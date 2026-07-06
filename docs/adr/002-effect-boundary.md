@@ -23,12 +23,23 @@ Effects are host-side functions (anyrt/anybao code — never guest code),
 registered declaratively:
 
 ```python
-@effect("fetch", kind="mutate",            # JSON trace field: "class"
-        normalize=normalize_fetch,          # raw args -> canonical input (ADR-001 §3)
+@effect("http.get", kind="read",            # JSON trace field: "class"
+        normalize=normalize_http,           # raw args -> canonical input (ADR-001 §3)
         redact=["headers.authorization"],   # sensitive paths, masked pre-record
-        cap="net.fetch")                    # required capability (default: effect name)
-def fetch(ctx, url, *, method="GET", headers=None, body=None): ...
+        cap="net.http")                     # required capability (default: effect name)
+def http_get(ctx, url, *, params=None, headers=None, timeout=None): ...
 ```
+
+**Pythonic surface (not JS land).** The old harness mimicked JS
+(`fetch`, `console.log`); anybao's effect catalog mimics Python idioms —
+the model has seen far more requests-style Python than JS-in-Python:
+`http.get/post/put/delete(...)` with `params=/headers=/json=` returning
+a `Response` (`.status`, `.json()`, `.text`); **`print()` is the
+model-facing output channel** (the console.log role — traced as a
+structured-value record, primary input to the digest); snake_case
+everywhere. Granular verbs also fix classification: `http.get` is
+`read`, `http.post` is `mutate` — one JS-style `fetch` couldn't declare
+either honestly.
 
 - `kind` is declared, never guessed (kills the v1 name-prefix
   heuristic). `kind="read"` effects are safe to re-execute; `mutate`
@@ -74,7 +85,8 @@ tightens later without touching mechanism.
 Cells execute in a constructed namespace containing **only**:
 
 - **kernel facades** (tools; ADR-003 owns their shape),
-- **effect shims** (§4),
+- **effect shims** (§4) and **`print()`** — the traced structured-value
+  output channel (console.log's role in v1),
 - **curated builtins**: the pure computation subset (`len`, `range`,
   `enumerate`, `zip`, `sorted`, `min/max/sum`, `dict/list/set/tuple`,
   `str/int/float/bool`, `isinstance`, `repr`, comprehension machinery,
@@ -114,10 +126,14 @@ In-process v2.0 delivers this contract for honest code: nothing ambient
 is *reachable*, so accidental effects and accidental nondeterminism are
 structurally impossible. Deliberate escape (ctypes-style) is not
 defensible in-process and we do not pretend otherwise — that is the
-security milestone (presumptive engine: Rust + wasmtime, CPython-on-WASI
-guest, effects become host imports — this ADR's broker pipeline maps
-1:1 onto host functions). Programs and effects see an identical API at
-both stages.
+security milestone (wasmtime + CPython-on-WASI guest; engine timing and
+host shape are ADR-003's decision — deferred by review 2026-07-07).
+**Effect registration stays in Python in every engine variant**: with
+wasmtime-py the Python harness IS the host and `@effect` functions are
+the host imports; with a Rust engine binary the engine relays host
+calls to the same Python implementations over IPC. The engine choice
+picks the cage, never where effects are written. Programs and effects
+see an identical API at every stage.
 
 ## Consequences
 
