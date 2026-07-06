@@ -1,0 +1,21 @@
+# Virtual workspace root — the packages live in runtime/ (anyrt) and
+# harness/ (anybao). Import direction: anybao → anyrt, never back.
+[tool.uv.workspace]
+members = ["runtime", "harness"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["runtime/tests", "harness/tests"]
+addopts = "-q --import-mode=importlib"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
