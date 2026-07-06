@@ -844,6 +844,9 @@ fixed in Phase 1 ADRs so Phase 3 doesn't bake in the flat shape.
   subprocess). If the engine goes Rust, anyrt splits contract (Python
   pkg) / engine (Rust bin) — which is exactly the repo-split trigger.
   Bonus to park: wasm memory snapshots ⇒ resumable kernels.
+  User (2026-07-07): familiar with wasmtime, happy to use it —
+  Rust+wasmtime is the PRESUMPTIVE security-milestone engine, not just a
+  candidate.
 - **Where does anybao live** — decided direction: one NEW repo, uv
   workspace with two packages, `runtime/` (cell executor, effect boundary,
   tracer/replay, space module finder — the contract programs are written
