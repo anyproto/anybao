@@ -831,6 +831,19 @@ fixed in Phase 1 ADRs so Phase 3 doesn't bake in the flat shape.
   the security milestone. Both stages implement the same isolation
   principle (§5 sketch) — staging varies enforcement strength
   (honest-code vs adversarial), never the program-facing contract.
+  **CPython-on-WASI note (clarified 2026-07-07)**: python.wasm is
+  host-agnostic — the security-milestone engine can be a single static
+  **Rust binary embedding wasmtime** (engine #2 behind the same executor
+  interface). Fit: effects-as-host-imports makes the isolation principle
+  physical (no ambient world in the guest, clock/random virtualized);
+  wasmtime fuel metering + epoch interruption + memory caps = the
+  hard-limits story done properly (interrupts even C-level loops);
+  single-binary distribution regained. Costs: ~2–5× interpreter
+  slowdown (fine — cells orchestrate I/O), pure-Python-only guest (C
+  extensions effectively out), guest↔host value serialization (same as
+  subprocess). If the engine goes Rust, anyrt splits contract (Python
+  pkg) / engine (Rust bin) — which is exactly the repo-split trigger.
+  Bonus to park: wasm memory snapshots ⇒ resumable kernels.
 - **Where does anybao live** — decided direction: one NEW repo, uv
   workspace with two packages, `runtime/` (cell executor, effect boundary,
   tracer/replay, space module finder — the contract programs are written
