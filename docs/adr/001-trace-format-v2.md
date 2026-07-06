@@ -93,6 +93,17 @@ principle made concrete: if it isn't in the trace, it didn't happen.
   live (or fail, per option) and are flagged `mocked: false` — the
   **traceDiff** view is exactly these records.
 
+**How matching works over a log.** The log is the source of truth;
+matching structures are derived from it at replay setup. Loose mode
+folds the log in one O(n) pass into exactly the v1 shape —
+`effect → key → FIFO output queue`, queue order = log order — and pops
+per call, byte-for-byte v1 pop semantics (v1's ordering was an implicit
+map-insertion artifact; here it's a provable property of the log).
+Strict mode uses no index at all: a **cursor** — the next call must
+match `log[i]`, then advance. A map can answer "seen this input?" but
+cannot detect reordered, extra, or missing calls; the cursor detects
+all three, which is what makes determinism testable.
+
 ### 6. Classification is declared, not guessed
 
 `class: read | mutate` comes from the `@effect` registration (ADR-002),
