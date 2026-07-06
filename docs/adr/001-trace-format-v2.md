@@ -1,6 +1,6 @@
 # ADR-001: Trace format v2
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-06
 
 ## Context
@@ -128,16 +128,16 @@ bounded without truncating anything.
 - The tracer-heritage mock debugging keeps working, minus the key
   brittleness.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **LLM input growth.** Recording the full `messages` array per call is
-   O(turns²) bytes per conversation trace. Options: accept (spill rule
-   bounds line size; traces are per-run), or prefix-compress (an
-   `llm.chat` input may reference the previous call's messages by seq +
-   delta). Lean: accept for v2.0, revisit with data.
-2. **Spill threshold default** (64 KB?) and whether `console.log` values
-   should spill at a lower threshold than effect outputs.
-3. **Should `mock` mode fail or execute live on unmatched calls by
-   default?** Old tracer executed live (exploration probes need it);
-   golden tests want fail. Proposal: mode option, default = fail in
-   tests, live in interactive debugging.
+1. **LLM input growth** — record the full `messages` array per call;
+   accept O(turns²) for v2.0 (the spill rule bounds line size; traces
+   are per-run). Revisit with real data; prefix-compression (reference
+   prior call's messages by seq + delta) is the known escape hatch.
+2. **Spill threshold** — default 64 KB, one config knob, same threshold
+   for effect outputs and `console.log` values. Revisit only if digest
+   noise shows console values need a lower bar.
+3. **`mock` mode on unmatched calls** — a mode option: **fail** is the
+   default under tests, **execute live** is the default in interactive
+   debugging (exploration probes need live execution; golden tests need
+   the failure).
