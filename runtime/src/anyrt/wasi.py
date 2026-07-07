@@ -14,8 +14,8 @@ import threading
 import time
 from pathlib import Path
 
-from wasmtime import Config, Engine, Store, WasiConfig
 import wasmtime.component as wc
+from wasmtime import Config, Engine, Store, WasiConfig
 
 from .effects import Broker
 from .executor import CellError, CellResult
@@ -27,7 +27,7 @@ class _Runtime:
     """Process-wide engine + compiled component (compile once, ~750ms)."""
 
     _lock = threading.Lock()
-    _instances: dict[str, "_Runtime"] = {}
+    _instances: dict[str, _Runtime] = {}
 
     def __init__(self, kernel_wasm: str):
         cfg = Config()
@@ -44,7 +44,7 @@ class _Runtime:
             self.engine.increment_epoch()
 
     @classmethod
-    def get(cls, kernel_wasm: str) -> "_Runtime":
+    def get(cls, kernel_wasm: str) -> _Runtime:
         with cls._lock:
             if kernel_wasm not in cls._instances:
                 cls._instances[kernel_wasm] = cls(kernel_wasm)
@@ -109,10 +109,13 @@ class WasiEngine:
             raw = self._run_cell(self.store, code)
             reply = json.loads(raw)
             err = reply.get("error")
+            cell_err = None
+            if err:
+                cell_err = CellError(err["type"], err["message"], err.get("traceback", ""))
             result = CellResult(
                 cell_id=cell_id,
                 ok=reply["ok"],
-                error=CellError(err["type"], err["message"], err.get("traceback", "")) if err else None,
+                error=cell_err,
                 prints=reply.get("prints", []),
                 last_value=reply.get("last"),
             )
@@ -132,10 +135,13 @@ class WasiEngine:
         except Exception:  # store poisoned by trap
             fuel_used = -1
         result.metrics = {"fuel_used": fuel_used, "duration_ms": result.duration_ms}
+        err_rec = None
+        if result.error:
+            err_rec = {"type": result.error.type, "message": result.error.message}
         self.broker.writer.cell(
             cell=cell_id,
             ok=result.ok,
-            error={"type": result.error.type, "message": result.error.message} if result.error else None,
+            error=err_rec,
             interrupted=result.interrupted,
             metrics=result.metrics,
         )

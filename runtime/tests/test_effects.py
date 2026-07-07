@@ -1,5 +1,4 @@
 import pytest
-
 from anyrt import trace as tr
 from anyrt.effects import Broker, EffectError, Registry, effect
 

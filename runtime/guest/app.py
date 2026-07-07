@@ -39,7 +39,11 @@ class WitWorld:
         if not _ns:
             _ns = _fresh_ns()
         prints: list[str] = []
-        _ns["print"] = lambda *a, **kw: prints.append(" ".join(repr(x) if not isinstance(x, str) else x for x in a))
+
+        def _print(*a, **kw):
+            prints.append(" ".join(x if isinstance(x, str) else repr(x) for x in a))
+
+        _ns["print"] = _print
         try:
             tree = ast.parse(code, mode="exec")
             last = None

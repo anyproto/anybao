@@ -6,13 +6,14 @@ Needs bin/kernel.wasm (`make kernel`); skipped when absent.
 from pathlib import Path
 
 import pytest
-
 from anyrt import trace as tr
 from anyrt.effects import Broker, Registry, effect
 
 KERNEL = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
 
-pytestmark = pytest.mark.skipif(not KERNEL.exists(), reason="bin/kernel.wasm missing — run `make kernel`")
+pytestmark = pytest.mark.skipif(
+    not KERNEL.exists(), reason="bin/kernel.wasm missing — run `make kernel`"
+)
 
 
 def make_engine(**kw):
