@@ -101,6 +101,24 @@ current user message (timestamp + ui-context suffix). Stable-block
 content is fingerprinted; the fingerprint is recorded per run (prompt
 drift is diagnosable from traces).
 
+**Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
+cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,
+`values`, `effects`) must be taught, but split by reach-frequency so
+standing prompt stays minimal (every injected global is prompt tax):
+- **Hot surface → the cached core skill** (small stable paragraph, in
+  the fingerprinted block): cells are Python; `http.get/post`,
+  `print()` = output channel, `now()/rand()/uuid4()`, `use('name@v1')`.
+- **Recovery mechanics → just-in-time, no standing prompt**:
+  `values.get`/`effects.of` are taught by the artifact that creates the
+  need (the digest stub already prints `values.get("cell", i)`; the
+  boundary `ImportError` enumerates the allowlist). Same doctrine as
+  the `*_many` digest hint.
+This is a design constraint on the runtime, not just the prompt: keep
+the injected namespace deliberately small so the standing surface stays
+cheap. stdlib mechanics are never in the prompt (the model knows them;
+imports self-teach on error). Content authored in M4 (core skill,
+through the audit); assembled here in M2.
+
 ### 6. Purity
 
 The loop is a pure function over (history, policies, mailbox) with
