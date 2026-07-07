@@ -1,6 +1,6 @@
 # ADR-003: Executor & kernel API
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-001 (trace v2), ADR-002 (effect boundary) — both accepted
 
@@ -16,41 +16,54 @@ module resolution grammar (ADR-004), digest rendering and loop policy
 
 ## Decision
 
-### 1. Engines: two, behind one interface; wasi is the v2.0 production engine
+### 1. One engine: wasi. The interface stays; a test double, not a second engine
 
 ```
-Executor (interface)
-├── NativeEngine  — in-process exec() into a curated namespace.
-│                   Dev/test/spike engine: fast, pdb-able, zero setup.
-│                   Honest-code enforcement only (ADR-002 §5). NOT the
-│                   production engine.
-└── WasiEngine    — wasmtime-py host; guest = CPython compiled to
-                    wasm32-wasi (official CPython target). The v2.0
-                    PRODUCTION engine, required for GA / parity cutover.
-                    Effects are host functions (the ADR-002 broker,
-                    verbatim); fuel + epoch deadlines + memory caps are
-                    engine-native.
+Executor (protocol)
+├── WasiEngine    — THE engine, spike onward. wasmtime-py host; guest =
+│                   CPython compiled to wasm32-wasi (official CPython
+│                   target). Effects are host functions (the ADR-002
+│                   broker, verbatim); fuel + epoch deadlines + memory
+│                   caps are engine-native.
+└── FakeExecutor  — a TEST DOUBLE (canned CellResults behind the same
+                    protocol) for loop-logic unit tests. Not an engine:
+                    it executes nothing.
 ```
 
-Rationale for wasi-in-v2.0 (not deferred to a "security milestone"):
-the isolation principle is core doctrine, not a hardening extra — and
-the in-process watchdog is genuinely weak (CPython cannot interrupt a
-cell stuck in a C-level loop or blocking call; async exceptions land
-only between bytecodes). wasmtime's **fuel metering** (deterministic
-instruction budget), **epoch interruption** (hard wall-clock deadline
-that stops even C loops), and **per-store memory limits** solve the
-three limits gaps properly and are all exposed through wasmtime-py.
-Keeping NativeEngine permanently (not as a migration leftover) buys
-fast unit tests of loop logic and painless debugging; golden replay
-tests run on BOTH engines in CI, which continuously proves the
-program-facing contract identical — the portability seam (ADR-002
-rationale) stays honest by test, not by promise.
+A NativeEngine (in-process exec) was proposed and **rejected in review
+(2026-07-07)** — "faster first result" is not a real benefit, and the
+two-engine design had hidden costs the wasi-only design deletes:
+
+- **Enforcement gets built once, at the right layer.** In-process,
+  ADR-002's proxied-stdlib tier means hand-built wrapper modules
+  (datetime/random/time — the admitted fiddly part). Under wasi the
+  guest's plain `datetime.now()` bottoms out in a WASI syscall
+  (`clock_time_get`) that WE provide as a host function → routed to the
+  `time.now` effect. The guest imports the REAL stdlib module; the
+  shim lives at the syscall layer. Same for `random` (entropy
+  syscall). ADR-002 §4 tier 2 is thus implemented as WASI host
+  functions wherever the ambient authority is syscall-shaped; proxy
+  modules remain only where the authority is API-shaped (e.g.
+  `os.environ` → `env.get`). The *contract* (those APIs are
+  effect-backed and recorded) is unchanged.
+- **Fast loop tests never needed an engine** — the FakeExecutor double
+  covers them.
+- **pdb-on-cells contradicts doctrine** — traces are the debugging
+  story for guest code; effects (host Python in every design) stay
+  pdb-able regardless.
+- **Dual-engine "contract proving" was circular** — one engine, no
+  drift to prove. The protocol remains the seam for the double and any
+  future engine (e.g. a Rust host).
+
+Bonus: the spike now de-risks the riskiest integration (python.wasm +
+wasmtime-py + host functions) first instead of last.
 
 Costs accepted: vendoring a `python.wasm` + pure-Python stdlib bundle
 (nix pins it like any other artifact); guest↔host marshaling is
 JSON-serializable data only (already the trace constraint); guest
 tracebacks arrive as strings; C extensions unavailable in cells (the
-allowlist is pure-Python by design — ADR-002 §4).
+allowlist is pure-Python by design — ADR-002 §4); a heavier spike,
+explicitly accepted.
 
 ### 2. Executor interface
 
@@ -115,31 +128,45 @@ effects.get(seq)              # one full record incl. output (blob-resolved)
 the digest layer (ADR-005) decides inline-vs-stub per its budget; the
 full value stays in the kernel. Values larger than the ADR-001 spill
 threshold are held as blob refs; `values.get` re-hydrates transparently.
-Store lives **kernel-side** (guest memory under wasi) with an LRU cap
-(config; default generous) — evicted values fall back to their trace
-blob if one was written, else raise a clear "evicted" error.
+Store lives **kernel-side** (guest memory under wasi), **uncapped for
+now** (review 2026-07-07): no LRU/eviction until real numbers justify
+one — instead, per-cell and per-conversation store metrics are always
+recorded (§5) so the decision is made from data. Guest memory itself is
+the natural backstop (a runaway store hits the memory limit as a clean
+`MemoryError`).
 
-### 5. Limits & interruption (per cell)
+### 5. Limits, interruption & metrics (per cell)
 
-| Limit           | NativeEngine              | WasiEngine                  |
-|-----------------|---------------------------|-----------------------------|
-| wall timeout    | watchdog + async-exc (soft)| epoch deadline (hard)      |
-| instruction cap | —                         | fuel (deterministic)        |
-| memory cap      | process-RSS watch (soft)  | store memory limit (hard)   |
-| hard break      | best-effort               | epoch bump (always lands)   |
+| Limit           | Mechanism (wasi)                       |
+|-----------------|----------------------------------------|
+| wall timeout    | epoch deadline (hard, lands in loops)  |
+| instruction cap | fuel (deterministic, replayable)       |
+| memory cap      | store memory limit (hard, MemoryError) |
+| hard break      | epoch bump (always lands)              |
 
 Defaults config-injected (ADR-002 policy rule); every limit hit is
 recorded (a `cell.interrupted` marker in the trace via the cell's
 terminal record) and surfaces as `CellResult.interrupted` + `error`.
 
+**Metrics are first-class (review 2026-07-07)** — sobek could measure
+none of this; wasmtime measures all of it for free, so every cell's
+terminal trace record (and thus the debug log) carries:
+`fuel_used`, `mem_pages` (linear-memory size after the cell; growth
+events from the ResourceLimiter callback give the peak), `duration_ms`,
+`value_store` {entries, bytes}, and per-effect timing already in each
+record's `meta.durMs`. Capacity decisions (store caps, fuel defaults,
+timeout defaults) get made later FROM these numbers, not guessed.
+
 ## Consequences
 
-- The isolation principle is physically enforced in production from
-  v2.0 GA; "honest-code" mode exists only as a labeled dev engine.
-- Two engines in CI = the identical-contract claim is continuously
-  tested; drift between them is a red build, not a latent surprise.
-- The spike can start on NativeEngine immediately (no wasm plumbing on
-  the critical path) while WasiEngine lands before cutover.
+- The isolation principle is physically enforced from the first spike
+  cell onward — no honest-code interim in production, no second
+  enforcement implementation to build and maintain.
+- One engine; loop logic tested via the FakeExecutor double; the
+  Executor protocol remains the seam for future engines.
+- Runtime behavior is measurable for the first time (fuel/memory/
+  timing per cell in the debug log) — capacity tuning becomes
+  data-driven.
 - Value recovery idioms carry over from v1 with Pythonic names
   (`values.get`, `effects.of`), and the effects half stops being a
   second store — one source of truth (the trace).
@@ -178,15 +205,14 @@ wasmtime hard-bounds everything the agent's code does; the effect
 boundary bounds everything we do on its behalf. No un-cancellable path
 remains — the property the sobek runtime lacks end-to-end.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **Is WasiEngine required for v2.0 GA?** Lean: yes (production =
-   wasi; native = dev/test only). The alternative — ship GA on native,
-   wasi later — restores the old "security milestone" staging.
-2. **Spike on NativeEngine?** Lean: yes — spike validates loop + trace
-   + replay ergonomics, not the cage; wasm plumbing would delay signal.
-3. **`reset()` exposed to the agent** (as v1's `js.reset`) or
-   loop-internal only? Lean: exposed — the agent knows when its
-   namespace is poisoned.
-4. **Value-store LRU default cap** — number? Lean: size-based (e.g.
-   256 MB native / guest-memory-bounded under wasi), not count-based.
+1+2. **wasi-only, spike included.** NativeEngine rejected — "faster
+   first result" is not a benefit; wasi-only builds enforcement once at
+   the syscall layer and de-risks the hard integration first (§1).
+3. **`reset()` exposed to the agent** (as v1's `js.reset`) — the agent
+   knows when its namespace is poisoned.
+4. **No value-store cap for now.** Measure first: fuel/memory/timing/
+   store-size metrics in every cell's terminal record and the debug log
+   (§5) — things sobek could never measure. Capacity decisions come
+   from those numbers later; guest memory limit is the backstop.
