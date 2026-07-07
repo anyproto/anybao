@@ -76,6 +76,11 @@ def register_config_effect(registry, config: Config) -> None:
 
     @effect("config.get", kind="read", registry=registry)
     def config_get(ctx, key):
+        # Cells/programs get non-secret config only. INFRASTRUCTURE
+        # secrets (LLM key) are resolved host-side by their effects.
+        # INTEGRATION secrets a program needs (e.g. gemini) are USED via
+        # named-credential injection, never READ — plan §4 config
+        # (named-credential injection, M6), not this door.
         if key in config._secret:
             raise ConfigError(f"{key!r} is a secret — not readable from cells")
         return {"value": config.get(key)}

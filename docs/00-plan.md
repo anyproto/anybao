@@ -359,6 +359,28 @@ change, never syncs):
   writable today (mirror covers objects rows only) — per-account
   cross-device keys may need an objects-row property or small SDK work.
 - Bootstrap: first key entry via CLI/env once, persisted thereafter.
+- **Integration secrets — named-credential injection (design, not yet
+  built; surfaced 2026-07-08).** Two secret kinds: INFRASTRUCTURE
+  secrets (LLM key) used only by built-in effects — M2 handles these
+  (host-side resolve, cells blocked from `config.get`). INTEGRATION
+  secrets (websearch's Gemini key, any program's 3rd-party API) are
+  needed BY guest programs — M2 leaves this a gap (config.get refuses,
+  so the program can't authenticate). Resolution is NOT "trusted
+  programs read bytes" (reopens exfiltration): programs reference a
+  credential by HANDLE and the effect injects host-side —
+  `http.get(url, credential="gemini")` → the http effect looks up the
+  secret + an **injection recipe** (`{into: header|query|bearer,
+  field}`), applies it to the request, **redacts the injected field
+  from the trace**. Load-bearing safety: a credential is **host-bound**
+  (allowed destination hosts) so a program can't pass
+  `credential="gemini"` toward `attacker.com` and exfiltrate via the
+  injection. **Capability-gated**: the program manifest declares
+  `credentials: [gemini]`, the user grants it (CapBAC — credentials are
+  one capability kind). Testing-in-a-cell uses the same handle (results
+  back, never bytes). Raw-byte access = capability-gated escape hatch,
+  default-deny. Lands with capabilities/overlays (M6); touches config
+  (credential defs + recipes + host allowlist), the http effect
+  (credential param + inject + redact + host check), and the manifest.
 
 ### Loop control: break + inject (new requirement)
 The toolcaller loop must support external control while running:
