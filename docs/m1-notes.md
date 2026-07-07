@@ -1,4 +1,4 @@
-# M1 — runtime core (anyrt complete)
+# M1 — runtime core (anyrt complete) — ACCEPTED 2026-07-08
 
 Scope from docs/01-implementation-plan.md; ADRs 001–004. Checklist
 (one commit per item, roughly):
