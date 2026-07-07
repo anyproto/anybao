@@ -135,3 +135,19 @@ def test_values_store_across_cells():
     eng.reset()
     r = eng.run_cell("values.get('c1', 'last')", cell_id="c4")
     assert not r.ok and r.error is not None and r.error.type == "KeyError"
+
+
+def test_effects_views_from_guest():
+    eng, w = make_engine()
+    r = eng.run_cell("resp = http.get('https://a')\nresp.status", cell_id="c1")
+    assert r.ok
+    r = eng.run_cell(
+        "recs = effects.of('c1')\nprint(recs)\n[e['effect'] for e in recs]",
+        cell_id="c2",
+    )
+    assert r.ok and r.last_value == "['http.get']"
+    r = eng.run_cell(
+        "seq = effects.of('c1')[0]['seq']\nfull = effects.get(seq)\nfull['output']['status']",
+        cell_id="c3",
+    )
+    assert r.ok and r.last_value == "200"

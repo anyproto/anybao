@@ -40,6 +40,38 @@ def register_builtin_effects(registry: Registry, *, env: dict[str, str] | None =
         present = name in env_map
         return {"present": present, "value": env_map.get(name)}
 
+    @effect("trace.effects_of", kind="read", registry=registry)
+    def trace_effects_of(ctx, cell):
+        # Compact per-cell view (ADR-003 §4): no input/output bodies.
+        out = []
+        for r in ctx.writer.records:
+            if r["kind"] == "effect" and r.get("cell") == cell:
+                out.append(
+                    {
+                        "seq": r["seq"],
+                        "effect": r["effect"],
+                        "class": r.get("meta", {}).get("class"),
+                        "mocked": r.get("meta", {}).get("mocked"),
+                        "error": (r.get("error") or {}).get("type"),
+                    }
+                )
+        return {"records": out}
+
+    @effect("trace.effect_get", kind="read", registry=registry)
+    def trace_effect_get(ctx, seq):
+        # One full record, blob-resolved (ADR-003 §4 / ADR-001 §2).
+        for r in ctx.writer.records:
+            if r["kind"] == "effect" and r["seq"] == seq:
+                blobs = {**ctx.blobs, **ctx.writer.blobs}
+                from . import trace as _tr
+
+                return {
+                    **r,
+                    "input": _tr.resolve_blobs(r["input"], blobs),
+                    "output": _tr.resolve_blobs(r["output"], blobs),
+                }
+        raise KeyError(f"no effect record with seq {seq}")
+
     @effect("kernel.boot", kind="read", registry=registry)
     def kernel_boot(ctx, **pins):
         # Input carries the determinism pins (kernel hash, hashseed,

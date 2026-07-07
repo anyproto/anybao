@@ -200,7 +200,7 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         f"module '{name}' is outside the effect boundary. "
         f"Available: {', '.join(sorted(_ALLOWED))}; "
         f"proxied: {', '.join(sorted(_PROXIES))}; "
-        f"plus globals http, now(), rand(), env(), uuid4(), values, effect()."
+        f"plus globals http, now(), rand(), env(), uuid4(), values, effects, effect()."
     )
 
 
@@ -261,6 +261,19 @@ class _Values:
 
 values = _Values()
 
+
+class _Effects:
+    """Trace views (ADR-003 §4) — the effects half of the kernel API."""
+
+    def of(self, cell_id):
+        return _effect("trace.effects_of", {"cell": cell_id})["records"]
+
+    def get(self, seq):
+        return _effect("trace.effect_get", {"seq": seq})
+
+
+effects = _Effects()
+
 # ---- namespace & cell execution --------------------------------------------
 
 _ns: dict = {}
@@ -277,6 +290,7 @@ def _fresh_ns() -> dict:
         "env": env,
         "uuid4": uuid4,
         "values": values,
+        "effects": effects,
     }
 
 
