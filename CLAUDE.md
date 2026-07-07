@@ -45,3 +45,7 @@ UPDATE_GOLDEN=1 uv run pytest -k up_to_date   # regenerate golden fixture (revie
 ```
 
 CI runs exactly these through the flake.
+
+Gotcha: `harness/tests/fixtures/*.jsonl` are JSONL — one record per
+line is the parse contract. View pretty with `jq . <file>`; never
+reformat the buffer (a saved pretty-print breaks the golden tests).
