@@ -55,3 +55,10 @@ ADR-003's appendix described.
 - M0 guest keeps default builtins (the cage already denies the world);
   namespace curation + datetime/random proxies + values/effects kernel
   API are M1 scope, per plan.
+- **`effect('http.get', {...})` in cells is NOT the final surface** —
+  it's the raw single channel (the host-effect crossing). The
+  cell-facing contract is ADR-002's Pythonic facades
+  (`http.get(url) -> Response` with `.status/.json()/.text`), landing
+  in M1 with the namespace work; facades marshal onto this same
+  channel. Fixture cells will be rewritten to the facade idiom then
+  (UPDATE_GOLDEN regen).
