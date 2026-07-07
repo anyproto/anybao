@@ -1,0 +1,32 @@
+# M4 — functional-parity port
+
+Where anybao becomes a real agent and old bobrik-watch retires. Fresh
+shapes, no bridges (no-backcompat). Checklist:
+
+- [ ] Helper style guide (docs/helper-style.md) — the porting rubric:
+      naming, arg shapes, space handling, error normalization, catalog
+      caching, nested property shape. Feeds both the port and the
+      drift skill.
+- [ ] anyclient expansion — full any surface the helper needs (spaces,
+      objects, chat, editor, query, agent turns/chunks, search, props).
+- [ ] Helper facades (Python) over anyclient, THROUGH the workaround/
+      skill audit (provenance tags, no test → no port).
+- [ ] Drift-flow bootstrap — vendor any swagger.json + coverage
+      manifest + make api-drift (deferred from M3; first done here).
+- [ ] Tool-docs pipeline — ONE splitter (Python), sync.py (hash-gated,
+      fresh chat object per ADR-006 §0), skills written fresh incl. the
+      core skill (kernel surface, ADR-005 §5).
+- [ ] History writer — turns/chunks v2 writer, hierarchical rollup
+      trigger, token-budgeted boot-window renderer.
+- [ ] Trigger subsystem v1 — owner/arming, run records + metrics
+      rollups, limits + circuit breaker, monitoring list API;
+      watcher = trigger #1 (chat event → runner, cursor+dedup, mid-run
+      → mailbox).
+- [ ] Minimal trace viewer (agent-side views done; human = enough to
+      debug).
+- [ ] Real transports + one-real-call llm/any fixture seeding.
+
+Gate: side-by-side vs bobrik-watch on a test space + cutover checklist
+(BOBRIK.md behavior walk) → retire bobrik-watch. Second metrics
+checkpoint here (calibrate token counter + digest/ceiling defaults
+from live traces).

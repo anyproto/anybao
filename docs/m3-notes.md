@@ -1,4 +1,4 @@
-# M3 — any-side upstream pass (lands in ~/any/any, Go)
+# M3 — any-side upstream pass — ACCEPTED 2026-07-08
 
 Branch `feat/agentlog-v2` in ~/any/any. Implements the ADR-006 data
 contracts + the history index chunker server-side. NOT pushed/PR'd.
