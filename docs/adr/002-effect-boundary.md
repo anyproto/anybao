@@ -1,6 +1,6 @@
 # ADR-002: Effect boundary & isolation
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-001 (trace format v2 — accepted)
 
@@ -182,17 +182,23 @@ weekly — so the cage is wasmtime and the doing is Python.**
 - Cost accepted: proxy modules are fiddly to build correctly (datetime
   especially); the tier-1 allowlist will need occasional additions.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **Ergonomic shim names**: inject `now()/rand()/env()` globals in
-   addition to proxied modules, or force module imports only? Lean:
-   inject — cells are written by an LLM; shorter is fewer tokens and
-   fewer mistakes, and both routes hit the same effects.
-2. **`uuid`/id generation**: allow only deterministic uuid5, or provide
-   an effect-backed `uuid4()` (recorded like `random`)? Lean:
-   effect-backed uuid4 — id generation is too common to ban.
-3. **Batch effects**: keep `fetchBatch`-style batching as first-class
-   effects (one record carrying N sub-inputs), or N records + broker
-   parallelism? Lean: N individual records (uniform trace, replay
-   stays simple); the *facade* may still offer a batch helper that fans
-   out.
+1. **Ergonomic shim names** — inject `now()/rand()/env()` globals in
+   addition to proxied modules; both routes hit the same effects.
+2. **`uuid`** — effect-backed `uuid4()` (recorded like `random`);
+   deterministic uuid5 passes through the allowlist.
+3. **Batch** — N individual records + host-side concurrency, exposed as
+   **per-facade `*_many` methods** (no generic combinator in v2.0):
+   `http.get_many(urls, ...)`, `llm.complete_many(prompts, tier=...)`.
+   One guest→host crossing carries the list; the broker fans out to the
+   same single-item effect on a pool (per-item cap checks/normalizers/
+   redaction unchanged, no separate batch effect in the catalog).
+   Records append in **input order** regardless of completion order
+   (strict replay stays deterministic under concurrency), each
+   individually mockable, `meta.batch: {id, i}` for provenance.
+   Per-item failure is an `EffectError` value in that slot, never a
+   whole-batch exception. Generic thunk-based `batch()` rejected:
+   thunks are guest code and cells stay single-threaded; a
+   descriptor-based combinator can be added later without touching the
+   trace contract.
