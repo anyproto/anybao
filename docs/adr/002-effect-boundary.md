@@ -135,6 +135,41 @@ calls to the same Python implementations over IPC. The engine choice
 picks the cage, never where effects are written. Programs and effects
 see an identical API at every stage.
 
+## Design rationale: why two wraps, why effects in Python
+
+**Syscall analogy**: the guest facade is libc, the host broker is the
+kernel's syscall layer — nobody puts permission checks in libc, nobody
+makes applications issue raw syscalls by hand.
+
+**The two wraps answer different questions.** The guest-side facade
+(`http.get`, module proxies, `print()`, tool facades) provides *shape*:
+a natural Python surface for LLM-written cells — kwargs, `Response`
+objects with methods — marshalled into the serialized crossing. It
+holds ZERO authority; a cell can monkeypatch or bypass it and gain
+nothing. The host-side `@effect` + broker provides *authority and
+truth*: enforcement and recording live where guest code cannot reach.
+Checks in the guest would be tamperable; ergonomics in the host can't
+shape the guest's Python experience. The split is the trust boundary
+made visible in code — and it is also the **portability seam**: between
+the wraps sits a plain function call (in-process), a wasm host call
+(wasmtime), or an IPC hop (Rust engine). Only the transport changes;
+neither wrap's contents do. That is how "identical program-facing
+contract at every stage" is achieved mechanically, not by promise.
+
+**Effects are Python because the engine's job is containment, not
+capability.** (1) Effects are application logic, not syscalls —
+`http.get` needs config-cascade credentials and redaction, `llm.chat`
+needs provider adapters, `chat.send` needs anyclient; that is the
+harness domain, written once in Python, and uniform `@effect` functions
+are the cheap-model-maintainable shape. (2) Trust comes from *position*,
+not language — effects are trusted because they run outside the cage;
+the part that must be strong is the boundary, which is exactly what the
+engine provides. (3) Stage-1 coherence — v2.0 in-process has no Rust
+anywhere; Python-declared effects are the invariant, engines are
+interchangeable cages. One line: **the cage is infrastructure and
+should never change; what the agent can do is product and should change
+weekly — so the cage is wasmtime and the doing is Python.**
+
 ## Consequences
 
 - One choke point: tracing, mocking, capability checks, redaction, and
