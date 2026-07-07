@@ -120,6 +120,25 @@ class Broker:
         self.mock_unmatched = mock_unmatched
         self.current_cell: str | None = None
 
+    def cell_done(
+        self,
+        *,
+        cell: str,
+        ok: bool,
+        error: dict | None = None,
+        interrupted: bool = False,
+        metrics: dict | None = None,
+    ) -> None:
+        """Cell lifecycle record (ADR-001 §4b). In strict replay the
+        matching cell checkpoint is consumed (cell id + ok compared;
+        metrics legitimately vary run-to-run)."""
+        if self.mode == "replay":
+            assert self.cursor is not None
+            self.cursor.expect_cell(cell, ok)
+        self.writer.cell(
+            cell=cell, ok=ok, error=error, interrupted=interrupted, metrics=metrics
+        )
+
     def call(self, name: str, payload: dict) -> Any:
         import time as _time
 

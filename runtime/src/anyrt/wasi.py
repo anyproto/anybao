@@ -138,7 +138,7 @@ class WasiEngine:
         err_rec = None
         if result.error:
             err_rec = {"type": result.error.type, "message": result.error.message}
-        self.broker.writer.cell(
+        self.broker.cell_done(
             cell=cell_id,
             ok=result.ok,
             error=err_rec,

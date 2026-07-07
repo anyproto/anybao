@@ -13,5 +13,6 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v16
       - uses: DeterminateSystems/magic-nix-cache-action@v9
       - run: nix develop -c uv sync
+      - run: nix develop -c make kernel
       - run: nix develop -c uv run ruff check .
       - run: nix develop -c uv run pytest
