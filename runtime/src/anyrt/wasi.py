@@ -82,8 +82,11 @@ class WasiEngine:
         self.store.set_epoch_deadline(1_000_000_000)  # parked until a cell runs
 
         instance = linker.instantiate(self.store, rt.component)
-        self._run_cell = instance.get_func(self.store, "run-cell")
-        self._reset_ns = instance.get_func(self.store, "reset-ns")
+        run_cell = instance.get_func(self.store, "run-cell")
+        reset_ns = instance.get_func(self.store, "reset-ns")
+        assert run_cell is not None and reset_ns is not None  # exports per kernel.wit
+        self._run_cell = run_cell
+        self._reset_ns = reset_ns
         self._interrupted = False
 
     # -- host side of the ONE channel -------------------------------------

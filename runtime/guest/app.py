@@ -48,8 +48,10 @@ class WitWorld:
             tree = ast.parse(code, mode="exec")
             last = None
             has_last = False
-            if tree.body and isinstance(tree.body[-1], ast.Expr):
-                last_expr = ast.Expression(tree.body.pop().value)
+            tail = tree.body[-1] if tree.body else None
+            if isinstance(tail, ast.Expr):
+                tree.body.pop()
+                last_expr = ast.Expression(tail.value)
                 exec(compile(tree, "<cell>", "exec"), _ns)
                 last = eval(compile(last_expr, "<cell>", "eval"), _ns)
                 has_last = last is not None

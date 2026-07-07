@@ -57,13 +57,13 @@ def test_reset_drops_namespace():
     assert eng.run_cell("y = 1", cell_id="c1").ok
     eng.reset()
     r = eng.run_cell("y", cell_id="c2")
-    assert not r.ok and r.error.type == "NameError"
+    assert not r.ok and r.error is not None and r.error.type == "NameError"
 
 
 def test_guest_error_has_traceback_and_kernel_survives():
     eng, _ = make_engine()
     r = eng.run_cell("z = [1,2]\nz[10]", cell_id="c1")
-    assert not r.ok and r.error.type == "IndexError"
+    assert not r.ok and r.error is not None and r.error.type == "IndexError"
     assert "IndexError" in r.error.traceback_str
     assert eng.run_cell("z[1]", cell_id="c2").last_value == "2"  # namespace intact
 
@@ -83,7 +83,7 @@ def test_epoch_timeout_interrupts_busy_loop():
 def test_memory_cap_yields_memoryerror_kernel_survives():
     eng, _ = make_engine(memory_bytes=96 * 1024 * 1024)
     r = eng.run_cell("blob = 'x' * (200 * 1024 * 1024)", cell_id="c1")
-    assert not r.ok
+    assert not r.ok and r.error is not None
     assert (r.error.type == "MemoryError") or r.interrupted
     # kernel survives a denied allocation (MemoryError path)
     if r.error.type == "MemoryError":

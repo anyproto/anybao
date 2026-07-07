@@ -51,7 +51,7 @@ def test_golden_replay_strict():
     records = tr.load(hg.FIXTURE)
     replies, _, broker = hg.run_golden("replay", records)
     assert replies == EXPECTED_REPLIES
-    assert broker.cursor.exhausted()  # no missing calls either
+    assert broker.cursor is not None and broker.cursor.exhausted()  # no missing calls
 
 
 @needs_kernel

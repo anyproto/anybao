@@ -58,6 +58,7 @@ def test_mock_index_fifo(tmp_path):
     w.effect(effect="e", cell=None, input={"n": 1}, key=k, output="first")
     w.effect(effect="e", cell=None, input={"n": 1}, key=k, output="second")
     idx = tr.MockIndex(w.records)
-    assert idx.pop("e", k)["output"] == "first"
-    assert idx.pop("e", k)["output"] == "second"
+    first, second = idx.pop("e", k), idx.pop("e", k)
+    assert first is not None and first["output"] == "first"
+    assert second is not None and second["output"] == "second"
     assert idx.pop("e", k) is None
