@@ -3,5 +3,5 @@
   "venv": ".venv",
   "typeCheckingMode": "standard",
   "extraPaths": ["runtime/src", "harness/src", "runtime/guest"],
-  "exclude": ["bin", ".venv", "**/__pycache__"]
+  "exclude": ["bin", ".venv", ".direnv", "**/__pycache__"]
 }
