@@ -67,6 +67,27 @@ failure. v2 chunk record:
   (§4), off the completion hot path.
 - Server validation: append-only stays; add `level` ≥ 1, range checks
   per level.
+- **Growth** (reviewed): geometric series — N turns ⇒ ~N/10 L1 +
+  ~N/100 L2 + … ≈ **11% record overhead**, depth grows
+  logarithmically (at ~50 turns/day, a year ≈ 18k turns → ~1.8k L1 /
+  ~180 L2 / ~18 L3 / ~2 L4). Boot window is constant-size by budget;
+  summarizer work amortizes to ~11% extra, spread over background
+  trigger jobs. The scaling watch-item is summary drift across levels
+  (open Q3), not volume.
+- **Turns + chunks enter the semantic index** (restores the original
+  design — old amemory had `chat_chunk` as a memory category with
+  vectors, period fields, and a recall boost; the current
+  outside-the-index design silently dropped that). Mechanism: the
+  dedicated gated agent-data chunker (docs/13 roadmap item) emits
+  scope **`history`** — chunk entries = summary text + `level`/
+  `periodStart`/`periodEnd` metadata; turn entries = userText+replies.
+  `semsearch(scopes=["agent","history"])` = the old one-surface recall
+  over memories AND history. Temporal range queries stay dataset
+  queries (indexes exist) unified at the recall-tool level
+  (`recall.by_period` fanning across memory + turns + chunks) —
+  combining idioms are ADR-007's subject. Storage stays split on
+  purpose: memory items evolve, chunks are immutable; chunk-as-memory-
+  CATEGORY becomes chunk-as-recall-category.
 
 ### 3. Config object (`agent_config` dataset on a derived object)
 
@@ -107,7 +128,10 @@ failure. v2 chunk record:
    per-level range validation.
 2. Config: none (slice 22 suffices) — account scope later.
 3. Triggers: none in v2.0.
-4. (Parallel, §4c): backlinks read surface; turns/chunks index chunker.
+4. **Agent-data index chunker** (scope `history`): turns + chunks into
+   the search index with level/period metadata — required for the
+   unified recall surface (§2), not merely parallel work.
+5. (Parallel, §4c): backlinks read surface.
 
 ## Consequences
 
