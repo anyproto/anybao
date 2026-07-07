@@ -161,6 +161,26 @@ vocabulary and duplicates in check. All maintenance is trigger jobs
 with run observability (ADR-006 §4) — when the bird's-eye view is
 stale, a trigger's run log says why.
 
+### 7. Search quality is a dependency risk (named, 2026-07-07)
+
+Everything above leans on `any`'s `/search` (index candidates for
+recall, dedup, auto-injection, extraction judging) — and while the
+stack has BEIR-grade evals behind its defaults (`any` docs/search/),
+it has NOT been validated on THIS workload: short conversational
+queries, small personal corpora, memory items, turns/chunks. Treat as
+a first-class risk:
+1. **Workload-specific golden recall eval** — a small fixture set from
+   real data (the bao export is seed material: query → expected item),
+   run against fts/vector/hybrid modes; extends the existing
+   docs/search eval harness. Built alongside the recall tool, red in
+   CI when recall regresses.
+2. **Live signals double as search QA** — the §1b/§5 ROI metrics
+   (injected-but-never-referenced, extracted-but-never-recalled) and
+   explicit-search outcomes flag quality drift in production.
+3. **Fixes go upstream** (fix-upstream doctrine): RRF knobs, chunking,
+   embedder choice, scope handling — improved in `any`'s indexer, not
+   worked around in the harness.
+
 ## Consequences
 
 - The write side finally has policy with teeth: budget + table in the
