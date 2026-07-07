@@ -40,6 +40,23 @@ def register_builtin_effects(registry: Registry, *, env: dict[str, str] | None =
         present = name in env_map
         return {"present": present, "value": env_map.get(name)}
 
+    @effect("batch", kind="read", registry=registry)
+    def batch(ctx, name, payloads):
+        # ONE guest->host crossing carrying the list; broker fans out to
+        # the same single-item effect (per-item cap/normalize/redact
+        # unchanged). Errors come back as {"__error": {...}} slots.
+        results = ctx.call_many(name, payloads)
+        from .effects import EffectError as _EE
+
+        return {
+            "results": [
+                {"__error": {"type": r.type, "message": r.message}}
+                if isinstance(r, _EE)
+                else r
+                for r in results
+            ]
+        }
+
     @effect("trace.effects_of", kind="read", registry=registry)
     def trace_effects_of(ctx, cell):
         # Compact per-cell view (ADR-003 §4): no input/output bodies.

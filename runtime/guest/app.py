@@ -84,9 +84,30 @@ class Response:
         return f"<Response {self.status}, {len(self.text)} bytes>"
 
 
+def _batch(name, payloads):
+    out = _effect("batch", {"name": name, "payloads": payloads})["results"]
+    resolved = []
+    for r in out:
+        if isinstance(r, dict) and "__error" in r:
+            resolved.append(EffectError(f"{r['__error']['type']}: {r['__error']['message']}"))
+        else:
+            resolved.append(r)
+    return resolved
+
+
 class _Http:
     def _call(self, verb, url, **kw):
         return Response(_effect(f"http.{verb}", {"url": url, **kw}))
+
+    def get_many(self, items, **common):
+        """items: list of urls or {url, ...} dicts. One crossing, host
+        concurrency, results in input order (ADR-002 resolved Q3)."""
+        payloads = [
+            {"url": it, **common} if isinstance(it, str) else {**common, **it}
+            for it in items
+        ]
+        return [r if isinstance(r, EffectError) else Response(r)
+                for r in _batch("http.get", payloads)]
 
     def get(self, url, **kw):
         return self._call("get", url, **kw)

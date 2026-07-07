@@ -125,6 +125,21 @@ class Broker:
     def _resolve(self, value):
         return tr.resolve_blobs(value, self.blobs)
 
+    def call_many(self, name: str, payloads: list[dict]) -> list:
+        """Batch fan-out (ADR-002 resolved Q3): N individual records in
+        INPUT order regardless of completion order (strict replay stays
+        deterministic). Each item marked meta.batch={id,i}. Per-item
+        failure is an EffectError VALUE in that slot, not a raised
+        exception. M1: sequential host execution (concurrency is a
+        later optimization; the record contract is what matters)."""
+        results: list = []
+        for i, payload in enumerate(payloads):
+            try:
+                results.append(self.call(name, payload, _batch=(id(payloads), i)))
+            except EffectError as e:
+                results.append(e)
+        return results
+
     def cell_done(
         self,
         *,
@@ -144,9 +159,10 @@ class Broker:
             cell=cell, ok=ok, error=error, interrupted=interrupted, metrics=metrics
         )
 
-    def call(self, name: str, payload: dict) -> Any:
+    def call(self, name: str, payload: dict, _batch: tuple | None = None) -> Any:
         import time as _time
 
+        batch_meta = {"batch": {"id": _batch[0], "i": _batch[1]}} if _batch else {}
         d = self.registry.get(name)
         canonical = d.normalize(payload) if d.normalize else payload
         canonical = _redact(canonical, d.redact)
@@ -158,7 +174,7 @@ class Broker:
             self.writer.effect(
                 effect=name, cell=self.current_cell, input=canonical, key=key,
                 output=rec["output"], error=rec["error"],
-                meta={**rec.get("meta", {}), "mocked": True, "class": d.kind},
+                meta={**rec.get("meta", {}), "mocked": True, "class": d.kind, **batch_meta},
             )
             if rec["error"]:
                 raise EffectError(name, rec["error"]["type"], rec["error"]["message"])
@@ -171,7 +187,7 @@ class Broker:
                 self.writer.effect(
                     effect=name, cell=self.current_cell, input=canonical, key=key,
                     output=rec["output"], error=rec["error"],
-                    meta={"mocked": True, "class": d.kind},
+                    meta={"mocked": True, "class": d.kind, **batch_meta},
                 )
                 if rec["error"]:
                     raise EffectError(name, rec["error"]["type"], rec["error"]["message"])
@@ -192,7 +208,10 @@ class Broker:
         rec = self.writer.effect(
             effect=name, cell=self.current_cell, input=canonical, key=key,
             output=output, error=err,
-            meta={"durMs": int((_time.monotonic() - t0) * 1000), "mocked": False, "class": d.kind},
+            meta={
+                "durMs": int((_time.monotonic() - t0) * 1000),
+                "mocked": False, "class": d.kind, **batch_meta,
+            },
         )
         if err:
             raise EffectError(name, err["type"], err["message"], seq=rec["seq"])

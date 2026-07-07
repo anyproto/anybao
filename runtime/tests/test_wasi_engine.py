@@ -151,3 +151,21 @@ def test_effects_views_from_guest():
         cell_id="c3",
     )
     assert r.ok and r.last_value == "200"
+
+
+def test_http_get_many_input_order_and_records():
+    eng, w = make_engine()
+    code = (
+        "urls = ['https://a', 'https://bb', 'https://ccc']\n"
+        "rs = http.get_many(urls)\n"
+        "[len(r.text) for r in rs]"
+    )
+    r = eng.run_cell(code, cell_id="c1")
+    # stub returns "body of <url>" — lengths differ by url length
+    assert r.ok
+    assert r.last_value == str([len(f"body of {u}") for u in ["https://a", "https://bb", "https://ccc"]])
+    # three http.get records, input order, batch-tagged
+    gets = [x for x in w.records if x["kind"] == "effect" and x["effect"] == "http.get"]
+    assert len(gets) == 3
+    assert [g["input"]["url"] for g in gets] == ["https://a", "https://bb", "https://ccc"]
+    assert all("batch" in g["meta"] for g in gets)
