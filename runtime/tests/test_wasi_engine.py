@@ -17,11 +17,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def make_engine(**kw):
+def make_engine(programs=None, **kw):
+    from anyrt.builtin_effects import DictResolver
     from anyrt.wasi import WasiEngine
 
     reg = Registry()
-    register_builtin_effects(reg, env={"MY_FLAG": "on"})
+    register_builtin_effects(
+        reg, env={"MY_FLAG": "on"}, resolver=DictResolver(programs or {})
+    )
 
     @effect("http.get", kind="read", registry=reg)
     def http_get(ctx, url):
@@ -169,3 +172,34 @@ def test_http_get_many_input_order_and_records():
     assert len(gets) == 3
     assert [g["input"]["url"] for g in gets] == ["https://a", "https://bb", "https://ccc"]
     assert all("batch" in g["meta"] for g in gets)
+
+
+
+def test_use_loads_program_and_caches():
+    prog = "GREETING = 'hi'\n\ndef greet(name):\n    return GREETING + ' ' + name\n"
+    eng, w = make_engine(programs={"greeter@v1": prog})
+    r = eng.run_cell("g = use('greeter@v1')\ng.greet('bao')", cell_id="c1")
+    assert r.ok and r.last_value == "'hi bao'"
+    # second use -> cache hit (one module.resolve total is fine; marker match)
+    r = eng.run_cell("use('greeter@v1').GREETING", cell_id="c2")
+    assert r.ok and r.last_value == "'hi'"
+    resolves = [x for x in w.records if x["kind"] == "effect" and x["effect"] == "module.resolve"]
+    assert len(resolves) == 2  # probes every call
+    assert resolves[0]["output"]["cache"] == "miss"
+    assert resolves[1]["output"]["cache"] == "hit"  # marker unchanged
+    assert resolves[0]["output"]["sourceHash"].startswith("sha256:")
+
+
+def test_use_transitive_defining_space_first():
+    helper = "def double(x):\n    return x * 2\n"
+    main = "h = use('helper@v1')\n\ndef run(n):\n    return h.double(n) + 1\n"
+    eng, _ = make_engine(programs={"helper@v1": helper, "main@v1": main})
+    r = eng.run_cell("use('main@v1').run(10)", cell_id="c1")
+    assert r.ok and r.last_value == "21"
+
+
+def test_use_unknown_program_errors():
+    eng, _ = make_engine(programs={})
+    r = eng.run_cell("use('nope@v1')", cell_id="c1")
+    assert not r.ok and r.error is not None
+    assert r.error.type == "EffectError" and "program not found" in r.error.message

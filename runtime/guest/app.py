@@ -295,6 +295,32 @@ class _Effects:
 
 effects = _Effects()
 
+# ---- use() module loading (ADR-004) ----------------------------------------
+
+_module_cache: dict = {}   # (objectId, marker) -> module object
+_frame_stack: list = []    # defining-space chain (§5); top = current requester
+
+
+def use(spec):
+    """Load a space program by `name@vN` spec (ADR-004 §1). Probe every
+    call (host cache validates by marker); a program's own use() calls
+    resolve against ITS defining space via the frame chain."""
+    frm = _frame_stack[-1] if _frame_stack else None
+    r = _effect("module.resolve", {"spec": spec, "frm": frm})
+    ck = (r["objectId"], r["marker"])
+    if ck in _module_cache:
+        return _module_cache[ck]
+    mod = types.ModuleType(spec.split("@")[0].split(":")[-1])
+    mod.__dict__.update(_fresh_ns())
+    mod.__dict__["use"] = use
+    _frame_stack.append(r["objectId"])
+    try:
+        exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
+    finally:
+        _frame_stack.pop()
+    _module_cache[ck] = mod
+    return mod
+
 # ---- namespace & cell execution --------------------------------------------
 
 _ns: dict = {}
@@ -312,6 +338,7 @@ def _fresh_ns() -> dict:
         "uuid4": uuid4,
         "values": values,
         "effects": effects,
+        "use": use,
     }
 
 
@@ -370,3 +397,4 @@ class WitWorld:
         _ns = {}
         _values.clear()
         _proxy_cache.clear()
+        _module_cache.clear()

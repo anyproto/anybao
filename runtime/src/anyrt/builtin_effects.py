@@ -9,14 +9,60 @@ from __future__ import annotations
 import secrets
 import time as _time
 import uuid as _uuid
+from dataclasses import dataclass
 
 from .effects import Registry, effect
 
 
-def register_builtin_effects(registry: Registry, *, env: dict[str, str] | None = None) -> None:
+@dataclass
+class Resolved:
+    space_id: str
+    object_id: str
+    marker: int       # _ver/_addSeq — probe-cache key (ADR-004 §4)
+    source_hash: str
+    source: str
+
+
+class ModuleResolver:
+    def __call__(self, spec: str, frm: str | None):  # -> Resolved
+        raise NotImplementedError
+
+
+class DictResolver(ModuleResolver):
+    """M1/test resolver: {spec: source} with synthetic markers."""
+
+    def __init__(self, sources: dict[str, str]):
+        import hashlib as _h
+
+        self._sources = sources
+        self._h = _h
+
+    def __call__(self, spec, frm):
+        if spec not in self._sources:
+            raise KeyError(f"program not found: {spec}")
+        src = self._sources[spec]
+        return Resolved(
+            space_id="dict",
+            object_id=spec,
+            marker=1,
+            source_hash="sha256:" + self._h.sha256(src.encode()).hexdigest(),
+            source=src,
+        )
+
+
+def register_builtin_effects(
+    registry: Registry,
+    *,
+    env: dict[str, str] | None = None,
+    resolver: ModuleResolver | None = None,
+) -> None:
     """`env` is the explicit allowlisted mapping the harness chooses to
-    expose (never raw os.environ by default — deny-by-default)."""
+    expose (never raw os.environ by default — deny-by-default).
+    `resolver` resolves module specs to source (ADR-004); M1 uses an
+    injected map, M2/M4 the any-backed one."""
     env_map = env or {}
+    resolve = resolver or DictResolver({})
+    _probe_cache: dict = {}  # objectId -> (marker, Resolved)  ADR-004 §4
 
     @effect("time.now", kind="read", registry=registry)
     def time_now(ctx):
@@ -39,6 +85,28 @@ def register_builtin_effects(registry: Registry, *, env: dict[str, str] | None =
     def env_get(ctx, name):
         present = name in env_map
         return {"present": present, "value": env_map.get(name)}
+
+    @effect("module.resolve", kind="read", registry=registry)
+    def module_resolve(ctx, spec, frm=None):
+        # ADR-004 §3/§4: host resolves + probe-validated cache. The
+        # record is self-contained (carries source) so strict replay
+        # rebuilds modules bit-exact even on a cache hit.
+        r = resolve(spec, frm)
+        cached = _probe_cache.get(r.object_id)
+        if cached is not None and cached[0] == r.marker:
+            cache_state = "hit"
+            r = cached[1]
+        else:
+            cache_state = "miss"
+            _probe_cache[r.object_id] = (r.marker, r)
+        return {
+            "spaceId": r.space_id,
+            "objectId": r.object_id,
+            "marker": r.marker,
+            "sourceHash": r.source_hash,
+            "source": r.source,
+            "cache": cache_state,
+        }
 
     @effect("batch", kind="read", registry=registry)
     def batch(ctx, name, payloads):
