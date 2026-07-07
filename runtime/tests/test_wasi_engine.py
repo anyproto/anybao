@@ -102,6 +102,7 @@ def test_namespace_denies_ambient_authority():
     r = eng.run_cell("import socket", cell_id="c3")
     assert not r.ok and r.error is not None and r.error.type == "ImportError"
     assert "effect boundary" in r.error.message
+    assert "math" in r.error.message  # error-as-teaching: lists what IS available
 
 
 def test_allowlisted_and_proxied_imports():

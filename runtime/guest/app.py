@@ -197,8 +197,10 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
     if top in _ALLOWED:
         return _b.__import__(name, globals, locals, fromlist, level)
     raise ImportError(
-        f"module '{name}' is outside the effect boundary "
-        f"(allowlist + proxies only — ADR-002 §4)"
+        f"module '{name}' is outside the effect boundary. "
+        f"Available: {', '.join(sorted(_ALLOWED))}; "
+        f"proxied: {', '.join(sorted(_PROXIES))}; "
+        f"plus globals http, now(), rand(), env(), uuid4(), values, effect()."
     )
 
 
