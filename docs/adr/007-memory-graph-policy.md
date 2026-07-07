@@ -1,6 +1,6 @@
 # ADR-007: Memory & graph write policy
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-006 (data contracts); plan §4b/§4c; old `amemory@v2.md`
 (the proven policy prose); A-MEM (paper) as the evolution reference
@@ -103,8 +103,8 @@ the judge decides — no magic similarity constant to drift.
 
 ### 4. Link generation & evolution — trigger jobs, promoted behind evals
 
-A-MEM's write-time steps run async (trigger on memory-item creation,
-budgeted):
+A-MEM's write-time steps run async (hourly cron trigger sweeping items
+created since the last run — review 2026-07-07; budgeted):
 1. **Link generation**: seed-search neighbors of the new item (scopes
    agent+history+basic) → LLM proposes typed links → written as
    properties. Generalizes beyond memory: the same job can propose
@@ -203,13 +203,11 @@ meant". Treat as a first-class risk:
 - Scoring fields stop being write-only the day their producers (decay/
   reflection) prove out — and not before.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **Save budget**: keep ~1–2/turn from v1, or scale with turn length?
-   Lean: keep 1–2, revisit from metrics.
-2. **Link-generation timing**: trigger per save (fresh but chatty) vs
-   batched (e.g. hourly sweep over new items)? Lean: per save with a
-   small debounce — freshness matters for the "attach new info"
-   property.
-3. **Dedup judge tier**: `classify` (consistent with orientation
-   summaries)? Lean: yes.
+1. **Save budget**: ~1–2 per turn, revisit from metrics.
+2. **Link-generation timing**: **hourly cron sweep** over items
+   created since the last run (reviewer decision — batched over
+   per-save; one run-log entry per sweep, calmer trigger monitoring,
+   natural batching for the `*_many` judge calls).
+3. **Dedup judge tier**: `classify`.

@@ -11,8 +11,9 @@ review at a time; user accepts explicitly.
 | 004 | Module loading & resolution    | Accepted  |
 | 005 | Loop core                      | Accepted  |
 | 006 | Data contracts                 | Accepted  |
-| 007 | Memory & graph write policy    | Planned — when/what the harness memorizes and links: save/dedup discipline, object-vs-property-edge decisions, edge vocabulary curation, interconnection maintenance (bird's-eye accuracy), and the query idioms that exploit it (recall paths, neighbor expansion). The POLICY layer over plan §4b/§4c mechanisms — the layer whose absence was the old system's biggest memory failure. |
+| 007 | Memory & graph write policy    | Accepted  |
 
-The spike (loop skeleton + wasi executor + golden replay test) is
-unblocked by 001–003; 005–007 can be reviewed in parallel with spike
-implementation.
+**Design phase complete (2026-07-07): all seven ADRs accepted.**
+Next: the spike — loop skeleton + WasiEngine (wasmtime-py +
+python.wasm + effect host functions) + one golden replay test from a
+converted real-conversation trace, offline in CI.
