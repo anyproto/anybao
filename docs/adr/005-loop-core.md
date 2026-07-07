@@ -1,6 +1,6 @@
 # ADR-005: Loop core
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
@@ -121,15 +121,11 @@ ceiling decisions.
 - toolcaller.py (space program) shrinks to: boot composition choices,
   policy knobs, persona/skill selection — the §5b thin-program goal.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **Ceiling defaults**: max_turns=32, max_tokens_total=512k,
-   max_cost_total unset? (Numbers to be tuned from metrics; need
-   starting values.)
-2. **Progress bubbles**: keep v1's every-interim-text bubble, or only
-   bubble when >N seconds elapsed since the last user-visible output?
-   Lean: keep v1 behavior first, tune from usage.
-3. **Orientation-summary tier**: default to the `classify` tier
-   (cheapest) or a dedicated `digest` tier in config? Lean: dedicated
-   tier name mapped to the same cheap model — renaming later is free,
-   re-plumbing isn't.
+1. **Ceiling defaults**: `max_turns=108`, `max_tokens_total=1M`,
+   `max_cost_total` unset — starting values, tuned from metrics later.
+2. **Progress bubbles**: keep v1 behavior — every interim text posts as
+   a `done: false` bubble; revisit from usage metrics if ever noisy.
+3. **Orientation-summary tier**: `classify` (reviewer decision — no
+   dedicated tier).

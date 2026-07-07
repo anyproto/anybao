@@ -9,7 +9,7 @@ review at a time; user accepts explicitly.
 | 002 | Effect boundary & isolation    | Accepted  |
 | 003 | Executor & kernel API          | Accepted  |
 | 004 | Module loading & resolution    | Accepted  |
-| 005 | Loop core                      | Planned — neutral message model + provider adapters, ceilings, mailbox break/inject, digest policy (incl. orientation summaries) |
+| 005 | Loop core                      | Accepted  |
 | 006 | Data contracts                 | Planned — turns/chunks v2 (server-assigned seq, chunk→child pointers), config object, trigger schema |
 | 007 | Memory & graph write policy    | Planned — when/what the harness memorizes and links: save/dedup discipline, object-vs-property-edge decisions, edge vocabulary curation, interconnection maintenance (bird's-eye accuracy), and the query idioms that exploit it (recall paths, neighbor expansion). The POLICY layer over plan §4b/§4c mechanisms — the layer whose absence was the old system's biggest memory failure. |
 
