@@ -51,7 +51,13 @@ class DivergenceError(Exception):
         super().__init__(f"replay divergence: expected {exp}, got {act}")
 
 
-BLOB_THRESHOLD = 64 * 1024  # ADR-001 §7 + resolved Q2: one knob
+# ADR-001 §7 + resolved Q2: one knob. Refs are content-addressed
+# (`sha256:…`), so the blob STORE is swappable behind a future
+# BlobStore seam: the `.blobs` sidecar here is the dev/test tier; the
+# production tier attaches blobs as any files-v2 files, fetched on
+# demand (ADR-006 traceRef). Ref shape is already final — the backend
+# swaps without touching the trace format.
+BLOB_THRESHOLD = 64 * 1024
 
 
 def resolve_blobs(value: Any, blobs: dict[str, str]) -> Any:
