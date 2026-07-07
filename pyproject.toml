@@ -5,6 +5,7 @@ members = ["runtime", "harness"]
 
 [dependency-groups]
 dev = [
+    "componentize-py>=0.24.0",
     "pytest>=8",
     "ruff>=0.8",
 ]

@@ -1,0 +1,14 @@
+package anybao:runtime@0.1.0;
+
+world kernel {
+  // The ONE channel to the world (ADR-002/003): every effect crosses
+  // here; payload and reply are JSON strings.
+  import host-effect: func(name: string, payload: string) -> string;
+
+  // Execute a cell in the persistent namespace; reply is a JSON
+  // CellReply {ok, prints, last, error{type,message,traceback}}.
+  export run-cell: func(code: string) -> string;
+
+  // Drop the kernel namespace (agent-invoked reset, ADR-003).
+  export reset-ns: func();
+}
