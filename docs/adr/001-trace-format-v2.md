@@ -56,6 +56,17 @@ spill-friendly, diffable. Line 1 is a header record.
           "class": "read"|"mutate", "usage": {...}}}   // usage: llm tokens etc.
 ```
 
+**`seq` is the record's stable ADDRESS, not a replay mechanism**
+(amendment 2026-07-07): replay consumes the log as a sequence
+(cursor = list position; mock index = key map) and never reads `seq`.
+Its consumers are everything that handles records *individually* or
+*extracted from the intact log*: `EffectError.seq` (an exception points
+at its record), kernel lookups (`effects.get(seq)`, ADR-003), filtered
+views (`effects.of(cell)` — file order is gone, seq keeps subsets
+self-describing and gap-checkable), cross-artifact refs (turn
+`traceRef` + seq anchors, viewer "#turn_N"), and quotable divergence
+reports ("expected record #23").
+
 ### 3. Canonical inputs, per-effect normalizers, redaction
 
 The mock-match `key` is a hash of the **canonical form** of the input:

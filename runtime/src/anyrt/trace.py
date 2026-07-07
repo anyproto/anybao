@@ -35,7 +35,9 @@ def input_key(effect: str, canonical_input: Any) -> str:
 
 
 class DivergenceError(Exception):
-    """Strict replay: the next call does not match the next record."""
+    """Strict replay only: the next call does not match the next record.
+    The hard error IS the feature (determinism made testable); loose
+    mock mode never raises this — ADR-001 §5."""
 
     def __init__(self, expected: dict | None, actual: dict):
         self.expected = expected
@@ -61,6 +63,8 @@ class TraceWriter:
         self.records.append({"kind": "header", "schema": SCHEMA, "run": self.run})
 
     def next_seq(self) -> int:
+        # seq = the record's stable address (refs, views, lookups) —
+        # replay never reads it; ADR-001 §2 amendment.
         self._seq += 1
         return self._seq
 
