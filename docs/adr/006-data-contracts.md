@@ -131,6 +131,28 @@ failure. v2 chunk record:
 - **Plain user-created type in v2.0** (harness-enforced invariants); a
   server handler (validation, immutable runs) is a later upstream item
   if the honor system proves insufficient.
+- **API surface is a monitoring tool, not just CRUD** (review
+  2026-07-07): `create / delete / patch / enable / disable / list /
+  get / runs(triggerId)`. **`list` carries enough to monitor without
+  opening traces**: definition + owner + enabled + the §4 rollup
+  (lastRunAt/lastStatus/lastDurationMs/runCount/lastRunRef) **+
+  aggregated resource stats** — `lastFuel`, `lastCostUsd`,
+  `lastMemPages`, rolling `avgDurationMs`/`failureRate` (computed from
+  the retained trigger_runs window). Run records therefore carry the
+  metrics rollup (`fuel`, `costUsd`, `tokens`, `memPages`) alongside
+  status/error/traceRef — extracted from the run's trace at write time
+  so the list stays one query.
+- **Per-trigger resource limits**: the definition gains
+  `limits: {fuelPerRun?, timeoutS?, maxCostPerRun?}` — enforced by the
+  executor mechanics (ADR-003 fuel/epoch) and the llm effect (cost).
+  A background program structurally cannot run away.
+- **Circuit breaker**: `maxConsecutiveFailures` (default 3) —
+  exceeded ⇒ trigger auto-disables (`enabled: false`,
+  `lastStatus: "auto_disabled"`, reason in the last run record);
+  re-enable is manual (or an agent proposal). Failures are loud, cheap,
+  and self-limiting — background programs stay in sane order by
+  construction: budgeted per run (fuel/cost), observable per list
+  query, and self-quarantining on repeated failure.
 
 ### 5. `any`-side work list (upstream, sequenced before parity)
 
