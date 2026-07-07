@@ -16,6 +16,9 @@
           packages = with pkgs; [
             uv
             python313
+            basedpyright   # python LSP (emacs eglot/lsp-mode); resolves the
+                           # uv venv via pyrightconfig.json
+            ruff           # editor-facing ruff/ruff-lsp (CI uses the uv one)
           ];
 
           # uv manages the workspace venv; keep it from downloading its own

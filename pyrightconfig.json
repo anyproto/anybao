@@ -1,0 +1,6 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["runtime/src", "harness/src", "runtime/guest"],
+  "exclude": ["bin", ".venv", "**/__pycache__"]
+}
