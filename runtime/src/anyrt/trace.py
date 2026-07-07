@@ -51,16 +51,36 @@ class DivergenceError(Exception):
         super().__init__(f"replay divergence: expected {exp}, got {act}")
 
 
+BLOB_THRESHOLD = 64 * 1024  # ADR-001 §7 + resolved Q2: one knob
+
+
+def resolve_blobs(value: Any, blobs: dict[str, str]) -> Any:
+    if isinstance(value, dict) and set(value) == {"__blob", "bytes"}:
+        return json.loads(blobs[value["__blob"]])
+    return value
+
+
 @dataclass
 class TraceWriter:
-    """Appends records in execution order, assigns seq."""
+    """Appends records in execution order, assigns seq. Values over
+    BLOB_THRESHOLD spill out-of-line (ADR-001 §7) into `blobs`."""
 
     run: dict[str, Any]
     records: list[dict] = field(default_factory=list)
+    blobs: dict[str, str] = field(default_factory=dict)
+    blob_threshold: int = BLOB_THRESHOLD
     _seq: int = 0
 
     def __post_init__(self) -> None:
         self.records.append({"kind": "header", "schema": SCHEMA, "run": self.run})
+
+    def _spill(self, value: Any) -> Any:
+        text = canonical_json(value)
+        if len(text.encode()) <= self.blob_threshold:
+            return value
+        h = "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+        self.blobs[h] = text
+        return {"__blob": h, "bytes": len(text.encode())}
 
     def next_seq(self) -> int:
         # seq = the record's stable address (refs, views, lookups) —
@@ -84,9 +104,9 @@ class TraceWriter:
             "seq": self.next_seq(),
             "effect": effect,
             "cell": cell,
-            "input": input,
+            "input": self._spill(input),    # key was computed pre-spill
             "key": key,
-            "output": output,
+            "output": self._spill(output) if output is not None else None,
             "error": error,
             "meta": meta or {},
         }
@@ -116,6 +136,14 @@ class TraceWriter:
 
     def dump(self, path: Path) -> None:
         path.write_text("".join(canonical_json(r) + "\n" for r in self.records))
+        if self.blobs:
+            side = path.with_suffix(path.suffix + ".blobs")
+            side.write_text(
+                "".join(
+                    canonical_json({"hash": h, "data": t}) + "\n"
+                    for h, t in sorted(self.blobs.items())
+                )
+            )
 
 
 def load(path: Path) -> list[dict]:
@@ -125,6 +153,38 @@ def load(path: Path) -> list[dict]:
     if records[0].get("schema") != SCHEMA:
         raise ValueError(f"trace schema {records[0].get('schema')} != {SCHEMA}")
     return records
+
+
+def load_blobs(path: Path) -> dict[str, str]:
+    side = path.with_suffix(path.suffix + ".blobs")
+    if not side.exists():
+        return {}
+    out = {}
+    for line in side.read_text().splitlines():
+        if line.strip():
+            e = json.loads(line)
+            out[e["hash"]] = e["data"]
+    return out
+
+
+# ---- derived views (ADR-001 §1: the log is truth, views are computed) ------
+
+def trace_diff(records: list[dict]) -> list[dict]:
+    """Effect records that actually EXECUTED during a mock run — the
+    new-behavior view (mocked calls are silent). ADR-001 §5."""
+    return [
+        r for r in records
+        if r["kind"] == "effect" and not r.get("meta", {}).get("mocked", False)
+    ]
+
+
+def call_trace(records: list[dict], cell: str) -> list[dict]:
+    """Everything attributed to one cell, in order."""
+    return [
+        r for r in records
+        if (r["kind"] == "effect" and r.get("cell") == cell)
+        or (r["kind"] == "cell" and r.get("cell") == cell)
+    ]
 
 
 class ReplayCursor:

@@ -111,6 +111,7 @@ class Broker:
         cursor: tr.ReplayCursor | None = None,
         mock_index: tr.MockIndex | None = None,
         mock_unmatched: Literal["fail", "live"] = "fail",
+        blobs: dict[str, str] | None = None,
     ):
         self.registry = registry
         self.writer = writer
@@ -118,7 +119,11 @@ class Broker:
         self.cursor = cursor
         self.mock_index = mock_index
         self.mock_unmatched = mock_unmatched
+        self.blobs = blobs or {}  # sidecar of the trace being replayed
         self.current_cell: str | None = None
+
+    def _resolve(self, value):
+        return tr.resolve_blobs(value, self.blobs)
 
     def cell_done(
         self,
@@ -157,7 +162,7 @@ class Broker:
             )
             if rec["error"]:
                 raise EffectError(name, rec["error"]["type"], rec["error"]["message"])
-            return rec["output"]
+            return self._resolve(rec["output"])
 
         if self.mode == "mock":
             assert self.mock_index is not None
@@ -170,7 +175,7 @@ class Broker:
                 )
                 if rec["error"]:
                     raise EffectError(name, rec["error"]["type"], rec["error"]["message"])
-                return rec["output"]
+                return self._resolve(rec["output"])
             if self.mock_unmatched == "fail":
                 raise EffectError(name, "unmatched_mock", f"no recorded output for {name} {key}")
             # fall through: live execution (traceDiff view = mocked: false)
