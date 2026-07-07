@@ -202,3 +202,10 @@ weekly — so the cage is wasmtime and the doing is Python.**
    thunks are guest code and cells stay single-threaded; a
    descriptor-based combinator can be added later without touching the
    trace contract.
+   *Teaching burden (accepted as low)*: not using `*_many` is
+   correct-but-slow, never wrong — sequential calls yield the same
+   records; real consumers are programs (classify maps, fan-outs), not
+   ad-hoc cells. Guidance = tool docs + one skill line; plus a **digest
+   hint** — when a cell loops the same effect many times sequentially,
+   the result digest suggests `*_many` (teach at the moment it matters,
+   zero standing prompt cost).
