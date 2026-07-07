@@ -164,11 +164,13 @@ stale, a trigger's run log says why.
 ### 7. Search quality is a dependency risk (named, 2026-07-07)
 
 Everything above leans on `any`'s `/search` (index candidates for
-recall, dedup, auto-injection, extraction judging) — and while the
-stack has BEIR-grade evals behind its defaults (`any` docs/search/),
-it has NOT been validated on THIS workload: short conversational
-queries, small personal corpora, memory items, turns/chunks. Treat as
-a first-class risk:
+recall, dedup, auto-injection, extraction judging) — and the stack's
+validation so far is SYNTHETIC, written after the implementation
+(BEIR-grade evals behind the defaults, `any` docs/search/). That
+catches regressions; it does not catch wrong assumptions. What it has
+NOT had is real daily usage: short conversational queries, small
+personal corpora, memory items, turns/chunks, "did it find the thing I
+meant". Treat as a first-class risk:
 1. **Workload-specific golden recall eval** — a small fixture set from
    real data (the bao export is seed material: query → expected item),
    run against fts/vector/hybrid modes; extends the existing
