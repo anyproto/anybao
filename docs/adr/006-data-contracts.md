@@ -37,10 +37,16 @@ rule mirrors v1 (`name == <agent-space-name> && status == active`).
   usage (dead fields today); plus `costUsd` (computed from tier
   pricing), `fuelUsed`, `cells` (count) — the ADR-003 metrics rollup at
   turn level.
-- **`traceRef` replaces `debugRef`**: the per-invocation debug record
-  IS the trace (ADR-001 format, one object per run, spilled blobs as
-  file attachments). The dc* collector's prose pages are superseded —
-  one format for debugging, replay, and retrospection.
+- **`traceRef` replaces `debugRef`**: the trace (ADR-001 format, one
+  object per run, spilled blobs as file attachments) is the single
+  SOURCE OF TRUTH; "the debug log" becomes two VIEWS over it — agent-
+  facing (trace queries: `effects.of`, filters by cell/effect/class)
+  and human-facing (a renderer/UI view; `#turn_N` anchors resolve to
+  the Nth `llm.chat` record). Content-complete by loop purity (system
+  prompt, responses, cell code, digests, usage all live inside
+  `llm.chat` + `cell` records — ADR-001 §4b). What dies is the
+  separately AUTHORED prose page (the dc* duplication); the
+  navigability is owed as a viewer, not as a second data format.
 
 ### 2. Chunks v2 — hierarchical (`agent_chunks`)
 

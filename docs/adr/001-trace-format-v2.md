@@ -80,6 +80,22 @@ per the config-effect design). Secrets structurally cannot enter traces.
 code version is part of the recorded run). This is the isolation
 principle made concrete: if it isn't in the trace, it didn't happen.
 
+### 4b. Cell records (amendment 2026-07-07)
+
+A third record kind marks each cell's lifecycle end — cells are not
+effects, and the per-cell facts (ADR-003 metrics) need a home:
+
+```jsonc
+{"kind": "cell", "seq": 23, "cell": "toolu_abc",
+ "ok": true, "error": null, "interrupted": false,
+ "metrics": {"fuel_used": 184223, "mem_pages": 512, "duration_ms": 240,
+             "value_store": {"entries": 7, "bytes": 91234}}}
+```
+
+Written by the executor at cell end; replay treats it as a checkpoint
+(sequence-checked in strict mode like any record). Turn boundaries
+need no marker — they ARE the `llm.chat` records.
+
 ### 5. Two replay modes
 
 - **`replay` (strict)** — the default for golden tests and deterministic
