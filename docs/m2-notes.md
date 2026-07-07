@@ -1,4 +1,4 @@
-# M2 — harness core (anybao app layer)
+# M2 — harness core (anybao app layer) — ACCEPTED 2026-07-08
 
 Scope: ADR-005 + config. Checklist (one commit per item, roughly):
 
