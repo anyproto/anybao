@@ -1,6 +1,6 @@
 # ADR-006: Data contracts — turns/chunks v2, config object, triggers
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-001..005 (accepted); plan §4b (memory & history), §4
 (config effect, triggers); no-backcompat principle
@@ -15,11 +15,16 @@ place.
 
 ## Decision
 
-### 0. Fresh agent space
+### 0. Reuse the bao space; fresh chat object
 
-anybao boots its own agent space (fresh datasets, zero mixed-shape
-risk); the old bao space stays as a readable archive. Name/adoption
-rule mirrors v1 (`name == <agent-space-name> && status == active`).
+anybao adopts the EXISTING bao space (review 2026-07-07) — this keeps
+the per-space memory brain (shape unchanged), space identity, programs
+history. Mixed-shape safety comes one level down: `agent_turns`/
+`agent_chunks` live ON the chat object, so anybao creates its own
+fresh chat object → clean v2 datasets for free; the old chat and its
+v1 datasets stay archived in place (no-backcompat: never read, never
+migrated). Adoption rule mirrors v1 (`name == "bao" && status ==
+active`).
 
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
@@ -150,17 +155,10 @@ failure. v2 chunk record:
 - The seq collision class, the dead-field debt (`think`, `cache*`),
   and the debug/turn duplication all close in one server pass.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **Fresh space naming**: new name (e.g. "bao2"/"anybao") or reuse
-   "bao" with the old space renamed to an archive? Lean: agent keeps
-   the name "bao" — the space is an implementation detail; rename old
-   to "bao-archive".
-2. **`think` content**: store full interim narration + thinking text,
-   or a length-capped excerpt (thinking can be long)? Lean: full — it's
-   one turn record per invocation, and the keep-all-raw doctrine
-   applies to turns.
-3. **L2+ rollup summarizer input**: summarize from child *summaries*
-   only (cheap, lossy) or child summaries + sampled raw turns (dearer,
-   anchored)? Lean: summaries-only for v2.0; anchoring is a tunable
-   later.
+1. **Reuse the bao space** — with a fresh chat object supplying clean
+   v2 datasets (§0); memory brain and space identity continue.
+2. **`think` stored full** — keep-all-raw applies to turns.
+3. **L2+ rollups from child summaries only** — anchoring with sampled
+   raw turns is a later tunable.
