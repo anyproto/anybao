@@ -7,15 +7,21 @@ Builds on: ADR-006 (data contracts); plan §4b/§4c; old `amemory@v2.md`
 
 ## Context
 
-The old system's biggest memory failure was not machinery but the
-missing POLICY layer: `addMemory` had zero callers in guidance, four
-recall paths disagreed, scoring fields were write-only, edges were
-never traversed. This ADR fixes when/what the harness memorizes and
-links, how it avoids duplication and vocabulary drift, and the query
-idioms the discipline is designed to feed — so recall stays high and
-the bird's-eye view stays accurate as data grows. Policy *text* ships
-as skills/tool docs (audited, evidence rule); this ADR fixes the
-policy *content* and the mechanisms enforcing it.
+Correction of record (2026-07-07 review): the OLD generation DID have
+full write guidance — `amemory@v2.md` (a tool doc, injected via the
+tools section) carried the ✓/✗ table, confidence/importance rubrics,
+and dedup instructions; toolcall_core pinned amemory second and
+rendered a live category inventory at boot. The current bobrik-watch
+deferred the wiring (hence "zero callers" there). **The decisive
+empirical finding (user, from live testing): even WITH that guidance,
+the agent saved/searched only rarely — essentially only when memory
+was the conversation topic.** Prompt guidance alone does not produce
+memory behavior; meta-tasks lose to the task at hand. This ADR
+therefore pairs the ported policy prose with STRUCTURAL mechanisms
+that do not depend on model initiative (§1b auto-extraction, §5
+auto-recall injection) — plus dedup/vocabulary discipline and the
+query idioms, so recall stays high and the bird's-eye view stays
+accurate as data grows.
 
 ## Decision
 
@@ -31,6 +37,19 @@ Port the proven `amemory@v2.md` policy (was live and working):
   speculation. (Full ✓/✗ table ported into the memory tool doc.)
 - `category` + one-line `context` required at save time (agent-direct
   path); categories stay an open slug set with the documented builtins.
+
+### 1b. Background extraction — the save-side structural mechanism
+
+Because explicit saves are empirically rare, the volume comes from an
+async **trigger job over newly persisted turns** (batched, off the hot
+path — NOT the old synchronous per-save classifier): propose 0–2
+candidate memories per turn (cheap tier), run each through the §2
+dedup judge, save survivors with **provenance** (`fromSeq` pointer to
+the source turn) and capped confidence (≤6 — machine-derived facts
+never outrank user-stated ones). Fully auditable: the trigger's run
+log shows what was derived from where; wrong derivations are
+deletable and re-derivable (turns are append-only). Explicit
+`addMemory` (§1) remains the high-confidence in-the-moment path.
 
 ### 2. Dedup: search-before-save, judge-confirmed
 
@@ -96,9 +115,16 @@ The recall tool composes the axes the storage now supports (ADR-006):
   retrieval, GraphRAG local-search style.
 - **Drill-down**: chunk → children (recursive, ADR-006), run →
   trace (`effects.of` / viewer). Every summary keeps its pointers.
-Boot injection stays lean: category names + counts only (v1 behavior);
-a ranked "top memories" boot digest is deferred until scoring fields
-are consumed (needs decay/reflection live to mean anything).
+**Auto-recall injection — the recall-side structural mechanism.** The
+harness itself runs `recall.search(user_message)` at invocation start
+(index-backed, no LLM call) and injects top hits as a budget-capped
+"relevant memories" section in the boot context — A-MEM §3.4's
+per-interaction retrieval, which v1 never wired (it injected only
+category names). The agent's explicit search remains for deliberate
+digging; the common case stops depending on model initiative.
+Category-name inventory stays too (cheap, cache-stable); a ranked
+"top memories" digest is deferred until scoring fields are consumed
+(needs decay/reflection live to mean anything).
 
 ### 6. Bird's-eye maintenance = the composition
 
