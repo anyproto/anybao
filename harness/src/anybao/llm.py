@@ -211,3 +211,31 @@ def register_llm_effect(registry, *, transport, config):
 def _build_adapter(provider: str, fenced: bool):
     base = ADAPTERS[provider]()
     return FencedAdapter(base) if fenced else base
+
+
+def http_transport(secret_key_lookup):
+    """Production transport: one HTTP POST to the provider. `prov`
+    carries endpoint/model; the api key is resolved HERE (inside the
+    effect boundary) via secret_key_lookup(prov['api_key_ref']) — never
+    passed through neutral messages or the trace."""
+    import json as _j
+    import urllib.request
+
+    def transport(prov, req):
+        headers = {"Content-Type": "application/json"}
+        key = secret_key_lookup(prov["api_key_ref"])
+        if prov["provider"] == "anthropic":
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = "2023-06-01"
+            path = "/v1/messages"
+        else:
+            headers["Authorization"] = f"Bearer {key}"
+            path = "/chat/completions"
+        r = urllib.request.Request(
+            prov["base_url"].rstrip("/") + path,
+            data=_j.dumps(req).encode(), method="POST", headers=headers,
+        )
+        with urllib.request.urlopen(r) as resp:
+            return _j.loads(resp.read())
+
+    return transport
