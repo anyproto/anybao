@@ -1,20 +1,43 @@
 """Guest kernel — runs INSIDE CPython-on-WASI (componentize-py world
-`kernel`). Persistent namespace across cells; print capture; last-
-expression value; `effect(name, payload)` bridging to the host broker.
-
-M0 scope: default builtins remain (the cage already denies the world —
-no sockets/fs/env are linked); namespace curation + proxied
-datetime/random land in M1 per ADR-002 §3/§4.
+`kernel`). ADR-002 §3/§4: deny-by-default namespace, curated builtins,
+import allowlist + proxied ambient-authority modules, Pythonic facades.
+Everything nondeterministic routes through `host-effect` (ADR-003).
 """
 
 import ast
+
+# Literal imports so componentize-py BUNDLES these into the guest (its
+# static analysis can't see lazy imports) — every tier-1 allowlist
+# module plus datetime (proxied). Do not convert to importlib loops.
+import base64  # noqa: F401
+import bisect  # noqa: F401
+import builtins as _b
+import collections  # noqa: F401
+import copy  # noqa: F401
+import dataclasses  # noqa: F401
+import datetime  # noqa: F401  (guest sees only the proxy)
+import decimal  # noqa: F401
+import enum  # noqa: F401
+import fractions  # noqa: F401
+import functools  # noqa: F401
+import hashlib  # noqa: F401
+import heapq  # noqa: F401
+import itertools  # noqa: F401
 import json
+import math  # noqa: F401
+import re  # noqa: F401
+import statistics  # noqa: F401
+import string  # noqa: F401
+import textwrap  # noqa: F401
 import traceback
+import types
+import typing  # noqa: F401
+import unicodedata  # noqa: F401
 
 import wit_world
 
 
-class _EffectError(Exception):
+class EffectError(Exception):
     pass
 
 
@@ -22,26 +45,250 @@ def _effect(name, payload=None):
     reply = json.loads(wit_world.host_effect(name, json.dumps(payload or {})))
     if not reply.get("ok"):
         err = reply.get("error") or {}
-        raise _EffectError(f"{err.get('type', 'EffectError')}: {err.get('message', '')}")
+        raise EffectError(f"{err.get('type', 'EffectError')}: {err.get('message', '')}")
     return reply.get("output")
 
+
+# ---- shim globals (ADR-002 resolved Q1/Q2) --------------------------------
+
+def now():
+    """Wall-clock via the time.now effect (recorded)."""
+    return _effect("time.now")["epoch"]
+
+
+def rand():
+    return _effect("random.random")["value"]
+
+
+def env(name, default=None):
+    out = _effect("env.get", {"name": name})
+    return out["value"] if out["present"] else default
+
+
+def uuid4():
+    return _effect("uuid4")["hex"]
+
+
+# ---- http facade (ADR-002 §1 Pythonic surface) -----------------------------
+
+class Response:
+    def __init__(self, raw):
+        self.status = raw.get("status")
+        self.headers = raw.get("headers") or {}
+        self.text = raw.get("body") or ""
+
+    def json(self):
+        return json.loads(self.text)
+
+    def __repr__(self):
+        return f"<Response {self.status}, {len(self.text)} bytes>"
+
+
+class _Http:
+    def _call(self, verb, url, **kw):
+        return Response(_effect(f"http.{verb}", {"url": url, **kw}))
+
+    def get(self, url, **kw):
+        return self._call("get", url, **kw)
+
+    def post(self, url, **kw):
+        return self._call("post", url, **kw)
+
+    def put(self, url, **kw):
+        return self._call("put", url, **kw)
+
+    def delete(self, url, **kw):
+        return self._call("delete", url, **kw)
+
+
+http = _Http()
+
+# ---- proxied stdlib (tier 2: ambient authority -> effects) -----------------
+
+_proxy_cache: dict = {}
+
+
+def _datetime_proxy():
+    import datetime as _dt
+
+    class _DateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(_effect("time.now")["epoch"], tz)
+
+        @classmethod
+        def today(cls):
+            return cls.now()
+
+    class _Date(_dt.date):
+        @classmethod
+        def today(cls):
+            return _dt.date.fromtimestamp(_effect("time.now")["epoch"])
+
+    return types.SimpleNamespace(
+        datetime=_DateTime, date=_Date, time=_dt.time,
+        timedelta=_dt.timedelta, timezone=_dt.timezone, UTC=_dt.UTC,
+    )
+
+
+def _random_proxy():
+    def _sample(seq, k):
+        pool = list(seq)
+        return [pool.pop(int(rand() * len(pool))) for _ in range(k)]
+
+    return types.SimpleNamespace(
+        random=rand,
+        uniform=lambda a, b: a + rand() * (b - a),
+        randint=lambda a, b: a + int(rand() * (b - a + 1)),
+        choice=lambda seq: seq[int(rand() * len(seq))],
+        sample=_sample,
+        shuffle=lambda lst: lst.sort(key=lambda _: rand()),
+    )
+
+
+def _time_proxy():
+    return types.SimpleNamespace(
+        time=now,
+        monotonic=now,  # good enough for cell code; real monotonic is ambient
+        sleep=lambda s: _effect("sleep", {"seconds": s}),
+    )
+
+
+class _Environ:
+    def get(self, name, default=None):
+        return env(name, default)
+
+    def __getitem__(self, name):
+        out = _effect("env.get", {"name": name})
+        if not out["present"]:
+            raise KeyError(name)
+        return out["value"]
+
+    def __contains__(self, name):
+        return _effect("env.get", {"name": name})["present"]
+
+
+def _os_proxy():
+    return types.SimpleNamespace(environ=_Environ())
+
+
+_PROXIES = {
+    "datetime": _datetime_proxy,
+    "random": _random_proxy,
+    "time": _time_proxy,
+    "os": _os_proxy,
+}
+
+# tier 1: pure stdlib, passes through (ADR-002 §4)
+_ALLOWED = {
+    "math", "json", "re", "itertools", "functools", "collections",
+    "textwrap", "heapq", "bisect", "statistics", "dataclasses", "enum",
+    "typing", "decimal", "fractions", "base64", "hashlib", "string",
+    "copy", "unicodedata",
+}
+
+
+def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
+    top = name.split(".")[0]
+    if top in _PROXIES:
+        if top not in _proxy_cache:
+            _proxy_cache[top] = _PROXIES[top]()
+        return _proxy_cache[top]
+    if top in _ALLOWED:
+        return _b.__import__(name, globals, locals, fromlist, level)
+    raise ImportError(
+        f"module '{name}' is outside the effect boundary "
+        f"(allowlist + proxies only — ADR-002 §4)"
+    )
+
+
+# ---- curated builtins (ADR-002 §3) -----------------------------------------
+
+_SAFE_NAMES = [
+    "len", "range", "enumerate", "zip", "sorted", "reversed", "min", "max",
+    "sum", "abs", "round", "divmod", "pow", "dict", "list", "set",
+    "frozenset", "tuple", "str", "int", "float", "bool", "bytes",
+    "bytearray", "complex", "isinstance", "issubclass", "repr", "format",
+    "hash", "type", "getattr", "setattr", "hasattr", "iter", "next",
+    "slice", "map", "filter", "any", "all", "chr", "ord", "hex", "oct",
+    "bin", "dir", "callable", "object", "super", "staticmethod",
+    "classmethod", "property", "memoryview", "None", "True", "False",
+    "NotImplemented", "Ellipsis", "__build_class__", "__name__",
+]
+# excluded on purpose: open, input, eval, exec, compile, breakpoint,
+# globals, locals, vars, help, raw __import__ (replaced by _guest_import)
+
+
+def _safe_builtins() -> dict:
+    out = {}
+    for n in _SAFE_NAMES:
+        if hasattr(_b, n):
+            out[n] = getattr(_b, n)
+    for n in dir(_b):  # every exception/warning class
+        obj = getattr(_b, n)
+        if isinstance(obj, type) and issubclass(obj, BaseException):
+            out[n] = obj
+    out["__import__"] = _guest_import
+    return out
+
+
+_SAFE_BUILTINS = _safe_builtins()
+
+# ---- value store (ADR-003 §4, guest side; real objects) --------------------
+
+_values: dict = {}  # cell_id -> {"prints": [obj, ...], "last": obj}
+
+
+class _Values:
+    def get(self, cell_id, i="last"):
+        entry = _values.get(cell_id)
+        if entry is None:
+            raise KeyError(f"no values for cell {cell_id!r}")
+        if i == "last":
+            if "last" not in entry:
+                raise KeyError(f"cell {cell_id!r} has no last value")
+            return entry["last"]
+        return entry["prints"][i]
+
+    def list(self):
+        return {
+            cid: {"n_prints": len(e["prints"]), "has_last": "last" in e}
+            for cid, e in _values.items()
+        }
+
+
+values = _Values()
+
+# ---- namespace & cell execution --------------------------------------------
 
 _ns: dict = {}
 
 
 def _fresh_ns() -> dict:
-    return {"effect": _effect, "EffectError": _EffectError}
+    return {
+        "__builtins__": _SAFE_BUILTINS,
+        "effect": _effect,           # raw channel (plumbing; facades preferred)
+        "EffectError": EffectError,
+        "http": http,
+        "now": now,
+        "rand": rand,
+        "env": env,
+        "uuid4": uuid4,
+        "values": values,
+    }
 
 
 class WitWorld:
-    def run_cell(self, code: str) -> str:
+    def run_cell(self, code: str, cell_id: str) -> str:
         global _ns
         if not _ns:
             _ns = _fresh_ns()
+        store = _values.setdefault(cell_id, {"prints": []})
         prints: list[str] = []
 
         def _print(*a, **kw):
             prints.append(" ".join(x if isinstance(x, str) else repr(x) for x in a))
+            store["prints"].append(a[0] if len(a) == 1 else a)
 
         _ns["print"] = _print
         try:
@@ -57,6 +304,8 @@ class WitWorld:
                 has_last = last is not None
             else:
                 exec(compile(tree, "<cell>", "exec"), _ns)
+            if has_last:
+                store["last"] = last
             return json.dumps(
                 {
                     "ok": True,
@@ -65,7 +314,7 @@ class WitWorld:
                     "error": None,
                 }
             )
-        except Exception as e:
+        except BaseException as e:  # incl. MemoryError; traps never reach here
             return json.dumps(
                 {
                     "ok": False,
@@ -82,3 +331,5 @@ class WitWorld:
     def reset_ns(self) -> None:
         global _ns
         _ns = {}
+        _values.clear()
+        _proxy_cache.clear()

@@ -6,6 +6,7 @@ cells with every effect answered from the trace."""
 from pathlib import Path
 
 from anyrt import trace as tr
+from anyrt.builtin_effects import register_builtin_effects
 from anyrt.effects import Broker, Registry, effect
 from anyrt.wasi import WasiEngine
 
@@ -15,9 +16,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "golden-conv.jsonl"
 # Seeded from a real bao conversation shape: fetch two pages, compare
 # sizes, reply. Cells are Python (fresh-written; ADR clean-cut rule).
 CELL_1 = (
-    "a = effect('http.get', {'url': 'https://example.test/hn-digest'})\n"
-    "b = effect('http.get', {'url': 'https://example.test/tc-digest'})\n"
-    "sizes = {'hn': len(a['body']), 'tc': len(b['body'])}\n"
+    "a = http.get('https://example.test/hn-digest')\n"
+    "b = http.get('https://example.test/tc-digest')\n"
+    "sizes = {'hn': len(a.text), 'tc': len(b.text)}\n"
     "print('sizes', sizes)\n"
     "max(sizes, key=sizes.get)"
 )
@@ -42,6 +43,7 @@ SCRIPTED_REPLIES = [
 
 def build_registry(replies: list[dict]) -> Registry:
     reg = Registry()
+    register_builtin_effects(reg)
     queue = list(replies)
 
     @effect("llm.chat", kind="read", registry=reg)

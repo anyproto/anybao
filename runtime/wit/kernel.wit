@@ -7,8 +7,9 @@ world kernel {
 
   // Execute a cell in the persistent namespace; reply is a JSON
   // CellReply {ok, prints, last, error{type,message,traceback}}.
-  export run-cell: func(code: string) -> string;
+  // cell-id keys the guest-side value store (ADR-003 §4).
+  export run-cell: func(code: string, cell-id: string) -> string;
 
-  // Drop the kernel namespace (agent-invoked reset, ADR-003).
+  // Drop the kernel namespace and value store (agent reset, ADR-003).
   export reset-ns: func();
 }

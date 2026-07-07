@@ -30,11 +30,14 @@ class _Runtime:
     _instances: dict[str, _Runtime] = {}
 
     def __init__(self, kernel_wasm: str):
+        import hashlib
+
         cfg = Config()
         cfg.consume_fuel = True
         cfg.epoch_interruption = True
         self.engine = Engine(cfg)
         self.component = wc.Component.from_file(self.engine, kernel_wasm)
+        self.kernel_sha256 = hashlib.sha256(Path(kernel_wasm).read_bytes()).hexdigest()
         self._ticker = threading.Thread(target=self._tick, daemon=True)
         self._ticker.start()
 
@@ -75,7 +78,11 @@ class WasiEngine:
 
         self.store = Store(rt.engine)
         wasi = WasiConfig()
-        wasi.inherit_stderr()  # guest tracebacks; no fs/env/net granted
+        wasi.inherit_stderr()  # guest tracebacks; no fs/net granted
+        # determinism pin: stable str hashing inside the guest (the
+        # interpreter reads this env; guest cell code has no env access
+        # beyond the env.get effect)
+        wasi.env = [("PYTHONHASHSEED", "0")]
         self.store.set_wasi(wasi)
         self.store.set_limits(memory_size=memory_bytes)
         self.store.set_fuel(fuel_per_cell)
@@ -88,6 +95,13 @@ class WasiEngine:
         self._run_cell = run_cell
         self._reset_ns = reset_ns
         self._interrupted = False
+
+        # determinism pins as a recorded effect (ADR-003 kernel.boot):
+        # a changed kernel or hashseed diverges strict replay — correct.
+        self.broker.call(
+            "kernel.boot",
+            {"kernel_sha256": rt.kernel_sha256, "hashseed": "0", "trace_schema": 2},
+        )
 
     # -- host side of the ONE channel -------------------------------------
     def _host_effect(self, _store, name: str, payload: str) -> str:
@@ -109,7 +123,7 @@ class WasiEngine:
         fuel_before = self.store.get_fuel()
         t0 = time.monotonic()
         try:
-            raw = self._run_cell(self.store, code)
+            raw = self._run_cell(self.store, code, cell_id)
             reply = json.loads(raw)
             err = reply.get("error")
             cell_err = None
