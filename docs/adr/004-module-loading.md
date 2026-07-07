@@ -55,12 +55,40 @@ ws = use("<spaceId>:websearch@v1")  # explicit space, strict
 
 ### 3. Loading mechanics under wasi
 
+**Demand-driven, no source parsing.** `use()` at runtime is the only
+discovery mechanism — nothing ever scans program text for imports.
 Resolution and fetching are **host-side** (broker effect
-`module.resolve`: query program object → read `program_source`);
-the guest receives `{source, spaceId, objectId, marker}` and executes
-it into a module object in the kernel namespace. One trace record per
-load (spec → spaceId/objectId/version marker) — which code ran is part
-of the recorded run (ADR-001 §4).
+`module.resolve`: query the program object by name/version props →
+read `program_source`); the guest executes the returned source into a
+module object in the kernel namespace. A transitive `use()` inside a
+loaded module fires its own resolution at call time, resolved against
+the requester's defining space via the frame chain (§5) — the import
+tree is discovered by execution, one record at a time.
+
+One trace record per load, and **the record is self-contained**:
+
+```jsonc
+{"effect": "module.resolve", "cell": "toolu_01a",
+ "input":  {"spec": "websearch@v1", "from": null},   // null = cell code;
+                                                     // else requester identity
+ "output": {"spaceId": "…", "objectId": "…",
+            "marker": 4711,                          // _ver/_addSeq at load
+            "sourceHash": "sha256:…",
+            "source": {"__blob": "…", "bytes": 18234}},  // ADR-001 spill rule
+ "meta":   {"class": "read", "cache": "miss", "durMs": 12}}
+```
+
+- Identity pinned twice: `marker` (which CRDT version) + `sourceHash`
+  (which bytes); grants bind to the contentHash (CapBAC).
+- `from` chains records — cell → program → transitive dep — so the
+  whole import tree reconstructs from the log in execution order.
+- **Output carries the source itself** (blob-spilled), not just the
+  hash: strict replay returns recorded outputs instead of executing,
+  and the guest needs real bytes to rebuild the module. Traces are
+  therefore self-contained — a run replays bit-exact even after the
+  program was edited or deleted. This is the "deterministic
+  evaluation" promise (see both the code and the environment as they
+  were) delivered literally.
 
 ### 4. Cache: probe-validated, never stale
 
