@@ -38,18 +38,37 @@ Port the proven `amemory@v2.md` policy (was live and working):
 - `category` + one-line `context` required at save time (agent-direct
   path); categories stay an open slug set with the documented builtins.
 
-### 1b. Background extraction — the save-side structural mechanism
+### 1a. Empirical basis (bao-space export, 2026-07-07)
 
-Because explicit saves are empirically rare, the volume comes from an
-async **trigger job over newly persisted turns** (batched, off the hot
-path — NOT the old synchronous per-save classifier): propose 0–2
-candidate memories per turn (cheap tier), run each through the §2
-dedup judge, save survivors with **provenance** (`fromSeq` pointer to
-the source turn) and capped confidence (≤6 — machine-derived facts
-never outrank user-stated ones). Fully auditable: the trigger's run
-log shows what was derived from where; wrong derivations are
-deletable and re-derivable (turns are append-only). Explicit
-`addMemory` (§1) remains the high-confidence in-the-moment path.
+The old space's 55 memory items, audited: **46 (84%) were
+chat_chunks/episodes, ALL with accessCount 0** — never once recalled;
+the only retrieved items were lessons and preferences (accessCount 4
+each) — the small distilled-fact set (~9 items). Chunk quality ranged
+to garbage (question-fragment contexts, tokenized-noise keywords, raw
+transcript bodies); edges were `[]` on all 55; ~30 singleton invented
+categories showed live vocabulary drift. Conclusions baked into this
+ADR: (a) the useful "memory" experience came from HISTORY injection
+(boot chunks), not the memory store — funneling chunks into memory was
+the mistake, v2's storage split is correct and chunks NEVER become
+memory items; (b) the memory store must stay small and high-signal —
+distilled stable facts only; (c) low save frequency is healthy
+(Claude's own memory behaves the same) when what's saved is distilled.
+
+### 1b. Background extraction — conservative, measured
+
+An async **trigger job over newly persisted turns** (batched, off the
+hot path — NOT the old synchronous classifier), with a HIGH bar
+informed by §1a: propose candidates only matching stable-fact shapes —
+preference / decision / lesson / durable domain fact (the categories
+that earned recalls) — **never episodes or session summaries** (that's
+the history channel's job). Each candidate passes the §2 dedup judge;
+survivors save with **provenance** (`fromSeq` pointer) and capped
+confidence (≤6 — machine-derived never outranks user-stated). Fully
+auditable via the trigger run log; re-derivable (turns are
+append-only). **ROI is measured, not assumed**: accessCount bumps on
+recall (§4), so extracted-but-never-recalled and
+injected-but-never-referenced rates tune or kill the extractor.
+Explicit `addMemory` (§1) remains the high-confidence path.
 
 ### 2. Dedup: search-before-save, judge-confirmed
 
@@ -115,16 +134,22 @@ The recall tool composes the axes the storage now supports (ADR-006):
   retrieval, GraphRAG local-search style.
 - **Drill-down**: chunk → children (recursive, ADR-006), run →
   trace (`effects.of` / viewer). Every summary keeps its pointers.
-**Auto-recall injection — the recall-side structural mechanism.** The
-harness itself runs `recall.search(user_message)` at invocation start
-(index-backed, no LLM call) and injects top hits as a budget-capped
-"relevant memories" section in the boot context — A-MEM §3.4's
-per-interaction retrieval, which v1 never wired (it injected only
-category names). The agent's explicit search remains for deliberate
-digging; the common case stops depending on model initiative.
-Category-name inventory stays too (cheap, cache-stable); a ranked
-"top memories" digest is deferred until scoring fields are consumed
-(needs decay/reflection live to mean anything).
+**Auto-recall injection — the recall-side structural mechanism, with
+tool-result framing.** The harness runs `recall.search(user_message)`
+at invocation start (index-backed, no LLM call) and injects top 3–5
+hits, budget-capped — A-MEM §3.4's per-interaction retrieval, which v1
+never wired. Two constraints from prior experience (user: injected
+memory near the system prompt gets treated as ground truth) and §1a:
+- **Framed as a tool result, not prompt truth**: rendered as a
+  synthetic recall call + result (like any tool output), each item
+  carrying provenance date + confidence — evidence the model weighs
+  and can discount as stale, not doctrine it obeys.
+- **Scope `agent` only** (distilled facts). History is NEVER injected
+  as memories — it has its own channels (boot chunk window; `history`
+  scope on explicit search).
+The agent's explicit search remains for deliberate digging.
+Category-name inventory stays (cheap, cache-stable); a ranked "top
+memories" digest is deferred until scoring fields are consumed.
 
 ### 6. Bird's-eye maintenance = the composition
 
