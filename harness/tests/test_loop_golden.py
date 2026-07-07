@@ -85,8 +85,8 @@ def test_loop_over_fake_executor():
             last_value=ValueRef("'hn'", 4, "str"),
         ),
     ])
-    replies = run_conversation("q", broker=broker, executor=fake)
-    assert replies == EXPECTED_REPLIES
+    outcome = run_conversation("q", broker=broker, executor=fake)
+    assert outcome.replies == EXPECTED_REPLIES and outcome.stop == "done"
     assert fake.calls == [hg.CELL_1]
 
 

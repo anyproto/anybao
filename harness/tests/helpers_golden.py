@@ -47,7 +47,7 @@ def build_registry(replies: list[dict]) -> Registry:
     queue = list(replies)
 
     @effect("llm.chat", kind="read", registry=reg)
-    def llm_chat(ctx, messages, system="", tier="codegen"):
+    def llm_chat(ctx, messages, system="", tier="codegen", tools=None):
         return queue.pop(0)
 
     @effect("http.get", kind="read", registry=reg)
@@ -71,6 +71,6 @@ def run_golden(mode: str, records: list[dict] | None = None):
     else:
         raise ValueError(mode)
     executor = WasiEngine(broker, kernel_wasm=KERNEL)
-    replies = run_conversation("which digest is bigger, hn or tc?",
+    outcome = run_conversation("which digest is bigger, hn or tc?",
                                broker=broker, executor=executor)
-    return replies, writer, broker
+    return outcome.replies, writer, broker

@@ -54,6 +54,7 @@ class FakeExecutor:
         self._results = list(results)
         self.calls: list[str] = []
         self.reset_count = 0
+        self.interrupted = False
 
     def run_cell(self, code: str, *, cell_id: str, timeout_s: float | None = None) -> CellResult:
         self.calls.append(code)
@@ -63,8 +64,8 @@ class FakeExecutor:
         r.cell_id = cell_id
         return r
 
-    def interrupt(self) -> None:  # pragma: no cover
-        pass
+    def interrupt(self) -> None:
+        self.interrupted = True
 
     def reset(self) -> None:
         self.reset_count += 1
