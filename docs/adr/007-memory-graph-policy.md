@@ -144,9 +144,18 @@ memory near the system prompt gets treated as ground truth) and §1a:
   synthetic recall call + result (like any tool output), each item
   carrying provenance date + confidence — evidence the model weighs
   and can discount as stale, not doctrine it obeys.
-- **Scope `agent` only** (distilled facts). History is NEVER injected
-  as memories — it has its own channels (boot chunk window; `history`
-  scope on explicit search).
+- **Both scopes, rendered distinctly** (revised 2026-07-07 — the
+  agent-only version was an overcorrection: the corpus audit condemned
+  chunks-in-the-memory-STORE, a write-side fact; and "relevance depends
+  on chat history really" means the useful substance IS history).
+  Memory hits = distilled facts (provenance + confidence). History
+  hits = *"related past discussion, <date>"* — chunk summary / turn
+  one-liner + drill-down pointer (`chunk #N, turns a–b`), body on
+  demand, capped at 2–3. Guards: **deep-history only** (hits already
+  covered by the boot window are skipped — auto-recall is the TOPICAL
+  channel complementing the window's RECENCY channel); pointers not
+  bodies; relevance threshold so generic messages inject nothing.
+  The write-side rule is untouched: chunks never become memory items.
 The agent's explicit search remains for deliberate digging.
 Category-name inventory stays (cheap, cache-stable); a ranked "top
 memories" digest is deferred until scoring fields are consumed.
