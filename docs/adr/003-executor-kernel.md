@@ -144,6 +144,40 @@ terminal record) and surfaces as `CellResult.interrupted` + `error`.
   (`values.get`, `effects.of`), and the effects half stops being a
   second store — one source of truth (the trace).
 
+## Appendix: how the wasi limits actually work
+
+Root fact: **every guest instruction is wasm compiled by wasmtime** —
+CPython's interpreter loop included. No native guest code exists, so
+all of it can be instrumented and bounded (the "can't interrupt a C
+loop" problem disappears: there is no C on the guest side).
+
+- **Fuel** — Cranelift inserts a per-basic-block counter decrement at
+  compile time; `store.set_fuel(n)` sets the budget; zero ⇒ trap at
+  exactly that instruction. Counts instructions, not time ⇒
+  **deterministic and replayable cutoffs** (same cell + inputs = same
+  fuel), and leftover fuel is a free compute-cost metric for `meta`.
+  ~few % overhead.
+- **Epoch interruption** — one global engine counter; compiled code
+  does a load+compare against the store's deadline at function entries
+  and **loop back-edges** (nearly free). A ticker thread bumps the
+  epoch; deadline passed ⇒ trap at the next back-edge — lands inside
+  any guest loop, guaranteed. `interrupt()` = set deadline to now +
+  bump. Wall-clock-driven ⇒ non-deterministic — the tool for
+  *cancellation*; fuel is the tool for *budgets*.
+- **Memory** — the guest lives in one bounds-checked linear memory;
+  growth (`memory.grow`, i.e. Python's allocator asking for pages) is
+  routed through a host `ResourceLimiter` callback. Deny ⇒ guest
+  malloc fails ⇒ ordinary `MemoryError` inside the cell — **cell
+  fails, kernel namespace survives** (vs an OS kill destroying the
+  conversation state). Dropping the store frees everything.
+
+Nuance: epoch checks run only in guest code — while inside a host
+function (an effect), interruption is cooperative. Host functions are
+our own effects, which honor cancellation (HTTP timeouts etc.):
+wasmtime hard-bounds everything the agent's code does; the effect
+boundary bounds everything we do on its behalf. No un-cancellable path
+remains — the property the sobek runtime lacks end-to-end.
+
 ## Open questions (reviewer input wanted)
 
 1. **Is WasiEngine required for v2.0 GA?** Lean: yes (production =
