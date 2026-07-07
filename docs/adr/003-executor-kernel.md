@@ -34,18 +34,27 @@ A NativeEngine (in-process exec) was proposed and **rejected in review
 (2026-07-07)** — "faster first result" is not a real benefit, and the
 two-engine design had hidden costs the wasi-only design deletes:
 
-- **Enforcement gets built once, at the right layer.** In-process,
-  ADR-002's proxied-stdlib tier means hand-built wrapper modules
-  (datetime/random/time — the admitted fiddly part). Under wasi the
-  guest's plain `datetime.now()` bottoms out in a WASI syscall
-  (`clock_time_get`) that WE provide as a host function → routed to the
-  `time.now` effect. The guest imports the REAL stdlib module; the
-  shim lives at the syscall layer. Same for `random` (entropy
-  syscall). ADR-002 §4 tier 2 is thus implemented as WASI host
-  functions wherever the ambient authority is syscall-shaped; proxy
-  modules remain only where the authority is API-shaped (e.g.
-  `os.environ` → `env.get`). The *contract* (those APIs are
-  effect-backed and recorded) is unchanged.
+- **Enforcement gets built once.** The in-process engine needed the
+  entire deny-by-default namespace rebuilt by hand; under wasi the
+  cage is the substrate. **Correction (review 2026-07-07 — trace
+  semantics):** WASI syscalls are NOT the effect layer. The trace line
+  stays at semantic effects (ADR-001/002); the guest reaches the world
+  through ONE custom host function (`host.effect(name, payload)` → the
+  broker). No wasi-http, no sockets, no fs imports are linked into the
+  guest — network syscalls are structurally impossible, so syscall
+  noise cannot enter traces. WASI proper is reduced to interpreter
+  plumbing made **deterministic by construction, untraced**: a virtual
+  clock (boot-recorded epoch, deterministic advance) and a fixed
+  boot-recorded seed — CPython internals call the clock constantly
+  (imports/gc), and those reads are both indistinguishable from user
+  calls at the syscall layer and worthless in a trace; a hash-pinned
+  read-only stdlib bundle covers module loading. One `kernel.boot`
+  header record captures epoch/seed/bundle-hash. **User-visible
+  time/random stay ADR-002 tier-2 proxies** installed by the kernel
+  boot prelude — `datetime.now()`/`random()` in cell code route
+  through the effect host function: REAL wall-clock, one semantic,
+  agent-legible record. Cell code must never silently receive the
+  virtual clock's fake time.
 - **Fast loop tests never needed an engine** — the FakeExecutor double
   covers them.
 - **pdb-on-cells contradicts doctrine** — traces are the debugging
