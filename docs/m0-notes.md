@@ -42,6 +42,14 @@ ADR-003's appendix described.
 
 ## Learnings / M1 carry-overs
 
+- **anyenc/fastjson NUL constraint** (known upstream issue, decided
+  not to fix/fork): strings containing `\x00` break when written into
+  any-store dataset records. Trace persistence is safe by design
+  (JSONL file attachments, our parser); but every string that lands in
+  a dataset record (turn userText/replies, run-record errors) must
+  pass a NUL-sanitization guard at the anyclient write boundary — one
+  function, one place (M2 anyclient).
+
 - wasmtime-py host funcs receive `(store, *args)`; a `WasiConfig` must
   be set on the store or instantiation panics in the C API.
 - Cell records must be cursor-consumed in replay (broker.cell_done) —

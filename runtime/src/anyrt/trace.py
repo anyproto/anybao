@@ -21,6 +21,12 @@ def canonical_json(value: Any) -> str:
 
 
 def input_key(effect: str, canonical_input: Any) -> str:
+    # \x00 is a hash-domain separator only — it lives in the local
+    # hashlib buffer and is never serialized/stored (json.dumps always
+    # escapes control chars, so canonical JSON can't carry raw NULs
+    # either). NB the known anyenc/fastjson NUL issue applies to
+    # strings written into any-store DATASET RECORDS — that guard
+    # belongs at the anyclient write boundary, not here.
     h = hashlib.sha256()
     h.update(effect.encode())
     h.update(b"\x00")
