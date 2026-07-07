@@ -1,6 +1,6 @@
 # M0 spike — results & numbers
 
-Date: 2026-07-07. Status: **exit criteria met** (pending review).
+Date: 2026-07-07. Status: **ACCEPTED** (review 2026-07-08).
 
 ## Exit criteria (01-implementation-plan.md)
 
