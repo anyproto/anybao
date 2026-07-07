@@ -321,6 +321,33 @@ def use(spec):
     _module_cache[ck] = mod
     return mod
 
+# ---- value metadata for the digest (ADR-003 ValueRef / ADR-005 §4) ---------
+
+def _schema(v, depth=0):
+    """Compact structural descriptor — the host digest decides
+    inline-vs-stub and shows this in the stub (v1 inferSchema)."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return type(v).__name__
+    if isinstance(v, (list, tuple)):
+        inner = _schema(v[0], depth + 1) if v and depth < 2 else "…"
+        return f"{type(v).__name__}[{len(v)} × {inner}]"
+    if isinstance(v, dict):
+        if depth < 2:
+            keys = list(v)[:8]
+            shape = ", ".join(f"{k}:{_schema(v[k], depth + 1)}" for k in keys)
+            more = ", …" if len(v) > 8 else ""
+            return "{" + shape + more + "}"
+        return f"dict[{len(v)}]"
+    return type(v).__name__
+
+
+def _value_meta(v, display=repr):
+    # prints render str-like (no quotes on strings, like Python print);
+    # last-expression values render repr-like (REPL semantics).
+    r = display(v)
+    return {"repr": r, "size": len(r), "schema": _schema(v)}
+
+
 # ---- namespace & cell execution --------------------------------------------
 
 _ns: dict = {}
@@ -348,11 +375,16 @@ class WitWorld:
         if not _ns:
             _ns = _fresh_ns()
         store = _values.setdefault(cell_id, {"prints": []})
-        prints: list[str] = []
+        prints: list[dict] = []
 
         def _print(*a, **kw):
-            prints.append(" ".join(x if isinstance(x, str) else repr(x) for x in a))
-            store["prints"].append(a[0] if len(a) == 1 else a)
+            # single arg: keep the structured value (schema/size for the
+            # digest). multi arg: Python's space-join, a formatted line.
+            v = a[0] if len(a) == 1 else " ".join(
+                x if isinstance(x, str) else repr(x) for x in a
+            )
+            store["prints"].append(v)
+            prints.append(_value_meta(v, display=str))
 
         _ns["print"] = _print
         try:
@@ -374,7 +406,7 @@ class WitWorld:
                 {
                     "ok": True,
                     "prints": prints,
-                    "last": repr(last) if has_last else None,
+                    "last": _value_meta(last) if has_last else None,
                     "error": None,
                 }
             )

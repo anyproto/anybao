@@ -15,12 +15,24 @@ class CellError:
 
 
 @dataclass
+class ValueRef:
+    """A printed value or last-expression value (ADR-003 §4). `repr`,
+    `size`, `schema` come from the guest; the digest decides
+    inline-vs-stub, the full object stays in the guest value store
+    (values.get)."""
+
+    repr: str
+    size: int
+    schema: str
+
+
+@dataclass
 class CellResult:
     cell_id: str
     ok: bool
     error: CellError | None = None
-    prints: list[str] = field(default_factory=list)  # repr strings (M0)
-    last_value: str | None = None                    # repr string (M0)
+    prints: list[ValueRef] = field(default_factory=list)
+    last_value: ValueRef | None = None
     duration_ms: int = 0
     interrupted: bool = False
     metrics: dict = field(default_factory=dict)

@@ -12,7 +12,7 @@ import os
 import helpers_golden as hg
 import pytest
 from anyrt import trace as tr
-from anyrt.executor import CellError, CellResult, FakeExecutor
+from anyrt.executor import CellError, CellResult, FakeExecutor, ValueRef
 
 needs_kernel = pytest.mark.skipif(
     not hg.KERNEL.exists(), reason="bin/kernel.wasm missing — run `make kernel`"
@@ -79,15 +79,21 @@ def test_loop_over_fake_executor():
     writer = tr.TraceWriter(run={"id": "fake"})
     broker = Broker(reg, writer)
     fake = FakeExecutor([
-        CellResult(cell_id="", ok=True, prints=["sizes {'hn': 120, 'tc': 36}"], last_value="'hn'"),
+        CellResult(
+            cell_id="", ok=True,
+            prints=[ValueRef("sizes {'hn': 120, 'tc': 36}", 27, "str")],
+            last_value=ValueRef("'hn'", 4, "str"),
+        ),
     ])
     replies = run_conversation("q", broker=broker, executor=fake)
     assert replies == EXPECTED_REPLIES
     assert fake.calls == [hg.CELL_1]
 
 
-def test_digest_v0_error_shape():
-    from anybao.loop import _digest_v0
+def test_digest_error_shape():
+    from anybao import digest
 
-    d = _digest_v0(CellResult(cell_id="c", ok=False, error=CellError("ValueError", "boom")))
+    d = digest.render(
+        CellResult(cell_id="c", ok=False, error=CellError("ValueError", "boom")), []
+    )
     assert "Error: ValueError: boom" in d

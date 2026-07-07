@@ -10,18 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from anyrt.effects import Broker
-from anyrt.executor import CellResult, Executor
+from anyrt.executor import Executor
 
-
-def _digest_v0(r: CellResult) -> str:
-    parts = []
-    if r.prints:
-        parts.append("Output:\n" + "\n".join(f"#{i} {p}" for i, p in enumerate(r.prints)))
-    if r.last_value is not None:
-        parts.append(f"Last value: {r.last_value}")
-    if r.error:
-        parts.append(f"Error: {r.error.type}: {r.error.message}")
-    return "\n".join(parts) or "(no output)"
+from . import digest
 
 
 def run_conversation(
@@ -51,11 +42,14 @@ def run_conversation(
             if part["type"] != "tool_call":
                 continue
             cr = executor.run_cell(part["args"]["code"], cell_id=part["id"])
+            content = digest.render(
+                cr, broker.writer.records, hints=digest.teaching_hints(cr, broker.writer.records)
+            )
             results.append(
                 {
                     "type": "tool_result",
                     "call_id": part["id"],
-                    "content": _digest_v0(cr),
+                    "content": content,
                     "is_error": not cr.ok,
                 }
             )

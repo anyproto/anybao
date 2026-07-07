@@ -17,6 +17,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def lastrepr(r):
+    assert r.last_value is not None
+    return r.last_value.repr
+
+
 def make_engine(programs=None, **kw):
     from anyrt.builtin_effects import DictResolver
     from anyrt.wasi import WasiEngine
@@ -38,13 +43,14 @@ def make_engine(programs=None, **kw):
 def test_cell_executes_persists_and_effects_record():
     eng, w = make_engine()
     r1 = eng.run_cell("x = 40 + 2\nprint('computed', x)\nx", cell_id="c1")
-    assert r1.ok and r1.last_value == "42" and r1.prints == ["computed 42"]
+    assert r1.ok and lastrepr(r1) == "42"
+    assert [p.repr for p in r1.prints] == ["computed 42"]
 
     r2 = eng.run_cell("x * 10", cell_id="c2")  # persistence
-    assert r2.ok and r2.last_value == "420"
+    assert r2.ok and lastrepr(r2) == "420"
 
     r3 = eng.run_cell("resp = http.get('https://a')\nresp.text", cell_id="c3")
-    assert r3.ok and r3.last_value == "'body of https://a'"
+    assert r3.ok and lastrepr(r3) == "'body of https://a'"
 
     kinds = [(r["kind"], r.get("effect") or r.get("cell")) for r in w.records[1:]]
     assert kinds == [
@@ -71,7 +77,7 @@ def test_guest_error_has_traceback_and_kernel_survives():
     r = eng.run_cell("z = [1,2]\nz[10]", cell_id="c1")
     assert not r.ok and r.error is not None and r.error.type == "IndexError"
     assert "IndexError" in r.error.traceback_str
-    assert eng.run_cell("z[1]", cell_id="c2").last_value == "2"  # namespace intact
+    assert lastrepr(eng.run_cell("z[1]", cell_id="c2")) == "2"  # namespace intact
 
 
 def test_fuel_exhaustion_interrupts():
@@ -93,7 +99,7 @@ def test_memory_cap_yields_memoryerror_kernel_survives():
     assert (r.error.type == "MemoryError") or r.interrupted
     # kernel survives a denied allocation (MemoryError path)
     if r.error.type == "MemoryError":
-        assert eng.run_cell("1 + 1", cell_id="c2").last_value == "2"
+        assert lastrepr(eng.run_cell("1 + 1", cell_id="c2")) == "2"
 
 
 def test_namespace_denies_ambient_authority():
@@ -111,30 +117,30 @@ def test_namespace_denies_ambient_authority():
 def test_allowlisted_and_proxied_imports():
     eng, w = make_engine()
     r = eng.run_cell("import math\nmath.floor(3.7)", cell_id="c1")
-    assert r.ok and r.last_value == "3"
+    assert r.ok and lastrepr(r) == "3"
     r = eng.run_cell("import datetime\nd = datetime.datetime.now()\nd.year >= 2026", cell_id="c2")
-    assert r.ok and r.last_value == "True"
+    assert r.ok and lastrepr(r) == "True"
     assert any(x["kind"] == "effect" and x["effect"] == "time.now" for x in w.records)
     r = eng.run_cell("import random\n0 <= random.random() < 1", cell_id="c3")
-    assert r.ok and r.last_value == "True"
+    assert r.ok and lastrepr(r) == "True"
 
 
 def test_shim_globals_and_env_allowlist():
     eng, w = make_engine()
     code = "e = env('MY_FLAG')\nmissing = env('NOPE', 'dflt')\n(e, missing)"
     r = eng.run_cell(code, cell_id="c1")
-    assert r.ok and r.last_value == "('on', 'dflt')"
+    assert r.ok and lastrepr(r) == "('on', 'dflt')"
     r = eng.run_cell("u = uuid4()\nlen(u)", cell_id="c2")
-    assert r.ok and r.last_value == "36"
+    assert r.ok and lastrepr(r) == "36"
 
 
 def test_values_store_across_cells():
     eng, _ = make_engine()
     assert eng.run_cell("print({'big': 1})\n[1, 2, 3]", cell_id="c1").ok
     r = eng.run_cell("v = values.get('c1', 'last')\nsum(v)", cell_id="c2")
-    assert r.ok and r.last_value == "6"
+    assert r.ok and lastrepr(r) == "6"
     r = eng.run_cell("values.get('c1', 0)['big']", cell_id="c3")
-    assert r.ok and r.last_value == "1"
+    assert r.ok and lastrepr(r) == "1"
     eng.reset()
     r = eng.run_cell("values.get('c1', 'last')", cell_id="c4")
     assert not r.ok and r.error is not None and r.error.type == "KeyError"
@@ -148,12 +154,12 @@ def test_effects_views_from_guest():
         "recs = effects.of('c1')\nprint(recs)\n[e['effect'] for e in recs]",
         cell_id="c2",
     )
-    assert r.ok and r.last_value == "['http.get']"
+    assert r.ok and lastrepr(r) == "['http.get']"
     r = eng.run_cell(
         "seq = effects.of('c1')[0]['seq']\nfull = effects.get(seq)\nfull['output']['status']",
         cell_id="c3",
     )
-    assert r.ok and r.last_value == "200"
+    assert r.ok and lastrepr(r) == "200"
 
 
 def test_http_get_many_input_order_and_records():
@@ -166,7 +172,7 @@ def test_http_get_many_input_order_and_records():
     r = eng.run_cell(code, cell_id="c1")
     # stub returns "body of <url>" — lengths differ by url length
     assert r.ok
-    assert r.last_value == str([len(f"body of {u}") for u in ["https://a", "https://bb", "https://ccc"]])
+    assert lastrepr(r) == str([len(f"body of {u}") for u in ["https://a", "https://bb", "https://ccc"]])
     # three http.get records, input order, batch-tagged
     gets = [x for x in w.records if x["kind"] == "effect" and x["effect"] == "http.get"]
     assert len(gets) == 3
@@ -179,10 +185,10 @@ def test_use_loads_program_and_caches():
     prog = "GREETING = 'hi'\n\ndef greet(name):\n    return GREETING + ' ' + name\n"
     eng, w = make_engine(programs={"greeter@v1": prog})
     r = eng.run_cell("g = use('greeter@v1')\ng.greet('bao')", cell_id="c1")
-    assert r.ok and r.last_value == "'hi bao'"
+    assert r.ok and lastrepr(r) == "'hi bao'"
     # second use -> cache hit (one module.resolve total is fine; marker match)
     r = eng.run_cell("use('greeter@v1').GREETING", cell_id="c2")
-    assert r.ok and r.last_value == "'hi'"
+    assert r.ok and lastrepr(r) == "'hi'"
     resolves = [x for x in w.records if x["kind"] == "effect" and x["effect"] == "module.resolve"]
     assert len(resolves) == 2  # probes every call
     assert resolves[0]["output"]["cache"] == "miss"
@@ -195,7 +201,7 @@ def test_use_transitive_defining_space_first():
     main = "h = use('helper@v1')\n\ndef run(n):\n    return h.double(n) + 1\n"
     eng, _ = make_engine(programs={"helper@v1": helper, "main@v1": main})
     r = eng.run_cell("use('main@v1').run(10)", cell_id="c1")
-    assert r.ok and r.last_value == "21"
+    assert r.ok and lastrepr(r) == "21"
 
 
 def test_use_unknown_program_errors():

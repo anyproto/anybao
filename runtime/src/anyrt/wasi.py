@@ -18,7 +18,7 @@ import wasmtime.component as wc
 from wasmtime import Config, Engine, Store, WasiConfig
 
 from .effects import Broker
-from .executor import CellError, CellResult
+from .executor import CellError, CellResult, ValueRef
 
 EPOCH_TICK_S = 0.01  # ticker granularity: 10ms per epoch increment
 
@@ -129,12 +129,13 @@ class WasiEngine:
             cell_err = None
             if err:
                 cell_err = CellError(err["type"], err["message"], err.get("traceback", ""))
+            last = reply.get("last")
             result = CellResult(
                 cell_id=cell_id,
                 ok=reply["ok"],
                 error=cell_err,
-                prints=reply.get("prints", []),
-                last_value=reply.get("last"),
+                prints=[ValueRef(**p) for p in reply.get("prints", [])],
+                last_value=ValueRef(**last) if last else None,
             )
         except Exception as e:
             # trap: fuel exhausted / epoch deadline / interrupt / guest crash
