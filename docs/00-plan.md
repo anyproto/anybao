@@ -381,6 +381,30 @@ change, never syncs):
   default-deny. Lands with capabilities/overlays (M6); touches config
   (credential defs + recipes + host allowlist), the http effect
   (credential param + inject + redact + host check), and the manifest.
+  - **Secret handle (the "box", surfaced 2026-07-08).** Programs hold a
+    sealed opaque handle, never bytes: `cred = credentials.get("gemini")`
+    is host-minted + grant-checked (raises if not granted — fail-early,
+    unforgeable). The handle is **opaque** (`repr` → `<secret gemini>`,
+    no path to bytes) and **non-serializable** (refuses json → can't
+    leak via print/value-store/trace even if the agent tries — a second
+    guard beside redaction). It **composes** as a first-class value
+    (bind to a var, pass through helpers); the unseal happens ONLY
+    host-side at the effect boundary (monad-adjacent: deferred unwrap,
+    like IO). The box is ergonomics + fail-early + defense-in-depth; the
+    real boundary stays the host-side grant check + host-binding at
+    injection.
+  - **Authoring flow — createProgram teaches credential mechanics.**
+    Cell use = EPHEMERAL grant ("let this run use gemini?"); persistent
+    integration program = DECLARED in its manifest (`credentials:
+    [gemini]`), granted once, travels with the program. createProgram
+    (the "program that helps write correct programs") is manifest-aware:
+    validates that `credentials.get("X")` calls match declared creds,
+    warns on hardcoded key-shaped literals. **Install-time grant is
+    where sane key management lives**: installing an integration from an
+    overlay surfaces its credential requirements and the user supplies
+    the key (device scope) then — the program ships NEEDING a key, never
+    CONTAINING one. The authoring skill teaches the one pattern (declare
+    → grant → handle → inject), identical for cells and programs.
 
 ### Loop control: break + inject (new requirement)
 The toolcaller loop must support external control while running:
