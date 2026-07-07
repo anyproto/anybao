@@ -1,4 +1,16 @@
-.PHONY: kernel test lint
+.PHONY: kernel test lint api-drift api-vendor
+
+# Drift check: vendored any swagger vs the coverage manifest (plan §4).
+# Nonzero exit on drift so CI catches an uncovered/changed endpoint.
+api-drift:
+	uv run python -m anybao.apidrift
+
+# Re-vendor any's swagger (run after bumping the targeted any version),
+# then re-check drift to see what moved.
+api-vendor:
+	cp ../any/internal/server/docs/swagger.json api/swagger.vendored.json
+	uv run python -m anybao.apidrift || true
+
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; CI runs this before pytest. Artifact is gitignored.
