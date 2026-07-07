@@ -1,6 +1,6 @@
 # ADR-004: Module loading & resolution
 
-Status: **Proposed** (awaiting review)
+Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-001..003 (accepted); plan §4 Overlays, §5 isolation
 principle
@@ -134,14 +134,10 @@ the parity port).
 - The overlay story needs zero loader changes when it lands — aliases
   are config, resolution rules already encode the shadowing doctrine.
 
-## Open questions (reviewer input wanted)
+## Resolved questions (review 2026-07-07)
 
-1. **Name of `use()`**: `use("name@v1")` vs `load_program(...)` vs
-   `require(...)`. Lean: `use` — short (LLM-written cells), reads
-   naturally, no JS `require` baggage.
-2. **Probe batching at boot**: probe all pre-bound tools in one
-   `*_many` call at kernel boot (lean: yes), or lazily per first use?
-3. **Module identity for `reset()`**: after an agent-invoked `reset()`,
-   do previously `use()`d modules reload automatically on next
-   reference (lean: no — `reset()` drops everything; the agent
-   re-`use()`s what it needs)?
+1. **`use()`** — confirmed as the name.
+2. **Boot probe batching** — yes: all pre-bound tools probed in one
+   `*_many` call at kernel boot.
+3. **`reset()` just cleans the runtime** — no auto-reload; the agent
+   re-`use()`s what it needs.
