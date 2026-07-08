@@ -208,3 +208,11 @@ class AnyClient:
         if mode:
             body["mode"] = mode
         return self._call("POST", f"/v1/spaces/{space_id}/search", body)
+
+    def backlinks(self, space_id: str, object_id: str) -> list[dict]:
+        """Objects that reference object_id through a links-format
+        property. Returns the `backlinks` list unwrapped from the
+        envelope — each `{objectId, typeId, propId}` (never null)."""
+        reply = self._call(
+            "GET", f"/v1/spaces/{space_id}/objects/{object_id}/backlinks")
+        return reply.get("backlinks") or []
