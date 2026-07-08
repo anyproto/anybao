@@ -1,0 +1,129 @@
+"""programs/rollup@v1 — the hierarchical rollup trigger job (ADR-006
+§2), tested host-side by exec-ing the guest source with a fake
+`effect` global (the same seam the guest provides)."""
+
+from pathlib import Path
+
+from anybao.deploy import load_programs
+from anybao.history import rollup_trigger
+
+PROGRAMS_DIR = Path(__file__).resolve().parents[2] / "programs"
+SRC = (PROGRAMS_DIR / "rollup@v1.py").read_text()
+
+
+class FakeSpace:
+    """Answers any.query / any.create_chunk / llm.chat like the wire."""
+
+    def __init__(self, turns=(), chunks=()):
+        self.turns = list(turns)
+        self.chunks = list(chunks)
+        self.created = []
+        self.llm_calls = []
+
+    def __call__(self, name, payload):
+        if name == "llm.chat":
+            self.llm_calls.append(payload)
+            return {"parts": [{"type": "text", "text": f"S{len(self.llm_calls)}"}],
+                    "stop": "done", "usage": {"in": 1, "out": 1}}
+        if name == "any.create_chunk":
+            body = dict(payload["body"])
+            body["seq"] = max((c["seq"] for c in self.chunks), default=0) + 1
+            self.chunks.append(body)
+            self.created.append(body)
+            return {"seq": body["seq"]}
+        assert name == "any.query", name
+        rows = {"agent_turns": self.turns, "agent_chunks": self.chunks}[payload["dataset"]]
+        rows = [r for r in rows if _matches(r, payload.get("filter") or {})]
+        for key in reversed(payload.get("sort") or []):
+            rev = key.startswith("-")
+            rows = sorted(rows, key=lambda r: r[key.lstrip("-")], reverse=rev)
+        limit = payload.get("limit")
+        return rows[:limit] if limit else rows
+
+
+def _matches(rec, flt):
+    for k, cond in flt.items():
+        v = rec.get(k)
+        if isinstance(cond, dict):
+            if "$gt" in cond and not (v is not None and v > cond["$gt"]):
+                return False
+        elif v != cond:
+            return False
+    return True
+
+
+def run_main(fake, args):
+    g = {"effect": fake}
+    exec(compile(SRC, "rollup@v1.py", "exec"), g)
+    return g["main"](args)
+
+
+def turn(seq, ts=None):
+    return {"seq": seq, "userText": f"u{seq}", "replies": [f"r{seq}"],
+            "createdAt": ts if ts is not None else 1000 + seq}
+
+
+ARGS = {"space": "s1", "chatId": "chat1"}
+
+
+def test_l1_rolls_complete_batches_only():
+    fake = FakeSpace(turns=[turn(i) for i in range(1, 26)])
+    run_main(fake, ARGS)
+    l1 = [c for c in fake.created if c["level"] == 1]
+    assert [(c["fromSeq"], c["toSeq"]) for c in l1] == [(1, 10), (11, 20)]
+    assert all(c["unitsCovered"] == 10 for c in l1)
+    # period from the covered turns' timestamps
+    assert (l1[0]["periodStart"], l1[0]["periodEnd"]) == (1001, 1010)
+    # partial tail 21-25 untouched; no L2 (only 2 L1 chunks)
+    assert all(c["level"] == 1 for c in fake.created)
+
+
+def test_l1_resumes_after_existing_coverage():
+    fake = FakeSpace(
+        turns=[turn(i) for i in range(1, 21)],
+        chunks=[{"seq": 1, "level": 1, "fromSeq": 1, "toSeq": 10,
+                 "summary": "old", "periodStart": 0, "periodEnd": 0}])
+    run_main(fake, ARGS)
+    assert [(c["fromSeq"], c["toSeq"]) for c in fake.created] == [(11, 20)]
+
+
+def test_no_complete_batch_no_llm_calls():
+    fake = FakeSpace(turns=[turn(i) for i in range(1, 6)])
+    run_main(fake, ARGS)
+    assert fake.created == [] and fake.llm_calls == []
+
+
+def test_l2_summarizes_child_summaries_only():
+    chunks = [{"seq": i, "level": 1, "fromSeq": i * 10 - 9, "toSeq": i * 10,
+               "summary": f"c{i}", "periodStart": 100 + i, "periodEnd": 200 + i}
+              for i in range(1, 11)]
+    fake = FakeSpace(chunks=chunks)
+    run_main(fake, ARGS)
+    l2 = [c for c in fake.created if c["level"] == 2]
+    assert len(l2) == 1
+    # range is over CHILD CHUNK seqs, not turn seqs
+    assert (l2[0]["fromSeq"], l2[0]["toSeq"]) == (1, 10)
+    assert (l2[0]["periodStart"], l2[0]["periodEnd"]) == (101, 210)
+    # the L2 prompt contains child summaries, no raw turn text
+    prompt = fake.llm_calls[-1]["messages"][0]["parts"][0]["text"]
+    assert "- c1" in prompt and "user:" not in prompt
+
+
+def test_custom_batch_and_tier_flow_through():
+    fake = FakeSpace(turns=[turn(i) for i in range(1, 7)])
+    run_main(fake, {**ARGS, "batch": 3, "tier": "cheap"})
+    assert [(c["fromSeq"], c["toSeq"]) for c in fake.created] == [(1, 3), (4, 6)]
+    assert all(c["tier"] == "cheap" for c in fake.llm_calls)
+
+
+def test_program_loads_via_deploy_pipeline():
+    progs = {p.spec: p for p in load_programs(PROGRAMS_DIR)}
+    assert "rollup@v1" in progs
+    assert "def main(args)" in progs["rollup@v1"].code
+
+
+def test_rollup_trigger_factory():
+    t = rollup_trigger(space="s1", chat_id="chat1", owner="inst1")
+    assert t.kind == "cron" and t.program == "rollup@v1"
+    assert t.spec == {"every_s": 3600}
+    assert t.args == {"space": "s1", "chatId": "chat1"} and t.owner == "inst1"

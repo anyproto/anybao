@@ -90,6 +90,12 @@ def register_data_effects(registry: Registry, client: AnyClient) -> None:
         """Upsert one dataset record by id."""
         return client.upsert_record(space, object_id, dataset, record_id, value)
 
+    @effect("any.create_chunk", kind="mutate", registry=registry, cap=WRITE)
+    def any_create_chunk(ctx, space, object_id, body):
+        """Append an agent_chunks record (agentlog handler validates
+        level/range; server assigns seq) — the rollup program's write."""
+        return client.create_chunk(space, object_id, body)
+
 
 def _opts(**kw) -> dict:
     """Drop None so absent options don't reach the wire as nulls."""

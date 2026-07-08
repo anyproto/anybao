@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from .anyclient import AnyClient
 from .digest import approx_tokens
 from .loop import Outcome
+from .triggers import Trigger
 
 
 def build_turn(
@@ -152,6 +153,17 @@ def render_boot_window(
     for turn in included_turns:
         messages.extend(_turn_messages(turn))
     return messages
+
+
+# --- rollup trigger (the producer of chunks_by_level) ------------------------
+
+def rollup_trigger(*, space: str, chat_id: str, owner: str = "",
+                   every_s: int = 3600, trigger_id: str = "rollup") -> Trigger:
+    """The standing cron trigger that runs programs/rollup@v1 (ADR-006
+    §2: rollup is a trigger job, off the completion hot path)."""
+    return Trigger(id=trigger_id, name="history rollup", kind="cron",
+                   spec={"every_s": every_s}, program="rollup@v1",
+                   args={"space": space, "chatId": chat_id}, owner=owner)
 
 
 # --- I/O wrapper -------------------------------------------------------------

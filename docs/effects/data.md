@@ -33,3 +33,4 @@ Absent optional args are dropped before the wire (no `null` bodies).
 | `any.create_type(space, body)` | `create_type` | `{typeId}` |
 | `any.add_property(space, type_id, body)` | `add_property` | `{propId}` |
 | `any.upsert_record(space, object_id, dataset, record_id, value)` | `upsert_record` | upsert result |
+| `any.create_chunk(space, object_id, body)` | `create_chunk` | agentlog append (server-assigned `seq`) |
