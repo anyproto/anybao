@@ -11,10 +11,13 @@ from __future__ import annotations
 import json as _json
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 Transport = Callable[[str, str, dict | None], tuple[int, dict]]
+# SSE transport: POST (path, body) → an iterator of raw decoded text
+# lines from a text/event-stream response. Injectable for tests.
+SSETransport = Callable[[str, dict | None], Iterator[str]]
 
 
 def sanitize_nuls(obj: Any) -> Any:
@@ -57,9 +60,57 @@ def http_transport(base_url: str) -> Transport:
     return send
 
 
+def sse_http_transport(base_url: str) -> SSETransport:
+    """POST an SSE subscribe request and stream decoded lines. Kept
+    separate from the JSON transport (which is one-shot request/response)
+    so the client stays unit-testable with a fake line source."""
+    def open_stream(path: str, body: dict | None) -> Iterator[str]:
+        data = _json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            base_url + path, data=data, method="POST",
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        )
+        resp = urllib.request.urlopen(req)   # noqa: S310 (localhost)
+        try:
+            for raw in resp:
+                yield raw.decode("utf-8", "replace").rstrip("\n")
+        finally:
+            resp.close()
+
+    return open_stream
+
+
+def _parse_sse(lines: Iterator[str]) -> Iterator[dict]:
+    """Fold raw SSE lines into `{"event", "data"}` frames. `data:` may
+    span multiple lines (joined with \\n); a blank line dispatches the
+    frame. `data` is JSON-decoded, falling back to the raw string."""
+    event = "message"
+    data_lines: list[str] = []
+    for line in lines:
+        if line == "":
+            if data_lines:
+                raw = "\n".join(data_lines)
+                try:
+                    payload: Any = _json.loads(raw)
+                except ValueError:
+                    payload = raw
+                yield {"event": event, "data": payload}
+            event, data_lines = "message", []
+            continue
+        if line.startswith(":"):          # SSE comment / heartbeat
+            continue
+        field, _, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if field == "event":
+            event = value
+        elif field == "data":
+            data_lines.append(value)
+
+
 class AnyClient:
-    def __init__(self, transport: Transport):
+    def __init__(self, transport: Transport, sse_transport: SSETransport | None = None):
         self._send = transport
+        self._sse = sse_transport
 
     def _call(self, method: str, path: str, body: dict | None = None) -> dict:
         if body is not None:
@@ -216,3 +267,44 @@ class AnyClient:
         reply = self._call(
             "GET", f"/v1/spaces/{space_id}/objects/{object_id}/backlinks")
         return reply.get("backlinks") or []
+
+    # --- agent memory (M5 write path; reads go through /query on the brain) ---
+    def get_brain(self, space_id: str) -> dict:
+        """The derived per-space brain object id hosting
+        agent_memory_items. `{objectId}` — deterministic, no create race."""
+        return self._call("GET", f"/v1/spaces/{space_id}/agent/brain")
+
+    def create_memory(self, space_id: str, fields: dict) -> dict:
+        """Create a memory item (category + context required). Server
+        resolves the brain object. Returns ModifyResult — recordIds[0] is
+        the item id."""
+        return self._call("POST", f"/v1/spaces/{space_id}/agent/memory", fields)
+
+    def evolve_memory(self, space_id: str, item_id: str, fields: dict) -> dict:
+        """Evolve a memory item's mutable fields (author only; modifiedAt
+        bumped server-side). accessCount bump on recall rides this path."""
+        return self._call(
+            "PATCH", f"/v1/spaces/{space_id}/agent/memory/{item_id}", fields)
+
+    def delete_memory(self, space_id: str, item_id: str) -> dict:
+        return self._call(
+            "DELETE", f"/v1/spaces/{space_id}/agent/memory/{item_id}")
+
+    # --- SSE subscribe (windowed query/subscribe primitive) ---
+    def subscribe(self, path: str, body: dict | None = None):
+        """Open an SSE stream over a `/query/subscribe`-shaped route and
+        yield parsed frames `{"event": str, "data": obj}` in order:
+        `ready` → `snapshot` → `changes`* → `closed` (docs/04-events.md).
+        Terminal on `closed`. Requires an sse_transport (raises if the
+        client was built without one)."""
+        if self._sse is None:
+            raise RuntimeError("AnyClient has no sse_transport; SSE unavailable")
+        if body is not None:
+            body = sanitize_nuls(body)
+        yield from _parse_sse(self._sse(path, body))
+
+    def subscribe_dataset(self, space_id: str, object_id: str, dataset: str, **opts):
+        """Subscribe over one object's dataset (POST
+        /v1/spaces/:id/query/subscribe). opts: filter/sort/limit/…"""
+        body = {"objectId": object_id, "dataset": dataset, **opts}
+        yield from self.subscribe(f"/v1/spaces/{space_id}/query/subscribe", body)

@@ -39,8 +39,8 @@ def any_server() -> str:
 
 @pytest.fixture
 def client(any_server):
-    from anybao.anyclient import AnyClient, http_transport
-    return AnyClient(http_transport(any_server))
+    from anybao.anyclient import AnyClient, http_transport, sse_http_transport
+    return AnyClient(http_transport(any_server), sse_http_transport(any_server))
 
 
 @pytest.fixture
