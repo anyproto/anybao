@@ -270,6 +270,33 @@ into the prompt — guidance + default overlays instead. Design:
   ⇒ authenticity by CRDT ACL, no signing infra. Interim: joining = 
   trusting the space's writers; capabilities limit blast radius.
 
+- **The `agent:` overlay — separate agent CODE from user DATA (decided
+  2026-07-08).** The single agent space conflated code (programs/skills,
+  developer-authored, churns every deploy) with user data (memory/chat,
+  user-owned, permanent) — the "sync looks off" problem. Fix: a built-in
+  **`agent:` alias** (like `private:`) pointing at the **agent-code
+  overlay**. Split:
+  - **Agent overlay** (`agent:`, shared/updatable): programs, skills,
+    DEFAULT config (tiers, model defaults).
+  - **User's space** (private, per-user): the chat + turns + chunks, the
+    memory brain + items, config OVERRIDES + secrets (device scope).
+  Two things fall out: config becomes the cascade already designed
+  (overlay default ?? user value ?? code default); skill/program
+  customization is just overlay shadowing (user edit → copy in their
+  space shadows the overlay, Nix-style). Buys: update the agent by
+  bumping the overlay with ZERO user-data churn; eventual official
+  agent overlay autojoined readonly (code ships, data never leaves the
+  user space); one code overlay backs many user data spaces; SIMPLER
+  bootstrap (populate the overlay once vs hash-gated program-sync into
+  every user space). **Invariant: memory + chat NEVER live in the shared
+  overlay — user-private only.** Resolution discipline (ADR-004): harness
+  boot imports use `agent:` EXPLICITLY (unqualified never resolves into
+  an overlay silently) — boot prelude + core skill written to do so.
+  Open: trace/debug placement (user space for drill-down vs device-local;
+  revisit with AnyFileStore). Refines ADR-004 (aliases) + ADR-006 (where
+  data lives); changes M4 targets — sync.py writes the OVERLAY, history
+  writer writes the USER space.
+
 ### Capabilities & trust — CapBAC model (new requirement)
 The manifest alone can't carry authority — in an editable space any
 writer can edit it. CapBAC reframe: **manifest = request, grant =

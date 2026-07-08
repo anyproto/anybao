@@ -13,11 +13,11 @@ shapes, no bridges (no-backcompat). Checklist:
       skill audit (provenance tags, no test → no port).
 - [x] Drift-flow bootstrap — vendor any swagger.json + coverage
       manifest + make api-drift (deferred from M3; first done here).
-- [ ] Tool-docs pipeline — ONE splitter (Python), sync.py (hash-gated,
-      fresh chat object per ADR-006 §0), skills written fresh incl. the
-      core skill (kernel surface, ADR-005 §5).
-- [ ] History writer — turns/chunks v2 writer, hierarchical rollup
-      trigger, token-budgeted boot-window renderer.
+- [ ] Tool-docs pipeline — ONE splitter (Python), sync.py targets the
+      AGENT OVERLAY (agent: alias — code separate from user data,
+      plan §4), skills written fresh incl. the core skill (ADR-005 §5).
+- [ ] History writer — turns/chunks v2 writer (USER space), hierarchical
+      rollup trigger, token-budgeted boot-window renderer.
 - [ ] Trigger subsystem v1 — owner/arming, run records + metrics
       rollups, limits + circuit breaker, monitoring list API;
       watcher = trigger #1 (chat event → runner, cursor+dedup, mid-run
