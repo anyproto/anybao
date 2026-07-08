@@ -7,9 +7,9 @@ shapes, no bridges (no-backcompat). Checklist:
       naming, arg shapes, space handling, error normalization, catalog
       caching, nested property shape. Feeds both the port and the
       drift skill.
-- [ ] anyclient expansion — full any surface the helper needs (spaces,
+- [x] anyclient expansion — full any surface the helper needs (spaces,
       objects, chat, editor, query, agent turns/chunks, search, props).
-- [ ] Helper facades (Python) over anyclient, THROUGH the workaround/
+- [~] Helper facades (Python) — objects/catalog/query/search done; chat/editor/programs/skills/members remain over anyclient, THROUGH the workaround/
       skill audit (provenance tags, no test → no port).
 - [x] Drift-flow bootstrap — vendor any swagger.json + coverage
       manifest + make api-drift (deferred from M3; first done here).
