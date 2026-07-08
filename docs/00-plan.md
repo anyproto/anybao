@@ -483,6 +483,21 @@ change, never syncs):
     injection regardless of what the UI displayed. Right architecture:
     agent initiates, UI collects, secret bypasses agent, provenance +
     host-binding make it non-spoofable.
+  - **Credential lifecycle — set / list / wipe / rotate (2026-07-08).**
+    set = above. **list**: names + status + hosts + granted-to programs,
+    NEVER values (a credentials-directory, sibling to identities) —
+    lets the agent know "is X connected?" without the key. **wipe/
+    revoke** (`ui.wipe_credential {name}`): removes the device secret
+    AND revokes the program's capability grant (no stale reuse); USER-
+    driven by default, an agent-initiated wipe routes through UI
+    CONFIRMATION (destructive, hard to reverse — never silent).
+    **rotate**: wipe-then-set as one UI flow, or re-set (overwrite).
+    Two caveats: wipe is DEVICE-LOCAL/per-device (secrets are device-
+    scope; "revoke everywhere" waits on account-scope SDK work), and
+    wipe ≠ PROVIDER revocation (removes the local copy + grant, not the
+    key at Linear — the wipe UI must say "revoke at the provider too if
+    compromised"). Lifecycle tie-in: uninstalling a tool offers to wipe
+    its credentials (cleanup bounded by the tool's lifecycle).
 
 ### Loop control: break + inject (new requirement)
 The toolcaller loop must support external control while running:
