@@ -136,6 +136,36 @@ def linkgen_trigger(*, space: str, brain_id: str, owner: str = "",
                    args={"space": space, "brainId": brain_id}, owner=owner)
 
 
+# --- §4.2 mechanisms: present, DISABLED, each behind an eval ------------------
+# Flip enabled=True only after the matching eval passes (test_evals_gated
+# mechanisms are the offline gate; live-quality runs extend them). The
+# amemory lesson stands: these were implemented-but-disabled there too,
+# and never earned activation — evals decide, not enthusiasm.
+
+def decay_trigger(*, space: str, brain_id: str, owner: str = "",
+                  every_s: int = 86400, trigger_id: str = "decay") -> Trigger:
+    return Trigger(id=trigger_id, name="salience decay", kind="cron",
+                   spec={"every_s": every_s}, program="decay@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner,
+                   enabled=False)
+
+
+def reflection_trigger(*, space: str, brain_id: str, owner: str = "",
+                       every_s: int = 86400, trigger_id: str = "reflection") -> Trigger:
+    return Trigger(id=trigger_id, name="reflection", kind="cron",
+                   spec={"every_s": every_s}, program="reflection@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner,
+                   enabled=False)
+
+
+def evolution_trigger(*, space: str, brain_id: str, owner: str = "",
+                      every_s: int = 21600, trigger_id: str = "evolution") -> Trigger:
+    return Trigger(id=trigger_id, name="memory evolution", kind="cron",
+                   spec={"every_s": every_s}, program="evolution@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner,
+                   enabled=False)
+
+
 # --- the §2 judge + effect wiring --------------------------------------------
 
 _JUDGE_SYSTEM = (
