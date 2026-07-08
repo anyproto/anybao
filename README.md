@@ -15,6 +15,9 @@ the bobrik harness — design and rationale in [`docs/00-plan.md`](docs/00-plan.
   written against.
 - `docs/adr/` — decision records. **No code lands ahead of its accepted ADR.**
 
+Debugging a run: [`docs/debugging.md`](docs/debugging.md) — traces are
+device-local JSONL; `anyrt trace show` / `trace stats` are the viewers.
+
 ## Dev environment
 
 Nix flake is canonical (uv + pinned python + Rust toolchain inside):
