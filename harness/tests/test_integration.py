@@ -130,9 +130,9 @@ def test_deploy_program_then_resolve(client, fresh_space):
     from anybao.modules import AnyModuleResolver
 
     code = "GREETING = 'hi'\n\ndef greet(name):\n    return GREETING + ' ' + name\n"
-    prog = ProgramSource("greeter", "v1", code=code,
-                         tool_md="## Tool Description\n\nGreets.\n\n"
-                                 "## Tool Schema\n### greet(name) [getter]\n\nreturns a greeting.\n")
+    md = ("## Tool Description\n\nGreets.\n\n"
+          "## Tool Schema\n### greet(name) [getter]\n\nreturns a greeting.\n")
+    prog = ProgramSource("greeter", "v1", code=code, tool_md=md)
     dep = Deployer(client, space=fresh_space)
     assert dep.deploy_one(prog) == "created"
     assert dep.deploy_one(prog) == "unchanged"          # hash-gate, live
