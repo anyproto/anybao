@@ -1,8 +1,11 @@
 # CLAUDE.md
 
-anybao — agent harness (`harness/` pkg `anybao`) + isolated runtime
-(`runtime/` pkg `anyrt`) on top of the `any` server (`~/any/any`).
-The respawn of the bobrik harness.
+anybao — the Rust runtime (`runtime/`, binary `anyrt`: effect boundary,
+trace/replay, cell executor, `any` client, deploy, the agent loop +
+triggers) plus the componentized CPython guest kernel it runs, on top of
+the `any` server (`~/any/any`). The agent itself lives in `programs/` +
+`skills/` (space-resident guest units). The respawn of the bobrik
+harness.
 
 ## Read first, in this order
 
@@ -26,7 +29,9 @@ The respawn of the bobrik harness.
 - **Isolation principle**: nothing executes side effects except through
   the effect boundary (broker). Everything nondeterministic is an
   effect. If it isn't in the trace, it didn't happen.
-- **Import direction**: `anybao` → `anyrt`, never back.
+- **Guest never imports the host**: `programs/` are import-free sources
+  exec'd in the wasm kernel; they reach the runtime only through the
+  effect boundary + `use()`.
 - **`any`-server quirks are fixed upstream** (in `~/any/any` / SDK),
   never worked around here; a workaround is a dated bridge with an
   upstream ticket.
@@ -39,13 +44,16 @@ The respawn of the bobrik harness.
 nix develop            # canonical env (or: direnv allow)
 uv sync
 make kernel            # componentized CPython guest -> bin/kernel.wasm (gitignored)
-uv run pytest          # wasi tests skip if kernel.wasm missing
+cargo test --manifest-path runtime/Cargo.toml   # runtime unit + replay tests
+make runtime           # runtime/target/release/anyrt (rt_e2e needs it, else skips)
+uv run pytest          # guest-module + wire tests; rt_e2e skips w/o kernel+binary
 uv run ruff check .
-UPDATE_GOLDEN=1 uv run pytest -k up_to_date   # regenerate golden fixture (review the diff!)
 ```
 
-CI runs exactly these through the flake.
+`make test` chains kernel + cargo test + pytest; `make lint` = ruff +
+runtime-check (clippy -D warnings + fmt --check). CI runs these through
+the flake.
 
-Gotcha: `harness/tests/fixtures/*.jsonl` are JSONL — one record per
-line is the parse contract. View pretty with `jq . <file>`; never
-reformat the buffer (a saved pretty-print breaks the golden tests).
+Gotcha: `tests/fixtures/*.jsonl` are JSONL — one record per line is the
+parse contract. View pretty with `jq . <file>`; never reformat the
+buffer (a saved pretty-print breaks the parse).

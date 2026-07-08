@@ -28,7 +28,8 @@ cd ~/any/any && ./bin/bobrik-watch --space bao
 # terminal 3 — anybao on a TEST space (never the live bao space
 # until the walk passes)
 cd ~/any/anybao && make kernel
-ANTHROPIC_API_KEY=... uv run anybao serve \
+make runtime
+ANTHROPIC_API_KEY=... ./runtime/target/release/anyrt serve \
   --addr http://127.0.0.1:7001 --space bao-test
 ```
 
@@ -59,7 +60,7 @@ Conversation loop:
 - [ ] Turn persisted to `agent_turns` (server-assigned seq, v2 fields:
       `traceRef`, `interrupted`, llm scalars).
 - [ ] Trace written device-local (`traces/run_*.jsonl` + blob sidecar);
-      `uv run python -c "from anybao.viewer import ..."` renders it.
+      `anyrt trace show traces/run_*.jsonl` renders it.
 - [ ] Cell errors surface in the digest; the loop continues.
 - [ ] Ceilings produce a wrap-up reply, never a silent cut.
 
@@ -91,13 +92,14 @@ Ops:
 
 ## Metrics checkpoint (second of two; ADR-003/005 "decisions from data")
 
-- [ ] `metrics.scan("traces/")` over a day of side-by-side traffic;
-      review fuel/duration/token distributions.
+- [ ] Review fuel/duration/token distributions over a day of
+      side-by-side traces (`anyrt trace show`; a `trace stats`
+      aggregate is a welcome follow-up).
 - [ ] Tune: LoopPolicy ceilings, DigestPolicy inline budget,
       BootWindowPolicy total_tokens, trigger `limits` — from p95s, in
       config (not code) where possible.
 - [ ] Golden recall eval green against the live index
-      (`uv run pytest harness/tests/test_recall_eval.py -m integration`).
+      (`uv run pytest tests/test_recall_eval.py -m integration`).
 
 ## Retire
 

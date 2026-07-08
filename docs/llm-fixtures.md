@@ -7,16 +7,22 @@ provider; after that CI needs no API key.
 
 ## To (re)seed a provider fixture
 
-1. `anybao llm-seed --provider anthropic --tier codegen`  (a tiny CLI
-   that runs one live `llm.chat` with the real transport + your config,
-   dumps the raw response to `harness/tests/fixtures/llm_<provider>.json`).
-   [CLI lands with anyclient/config; until then run the transport by
-   hand — see the transport signature in llm.py.]
-2. Eyeball the JSON (no secrets: responses carry no keys; the request —
-   which does — is NOT saved).
-3. Replace the inline `*_RESP` dicts in test_llm_adapters.py with a load
-   of the fixture, or keep both (inline = minimal contract, fixture =
-   real shape).
+The fixtures under `tests/fixtures/llm_<provider>.json` are raw provider
+responses. To re-record one, make a single live call and save the raw
+JSON body — e.g. against Anthropic:
+
+```
+curl -s https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":64,
+       "messages":[{"role":"user","content":"say hi"}]}' \
+  > tests/fixtures/llm_anthropic.json
+```
+
+Eyeball the JSON before committing (responses carry no keys; the request
+— which does — is not saved). The OpenAI-compatible fixture is the same
+shape from a `/chat/completions` call.
 
 ## Why only one call
 

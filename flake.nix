@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # the Rust host (host/): wasmtime's MSRV outruns nixpkgs' rustc, so
+    # the runtime (runtime/): wasmtime's MSRV outruns nixpkgs' rustc, so
     # the toolchain comes from the overlay, pinned like everything else
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -32,7 +32,7 @@
                            # uv venv via pyrightconfig.json
             ruff           # editor-facing ruff/ruff-lsp (CI uses the uv one)
 
-            rustToolchain  # cargo/rustc/clippy/rustfmt for host/
+            rustToolchain  # cargo/rustc/clippy/rustfmt for runtime/
                            # (rustls-only deps — no openssl/pkg-config)
           ];
 

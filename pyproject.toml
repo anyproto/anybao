@@ -1,7 +1,6 @@
-# Virtual workspace root — the packages live in runtime/ (anyrt) and
-# harness/ (anybao). Import direction: anybao → anyrt, never back.
-[tool.uv.workspace]
-members = ["runtime", "harness"]
+# No Python packages live here anymore — the runtime is Rust (runtime/,
+# binary anyrt). Python remains only for the componentized guest kernel
+# build (componentize-py) and the guest-module + wire tests under tests/.
 
 [dependency-groups]
 dev = [
@@ -11,10 +10,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["runtime/tests", "harness/tests"]
+testpaths = ["tests"]
 # Offline by default (`-m "not integration"`); integration tests hit a
 # real any server and are opt-in via `-m integration`.
-addopts = "-q --import-mode=importlib -m 'not integration'"
+addopts = "-q -m 'not integration'"
 markers = [
     "integration: hits a real any server (skipped without one; run with -m integration)",
 ]
