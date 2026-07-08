@@ -15,6 +15,10 @@ from dataclasses import dataclass, field
 from .anyclient import AnyClient
 
 RESERVED_KEYS = {"name", "body", "markdown", "types", "space"}
+# Built-in reserved GROUPS whose record keys are already canonical
+# (propId IS the readable key for any/nav) — never relabel to display
+# names on read.
+RESERVED_GROUPS = {"any", "nav"}
 CATALOG_TTL_S = 30.0
 
 
@@ -175,12 +179,12 @@ class Helper:
         cat = self._catalog(space)
         out: dict = {}
         for k, v in rec.items():
-            if isinstance(v, dict) and k in cat.prop_xkey_by_id:
+            if isinstance(v, dict) and k in cat.prop_xkey_by_id and k not in RESERVED_GROUPS:
                 byid = cat.prop_xkey_by_id[k]
                 label = cat.label_by_type.get(k, k)
                 out[label] = {byid.get(pid, pid): val for pid, val in v.items()}
             else:
-                out[k] = v
+                out[k] = v  # reserved groups (any/nav) pass through unrelabeled
         return out
 
     # --- schema (agent builds collections) ---------------------------------

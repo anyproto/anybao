@@ -188,3 +188,30 @@ def fake_any_agg():
             return 200, {"records": [{"id": "x", "n": 3}]}
         return 200, {}
     return send
+
+
+def test_normalize_leaves_reserved_groups_unrelabeled():
+    # regression (live-caught): built-in any/nav types are in the catalog
+    # with display-name props (Name/Types); their record keys are already
+    # canonical and must NOT be relabeled.
+    types = [{"id": "any", "xKey": "", "name": "Any"},
+             {"id": "bk1", "xKey": "book", "name": "Book"}]
+    any_props = [{"id": "name", "xKey": "", "name": "Name"},
+                 {"id": "types", "xKey": "", "name": "Types"}]
+
+    def send(method, path, body):
+        if method == "GET" and path.endswith("/types"):
+            return 200, {"types": types}
+        if path.endswith("/types/any/properties"):
+            return 200, {"properties": any_props}
+        if path.endswith("/types/bk1/properties"):
+            return 200, {"properties": BOOK_PROPS}
+        if path.endswith("/objects/query"):
+            return 200, {"records": [{"id": "o1", "any": {"name": "Dune"},
+                                      "bk1": {"p_author": "Herbert"}}]}
+        return 200, {}
+
+    h = Helper(AnyClient(send), default_space="s1")
+    obj = h.get_object("o1")
+    assert obj["any"] == {"name": "Dune"}         # NOT relabeled to {"Name": ...}
+    assert obj["book"] == {"author": "Herbert"}   # user type IS relabeled
