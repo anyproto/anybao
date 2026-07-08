@@ -76,7 +76,7 @@ def turn(seq):
 
 # --- extraction ---------------------------------------------------------------
 
-EXT_ARGS = {"space": "s1", "chatId": "chat1"}
+EXT_ARGS = {"space": "s1", "chatId": "chat1", "brainId": "brain1"}
 
 
 def test_extraction_enforces_shapes_confidence_cap_and_provenance():
@@ -191,8 +191,9 @@ def test_programs_load_via_deploy_pipeline():
 
 
 def test_trigger_factories():
-    e = extraction_trigger(space="s1", chat_id="c1", owner="i1")
+    e = extraction_trigger(space="s1", chat_id="c1", brain_id="b1", owner="i1")
     assert (e.program, e.kind, e.spec) == ("extraction@v1", "cron", {"every_s": 900})
+    assert e.args == {"space": "s1", "chatId": "c1", "brainId": "b1"}
     lg = linkgen_trigger(space="s1", brain_id="b1")
     assert (lg.program, lg.spec) == ("linkgen@v1", {"every_s": 3600})
     assert lg.args == {"space": "s1", "brainId": "b1"}

@@ -6,9 +6,10 @@ preference / decision / lesson / durable domain fact — never episodes
 or session summaries (that is the history channel's job). Every
 candidate goes through the §2 dedup judge (memory.save_with_dedup);
 survivors carry provenance (fromSeq) and capped confidence ≤ 6
-(machine-derived never outranks user-stated). Cursor = a plain
-agent_job_state record on the chat object; re-derivable (turns are
-append-only). args: {space, chatId, batch?, tier?}.
+(machine-derived never outranks user-stated). Cursor = an
+agent_job_state record on the BRAIN object (where the server registers
+harness bookkeeping); re-derivable (turns are append-only). args:
+{space, chatId, brainId, batch?, tier?}.
 """
 
 import json
@@ -38,16 +39,16 @@ def _first_json_array(text):
     return json.loads(text[start:end + 1])
 
 
-def _state(space, chat):
+def _state(space, brain):
     rows = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": chat, "dataset": STATE_DATASET,
+        "space": space, "object_id": brain, "dataset": STATE_DATASET,
         "filter": {"id": STATE_ID}, "limit": 1})
     return rows[0].get("lastSeq", 0) if rows else 0
 
 
-def _save_state(space, chat, last_seq):
+def _save_state(space, brain, last_seq):
     effect("any.upsert_record", {  # noqa: F821 - guest global
-        "space": space, "object_id": chat, "dataset": STATE_DATASET,
+        "space": space, "object_id": brain, "dataset": STATE_DATASET,
         "record_id": STATE_ID, "value": {"lastSeq": last_seq}})
 
 
@@ -84,8 +85,8 @@ def normalize(candidate, max_seq):
 
 
 def main(args):
-    space, chat = args["space"], args["chatId"]
-    last = _state(space, chat)
+    space, chat, brain = args["space"], args["chatId"], args["brainId"]
+    last = _state(space, brain)
     turns = effect("any.query", {  # noqa: F821 - guest global
         "space": space, "object_id": chat, "dataset": "agent_turns",
         "filter": {"seq": {"$gt": last}}, "sort": ["seq"],
@@ -110,6 +111,6 @@ def main(args):
                 saved += 1
         except Exception:
             errors += 1  # loud in the run record via counts; sweep continues
-    _save_state(space, chat, max_seq)
+    _save_state(space, brain, max_seq)
     return {"scanned": len(turns), "saved": saved, "deduplicated": deduped,
             "skipped": skipped, "errors": errors}
