@@ -23,7 +23,7 @@
     "DELETE /spaces/{spaceId}/objects/{objectId}": {
       "excluded": null,
       "fingerprint": "sha256:1bde4b0422a86fa1",
-      "helper": null
+      "helper": "helper.delete_object"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
@@ -78,12 +78,12 @@
     "GET /spaces": {
       "excluded": null,
       "fingerprint": "sha256:8419310306f3cdf5",
-      "helper": null
+      "helper": "helper.list_spaces"
     },
     "GET /spaces/{spaceId}": {
       "excluded": null,
       "fingerprint": "sha256:5c63cf769c659144",
-      "helper": null
+      "helper": "anyclient.get_space"
     },
     "GET /spaces/{spaceId}/agent/brain": {
       "excluded": null,
@@ -173,7 +173,7 @@
     "GET /spaces/{spaceId}/objects/{objectId}/editor/markdown": {
       "excluded": null,
       "fingerprint": "sha256:9f42263101526eb5",
-      "helper": null
+      "helper": "anyclient.get_markdown"
     },
     "GET /spaces/{spaceId}/properties/{objectId}": {
       "excluded": null,
@@ -198,7 +198,7 @@
     "GET /spaces/{spaceId}/types": {
       "excluded": null,
       "fingerprint": "sha256:5c63cf769c659144",
-      "helper": null
+      "helper": "helper catalog (list_types)"
     },
     "GET /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
@@ -208,7 +208,7 @@
     "GET /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
       "fingerprint": "sha256:d535a79b159cb3e4",
-      "helper": null
+      "helper": "helper catalog (list_properties)"
     },
     "GET /sync-status/subscribe": {
       "excluded": null,
@@ -378,7 +378,7 @@
     "POST /spaces/{spaceId}/objects": {
       "excluded": null,
       "fingerprint": "sha256:76a0e1bf0554a426",
-      "helper": null
+      "helper": "helper.create_object"
     },
     "POST /spaces/{spaceId}/objects/aggregate": {
       "excluded": null,
@@ -388,7 +388,7 @@
     "POST /spaces/{spaceId}/objects/query": {
       "excluded": null,
       "fingerprint": "sha256:9882758e107a98d4",
-      "helper": null
+      "helper": "helper.get_object / query_objects"
     },
     "POST /spaces/{spaceId}/objects/query/subscribe": {
       "excluded": null,
@@ -398,12 +398,12 @@
     "POST /spaces/{spaceId}/objects/{objectId}/agent/chunks": {
       "excluded": null,
       "fingerprint": "sha256:9cdefcd0c2330075",
-      "helper": null
+      "helper": "anyclient.create_chunk"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/agent/turns": {
       "excluded": null,
       "fingerprint": "sha256:4e3d03e90b1b1ecc",
-      "helper": null
+      "helper": "anyclient.append_turn"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages": {
       "excluded": null,
@@ -463,12 +463,12 @@
     "POST /spaces/{spaceId}/properties/{objectId}/set/{typeId}": {
       "excluded": null,
       "fingerprint": "sha256:bc654ebe397a5237",
-      "helper": null
+      "helper": "helper.update_object"
     },
     "POST /spaces/{spaceId}/query": {
       "excluded": null,
       "fingerprint": "sha256:a23e1111021ce486",
-      "helper": null
+      "helper": "anyclient.query"
     },
     "POST /spaces/{spaceId}/query/subscribe": {
       "excluded": null,
@@ -478,7 +478,7 @@
     "POST /spaces/{spaceId}/search": {
       "excluded": null,
       "fingerprint": "sha256:0775fbf42beab8a6",
-      "helper": null
+      "helper": "helper.search"
     },
     "POST /spaces/{spaceId}/sync": {
       "excluded": null,
@@ -508,7 +508,7 @@
     "PUT /spaces/{spaceId}/objects/{objectId}/editor/markdown": {
       "excluded": null,
       "fingerprint": "sha256:2948e60cc98a6f9e",
-      "helper": null
+      "helper": "anyclient.put_markdown"
     }
   },
   "note": "endpoint -> {helper: <method>} | {excluded: <reason>}; fingerprint pins the contract (make api-drift checks it)"
