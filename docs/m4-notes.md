@@ -30,8 +30,8 @@ shapes, no bridges (no-backcompat). Checklist:
       TriggerStore + SSE run feed (trigger_events) + program-execution
       adapter (runner) + HTTP control API (trigger_control). Validated
       LIVE (integration suite).
-- [x] Primitive `any.*` data effects (data_effects.py, 13 effects,
-      docs/effects/data.md) — the guest path to space data; what the
+- [x] Primitive `any.*` data effects (programs/any@v1.py, 13 effects,
+      docs/effects/syscalls.md) — the guest path to space data; what the
       background programs compose over.
 - [x] Minimal trace viewer (agent-side views done; human = enough to
       debug). Traces DEVICE-LOCAL (FileSidecarStore = production);

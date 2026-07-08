@@ -3,14 +3,14 @@
 All mechanisms landed 2026-07-08; the LLM-quality halves of the evals
 await live traffic (the ROI metrics are the standing judge).
 
-- [x] Recall primitives — one surface, three axes (recall.py: search /
-      by_period / neighbors incl. backlinks with pre-route fallback) +
+- [x] Recall primitives — one surface, three axes (programs/recall@v1.py:
+      search / by_period / neighbors incl. backlinks with pre-route fallback) +
       `hydrate` (pointer→record, shared with the judge and injection).
-- [x] Memory write facade + dedup judge (memory.py) — add/evolve/
-      delete/bump_access/save_with_dedup; judge INJECTED, then wired as
-      an effect: `memory.save_with_dedup` runs the classify-tier judge
-      via nested broker call (the judge's llm.chat records in-trace).
-- [x] Auto-recall injection (autorecall.py, ADR-007 §5) — synthetic
+- [x] Memory write facade + dedup judge (programs/memory@v1.py) — add/evolve/
+      delete/bump_access/save_with_dedup; the classify-tier judge runs
+      inside the module (its llm call is a credentialed http effect,
+      so the judge's exchange records in the same trace).
+- [x] Auto-recall injection (programs/autorecall@v1.py, ADR-007 §5) — synthetic
       recall tool call + result at invocation start; both scopes
       rendered distinctly; relevance threshold, deep-history guard
       (boot-window raw tail), token budget; accessCount bump ON.
@@ -29,9 +29,9 @@ await live traffic (the ROI metrics are the standing judge).
       workload-shaped fixture (12 items / 8 cases), red in CI below
       recall@5 = 1.0 when an index is live (`-m integration`); re-seed
       from a fresh bao export by regenerating item lines.
-- [x] Live ROI metrics (roi.py) — extracted-but-unrecalled (accessCount
+- [x] Live ROI metrics (programs/autorecall@v1.py — log_roi) — extracted-but-unrecalled (accessCount
       stuck at 0) + injected-but-unreferenced (significant-word
-      heuristic), logged per injection from the runner. These tune or
+      heuristic), logged per injection by the toolcaller. These tune or
       kill the extractor/injector — review at the M4 gate's metrics
       checkpoint and monthly after.
 

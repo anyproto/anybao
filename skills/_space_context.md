@@ -23,7 +23,7 @@ rather than trusting Main.
 ### What does NOT belong
 
 - Per-object IDs, ratings, statuses, progress — query them live
-- Full property lists — `effect("any.list_properties", ...)` at need
+- Full property lists — `c.list_properties(space, type_id)` at need
 - Ephemeral state, drafts — those ride chat-history compression
 
 ### Entry style: rules, not inventory
@@ -38,13 +38,12 @@ it's inventory — don't write it.
 ### How to edit
 
 Main's id is in the `[Main](any://spaceId/objectId)` link at the top of
-its section. Surgical edit from a cell:
+its section. Surgical edit from a cell (`c = use("any@v1").client()`):
 
 ```python
-md = effect("any.get_markdown", {"space": s, "object_id": main_id})
+md = c.get_markdown(s, main_id)
 assert md.count(old) == 1
-effect("any.put_markdown", {"space": s, "object_id": main_id,
-                            "content": md.replace(old, new)})
+c.put_markdown(s, main_id, md.replace(old, new))
 ```
 
 After editing, don't re-output Main — the next turn's prompt reflects

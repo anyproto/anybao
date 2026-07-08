@@ -6,34 +6,34 @@ first. When the user says "create", "track", "save", "add", "organize"
 type) unless they explicitly say otherwise. Objects are the default
 unit of work.
 
-Core mechanics:
+Core mechanics (get the client once: `c = use("any@v1").client()`):
 
 - Everything in a space is a **typed object**. Types define which
   properties objects can have.
 - Discover existing types before creating new ones —
-  `effect("any.query_objects", ...)` over the catalog or
-  `effect("any.list_properties", {space, type_id})` for one type's
-  property map (`[{id, name, xKey, kind}]`). Find an existing fit
-  first; avoid inventing parallel types.
+  `c.query_objects(space, ...)` over the catalog or
+  `c.list_properties(space, type_id)` for one type's property map
+  (`[{id, name, xKey, kind}]`). Find an existing fit first; avoid
+  inventing parallel types.
 - Types are referenced by **xKey** (the stable slug, e.g. `"pages"`),
   NOT the display name; builtins use their id (`chat`, `editor`,
   `program`, `nav`).
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
-  `effect("any.create_object", {"space": s, "body": {"types": ["book"],
-  "initialProperties": {"any": {"name": "Dune"}, "book": {"author":
-  "Frank Herbert", "year": 1965}}}})`. Properties placed anywhere else
-  error — they are never silently dropped.
-- **Search before create**: `effect("any.search", {space, query, ...})`
-  is cheap (one indexed call, zero tokens). Check for an existing
-  object (and memory `preference` items about the workflow) before
-  spawning a new one.
+  `c.create_object(s, {"types": ["book"], "initialProperties":
+  {"any": {"name": "Dune"}, "book": {"author": "Frank Herbert",
+  "year": 1965}}})`. Properties placed anywhere else error — they are
+  never silently dropped.
+- **Search before create**: `c.search(space, query, ...)` is cheap
+  (one indexed call, zero tokens). Check for an existing object (and
+  memory `preference` items about the workflow) before spawning a new
+  one.
 
 Spaces:
 
 - You live in the user's space (chat, history, brain) with your code in
   the agent overlay, but you can reach **every space**: `space` is an
-  explicit argument on every `any.*` effect. Cross-space is normal.
+  explicit argument on every `any@v1` client call. Cross-space is normal.
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
 

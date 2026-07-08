@@ -55,6 +55,7 @@ def register_builtin_effects(
     *,
     env: dict[str, str] | None = None,
     resolver: ModuleResolver | None = None,
+    clock=None,
 ) -> None:
     """`env` is the explicit allowlisted mapping the harness chooses to
     expose (never raw os.environ by default — deny-by-default).
@@ -62,11 +63,12 @@ def register_builtin_effects(
     injected map, M2/M4 the any-backed one."""
     env_map = env or {}
     resolve = resolver or DictResolver({})
+    tick = clock or _time.time   # injectable determinism pin (tests/replay tooling)
     _probe_cache: dict = {}  # objectId -> (marker, Resolved)  ADR-004 §4
 
     @effect("time.now", kind="read", registry=registry)
     def time_now(ctx):
-        return {"epoch": _time.time()}
+        return {"epoch": tick()}
 
     @effect("random.random", kind="read", registry=registry)
     def random_random(ctx):

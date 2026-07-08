@@ -58,6 +58,7 @@ class Runner:
         any_base: str | None = None,
         grants=None,
         http_request=None,   # injectable wire (offline e2e); None = real
+        clock=None,          # injectable determinism pin
     ):
         self._client = client   # host INFRA only (deploy/watch/failure paths)
         self._config = config
@@ -72,12 +73,14 @@ class Runner:
         self._classifier = Classifier(any_base)
         self._grants = grants
         self._http_request = http_request
+        self._clock = clock
         self._blobs = FileSidecarStore()
 
     def _build(self, writer: tr.TraceWriter,
                mailbox: Mailbox | None = None) -> tuple[Broker, WasiEngine]:
         reg = Registry()
-        register_builtin_effects(reg, env=self._env, resolver=self._resolver)
+        register_builtin_effects(reg, env=self._env, resolver=self._resolver,
+                                 clock=self._clock)
         register_config_effect(reg, self._config)
         kw = {"request": self._http_request} if self._http_request else {}
         register_http_effects(reg, secrets=self._config.get,

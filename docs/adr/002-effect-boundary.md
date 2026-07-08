@@ -126,49 +126,53 @@ In-process v2.0 delivers this contract for honest code: nothing ambient
 is *reachable*, so accidental effects and accidental nondeterminism are
 structurally impossible. Deliberate escape (ctypes-style) is not
 defensible in-process and we do not pretend otherwise — that is the
-security milestone (wasmtime + CPython-on-WASI guest; engine timing and
-host shape are ADR-003's decision — deferred by review 2026-07-07).
-**Effect registration stays in Python in every engine variant**: with
-wasmtime-py the Python harness IS the host and `@effect` functions are
-the host imports; with a Rust engine binary the engine relays host
-calls to the same Python implementations over IPC. The engine choice
-picks the cage, never where effects are written. Programs and effects
-see an identical API at every stage.
+security milestone (a static Rust host embedding wasmtime implements
+the SAME syscall surface natively; nothing above the boundary changes).
 
-## Design rationale: why two wraps, why effects in Python
+## Design rationale: the thin host (syscall doctrine)
 
-**Syscall analogy**: the guest facade is libc, the host broker is the
-kernel's syscall layer — nobody puts permission checks in libc, nobody
-makes applications issue raw syscalls by hand.
+**Syscall analogy, taken literally.** The host is a kernel: it exposes
+a SMALL, STABLE syscall set — `http.*` (the one outbound door),
+`config.get`, `mailbox.drain`, time/random/uuid/sleep/env,
+`module.resolve`, `batch`, `trace.*` views, span begin/end — plus the
+broker machinery (trace, replay, capability check, redaction) and the
+engine itself. Everything else — the any client, llm adapters, memory
+policy, recall, history, the conversation loop itself — is guest-side
+Python: modules in program space, deployed and versioned like any
+program, hot-swappable without touching the host. The host surface
+changes rarely and by necessity; the product changes weekly WITHOUT a
+host release.
+
+**What the host contributes is exactly what guest code must not hold:**
+
+- **Classification truth.** read/mutate and the capability for an http
+  call derive from (method, url) at the boundary — a route table
+  (anybao.routes, any_base-scoped), data not code, sourced from the
+  api-drift manifest when routes change. Spans let guest facades group
+  their calls into legible trace lines, but spans are narrative; class
+  and cap are boundary facts guest code cannot fake.
+- **Secrets.** Named-credential injection: a payload names
+  `{ref, header, prefix}`; the host resolves the config secret and sets
+  the header AFTER the payload records. Key values never enter guest
+  memory or the trace — so llm adapters can live guest-side while keys
+  never do.
+- **Recording and replay.** The broker records every crossing; loop
+  control (mailbox.drain) is itself a recorded effect, so a replayed
+  conversation replays its interruptions.
 
 **The two wraps answer different questions.** The guest-side facade
-(`http.get`, module proxies, `print()`, tool facades) provides *shape*:
-a natural Python surface for LLM-written cells — kwargs, `Response`
-objects with methods — marshalled into the serialized crossing. It
-holds ZERO authority; a cell can monkeypatch or bypass it and gain
-nothing. The host-side `@effect` + broker provides *authority and
-truth*: enforcement and recording live where guest code cannot reach.
-Checks in the guest would be tamperable; ergonomics in the host can't
-shape the guest's Python experience. The split is the trust boundary
-made visible in code — and it is also the **portability seam**: between
-the wraps sits a plain function call (in-process), a wasm host call
-(wasmtime), or an IPC hop (Rust engine). Only the transport changes;
-neither wrap's contents do. That is how "identical program-facing
+(module functions, `http.get`, `print()`) provides *shape*: a natural
+Python surface for LLM-written code, holding ZERO authority — bypassing
+it gains nothing. The host-side broker provides *authority and truth*.
+Between them sits a serialized crossing: a wasm host call today, a Rust
+host function at the security milestone. Only the transport changes;
+neither wrap's contents do — that is how "identical program-facing
 contract at every stage" is achieved mechanically, not by promise.
 
-**Effects are Python because the engine's job is containment, not
-capability.** (1) Effects are application logic, not syscalls —
-`http.get` needs config-cascade credentials and redaction, `llm.chat`
-needs provider adapters, `chat.send` needs anyclient; that is the
-harness domain, written once in Python, and uniform `@effect` functions
-are the cheap-model-maintainable shape. (2) Trust comes from *position*,
-not language — effects are trusted because they run outside the cage;
-the part that must be strong is the boundary, which is exactly what the
-engine provides. (3) Stage-1 coherence — v2.0 in-process has no Rust
-anywhere; Python-declared effects are the invariant, engines are
-interchangeable cages. One line: **the cage is infrastructure and
-should never change; what the agent can do is product and should change
-weekly — so the cage is wasmtime and the doing is Python.**
+One line: **the cage and the syscalls are infrastructure and never
+change; everything the agent IS lives above the boundary as deployed
+guest code — so the host can be wasmtime-py today and a static Rust
+binary tomorrow, and the agent cannot tell.**
 
 ## Consequences
 

@@ -21,13 +21,14 @@ def test_skill_sources_cover_the_system_set():
 
 def test_core_skill_documents_the_real_surface():
     core = load_skills_dir(SKILLS_DIR)["_core"]
-    for needle in ("run_cell", "values.get", "effects.of", "use(",
-                   "any.query", "memory.save_with_dedup", "llm.chat",
-                   "chat.send", "any://"):
+    for needle in ("run_cell", "values.get", "use(", 'use("any@v1")',
+                   "save_with_dedup", 'use("llm@v1")', "chat_send", "any://",
+                   "batch"):
         assert needle in core, f"_core.md lost {needle!r}"
-    # no legacy-JS residue (no-backcompat: fresh shapes)
-    for stale in ("console.log", "anyHelper.", "convmemory", "var result"):
-        assert stale not in core, f"_core.md still speaks JS: {stale!r}"
+    # no residue of retired surfaces (no-backcompat: fresh shapes)
+    for stale in ("console.log", "anyHelper.", "convmemory", "var result",
+                  'effect("any.', 'effect("memory.', 'effect("llm.chat'):
+        assert stale not in core, f"_core.md teaches a dead surface: {stale!r}"
 
 
 def test_memory_skill_carries_the_save_table_and_vocabulary():

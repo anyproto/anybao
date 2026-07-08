@@ -84,7 +84,7 @@ class FakeWire:
         return {"status": 200, "headers": {}, "body": json.dumps(payload)}
 
 
-def make_runner(wire):
+def make_runner(wire, clock=None):
     cfg = Config(DictConfigStore({
         "any.base_url": {"value": ANY},
         "llm.tier.codegen": {"value": {"provider": "anthropic", "model": "t",
@@ -98,7 +98,7 @@ def make_runner(wire):
     return Runner(AnyClient(lambda m, p, b: (200, {})), cfg,
                   kernel_wasm=KERNEL, traces_dir=Path(tempfile.mkdtemp()),
                   resolver=resolver(), user_space="s1", any_base=ANY,
-                  http_request=wire)
+                  http_request=wire, clock=clock)
 
 
 MEM = {"id": "m1", "category": "preference", "context": "prefers dark roast",
@@ -177,3 +177,28 @@ def test_hard_break_interrupts_and_reports_stopped():
     assert result.status in ("interrupted", "error")
     assert any("Stopped." in str(b) or "broke mid-run" in str(b)
                for _, b in infra_posts)
+
+
+def test_same_conversation_twice_traces_identically():
+    """Loop purity, v3 edition: same inputs + same wire answers ⇒ the
+    effect sequence (names + input keys) is bit-identical — the property
+    strict replay stands on, now covering the WHOLE harness (modules,
+    llm, digests) since all of it lives behind the syscalls."""
+    def one_run():
+        wire = FakeWire(llm_replies=[
+            {"content": [{"type": "text", "text": "hi."}],
+             "stop_reason": "end_turn",
+             "usage": {"input_tokens": 5, "output_tokens": 1}}])
+        runner = make_runner(wire, clock=lambda: 1751328000.0)
+        result = runner.run_program(
+            "toolcaller@v1",
+            {"space": "s1", "chatId": "chat1", "userText": "hello",
+             "traceRef": "run_fixed"},
+            mailbox=Mailbox(), run_id="run_fixed")
+        assert result.status == "ok", result.error
+        trace = runner._traces_dir / f"{result.trace_ref}.jsonl"
+        return [(r["effect"], r["key"]) for r in
+                (json.loads(ln) for ln in trace.read_text().splitlines())
+                if r.get("kind") == "effect"]
+
+    assert one_run() == one_run()

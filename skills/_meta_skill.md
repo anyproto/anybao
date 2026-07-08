@@ -8,15 +8,16 @@ injected below** — the body is not. When the current turn matches one
 of these entries, fetch the body *before* you plan, and follow it:
 
 ```python
-effect("any.get_markdown", {"space": s, "object_id": skill_id})
+c = use("any@v1").client()
+c.get_markdown(s, skill_id)
 ```
 
 You can author skills yourself when the user asks you to capture a
 workflow:
 
-- **Create**: `effect("any.create_object", {"space": s, "body":
-  {"types": ["agent_skill"], "initialProperties": {"any": {"name":
-  "<title>"}}}})`, then write the body with `any.put_markdown`.
+- **Create**: `c.create_object(s, {"types": ["agent_skill"],
+  "initialProperties": {"any": {"name": "<title>"}}})`, then write the
+  body with `c.put_markdown`.
 - **Update (surgical)**: get markdown → assert single match →
   `str.replace` → put markdown.
 - **Update (rewrite)**: put the whole new body — only when

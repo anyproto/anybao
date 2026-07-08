@@ -18,85 +18,59 @@ with text only (no tool call).
 **Reading what a cell returns.** The tool result shows your `print()`
 output, the cell's last expression, and a side-effects summary. Large
 values collapse to a stub naming the exact `values.get(...)` call that
-fetches them in a later cell; `effects.of(cell_id)` lists a cell's
-effect one-liners when you need the full record.
+fetches them in a later cell.
 
 ## Cell semantics
 
-Plain Python, top-level statements. The last expression is captured as
-the Last value. `print()` freely — it goes to you, never to the user.
+Plain Python, top-level statements. The last expression is captured.
+`print()` freely — it goes to you, never to the user. Only the curated
+stdlib imports work (`json`, `re`, `math`, …). Anything nondeterministic
+is a GLOBAL backed by a recorded effect: `now()`, `rand()`, `env(name)`,
+`uuid4()`, plus proxied `datetime`/`random`/`time`. Raw web:
+`http.get(url)`, `http.post(url, json=...)` (`.json()` on the response).
 
-- Only the curated stdlib imports work (`json`, `re`, `math`, …).
-  Anything nondeterministic is a GLOBAL backed by a recorded effect:
-  `now()` (epoch seconds), `rand()`, `env(name)`, `uuid4()`, plus
-  proxied `datetime` / `random` / `time`. `import requests` etc. will
-  fail — use the `http` global (`http.get(url)`, `http.post(url,
-  json=...)`, `.json()` on the response).
-- `use("name@vN")` imports a program from the space (e.g.
-  `use("rollup@v1")`); `use("alias:name@vN")` reaches other spaces.
-- `effect(name, payload)` is the raw effect call — the full catalog
-  below goes through it.
+## The module surface
 
-## The effect surface
+`use("name@vN")` imports a deployed module. The standing set:
 
-Space data (all take an explicit `space`):
+- `c = use("any@v1").client()` — space data, `space` always explicit:
+  `c.query(space, object_id, dataset, filter?, sort?, limit?)`,
+  `c.query_objects(space, ...)`, `c.search(space, query, scopes?, limit?)`
+  (scopes: `agent` memory / `history` turns+chunks / `basic` content),
+  `c.create_object(space, body)` (nested type-group properties, keyed by
+  typeId), `c.modify`, `c.upsert_record`, `c.get_markdown` /
+  `c.put_markdown` (surgical edit = get → single-match `str.replace` →
+  put), `c.chat_send(space, chat_id, body)`, `c.create_memory` /
+  `c.evolve_memory` / `c.delete_memory`, `c.list_types`,
+  `c.list_properties`, `c.backlinks`, `c.aggregate`.
+- `use("recall@v1").recall(c, space)` — `search` / `hydrate(hits)` /
+  `by_period(from, to)` / `neighbors(object_id)`.
+- `mem = use("memory@v1").memory(c, space)` — see the `_memory` skill
+  for POLICY; `mem.save_with_dedup(candidate, recall=...)` is THE save
+  path (`{"deduplicated": true}` is a success), `mem.evolve`,
+  `mem.bump_access(item_id, current_count)` when a deliberate dig used
+  an item.
+- `use("llm@v1").chat(messages, system=, tier="classify", tools=[])` —
+  sub-LLM work (summaries, judgments).
 
-- `effect("any.query", {space, object_id, dataset, filter?, sort?,
-  limit?, offset?})` — one object's dataset records (`chat_messages`,
-  `agent_turns`, `agent_chunks`, `agent_memory_items`, …).
-- `effect("any.query_objects", {space, filter?, sort?, limit?})` — the
-  objects collection.
-- `effect("any.search", {space, query, scopes?, limit?})` — the index
-  (`{hits, ...}`); scopes: `agent` (memory), `history` (turns/chunks),
-  `basic` (content).
-- `effect("any.aggregate", {space, pipeline})` — Mongo-style pipeline.
-- `effect("any.get_markdown", {space, object_id})` /
-  `effect("any.put_markdown", {space, object_id, content})` — editor
-  objects. For surgical edits: get, `str.replace` (assert exactly one
-  match), put.
-- `effect("any.create_object", {space, body})`,
-  `effect("any.create_type", ...)`, `effect("any.add_property", ...)`,
-  `effect("any.modify", ...)`, `effect("any.upsert_record", ...)`,
-  `effect("any.list_properties", {space, type_id})`.
-
-Memory (see the `_memory` skill for POLICY — budget, categories, what
-to save):
-
-- `effect("memory.save_with_dedup", {candidate: {category, context,
-  ...}})` — THE save path; `{"deduplicated": true}` is a success.
-- `effect("memory.evolve", {item_id, ...mutable fields})`,
-  `effect("memory.delete", {item_id})`.
-
-Other: `effect("llm.chat", {messages, system, tier, tools})` for
-sub-LLM work (summaries → tier `classify`); `effect("chat.send",
-{text, done})` posts a chat bubble mid-run (`done: false` = progress).
-
-Repeating one effect ≥4 times in a cell earns a hint: batch with the
-`*_many` form for one round-trip.
+Repeating one call ≥4 times in a cell earns a hint: fan out in one
+round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.
 
 ## Your compressed context is drillable
 
 The boot window shows old history as chunk lines:
 `[chunk #N (L1), turns A–B]`. Expand instead of guessing:
-
-```python
-effect("any.query", {"space": space, "object_id": chat_id,
-                     "dataset": "agent_turns",
-                     "filter": {"seq": {"$gte": A, "$lte": B}},
-                     "sort": ["seq"]})
-```
-
-L2+ chunks cover chunk seqs — expand recursively via `agent_chunks`.
-Auto-recalled items arrive as a `recall` tool result at turn start —
-treat them as evidence with a date, not doctrine; they can be stale.
+`c.query(space, chat_id, "agent_turns", filter={"seq": {"$gte": A,
+"$lte": B}}, sort=["seq"])`. L2+ chunks cover chunk seqs — recurse via
+`agent_chunks`. Auto-recalled items arrive as a `recall` tool result at
+turn start — evidence with a date, not doctrine; they can be stale.
 
 ## Termination
 
 When the request is complete, do NOT call run_cell — reply with the
 final answer as plain text. If you need information from the user, stop
 and ask as plain text. **Probe before asking**: for a short/deictic
-message ("read it", "check that"), spend one cheap query that could
-disambiguate before asking a sharper question.
+message ("read it", "check that"), spend one cheap query first.
 
 If told to wrap up (ceiling reached, user asked), summarize state
 honestly: done / pending / next.

@@ -95,12 +95,16 @@ class CellResult:
     interrupted: bool                # True on break/timeout/fuel-exhausted
 ```
 
-One executor instance per conversation. `run_cell` is synchronous from
-the loop's view; `interrupt()` is callable from another thread (the
-mailbox handler) and maps to epoch-bump (wasi) / best-effort async
-exception (native). Effect records don't appear in CellResult — they
-are already in the trace (ADR-001), attributed via `meta.cell =
-cell_id`; the loop reads trace views to build the Side Effects digest.
+One executor instance per conversation. The host runs ONE `run_cell` —
+the program's `main` (a conversation is `toolcaller@v1`); the model's
+per-turn cells run inside it through the guest-global `subcell` (§3).
+`run_cell` is synchronous from the host's view; `interrupt()` is
+callable from another thread (the hard-break watchdog in the Runner)
+and maps to epoch-bump — it lands in the guest loop or a wedged subcell
+alike. Effect records don't appear in CellResult — they are already in
+the trace (ADR-001), attributed via `meta.cell = cell_id`; the guest
+loop reads trace views (`trace.effects_of`) to build the Side Effects
+digest.
 
 ### 3. Kernel semantics: the persistent namespace
 
@@ -116,6 +120,17 @@ cell_id`; the loop reads trace views to build the Side Effects digest.
   matches v1's "Last value" digest section).
 - Cells are **single-threaded, synchronous** Python. No `async`/threads
   in guest code; concurrency is the host's job (`*_many`, ADR-002).
+- **`subcell(code, cell_id)` — nested cells inside a program.** A
+  program that drives model turns (the `toolcaller`) runs each model
+  cell through the guest-global `subcell`: same persistent namespace,
+  same print/last-value capture, returning the cell's result to the
+  driver (a JSON-friendly `{ok, prints, last, error}`, not the host
+  CellResult dataclass). Nested execution **restores the caller's
+  printer** on return, so a child cell's `print()` output never leaks
+  into the driver's own. Per-model-cell trace granularity comes from
+  wrapping each `subcell` in a `cell`-named span (§4b): the span groups
+  that cell's effects, and the driver reads them back with
+  `trace.effects_of(span=…)` for the digest.
 
 ### 4. Value store: `values` and `effects`
 
@@ -133,9 +148,11 @@ effects.of(cell_id)           # that cell's effect records (trace view):
 effects.get(seq)              # one full record incl. output (blob-resolved)
 ```
 
-`ValueRef` in CellResult carries `(cell_id, i, size, schema_digest)` —
-the digest layer (ADR-005) decides inline-vs-stub per its budget; the
-full value stays in the kernel. Values larger than the ADR-001 spill
+`values.get`/`effects.of` are guest globals: the toolcaller's in-guest
+digest (ADR-005) reads them together with `trace.effects_of` to render
+each model cell's result. `ValueRef` in CellResult carries
+`(cell_id, i, size, schema_digest)` — the digest decides inline-vs-stub
+per its budget; the full value stays in the kernel. Values larger than the ADR-001 spill
 threshold are held as blob refs; `values.get` re-hydrates transparently.
 Store lives **kernel-side** (guest memory under wasi), **uncapped for
 now** (review 2026-07-07): no LRU/eviction until real numbers justify

@@ -7,12 +7,15 @@ memory items.
 
 ## Saving — budget ~1–2 per turn
 
-Every save goes through `effect("memory.save_with_dedup", {"candidate":
-{"category": ..., "context": ...}})`. `category` (lowercase slug) and
-`context` (one-line fact) are REQUIRED; add `body` (detail),
-`confidence` (1–10, user-stated facts rank above inferred ones),
-`tags`, `edges`. A `{"deduplicated": true, "mergedInto": ...}` reply is
-a SUCCESS — the fact was already known and got refreshed.
+Get the facades once: `c = use("any@v1").client()`, `mem =
+use("memory@v1").memory(c, space)`, `r = use("recall@v1").recall(c,
+space)`. Every save goes through `mem.save_with_dedup(candidate,
+recall=r)` with `candidate = {"category": ..., "context": ...}`.
+`category` (lowercase slug) and `context` (one-line fact) are REQUIRED;
+add `body` (detail), `confidence` (1–10, user-stated facts rank above
+inferred ones), `tags`, `edges`. A `{"deduplicated": true,
+"mergedInto": ...}` reply is a SUCCESS — the fact was already known and
+got refreshed.
 
 | ✓ Save | ✗ Skip |
 |---|---|
@@ -28,27 +31,27 @@ categories before inventing one (vocabulary drift kills recall).
 
 ## Recall — one surface, three axes
 
-- **Semantic**: `effect("any.search", {space, query, scopes: ["agent",
-  "history", "basic"], limit})` — memories, turns/chunks, and content
-  in one call. Hits are pointers; hydrate via `any.query` on
-  `(objectId, dataset)` filtered by `recordId`.
-- **Temporal**: query `agent_memory_items` by `validFrom`,
-  `agent_turns` by `createdAt`, `agent_chunks` by period overlap.
-- **Graph**: follow `edges` on a hit (`[{to, type}]`), and links-format
-  properties on objects — expansion AFTER retrieval.
+- **Semantic**: `r.search(query, scopes=["agent", "history", "basic"],
+  limit=...)` — memories, turns/chunks, and content in one call. Hits
+  are pointers; hydrate via `r.hydrate(hits)`.
+- **Temporal**: `r.by_period(from, to)` — fans across memory items
+  (`validFrom`), turns (`createdAt`), and chunks (period overlap).
+- **Graph**: `r.neighbors(object_id)` — follow a hit's `edges`
+  (`[{to, type}]`) and links-format properties on objects; expansion
+  AFTER retrieval.
 
 Top hits for the user's message are auto-injected at turn start as a
 `recall` tool result — dig explicitly when you need more than they
 show. When a deliberate dig actually USES a memory item, bump it:
-`effect("memory.bump_access", {"item_id": ..., "current_count":
-<its accessCount>})` — accessCount is the signal that keeps useful
-memories alive (auto-injected items are bumped for you).
+`mem.bump_access(item_id, current_count=<its accessCount>)` —
+accessCount is the signal that keeps useful memories alive (auto-injected
+items are bumped for you).
 
 ## Evolving
 
-`effect("memory.evolve", {"item_id": ..., ...})` may change only:
-salience, accessCount, confidence, importance, context, body, tags,
-edges. Everything else is immutable after create.
+`mem.evolve(item_id, ...)` may change only: salience, accessCount,
+confidence, importance, context, body, tags, edges. Everything else is
+immutable after create.
 
 ## Graph write discipline
 

@@ -103,9 +103,13 @@ effects, and the per-cell facts (ADR-003 metrics) need a home:
              "value_store": {"entries": 7, "bytes": 91234}}}
 ```
 
-Written by the executor at cell end; replay treats it as a checkpoint
-(sequence-checked in strict mode like any record). Turn boundaries
-need no marker — they ARE the `llm.chat` records.
+Written by the executor at cell end — one per program run, since the
+host runs a single cell (the program `main`, ADR-003 §2). The model's
+per-turn cells run as nested `subcell`s inside it and get their trace
+granularity from `cell`-named spans (§4c), not a cell record each.
+Replay treats the cell record as a checkpoint (sequence-checked in
+strict mode like any record). Turn boundaries need no marker — they ARE
+the `llm.chat` records.
 
 ### 4c. Span records (amendment 2026-07-08)
 
