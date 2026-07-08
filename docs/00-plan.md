@@ -386,6 +386,23 @@ change, never syncs):
   writable today (mirror covers objects rows only) — per-account
   cross-device keys may need an objects-row property or small SDK work.
 - Bootstrap: first key entry via CLI/env once, persisted thereafter.
+- **Config WRITE model (surfaced 2026-07-08; M2 built read-only).**
+  `config.get` (read, non-secret) ships. `config.set` is designed-but-
+  unbuilt, gated by three rules: (1) writes land in the USER-SPACE
+  override layer, never the agent overlay (overlay = deploy-managed
+  defaults; user space = overrides that shadow via the cascade); (2)
+  capability-gated by namespace — reserved prefixes (`llm.*`/`loop.*`/
+  `overlays.*`/`index.*`) need a `config.admin` grant, integration/
+  own-namespace keys need basic `config.write`, so a program manages its
+  OWN settings but can't silently reconfigure the harness; (3) secrets
+  are never program-writable (refuse synced scope; a program USES a
+  secret via named-credential injection, never SETS it). Keys are an
+  open dotted namespace (programs create new namespaced keys freely;
+  reserved prefixes are the only closed set). **Distinction:** config =
+  operational settings (drives behavior); a remembered PREFERENCE is
+  MEMORY, not config — so the agent rarely needs config.set (that stays
+  low-traffic, user/harness-driven + own-integration). Lands with
+  capabilities (M6) or earlier if a program needs to persist settings.
 - **Integration secrets — named-credential injection (design, not yet
   built; surfaced 2026-07-08).** Two secret kinds: INFRASTRUCTURE
   secrets (LLM key) used only by built-in effects — M2 handles these
