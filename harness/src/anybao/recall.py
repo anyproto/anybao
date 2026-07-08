@@ -49,6 +49,20 @@ class Recall:
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 
+    def hydrate(self, hits: list[dict]) -> list[tuple[dict, dict]]:
+        """Hit pointers → (hit, record) pairs (hit order kept, missing
+        dropped), one `$in` query per (object, dataset). The shared step
+        under auto-recall rendering and the dedup judge."""
+        wanted: dict[tuple[str, str], list[str]] = {}
+        for h in hits:
+            wanted.setdefault((h["objectId"], h["dataset"]), []).append(h["recordId"])
+        recs: dict[tuple[str, str], dict] = {}
+        for (obj, ds), ids in wanted.items():
+            for r in self._c.query(self._space, obj, ds, filter={"id": {"$in": ids}}):
+                recs[(ds, r.get("id"))] = r
+        pairs = [(h, recs.get((h["dataset"], h["recordId"]))) for h in hits]
+        return [(h, r) for h, r in pairs if r is not None]
+
     # --- temporal ----------------------------------------------------------
     def by_period(self, from_ts: int, to_ts: int) -> list[dict]:
         """Everything that happened in [from_ts, to_ts] (unix seconds,

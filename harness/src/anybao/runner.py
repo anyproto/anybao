@@ -34,6 +34,7 @@ from .history import History, build_turn, raw_tail, render_boot_window
 from .llm import http_transport as real_llm_transport
 from .llm import register_llm_effect
 from .loop import LoopPolicy, Mailbox, Outcome, run_conversation
+from .memory import register_memory_effects
 
 
 @dataclass
@@ -92,6 +93,7 @@ class Runner:
         register_llm_effect(reg, transport=self._llm_transport, config=self._config.get)
         register_http_effects(reg)
         register_data_effects(reg, self._client)
+        register_memory_effects(reg, self._client, space=self._user_space)
         if chat_id is not None:
             register_chat_effect(reg, self._client, space=self._user_space,
                                  chat_id=chat_id, agent_name=self._agent_name)

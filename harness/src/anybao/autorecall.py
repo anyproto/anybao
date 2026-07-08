@@ -119,13 +119,12 @@ class AutoRecall:
         if not mem_hits and not hist_hits:
             return []
 
-        recs = self._hydrate(mem_hits + hist_hits)
+        pairs = self._recall.hydrate(mem_hits + hist_hits)
         budget = p.token_budget
 
         mem_lines, bumped = [], []
-        for h in mem_hits:
-            rec = recs.get((h["dataset"], h["recordId"]))
-            if rec is None or len(mem_lines) >= p.max_memory:
+        for h, rec in pairs:
+            if h["dataset"] != "agent_memory_items" or len(mem_lines) >= p.max_memory:
                 continue
             line = memory_line(rec)
             cost = p.tokenizer(line)
@@ -136,9 +135,8 @@ class AutoRecall:
             bumped.append(rec)
 
         hist_lines = []
-        for h in hist_hits:
-            rec = recs.get((h["dataset"], h["recordId"]))
-            if rec is None or len(hist_lines) >= p.max_history \
+        for h, rec in pairs:
+            if h["dataset"] not in _HISTORY_DATASETS or len(hist_lines) >= p.max_history \
                     or covered_by_boot(rec, h["dataset"], boot_min_seq):
                 continue
             line = history_line(rec, h["dataset"])
@@ -155,14 +153,3 @@ class AutoRecall:
                 with contextlib.suppress(Exception):
                     self._memory.bump_access(rec["id"], rec.get("accessCount", 0))
         return msgs
-
-    def _hydrate(self, hits: list[dict]) -> dict:
-        """Hit pointers → records, one $in query per (object, dataset)."""
-        wanted: dict[tuple[str, str], list[str]] = {}
-        for h in hits:
-            wanted.setdefault((h["objectId"], h["dataset"]), []).append(h["recordId"])
-        out: dict[tuple[str, str], dict] = {}
-        for (obj, ds), ids in wanted.items():
-            for r in self._c.query(self._space, obj, ds, filter={"id": {"$in": ids}}):
-                out[(ds, r.get("id"))] = r
-        return out

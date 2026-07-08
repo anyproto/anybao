@@ -7,13 +7,24 @@ search-before-save path. The dedup JUDGE and the recall used for
 candidate retrieval are INJECTED (like the loop's llm transport): no
 LLM call happens here, and there is no similarity threshold — the
 judge decides merge | supersede | create.
+
+`register_memory_effects` is the promised judge-as-effect wiring: the
+`memory.*` effects guest programs (extraction, the agent's addMemory
+tool) call; `memory.save_with_dedup` runs the classify-tier judge via
+a NESTED broker call, so the judge's llm.chat records in the trace.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 
+from anyrt.effects import Registry, effect
+
 from anybao.anyclient import AnyClient
+from anybao.recall import Recall
+from anybao.triggers import Trigger
 
 # Post-create mutable fields (author-only evolve allow-list,
 # docs/11-agent-memory.md) — the merge path evolves only these.
@@ -105,3 +116,95 @@ class Memory:
         fields["edges"] = [*(fields.get("edges") or []),
                            {"to": merged_into, "type": "supersedes"}]
         return {**self.add(**fields), "action": "supersede"}
+
+
+# --- background cognition triggers (ADR-007 §1b / §4.1) ----------------------
+
+def extraction_trigger(*, space: str, chat_id: str, owner: str = "",
+                       every_s: int = 900, trigger_id: str = "extraction") -> Trigger:
+    """programs/extraction@v1 — batched sweep over newly persisted turns."""
+    return Trigger(id=trigger_id, name="memory extraction", kind="cron",
+                   spec={"every_s": every_s}, program="extraction@v1",
+                   args={"space": space, "chatId": chat_id}, owner=owner)
+
+
+def linkgen_trigger(*, space: str, brain_id: str, owner: str = "",
+                    every_s: int = 3600, trigger_id: str = "linkgen") -> Trigger:
+    """programs/linkgen@v1 — the HOURLY link sweep (§4 resolved Q2)."""
+    return Trigger(id=trigger_id, name="memory link generation", kind="cron",
+                   spec={"every_s": every_s}, program="linkgen@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner)
+
+
+# --- the §2 judge + effect wiring --------------------------------------------
+
+_JUDGE_SYSTEM = (
+    "You deduplicate an agent's memory store. Given a CANDIDATE fact and "
+    "EXISTING items, decide: merge (same fact — evolve the existing item), "
+    "supersede (candidate replaces a now-outdated item), or create (new "
+    "fact). Answer ONLY a JSON object: "
+    '{"action": "merge"|"supersede"|"create", "mergedInto": "<existing id>"} '
+    "(mergedInto required unless action is create).")
+
+
+def _first_json(text: str) -> dict:
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        raise ValueError(f"judge reply carried no JSON object: {text!r}")
+    return json.loads(m.group(0))
+
+
+def llm_judge(llm_call: Callable[[dict], dict], recall: Recall,
+              tier: str = "classify") -> Callable[[dict, list[dict]], dict]:
+    """The ADR-007 §2 dedup judge: hydrate the recall hits, ask the
+    classify tier same-fact?, return the verdict dict. `llm_call` is
+    payload -> llm.chat reply (broker-bound in production)."""
+
+    def judge(candidate: dict, hits: list[dict]) -> dict:
+        items = [r for _, r in recall.hydrate(hits)
+                 if r.get("category") or r.get("context")]
+        if not items:
+            return {"action": "create"}
+        existing = "\n".join(
+            f"- id={r['id']} [{r.get('category', '?')}] {r.get('context', '')}"
+            for r in items)
+        prompt = (f"CANDIDATE: [{candidate.get('category')}] "
+                  f"{candidate.get('context')}\n"
+                  f"{candidate.get('body', '')}\n\nEXISTING:\n{existing}")
+        reply = llm_call({
+            "messages": [{"role": "user", "parts": [{"type": "text", "text": prompt}]}],
+            "system": _JUDGE_SYSTEM, "tier": tier, "tools": []})
+        verdict = _first_json(" ".join(
+            p["text"] for p in reply["parts"] if p["type"] == "text"))
+        if verdict.get("action") not in _ACTIONS:
+            raise ValueError(f"judge returned unknown action: {verdict!r}")
+        return verdict
+
+    return judge
+
+
+def register_memory_effects(registry: Registry, client: AnyClient, *,
+                            space: str, judge_tier: str = "classify") -> None:
+    """`memory.*` effects over one space's brain. Reads happen through
+    recall/`any.query`; these are the writes (cap memory.write)."""
+    mem = Memory(client, space)
+    rec = Recall(client, space)
+
+    @effect("memory.add", kind="mutate", registry=registry, cap="memory.write")
+    def memory_add(ctx, category, context, **fields):
+        return mem.add(category, context, **fields)
+
+    @effect("memory.evolve", kind="mutate", registry=registry, cap="memory.write")
+    def memory_evolve(ctx, item_id, **fields):
+        return mem.evolve(item_id, **fields)
+
+    @effect("memory.delete", kind="mutate", registry=registry, cap="memory.write")
+    def memory_delete(ctx, item_id):
+        return mem.delete(item_id)
+
+    @effect("memory.save_with_dedup", kind="mutate", registry=registry,
+            cap="memory.write")
+    def memory_save_with_dedup(ctx, candidate):
+        judge = llm_judge(lambda payload: ctx.call("llm.chat", payload),
+                          rec, tier=judge_tier)
+        return mem.save_with_dedup(candidate, recall=rec, judge=judge)
