@@ -17,8 +17,11 @@ shapes, no bridges (no-backcompat). Checklist:
       <target> (hash-gated, splits tool docs, sweeps orphans); reusable
       for any overlay. Agent-code deploy = one invocation to `agent:`.
       ONE splitter (Python). Skills written fresh incl. core skill.
-- [ ] History writer — turns/chunks v2 writer (USER space), hierarchical
-      rollup trigger, token-budgeted boot-window renderer.
+- [~] History writer — build_turn + token-budgeted hierarchical
+      boot-window renderer DONE (history.py, 6 pure tests); History
+      wrapper (append/read via anyclient). REMAINING: hierarchical rollup
+      trigger (turns→L1→L2 summarizer, runs as cron trigger via llm) —
+      pairs with the trigger I/O layer.
 - [~] Trigger subsystem v1 — PURE SCHEDULER CORE done (triggers.py:
       owner/arming/cron+interval-due/event-match+age-guard/run-rollup/
       circuit-breaker/monitoring-rollup, 10 tests). REMAINING: I/O layer
