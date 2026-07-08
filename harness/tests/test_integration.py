@@ -148,13 +148,12 @@ def test_deploy_then_use_in_wasi_guest(client, fresh_space):
     """The full chain: deploy → AnyModuleResolver → use() in the guest."""
     from pathlib import Path
 
+    from anybao.deploy import Deployer, ProgramSource
+    from anybao.modules import AnyModuleResolver
     from anyrt import trace as tr
     from anyrt.builtin_effects import register_builtin_effects
     from anyrt.effects import Broker, Registry
     from anyrt.wasi import WasiEngine
-
-    from anybao.deploy import Deployer, ProgramSource
-    from anybao.modules import AnyModuleResolver
 
     kernel = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
     if not kernel.exists():

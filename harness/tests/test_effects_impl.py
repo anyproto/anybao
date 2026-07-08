@@ -1,7 +1,6 @@
+from anybao.effects_impl import register_chat_effect, register_http_effects
 from anyrt import trace as tr
 from anyrt.effects import Broker, Registry
-
-from anybao.effects_impl import register_chat_effect, register_http_effects
 
 
 def test_http_effects_declared_read_vs_mutate():

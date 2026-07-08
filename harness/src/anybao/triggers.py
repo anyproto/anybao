@@ -118,9 +118,7 @@ class Scheduler:
         if record_created_at is not None and record_created_at < boot_time - slack_s:
             return False
         flt = t.spec.get("filter")
-        if flt and not _matches_filter(flt, record):
-            return False
-        return True
+        return not flt or _matches_filter(flt, record)
 
     # --- run recording + circuit breaker -----------------------------------
     def record_run(self, t: Trigger, *, status: str, duration_ms: int,
