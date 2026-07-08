@@ -13,9 +13,10 @@ shapes, no bridges (no-backcompat). Checklist:
       skill audit (provenance tags, no test → no port).
 - [x] Drift-flow bootstrap — vendor any swagger.json + coverage
       manifest + make api-drift (deferred from M3; first done here).
-- [ ] Tool-docs pipeline — ONE splitter (Python), sync.py targets the
-      AGENT OVERLAY (agent: alias — code separate from user data,
-      plan §4), skills written fresh incl. the core skill (ADR-005 §5).
+- [ ] Deploy tool (was sync.py) — GENERIC: deploy <src-dir> --space
+      <target> (hash-gated, splits tool docs, sweeps orphans); reusable
+      for any overlay. Agent-code deploy = one invocation to `agent:`.
+      ONE splitter (Python). Skills written fresh incl. core skill.
 - [ ] History writer — turns/chunks v2 writer (USER space), hierarchical
       rollup trigger, token-budgeted boot-window renderer.
 - [ ] Trigger subsystem v1 — owner/arming, run records + metrics
@@ -23,7 +24,9 @@ shapes, no bridges (no-backcompat). Checklist:
       watcher = trigger #1 (chat event → runner, cursor+dedup, mid-run
       → mailbox).
 - [ ] Minimal trace viewer (agent-side views done; human = enough to
-      debug).
+      debug). Traces DEVICE-LOCAL (FileSidecarStore = production);
+      traceRef = local run id; optional promote-to-synced escape hatch
+      (AnyFileStore).
 - [ ] Real transports + one-real-call llm/any fixture seeding.
 
 Gate: side-by-side vs bobrik-watch on a test space + cutover checklist

@@ -52,6 +52,21 @@ active`).
   `llm.chat` + `cell` records — ADR-001 §4b). What dies is the
   separately AUTHORED prose page (the dc* duplication); the
   navigability is owed as a viewer, not as a second data format.
+  **Traces are DEVICE-LOCAL by default (revised 2026-07-08).** The trace
+  (JSONL + blobs) is huge and rarely read; syncing it into `any` would
+  bloat the user's synced space for diagnostic data. So it lives on the
+  device that ran it (FileSidecarStore is the production store, not just
+  dev) and `traceRef` is a LOCAL run id. The lean layer stays synced:
+  the turn record (`userText`/`replies`/`effects` one-liners/llm
+  scalars), chat, chunks, memory — so "what happened" + bird's-eye view
+  work cross-device; only DEEP replay/introspection of an old run is
+  device-pinned (on another device `traceRef` dangles; the viewer shows
+  "trace ran on another device"). Accepted tradeoff — cross-device deep
+  replay is niche, and the synced summary covers the common case.
+  Escape hatch: an on-demand **promote** action uploads one trace as an
+  `any` object + file attachments (this is what `AnyFileStore`
+  becomes — opt-in, not the default). Same progressive-disclosure
+  philosophy: lean synced summary + heavy local detail.
 
 ### 2. Chunks v2 — hierarchical (`agent_chunks`)
 
