@@ -19,10 +19,12 @@ shapes, no bridges (no-backcompat). Checklist:
       ONE splitter (Python). Skills written fresh incl. core skill.
 - [ ] History writer — turns/chunks v2 writer (USER space), hierarchical
       rollup trigger, token-budgeted boot-window renderer.
-- [ ] Trigger subsystem v1 — owner/arming, run records + metrics
-      rollups, limits + circuit breaker, monitoring list API;
-      watcher = trigger #1 (chat event → runner, cursor+dedup, mid-run
-      → mailbox).
+- [~] Trigger subsystem v1 — PURE SCHEDULER CORE done (triggers.py:
+      owner/arming/cron+interval-due/event-match+age-guard/run-rollup/
+      circuit-breaker/monitoring-rollup, 10 tests). REMAINING: I/O layer
+      (SSE event subscription, program execution wiring, HTTP API, synced
+      trigger objects + trigger_runs dataset), watcher = trigger #1
+      (chat event → runner, cursor+dedup, mid-run → mailbox).
 - [ ] Minimal trace viewer (agent-side views done; human = enough to
       debug). Traces DEVICE-LOCAL (FileSidecarStore = production);
       traceRef = local run id; optional promote-to-synced escape hatch
