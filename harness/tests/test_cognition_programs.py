@@ -1,9 +1,11 @@
 """programs/extraction@v1 + linkgen@v1 — the ADR-007 background
-cognition sweeps, tested host-side by exec-ing the guest sources with a
-fake `effect` global."""
+cognition sweeps, tested host-side by exec-ing the guest sources with
+fake any@v1 / llm@v1 / memory@v1 / recall@v1 modules injected through
+the `use` seam."""
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from anybao.deploy import load_programs
 from anybao.memory import extraction_trigger, linkgen_trigger
@@ -12,7 +14,7 @@ PROGRAMS_DIR = Path(__file__).resolve().parents[2] / "programs"
 
 
 def run_main(src_name, fake, args):
-    g = {"effect": fake}
+    g = {"use": fake.use}
     exec(compile((PROGRAMS_DIR / src_name).read_text(), src_name, "exec"), g)
     return g["main"](args)
 
@@ -29,6 +31,8 @@ def _matches(rec, flt):
 
 
 class FakeGuest:
+    """One object answering the whole module surface the sweeps use."""
+
     def __init__(self, *, turns=(), items=(), hits=(), llm_texts=(),
                  state=(), dedup_result=None):
         self.datasets = {"agent_turns": list(turns),
@@ -42,31 +46,49 @@ class FakeGuest:
         self.state_writes = []
         self.dedup_result = dedup_result or {"itemId": "new", "action": "create"}
 
-    def __call__(self, name, payload):
-        if name == "any.query":
-            rows = [r for r in self.datasets[payload["dataset"]]
-                    if _matches(r, payload.get("filter") or {})]
-            for key in reversed(payload.get("sort") or []):
-                rows = sorted(rows, key=lambda r: r[key.lstrip("-")],
-                              reverse=key.startswith("-"))
-            lim = payload.get("limit")
-            return rows[:lim] if lim else rows
-        if name == "any.upsert_record":
-            self.state_writes.append(payload)
-            return {"versionId": "v"}
-        if name == "any.search":
-            return {"hits": self.hits, "mode": "hybrid"}
-        if name == "llm.chat":
-            self.llm_calls.append(payload)
-            return {"parts": [{"type": "text", "text": self.llm_texts.pop(0)}],
-                    "stop": "done", "usage": {"in": 1, "out": 1}}
-        if name == "memory.save_with_dedup":
-            self.saves.append(payload["candidate"])
-            return self.dedup_result
-        if name == "memory.evolve":
-            self.evolves.append(payload)
-            return {"itemId": payload["item_id"]}
-        raise AssertionError(f"unexpected effect {name}")
+    # --- any@v1 client ---
+    def query(self, space, object_id, dataset, filter=None, sort=None, limit=None):
+        rows = [r for r in self.datasets[dataset] if _matches(r, filter or {})]
+        for key in reversed(sort or []):
+            rows = sorted(rows, key=lambda r: r[key.lstrip("-")],
+                          reverse=key.startswith("-"))
+        return rows[:limit] if limit else rows
+
+    def upsert_record(self, space, object_id, dataset, record_id, value):
+        self.state_writes.append({"space": space, "object_id": object_id,
+                                  "dataset": dataset, "record_id": record_id,
+                                  "value": value})
+        return {"versionId": "v"}
+
+    def search(self, space, query, scopes=None, limit=None, mode=None):
+        return {"hits": self.hits, "mode": "hybrid"}
+
+    # --- llm@v1 ---
+    def chat(self, messages, system="", tier="codegen", tools=None):
+        self.llm_calls.append({"messages": messages, "system": system,
+                               "tier": tier, "tools": tools})
+        return {"parts": [{"type": "text", "text": self.llm_texts.pop(0)}],
+                "stop": "done", "usage": {"in": 1, "out": 1}}
+
+    # --- memory@v1 ---
+    def save_with_dedup(self, candidate, recall=None):
+        self.saves.append(candidate)
+        return self.dedup_result
+
+    def evolve(self, item_id, **fields):
+        self.evolves.append({"item_id": item_id, **fields})
+        return {"itemId": item_id}
+
+    def use(self, spec):
+        if spec == "any@v1":
+            return SimpleNamespace(client=lambda base_url=None: self)
+        if spec == "llm@v1":
+            return SimpleNamespace(chat=self.chat)
+        if spec == "memory@v1":
+            return SimpleNamespace(memory=lambda client, space: self)
+        if spec == "recall@v1":
+            return SimpleNamespace(recall=lambda client, space, **kw: self)
+        raise AssertionError(f"unexpected module {spec}")
 
 
 def turn(seq):

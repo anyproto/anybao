@@ -34,17 +34,15 @@ def _first_json(text):
     return json.loads(text[start:end + 1])
 
 
-def _state(space, brain):
-    rows = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": STATE_DATASET,
-        "filter": {"id": STATE_ID}, "limit": 1})
+def _state(c, space, brain):
+    rows = c.query(space, brain, STATE_DATASET,
+                   filter={"id": STATE_ID}, limit=1)
     return rows[0].get("lastModifiedAt", 0) if rows else 0
 
 
-def _save_state(space, brain, last_ts):
-    effect("any.upsert_record", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": STATE_DATASET,
-        "record_id": STATE_ID, "value": {"lastModifiedAt": last_ts}})
+def _save_state(c, space, brain, last_ts):
+    c.upsert_record(space, brain, STATE_DATASET, STATE_ID,
+                    {"lastModifiedAt": last_ts})
 
 
 def refresh(item, neighbors, tier):
@@ -52,9 +50,9 @@ def refresh(item, neighbors, tier):
              for n in neighbors]
     prompt = (f"ITEM: [{item.get('category')}] {item.get('context')}\n"
               f"tags: {item.get('tags') or []}\n\nNEIGHBORS:\n" + "\n".join(lines))
-    reply = effect("llm.chat", {  # noqa: F821 - guest global
-        "messages": [{"role": "user", "parts": [{"type": "text", "text": prompt}]}],
-        "system": _SYSTEM, "tier": tier, "tools": []})
+    reply = use("llm@v1").chat(  # noqa: F821 - guest global
+        [{"role": "user", "parts": [{"type": "text", "text": prompt}]}],
+        system=_SYSTEM, tier=tier, tools=[])
     return _first_json(" ".join(p["text"] for p in reply["parts"]
                                 if p["type"] == "text"))
 
@@ -62,25 +60,24 @@ def refresh(item, neighbors, tier):
 def main(args):
     space, brain = args["space"], args["brainId"]
     tier = args.get("tier", TIER)
-    last = _state(space, brain)
-    items = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": "agent_memory_items",
-        "filter": {"modifiedAt": {"$gt": last}}, "sort": ["modifiedAt"],
-        "limit": args.get("batch", BATCH)})
+    c = use("any@v1").client()  # noqa: F821 - guest global
+    last = _state(c, space, brain)
+    items = c.query(space, brain, "agent_memory_items",
+                    filter={"modifiedAt": {"$gt": last}}, sort=["modifiedAt"],
+                    limit=args.get("batch", BATCH))
     linked = [i for i in items if i.get("edges")]
     if not items:
         return {"swept": 0, "refreshed": 0, "errors": 0}
 
+    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
     by_id = {i["id"]: i for i in items}
     refreshed = errors = 0
     for item in linked:
         neighbor_ids = [e.get("to") for e in item["edges"] if e.get("to")]
         neighbors = [by_id[n] for n in neighbor_ids if n in by_id]
         if not neighbors:
-            hydrated = effect("any.query", {  # noqa: F821 - guest global
-                "space": space, "object_id": brain,
-                "dataset": "agent_memory_items",
-                "filter": {"id": {"$in": neighbor_ids}}})
+            hydrated = c.query(space, brain, "agent_memory_items",
+                               filter={"id": {"$in": neighbor_ids}})
             neighbors = list(hydrated)
         if not neighbors:
             continue
@@ -99,8 +96,7 @@ def main(args):
                 update["tags"] != (item.get("tags") or []):
             fields["tags"] = [str(t) for t in update["tags"]]
         if fields:  # ONLY context/tags — enforced here, not prompt trust
-            effect("memory.evolve", {  # noqa: F821 - guest global
-                "item_id": item["id"], **fields})
+            mem.evolve(item["id"], **fields)
             refreshed += 1
-    _save_state(space, brain, max(i.get("modifiedAt", 0) for i in items))
+    _save_state(c, space, brain, max(i.get("modifiedAt", 0) for i in items))
     return {"swept": len(linked), "refreshed": refreshed, "errors": errors}

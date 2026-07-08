@@ -2,10 +2,10 @@
 A-MEM's write-time linking run async over memory items created since
 the last sweep. Seed-search neighbors (scopes agent+history+basic) →
 classify-tier LLM proposes typed links from the CURATED edge vocabulary
-→ written as edges via memory.evolve. New edge types are never invented
-here (vocabulary drift is the known traversal killer — §3). Cursor = a
-plain agent_job_state record on the brain object. args: {space,
-brainId, batch?, tier?, maxLinks?}.
+→ written as edges via memory@v1 evolve. New edge types are never
+invented here (vocabulary drift is the known traversal killer — §3).
+Cursor = a plain agent_job_state record on the brain object. args:
+{space, brainId, batch?, tier?, maxLinks?}.
 """
 
 import json
@@ -33,17 +33,15 @@ def _first_json_array(text):
     return json.loads(text[start:end + 1])
 
 
-def _state(space, brain):
-    rows = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": STATE_DATASET,
-        "filter": {"id": STATE_ID}, "limit": 1})
+def _state(c, space, brain):
+    rows = c.query(space, brain, STATE_DATASET,
+                   filter={"id": STATE_ID}, limit=1)
     return rows[0].get("lastCreatedAt", 0) if rows else 0
 
 
-def _save_state(space, brain, last_ts):
-    effect("any.upsert_record", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": STATE_DATASET,
-        "record_id": STATE_ID, "value": {"lastCreatedAt": last_ts}})
+def _save_state(c, space, brain, last_ts):
+    c.upsert_record(space, brain, STATE_DATASET, STATE_ID,
+                    {"lastCreatedAt": last_ts})
 
 
 def propose_links(item, neighbors, tier):
@@ -51,9 +49,9 @@ def propose_links(item, neighbors, tier):
              f"{n.get('snippet') or n.get('recordId')}" for n in neighbors]
     prompt = (f"ITEM: [{item.get('category')}] {item.get('context')}\n"
               f"{item.get('body') or ''}\n\nNEIGHBORS:\n" + "\n".join(lines))
-    reply = effect("llm.chat", {  # noqa: F821 - guest global
-        "messages": [{"role": "user", "parts": [{"type": "text", "text": prompt}]}],
-        "system": _SYSTEM, "tier": tier, "tools": []})
+    reply = use("llm@v1").chat(  # noqa: F821 - guest global
+        [{"role": "user", "parts": [{"type": "text", "text": prompt}]}],
+        system=_SYSTEM, tier=tier, tools=[])
     text = " ".join(p["text"] for p in reply["parts"] if p["type"] == "text")
     return _first_json_array(text)
 
@@ -76,22 +74,22 @@ def valid_links(proposals, neighbor_ids, existing_edges, max_links):
 
 def main(args):
     space, brain = args["space"], args["brainId"]
-    last = _state(space, brain)
-    items = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": "agent_memory_items",
-        "filter": {"createdAt": {"$gt": last}}, "sort": ["createdAt"],
-        "limit": args.get("batch", BATCH)})
+    c = use("any@v1").client()  # noqa: F821 - guest global
+    last = _state(c, space, brain)
+    items = c.query(space, brain, "agent_memory_items",
+                    filter={"createdAt": {"$gt": last}}, sort=["createdAt"],
+                    limit=args.get("batch", BATCH))
     if not items:
         return {"swept": 0, "linked": 0, "errors": 0}
 
+    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
     tier = args.get("tier", TIER)
     max_links = args.get("maxLinks", MAX_LINKS)
     linked = errors = 0
     for item in items:
         try:
-            hits = effect("any.search", {  # noqa: F821 - guest global
-                "space": space, "query": item.get("context", ""),
-                "scopes": ["agent", "history", "basic"], "limit": 8})
+            hits = c.search(space, item.get("context", ""),
+                            scopes=["agent", "history", "basic"], limit=8)
             neighbors = [h for h in hits.get("hits", [])
                          if h.get("recordId") != item["id"]]
             if not neighbors:
@@ -100,11 +98,10 @@ def main(args):
             links = valid_links(proposals, {n["recordId"] for n in neighbors},
                                 item.get("edges") or [], max_links)
             if links:
-                effect("memory.evolve", {  # noqa: F821 - guest global
-                    "item_id": item["id"],
-                    "edges": [*(item.get("edges") or []), *links]})
+                mem.evolve(item["id"],
+                           edges=[*(item.get("edges") or []), *links])
                 linked += 1
         except Exception:
             errors += 1  # counted loud; the sweep continues
-    _save_state(space, brain, max(i.get("createdAt", 0) for i in items))
+    _save_state(c, space, brain, max(i.get("createdAt", 0) for i in items))
     return {"swept": len(items), "linked": linked, "errors": errors}

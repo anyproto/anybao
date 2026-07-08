@@ -37,10 +37,10 @@ def _first_json(text):
 
 def reflect_cluster(category, items, tier):
     lines = [f"- id={i['id']} {i.get('context', '')}" for i in items]
-    reply = effect("llm.chat", {  # noqa: F821 - guest global
-        "messages": [{"role": "user", "parts": [{"type": "text", "text":
-                      f"category: {category}\n" + "\n".join(lines)}]}],
-        "system": _SYSTEM, "tier": tier, "tools": []})
+    reply = use("llm@v1").chat(  # noqa: F821 - guest global
+        [{"role": "user", "parts": [{"type": "text", "text":
+          f"category: {category}\n" + "\n".join(lines)}]}],
+        system=_SYSTEM, tier=tier, tools=[])
     return _first_json(" ".join(p["text"] for p in reply["parts"]
                                 if p["type"] == "text"))
 
@@ -50,9 +50,11 @@ def main(args):
     tier = args.get("tier", TIER)
     min_cluster = args.get("minCluster", MIN_CLUSTER)
     cutoff = now() - args.get("minAgeDays", MIN_AGE_DAYS) * DAY_S  # noqa: F821
-    items = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": "agent_memory_items",
-        "filter": {"accessCount": 0, "createdAt": {"$lt": cutoff}}})
+    c = use("any@v1").client()  # noqa: F821 - guest global
+    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
+    items = c.query(space, brain, "agent_memory_items",
+                    filter={"accessCount": 0, "createdAt": {"$lt": cutoff}})
 
     clusters = {}
     for i in items:
@@ -77,8 +79,7 @@ def main(args):
                 "edges": [{"to": mid, "type": "derived_from"} for mid in sorted(ids)]}
             if insight.get("body"):
                 candidate["body"] = insight["body"]
-            effect("memory.save_with_dedup",  # noqa: F821 - guest global
-                   {"candidate": candidate})
+            mem.save_with_dedup(candidate, recall=rec)
             insights += 1
         for pair in verdict.get("contradictions") or []:
             a, b = pair.get("a"), pair.get("b")
@@ -86,11 +87,10 @@ def main(args):
                 continue  # LLM output validated against real cluster ids
             for mid, other in ((a, b), (b, a)):
                 item = by_id[mid]
-                effect("memory.evolve", {  # noqa: F821 - guest global
-                    "item_id": mid,
-                    "confidence": max(1, int(item.get("confidence", 5)) - 2),
-                    "edges": [*(item.get("edges") or []),
-                              {"to": other, "type": "contradicts"}]})
+                mem.evolve(mid,
+                           confidence=max(1, int(item.get("confidence", 5)) - 2),
+                           edges=[*(item.get("edges") or []),
+                                  {"to": other, "type": "contradicts"}])
             contradictions += 1
     return {"clusters": len(clusters), "insights": insights,
             "contradictions": contradictions, "errors": errors}
