@@ -18,13 +18,18 @@ def fake_any(capture):
 
 
 class FakeRecall:
-    def __init__(self, hits=HITS):
+    def __init__(self, hits=HITS, records=()):
         self.hits = hits
+        self.records = {r["id"]: r for r in records}
         self.calls = []
 
     def search(self, query, scopes):
         self.calls.append((query, scopes))
         return self.hits
+
+    def hydrate(self, hits):
+        return [(h, self.records[h["recordId"]]) for h in hits
+                if h.get("recordId") in self.records]
 
 
 def verdict_judge(verdict):
@@ -167,3 +172,44 @@ def test_dedup_candidate_validated_before_any_call():
         memory([]).save_with_dedup({"category": "x"}, recall=r,
                                    judge=verdict_judge({"action": "create"}))
     assert r.calls == []   # nothing hit the wire or the recall
+
+
+# --- humble merge (§1b applied to the merge path; live-caught) ---------------
+
+def test_machine_merge_never_blurs_user_stated_text_or_confidence():
+    cap = []
+    old = {"id": "m1", "category": "preference",
+           "context": "User drinks espresso, no milk — ever.",
+           "confidence": 9, "tags": ["coffee"]}
+    recall = FakeRecall(hits=[{**HITS[0], "recordId": "m1"}], records=[old])
+    out = memory(cap).save_with_dedup(
+        {"category": "preference", "context": "Coffee drink preference",
+         "confidence": 6, "source": "extraction", "tags": ["drinks"]},
+        recall=recall,
+        judge=verdict_judge({"action": "merge", "mergedInto": "m1"}))
+    assert out["action"] == "merge"
+    patches = [b for m, p, b in cap if p.endswith("/agent/memory/m1")]
+    assert patches, "corroborating fields still merge"
+    patch = patches[0]
+    assert "context" not in patch and "body" not in patch   # text kept
+    assert "confidence" not in patch                        # 9 never drops to 6
+    assert patch["tags"] == ["coffee", "drinks"]            # union, not replace
+
+
+def test_agent_explicit_merge_may_update_text_and_raise_confidence():
+    cap = []
+    old = {"id": "m1", "category": "preference",
+           "context": "likes coffee", "confidence": 5,
+           "edges": [{"to": "x", "type": "part_of"}]}
+    recall = FakeRecall(hits=[{**HITS[0], "recordId": "m1"}], records=[old])
+    memory(cap).save_with_dedup(
+        {"category": "preference", "context": "espresso only, no milk",
+         "confidence": 9, "edges": [{"to": "x", "type": "part_of"},
+                                    {"to": "y", "type": "relates_to"}]},
+        recall=recall,
+        judge=verdict_judge({"action": "merge", "mergedInto": "m1"}))
+    patch = [b for m, p, b in cap if p.endswith("/agent/memory/m1")][0]
+    assert patch["context"] == "espresso only, no milk"     # user-stated wins in
+    assert patch["confidence"] == 9                         # confidence may rise
+    assert patch["edges"] == [{"to": "x", "type": "part_of"},
+                              {"to": "y", "type": "relates_to"}]  # deduped union

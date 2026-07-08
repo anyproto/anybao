@@ -32,6 +32,31 @@ MUTABLE_FIELDS = ("salience", "accessCount", "confidence", "importance",
                   "context", "body", "tags", "edges")
 
 _ACTIONS = ("merge", "supersede", "create")
+_MACHINE_SOURCES = ("extraction", "reflection")
+
+
+def _humble_merge(old: dict, updates: dict, *, machine: bool) -> dict:
+    """§1b machine humility on the MERGE path (live-caught: an
+    extraction re-sighting blurred a user-stated fact and dropped its
+    confidence): machine-derived text never overwrites stored text, and
+    a merge never LOWERS confidence — a duplicate sighting is
+    corroboration, not doubt. Tags/edges union instead of replace."""
+    if machine:
+        updates.pop("context", None)
+        updates.pop("body", None)
+    if "confidence" in updates and isinstance(old.get("confidence"), (int, float)):
+        updates["confidence"] = max(old["confidence"], updates["confidence"])
+        if updates["confidence"] == old["confidence"]:
+            del updates["confidence"]
+    if "tags" in updates and old.get("tags"):
+        updates["tags"] = [*old["tags"],
+                           *(t for t in updates["tags"] if t not in old["tags"])]
+    if "edges" in updates and old.get("edges"):
+        seen = {(e.get("to"), e.get("type")) for e in old["edges"]}
+        updates["edges"] = [*old["edges"],
+                            *(e for e in updates["edges"]
+                              if (e.get("to"), e.get("type")) not in seen)]
+    return updates
 
 
 def _require(fields: dict, what: str) -> None:
@@ -108,7 +133,14 @@ class Memory:
 
         if action == "merge":
             updates = {k: candidate[k] for k in MUTABLE_FIELDS if k in candidate}
-            self.evolve(merged_into, **updates)
+            old = next((r for _, r in recall.hydrate(hits)
+                        if r.get("id") == merged_into), None)
+            if old is not None:
+                updates = _humble_merge(old, updates,
+                                        machine=candidate.get("source")
+                                        in _MACHINE_SOURCES)
+            if updates:
+                self.evolve(merged_into, **updates)
             return {"deduplicated": True, "mergedInto": merged_into, "action": "merge"}
 
         # supersede: new item carrying a `supersedes` edge to the old one
@@ -120,12 +152,15 @@ class Memory:
 
 # --- background cognition triggers (ADR-007 §1b / §4.1) ----------------------
 
-def extraction_trigger(*, space: str, chat_id: str, owner: str = "",
-                       every_s: int = 900, trigger_id: str = "extraction") -> Trigger:
-    """programs/extraction@v1 — batched sweep over newly persisted turns."""
+def extraction_trigger(*, space: str, chat_id: str, brain_id: str,
+                       owner: str = "", every_s: int = 900,
+                       trigger_id: str = "extraction") -> Trigger:
+    """programs/extraction@v1 — batched sweep over newly persisted
+    turns; cursor lives on the brain (agent_job_state)."""
     return Trigger(id=trigger_id, name="memory extraction", kind="cron",
                    spec={"every_s": every_s}, program="extraction@v1",
-                   args={"space": space, "chatId": chat_id}, owner=owner)
+                   args={"space": space, "chatId": chat_id, "brainId": brain_id},
+                   owner=owner)
 
 
 def linkgen_trigger(*, space: str, brain_id: str, owner: str = "",

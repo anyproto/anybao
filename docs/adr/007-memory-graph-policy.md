@@ -77,7 +77,12 @@ then a cheap judge (`classify` tier): *same fact?* → **merge** (evolve
 the existing item: context/tags/confidence, `modifiedAt` bumps) |
 **supersede** (new item + `supersedes` edge) | **create**. Returned as
 `{deduplicated: true, mergedInto}` — a success, not an error (v1
-convention). The old 0.85-cosine lesson is inherited as a *retrieval*
+convention). **Merge is humble (amended 2026-07-08, live-caught at the
+cutover walk)**: a machine-sourced candidate (`extraction`/`reflection`)
+never overwrites the stored `context`/`body` — §1b's "machine-derived
+never outranks user-stated" applies to merges, not just creates; a
+merge never LOWERS confidence (a duplicate sighting is corroboration,
+not doubt); tags/edges union instead of replace. The old 0.85-cosine lesson is inherited as a *retrieval*
 rule, not a threshold rule: candidate retrieval is content-focused,
 the judge decides — no magic similarity constant to drift.
 
