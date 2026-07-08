@@ -16,3 +16,19 @@ jobs:
       - run: nix develop -c make kernel
       - run: nix develop -c uv run ruff check .
       - run: nix develop -c uv run pytest
+
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            host/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('host/Cargo.lock') }}
+      - run: nix develop -c make host-check
+      - run: nix develop -c make host

@@ -1,4 +1,4 @@
-.PHONY: kernel test lint api-drift api-vendor
+.PHONY: kernel test lint api-drift api-vendor host host-check test-integration
 
 # Drift check: vendored any swagger vs the coverage manifest (plan §4).
 # Nonzero exit on drift so CI catches an uncovered/changed endpoint.
@@ -26,6 +26,13 @@ test: kernel
 # Integration tests against a real any server (skipped without one).
 # Start a server first: `any run --addr 127.0.0.1:7009` (or set
 # ANYBAO_TEST_SERVER). Validates the wire contract offline fakes can't.
+host:              ## the Rust host binary (host/target/release/anybao-host)
+	cargo build --release --manifest-path host/Cargo.toml
+
+host-check:        ## clippy + fmt gate for host/
+	cargo clippy --manifest-path host/Cargo.toml -- -D warnings
+	cargo fmt --manifest-path host/Cargo.toml --check
+
 test-integration: kernel
 	uv run pytest -m integration
 

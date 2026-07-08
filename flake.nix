@@ -4,12 +4,24 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # the Rust host (host/): wasmtime's MSRV outruns nixpkgs' rustc, so
+    # the toolchain comes from the overlay, pinned like everything else
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "clippy" "rustfmt" "rust-analyzer" ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -19,6 +31,9 @@
             basedpyright   # python LSP (emacs eglot/lsp-mode); resolves the
                            # uv venv via pyrightconfig.json
             ruff           # editor-facing ruff/ruff-lsp (CI uses the uv one)
+
+            rustToolchain  # cargo/rustc/clippy/rustfmt for host/
+                           # (rustls-only deps — no openssl/pkg-config)
           ];
 
           # uv manages the workspace venv; keep it from downloading its own
@@ -29,7 +44,7 @@
           };
 
           shellHook = ''
-            echo "anybao dev shell — uv $(uv --version 2>/dev/null | cut -d' ' -f2), $(python3 --version)"
+            echo "anybao dev shell — uv $(uv --version 2>/dev/null | cut -d' ' -f2), $(python3 --version), $(rustc --version 2>/dev/null)"
           '';
         };
       });
