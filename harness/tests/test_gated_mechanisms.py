@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from anybao.memory import decay_trigger, evolution_trigger, reflection_trigger
+from anybao.triggers import decay_trigger, evolution_trigger, reflection_trigger
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[2] / "programs"
 

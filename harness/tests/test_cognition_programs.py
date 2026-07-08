@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from anybao.deploy import load_programs
-from anybao.memory import extraction_trigger, linkgen_trigger
+from anybao.triggers import extraction_trigger, linkgen_trigger
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[2] / "programs"
 

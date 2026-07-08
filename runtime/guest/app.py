@@ -407,63 +407,71 @@ def _fresh_ns() -> dict:
         "effects": effects,
         "span": span,
         "use": use,
+        "subcell": _run_cell,   # cell-in-cell: the toolcaller's executor
     }
+
+
+def _run_cell(code: str, cell_id: str) -> dict:
+    """Cell semantics (ADR-003 §2) — module-level so guest programs can
+    drive cells too (the toolcaller's `subcell`); the wit export wraps
+    this in JSON for the host protocol."""
+    global _ns
+    if not _ns:
+        _ns = _fresh_ns()
+    store = _values.setdefault(cell_id, {"prints": []})
+    prints: list[dict] = []
+
+    def _print(*a, **kw):
+        # single arg: keep the structured value (schema/size for the
+        # digest). multi arg: Python's space-join, a formatted line.
+        v = a[0] if len(a) == 1 else " ".join(
+            x if isinstance(x, str) else repr(x) for x in a
+        )
+        store["prints"].append(v)
+        prints.append(_value_meta(v, display=str))
+
+    prev_print = _ns.get("print")   # nested cells restore the caller's printer
+    _ns["print"] = _print
+    try:
+        tree = ast.parse(code, mode="exec")
+        last = None
+        has_last = False
+        tail = tree.body[-1] if tree.body else None
+        if isinstance(tail, ast.Expr):
+            tree.body.pop()
+            last_expr = ast.Expression(tail.value)
+            exec(compile(tree, "<cell>", "exec"), _ns)
+            last = eval(compile(last_expr, "<cell>", "eval"), _ns)
+            has_last = last is not None
+        else:
+            exec(compile(tree, "<cell>", "exec"), _ns)
+        if has_last:
+            store["last"] = last
+        return {
+            "ok": True,
+            "prints": prints,
+            "last": _value_meta(last) if has_last else None,
+            "error": None,
+        }
+    except BaseException as e:  # incl. MemoryError; traps never reach here
+        return {
+            "ok": False,
+            "prints": prints,
+            "last": None,
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e),
+                "traceback": traceback.format_exc(limit=8),
+            },
+        }
+    finally:
+        if prev_print is not None:
+            _ns["print"] = prev_print
 
 
 class WitWorld:
     def run_cell(self, code: str, cell_id: str) -> str:
-        global _ns
-        if not _ns:
-            _ns = _fresh_ns()
-        store = _values.setdefault(cell_id, {"prints": []})
-        prints: list[dict] = []
-
-        def _print(*a, **kw):
-            # single arg: keep the structured value (schema/size for the
-            # digest). multi arg: Python's space-join, a formatted line.
-            v = a[0] if len(a) == 1 else " ".join(
-                x if isinstance(x, str) else repr(x) for x in a
-            )
-            store["prints"].append(v)
-            prints.append(_value_meta(v, display=str))
-
-        _ns["print"] = _print
-        try:
-            tree = ast.parse(code, mode="exec")
-            last = None
-            has_last = False
-            tail = tree.body[-1] if tree.body else None
-            if isinstance(tail, ast.Expr):
-                tree.body.pop()
-                last_expr = ast.Expression(tail.value)
-                exec(compile(tree, "<cell>", "exec"), _ns)
-                last = eval(compile(last_expr, "<cell>", "eval"), _ns)
-                has_last = last is not None
-            else:
-                exec(compile(tree, "<cell>", "exec"), _ns)
-            if has_last:
-                store["last"] = last
-            return json.dumps(
-                {
-                    "ok": True,
-                    "prints": prints,
-                    "last": _value_meta(last) if has_last else None,
-                    "error": None,
-                }
-            )
-        except BaseException as e:  # incl. MemoryError; traps never reach here
-            return json.dumps(
-                {
-                    "ok": False,
-                    "prints": prints,
-                    "last": None,
-                    "error": {
-                        "type": type(e).__name__,
-                        "message": str(e),
-                        "traceback": traceback.format_exc(limit=8),
-                    },
-                }
-            )
+        return json.dumps(_run_cell(code, cell_id))
 
     def reset_ns(self) -> None:
         global _ns

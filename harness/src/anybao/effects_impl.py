@@ -81,5 +81,5 @@ def register_http_effects(registry: Registry, *, secrets=None,
 
         return http_verb
 
-    for verb in ("get", "post", "put", "delete"):
+    for verb in ("get", "post", "put", "patch", "delete"):
         _register(verb)

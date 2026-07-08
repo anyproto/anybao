@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .anyclient import AnyClient
-from .recall import Recall
 
 DEFAULT_K = 5
 
@@ -53,25 +52,39 @@ def seed_corpus(client: AnyClient, space: str, items: list[dict]) -> None:
         client.create_memory(space, body)
 
 
-def wait_for_index(recall: Recall, probe_query: str, *,
+def _search(client: AnyClient, space: str, query: str, k: int) -> list[dict]:
+    return client.search(space, query, scopes=["agent"], limit=k).get("hits") or []
+
+
+def _hydrate(client: AnyClient, space: str, hits: list[dict]) -> list[dict]:
+    out = []
+    for h in hits:
+        recs = client.query(space, h["objectId"], h["dataset"],
+                            filter={"id": h["recordId"]}, limit=1)
+        out.extend(recs)
+    return out
+
+
+def wait_for_index(client: AnyClient, space: str, probe_query: str, *,
                    timeout: float = 15.0) -> bool:
     """The indexer is async — poll until the probe surfaces (or give
     up: timing is environmental, the caller decides skip-vs-fail)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if recall.search(probe_query, scopes=("agent",)):
+        if _search(client, space, probe_query, DEFAULT_K):
             return True
         time.sleep(0.5)
     return False
 
 
-def run_eval(recall: Recall, cases: list[dict], *, k: int = DEFAULT_K) -> EvalReport:
+def run_eval(client: AnyClient, space: str, cases: list[dict], *,
+             k: int = DEFAULT_K) -> EvalReport:
     report = EvalReport()
     for case in cases:
         report.total += 1
-        hits = recall.search(case["query"], scopes=("agent",),
-                             limit=case.get("k", k))
-        contexts = [r.get("context", "") for _, r in recall.hydrate(hits)]
+        hits = _search(client, space, case["query"], case.get("k", k))
+        contexts = [r.get("context", "")
+                    for r in _hydrate(client, space, hits)]
         if any(case["expectContext"] in c for c in contexts):
             report.passed += 1
         else:

@@ -203,6 +203,55 @@ class TriggerRuntime:
         return result
 
 
+# --- the standing background jobs (ADR-006 §2, ADR-007 §1b/§4) --------------
+
+def rollup_trigger(*, space, chat_id, owner="", every_s=3600,
+                   trigger_id="rollup") -> Trigger:
+    return Trigger(id=trigger_id, name="history rollup", kind="cron",
+                   spec={"every_s": every_s}, program="rollup@v1",
+                   args={"space": space, "chatId": chat_id}, owner=owner)
+
+
+def extraction_trigger(*, space, chat_id, brain_id, owner="", every_s=900,
+                       trigger_id="extraction") -> Trigger:
+    return Trigger(id=trigger_id, name="memory extraction", kind="cron",
+                   spec={"every_s": every_s}, program="extraction@v1",
+                   args={"space": space, "chatId": chat_id, "brainId": brain_id},
+                   owner=owner)
+
+
+def linkgen_trigger(*, space, brain_id, owner="", every_s=3600,
+                    trigger_id="linkgen") -> Trigger:
+    return Trigger(id=trigger_id, name="memory link generation", kind="cron",
+                   spec={"every_s": every_s}, program="linkgen@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner)
+
+
+# §4.2 mechanisms ship DISABLED — each behind its eval (ADR-007).
+def decay_trigger(*, space, brain_id, owner="", every_s=86400,
+                  trigger_id="decay") -> Trigger:
+    return Trigger(id=trigger_id, name="salience decay", kind="cron",
+                   spec={"every_s": every_s}, program="decay@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner,
+                   enabled=False)
+
+
+def reflection_trigger(*, space, brain_id, owner="", every_s=86400,
+                       trigger_id="reflection") -> Trigger:
+    return Trigger(id=trigger_id, name="reflection", kind="cron",
+                   spec={"every_s": every_s}, program="reflection@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner,
+                   enabled=False)
+
+
+def evolution_trigger(*, space, brain_id, owner="", every_s=21600,
+                      trigger_id="evolution") -> Trigger:
+    return Trigger(id=trigger_id, name="memory evolution", kind="cron",
+                   spec={"every_s": every_s}, program="evolution@v1",
+                   args={"space": space, "brainId": brain_id}, owner=owner,
+                   enabled=False)
+
+
 TRIGGER_TYPE = "agent_trigger"
 DATASET_TRIGGERS = "agent_triggers"
 DATASET_RUNS = "agent_trigger_runs"

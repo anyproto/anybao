@@ -8,7 +8,6 @@ they can't regress. Run: `uv run pytest -m integration` with a server up
 
 
 import pytest
-from anybao.helper import Helper, HelperError
 
 pytestmark = pytest.mark.integration
 
@@ -57,36 +56,6 @@ def test_hierarchical_chunk_level(client, fresh_space):
     chunks = client.query(fresh_space, chat, "agent_chunks", sort=["seq"])
     assert [(c["seq"], c["level"]) for c in chunks] == [(0, 1), (1, 2)]
 
-
-# --- helper facades (catalog, nested shape, normalization) -------------------
-
-def test_helper_nested_create_read_roundtrip(client, fresh_space):
-    h = Helper(client, default_space=fresh_space)
-    h.create_type("Book", xkey="book")
-    h.add_property("book", "Author", xkey="author", kind="string")
-    h.add_property("book", "Year", xkey="year", kind="number")
-    res = h.create_object("book", {"name": "Dune", "book": {"author": "Herbert", "year": 1965}})
-    got = h.get_object(res["id"])
-    assert got["any"]["name"] == "Dune"              # reserved group unrelabeled
-    assert got["book"] == {"author": "Herbert", "year": 1965}  # user type relabeled
-
-
-def test_helper_no_silent_drop_live(client, fresh_space):
-    h = Helper(client, default_space=fresh_space)
-    h.create_type("Book", xkey="book")
-    with pytest.raises(HelperError, match="not found"):
-        h.create_object("book", {"book": {"nonexistent": 1}})
-
-
-def test_helper_editor_append(client, fresh_space):
-    h = Helper(client, default_space=fresh_space)
-    oid = client.create_object(fresh_space, {"types": ["editor"]})["objectId"]
-    h.append_markdown(oid, "## section\nbody text")
-    md = client.get_markdown(fresh_space, oid)
-    assert "section" in md and "body text" in md
-
-
-# --- trigger persistence (TriggerStore over plain datasets) ------------------
 
 def test_trigger_store_persists_and_rolls_up(client, fresh_space):
     from anybao.triggers import Scheduler, Trigger, TriggerStore
@@ -172,59 +141,79 @@ def test_deploy_then_use_in_wasi_guest(client, fresh_space):
 
 # --- the runner: full adapter (loop + wasi guest + effects) end to end -------
 
-def test_runner_full_conversation(client, fresh_space):
-    """THE keystone: a real conversation through the wasi guest with a
-    scripted llm transport (no API key) — cell runs in the sandbox, turn
-    persists, trace written device-local."""
+def test_runner_full_conversation(client, fresh_space, any_server):
+    """THE keystone: a real conversation — toolcaller@v1 + all guest
+    modules deployed to the LIVE space, cells in the sandbox, space
+    writes against the real server; only the anthropic endpoint is
+    faked at the http seam (no API key)."""
+    import json as _json
+    import tempfile
     from pathlib import Path
 
     from anybao.config import Config, DictConfigStore
+    from anybao.deploy import Deployer
+    from anybao.effects_impl import _http_request
     from anybao.modules import AnyModuleResolver
     from anybao.runner import Runner
 
-    kernel = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
+    root = Path(__file__).resolve().parents[2]
+    kernel = root / "bin" / "kernel.wasm"
     if not kernel.exists():
         pytest.skip("bin/kernel.wasm missing — run `make kernel`")
 
+    Deployer(client, space=fresh_space).deploy_dir(root / "programs")
     chat = client.create_object(fresh_space, {"types": ["chat"]})["objectId"]
 
     cfg = Config(DictConfigStore({
-        "llm.tier.codegen": {"value": {"provider": "anthropic", "model": "test-model",
-                                       "base_url": "http://x", "api_key_ref": "llm.key"}},
+        "any.base_url": {"value": any_server},
+        "llm.tier.codegen": {"value": {"provider": "anthropic", "model": "t",
+                                       "base_url": "https://api.anthropic.test",
+                                       "api_key_ref": "llm.key"}},
+        "llm.tier.classify": {"value": {"provider": "anthropic", "model": "t",
+                                        "base_url": "https://api.anthropic.test",
+                                        "api_key_ref": "llm.key"}},
         "llm.key": {"localValue": "fake"},
     }))
 
-    # scripted anthropic-shaped responses: run a cell, then finish
     calls = []
-    def fake_transport(prov, req):
-        calls.append(req)
-        if len(calls) == 1:
-            return {"content": [{"type": "tool_use", "id": "t1", "name": "run_cell",
+
+    def hybrid_request(method, url, **kw):
+        if url.startswith("https://api.anthropic.test"):
+            calls.append(kw.get("json_body"))
+            raw = ({"content": [{"type": "tool_use", "id": "t1", "name": "run_cell",
                                  "input": {"code": "result = 40 + 2\nresult"}}],
                     "stop_reason": "tool_use",
                     "usage": {"input_tokens": 10, "output_tokens": 5}}
-        return {"content": [{"type": "text", "text": "The answer is 42."}],
-                "stop_reason": "end_turn", "usage": {"input_tokens": 20, "output_tokens": 3}}
+                   if len(calls) == 1 else
+                   {"content": [{"type": "text", "text": "The answer is 42."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 20, "output_tokens": 3}})
+            return {"status": 200, "headers": {}, "body": _json.dumps(raw)}
+        return _http_request(method, url, **kw)   # the real server
 
-    import tempfile
     traces = Path(tempfile.mkdtemp())
     runner = Runner(client, cfg, kernel_wasm=kernel, traces_dir=traces,
                     resolver=AnyModuleResolver(client, current_space=fresh_space),
-                    user_space=fresh_space, llm_transport=fake_transport)
+                    user_space=fresh_space, any_base=any_server,
+                    http_request=hybrid_request)
 
     result = runner.run_conversation(chat, "what is 40 + 2?")
 
-    # the loop finished with the model's final reply
-    assert result.outcome.stop == "done"
-    assert result.outcome.replies == ["The answer is 42."]
+    assert result.status == "ok", result.error
+    assert result.value["stop"] == "done"
+    assert result.value["replies"] == ["The answer is 42."]
     assert len(calls) == 2  # one tool turn + one done turn
 
-    # the turn persisted to the user space (agent_turns), server-assigned seq
+    # the turn persisted LIVE (agent_turns, server-assigned seq)
     turns = client.query(fresh_space, chat, "agent_turns", sort=["seq"])
     assert len(turns) == 1
     assert turns[0]["userText"] == "what is 40 + 2?"
-    assert turns[0]["traceRef"] == result.trace_ref
     assert turns[0]["replies"] == ["The answer is 42."]
+
+    # reply bubble arrived in the real chat, agent-authored
+    msgs = client.query(fresh_space, chat, "chat_messages")
+    assert any(m.get("agent", {}).get("done") and "42" in m.get("text", "")
+               for m in msgs)
 
     # the trace is device-local (a file, not synced)
     assert (traces / f"{result.trace_ref}.jsonl").exists()

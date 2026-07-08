@@ -12,7 +12,6 @@ import uuid
 
 import pytest
 from anybao.anyclient import AnyError
-from anybao.recall import Recall
 
 pytestmark = pytest.mark.integration
 
@@ -27,18 +26,18 @@ def _poll_search(recall, query, *, scopes, timeout=10.0):
     return []
 
 
-def test_search_finds_written_content(client, fresh_space):
+def test_search_finds_written_content(client, fresh_space, guest_use):
     # any.name always indexes under scope `basic` (prop chunker) — the
     # agent-data datasets are excluded from indexing today, so an object
     # name is the reliable searchable write.
     token = f"zanzibar{uuid.uuid4().hex[:8]}"
     client.create_object(fresh_space, {"initialProperties": {"any": {"name": f"note {token}"}}})
 
-    r = Recall(client, fresh_space)
+    r = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space)
     try:
         hits = _poll_search(r, token, scopes=("agent", "history", "basic"))
-    except AnyError as e:
-        if e.code == "index.disabled":
+    except Exception as e:
+        if getattr(e, "code", "") == "index.disabled":
             pytest.skip("search index disabled on this server")
         raise
     if not hits:
@@ -48,7 +47,7 @@ def test_search_finds_written_content(client, fresh_space):
     assert {"objectId", "dataset", "recordId", "score"} <= hit.keys()
 
 
-def test_by_period_fans_out_across_real_datasets(client, fresh_space):
+def test_by_period_fans_out_across_real_datasets(client, fresh_space, guest_use):
     now = int(time.time())
     chat = client.create_object(fresh_space, {"types": ["chat"]})["objectId"]
     client.append_turn(fresh_space, chat,
@@ -60,7 +59,8 @@ def test_by_period_fans_out_across_real_datasets(client, fresh_space):
     client._call("POST", f"/v1/spaces/{fresh_space}/agent/memory",
                  {"category": "lesson", "context": "test fact"})
 
-    r = Recall(client, fresh_space, brain_object_id=brain, chat_object_id=chat)
+    r = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space,
+                                      brain_object_id=brain, chat_object_id=chat)
     recs = r.by_period(now - 3600, now + 3600)
     assert {x["source"] for x in recs} == {"memory", "turn", "chunk"}
     # merged list is time-ascending on each source's natural field
@@ -70,7 +70,7 @@ def test_by_period_fans_out_across_real_datasets(client, fresh_space):
     assert r.by_period(now - 7200, now - 7100) == []
 
 
-def test_neighbors_forward_refs_live(client, fresh_space):
+def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
     # Object refs are links-format properties: arrays of any://<id> URIs
     # (an object-KIND property would reject a bare id string). Helper
     # doesn't take a format kwarg, so define the property via the client.
@@ -84,7 +84,8 @@ def test_neighbors_forward_refs_live(client, fresh_space):
         "initialProperties": {"any": {"name": "source"},
                               tid: {pid: [f"any://{target}"]}}})["objectId"]
 
-    got = Recall(client, fresh_space).neighbors(source)
+    rec = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space)
+    got = rec.neighbors(source)
     assert [f["targetId"] for f in got["forward"]] == [target]  # any:// stripped
     assert got["forward"][0]["propName"] == "Relates To"
 
@@ -95,5 +96,5 @@ def test_neighbors_forward_refs_live(client, fresh_space):
         if e.code == "request.not_found":
             pytest.skip("server predates the /backlinks route")
         raise
-    back = Recall(client, fresh_space).neighbors(target)
+    back = rec.neighbors(target)
     assert {"sourceId": source, "typeId": tid, "propId": pid} in back["backlinks"]

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .loop import Mailbox
+from .mailbox import Mailbox
 
 
 class Watcher:

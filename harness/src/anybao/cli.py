@@ -22,9 +22,17 @@ import threading
 import time
 from pathlib import Path
 
-from .llm import ADAPTERS, http_transport
-
 FIXTURES_DIR = Path("harness/tests/fixtures")
+PROGRAMS_DIR = Path(__file__).resolve().parents[3] / "programs"
+
+
+def llm_module():
+    """The llm@v1 guest module exec'd host-side — the adapters are pure
+    translation, equally at home in the seeding CLI and tests."""
+    g = {"effect": lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no effects host-side")),
+         "span": lambda name: (lambda f: f), "use": None}
+    exec(compile((PROGRAMS_DIR / "llm@v1.py").read_text(), "llm@v1.py", "exec"), g)
+    return g
 
 
 def llm_seed(args: argparse.Namespace) -> int:
@@ -32,14 +40,22 @@ def llm_seed(args: argparse.Namespace) -> int:
     if not key:
         print(f"error: ${args.api_key_env} is not set", file=sys.stderr)
         return 2
-    prov = {"provider": args.provider, "model": args.model,
-            "base_url": args.base_url, "api_key_ref": args.api_key_env}
-    adapter = ADAPTERS[args.provider]()
+    mod = llm_module()
+    adapter = mod["build_adapter"](args.provider, False)
     req = adapter.build_request(
         [{"role": "user", "parts": [{"type": "text",
                                      "text": "Reply with the single word OK."}]}],
         "", [], args.model)
-    raw = http_transport(os.environ.get)(prov, req)
+    from .effects_impl import _http_request
+    if args.provider == "anthropic":
+        raw_resp = _http_request(
+            "POST", args.base_url.rstrip("/") + "/v1/messages", json_body=req,
+            headers={"anthropic-version": "2023-06-01", "x-api-key": key})
+    else:
+        raw_resp = _http_request(
+            "POST", args.base_url.rstrip("/") + "/chat/completions", json_body=req,
+            headers={"Authorization": "Bearer " + key})
+    raw = json.loads(raw_resp["body"])
     # sanity: the adapter must be able to translate what came back
     reply = adapter.parse_response(raw)
     assert reply["parts"], "provider response translated to no parts"
@@ -68,6 +84,7 @@ def bootstrap_config():
     store when config writes need to sync — the cascade is the same."""
     from .config import Config, DictConfigStore
     cfg = Config(DictConfigStore())
+    cfg.define("any.base_url", default="http://127.0.0.1:7001")
     cfg.define("llm.key.anthropic", secret=True)
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if key:
@@ -137,13 +154,18 @@ def serve(args: argparse.Namespace) -> int:
     from .anyclient import AnyClient, sse_http_transport
     from .anyclient import http_transport as any_http
     from .deploy import Deployer
-    from .history import rollup_trigger
-    from .memory import extraction_trigger, linkgen_trigger
     from .overlays import resolver_from_config
     from .runner import Runner
     from .skills import SkillDeployer, compose_system, load_skills_dir
     from .trigger_control import TriggerService, start_server
-    from .triggers import Scheduler, TriggerRuntime, TriggerStore
+    from .triggers import (
+        Scheduler,
+        TriggerRuntime,
+        TriggerStore,
+        extraction_trigger,
+        linkgen_trigger,
+        rollup_trigger,
+    )
     from .watch import Watcher
 
     client = AnyClient(any_http(args.addr), sse_http_transport(args.addr))
@@ -157,6 +179,7 @@ def serve(args: argparse.Namespace) -> int:
     print(f"skills → {skills_out}", flush=True)
 
     cfg = bootstrap_config()
+    cfg.set("any.base_url", args.addr, scope="device")
     if args.overlay:
         cfg.set("overlays.agent", args.overlay, scope="device")
     resolver = resolver_from_config(client, cfg, current_space=overlay,
@@ -174,7 +197,7 @@ def serve(args: argparse.Namespace) -> int:
                 system += "\n\n" + section
     runner = Runner(client, cfg, kernel_wasm=args.kernel, traces_dir=args.traces_dir,
                     resolver=resolver, user_space=space, system=system,
-                    agent_name=args.agent_name)
+                    agent_name=args.agent_name, any_base=args.addr)
 
     watcher = Watcher(
         run_conversation=lambda cid, text, mb: _converse(runner, watcher, cid, text, mb),
@@ -237,7 +260,8 @@ def main(argv: list[str] | None = None) -> int:
 
     seed = sub.add_parser("llm-seed", help="record one real provider call "
                           "as a wire-shape fixture")
-    seed.add_argument("--provider", choices=sorted(ADAPTERS), default="anthropic")
+    seed.add_argument("--provider", choices=["anthropic", "openai-compat"],
+                      default="anthropic")
     seed.add_argument("--model")
     seed.add_argument("--base-url")
     seed.add_argument("--api-key-env")

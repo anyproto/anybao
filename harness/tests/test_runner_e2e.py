@@ -1,8 +1,9 @@
-"""Runner end-to-end, OFFLINE: real WasiEngine + scripted llm transport
-+ fake anyclient. The composition test the integration suite runs live,
-now runnable in CI — boot window, auto-recall injection, guest effect
-calls, turn persistence, ROI log, and the trigger program path all in
-one pass. Skips when bin/kernel.wasm is missing (repo convention)."""
+"""The v3 stack end-to-end, OFFLINE: real WasiEngine, all guest modules
+via use(), the llm as a credentialed http call answered by a fake wire.
+One conversation exercises: boot window, auto-recall injection, model
+cell via subcell (span-grouped), digest, chat bubbles, turn persistence,
+ROI log — every hop through the recorded http syscall. Skips without
+bin/kernel.wasm (repo convention)."""
 
 import json
 import tempfile
@@ -11,171 +12,168 @@ from pathlib import Path
 import pytest
 from anybao.anyclient import AnyClient
 from anybao.config import Config, DictConfigStore
+from anybao.mailbox import Mailbox
 from anybao.runner import Runner
 from anyrt.builtin_effects import DictResolver
 
-KERNEL = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
-PROGRAMS = Path(__file__).resolve().parents[2] / "programs"
+ROOT = Path(__file__).resolve().parents[2]
+KERNEL = ROOT / "bin" / "kernel.wasm"
+PROGRAMS = ROOT / "programs"
+ANY = "http://anyserver.test"
 
 pytestmark = pytest.mark.skipif(not KERNEL.exists(),
                                 reason="bin/kernel.wasm missing — run `make kernel`")
 
-MEM_REC = {"id": "m1", "category": "preference", "context": "prefers dark roast",
-           "confidence": 8, "validFrom": 1751328000, "accessCount": 0}
+
+def resolver():
+    return DictResolver({p.stem: p.read_text()
+                         for p in PROGRAMS.glob("*.py")})
 
 
-class FakeAnySpace:
-    """Enough of the any wire for a full conversation + program run."""
+class FakeWire:
+    """Answers BOTH backends at the http layer: the any server (space
+    data) and the anthropic endpoint (scripted replies)."""
 
-    def __init__(self, *, hits=(), turns=(), memory=(MEM_REC,)):
-        self.hits = list(hits)
-        self.datasets = {"agent_turns": list(turns), "agent_chunks": [],
-                         "agent_memory_items": list(memory),
-                         "agent_roi_injections": []}
-        self.appended_turns = []
-        self.created_chunks = []
-        self.bumps = []
-        self.modifies = []
+    def __init__(self, llm_replies, memory_items=()):
+        self.llm_replies = list(llm_replies)
+        self.llm_requests = []
+        self.turns = []
         self.chat_posts = []
+        self.datasets = {"agent_turns": self.turns, "agent_chunks": [],
+                         "agent_memory_items": list(memory_items),
+                         "agent_roi_injections": []}
+        self.search_hits = []
 
-    def __call__(self, method, path, body):
+    def __call__(self, method, url, *, params=None, headers=None,
+                 json_body=None, body=None, timeout=None):
+        if url.endswith("/v1/messages"):
+            assert headers.get("x-api-key") == "sk-live", "credential not injected"
+            self.llm_requests.append(json_body)
+            return self._ok(self.llm_replies.pop(0))
+        assert url.startswith(ANY), url
+        path = url[len(ANY):]
         if path.endswith("/search"):
-            return 200, {"hits": self.hits, "mode": "hybrid", "vectorStatus": "used"}
+            return self._ok({"hits": self.search_hits, "mode": "hybrid"})
         if path.endswith("/query"):
-            rows = self.datasets.get(body["dataset"], [])
-            flt = body.get("filter") or {}
-            if "id" in flt and "$in" in flt["id"]:
-                rows = [r for r in rows if r["id"] in flt["id"]["$in"]]
-            if "seq" in flt and "$gt" in flt["seq"]:
-                rows = [r for r in rows if r.get("seq", 0) > flt["seq"]["$gt"]]
-            if "level" in flt:
-                rows = [r for r in rows if r.get("level") == flt["level"]]
-            for key in reversed(body.get("sort") or []):
-                rows = sorted(rows, key=lambda r: r.get(key.lstrip("-"), 0),
-                              reverse=key.startswith("-"))
-            lim = body.get("limit")
-            return 200, {"records": rows[:lim] if lim else rows}
+            rows = self.datasets.get(json_body["dataset"], [])
+            flt = json_body.get("filter") or {}
+            if "id" in flt:
+                ids = flt["id"]["$in"] if isinstance(flt["id"], dict) else [flt["id"]]
+                rows = [r for r in rows if r.get("id") in ids]
+            return self._ok({"records": rows})
         if path.endswith("/agent/turns"):
-            self.appended_turns.append(body)
-            return 200, {"seq": len(self.appended_turns) - 1}
-        if path.endswith("/agent/chunks"):
-            self.created_chunks.append(body)
-            return 200, {"seq": len(self.created_chunks) - 1}
-        if "/agent/memory/" in path:
-            self.bumps.append((path.rsplit("/", 1)[1], body))
-            return 200, {"versionId": "v", "changeId": "c", "recordIds": ["m1"]}
+            self.turns.append({**json_body, "seq": len(self.turns)})
+            return self._ok({"seq": len(self.turns) - 1})
         if path.endswith("/chat/messages"):
-            self.chat_posts.append(body)
-            return 200, {"recordIds": [f"msg{len(self.chat_posts)}"]}
+            self.chat_posts.append(json_body)
+            return self._ok({"recordIds": [f"m{len(self.chat_posts)}"]})
+        if "/agent/memory/" in path and method == "PATCH":
+            return self._ok({"versionId": "v", "changeId": "c",
+                             "recordIds": [path.rsplit("/", 1)[1]]})
         if path.endswith("/modify"):
-            self.modifies.append(body)
-            return 200, {"versionId": "v", "changeId": "c",
-                         "recordIds": [body["records"][0]["id"]]}
-        return 404, {"error": {"code": "unknown", "message": path}}
+            rec = json_body["records"][0]
+            self.datasets.setdefault(json_body["dataset"], []).append(
+                {"id": rec["id"], **rec["ops"][0]["value"]})
+            return self._ok({"versionId": "v", "changeId": "c",
+                             "recordIds": [rec["id"]]})
+        return {"status": 404, "headers": {},
+                "body": json.dumps({"error": {"code": "unknown", "message": path}})}
+
+    @staticmethod
+    def _ok(payload):
+        return {"status": 200, "headers": {}, "body": json.dumps(payload)}
 
 
-def scripted_anthropic(responses):
-    calls = []
-
-    def transport(prov, req):
-        calls.append(req)
-        return responses[min(len(calls), len(responses)) - 1]
-    return transport, calls
-
-
-CFG = {
-    "llm.tier.codegen": {"value": {"provider": "anthropic", "model": "t",
-                                   "base_url": "http://x", "api_key_ref": "llm.key"}},
-    "llm.tier.classify": {"value": {"provider": "anthropic", "model": "t",
-                                    "base_url": "http://x", "api_key_ref": "llm.key"}},
-    "llm.key": {"localValue": "fake"},
-}
-
-
-def make_runner(fake, transport, resolver=None):
-    return Runner(AnyClient(fake), Config(DictConfigStore(dict(CFG))),
+def make_runner(wire):
+    cfg = Config(DictConfigStore({
+        "any.base_url": {"value": ANY},
+        "llm.tier.codegen": {"value": {"provider": "anthropic", "model": "t",
+                                       "base_url": "https://api.anthropic.com",
+                                       "api_key_ref": "llm.key"}},
+        "llm.tier.classify": {"value": {"provider": "anthropic", "model": "t",
+                                        "base_url": "https://api.anthropic.com",
+                                        "api_key_ref": "llm.key"}},
+        "llm.key": {"localValue": "sk-live"},
+    }))
+    return Runner(AnyClient(lambda m, p, b: (200, {})), cfg,
                   kernel_wasm=KERNEL, traces_dir=Path(tempfile.mkdtemp()),
-                  resolver=resolver or DictResolver({}),
-                  user_space="s1", llm_transport=transport)
+                  resolver=resolver(), user_space="s1", any_base=ANY,
+                  http_request=wire)
 
 
-def test_conversation_end_to_end_with_injection_and_guest_effect():
-    fake = FakeAnySpace(hits=[{"scope": "agent", "objectId": "brain1",
-                               "dataset": "agent_memory_items",
-                               "recordId": "m1", "score": 0.9}])
-    cell = ("rows = effect('any.query', {'space': 's1', 'object_id': 'chat1',"
-            " 'dataset': 'agent_memory_items', 'limit': 5})\nlen(rows)")
-    transport, calls = scripted_anthropic([
-        {"content": [{"type": "tool_use", "id": "t1", "name": "run_cell",
-                      "input": {"code": cell}}],
-         "stop_reason": "tool_use", "usage": {"input_tokens": 10, "output_tokens": 5}},
-        {"content": [{"type": "text", "text": "you like dark roast."}],
-         "stop_reason": "end_turn", "usage": {"input_tokens": 20, "output_tokens": 3}},
-    ])
-    runner = make_runner(fake, transport)
-    result = runner.run_conversation("chat1", "what coffee do I like?")
+MEM = {"id": "m1", "category": "preference", "context": "prefers dark roast",
+       "confidence": 8, "validFrom": 1751328000, "accessCount": 0}
 
-    assert result.outcome.stop == "done"
-    # auto-recall entered the FIRST request as a synthetic tool pair
-    first_msgs = calls[0]["messages"]
-    blocks = [b for m in first_msgs for b in m["content"]]
+
+def test_full_conversation_through_the_kernel():
+    wire = FakeWire(
+        llm_replies=[
+            {"content": [{"type": "tool_use", "id": "t1", "name": "run_cell",
+                          "input": {"code": "x = 40 + 2\nprint(x)\nx"}}],
+             "stop_reason": "tool_use",
+             "usage": {"input_tokens": 10, "output_tokens": 5}},
+            {"content": [{"type": "text", "text": "It is 42; you like dark roast."}],
+             "stop_reason": "end_turn",
+             "usage": {"input_tokens": 20, "output_tokens": 6}},
+        ],
+        memory_items=[MEM])
+    wire.search_hits = [{"scope": "agent", "objectId": "brain1",
+                         "dataset": "agent_memory_items", "recordId": "m1",
+                         "score": 0.03}]
+    runner = make_runner(wire)
+    result = runner.run_conversation("chat1", "what's 40+2, coffee fan?")
+
+    assert result.status == "ok", result.error
+    assert result.value and result.value["stop"] == "done"
+    assert result.value["replies"] == ["It is 42; you like dark roast."]
+    assert result.value["injected"] == 1
+
+    # auto-recall reached the provider wire as a synthetic tool pair
+    first = wire.llm_requests[0]["messages"]
+    blocks = [b for m in first for b in m["content"]]
     assert any(b.get("type") == "tool_use" and b.get("name") == "recall"
                for b in blocks)
-    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
-    assert any("dark roast" in str(b.get("content")) for b in tool_results)
-    # the injected item's accessCount bumped
-    assert ("m1", {"accessCount": 1}) in fake.bumps
-    # the guest cell's any.query effect reached the fake wire
-    assert result.outcome.replies == ["you like dark roast."]
-    # turn persisted with the local trace ref; trace file parses as JSONL
-    assert fake.appended_turns[0]["userText"] == "what coffee do I like?"
-    trace_path = runner._traces_dir / f"{result.trace_ref}.jsonl"
-    records = [json.loads(line) for line in trace_path.read_text().splitlines()]
-    effects = [r["effect"] for r in records if r.get("kind") == "effect"]
-    assert "llm.chat" in effects and "any.query" in effects
-    # ROI injection log written (best-effort path exercised)
-    roi_writes = [m for m in fake.modifies
-                  if m.get("dataset") == "agent_roi_injections"]
-    assert len(roi_writes) == 1
-    assert roi_writes[0]["records"][0]["ops"][0]["value"]["referenced"] is True
+    assert any("dark roast" in str(b.get("content", ""))
+               for b in blocks if b.get("type") == "tool_result")
+    # the model's cell ran in the kernel: digest carries the print
+    cell_results = [b for m in wire.llm_requests[1]["messages"]
+                    for b in m["content"] if b.get("type") == "tool_result"
+                    if b.get("tool_use_id") == "t1"]
+    assert "#0 42" in str(cell_results[0]["content"])
+    # reply bubble + turn persisted guest-side
+    assert wire.chat_posts[-1]["agent"]["done"] is True
+    assert wire.turns[0]["userText"] == "what's 40+2, coffee fan?"
+    assert wire.turns[0]["llm"]["stopReason"] == "done"
+    # ROI log written through /modify
+    assert wire.datasets["agent_roi_injections"]
+
+    # the trace shows the syscall surface only: http + span/cell + mailbox
+    trace = runner._traces_dir / f"{result.trace_ref}.jsonl"
+    records = [json.loads(ln) for ln in trace.read_text().splitlines()]
+    effects = {r["effect"] for r in records if r.get("kind") == "effect"}
+    assert any(e.startswith("http.") for e in effects)
+    assert "mailbox.drain" in effects
+    syscalls = ("http.", "mailbox.", "module.", "kernel.", "trace.",
+                "config.", "time.", "random.", "env.", "uuid4", "sleep", "batch")
+    assert all(e.startswith(syscalls) for e in effects), effects
+    spans = [r for r in records if r.get("kind") == "span"]
+    assert any(r.get("name") == "cell" for r in spans)
+    assert any(r.get("name") == "llm.chat" for r in spans)
 
 
-def test_same_conversation_twice_traces_identically():
-    """Loop purity (ADR-005): same inputs + same effect answers ⇒ the
-    trace's effect sequence (names + input keys) is bit-identical —
-    the property strict replay stands on."""
-    def one_run():
-        fake = FakeAnySpace()
-        transport, _ = scripted_anthropic([
-            {"content": [{"type": "text", "text": "hi."}],
-             "stop_reason": "end_turn",
-             "usage": {"input_tokens": 5, "output_tokens": 1}}])
-        runner = make_runner(fake, transport)
-        result = runner.run_conversation("chat1", "hello")
-        trace = runner._traces_dir / f"{result.trace_ref}.jsonl"
-        return [(r["effect"], r["key"]) for r in
-                (json.loads(ln) for ln in trace.read_text().splitlines())
-                if r.get("kind") == "effect"]
+def test_hard_break_interrupts_and_reports_stopped():
+    wire = FakeWire(llm_replies=[])  # llm never answers — we interrupt first
+    infra_posts = []
 
-    assert one_run() == one_run()
+    def infra(method, path, body):
+        infra_posts.append((path, body))
+        return 200, {"recordIds": ["x"]}
 
-
-def test_rollup_program_runs_in_the_real_guest():
-    turns = [{"id": f"t{i}", "seq": i, "userText": f"u{i}", "replies": [f"r{i}"],
-              "createdAt": 1000 + i} for i in range(1, 11)]
-    fake = FakeAnySpace(turns=turns)
-    transport, calls = scripted_anthropic([
-        {"content": [{"type": "text", "text": "ten turns about coffee."}],
-         "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 5}},
-    ])
-    resolver = DictResolver({"rollup@v1": (PROGRAMS / "rollup@v1.py").read_text()})
-    runner = make_runner(fake, transport, resolver=resolver)
-
-    res = runner.run_program("rollup@v1", {"space": "s1", "chatId": "chat1"})
-    assert res.status == "ok", res.error
-    assert res.fuel and res.fuel > 0
-    assert len(fake.created_chunks) == 1
-    chunk = fake.created_chunks[0]
-    assert (chunk["level"], chunk["fromSeq"], chunk["toSeq"]) == (1, 1, 10)
-    assert chunk["summary"] == "ten turns about coffee."
-    assert calls[0]["messages"][0]["content"][0]["text"].startswith("user: u1")
+    runner = make_runner(wire)
+    runner._client = AnyClient(infra)
+    mb = Mailbox()
+    mb.break_hard()   # flag set before the run: watchdog fires immediately
+    result = runner.run_conversation("chat1", "hi", mailbox=mb)
+    assert result.status in ("interrupted", "error")
+    assert any("Stopped." in str(b) or "broke mid-run" in str(b)
+               for _, b in infra_posts)

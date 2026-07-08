@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 from anybao import cli
-from anybao.llm import ADAPTERS
 
 ANTHROPIC_RAW = {
     "content": [{"type": "text", "text": "OK"}],
@@ -20,13 +19,16 @@ FIXTURE = Path(__file__).parent / "fixtures" / "llm_anthropic.json"
 def test_llm_seed_writes_raw_response(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_transport(secret_lookup):
-        def transport(prov, req):
-            seen["prov"], seen["req"] = prov, req
-            return ANTHROPIC_RAW
-        return transport
+    import json as _j
 
-    monkeypatch.setattr(cli, "http_transport", fake_transport)
+    from anybao import effects_impl
+
+    def fake_request(method, url, *, params=None, headers=None,
+                     json_body=None, body=None, timeout=None):
+        seen["url"], seen["req"], seen["headers"] = url, json_body, headers
+        return {"status": 200, "headers": {}, "body": _j.dumps(ANTHROPIC_RAW)}
+
+    monkeypatch.setattr(effects_impl, "_http_request", fake_request)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     out = tmp_path / "llm_anthropic.json"
     rc = cli.main(["llm-seed", "--provider", "anthropic", "--out", str(out)])
@@ -42,13 +44,14 @@ def test_llm_seed_without_key_is_a_clean_error(monkeypatch, capsys):
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("provider", sorted(ADAPTERS))
+@pytest.mark.parametrize("provider", ["anthropic", "openai-compat"])
 def test_seeded_fixture_translates_when_present(provider):
     """The fixture-consumer side: once llm-seed has run for real, the
     adapter must translate the recorded wire shape."""
     fixture = FIXTURE.parent / f"llm_{provider}.json"
     if not fixture.exists():
         pytest.skip(f"no seeded {provider} fixture yet — run `anybao llm-seed`")
-    reply = ADAPTERS[provider]().parse_response(json.loads(fixture.read_text()))
+    adapter = cli.llm_module()["build_adapter"](provider, False)
+    reply = adapter.parse_response(json.loads(fixture.read_text()))
     assert reply["parts"] and reply["stop"] in ("done", "tool", "length")
     assert reply["usage"]["in"] > 0
