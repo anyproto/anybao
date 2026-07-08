@@ -43,6 +43,15 @@ generic `batch` effect (`effect("batch", {"name": "llm.chat",
 (ADR-002 resolved Q3); the stable block's tool-docs + memory-category
 sections assemble in `anybao serve` (ADR-005 §5).
 
+Live-verified 2026-07-08 (gate walk 1): auto-recall injected on a real
+conversation (accessCount bumps, ROI log `referenced: true`), the
+extraction trigger fired through the control API and swept real turns
+through the dedup judge in the guest, and the golden recall eval hit
+recall@5 = 1.0 on the live hybrid index. Two policy calibrations came
+out of it: the RRF score scale (threshold 0.35 → 0.015) and the humble
+merge (ADR-007 §2 amendment — machine re-sightings were blurring
+user-stated facts).
+
 Learnings:
 
 - Guest programs are the natural home for every sweep: `effect()` +

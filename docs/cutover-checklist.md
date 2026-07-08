@@ -4,6 +4,18 @@ The M4 gate: run anybao side-by-side against the old binary on a test
 space, walk every BOBRIK.md behavior, then retire bobrik-watch. No
 bridges — verification, not compatibility (no-backcompat principle).
 
+**Walk 1 (2026-07-08, automated, bao-test space, fts+vector server):**
+startup / deploy / skills / triggers / conversation / cell execution /
+explicit memory save / auto-recall injection (accessCount + ROI log) /
+trace + viewer / control-API patch → live reschedule → extraction fired
+(2 runs: 4.2s real work, 5ms no-op cursor hit) — ALL VERIFIED LIVE.
+Golden recall eval recall@5 = 1.0; full integration suite 18/18, zero
+skips. Six wire bugs live-caught and fixed (commits e5a2040…a08819f);
+one upstream addition (any d2165e2: brain bookkeeping datasets); server
+must be built with `-tags 'fts vector'` (the warning is in its log).
+Remaining before retirement: the human side-by-side day on the real
+bao space (below).
+
 ## Setup (side-by-side)
 
 ```sh
