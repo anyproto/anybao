@@ -87,6 +87,34 @@ def test_deploy_one_create_update_unchanged():
         == "updated"
 
 
+def test_tool_docs_and_category_sections():
+    from anybao.skills import memory_categories_section, tool_docs_section
+
+    def send(method, path, body):
+        if path.endswith("/objects/query"):
+            return 200, {"records": [{"id": "p1", "program": {"name": "websearch"}}]}
+        if path.endswith("/agent/brain"):
+            return 200, {"objectId": "brain1"}
+        if path.endswith("/query"):
+            ds = body["dataset"]
+            if ds == "program_description":
+                return 200, {"records": [{"id": "main", "text": "Searches the web."}]}
+            if ds == "program_methods":
+                return 200, {"records": [
+                    {"id": "go", "name": "go(q)", "kind": "getter", "pos": 0}]}
+            return 200, {"records": [{"id": "m1", "category": "preference"},
+                                     {"id": "m2", "category": "lesson"},
+                                     {"id": "m3", "category": "lesson"}]}
+        return 404, {"error": {"code": "unknown", "message": path}}
+
+    client = AnyClient(send)
+    docs = tool_docs_section(client, "s1")
+    assert "### websearch" in docs and "Searches the web." in docs
+    assert "- `go(q)` [getter]" in docs
+    cats = memory_categories_section(client, "s1")
+    assert cats == "Memory categories in use: lesson, preference"
+
+
 def test_deploy_dir_survives_existing_type_and_reports_statuses():
     fake = FakeAny(existing=None)
     statuses = SkillDeployer(AnyClient(fake), space="s1").deploy_dir(SKILLS_DIR)

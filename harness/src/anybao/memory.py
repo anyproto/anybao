@@ -232,6 +232,12 @@ def register_memory_effects(registry: Registry, client: AnyClient, *,
     def memory_delete(ctx, item_id):
         return mem.delete(item_id)
 
+    @effect("memory.bump_access", kind="mutate", registry=registry, cap="memory.write")
+    def memory_bump_access(ctx, item_id, current_count=0):
+        """§4.3 bump for the agent's EXPLICIT recall path (auto-recall
+        bumps host-side; a deliberate dig bumps through this)."""
+        return mem.bump_access(item_id, current_count)
+
     @effect("memory.save_with_dedup", kind="mutate", registry=registry,
             cap="memory.write")
     def memory_save_with_dedup(ctx, candidate):

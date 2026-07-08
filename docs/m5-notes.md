@@ -35,6 +35,14 @@ await live traffic (the ROI metrics are the standing judge).
       kill the extractor/injector — review at the M4 gate's metrics
       checkpoint and monthly after.
 
+Gaps closed on review (recon cross-check 2026-07-08): explicit-recall
+accessCount bump = `memory.bump_access` effect (auto-recall bumps
+host-side); batched judge/summary calls need no `complete_many` — the
+generic `batch` effect (`effect("batch", {"name": "llm.chat",
+"payloads": [...]})`) already fans out with input-order records
+(ADR-002 resolved Q3); the stable block's tool-docs + memory-category
+sections assemble in `anybao serve` (ADR-005 §5).
+
 Learnings:
 
 - Guest programs are the natural home for every sweep: `effect()` +

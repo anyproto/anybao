@@ -145,6 +145,16 @@ def serve(args: argparse.Namespace) -> int:
     resolver = resolver_from_config(client, cfg, current_space=overlay,
                                     private_space=space)
     system = compose_system(load_skills_dir(args.skills))
+    # stable block = core skills + tool docs + memory categories (ADR-005 §5)
+    import contextlib
+
+    from .skills import memory_categories_section, tool_docs_section
+    for section_of, target in ((tool_docs_section, overlay),
+                               (memory_categories_section, space)):
+        with contextlib.suppress(Exception):  # fresh space = no sections yet
+            section = section_of(client, target)
+            if section:
+                system += "\n\n" + section
     runner = Runner(client, cfg, kernel_wasm=args.kernel, traces_dir=args.traces_dir,
                     resolver=resolver, user_space=space, system=system,
                     agent_name=args.agent_name)

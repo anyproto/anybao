@@ -39,7 +39,10 @@ categories before inventing one (vocabulary drift kills recall).
 
 Top hits for the user's message are auto-injected at turn start as a
 `recall` tool result — dig explicitly when you need more than they
-show.
+show. When a deliberate dig actually USES a memory item, bump it:
+`effect("memory.bump_access", {"item_id": ..., "current_count":
+<its accessCount>})` — accessCount is the signal that keeps useful
+memories alive (auto-injected items are bumped for you).
 
 ## Evolving
 

@@ -79,6 +79,33 @@ class SkillDeployer:
                 for name, content in load_skills_dir(src_dir).items()}
 
 
+def tool_docs_section(client: AnyClient, space: str) -> str:
+    """The stable block's tool-docs slice (ADR-005 §5): every deployed
+    any_tool program's description + method inventory."""
+    progs = client.query_objects(space, filter={"program.any_tool": True})
+    parts = []
+    for p in progs:
+        name = (p.get("program") or {}).get("name", "?")
+        desc = client.query(space, p["id"], "program_description")
+        methods = client.query(space, p["id"], "program_methods")
+        block = [f"### {name}"]
+        if desc:
+            block.append(desc[0].get("text", ""))
+        block += [f"- `{m.get('name')}` [{m.get('kind', 'getter')}]"
+                  for m in sorted(methods, key=lambda m: m.get("pos", 0))]
+        parts.append("\n".join(block))
+    return "## Tools\n\n" + "\n\n".join(parts) if parts else ""
+
+
+def memory_categories_section(client: AnyClient, space: str) -> str:
+    """Category-name inventory (ADR-007 §5 — cheap, cache-stable; the
+    write path's vocabulary anchor)."""
+    brain = client.get_brain(space)["objectId"]
+    items = client.query(space, brain, "agent_memory_items", limit=500)
+    cats = sorted({i.get("category") for i in items if i.get("category")})
+    return "Memory categories in use: " + ", ".join(cats) if cats else ""
+
+
 def load_skills_space(client: AnyClient, space: str) -> dict[str, str]:
     """System skills back from a space — the runtime side of compose."""
     recs = client.query_objects(space, filter={f"{SKILL_TYPE}.name":

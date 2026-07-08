@@ -15,19 +15,11 @@ the next; you are continuing, not starting fresh.
 cells fail more legibly than one mega-cell. The turn ends when you reply
 with text only (no tool call).
 
-**Reading what a cell returns.** The tool result has up to three
-sections:
-
-- **Output** — everything you `print()`, in call order. This is your
-  primary way to see data. A large printed value collapses to a
-  `[<N> bytes, <schema> — values.get("<cell>", <i>) to walk]` stub;
-  fetch the real structured value in a later cell with
-  `values.get(cell_id, i)` and slice it with normal Python.
-- **Last value** — the cell's final expression, same inline-or-stub rule
-  (`values.get(cell_id, "last")` when stubbed).
-- **Side effects** — a per-call-signature count of the effects the cell
-  made, mutations called out individually. The full record is queryable:
-  `effects.of(cell_id)` returns the cell's effect one-liners.
+**Reading what a cell returns.** The tool result shows your `print()`
+output, the cell's last expression, and a side-effects summary. Large
+values collapse to a stub naming the exact `values.get(...)` call that
+fetches them in a later cell; `effects.of(cell_id)` lists a cell's
+effect one-liners when you need the full record.
 
 ## Cell semantics
 

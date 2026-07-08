@@ -48,8 +48,17 @@ def test_effects_registered_as_mutate_with_memory_cap():
     reg = Registry()
     register_memory_effects(reg, AnyClient(lambda m, p, b: (200, {})), space="s1")
     for name in ("memory.add", "memory.evolve", "memory.delete",
-                 "memory.save_with_dedup"):
+                 "memory.save_with_dedup", "memory.bump_access"):
         assert reg.get(name).kind == "mutate" and reg.get(name).cap == "memory.write"
+
+
+def test_bump_access_effect_increments_from_current():
+    cap = []
+    b, _ = broker_with("unused", cap)
+    out = b.call("memory.bump_access", {"item_id": "m1", "current_count": 4})
+    assert out == {"itemId": "m1", "accessCount": 5}
+    patch = [b_ for _, p, b_ in cap if p.endswith("/agent/memory/m1")]
+    assert patch == [{"accessCount": 5}]
 
 
 def test_save_with_dedup_merge_records_nested_judge_call():
