@@ -36,27 +36,27 @@
       "helper": null
     },
     "GET /account": {
-      "excluded": null,
+      "excluded": "harness/account profile",
       "fingerprint": "sha256:73e21939b71a4a58",
       "helper": null
     },
     "GET /auth": {
-      "excluded": null,
+      "excluded": "harness auth/boot",
       "fingerprint": "sha256:959ce9ec0364f6c9",
       "helper": null
     },
     "GET /datasets": {
-      "excluded": null,
+      "excluded": "schema discovery (harness)",
       "fingerprint": "sha256:73e21939b71a4a58",
       "helper": null
     },
     "GET /files/cache": {
-      "excluded": null,
+      "excluded": "file cache ops (harness/ops)",
       "fingerprint": "sha256:73e21939b71a4a58",
       "helper": null
     },
     "GET /health": {
-      "excluded": null,
+      "excluded": "harness lifecycle",
       "fingerprint": "sha256:959ce9ec0364f6c9",
       "helper": null
     },
@@ -91,17 +91,17 @@
       "helper": null
     },
     "GET /spaces/{spaceId}/datasets": {
-      "excluded": null,
+      "excluded": "schema discovery (harness)",
       "fingerprint": "sha256:5c63cf769c659144",
       "helper": null
     },
     "GET /spaces/{spaceId}/debug": {
-      "excluded": null,
+      "excluded": "diagnostic (harness/human)",
       "fingerprint": "sha256:5c63cf769c659144",
       "helper": null
     },
     "GET /spaces/{spaceId}/debug/objects/{objectId}": {
-      "excluded": null,
+      "excluded": "diagnostic (harness/human)",
       "fingerprint": "sha256:9f42263101526eb5",
       "helper": null
     },
@@ -181,17 +181,17 @@
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status": {
-      "excluded": null,
+      "excluded": "diagnostic/sync (harness)",
       "fingerprint": "sha256:5c63cf769c659144",
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status/objects/{objectId}": {
-      "excluded": null,
+      "excluded": "diagnostic/sync (harness)",
       "fingerprint": "sha256:9f42263101526eb5",
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status/objects/{objectId}/subscribe": {
-      "excluded": null,
+      "excluded": "diagnostic/sync (harness)",
       "fingerprint": "sha256:9f42263101526eb5",
       "helper": null
     },
@@ -211,7 +211,7 @@
       "helper": "helper catalog (list_properties)"
     },
     "GET /sync-status/subscribe": {
-      "excluded": null,
+      "excluded": "diagnostic/sync (harness)",
       "fingerprint": "sha256:959ce9ec0364f6c9",
       "helper": null
     },
@@ -241,22 +241,22 @@
       "helper": null
     },
     "POST /auth": {
-      "excluded": null,
+      "excluded": "harness auth/boot",
       "fingerprint": "sha256:50ea584dba15a4d0",
       "helper": null
     },
     "POST /files/cache/free": {
-      "excluded": null,
+      "excluded": "file cache ops (harness/ops)",
       "fingerprint": "sha256:736be8690f9f5064",
       "helper": null
     },
     "POST /files/cache/sweep": {
-      "excluded": null,
+      "excluded": "file cache ops (harness/ops)",
       "fingerprint": "sha256:918fc860ba813e78",
       "helper": null
     },
     "POST /shutdown": {
-      "excluded": null,
+      "excluded": "harness lifecycle",
       "fingerprint": "sha256:9a810fd328333506",
       "helper": null
     },
@@ -346,7 +346,7 @@
       "helper": null
     },
     "POST /spaces/{spaceId}/delete-records": {
-      "excluded": null,
+      "excluded": "low-level (harness)",
       "fingerprint": "sha256:932e8521d61b089d",
       "helper": null
     },
@@ -371,7 +371,7 @@
       "helper": null
     },
     "POST /spaces/{spaceId}/modify": {
-      "excluded": null,
+      "excluded": "raw modify \u2014 helper wraps internally",
       "fingerprint": "sha256:28ffe2f6594b99e3",
       "helper": null
     },
@@ -481,7 +481,7 @@
       "helper": "helper.search"
     },
     "POST /spaces/{spaceId}/sync": {
-      "excluded": null,
+      "excluded": "diagnostic/sync (harness)",
       "fingerprint": "sha256:86f9fa5498bd4e62",
       "helper": null
     },
@@ -501,7 +501,7 @@
       "helper": null
     },
     "PUT /account/metadata": {
-      "excluded": null,
+      "excluded": "harness/account profile",
       "fingerprint": "sha256:652478553dffd22e",
       "helper": null
     },
