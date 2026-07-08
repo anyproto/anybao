@@ -14,7 +14,9 @@ wasi guest.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +27,7 @@ from anyrt.builtin_effects import ModuleResolver, register_builtin_effects
 from anyrt.effects import Broker, Registry
 from anyrt.wasi import WasiEngine
 
+from . import roi
 from .anyclient import AnyClient
 from .autorecall import AutoRecall
 from .config import Config, register_config_effect
@@ -143,6 +146,11 @@ class Runner:
         hist.append_turn(
             build_turn(user_text=user_text, outcome=outcome, trace_ref=run_id,
                        from_agent=self._agent_name))
+        if recall.last_injected:  # ROI log (ADR-007 §5) — best-effort
+            with contextlib.suppress(Exception):
+                roi.log_injection(self._client, self._user_space,
+                                  recall.last_injected, outcome.replies,
+                                  ts=int(time.time()))
         return ConversationResult(outcome, run_id)
 
     def run_program(self, spec: str, args: dict | None = None) -> ProgramResult:

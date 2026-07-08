@@ -1,0 +1,20 @@
+{"kind": "item", "category": "preference", "context": "prefers tabular data as page objects, never markdown tables in chat", "body": "chat tables render badly; create a page and link it"}
+{"kind": "item", "category": "preference", "context": "reading list entries use category tags, not emoji prefixes", "body": "switched 2026-04; old emoji prefixes retired"}
+{"kind": "item", "category": "lesson", "context": "bulk creates without a one-item probe first corrupted the books collection", "body": "always test the helper on one item, inspect, then batch"}
+{"kind": "item", "category": "lesson", "context": "search scope agent misses editor content; add scope basic for page bodies"}
+{"kind": "item", "category": "decision", "context": "picked sqlite over postgres for the tracker: simpler ops, single user", "body": "revisit only if concurrent writers appear"}
+{"kind": "item", "category": "decision", "context": "weekly review runs friday morning, summaries filed under the review collection"}
+{"kind": "item", "category": "fact", "context": "the staging server lives at staging.internal:7002 behind tailscale"}
+{"kind": "item", "category": "fact", "context": "zarkone timezone is europe/berlin; schedule reminders accordingly"}
+{"kind": "item", "category": "fact", "context": "the identities directory anchors people objects; one object per person"}
+{"kind": "item", "category": "preference", "context": "likes dark roast coffee, drinks it black"}
+{"kind": "item", "category": "fact", "context": "the cat is named miso and interrupts video calls"}
+{"kind": "item", "category": "lesson", "context": "deleting a type with live objects orphans their property groups"}
+{"kind": "case", "query": "how should I show a table of tasks", "expectContext": "tabular data as page objects"}
+{"kind": "case", "query": "tags or emoji for the reading list?", "expectContext": "category tags, not emoji prefixes"}
+{"kind": "case", "query": "about to create 40 book objects in one go", "expectContext": "bulk creates without a one-item probe"}
+{"kind": "case", "query": "which database did we choose for the tracker and why", "expectContext": "sqlite over postgres"}
+{"kind": "case", "query": "where is the staging environment", "expectContext": "staging.internal:7002"}
+{"kind": "case", "query": "when do we do the weekly review", "expectContext": "friday morning"}
+{"kind": "case", "query": "what timezone is the user in", "expectContext": "europe/berlin"}
+{"kind": "case", "query": "coffee order for the user", "expectContext": "dark roast"}

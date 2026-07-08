@@ -102,6 +102,8 @@ class AutoRecall:
         self.policy = policy or AutoRecallPolicy()
         self._recall = recall or Recall(client, space)
         self._memory = memory or Memory(client, space)
+        # (hit, item) pairs actually injected last call — the ROI log's input
+        self.last_injected: list[tuple[dict, dict]] = []
 
     def messages_for(self, user_text: str, *, boot_min_seq: int | None = None) -> list[dict]:
         try:
@@ -122,6 +124,7 @@ class AutoRecall:
         pairs = self._recall.hydrate(mem_hits + hist_hits)
         budget = p.token_budget
 
+        self.last_injected = []
         mem_lines, bumped = [], []
         for h, rec in pairs:
             if h["dataset"] != "agent_memory_items" or len(mem_lines) >= p.max_memory:
@@ -133,6 +136,7 @@ class AutoRecall:
             mem_lines.append(line)
             budget -= cost
             bumped.append(rec)
+            self.last_injected.append((h, rec))
 
         hist_lines = []
         for h, rec in pairs:
