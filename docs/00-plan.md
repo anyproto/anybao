@@ -465,6 +465,24 @@ change, never syncs):
     the device secret + manifest recipe + host-binds + injects + redacts.
     Convention pinned: `credentials.<name>` = the device secret;
     `integrations.<name>.*` = the program's own non-secret config.
+  - **Agent-initiated key entry via the UI channel (2026-07-08).** The
+    agent DRIVES collection but never touches the secret. A new UI
+    command action `ui.request_credential {name, program, overlay,
+    label, hosts, recipe}` (alongside open_space/open_object — the
+    channel is "extensible to other UI-side ops", plan §18) makes the
+    connected any-ui render a secret-input control. **The secret bypasses
+    the agent entirely**: user → UI → LOCAL device-secret store
+    (`credentials.<name>`, device scope); the UI signals back only
+    "provided:true" (never the key), so it never enters chat/trace/LLM
+    context. UX collapse: the capability GRANT + key entry are one dialog
+    (the tool declared `credentials:[name]`). Security guard (agent-
+    triggered "paste your key" is a phishing surface): the request
+    carries PROVENANCE + host-binding SHOWN to the user ("linear@v1 from
+    std, key goes only to api.linear.app"), a program can't request a
+    credential it didn't declare, and the host-binding is enforced at
+    injection regardless of what the UI displayed. Right architecture:
+    agent initiates, UI collects, secret bypasses agent, provenance +
+    host-binding make it non-spoofable.
 
 ### Loop control: break + inject (new requirement)
 The toolcaller loop must support external control while running:
