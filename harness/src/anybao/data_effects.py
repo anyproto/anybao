@@ -96,6 +96,12 @@ def register_data_effects(registry: Registry, client: AnyClient) -> None:
         level/range; server assigns seq) — the rollup program's write."""
         return client.create_chunk(space, object_id, body)
 
+    @effect("any.put_markdown", kind="mutate", registry=registry, cap=WRITE)
+    def any_put_markdown(ctx, space, object_id, content):
+        """Replace an editor object's markdown. Surgical edits = get,
+        single-match str.replace, put (the guest-side edit idiom)."""
+        return client.put_markdown(space, object_id, content)
+
 
 def _opts(**kw) -> dict:
     """Drop None so absent options don't reach the wire as nulls."""
