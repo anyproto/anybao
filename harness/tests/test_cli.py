@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from anybao import cli
-from anybao.llm import AnthropicAdapter
+from anybao.llm import ADAPTERS
 
 ANTHROPIC_RAW = {
     "content": [{"type": "text", "text": "OK"}],
@@ -42,11 +42,13 @@ def test_llm_seed_without_key_is_a_clean_error(monkeypatch, capsys):
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
 
 
-def test_seeded_fixture_translates_when_present():
+@pytest.mark.parametrize("provider", sorted(ADAPTERS))
+def test_seeded_fixture_translates_when_present(provider):
     """The fixture-consumer side: once llm-seed has run for real, the
     adapter must translate the recorded wire shape."""
-    if not FIXTURE.exists():
-        pytest.skip("no seeded fixture yet — run `anybao llm-seed`")
-    reply = AnthropicAdapter().parse_response(json.loads(FIXTURE.read_text()))
+    fixture = FIXTURE.parent / f"llm_{provider}.json"
+    if not fixture.exists():
+        pytest.skip(f"no seeded {provider} fixture yet — run `anybao llm-seed`")
+    reply = ADAPTERS[provider]().parse_response(json.loads(fixture.read_text()))
     assert reply["parts"] and reply["stop"] in ("done", "tool", "length")
     assert reply["usage"]["in"] > 0
