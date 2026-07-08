@@ -65,11 +65,19 @@ class TriggerService:
     persists; the registry is authoritative between `load_all` and
     saves. Thread-safe: the HTTP binding runs threaded."""
 
-    def __init__(self, store: Store, *, owner: str):
+    def __init__(self, store: Store, *, owner: str,
+                 registry: dict[str, Trigger] | None = None):
+        """`registry` shares live state with a TriggerRuntime (pass
+        `runtime.triggers` — live-caught: separate dicts meant control-API
+        patches never reached the running scheduler). In-memory entries
+        win over persisted ones; store rows fill the gaps."""
         self._store = store
         self._owner = owner
         self._lock = threading.Lock()
-        self._triggers: dict[str, Trigger] = {t.id: t for t in store.load_all()}
+        self._triggers: dict[str, Trigger] = \
+            registry if registry is not None else {}
+        for t in store.load_all():
+            self._triggers.setdefault(t.id, t)
 
     # --- CRUD ---------------------------------------------------------------
     def create(self, fields: dict) -> str:
