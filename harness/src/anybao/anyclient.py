@@ -98,6 +98,15 @@ class AnyClient:
     def modify(self, space_id: str, body: dict) -> dict:
         return self._call("POST", f"/v1/spaces/{space_id}/modify", body)
 
+    def upsert_record(self, space_id: str, object_id: str, dataset: str,
+                      record_id: str, value: dict) -> dict:
+        """Write one dataset record (whole-value $set, upsert) — the
+        generic path for plain (unregistered) datasets like agent_triggers."""
+        return self.modify(space_id, {
+            "objectId": object_id, "dataset": dataset,
+            "records": [{"id": record_id, "upsert": True,
+                         "ops": [{"type": "$set", "path": "", "value": value}]}]})
+
     # --- editor markdown (content, NOT markdown — wire landmine) ---
     def get_markdown(self, space_id: str, object_id: str) -> str:
         r = self._call("GET", f"/v1/spaces/{space_id}/objects/{object_id}/editor/markdown")

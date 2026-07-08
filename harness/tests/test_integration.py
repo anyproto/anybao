@@ -84,3 +84,40 @@ def test_helper_editor_append(client, fresh_space):
     h.append_markdown(oid, "## section\nbody text")
     md = client.get_markdown(fresh_space, oid)
     assert "section" in md and "body text" in md
+
+
+# --- trigger persistence (TriggerStore over plain datasets) ------------------
+
+def test_trigger_store_persists_and_rolls_up(client, fresh_space):
+    from anybao.triggers import RunRecord, Scheduler, Trigger, TriggerStore
+
+    # the anchor object carries the agent_trigger type so its datasets
+    # (agent_triggers / agent_trigger_runs) are writable
+    anchor = client.create_object(fresh_space, {"types": ["agent_trigger"]})["objectId"]
+    store = TriggerStore(client, space=fresh_space, anchor_object_id=anchor)
+
+    t = Trigger(id="sweep1", name="memory sweep", kind="cron",
+                spec={"cron": "0 * * * *"}, program="evolve@v1", owner="inst-A",
+                limits={"fuelPerRun": 5_000_000})
+    store.save(t)
+
+    # reload from the server → definition survives
+    loaded = {x.id: x for x in store.load_all()}
+    assert "sweep1" in loaded
+    got = loaded["sweep1"]
+    assert got.kind == "cron" and got.spec == {"cron": "0 * * * *"}
+    assert got.owner == "inst-A" and got.limits == {"fuelPerRun": 5_000_000}
+
+    # record a run → run record persists AND the trigger rollup updates
+    sched = Scheduler("inst-A", now=lambda: 1000.0)
+    rec = sched.record_run(t, status="ok", duration_ms=42, fuel=1234,
+                           cost_usd=0.003, trace_ref="run_local_1")
+    store.record_run(t, rec, ts_ms=1_000_000)
+
+    runs = store.runs("sweep1")
+    assert len(runs) == 1 and runs[0]["fuel"] == 1234 and runs[0]["status"] == "ok"
+
+    # the reloaded trigger carries the rollup (monitoring view, no run open)
+    rolled = {x.id: x for x in store.load_all()}["sweep1"]
+    assert rolled.run_count == 1 and rolled.last_status == "ok"
+    assert rolled.last_run_ref == "run_local_1" and rolled.last_fuel == 1234

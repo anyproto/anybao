@@ -205,6 +205,73 @@ class TriggerRuntime:
         return result
 
 
+TRIGGER_TYPE = "agent_trigger"
+DATASET_TRIGGERS = "agent_triggers"
+DATASET_RUNS = "agent_trigger_runs"
+
+
+def trigger_to_record(t: Trigger) -> dict:
+    """The synced trigger record — carries the full definition AND the
+    rollup, so a `list` query returns the monitoring view without opening
+    runs (ADR-006 §4)."""
+    return {
+        "name": t.name, "kind": t.kind, "spec": t.spec, "program": t.program,
+        "args": t.args, "owner": t.owner, "enabled": t.enabled, "limits": t.limits,
+        "maxConsecutiveFailures": t.max_consecutive_failures,
+        "lastRunAt": t.last_run_at, "lastStatus": t.last_status,
+        "lastDurationMs": t.last_duration_ms, "lastFuel": t.last_fuel,
+        "lastCostUsd": t.last_cost_usd, "runCount": t.run_count,
+        "consecutiveFailures": t.consecutive_failures, "lastRunRef": t.last_run_ref,
+    }
+
+
+def trigger_from_record(rec: dict) -> Trigger:
+    return Trigger(
+        id=rec["id"], name=rec.get("name", ""), kind=rec.get("kind", "cron"),
+        spec=rec.get("spec", {}), program=rec.get("program", ""),
+        args=rec.get("args", {}), owner=rec.get("owner", ""),
+        enabled=rec.get("enabled", True), limits=rec.get("limits", {}),
+        max_consecutive_failures=rec.get("maxConsecutiveFailures",
+                                         DEFAULT_MAX_CONSECUTIVE_FAILURES),
+        last_run_at=rec.get("lastRunAt"), last_status=rec.get("lastStatus"),
+        last_duration_ms=rec.get("lastDurationMs"), last_fuel=rec.get("lastFuel"),
+        last_cost_usd=rec.get("lastCostUsd"), run_count=rec.get("runCount", 0),
+        consecutive_failures=rec.get("consecutiveFailures", 0),
+        last_run_ref=rec.get("lastRunRef"))
+
+
+class TriggerStore:
+    """Persists triggers + run records as dataset records on a per-space
+    anchor object (plain datasets — no server handler in v2.0). The
+    trigger record IS the monitoring rollup; runs go to a separate
+    keep-last-N dataset."""
+
+    def __init__(self, client, *, space: str, anchor_object_id: str):
+        self._c = client
+        self._space = space
+        self._anchor = anchor_object_id
+
+    def save(self, t: Trigger) -> None:
+        self._c.upsert_record(self._space, self._anchor, DATASET_TRIGGERS,
+                              t.id, trigger_to_record(t))
+
+    def load_all(self) -> list[Trigger]:
+        recs = self._c.query(self._space, self._anchor, DATASET_TRIGGERS)
+        return [trigger_from_record(r) for r in recs]
+
+    def record_run(self, t: Trigger, run: RunRecord, *, ts_ms: int) -> None:
+        rid = f"{t.id}:{ts_ms:020d}"  # sortable per-trigger run id
+        self._c.upsert_record(self._space, self._anchor, DATASET_RUNS, rid, {
+            "triggerId": t.id, "ts": run.ts, "status": run.status,
+            "durationMs": run.duration_ms, "error": run.error,
+            "traceRef": run.trace_ref, "fuel": run.fuel, "costUsd": run.cost_usd})
+        self.save(t)  # refresh the rollup on the trigger record
+
+    def runs(self, trigger_id: str, limit: int = 20) -> list[dict]:
+        return self._c.query(self._space, self._anchor, DATASET_RUNS,
+                             filter={"triggerId": trigger_id}, sort=["-ts"], limit=limit)
+
+
 def _matches_filter(flt: dict, record: dict) -> bool:
     """Minimal equality/`$in` filter over top-level record fields — the
     event-trigger match. Full query-filter parity is a later add."""

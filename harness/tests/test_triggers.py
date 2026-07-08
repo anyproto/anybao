@@ -19,13 +19,13 @@ def sched(clock, instance="inst-A"):
 
 def cron_trigger(**kw):
     kw.setdefault("owner", "inst-A")
-    return Trigger(id="t1", name="sweep", kind="cron",
+    return Trigger(id=kw.pop("id", "t1"), name="sweep", kind="cron",
                    spec=kw.pop("spec", {"every_s": 100}), program="p@v1", **kw)
 
 
 def event_trigger(**kw):
     kw.setdefault("owner", "inst-A")
-    return Trigger(id="e1", name="watch", kind="event",
+    return Trigger(id=kw.pop("id", "e1"), name="watch", kind="event",
                    spec=kw.pop("spec", {"dataset": "chat_messages"}),
                    program="runner@v1", **kw)
 
@@ -129,3 +129,41 @@ def test_success_resets_failure_streak():
     s.record_run(t, status="error", duration_ms=1)
     s.record_run(t, status="ok", duration_ms=1)
     assert t.consecutive_failures == 0 and t.enabled is True
+
+
+# --- TriggerStore serialization (offline) -------------------------------------
+
+def test_trigger_record_roundtrip():
+    from anybao.triggers import trigger_from_record, trigger_to_record
+    t = cron_trigger(id="t9", spec={"cron": "0 * * * *"},
+                     limits={"fuelPerRun": 1000}, enabled=False)
+    t.run_count = 5
+    t.last_status = "ok"
+    rec = trigger_to_record(t)
+    rec["id"] = "t9"  # store keys by id
+    back = trigger_from_record(rec)
+    assert back.id == "t9" and back.kind == "cron" and back.spec == {"cron": "0 * * * *"}
+    assert back.enabled is False and back.run_count == 5 and back.limits == {"fuelPerRun": 1000}
+
+
+def test_trigger_store_save_and_record_run():
+    from anybao.triggers import DATASET_RUNS, DATASET_TRIGGERS, RunRecord, TriggerStore
+
+    class FakeClient:
+        def __init__(self):
+            self.writes = []
+        def upsert_record(self, space, obj, dataset, rid, value):
+            self.writes.append((dataset, rid, value))
+        def query(self, space, obj, dataset, **kw):
+            return []
+
+    fc = FakeClient()
+    store = TriggerStore(fc, space="s1", anchor_object_id="anchor")
+    t = cron_trigger(id="c1")
+    store.save(t)
+    store.record_run(t, RunRecord(trigger_id="c1", ts=1000.0, status="ok",
+                                  duration_ms=8, fuel=100), ts_ms=1000000)
+    datasets = [w[0] for w in fc.writes]
+    assert DATASET_TRIGGERS in datasets and DATASET_RUNS in datasets
+    run_write = next(w for w in fc.writes if w[0] == DATASET_RUNS)
+    assert run_write[2]["triggerId"] == "c1" and run_write[2]["fuel"] == 100
