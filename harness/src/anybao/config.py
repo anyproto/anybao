@@ -56,6 +56,13 @@ class Config:
             return self._defaults[key]
         raise ConfigError(f"no config value for {key!r}")
 
+    def under(self, prefix: str) -> dict[str, Any]:
+        """Resolved values for every stored/defined key under a dotted
+        prefix, keyed by the remainder (`overlays.` → {"std": <id>})."""
+        keys = {k for k in self._store.records() if k.startswith(prefix)}
+        keys |= {k for k in self._defaults if k.startswith(prefix)}
+        return {k[len(prefix):]: self.get(k) for k in sorted(keys)}
+
     def set(self, key: str, value: Any, *, scope: str = "space") -> None:
         # ADR-006 §3: secrets refuse synced scope (CRDT history is
         # forever) — enforced, not documented.

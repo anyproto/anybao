@@ -73,10 +73,15 @@ def load_programs(src_dir: Path) -> list[ProgramSource]:
     return out
 
 
+class FrozenVersionError(Exception):
+    """Published overlay versions never mutate — edits bump `name@vN`."""
+
+
 class Deployer:
-    def __init__(self, client: AnyClient, *, space: str):
+    def __init__(self, client: AnyClient, *, space: str, frozen: bool = False):
         self._c = client
         self._space = space
+        self._frozen = frozen
 
     def _find_program(self, name: str, version: str) -> str | None:
         """Existing program object id by name+version, or None."""
@@ -104,6 +109,9 @@ class Deployer:
         oid = self._find_program(p.name, p.version)
         if oid is not None and self._in_space_fingerprint(oid) == p.fingerprint():
             return "unchanged"
+        if oid is not None and self._frozen:
+            raise FrozenVersionError(
+                f"{p.spec} is published in a frozen overlay — bump the version")
 
         desc, methods = p.split()
         any_tool = bool(desc) and bool(methods)
