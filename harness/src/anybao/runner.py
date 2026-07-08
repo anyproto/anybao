@@ -27,6 +27,7 @@ from anyrt.wasi import WasiEngine
 
 from .anyclient import AnyClient
 from .config import Config, register_config_effect
+from .data_effects import register_data_effects
 from .effects_impl import register_chat_effect, register_http_effects
 from .history import History, build_turn
 from .llm import http_transport as real_llm_transport
@@ -89,6 +90,7 @@ class Runner:
         register_config_effect(reg, self._config)
         register_llm_effect(reg, transport=self._llm_transport, config=self._config.get)
         register_http_effects(reg)
+        register_data_effects(reg, self._client)
         if chat_id is not None:
             register_chat_effect(reg, self._client, space=self._user_space,
                                  chat_id=chat_id, agent_name=self._agent_name)
