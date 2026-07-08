@@ -4,7 +4,7 @@ batched trigger job over newly persisted turns, off the hot path.
 HIGH bar (the §1a audit): candidates only matching stable-fact shapes —
 preference / decision / lesson / durable domain fact — never episodes
 or session summaries (that is the history channel's job). Every
-candidate goes through the §2 dedup judge (memory.save_with_dedup);
+candidate goes through the §2 dedup judge (memory@v1 save_with_dedup);
 survivors carry provenance (fromSeq) and capped confidence ≤ 6
 (machine-derived never outranks user-stated). Cursor = an
 agent_job_state record on the BRAIN object (where the server registers
@@ -39,17 +39,15 @@ def _first_json_array(text):
     return json.loads(text[start:end + 1])
 
 
-def _state(space, brain):
-    rows = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": STATE_DATASET,
-        "filter": {"id": STATE_ID}, "limit": 1})
+def _state(c, space, brain):
+    rows = c.query(space, brain, STATE_DATASET,
+                   filter={"id": STATE_ID}, limit=1)
     return rows[0].get("lastSeq", 0) if rows else 0
 
 
-def _save_state(space, brain, last_seq):
-    effect("any.upsert_record", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": STATE_DATASET,
-        "record_id": STATE_ID, "value": {"lastSeq": last_seq}})
+def _save_state(c, space, brain, last_seq):
+    c.upsert_record(space, brain, STATE_DATASET, STATE_ID,
+                    {"lastSeq": last_seq})
 
 
 def extract_candidates(turns, tier):
@@ -58,10 +56,10 @@ def extract_candidates(turns, tier):
         replies = "\n".join(t.get("replies") or [])
         lines.append(f"turn {t.get('seq')}\nuser: {t.get('userText') or ''}\n"
                      f"agent: {replies}")
-    reply = effect("llm.chat", {  # noqa: F821 - guest global
-        "messages": [{"role": "user",
-                      "parts": [{"type": "text", "text": "\n\n".join(lines)}]}],
-        "system": _SYSTEM, "tier": tier, "tools": []})
+    reply = use("llm@v1").chat(  # noqa: F821 - guest global
+        [{"role": "user",
+          "parts": [{"type": "text", "text": "\n\n".join(lines)}]}],
+        system=_SYSTEM, tier=tier, tools=[])
     text = " ".join(p["text"] for p in reply["parts"] if p["type"] == "text")
     return _first_json_array(text)
 
@@ -86,15 +84,17 @@ def normalize(candidate, max_seq):
 
 def main(args):
     space, chat, brain = args["space"], args["chatId"], args["brainId"]
-    last = _state(space, brain)
-    turns = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": chat, "dataset": "agent_turns",
-        "filter": {"seq": {"$gt": last}}, "sort": ["seq"],
-        "limit": args.get("batch", BATCH)})
+    c = use("any@v1").client()  # noqa: F821 - guest global
+    last = _state(c, space, brain)
+    turns = c.query(space, chat, "agent_turns",
+                    filter={"seq": {"$gt": last}}, sort=["seq"],
+                    limit=args.get("batch", BATCH))
     if not turns:
         return {"scanned": 0, "saved": 0, "deduplicated": 0, "skipped": 0,
                 "errors": 0}
 
+    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
     max_seq = max(t["seq"] for t in turns)
     saved = deduped = skipped = errors = 0
     for raw in extract_candidates(turns, args.get("tier", TIER)):
@@ -103,14 +103,13 @@ def main(args):
             skipped += 1
             continue
         try:
-            out = effect("memory.save_with_dedup",  # noqa: F821 - guest global
-                         {"candidate": candidate})
+            out = mem.save_with_dedup(candidate, recall=rec)
             if out.get("deduplicated"):
                 deduped += 1
             else:
                 saved += 1
         except Exception:
             errors += 1  # loud in the run record via counts; sweep continues
-    _save_state(space, brain, max_seq)
+    _save_state(c, space, brain, max_seq)
     return {"scanned": len(turns), "saved": saved, "deduplicated": deduped,
             "skipped": skipped, "errors": errors}

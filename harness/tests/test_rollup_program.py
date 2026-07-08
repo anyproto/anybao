@@ -1,18 +1,18 @@
 """programs/rollup@v1 — the hierarchical rollup trigger job (ADR-006
-§2), tested host-side by exec-ing the guest source with a fake
-`effect` global (the same seam the guest provides)."""
+§2), tested host-side by exec-ing the guest source with fake any@v1 /
+llm@v1 modules injected through the `use` seam."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from anybao.deploy import load_programs
-from anybao.history import rollup_trigger
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[2] / "programs"
 SRC = (PROGRAMS_DIR / "rollup@v1.py").read_text()
 
 
 class FakeSpace:
-    """Answers any.query / any.create_chunk / llm.chat like the wire."""
+    """Answers the any@v1 client + llm@v1 chat surface like the wire."""
 
     def __init__(self, turns=(), chunks=()):
         self.turns = list(turns)
@@ -20,25 +20,33 @@ class FakeSpace:
         self.created = []
         self.llm_calls = []
 
-    def __call__(self, name, payload):
-        if name == "llm.chat":
-            self.llm_calls.append(payload)
-            return {"parts": [{"type": "text", "text": f"S{len(self.llm_calls)}"}],
-                    "stop": "done", "usage": {"in": 1, "out": 1}}
-        if name == "any.create_chunk":
-            body = dict(payload["body"])
-            body["seq"] = max((c["seq"] for c in self.chunks), default=0) + 1
-            self.chunks.append(body)
-            self.created.append(body)
-            return {"seq": body["seq"]}
-        assert name == "any.query", name
-        rows = {"agent_turns": self.turns, "agent_chunks": self.chunks}[payload["dataset"]]
-        rows = [r for r in rows if _matches(r, payload.get("filter") or {})]
-        for key in reversed(payload.get("sort") or []):
+    def chat(self, messages, system="", tier="codegen", tools=None):
+        self.llm_calls.append({"messages": messages, "system": system,
+                               "tier": tier, "tools": tools})
+        return {"parts": [{"type": "text", "text": f"S{len(self.llm_calls)}"}],
+                "stop": "done", "usage": {"in": 1, "out": 1}}
+
+    def create_chunk(self, space, object_id, body):
+        body = dict(body)
+        body["seq"] = max((c["seq"] for c in self.chunks), default=0) + 1
+        self.chunks.append(body)
+        self.created.append(body)
+        return {"seq": body["seq"]}
+
+    def query(self, space, object_id, dataset, filter=None, sort=None, limit=None):
+        rows = {"agent_turns": self.turns, "agent_chunks": self.chunks}[dataset]
+        rows = [r for r in rows if _matches(r, filter or {})]
+        for key in reversed(sort or []):
             rev = key.startswith("-")
             rows = sorted(rows, key=lambda r: r[key.lstrip("-")], reverse=rev)
-        limit = payload.get("limit")
         return rows[:limit] if limit else rows
+
+    def use(self, spec):
+        if spec == "any@v1":
+            return SimpleNamespace(client=lambda base_url=None: self)
+        if spec == "llm@v1":
+            return SimpleNamespace(chat=self.chat)
+        raise AssertionError(f"unexpected module {spec}")
 
 
 def _matches(rec, flt):
@@ -53,7 +61,7 @@ def _matches(rec, flt):
 
 
 def run_main(fake, args):
-    g = {"effect": fake}
+    g = {"use": fake.use}
     exec(compile(SRC, "rollup@v1.py", "exec"), g)
     return g["main"](args)
 
@@ -120,10 +128,3 @@ def test_program_loads_via_deploy_pipeline():
     progs = {p.spec: p for p in load_programs(PROGRAMS_DIR)}
     assert "rollup@v1" in progs
     assert "def main(args)" in progs["rollup@v1"].code
-
-
-def test_rollup_trigger_factory():
-    t = rollup_trigger(space="s1", chat_id="chat1", owner="inst1")
-    assert t.kind == "cron" and t.program == "rollup@v1"
-    assert t.spec == {"every_s": 3600}
-    assert t.args == {"space": "s1", "chatId": "chat1"} and t.owner == "inst1"

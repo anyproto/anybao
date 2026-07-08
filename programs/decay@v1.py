@@ -23,10 +23,11 @@ def main(args):
     space, brain = args["space"], args["brainId"]
     half_life = args.get("halfLifeDays", HALF_LIFE_DAYS)
     floor = args.get("floor", FLOOR)
-    ts = now()  # noqa: F821 - guest global (time.now effect, recorded)
-    items = effect("any.query", {  # noqa: F821 - guest global
-        "space": space, "object_id": brain, "dataset": "agent_memory_items",
-        "limit": args.get("batch", BATCH)})
+    ts = now()  # noqa: F821 - guest global (time effect, recorded)
+    c = use("any@v1").client()  # noqa: F821 - guest global
+    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    items = c.query(space, brain, "agent_memory_items",
+                    limit=args.get("batch", BATCH))
     swept = updated = 0
     for item in items:
         swept += 1
@@ -36,7 +37,6 @@ def main(args):
         idle_s = max(0, ts - (item.get("modifiedAt") or item.get("createdAt") or ts))
         new = max(floor, decayed(salience, idle_s, half_life))
         if new < salience:
-            effect("memory.evolve", {  # noqa: F821 - guest global
-                "item_id": item["id"], "salience": new})
+            mem.evolve(item["id"], salience=new)
             updated += 1
     return {"swept": swept, "updated": updated}
