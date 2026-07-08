@@ -449,6 +449,22 @@ change, never syncs):
     the key (device scope) then — the program ships NEEDING a key, never
     CONTAINING one. The authoring skill teaches the one pattern (declare
     → grant → handle → inject), identical for cells and programs.
+  - **Worked example — agent builds a Linear tool (2026-07-08).** Three
+    parts, three homes, agent sets NONE of the secret:
+    (1) the injection RECIPE lives in the tool's MANIFEST (agent-
+    authored, ships in the overlay): `credentials: [{name: linear, into:
+    header, field: Authorization, template: "Bearer {}", hosts:
+    ["api.linear.app"]}]` — shape only, no key. (2) the KEY appears in
+    config as **`credentials.<name>`** (`credentials.linear`), flagged
+    `secret: true`, **device scope only**, user-provided at grant time,
+    never program-readable (blocked at config.get), resolved only inside
+    the http effect. (3) non-secret integration settings the agent/user
+    may set via config.set live in the program's own namespace
+    (`integrations.linear.default_team`), `config.write`-capable, plain.
+    Runtime: `http.post(url, credential="linear", ...)` → effect resolves
+    the device secret + manifest recipe + host-binds + injects + redacts.
+    Convention pinned: `credentials.<name>` = the device secret;
+    `integrations.<name>.*` = the program's own non-secret config.
 
 ### Loop control: break + inject (new requirement)
 The toolcaller loop must support external control while running:
