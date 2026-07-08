@@ -13,10 +13,11 @@ shapes, no bridges (no-backcompat). Checklist:
       skill audit (provenance tags, no test → no port).
 - [x] Drift-flow bootstrap — vendor any swagger.json + coverage
       manifest + make api-drift (deferred from M3; first done here).
-- [ ] Deploy tool (was sync.py) — GENERIC: deploy <src-dir> --space
-      <target> (hash-gated, splits tool docs, sweeps orphans); reusable
-      for any overlay. Agent-code deploy = one invocation to `agent:`.
-      ONE splitter (Python). Skills written fresh incl. core skill.
+- [x] Deploy tool + splitter + resolver — toolmd.py (ONE splitter),
+      deploy.py (Deployer: hash-gated program deploy to any space),
+      modules.py (AnyModuleResolver: prod use() resolution). Full chain
+      deploy→resolve→use()-in-guest validated LIVE. REMAINING: skills
+      written fresh incl. core skill (deploy exists to deploy them).
 - [~] History writer — build_turn + token-budgeted hierarchical
       boot-window renderer DONE (history.py, 6 pure tests); History
       wrapper (append/read via anyclient). REMAINING: hierarchical rollup
