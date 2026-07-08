@@ -126,11 +126,14 @@ def register_builtin_effects(
         }
 
     @effect("trace.effects_of", kind="read", registry=registry)
-    def trace_effects_of(ctx, cell):
-        # Compact per-cell view (ADR-003 §4): no input/output bodies.
+    def trace_effects_of(ctx, cell=None, span=None):
+        # Compact per-cell/per-span view (ADR-003 §4; span filter feeds
+        # the toolcaller's inner-cell digests). No input/output bodies.
         out = []
         for r in ctx.writer.records:
-            if r["kind"] == "effect" and r.get("cell") == cell:
+            if r["kind"] == "effect" \
+                    and (cell is None or r.get("cell") == cell) \
+                    and (span is None or r.get("span") == span):
                 entry = {
                     "seq": r["seq"],
                     "effect": r["effect"],

@@ -1,9 +1,12 @@
-"""Real effect implementations the runner registers on the broker —
-the host side of the guest facades (ADR-002). `http.*` is the fetch
-replacement (arbitrary outbound HTTP); `chat.send` posts to a chat
-object via anyclient. Registered like any effect, so they trace and
-replay. Credentials/keys are resolved HERE, inside the boundary
-(M6 named-credential injection is a later hook).
+"""The http syscall — the ONE outbound door (ADR-002).
+
+Everything the agent does to the world is an http call from guest
+modules; the host contributes exactly what guest code must not hold:
+route-derived read/mutate + capability truth (anybao.routes) and
+NAMED-CREDENTIAL INJECTION — a payload carries
+`credential: {"ref": <config key>, "header": <name>, "prefix"?: <str>}`
+and the host resolves the secret and sets the header AFTER the payload
+is recorded. The value never enters guest memory or the trace.
 """
 
 from __future__ import annotations
@@ -14,9 +17,9 @@ import urllib.request
 
 from anyrt.effects import Registry, effect
 
-from .anyclient import AnyClient
+from .routes import Classifier
 
-_DEFAULT_TIMEOUT = 30.0
+_DEFAULT_TIMEOUT = 180.0  # a stalled connection must ERROR, never hang
 
 
 def _http_request(method: str, url: str, *, params=None, headers=None,
@@ -46,40 +49,37 @@ def _http_request(method: str, url: str, *, params=None, headers=None,
                 "body": raw.decode(errors="replace")}
 
 
-def register_http_effects(registry: Registry) -> None:
-    """http.get (read) / post|put|delete (mutate). Authorization header
-    redacted from the trace."""
-    redact = ("headers.authorization",)
+def register_http_effects(registry: Registry, *, secrets=None,
+                          classifier: Classifier | None = None,
+                          request=_http_request) -> None:
+    """http.get/post/put/delete. `secrets(ref) -> value` resolves
+    credential refs (config-backed in prod); `request` is injectable for
+    offline tests. Authorization-style headers never appear in payloads,
+    so there is nothing to redact — refs are trace-safe by construction."""
+    cls = classifier or Classifier()
 
-    @effect("http.get", kind="read", registry=registry, redact=redact, cap="net.http")
-    def http_get(ctx, url, params=None, headers=None, timeout=None):
-        return _http_request("GET", url, params=params, headers=headers, timeout=timeout)
+    def _inject(headers, credential) -> dict:
+        if not credential:
+            return headers or {}
+        if secrets is None:
+            raise RuntimeError("credential passed but no secrets resolver wired")
+        out = dict(headers or {})
+        prefix = credential.get("prefix", "")
+        out[credential["header"]] = prefix + str(secrets(credential["ref"]))
+        return out
 
-    @effect("http.post", kind="mutate", registry=registry, redact=redact, cap="net.http")
-    def http_post(ctx, url, json=None, body=None, headers=None, timeout=None):
-        return _http_request("POST", url, json_body=json, body=body,
-                             headers=headers, timeout=timeout)
+    def _register(verb: str):
+        method = verb.upper()
 
-    @effect("http.put", kind="mutate", registry=registry, redact=redact, cap="net.http")
-    def http_put(ctx, url, json=None, body=None, headers=None, timeout=None):
-        return _http_request("PUT", url, json_body=json, body=body,
-                             headers=headers, timeout=timeout)
+        @effect(f"http.{verb}", kind=cls.kind(method), registry=registry,
+                cap=cls.cap(method))
+        def http_verb(ctx, url, params=None, headers=None, json=None,
+                      body=None, timeout=None, credential=None):
+            return request(method, url, params=params,
+                           headers=_inject(headers, credential),
+                           json_body=json, body=body, timeout=timeout)
 
-    @effect("http.delete", kind="mutate", registry=registry, redact=redact, cap="net.http")
-    def http_delete(ctx, url, headers=None, timeout=None):
-        return _http_request("DELETE", url, headers=headers, timeout=timeout)
+        return http_verb
 
-
-def register_chat_effect(registry: Registry, client: AnyClient, *, space: str, chat_id: str,
-                         agent_name: str = "bao") -> None:
-    """chat.send posts to THE conversation's chat object. `done` is the
-    liveness flag (progress bubbles = done:false); every run ends
-    done:true. `agent` marks it agent-authored (so the watcher's
-    agent-skip filter ignores it — no self-trigger)."""
-
-    @effect("chat.send", kind="mutate", registry=registry, cap="chat.write")
-    def chat_send(ctx, text, done=True, debug_link=None):
-        agent = {"name": agent_name, "done": done}
-        if debug_link:
-            agent["debugLink"] = debug_link
-        return client.chat_send(space, chat_id, {"text": text, "agent": agent})
+    for verb in ("get", "post", "put", "delete"):
+        _register(verb)

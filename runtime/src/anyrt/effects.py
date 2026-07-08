@@ -31,10 +31,12 @@ class EffectError(Exception):
 class EffectDef:
     name: str
     fn: Callable[..., Any]
-    kind: Literal["read", "mutate"]
+    # class/cap may be payload-derived (ADR-002 §2: boundary-owned
+    # classification — e.g. http routes classify by method+url)
+    kind: Literal["read", "mutate"] | Callable[[dict], str]
     normalize: Callable[[dict], dict] | None
     redact: tuple[str, ...]
-    cap: str
+    cap: str | Callable[[dict], str]
 
 
 class Registry:
@@ -55,11 +57,11 @@ class Registry:
 def effect(
     name: str,
     *,
-    kind: Literal["read", "mutate"],
+    kind: Literal["read", "mutate"] | Callable[[dict], str],
     registry: Registry,
     normalize: Callable[[dict], dict] | None = None,
     redact: tuple[str, ...] = (),
-    cap: str | None = None,
+    cap: str | Callable[[dict], str] | None = None,
 ):
     """Declare a host-side effect (ADR-002 §1). `fn(ctx, **payload)`."""
 
@@ -231,6 +233,8 @@ class Broker:
 
         batch_meta = {"batch": {"id": _batch[0], "i": _batch[1]}} if _batch else {}
         d = self.registry.get(name)
+        cls = d.kind(payload) if callable(d.kind) else d.kind
+        cap = d.cap(payload) if callable(d.cap) else d.cap
         canonical = d.normalize(payload) if d.normalize else payload
         canonical = _redact(canonical, d.redact)
         key = tr.input_key(name, canonical)
@@ -239,19 +243,19 @@ class Broker:
         def _bump():  # span meta counters: one bump per record written
             for s in self._span_stack:
                 s["effects"] += 1
-                if d.kind == "mutate":
+                if cls == "mutate":
                     s["mutations"] += 1
 
         # Capability check precedes replay/mock consult AND execute
         # (ADR-002 §2): a denial is a recorded fact, never a silent gap.
-        if self.grants is not None and not self.grants.allowed(d.cap):
+        if self.grants is not None and not self.grants.allowed(cap):
             err = {"type": "capability_denied",
-                   "message": f"capability not granted: {d.cap} (effect {name})"}
+                   "message": f"capability not granted: {cap} (effect {name})"}
             _bump()
             rec = self.writer.effect(
                 effect=name, cell=self.current_cell, input=canonical, key=key,
                 output=None, error=err,
-                meta={"mocked": False, "class": d.kind, **batch_meta}, span=span,
+                meta={"mocked": False, "class": cls, **batch_meta}, span=span,
             )
             raise EffectError(name, err["type"], err["message"], seq=rec["seq"])
 
@@ -262,7 +266,7 @@ class Broker:
             self.writer.effect(
                 effect=name, cell=self.current_cell, input=canonical, key=key,
                 output=rec["output"], error=rec["error"],
-                meta={**rec.get("meta", {}), "mocked": True, "class": d.kind, **batch_meta},
+                meta={**rec.get("meta", {}), "mocked": True, "class": cls, **batch_meta},
                 span=span,
             )
             if rec["error"]:
@@ -277,7 +281,7 @@ class Broker:
                 self.writer.effect(
                     effect=name, cell=self.current_cell, input=canonical, key=key,
                     output=rec["output"], error=rec["error"],
-                    meta={"mocked": True, "class": d.kind, **batch_meta}, span=span,
+                    meta={"mocked": True, "class": cls, **batch_meta}, span=span,
                 )
                 if rec["error"]:
                     raise EffectError(name, rec["error"]["type"], rec["error"]["message"])
@@ -301,7 +305,7 @@ class Broker:
             output=output, error=err,
             meta={
                 "durMs": int((_time.monotonic() - t0) * 1000),
-                "mocked": False, "class": d.kind, **batch_meta,
+                "mocked": False, "class": cls, **batch_meta,
             },
             span=span,
         )
