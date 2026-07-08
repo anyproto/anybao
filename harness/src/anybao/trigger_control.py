@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol
 from urllib.parse import parse_qs, urlparse
 
+from .trigger_events import FeedProtocolError, TriggerEventFeed
 from .triggers import RunRecord, Trigger, rollup, trigger_from_record, trigger_to_record
 
 type Records = list[dict]
@@ -157,26 +159,32 @@ class TriggerService:
 
 class TriggerControlServer(ThreadingHTTPServer):
     """Localhost control server over a TriggerService. Port 0 = ephemeral
-    (read the bound port from `server_address`)."""
+    (read the bound port from `server_address`). `feed_factory` (a fresh
+    `TriggerEventFeed` per call) enables the live `GET /triggers/events`
+    stream; without it the route answers 501."""
 
     daemon_threads = True
 
-    def __init__(self, service: TriggerService, addr: tuple[str, int] = ("127.0.0.1", 0)):
+    def __init__(self, service: TriggerService, addr: tuple[str, int] = ("127.0.0.1", 0),
+                 *, feed_factory: Callable[[], TriggerEventFeed] | None = None):
         super().__init__(addr, _Handler)
         self.service = service
+        self.feed_factory = feed_factory
 
 
-def start_server(service: TriggerService, *, host: str = "127.0.0.1",
-                 port: int = 0) -> TriggerControlServer:
+def start_server(service: TriggerService, *, host: str = "127.0.0.1", port: int = 0,
+                 feed_factory: Callable[[], TriggerEventFeed] | None = None,
+                 ) -> TriggerControlServer:
     """Start the control server on a daemon thread; `shutdown()` +
     `server_close()` to stop."""
-    srv = TriggerControlServer(service, (host, port))
+    srv = TriggerControlServer(service, (host, port), feed_factory=feed_factory)
     threading.Thread(target=srv.serve_forever, name="trigger-control", daemon=True).start()
     return srv
 
 
 class _Handler(BaseHTTPRequestHandler):
-    # Routes: POST/GET /triggers · GET/PATCH/DELETE /triggers/{id}
+    # Routes: POST/GET /triggers · GET /triggers/events (SSE)
+    # · GET/PATCH/DELETE /triggers/{id}
     # · POST /triggers/{id}/enable|disable · GET /triggers/{id}/runs?limit=N
     @property
     def _service(self) -> TriggerService:
@@ -211,6 +219,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(201, {"id": svc.create(self._body())})
             if method == "GET":
                 return self._json(200, svc.list())
+        # static /triggers/events before the /triggers/{id} wildcard
+        elif seg == ["triggers", "events"]:
+            if method == "GET":
+                return self._stream_runs()
         elif len(seg) == 2 and seg[0] == "triggers":
             tid = seg[1]
             if method == "GET":
@@ -235,6 +247,35 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(200, svc.runs(tid, limit))
         self._json(404, {"error": {"code": "route.not_found",
                                    "message": f"no route {method} {url.path}"}})
+
+    def _stream_runs(self) -> None:
+        """GET /triggers/events — bridge a live TriggerEventFeed onto the
+        control API: one `run` frame per post-connect run, terminal
+        `closed{reason}` (drop-snapshot semantics live in the feed)."""
+        assert isinstance(self.server, TriggerControlServer)
+        factory = self.server.feed_factory
+        if factory is None:
+            return self._json(501, {"error": {"code": "feed.unavailable",
+                                              "message": "no run feed wired"}})
+        feed = factory()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            try:
+                for event in feed.events():
+                    self._frame("run", event)
+                reason = feed.closed_reason or "upstream_closed"
+            except FeedProtocolError:
+                reason = "upstream_error"
+            self._frame("closed", {"reason": reason})
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # monitor disconnected — the feed generator closes with us
+
+    def _frame(self, event: str, data: dict) -> None:
+        self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+        self.wfile.flush()
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
