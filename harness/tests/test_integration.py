@@ -169,3 +169,88 @@ def test_deploy_then_use_in_wasi_guest(client, fresh_space):
     eng = WasiEngine(broker, kernel_wasm=kernel)
     r = eng.run_cell("g = use('greeter@v1')\ng.greet('bao')", cell_id="c1")
     assert r.ok and r.last_value.repr == "'hi bao'"
+
+
+# --- the runner: full adapter (loop + wasi guest + effects) end to end -------
+
+def test_runner_full_conversation(client, fresh_space):
+    """THE keystone: a real conversation through the wasi guest with a
+    scripted llm transport (no API key) — cell runs in the sandbox, turn
+    persists, trace written device-local."""
+    from pathlib import Path
+
+    from anybao.config import Config, DictConfigStore
+    from anybao.modules import AnyModuleResolver
+    from anybao.runner import Runner
+
+    kernel = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
+    if not kernel.exists():
+        pytest.skip("bin/kernel.wasm missing — run `make kernel`")
+
+    chat = client.create_object(fresh_space, {"types": ["chat"]})["objectId"]
+
+    cfg = Config(DictConfigStore({
+        "llm.tier.codegen": {"value": {"provider": "anthropic", "model": "test-model",
+                                       "base_url": "http://x", "api_key_ref": "llm.key"}},
+        "llm.key": {"localValue": "fake"},
+    }))
+
+    # scripted anthropic-shaped responses: run a cell, then finish
+    calls = []
+    def fake_transport(prov, req):
+        calls.append(req)
+        if len(calls) == 1:
+            return {"content": [{"type": "tool_use", "id": "t1", "name": "run_cell",
+                                 "input": {"code": "result = 40 + 2\nresult"}}],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 10, "output_tokens": 5}}
+        return {"content": [{"type": "text", "text": "The answer is 42."}],
+                "stop_reason": "end_turn", "usage": {"input_tokens": 20, "output_tokens": 3}}
+
+    import tempfile
+    traces = Path(tempfile.mkdtemp())
+    runner = Runner(client, cfg, kernel_wasm=kernel, traces_dir=traces,
+                    resolver=AnyModuleResolver(client, current_space=fresh_space),
+                    user_space=fresh_space, llm_transport=fake_transport)
+
+    result = runner.run_conversation(chat, "what is 40 + 2?")
+
+    # the loop finished with the model's final reply
+    assert result.outcome.stop == "done"
+    assert result.outcome.replies == ["The answer is 42."]
+    assert len(calls) == 2  # one tool turn + one done turn
+
+    # the turn persisted to the user space (agent_turns), server-assigned seq
+    turns = client.query(fresh_space, chat, "agent_turns", sort=["seq"])
+    assert len(turns) == 1
+    assert turns[0]["userText"] == "what is 40 + 2?"
+    assert turns[0]["traceRef"] == result.trace_ref
+    assert turns[0]["replies"] == ["The answer is 42."]
+
+    # the trace is device-local (a file, not synced)
+    assert (traces / f"{result.trace_ref}.jsonl").exists()
+
+
+def test_runner_runs_a_program(client, fresh_space):
+    """The trigger execution path: deploy a program with main(), run it."""
+    from pathlib import Path
+
+    from anybao.config import Config, DictConfigStore
+    from anybao.deploy import Deployer, ProgramSource
+    from anybao.modules import AnyModuleResolver
+    from anybao.runner import Runner
+
+    kernel = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
+    if not kernel.exists():
+        pytest.skip("bin/kernel.wasm missing — run `make kernel`")
+
+    Deployer(client, space=fresh_space).deploy_one(ProgramSource(
+        "adder", "v1", "def main(args):\n    return args['a'] + args['b']\n"))
+
+    import tempfile
+    cfg = Config(DictConfigStore({}))
+    runner = Runner(client, cfg, kernel_wasm=kernel, traces_dir=Path(tempfile.mkdtemp()),
+                    resolver=AnyModuleResolver(client, current_space=fresh_space),
+                    user_space=fresh_space)
+    res = runner.run_program("adder@v1", {"a": 3, "b": 4})
+    assert res.status == "ok" and res.fuel and res.fuel > 0
