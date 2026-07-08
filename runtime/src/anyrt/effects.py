@@ -1,16 +1,19 @@
 """Effect boundary — ADR-002: one broker pipeline for every call.
 
-M0 scope: normalize → key → replay/mock consult → execute → record.
-Capability checks are permissive bookkeeping (cap recorded on the
-registration, enforcement wiring lands M1); redaction applies to
-declared dotted paths.
+Pipeline (ADR-002 §2): normalize → key → capability check →
+replay/mock consult → execute → record. The capability RULE lives
+here — an optional `grants` object is consulted before anything runs;
+denials are recorded (`error.type = "capability_denied"`) and raised.
+No `grants` = the permissive default profile (mechanism enabled,
+policy wide open). Grant POLICY lives harness-side (anybao.caps).
+Redaction applies to declared dotted paths.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from . import trace as tr
 
@@ -98,6 +101,13 @@ def _redact(payload: dict, paths: tuple[str, ...]) -> dict:
 Mode = Literal["record", "replay", "mock"]
 
 
+class Grants(Protocol):
+    """The broker's view of a grant set — policy objects (anybao.caps)
+    satisfy this; the broker only ever asks yes/no."""
+
+    def allowed(self, cap: str) -> bool: ...
+
+
 class Broker:
     """The one pipeline. `ctx` handed to effect impls is the broker
     itself — credential/config resolution happens inside the boundary."""
@@ -112,6 +122,7 @@ class Broker:
         mock_index: tr.MockIndex | None = None,
         mock_unmatched: Literal["fail", "live"] = "fail",
         blobs: dict[str, str] | None = None,
+        grants: Grants | None = None,
     ):
         self.registry = registry
         self.writer = writer
@@ -119,6 +130,7 @@ class Broker:
         self.cursor = cursor
         self.mock_index = mock_index
         self.mock_unmatched = mock_unmatched
+        self.grants = grants  # None = permissive default profile (ADR-002 §2)
         self.blobs = blobs or {}  # sidecar of the trace being replayed
         self.current_cell: str | None = None
 
@@ -167,6 +179,18 @@ class Broker:
         canonical = d.normalize(payload) if d.normalize else payload
         canonical = _redact(canonical, d.redact)
         key = tr.input_key(name, canonical)
+
+        # Capability check precedes replay/mock consult AND execute
+        # (ADR-002 §2): a denial is a recorded fact, never a silent gap.
+        if self.grants is not None and not self.grants.allowed(d.cap):
+            err = {"type": "capability_denied",
+                   "message": f"capability not granted: {d.cap} (effect {name})"}
+            rec = self.writer.effect(
+                effect=name, cell=self.current_cell, input=canonical, key=key,
+                output=None, error=err,
+                meta={"mocked": False, "class": d.kind, **batch_meta},
+            )
+            raise EffectError(name, err["type"], err["message"], seq=rec["seq"])
 
         if self.mode == "replay":
             assert self.cursor is not None

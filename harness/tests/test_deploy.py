@@ -1,7 +1,10 @@
+import json
+
 from anybao.deploy import Deployer, ProgramSource, load_programs
 
 PROG = "def main(args):\n    return 1\n"
 TOOL_MD = "## Tool Description\n\nDoes a thing.\n\n## Tool Schema\n### go(x) [getter]\n\nruns go.\n"
+MANIFEST = {"capabilities": ["net.http"], "publisher": "acme"}
 
 
 def test_load_programs_parses_name_version(tmp_path):
@@ -97,3 +100,42 @@ def test_deploy_without_tooldoc_is_not_a_tool():
     d.deploy_one(ProgramSource("lib", "v1", PROG, tool_md=""))
     assert fc.objects["prog1"]["program"]["any_tool"] is False
     assert ("prog1", "program_description") not in fc.datasets
+
+
+# --- capability manifest (CapBAC: manifest = request, hash-bound) ---
+
+def test_load_programs_reads_manifest_sidecar(tmp_path):
+    (tmp_path / "websearch@v1.py").write_text(PROG)
+    (tmp_path / "websearch@v1.manifest.json").write_text(json.dumps(MANIFEST))
+    progs = load_programs(tmp_path)
+    assert progs[0].manifest == MANIFEST
+    # absent sidecar → empty manifest
+    (tmp_path / "plain@v1.py").write_text(PROG)
+    assert load_programs(tmp_path)[0].manifest == {}
+
+
+def test_fingerprint_manifest_sensitivity():
+    bare = ProgramSource("t", "v1", PROG, TOOL_MD)
+    with_man = ProgramSource("t", "v1", PROG, TOOL_MD, manifest=MANIFEST)
+    # adding a manifest changes the hash; editing it changes it again
+    assert bare.fingerprint() != with_man.fingerprint()
+    edited = dict(MANIFEST, capabilities=["net.http", "chat.send"])
+    assert with_man.fingerprint() != ProgramSource(
+        "t", "v1", PROG, TOOL_MD, manifest=edited).fingerprint()
+    # empty manifest ({} default) keeps the pre-manifest fingerprint
+    assert bare.fingerprint() == ProgramSource("t", "v1", PROG, TOOL_MD, manifest={}).fingerprint()
+
+
+def test_deploy_writes_manifest_record_and_hash_gates():
+    fc = FakeClient()
+    d = Deployer(fc, space="agent")
+    p = ProgramSource("t", "v1", PROG, TOOL_MD, manifest=MANIFEST)
+    assert d.deploy_one(p) == "created"
+    assert fc.datasets[("prog1", "program_manifest")]["main"] == {"manifest": MANIFEST}
+    assert d.deploy_one(p) == "unchanged"  # manifest round-trips through the fingerprint
+    # manifest edit → new hash → update; dropped manifest clears the record
+    edited = ProgramSource("t", "v1", PROG, TOOL_MD,
+                           manifest={"capabilities": ["net.http", "chat.send"]})
+    assert d.deploy_one(edited) == "updated"
+    assert d.deploy_one(ProgramSource("t", "v1", PROG, TOOL_MD)) == "updated"
+    assert fc.datasets[("prog1", "program_manifest")] == {}
