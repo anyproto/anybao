@@ -144,6 +144,28 @@ recorded (§5) so the decision is made from data. Guest memory itself is
 the natural backstop (a runaway store hits the memory limit as a clean
 `MemoryError`).
 
+### 4b. `span` — composite facades lift to one record pair (amendment 2026-07-08)
+
+Tool programs compose primitive effects (ADR-002 §1's granular verbs),
+so their runs read as primitive noise in every view. The kernel
+namespace carries a `span(name)` decorator that wraps a facade
+function in an ADR-001 §4c span record pair:
+
+```python
+@span("linear.createTask")
+def create_task(title, assignee=None): ...   # any.modify + http.* inside
+```
+
+Callers and the trace viewer see `linear.createTask {input} ->
+{output}` like a host effect; the inner effect records stay recorded
+underneath (visible on expand). The decorator is guest-side *shape*
+with zero authority (ADR-002's syscall analogy: it is libc, not the
+kernel): it emits `span.begin`/`span.end` over the one host channel —
+**reserved names** the engine dispatches to broker span methods, never
+registry effects, so they cannot be capability-granted and produce
+`kind: "span"` records only. Exceptions re-raise after an `ok: false`
+end record; non-JSON inputs/outputs degrade to `repr()`.
+
 ### 5. Limits, interruption & metrics (per cell)
 
 | Limit           | Mechanism (wasi)                       |

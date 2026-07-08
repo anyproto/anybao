@@ -106,3 +106,71 @@ def test_views_trace_diff_and_call_trace():
     assert [r["output"] for r in diff] == [2, 3]
     ct = tr.call_trace(w.records, "c1")
     assert [r["kind"] for r in ct] == ["effect", "effect", "cell"]
+
+
+# ---- spans (ADR-001 §4c) -----------------------------------------------------
+
+def make_span_trace() -> tr.TraceWriter:
+    w = tr.TraceWriter(run={"id": "sp1"})
+    kb = tr.input_key("linear.createTask", {"kwargs": {"title": "t"}})
+    w.span_begin(span="s1", name="linear.createTask", cell="c1",
+                 input={"kwargs": {"title": "t"}}, key=kb)
+    ke = tr.input_key("any.modify", {"n": 1})
+    w.effect(effect="any.modify", cell="c1", input={"n": 1}, key=ke,
+             output={"ok": 1}, meta={"class": "mutate"}, span="s1")
+    w.span_end(span="s1", name="linear.createTask", cell="c1", ok=True,
+               output={"id": "T-1"}, meta={"effects": 1, "mutations": 1})
+    w.effect(effect="time.now", cell="c1", input={}, key=tr.input_key("time.now", {}),
+             output={"epoch": 1.0}, meta={"class": "read"})
+    w.cell(cell="c1", ok=True)
+    return w
+
+
+def test_span_records_and_stamp(tmp_path):
+    w = make_span_trace()
+    p = tmp_path / "sp.jsonl"
+    w.dump(p)
+    records = tr.load(p)
+    assert [(r["kind"], r.get("phase")) for r in records[1:]] == [
+        ("span", "begin"), ("effect", None), ("span", "end"),
+        ("effect", None), ("cell", None),
+    ]
+    assert records[2]["span"] == "s1"          # stamped inside the span
+    assert "span" not in records[4]            # absent outside — byte-stable
+
+
+def test_cursor_span_checkpoints_and_divergence():
+    w = make_span_trace()
+    cur = tr.ReplayCursor(w.records)
+    cur.expect_span_begin(
+        "linear.createTask", tr.input_key("linear.createTask", {"kwargs": {"title": "t"}})
+    )
+    cur.expect_effect("any.modify", tr.input_key("any.modify", {"n": 1}))
+    cur.expect_span_end("linear.createTask", ok=True)
+    cur.expect_effect("time.now", tr.input_key("time.now", {}))
+    cur.expect_cell("c1", ok=True)
+    assert cur.exhausted()
+
+    cur2 = tr.ReplayCursor(w.records)
+    with pytest.raises(tr.DivergenceError):    # changed facade input
+        cur2.expect_span_begin(
+            "linear.createTask",
+            tr.input_key("linear.createTask", {"kwargs": {"title": "OTHER"}}),
+        )
+    cur3 = tr.ReplayCursor(w.records)
+    with pytest.raises(tr.DivergenceError):    # skipped begin checkpoint
+        cur3.expect_effect("any.modify", tr.input_key("any.modify", {"n": 1}))
+
+
+def test_call_trace_includes_spans():
+    w = make_span_trace()
+    ct = tr.call_trace(w.records, "c1")
+    assert [r["kind"] for r in ct] == ["span", "effect", "span", "effect", "cell"]
+
+
+def test_mock_index_ignores_span_records():
+    w = make_span_trace()
+    idx = tr.MockIndex(w.records)
+    assert idx.pop("any.modify", tr.input_key("any.modify", {"n": 1})) is not None
+    assert idx.pop("linear.createTask",
+                   tr.input_key("linear.createTask", {"kwargs": {"title": "t"}})) is None

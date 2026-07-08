@@ -209,3 +209,56 @@ def test_use_unknown_program_errors():
     r = eng.run_cell("use('nope@v1')", cell_id="c1")
     assert not r.ok and r.error is not None
     assert r.error.type == "EffectError" and "program not found" in r.error.message
+
+
+def test_span_decorator_lifts_facade_to_one_pair():
+    eng, w = make_engine()
+    code = (
+        "@span('helper.fetch_both')\n"
+        "def fetch_both(a, b):\n"
+        "    return http.get(a).status + http.get(b).status\n"
+        "fetch_both('https://a', 'https://b')"
+    )
+    r = eng.run_cell(code, cell_id="c1")
+    assert r.ok and lastrepr(r) == "400"
+    spans = [x for x in w.records if x["kind"] == "span"]
+    assert [s["phase"] for s in spans] == ["begin", "end"]
+    begin, end = spans
+    assert begin["name"] == "helper.fetch_both" and begin["cell"] == "c1"
+    assert begin["input"] == {"args": ["https://a", "https://b"]}
+    assert end["ok"] is True and end["output"] == 400
+    assert end["meta"]["effects"] == 2 and end["meta"]["mutations"] == 0
+    gets = [x for x in w.records if x["kind"] == "effect" and x["effect"] == "http.get"]
+    assert [g["span"] for g in gets] == [begin["span"], begin["span"]]
+
+
+def test_span_decorator_error_reraises_after_end_record():
+    eng, w = make_engine()
+    code = (
+        "@span('helper.boom')\n"
+        "def boom():\n"
+        "    raise ValueError('nope')\n"
+        "boom()"
+    )
+    r = eng.run_cell(code, cell_id="c1")
+    assert not r.ok and r.error is not None and r.error.type == "ValueError"
+    end = next(x for x in w.records if x["kind"] == "span" and x["phase"] == "end")
+    assert end["ok"] is False and end["error"] == {"type": "ValueError", "message": "nope"}
+    # no dangling span: the cell record follows a well-nested log
+    assert w.records[-1]["kind"] == "cell" and w.records[-1]["cell"] == "c1"
+
+
+def test_span_in_use_program_facade():
+    prog = (
+        "@span('greeter.greet')\n"
+        "def greet(name):\n"
+        "    return 'hi ' + name\n"
+    )
+    eng, w = make_engine(programs={"greeter@v1": prog})
+    r = eng.run_cell("use('greeter@v1').greet('bao')", cell_id="c1")
+    assert r.ok and lastrepr(r) == "'hi bao'"
+    spans = [x for x in w.records if x["kind"] == "span"]
+    assert [s["phase"] for s in spans] == ["begin", "end"]
+    assert spans[0]["name"] == "greeter.greet"
+    assert spans[0]["input"] == {"args": ["bao"]}
+    assert spans[1]["output"] == "hi bao" and spans[1]["meta"]["effects"] == 0

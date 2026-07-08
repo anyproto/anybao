@@ -131,15 +131,16 @@ def register_builtin_effects(
         out = []
         for r in ctx.writer.records:
             if r["kind"] == "effect" and r.get("cell") == cell:
-                out.append(
-                    {
-                        "seq": r["seq"],
-                        "effect": r["effect"],
-                        "class": r.get("meta", {}).get("class"),
-                        "mocked": r.get("meta", {}).get("mocked"),
-                        "error": (r.get("error") or {}).get("type"),
-                    }
-                )
+                entry = {
+                    "seq": r["seq"],
+                    "effect": r["effect"],
+                    "class": r.get("meta", {}).get("class"),
+                    "mocked": r.get("meta", {}).get("mocked"),
+                    "error": (r.get("error") or {}).get("type"),
+                }
+                if "span" in r:  # grouping stamp (ADR-001 §4c)
+                    entry["span"] = r["span"]
+                out.append(entry)
         return {"records": out}
 
     @effect("trace.effect_get", kind="read", registry=registry)

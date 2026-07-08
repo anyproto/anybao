@@ -106,7 +106,18 @@ class WasiEngine:
     # -- host side of the ONE channel -------------------------------------
     def _host_effect(self, _store, name: str, payload: str) -> str:
         try:
-            output = self.broker.call(name, json.loads(payload))
+            p = json.loads(payload)
+            if name == "span.begin":
+                # reserved names (ADR-003 §4b): broker span methods, not
+                # registry effects — kind:"span" records only
+                output = {"span": self.broker.span_begin(p["name"], p.get("input"))}
+            elif name == "span.end":
+                self.broker.span_end(
+                    ok=p["ok"], output=p.get("output"), error=p.get("error")
+                )
+                output = None
+            else:
+                output = self.broker.call(name, p)
             return json.dumps({"ok": True, "output": output})
         except Exception as e:
             return json.dumps(

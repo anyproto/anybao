@@ -1,6 +1,6 @@
 """Trace v2 — ADR-001: append-only JSONL log; replay = derived views.
 
-Record kinds: header (line 1), effect, cell. M0 scope: no blob spill
+Record kinds: header (line 1), effect, cell, span. M0 scope: no blob spill
 (threshold effectively infinite — M1), no traceDiff view yet.
 """
 
@@ -104,6 +104,7 @@ class TraceWriter:
         output: Any = None,
         error: dict | None = None,
         meta: dict | None = None,
+        span: str | None = None,
     ) -> dict:
         rec = {
             "kind": "effect",
@@ -112,6 +113,60 @@ class TraceWriter:
             "cell": cell,
             "input": self._spill(input),    # key was computed pre-spill
             "key": key,
+            "output": self._spill(output) if output is not None else None,
+            "error": error,
+            "meta": meta or {},
+        }
+        if span is not None:
+            # stamp only inside spans — span-free traces stay byte-stable
+            # (ADR-001 §4c)
+            rec["span"] = span
+        self.records.append(rec)
+        return rec
+
+    def span_begin(
+        self,
+        *,
+        span: str,
+        name: str,
+        cell: str | None,
+        input: Any,
+        key: str,
+        parent: str | None = None,
+    ) -> dict:
+        rec = {
+            "kind": "span",
+            "seq": self.next_seq(),
+            "phase": "begin",
+            "span": span,
+            "parent": parent,
+            "name": name,
+            "cell": cell,
+            "input": self._spill(input),
+            "key": key,
+        }
+        self.records.append(rec)
+        return rec
+
+    def span_end(
+        self,
+        *,
+        span: str,
+        name: str,
+        cell: str | None,
+        ok: bool,
+        output: Any = None,
+        error: dict | None = None,
+        meta: dict | None = None,
+    ) -> dict:
+        rec = {
+            "kind": "span",
+            "seq": self.next_seq(),
+            "phase": "end",
+            "span": span,
+            "name": name,
+            "cell": cell,
+            "ok": ok,
             "output": self._spill(output) if output is not None else None,
             "error": error,
             "meta": meta or {},
@@ -188,8 +243,7 @@ def call_trace(records: list[dict], cell: str) -> list[dict]:
     """Everything attributed to one cell, in order."""
     return [
         r for r in records
-        if (r["kind"] == "effect" and r.get("cell") == cell)
-        or (r["kind"] == "cell" and r.get("cell") == cell)
+        if r["kind"] in ("effect", "span", "cell") and r.get("cell") == cell
     ]
 
 
@@ -199,7 +253,7 @@ class ReplayCursor:
     metrics ignored — they legitimately vary between runs)."""
 
     def __init__(self, records: list[dict]):
-        self._records = [r for r in records if r["kind"] in ("effect", "cell")]
+        self._records = [r for r in records if r["kind"] in ("effect", "cell", "span")]
         self._pos = 0
 
     def _peek(self) -> dict | None:
@@ -217,6 +271,30 @@ class ReplayCursor:
         rec = self._peek()
         if rec is None or rec["kind"] != "cell" or rec["cell"] != cell or rec["ok"] != ok:
             raise DivergenceError(rec, {"kind": "cell", "cell": cell, "ok": ok})
+        self._pos += 1
+        return rec
+
+    def expect_span_begin(self, name: str, key: str) -> dict:
+        # span checkpoints (ADR-001 §4c): begin matched on (name, key)
+        rec = self._peek()
+        actual = {"kind": "span", "phase": "begin", "name": name, "key": key}
+        if (
+            rec is None or rec["kind"] != "span" or rec["phase"] != "begin"
+            or rec["name"] != name or rec["key"] != key
+        ):
+            raise DivergenceError(rec, actual)
+        self._pos += 1
+        return rec
+
+    def expect_span_end(self, name: str, ok: bool) -> dict:
+        # end matched on (name, ok); output/meta legitimately unmatched
+        rec = self._peek()
+        actual = {"kind": "span", "phase": "end", "name": name, "ok": ok}
+        if (
+            rec is None or rec["kind"] != "span" or rec["phase"] != "end"
+            or rec["name"] != name or rec["ok"] != ok
+        ):
+            raise DivergenceError(rec, actual)
         self._pos += 1
         return rec
 

@@ -267,3 +267,80 @@ def test_turn_anchor_resolves_nth_llm_chat():
         turn_anchor(w.records, 3)
     with pytest.raises(IndexError):
         turn_anchor(w.records, 0)
+
+
+# ---- spans render collapsed by default (ADR-001 §4c) -------------------------
+
+def make_span_trace() -> tr.TraceWriter:
+    """One turn, one cell whose facade call wraps a mutate primitive in
+    a span; one primitive outside the span."""
+    w = tr.TraceWriter(run={"id": "run_sp", "program": "demo@v1"})
+    w.effect(
+        effect="llm.chat", cell=None, input={}, key="sha256:aa",
+        output=llm_output([
+            {"type": "tool_call", "id": "cell_1", "name": "run_cell",
+             "args": {"code": "linear.createTask('t')"}},
+        ]),
+    )
+    w.span_begin(span="s1", name="linear.createTask", cell="cell_1",
+                 input={"args": ["t"]}, key="sha256:bb")
+    w.effect(
+        effect="any.modify", cell="cell_1", input={"n": 1}, key="sha256:cc",
+        output={"ok": 1}, meta={"durMs": 40, "class": "mutate"}, span="s1",
+    )
+    w.span_end(span="s1", name="linear.createTask", cell="cell_1", ok=True,
+               output={"id": "T-1"}, meta={"durMs": 55, "effects": 1, "mutations": 1})
+    w.effect(
+        effect="time.now", cell="cell_1", input={}, key="sha256:dd",
+        output=1.5, meta={"durMs": 1, "class": "read"},
+    )
+    w.cell(cell="cell_1", ok=True, metrics={"fuel_used": 9})
+    return w
+
+
+def test_render_collapses_spans_by_default():
+    w = make_span_trace()
+    out = render_trace(w.records)
+    assert "#2 linear.createTask [span, 1 effect, 55ms] -> " in out
+    assert '{"id": "T-1"}' in out
+    assert "any.modify" not in out             # hidden under the span
+    assert "#5 time.now" in out                # non-span effect still shown
+
+
+def test_render_expand_spans_shows_inner_records():
+    w = make_span_trace()
+    out = render_trace(w.records, expand_spans=True)
+    assert "#2 linear.createTask [span, 1 effect, 55ms]" in out
+    assert "#3 any.modify [mutate, 40ms]" in out
+    # inner record indented under its span line
+    span_line = next(ln for ln in out.splitlines() if "linear.createTask" in ln)
+    inner_line = next(ln for ln in out.splitlines() if "any.modify" in ln)
+    assert len(inner_line) - len(inner_line.lstrip()) > len(span_line) - len(span_line.lstrip())
+
+
+def test_render_run_marks_mutating_span():
+    w = make_span_trace()
+    out = render_run(w.records)
+    assert "* #2 linear.createTask [span, 1 effect, 55ms]" in out
+    assert "any.modify" not in out
+
+
+def test_render_run_span_error_and_unclosed():
+    w = tr.TraceWriter(run={"id": "run_spe"})
+    w.effect(
+        effect="llm.chat", cell=None, input={}, key="sha256:aa",
+        output=llm_output([
+            {"type": "tool_call", "id": "cell_1", "name": "run_cell",
+             "args": {"code": "boom()"}},
+        ]),
+    )
+    w.span_begin(span="s1", name="helper.boom", cell="cell_1",
+                 input={}, key="sha256:bb")
+    w.span_end(span="s1", name="helper.boom", cell="cell_1", ok=False,
+               error={"type": "ValueError", "message": "nope"})
+    w.span_begin(span="s2", name="helper.hang", cell="cell_1",
+                 input={}, key="sha256:cc")
+    w.cell(cell="cell_1", ok=False, error={"type": "Interrupted", "message": "fuel"})
+    out = render_trace(w.records)
+    assert "helper.boom [span, 0 effects] !! ValueError: nope" in out
+    assert "helper.hang [span, 0 effects] (unclosed)" in out

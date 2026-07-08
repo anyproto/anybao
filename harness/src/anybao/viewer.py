@@ -89,7 +89,7 @@ def build_view(records: list[dict], blobs: dict[str, str] | None = None) -> Trac
                     run = CellRun(cell_id=part["id"], code=part.get("args", {}).get("code"))
                     cells[part["id"]] = run
                     cur.cells.append(run)
-        elif kind == "effect":
+        elif kind in ("effect", "span"):
             cell_id = _attributed_cell(r)
             if cell_id is not None:
                 cell_run(cell_id).effects.append(r)
@@ -131,6 +131,83 @@ def _effect_line(r: dict) -> str:
     return line
 
 
+def _group_spans(recs: list[dict]) -> list[tuple]:
+    """Group a flat record list into render items: ("effect", rec) and
+    ("span", begin, end|None, inner) — inner covers everything between
+    the pair, nested spans included (ADR-001 §4c)."""
+    items: list[tuple] = []
+    i = 0
+    while i < len(recs):
+        r = recs[i]
+        if r.get("kind") == "span" and r.get("phase") == "begin":
+            sid, inner, end = r["span"], [], None
+            j = i + 1
+            while j < len(recs):
+                x = recs[j]
+                if x.get("kind") == "span" and x.get("span") == sid and x.get("phase") == "end":
+                    end = x
+                    break
+                inner.append(x)
+                j += 1
+            items.append(("span", r, end, inner))
+            i = j + 1
+        elif r.get("kind") == "span":
+            i += 1  # stray end (partial log) — its begin already grouped it
+        else:
+            items.append(("effect", r))
+            i += 1
+    return items
+
+
+def _span_line(begin: dict, end: dict | None, inner: list[dict]) -> str:
+    n = (end or {}).get("meta", {}).get("effects")
+    if n is None:
+        n = sum(1 for x in inner if x.get("kind") == "effect")
+    tags = ["span", f"{n} effect" + ("s" if n != 1 else "")]
+    if end and "durMs" in end.get("meta", {}):
+        tags.append(f"{end['meta']['durMs']}ms")
+    line = f"#{begin['seq']} {begin['name']} [" + ", ".join(tags) + "]"
+    if end is None:
+        return line + " (unclosed)"
+    err = end.get("error")
+    if not end.get("ok") and err:
+        return line + f" !! {err.get('type', 'error')}: {err.get('message', '')}"
+    return line + " -> " + _preview(end.get("output"))
+
+
+def _span_mutates(end: dict | None, inner: list[dict]) -> bool:
+    m = (end or {}).get("meta", {}).get("mutations")
+    if m is None:
+        m = sum(
+            1 for x in inner
+            if x.get("kind") == "effect" and x.get("meta", {}).get("class") == "mutate"
+        )
+    return m > 0
+
+
+def _record_lines(recs: list[dict], *, marked: bool = False,
+                  expand_spans: bool = False) -> list[str]:
+    """Effect/span one-liners, spans collapsed unless expand_spans
+    (then: span line + inner records indented beneath it)."""
+    eff = _mark_effect_line if marked else _effect_line
+    out: list[str] = []
+    for item in _group_spans(recs):
+        if item[0] == "effect":
+            out.append(eff(item[1]))
+            continue
+        _, begin, end, inner = item
+        line = _span_line(begin, end, inner)
+        if marked:
+            line = ("*" if _span_mutates(end, inner) else " ") + " " + line
+        out.append(line)
+        if expand_spans:
+            out.extend(
+                "  " + ln
+                for ln in _record_lines(inner, marked=marked, expand_spans=True)
+            )
+    return out
+
+
 def _cell_result_line(end: dict | None) -> str:
     if end is None:
         return "result: (no cell record)"
@@ -153,7 +230,8 @@ def _cell_result_line(end: dict | None) -> str:
     return line
 
 
-def _turn_lines(turn: TurnView, blobs: dict[str, str]) -> list[str]:
+def _turn_lines(turn: TurnView, blobs: dict[str, str],
+                expand_spans: bool = False) -> list[str]:
     r = turn.record
     usage = r.get("meta", {}).get("usage") or {}
     head = f"turn {turn.n} (seq {r['seq']})"
@@ -186,19 +264,26 @@ def _turn_lines(turn: TurnView, blobs: dict[str, str]) -> list[str]:
             lines.extend(f"      {cl}" for cl in run.code.splitlines() or [""])
         if run.effects:
             lines.append("    effects:")
-            lines.extend(f"      {_effect_line(e)}" for e in run.effects)
+            lines.extend(
+                f"      {ln}"
+                for ln in _record_lines(run.effects, expand_spans=expand_spans)
+            )
         lines.append(f"    {_cell_result_line(run.end)}")
 
     if turn.effects:
         lines.append("  effects:")
-        lines.extend(f"    {_effect_line(e)}" for e in turn.effects)
+        lines.extend(
+            f"    {ln}" for ln in _record_lines(turn.effects, expand_spans=expand_spans)
+        )
     return lines
 
 
-def render_trace(records: list[dict], blobs: dict[str, str] | None = None) -> str:
+def render_trace(records: list[dict], blobs: dict[str, str] | None = None,
+                 *, expand_spans: bool = False) -> str:
     """Readable timeline over a trace log: header, then one block per
     turn (assistant output, cells with code/effects/metrics, grouped
-    non-cell effects). Pure function of (records, blobs)."""
+    non-cell effects). Spans render collapsed unless expand_spans.
+    Pure function of (records, blobs)."""
     blobs = blobs or {}
     view = build_view(records, blobs)
     lines: list[str] = []
@@ -212,11 +297,13 @@ def render_trace(records: list[dict], blobs: dict[str, str] | None = None) -> st
 
     if view.preamble:
         lines.append("before turn 1:")
-        lines.extend(f"  {_effect_line(e)}" for e in view.preamble)
+        lines.extend(
+            f"  {ln}" for ln in _record_lines(view.preamble, expand_spans=expand_spans)
+        )
         lines.append("")
 
     for turn in view.turns:
-        lines.extend(_turn_lines(turn, blobs))
+        lines.extend(_turn_lines(turn, blobs, expand_spans))
         lines.append("")
 
     n_effects = sum(1 for r in records if r.get("kind") == "effect")
@@ -376,7 +463,8 @@ def _run_head(records: list[dict]) -> str:
 
 
 def _run_turn_lines(
-    turn: TurnView, user_texts: list[str], digests: dict[str, str], blobs: dict[str, str]
+    turn: TurnView, user_texts: list[str], digests: dict[str, str],
+    blobs: dict[str, str], expand_spans: bool = False,
 ) -> list[str]:
     r = turn.record
     lines = [f"#turn_{turn.n} (seq {r['seq']})"]
@@ -403,7 +491,11 @@ def _run_turn_lines(
             lines.extend(f"      {cl}" for cl in run.code.splitlines() or [""])
         if run.effects:
             lines.append("    effects:")
-            lines.extend(f"    {_mark_effect_line(e)}" for e in run.effects)
+            lines.extend(
+                f"    {ln}"
+                for ln in _record_lines(run.effects, marked=True,
+                                        expand_spans=expand_spans)
+            )
         lines.append(f"    {_cell_result_line(run.end)}")
         if run.cell_id in digests:
             lines.append("    digest:")
@@ -411,17 +503,23 @@ def _run_turn_lines(
 
     if turn.effects:
         lines.append("  effects:")
-        lines.extend(f"  {_mark_effect_line(e)}" for e in turn.effects)
+        lines.extend(
+            f"  {ln}"
+            for ln in _record_lines(turn.effects, marked=True,
+                                    expand_spans=expand_spans)
+        )
     lines.append(f"  {_llm_line(r)}")
     return lines
 
 
-def render_run(records: list[dict], blobs: dict[str, str] | None = None) -> str:
+def render_run(records: list[dict], blobs: dict[str, str] | None = None,
+               *, expand_spans: bool = False) -> str:
     """The complete human-side render of one run: summary header (run
     id, program, chatId, totals), then turn-by-turn `#turn_N` blocks —
     user text, assistant text/tool calls, per-cell code + effect
-    one-liners (mutations marked `*`) + result + the digest the model
-    saw, and the llm usage/cost line. Plain text, no ANSI."""
+    one-liners (mutations marked `*`, spans collapsed unless
+    expand_spans) + result + the digest the model saw, and the llm
+    usage/cost line. Plain text, no ANSI."""
     blobs = blobs or {}
     view = build_view(records, blobs)
     digests = _digest_map(view.turns, blobs)
@@ -429,12 +527,16 @@ def render_run(records: list[dict], blobs: dict[str, str] | None = None) -> str:
 
     if view.preamble:
         lines.append("before turn 1:")
-        lines.extend(f"  {_mark_effect_line(e)}" for e in view.preamble)
+        lines.extend(
+            f"  {ln}"
+            for ln in _record_lines(view.preamble, marked=True,
+                                    expand_spans=expand_spans)
+        )
         lines.append("")
 
     for i, turn in enumerate(view.turns):
         texts = _user_texts(_delta_messages(view.turns, i, blobs), first_turn=i == 0)
-        lines.extend(_run_turn_lines(turn, texts, digests, blobs))
+        lines.extend(_run_turn_lines(turn, texts, digests, blobs, expand_spans))
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 

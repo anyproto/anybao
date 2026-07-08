@@ -107,6 +107,67 @@ Written by the executor at cell end; replay treats it as a checkpoint
 (sequence-checked in strict mode like any record). Turn boundaries
 need no marker — they ARE the `llm.chat` records.
 
+### 4c. Span records (amendment 2026-07-08)
+
+Composite guest facades — space-resident tool programs like a
+`linear.createTask` composed over `any.modify` + `http.*` — read as
+primitive noise at effect granularity. A **span** groups the effect
+records of one facade call under a single input/output pair, so views
+can render the call like a host effect: a collapsed one-liner by
+default, the inner records on demand.
+
+```jsonc
+{"kind": "span", "seq": 24, "phase": "begin", "span": "s1", "parent": null,
+ "name": "linear.createTask", "cell": "toolu_abc",
+ "input": {...}, "key": "sha256:..."}            // canonical-key rule of §3
+
+{"kind": "span", "seq": 31, "phase": "end", "span": "s1",
+ "name": "linear.createTask", "cell": "toolu_abc",
+ "ok": true, "output": {...}, "error": null,
+ "meta": {"durMs": 88, "effects": 3, "mutations": 1}}
+```
+
+Effect records between the pair carry `"span": "<id>"` (the innermost
+open span). The field is **absent** outside spans, so span-free traces
+stay byte-identical to pre-amendment schema 2. Span ids are
+broker-assigned per run (`s1`, `s2`, …) — execution order makes them
+deterministic; `parent` chains nested spans.
+
+**A span is a view-level collapse, never a recording-level one.** The
+inner effect records stay canonical: they are what replay consumes,
+what capability checks anchored to, where redaction applied. A span is
+guest-*declared* narrative — `kind: "span"` stays distinct from
+`kind: "effect"` precisely so a tool program cannot fake boundary
+truth; views may render the two alike, the log never confuses them.
+
+- **Strict replay**: span records are checkpoints like cell records
+  (§4b) — begin matched on (name, key), end on (name, ok); output and
+  meta are not matched (the output is the guest's deterministic
+  recomputation, meta legitimately varies). Loose mock mode ignores
+  them (the mock index holds effect records only); reruns write their
+  own.
+- **No normalizer, no redaction**: span input/output come from guest
+  code, and guest code never holds secrets (§3 — credentials resolve
+  inside the boundary), so there is nothing to redact. Non-JSON guest
+  values degrade to `repr()` at the facade. The spill rule (§7)
+  applies.
+- **Dangling spans**: a trapped cell (fuel/epoch/memory) can skip the
+  guest-side `finally`, so the broker force-closes open spans at cell
+  end (`ok: false`, `error.type: "unclosed_span"`) before the cell
+  record — the log stays well-nested by construction. Synthesized ends
+  replay-match like any record; a rerun that traps differently
+  diverges loudly, same doctrine as cell `ok` matching.
+- **Views**: the human viewer renders spans collapsed by default —
+  `#24 linear.createTask [span, 3 effects] -> {...}`, mutation-marked
+  when the span contains a mutate — with inner records behind an
+  expand flag. The `span` stamp passes through `effects.of` so agent-
+  facing views can group the same way.
+
+Out of scope, deliberately: span-level mocking (serving a whole
+composite from its recorded output without executing the guest code) —
+that changes execution semantics and gets its own decision if ever
+wanted. The guest-side `span` facade shape is ADR-003 §4b.
+
 ### 5. Two replay modes
 
 - **`replay` (strict)** — the default for golden tests and deterministic

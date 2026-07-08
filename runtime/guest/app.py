@@ -221,7 +221,8 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         f"module '{name}' is outside the effect boundary. "
         f"Available: {', '.join(sorted(_ALLOWED))}; "
         f"proxied: {', '.join(sorted(_PROXIES))}; "
-        f"plus globals http, now(), rand(), env(), uuid4(), values, effects, effect()."
+        f"plus globals http, now(), rand(), env(), uuid4(), values, effects, "
+        f"effect(), span()."
     )
 
 
@@ -295,6 +296,45 @@ class _Effects:
 
 effects = _Effects()
 
+# ---- span: composite facades lift to one record pair (ADR-003 §4b) ---------
+
+def _json_safe(v):
+    """Span input/output must be trace-serializable — non-JSON guest
+    values degrade to repr (ADR-001 §4c)."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _json_safe(x) for k, x in v.items()}
+    return repr(v)
+
+
+def span(name):
+    """Decorator: group one facade call's effects under a single trace
+    input/output pair, so views show `name(args) -> out` like a host
+    effect; the inner effect records stay underneath (expand to see)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            inp = {}
+            if args:
+                inp["args"] = _json_safe(list(args))
+            if kwargs:
+                inp["kwargs"] = _json_safe(kwargs)
+            _effect("span.begin", {"name": name, "input": inp})
+            try:
+                out = fn(*args, **kwargs)
+            except BaseException as e:
+                _effect("span.end", {"ok": False, "error": {
+                    "type": type(e).__name__, "message": str(e)}})
+                raise
+            _effect("span.end", {"ok": True, "output": _json_safe(out)})
+            return out
+        return wrapped
+    return deco
+
+
 # ---- use() module loading (ADR-004) ----------------------------------------
 
 _module_cache: dict = {}   # (objectId, marker) -> module object
@@ -365,6 +405,7 @@ def _fresh_ns() -> dict:
         "uuid4": uuid4,
         "values": values,
         "effects": effects,
+        "span": span,
         "use": use,
     }
 
