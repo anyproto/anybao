@@ -1,4 +1,4 @@
-.PHONY: kernel runtime runtime-check test test-integration lint
+.PHONY: api-drift kernel runtime runtime-check test test-integration lint
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
@@ -11,6 +11,9 @@ bin/kernel.wasm: runtime/guest/app.py runtime/wit/kernel.wit
 # The Rust runtime (runtime/target/release/anyrt).
 runtime:
 	cargo build --release --manifest-path runtime/Cargo.toml
+
+api-drift: runtime      ## vendored swagger vs coverage manifest (nonzero on drift)
+	./runtime/target/release/anyrt drift
 
 runtime-check:     ## clippy + fmt gate for runtime/
 	cargo clippy --manifest-path runtime/Cargo.toml -- -D warnings

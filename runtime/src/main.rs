@@ -6,11 +6,13 @@ mod anyapi;
 mod broker;
 mod caps;
 mod deploy;
+mod drift;
 mod replay;
 mod resolver;
 mod routes;
 mod runner;
 mod serve;
+mod stats;
 #[cfg(test)]
 mod testutil;
 mod toolmd;
@@ -90,12 +92,21 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TraceCmd,
     },
+    /// API-drift check: vendored swagger pin vs the coverage manifest
+    Drift {
+        #[arg(long, default_value = "api/swagger.vendored.json")]
+        spec: PathBuf,
+        #[arg(long, default_value = "api/coverage.json")]
+        manifest: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
 enum TraceCmd {
     /// human-side render of one run (turns = llm.chat spans)
     Show { file: PathBuf },
+    /// distributions + tuning suggestions over a traces directory
+    Stats { dir: PathBuf },
 }
 
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
@@ -230,6 +241,19 @@ fn main() -> Result<()> {
         } => {
             print!("{}", view::render(&file)?);
             Ok(())
+        }
+        Cmd::Trace {
+            cmd: TraceCmd::Stats { dir },
+        } => {
+            print!("{}", stats::render(&dir)?);
+            Ok(())
+        }
+        Cmd::Drift { spec, manifest } => {
+            if drift::run(&spec, &manifest)? {
+                Ok(())
+            } else {
+                std::process::exit(1)
+            }
         }
     }
 }

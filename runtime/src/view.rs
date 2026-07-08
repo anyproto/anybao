@@ -77,6 +77,23 @@ fn llm_exchange<'a>(inner: &[&'a Value]) -> Option<(&'a Value, Value)> {
     Some((req, serde_json::from_str(body).ok()?))
 }
 
+/// Index of the last plain-text user message — turn 1's real
+/// userText; everything before it is the boot window.
+fn last_text_user_index(req: &Value) -> usize {
+    let msgs = req["messages"].as_array().cloned().unwrap_or_default();
+    let mut idx = 0;
+    for (i, m) in msgs.iter().enumerate() {
+        let has_text = m["content"]
+            .as_array()
+            .map(|blocks| blocks.iter().any(|b| b["type"] == "text"))
+            .unwrap_or(false);
+        if m["role"] == "user" && has_text {
+            idx = i;
+        }
+    }
+    idx
+}
+
 fn user_delta(req: &Value, prev_len: usize) -> Vec<String> {
     let msgs = req["messages"].as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
@@ -111,14 +128,14 @@ pub fn render(path: &Path) -> anyhow::Result<String> {
         .count();
     let mut tokens_in = 0i64;
     let mut tokens_out = 0i64;
-    for (_, end) in &turns {
-        if let Some(e) = end {
-            if let Some((_, resp)) =
-                llm_exchange(&between(&records, 0, e["seq"].as_i64().unwrap_or(i64::MAX)))
-            {
-                tokens_in += resp["usage"]["input_tokens"].as_i64().unwrap_or(0);
-                tokens_out += resp["usage"]["output_tokens"].as_i64().unwrap_or(0);
-            }
+    for (begin, end) in &turns {
+        let b = begin["seq"].as_i64().unwrap_or(0);
+        let e = end
+            .map(|e| e["seq"].as_i64().unwrap_or(i64::MAX))
+            .unwrap_or(i64::MAX);
+        if let Some((_, resp)) = llm_exchange(&between(&records, b, e)) {
+            tokens_in += resp["usage"]["input_tokens"].as_i64().unwrap_or(0);
+            tokens_out += resp["usage"]["output_tokens"].as_i64().unwrap_or(0);
         }
     }
     out.push_str(&format!(
@@ -133,6 +150,7 @@ pub fn render(path: &Path) -> anyhow::Result<String> {
 
     let mut prev_msgs = 0usize;
     for (i, (begin, end)) in turns.iter().enumerate() {
+        let first_turn = i == 0;
         let b_seq = begin["seq"].as_i64().unwrap_or(0);
         let e_seq = end
             .map(|e| e["seq"].as_i64().unwrap_or(i64::MAX))
@@ -140,7 +158,12 @@ pub fn render(path: &Path) -> anyhow::Result<String> {
         let inner = between(&records, b_seq, e_seq);
         out.push_str(&format!("\n#turn_{}\n", i + 1));
         if let Some((req, resp)) = llm_exchange(&inner) {
-            for text in user_delta(req, prev_msgs) {
+            let skip = if first_turn {
+                last_text_user_index(req)
+            } else {
+                prev_msgs
+            };
+            for text in user_delta(req, skip) {
                 out.push_str(&format!("  user: {text}\n"));
             }
             prev_msgs = req["messages"].as_array().map(|m| m.len()).unwrap_or(0) + 1;

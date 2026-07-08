@@ -173,9 +173,9 @@ pub struct RunCtx {
 }
 
 impl RunCtx {
-    fn broker(&self) -> Broker {
+    fn broker(&self, spec: &str) -> Broker {
         let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
-        let writer = TraceWriter::new(json!({"id": run_id, "program": "",
+        let writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
         let mut b = Broker::new(
             writer,
@@ -200,7 +200,7 @@ impl RunCtx {
         mailbox: SharedMailbox,
         interrupt: Arc<AtomicBool>,
     ) -> Result<(String, RunResult)> {
-        let broker = self.broker();
+        let broker = self.broker(spec);
         let run_id = broker.writer.run_id();
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
