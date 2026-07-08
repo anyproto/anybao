@@ -6,10 +6,8 @@ they can't regress. Run: `uv run pytest -m integration` with a server up
 (`any run --addr 127.0.0.1:7009`).
 """
 
-import uuid
 
 import pytest
-
 from anybao.helper import Helper, HelperError
 
 pytestmark = pytest.mark.integration
