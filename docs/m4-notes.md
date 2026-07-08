@@ -9,7 +9,7 @@ shapes, no bridges (no-backcompat). Checklist:
       drift skill.
 - [x] anyclient expansion — full any surface the helper needs (spaces,
       objects, chat, editor, query, agent turns/chunks, search, props).
-- [~] Helper facades (Python) — objects/catalog/query/search done; chat/editor/programs/skills/members remain over anyclient, THROUGH the workaround/
+- [x] Helper facades (Python) — objects/chat/editor/ui/schema/aggregate/search done (26 endpoints mapped); memory→M5, files/collab→M6, programs/skills→tool-docs pipeline over anyclient, THROUGH the workaround/
       skill audit (provenance tags, no test → no port).
 - [x] Drift-flow bootstrap — vendor any swagger.json + coverage
       manifest + make api-drift (deferred from M3; first done here).
