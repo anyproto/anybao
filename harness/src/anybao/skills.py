@@ -10,10 +10,9 @@ fetch-on-demand contract).
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 
-from .anyclient import AnyClient, AnyError
+from .anyclient import AnyClient
 
 SKILL_TYPE = "agent_skill"
 SYSTEM_SKILL_ORDER = ("_soul", "_core", "_any", "_memory",
@@ -40,6 +39,29 @@ def compose_system(skills: dict[str, str], *,
     return "\n\n".join(parts)
 
 
+def _skill_schema(client: AnyClient, space: str) -> tuple[str, str]:
+    """Ensure the agent_skill type exists WITH its name property and
+    return (typeId, namePropId). Both live-caught constraints: a fresh
+    user type has no schema (property writes rejected until one is
+    defined), and raw-client writes key type groups by typeID, not
+    xKey (only builtins have id == xKey)."""
+    tid = None
+    for t in client.list_types(space):
+        if (t.get("xKey") or t.get("key")) == SKILL_TYPE:
+            tid = t.get("id") or t.get("typeId")
+            break
+    if tid is None:
+        res = client.create_type(space, {"name": "Agent Skill",
+                                         "xKey": SKILL_TYPE})
+        tid = res.get("typeId") or res.get("id")
+    for p in client.list_properties(space, tid):
+        if p.get("xKey") == "name":
+            return tid, p["id"]
+    prop = client.add_property(space, tid, {"name": "Name", "xKey": "name",
+                                            "kind": "string"})["propId"]
+    return tid, prop
+
+
 class SkillDeployer:
     """Skills counterpart of Deployer: agent_skill objects, markdown
     content, hash-gated by content comparison."""
@@ -47,16 +69,17 @@ class SkillDeployer:
     def __init__(self, client: AnyClient, *, space: str):
         self._c = client
         self._space = space
+        self._schema: tuple[str, str] | None = None
 
-    def _ensure_type(self) -> None:
-        # idempotent: an existing type errors, which is the fine case
-        with contextlib.suppress(AnyError):
-            self._c.create_type(self._space, {"name": "Agent Skill",
-                                              "xKey": SKILL_TYPE})
+    def _ensure_type(self) -> tuple[str, str]:
+        if self._schema is None:
+            self._schema = _skill_schema(self._c, self._space)
+        return self._schema
 
     def _find(self, name: str) -> str | None:
+        tid, prop = self._ensure_type()
         recs = self._c.query_objects(
-            self._space, filter={f"{SKILL_TYPE}.name": name}, limit=1)
+            self._space, filter={f"{tid}.{prop}": name}, limit=1)
         return recs[0]["id"] if recs else None
 
     def deploy_one(self, name: str, content: str) -> str:
@@ -66,10 +89,11 @@ class SkillDeployer:
                 return "unchanged"
             self._c.put_markdown(self._space, oid, content)
             return "updated"
+        tid, prop = self._ensure_type()
         res = self._c.create_object(self._space, {
-            "types": [SKILL_TYPE],
+            "types": [tid],
             "initialProperties": {"any": {"name": name},
-                                  SKILL_TYPE: {"name": name}}})
+                                  tid: {prop: name}}})
         self._c.put_markdown(self._space, res["objectId"], content)
         return "created"
 
@@ -108,11 +132,12 @@ def memory_categories_section(client: AnyClient, space: str) -> str:
 
 def load_skills_space(client: AnyClient, space: str) -> dict[str, str]:
     """System skills back from a space — the runtime side of compose."""
-    recs = client.query_objects(space, filter={f"{SKILL_TYPE}.name":
+    tid, prop = _skill_schema(client, space)
+    recs = client.query_objects(space, filter={f"{tid}.{prop}":
                                                {"$regex": "^_"}})
     out = {}
     for r in recs:
-        name = (r.get(SKILL_TYPE) or {}).get("name") or (r.get("any") or {}).get("name")
+        name = (r.get(tid) or {}).get(prop) or (r.get("any") or {}).get("name")
         if name:
             out[name] = client.get_markdown(space, r["id"])
     return out

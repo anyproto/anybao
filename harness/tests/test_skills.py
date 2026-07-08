@@ -56,8 +56,14 @@ class FakeAny:
 
     def __call__(self, method, path, body):
         self.calls.append((method, path, body))
+        if path.endswith("/types") and method == "GET":
+            return 200, {"types": [{"id": "t-skill", "xKey": "agent_skill"}]}
         if path.endswith("/types"):
-            return 409, {"error": {"code": "type.exists", "message": "dup"}}
+            return 200, {"typeId": "t-skill"}
+        if path.endswith("/properties") and method == "GET":
+            return 200, {"properties": []}
+        if path.endswith("/properties"):
+            return 200, {"propId": "p-name"}
         if path.endswith("/objects/query"):
             recs = [{"id": self.existing}] if self.existing else []
             return 200, {"records": recs}

@@ -90,13 +90,28 @@ def ensure_space(client, name: str) -> str:
                         {"name": name, "spaceType": "anytype.space"})["id"]
 
 
+def ensure_trigger_anchor(client, space: str, name: str = "agent-triggers") -> str:
+    """The agent_trigger-typed object whose datasets hold trigger
+    definitions + runs (live-caught: dataset writes validate against
+    the anchor's type membership)."""
+    rows = client.query_objects(
+        space, filter={"any.name": name, "any.types": "agent_trigger"}, limit=1)
+    if rows:
+        return rows[0]["id"]
+    return client.create_object(space, {
+        "types": ["agent_trigger"],
+        "initialProperties": {"any": {"name": name}}})["objectId"]
+
+
 def ensure_chat(client, space: str, name: str) -> str:
-    """Find-or-create the watched chat by name. A fresh name = clean v2
-    agent_turns/agent_chunks datasets (ADR-006 §0)."""
-    rows = client.query_objects(space, filter={"any.name": name}, limit=10)
-    for r in rows:
-        if "chat" in r:
-            return r["id"]
+    """Find-or-create the watched chat by NAME + TYPE — type membership
+    rides `any.types` on the row and is server-filterable (live-caught:
+    a top-level-group check never matches, minting a duplicate chat per
+    boot). A fresh name = clean v2 datasets (ADR-006 §0)."""
+    rows = client.query_objects(
+        space, filter={"any.name": name, "any.types": "chat"}, limit=1)
+    if rows:
+        return rows[0]["id"]
     return client.create_object(space, {
         "types": ["chat"],
         "initialProperties": {"any": {"name": name}}})["objectId"]
@@ -136,8 +151,10 @@ def serve(args: argparse.Namespace) -> int:
     chat = ensure_chat(client, space, args.chat_name)
     overlay = args.overlay or space  # agent-code target (agent: alias space)
 
-    print(f"deploy → {Deployer(client, space=overlay).deploy_dir(Path(args.programs))}")
-    print(f"skills → {SkillDeployer(client, space=overlay).deploy_dir(Path(args.skills))}")
+    deployed = Deployer(client, space=overlay).deploy_dir(Path(args.programs))
+    print(f"deploy → {deployed}", flush=True)
+    skills_out = SkillDeployer(client, space=overlay).deploy_dir(Path(args.skills))
+    print(f"skills → {skills_out}", flush=True)
 
     cfg = bootstrap_config()
     if args.overlay:
@@ -168,30 +185,32 @@ def serve(args: argparse.Namespace) -> int:
     brain = client.get_brain(space)["objectId"]
     instance = f"anybao-{os.getpid()}"
     sched = Scheduler(instance, now=time.time)
-    store = TriggerStore(client, space=space, anchor_object_id=chat)
+    anchor = ensure_trigger_anchor(client, space)
+    store = TriggerStore(client, space=space, anchor_object_id=anchor)
     runtime = TriggerRuntime(
         sched, lambda t, ev: runner.run_program_result(t.program, t.args),
         record_sink=lambda t, rec: store.record_run(t, rec, ts_ms=int(rec.ts * 1000)),
         boot_time=time.time())
     for t in (rollup_trigger(space=space, chat_id=chat, owner=instance),
-              extraction_trigger(space=space, chat_id=chat, owner=instance),
+              extraction_trigger(space=space, chat_id=chat, brain_id=brain,
+                                 owner=instance),
               linkgen_trigger(space=space, brain_id=brain, owner=instance)):
         runtime.add(t)
         store.save(t)
     sched.arm()  # post-sync arming (ADR-006 §4)
     threading.Thread(target=_tick_forever, args=(runtime,), daemon=True).start()
 
-    service = TriggerService(store, owner=instance)
+    service = TriggerService(store, owner=instance, registry=runtime.triggers)
     ctrl = start_server(service, host="127.0.0.1", port=args.control_port)
     print(f"anybao serving space={space} chat={chat} "
-          f"control=127.0.0.1:{ctrl.server_address[1]}")
+          f"control=127.0.0.1:{ctrl.server_address[1]}", flush=True)
 
     while True:  # reconnect loop: each feed drops its snapshot, so no replay
         try:
             for record in chat_messages(client, space, chat):
                 action = watcher.on_message(chat, record)
                 if action == "start":
-                    print(f"conversation started: {record.get('text', '')[:60]!r}")
+                    print(f"conversation started: {record.get('text', '')[:60]!r}", flush=True)
         except KeyboardInterrupt:
             return 0
         except Exception as e:  # noqa: BLE001 - the loop must outlive hiccups

@@ -213,7 +213,13 @@ def _build_adapter(provider: str, fenced: bool):
     return FencedAdapter(base) if fenced else base
 
 
-def http_transport(secret_key_lookup):
+_TRANSPORT_TIMEOUT_S = 180.0  # a stalled provider connection must ERROR,
+                              # never hang the conversation thread (live-caught:
+                              # a timeout-less urlopen wedged the watcher —
+                              # later messages injected into a dead mailbox)
+
+
+def http_transport(secret_key_lookup, *, timeout: float = _TRANSPORT_TIMEOUT_S):
     """Production transport: one HTTP POST to the provider. `prov`
     carries endpoint/model; the api key is resolved HERE (inside the
     effect boundary) via secret_key_lookup(prov['api_key_ref']) — never
@@ -235,7 +241,7 @@ def http_transport(secret_key_lookup):
             prov["base_url"].rstrip("/") + path,
             data=_j.dumps(req).encode(), method="POST", headers=headers,
         )
-        with urllib.request.urlopen(r) as resp:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
             return _j.loads(resp.read())
 
     return transport

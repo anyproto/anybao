@@ -35,12 +35,15 @@ def test_ensure_space_creates_when_missing():
     assert ("POST", "/v1/spaces") in calls
 
 
-def test_ensure_chat_finds_chat_typed_object_else_creates():
+def test_ensure_chat_filters_by_name_and_type_else_creates():
     def send(method, path, body):
         if path.endswith("/objects/query"):
-            return 200, {"records": [
-                {"id": "page1", "editor": {}},              # name matches, not a chat
-                {"id": "chat1", "chat": {}}]}
+            # the find MUST constrain on any.types server-side
+            # (live-caught: name-only matching minted a chat per boot)
+            assert body["filter"] == {"any.name": "general", "any.types": "chat"}
+            return 200, {"records": [{"id": "chat1",
+                                      "any": {"name": "general",
+                                              "types": ["chat", "nav"]}}]}
         raise AssertionError("should not create")
     assert cli.ensure_chat(AnyClient(send), "s1", "general") == "chat1"
 
