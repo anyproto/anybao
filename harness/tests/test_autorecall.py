@@ -10,11 +10,11 @@ from anyrt.effects import Broker, Registry, effect
 from anyrt.executor import FakeExecutor
 
 MEM_HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",
-           "recordId": "m1", "score": 0.9}
+           "recordId": "m1", "score": 0.033}
 TURN_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_turns",
-            "recordId": "t1", "score": 0.8}
+            "recordId": "t1", "score": 0.032}
 CHUNK_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_chunks",
-             "recordId": "c1", "score": 0.7}
+             "recordId": "c1", "score": 0.017}
 
 MEM_REC = {"id": "m1", "category": "preference", "context": "prefers dark roast",
            "confidence": 8, "validFrom": 1751328000, "accessCount": 2}   # 2025-07-01
@@ -63,7 +63,7 @@ def test_injects_tool_framed_pair_with_both_sections():
 
 def test_generic_message_below_threshold_injects_nothing():
     cap = []
-    weak = [{**MEM_HIT, "score": 0.1}, {**TURN_HIT, "score": 0.2}]
+    weak = [{**MEM_HIT, "score": 0.008}, {**TURN_HIT, "score": 0.011}]  # deep-rank RRF noise
     assert autorecall(cap, weak).messages_for("hi") == []
     # threshold cut happens before any hydration round-trip
     assert all(not p.endswith("/query") for _, p, _ in cap)

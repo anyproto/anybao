@@ -30,7 +30,13 @@ _HISTORY_DATASETS = ("agent_turns", "agent_chunks")
 
 @dataclass
 class AutoRecallPolicy:
-    min_score: float = 0.35     # relevance gate — below it, inject nothing
+    # Relevance gate — below it, inject nothing. The server's hybrid
+    # search scores are RRF (k=60): rank-1 in ONE leg ≈ 0.0164, rank-1
+    # in both ≈ 0.033 (live-calibrated 2026-07-08). 0.015 admits
+    # near-top hits from either leg and drops deep-rank noise; a 0-1
+    # similarity scale would need a very different constant (ADR-007
+    # §7: scale normalization is an upstream question).
+    min_score: float = 0.015
     max_memory: int = 5         # §5 "top 3–5 hits"
     max_history: int = 3        # §5 "capped at 2–3"
     token_budget: int = 1500
