@@ -21,10 +21,14 @@ version = "0.0.1"
 source = { editable = "harness" }
 dependencies = [
     { name = "anyrt" },
+    { name = "croniter" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "anyrt", editable = "runtime" }]
+requires-dist = [
+    { name = "anyrt", editable = "runtime" },
+    { name = "croniter", specifier = ">=6.2.3" },
+]
 
 [[package]]
 name = "anyrt"
@@ -57,6 +61,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/05/d8/da01980126a040c24a7f5ff8c13bac065c1226be5538626f3d58a3097079/componentize_py-0.24.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:039d049cdd39854629d975b65a8e658100d341ea2ce6509cf8af243089b510f5", size = 16296278, upload-time = "2026-06-12T23:42:43.559Z" },
     { url = "https://files.pythonhosted.org/packages/6d/7c/550b39b777cc6ce6ee705391841c8b6fdc07995de5fe3c37a7d0b7424a55/componentize_py-0.24.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:8ce842fce13960a23e8515cadb6914178692a185efce139d6cb3517a47cf3ad4", size = 16753720, upload-time = "2026-06-12T23:42:52.758Z" },
     { url = "https://files.pythonhosted.org/packages/48/55/287785fcdd147764a5cc5f1e49eaa2695c53b5f8de7ba17bdc1696617871/componentize_py-0.24.0-cp39-abi3-win_amd64.whl", hash = "sha256:111a1630d3bcdc651e1ee0aa25c5e0079b1f20ca975e43b20a9cbbea77b26a86", size = 14846239, upload-time = "2026-06-12T23:42:59.869Z" },
+]
+
+[[package]]
+name = "croniter"
+version = "6.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/03/35/96ad0a71eb0b27ab4476a7ed23facd0713d82da9c911edc8af7f34a62d6a/croniter-6.2.3.tar.gz", hash = "sha256:fb129986ef7e2c44e3f4c9f503da83ad914d2afa48f40a43ee3dca4b5c41d476", size = 166174, upload-time = "2026-07-02T14:34:22.166Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5c/dd/6466498a8b69754cffbd7237ce4c66446ca5ffcf53fb397d437666f056d2/croniter-6.2.3-py3-none-any.whl", hash = "sha256:137a97001b4d52fb71c10b750e303db79e6e42d40fff8ff77126102176c9f786", size = 46446, upload-time = "2026-07-02T14:34:20.889Z" },
 ]
 
 [[package]]
@@ -112,6 +128,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-dateutil"
+version = "2.9.0.post0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
 name = "ruff"
 version = "0.15.20"
 source = { registry = "https://pypi.org/simple" }
@@ -134,6 +162,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/10/9b/5f14927848d2fd4aa891fd88d883788c5a7baba561c7874732364045708c/ruff-0.15.20-py3-none-win32.whl", hash = "sha256:ed65ef510e43a137207e0f01cfcf998aeddb1aeeda5c9d35023e910284d7cf21", size = 10857322, upload-time = "2026-06-25T17:20:28.612Z" },
     { url = "https://files.pythonhosted.org/packages/fa/f0/fe47c501f9dea92a26d788ff98bb5d92ed4cb4c88792c5c88af6b697dc8e/ruff-0.15.20-py3-none-win_amd64.whl", hash = "sha256:a525c81c70fb0380344dd1d8745d8cc1c890b7fc94a58d5a07bd8eb9557b8415", size = 11993274, upload-time = "2026-06-25T17:20:31.871Z" },
     { url = "https://files.pythonhosted.org/packages/d7/2b/9555445e1201d92b3195f45cdb153a0b68f24e0a4273f6e3d5ab46e212bb/ruff-0.15.20-py3-none-win_arm64.whl", hash = "sha256:2f5b2a6d614e8700388806a14996c40fab2c47b819ef57d790a34878858ed9ca", size = 11343498, upload-time = "2026-06-25T17:20:35.03Z" },
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
 
 [[package]]
