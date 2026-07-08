@@ -80,9 +80,7 @@ def test_helper_no_silent_drop_live(client, fresh_space):
 
 def test_helper_editor_append(client, fresh_space):
     h = Helper(client, default_space=fresh_space)
-    obj = h.create_object("Pages" if False else None, {"name": "doc"}) \
-        if False else client.create_object(fresh_space, {"types": ["editor"]})
-    oid = obj["id"] if "id" in obj else obj["objectId"]
+    oid = client.create_object(fresh_space, {"types": ["editor"]})["objectId"]
     h.append_markdown(oid, "## section\nbody text")
     md = client.get_markdown(fresh_space, oid)
     assert "section" in md and "body text" in md
