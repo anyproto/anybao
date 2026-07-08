@@ -26,10 +26,11 @@ from anyrt.effects import Broker, Registry
 from anyrt.wasi import WasiEngine
 
 from .anyclient import AnyClient
+from .autorecall import AutoRecall
 from .config import Config, register_config_effect
 from .data_effects import register_data_effects
 from .effects_impl import register_chat_effect, register_http_effects
-from .history import History, build_turn
+from .history import History, build_turn, raw_tail, render_boot_window
 from .llm import http_transport as real_llm_transport
 from .llm import register_llm_effect
 from .loop import LoopPolicy, Mailbox, Outcome, run_conversation
@@ -102,20 +103,42 @@ class Runner:
         writer.dump(base)
         self._blobs.put(writer.blobs, base)
 
+    def _boot_window(self, hist: History) -> tuple[list[dict], int | None]:
+        """Boot context + its raw-tail min seq (the ADR-007 §5 deep-history
+        guard boundary). Fail-open: a fresh chat / unreachable history
+        must not block the conversation."""
+        try:
+            turns = list(reversed(hist.recent_turns(200)))  # ascending by seq
+            chunks = {}
+            for lvl in (1, 2, 3):
+                got = list(reversed(hist.chunks_at_level(lvl, 100)))
+                if got:
+                    chunks[lvl] = got
+        except Exception:
+            return [], None
+        tail = raw_tail(turns)
+        min_seq = tail[0].get("seq") if tail else None
+        return render_boot_window(raw_turns=turns, chunks_by_level=chunks), min_seq
+
     def run_conversation(self, chat_id: str, user_text: str,
                          mailbox: Mailbox | None = None) -> ConversationResult:
         run_id = "run_" + uuid.uuid4().hex[:16]
         writer = tr.TraceWriter(run={"id": run_id, "program": "toolcaller", "chatId": chat_id})
         broker, executor = self._build(writer, chat_id=chat_id)
+        hist = History(self._client, space=self._user_space, chat_id=chat_id)
+        boot_msgs, boot_min_seq = self._boot_window(hist)
+        recall = AutoRecall(self._client, self._user_space)
         try:
-            outcome = run_conversation(user_text, broker=broker, executor=executor,
-                                       system=self._system, policy=self._policy,
-                                       mailbox=mailbox)
+            outcome = run_conversation(
+                user_text, broker=broker, executor=executor,
+                system=self._system, policy=self._policy, mailbox=mailbox,
+                boot_messages=boot_msgs,
+                recall_inject=lambda q: recall.messages_for(q, boot_min_seq=boot_min_seq))
         finally:
             self._dump_trace(writer, run_id)
             executor.close()
 
-        History(self._client, space=self._user_space, chat_id=chat_id).append_turn(
+        hist.append_turn(
             build_turn(user_text=user_text, outcome=outcome, trace_ref=run_id,
                        from_agent=self._agent_name))
         return ConversationResult(outcome, run_id)

@@ -89,6 +89,25 @@ def _chunk_line(chunk: dict) -> str:
     return f"— {chunk.get('summary', '')}  [chunk #{seq} (L{lvl}), {unit} {frm}–{to}]"
 
 
+def raw_tail(raw_turns: list[dict], *, policy: BootWindowPolicy | None = None) -> list[dict]:
+    """Newest raw turns filling the raw-tail budget, oldest→newest — the
+    full-resolution slice of the boot window. Its min seq is also the
+    auto-recall deep-history guard boundary (ADR-007 §5)."""
+    policy = policy or BootWindowPolicy()
+    tok = policy.tokenizer
+    raw_budget = int(policy.total_tokens * policy.raw_tail_fraction)
+    included: list[dict] = []
+    spent = 0
+    for turn in reversed(raw_turns):  # newest first
+        cost = tok(turn.get("userText", "") + "\n".join(turn.get("replies", [])))
+        if spent + cost > raw_budget and included:
+            break
+        included.append(turn)
+        spent += cost
+    included.reverse()
+    return included
+
+
 def render_boot_window(
     *,
     raw_turns: list[dict],           # ascending by seq (oldest→newest)
@@ -103,18 +122,9 @@ def render_boot_window(
     compressed-context message."""
     policy = policy or BootWindowPolicy()
     tok = policy.tokenizer
-    raw_budget = int(policy.total_tokens * policy.raw_tail_fraction)
-
-    # newest raw turns until the raw budget fills
-    included_turns: list[dict] = []
-    spent = 0
-    for turn in reversed(raw_turns):  # newest first
-        cost = tok(turn.get("userText", "") + "\n".join(turn.get("replies", [])))
-        if spent + cost > raw_budget and included_turns:
-            break
-        included_turns.append(turn)
-        spent += cost
-    included_turns.reverse()  # back to oldest→newest
+    included_turns = raw_tail(raw_turns, policy=policy)
+    spent = sum(tok(t.get("userText", "") + "\n".join(t.get("replies", [])))
+                for t in included_turns)
     covered_min_seq = included_turns[0].get("seq", 0) if included_turns else None
 
     # fill the remainder with chunks ascending level, newest-first per level,

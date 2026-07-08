@@ -79,12 +79,21 @@ def run_conversation(
     system: str = "",
     policy: LoopPolicy | None = None,
     mailbox: Mailbox | None = None,
+    boot_messages: list[dict] | None = None,
+    recall_inject=None,
 ) -> Outcome:
+    """`boot_messages` = the token-budgeted history window (ADR-006 §2),
+    prepended verbatim. `recall_inject(user_text) -> [messages]` = the
+    ADR-007 §5 auto-recall hook, appended after the user message as a
+    synthetic tool call + result."""
     policy = policy or LoopPolicy()
     mailbox = mailbox or Mailbox()
     messages: list[dict[str, Any]] = [
-        {"role": "user", "parts": [{"type": "text", "text": user_text}]}
+        *(boot_messages or []),
+        {"role": "user", "parts": [{"type": "text", "text": user_text}]},
     ]
+    if recall_inject is not None:
+        messages.extend(recall_inject(user_text) or [])
     tokens = 0
     have_chat = _has_effect(broker, "chat.send")
 
