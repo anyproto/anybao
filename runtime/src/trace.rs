@@ -42,6 +42,13 @@ impl TraceWriter {
         w
     }
 
+    pub fn run_id(&self) -> String {
+        self.records[0]["run"]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
     fn next_seq(&mut self) -> i64 {
         self.seq += 1;
         self.seq

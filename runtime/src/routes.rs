@@ -1,6 +1,5 @@
 //! Route classification — the Rust twin of anybao/routes.py: boundary-
-//! owned read/mutate (+ capability, when grants land here) derived from
-//! (method, url).
+//! owned read/mutate + capability truth derived from (method, url).
 
 pub struct Classifier {
     any_netloc: Option<String>,
@@ -53,5 +52,50 @@ impl Classifier {
             return "read";
         }
         "mutate"
+    }
+
+    /// Capability truth for one http call (ADR-002 §2): llm endpoints
+    /// → llm.chat; the any server → data.read / data.write by kind;
+    /// everything else → net.http.
+    pub fn cap(&self, method: &str, url: &str) -> &'static str {
+        if Self::is_llm(url) {
+            return "llm.chat";
+        }
+        if self.is_any(url) {
+            return if self.kind(method, url) == "read" {
+                "data.read"
+            } else {
+                "data.write"
+            };
+        }
+        "net.http"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_classification() {
+        let c = Classifier::new(Some("http://any.local:8080"));
+        assert_eq!(
+            c.cap("POST", "https://api.anthropic.com/v1/messages"),
+            "llm.chat"
+        );
+        assert_eq!(
+            c.cap("GET", "http://any.local:8080/v1/spaces/s1/objects"),
+            "data.read"
+        );
+        assert_eq!(
+            c.cap("POST", "http://any.local:8080/v1/spaces/s1/objects/query"),
+            "data.read" // any read-POST
+        );
+        assert_eq!(
+            c.cap("POST", "http://any.local:8080/v1/spaces/s1/objects"),
+            "data.write"
+        );
+        assert_eq!(c.cap("GET", "https://example.com/x"), "net.http");
+        assert_eq!(c.cap("POST", "https://example.com/x"), "net.http");
     }
 }
