@@ -146,6 +146,65 @@ class Scheduler:
         return rec
 
 
+@dataclass
+class RunResult:
+    status: str                 # ok | error
+    duration_ms: int
+    trace_ref: str | None = None
+    fuel: int | None = None
+    cost_usd: float | None = None
+    error: str | None = None
+
+
+class TriggerRuntime:
+    """Orchestration over the pure Scheduler — cron ticks + event
+    dispatch → fire → record. I/O is injected: `run_program(trigger,
+    event_record) -> RunResult` drives the executor/loop in prod (a fake
+    in tests); `record_sink(trigger, RunRecord)` persists to trigger_runs
+    (optional). The scheduler stays pure; this is where firing happens."""
+
+    def __init__(self, scheduler: Scheduler, run_program, *, record_sink=None,
+                 boot_time: float):
+        self.sched = scheduler
+        self._run = run_program
+        self._record = record_sink
+        self._boot_time = boot_time
+        self.triggers: dict[str, Trigger] = {}
+
+    def add(self, t: Trigger) -> None:
+        self.triggers[t.id] = t
+
+    def tick(self) -> list[RunResult]:
+        """Fire every due cron/interval trigger. Called on a timer."""
+        out = []
+        for t in list(self.triggers.values()):
+            if t.kind == "cron" and self.sched.cron_due(t):
+                out.append(self._fire(t, None))
+                self.sched.advance_cron(t)
+        return out
+
+    def on_event(self, dataset: str, record: dict,
+                 *, created_at: float | None = None) -> list[RunResult]:
+        """Dispatch a post-connect delta to matching event triggers."""
+        out = []
+        for t in list(self.triggers.values()):
+            if self.sched.event_matches(t, dataset, record,
+                                        record_created_at=created_at,
+                                        boot_time=self._boot_time):
+                out.append(self._fire(t, record))
+        return out
+
+    def _fire(self, t: Trigger, event_record: dict | None) -> RunResult:
+        result = self._run(t, event_record)
+        rec = self.sched.record_run(
+            t, status=result.status, duration_ms=result.duration_ms,
+            error=result.error, trace_ref=result.trace_ref,
+            fuel=result.fuel, cost_usd=result.cost_usd)
+        if self._record is not None:
+            self._record(t, rec)
+        return result
+
+
 def _matches_filter(flt: dict, record: dict) -> bool:
     """Minimal equality/`$in` filter over top-level record fields — the
     event-trigger match. Full query-filter parity is a later add."""
