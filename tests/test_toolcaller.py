@@ -23,7 +23,8 @@ def done_reply(text="done", usage=None):
 class World:
     """Every seam the toolcaller touches, recorded."""
 
-    def __init__(self, replies, cells=None, mailbox=None, hits=None):
+    def __init__(self, replies, cells=None, mailbox=None, hits=None,
+                 ui_ctx=None):
         self.replies = list(replies)
         self.cells = list(cells or [])
         self.mail = list(mailbox or [])
@@ -33,6 +34,7 @@ class World:
         self.roi = []
         self.spans = []
         self.plan_hits = hits or {"messages": [], "injected": []}
+        self.ui_ctx = ui_ctx
 
     # --- guest globals -----------------------------------------------------
     def effect(self, name, payload=None):
@@ -66,6 +68,9 @@ class World:
             def append_turn(self, space, chat, body):
                 w.turns.append(body)
                 return {"seq": len(w.turns) - 1}
+
+            def get_ui_context(self, space):
+                return w.ui_ctx
 
         class Llm:
             @staticmethod
@@ -193,7 +198,7 @@ def test_boot_window_and_injection_bracket_the_user_message():
     out = run(w)
     msgs = w.llm_calls[0]["messages"]
     assert msgs[0]["parts"][0]["text"] == "[earlier context]"
-    assert msgs[1]["parts"][0]["text"] == "go"
+    assert msgs[1]["parts"][0]["text"].startswith("go\n\n[now: ")
     assert msgs[2]["parts"][0]["type"] == "tool_call"
     # ROI logged with the final replies
     assert w.roi and w.roi[0][1] == ["ok"]
@@ -214,3 +219,30 @@ def test_unknown_stop_reason_raises():
     w = World([{"parts": [], "stop": "weird", "usage": {}}])
     with pytest.raises(RuntimeError, match="unhandled stop reason"):
         run(w)
+
+
+# --- runtime context + ui-context suffix (ADR-005 §5) ---------------------------
+
+
+def test_user_message_carries_timestamp_and_view_context():
+    w = World([done_reply()],
+              ui_ctx={"spaceId": "sp9", "objectId": "ob3",
+                      "view": "object", "updatedAt": 1_200_000})
+    run(w)
+    call = w.llm_calls[0]
+    user = call["messages"][-1]["parts"][0]["text"]
+    assert user.startswith("go\n\n[now: ")
+    assert "user's view — space: sp9, object: ob3, view: object" in user
+    assert "34s ago" in user  # now()=1234s, pointer at 1200s
+    # runtime context is appended to the system arg, guest-side
+    assert "## Runtime context" in call["system"]
+    assert "`s1`" in call["system"] and "`c1`" in call["system"]
+    # the persisted turn keeps the raw userText — suffix is llm-only
+    assert w.turns[0]["userText"] == "go"
+
+
+def test_context_suffix_degrades_to_timestamp_without_pointer():
+    w = World([done_reply()])  # ui_ctx None
+    run(w)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "[now: " in user and "user's view" not in user

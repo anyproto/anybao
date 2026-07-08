@@ -12,6 +12,8 @@ args: {space, chatId, userText, system?, agentName?, traceRef?,
 maxTurns?, maxTokensTotal?, tier?, bootTokens?}.
 """
 
+import datetime
+
 RUN_CELL_TOOL = {
     "name": "run_cell",
     "description": "Execute a Python cell in the persistent kernel.",
@@ -25,6 +27,37 @@ MAX_SIDE_EFFECT_LINES = 12
 
 def approx_tokens(text):
     return (len(text) + 3) // 4
+
+
+def _fmt_age(sec):
+    if sec < 120:
+        return f"{int(sec)}s"
+    if sec < 7200:
+        return f"{int(sec // 60)}m"
+    return f"{int(sec // 3600)}h"
+
+
+def _context_suffix(c, space):
+    """ADR-005 §5: the current user message closes the prompt with a
+    timestamp + ui-context suffix ('here'/'this page' resolve against
+    the view line). Best-effort — a missing or unreadable pointer
+    degrades to timestamp-only. The suffix rides the llm message only;
+    the persisted turn keeps the raw userText."""
+    epoch = now()  # noqa: F821 - guest global
+    stamp = datetime.datetime.fromtimestamp(
+        int(epoch), datetime.UTC).strftime("%a %Y-%m-%d %H:%M UTC")
+    line = f"\n\n[now: {stamp}"
+    try:
+        ctx = c.get_ui_context(space)
+    except Exception:
+        ctx = None
+    if ctx and ctx.get("spaceId"):
+        age = _fmt_age(max(0, epoch - ctx["updatedAt"] / 1000.0))
+        line += (f" | user's view — space: {ctx['spaceId']}"
+                 + (f", object: {ctx['objectId']}" if ctx.get("objectId") else "")
+                 + (f", view: {ctx['view']}" if ctx.get("view") else "")
+                 + f", {age} ago")
+    return line + "]"
 
 
 # --- digest (progressive disclosure over subcell results) --------------------
@@ -113,11 +146,20 @@ def _run_model_cells(parts, results):
 def main(args):
     space, chat_id = args["space"], args["chatId"]
     user_text = args["userText"]
-    system = args.get("system", "")
     tier = args.get("tier", TIER)
     max_turns = args.get("maxTurns", MAX_TURNS)
     max_tokens = args.get("maxTokensTotal", MAX_TOKENS_TOTAL)
     agent_name = args.get("agentName", "bao")
+    # runtime context (ADR-005 §5): the ids the model must never guess.
+    # Appended guest-side — the host composes no prompt wording. Stable
+    # per instance, so the cached stable prefix is unaffected.
+    system = args.get("system", "") + (
+        "\n\n## Runtime context\n\n"
+        f"- agent space: `{space}` (your chat, history, and brain live here)\n"
+        f"- chat object: `{chat_id}`\n"
+        f"- agent name: {agent_name}\n"
+        "- other spaces: `c.list_spaces()`; the user's live view rides the "
+        "newest user message as a `[now: … | user's view — …]` line")
 
     c = use("any@v1").client()  # noqa: F821 - guest global
     llm = use("llm@v1")  # noqa: F821
@@ -138,7 +180,9 @@ def main(args):
     plan = ar.plan(c, space, user_text, boot_min_seq)
 
     messages = [*boot,
-                {"role": "user", "parts": [{"type": "text", "text": user_text}]},
+                {"role": "user",
+                 "parts": [{"type": "text",
+                            "text": user_text + _context_suffix(c, space)}]},
                 *plan["messages"]]
 
     def bubble(text, done):

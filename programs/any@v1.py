@@ -95,6 +95,40 @@ class Client:
                           f"/v1/spaces/{space}/objects/{object_id}/editor/markdown",
                           {"content": content})
 
+    # --- spaces & ui context ---------------------------------------------------
+    def list_spaces(self):
+        """Every space on the account as raw rows ({id, name, status, …});
+        operate on status == "active" unless asked otherwise."""
+        return self._call("get", "/v1/spaces").get("spaces", [])
+
+    def get_ui_context(self, space):
+        """The user's current view: the `ui_context` pointer object
+        any-ui maintains in the agent space (xKey contract with any-ui:
+        props space_id / object_id / view / updated_at). Returns
+        {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
+        check freshness before trusting — or None when the UI has never
+        reported (type or pointer absent)."""
+        tid = next((t["id"] for t in self.list_types(space)
+                    if t.get("xKey") == "ui_context"), None)
+        if tid is None:
+            return None
+        props = {p.get("xKey"): p["id"]
+                 for p in self.list_properties(space, tid) if p.get("id")}
+        recs = self.query_objects(space, filter={tid: {"$exists": True}},
+                                  limit=8)
+        latest, latest_at = None, 0
+        for r in recs:
+            group = r.get(tid) or {}
+            at = group.get(props.get("updated_at", ""), 0) or 0
+            if latest is None or at > latest_at:
+                latest, latest_at = group, at
+        if latest is None:
+            return None
+        return {"spaceId": latest.get(props.get("space_id", ""), ""),
+                "objectId": latest.get(props.get("object_id", ""), ""),
+                "view": latest.get(props.get("view", ""), ""),
+                "updatedAt": latest_at}
+
     # --- types & properties (catalog source) ----------------------------------
     def list_types(self, space):
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])

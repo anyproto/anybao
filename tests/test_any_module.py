@@ -197,3 +197,44 @@ def test_memory_verbs_and_paths():
         ("POST", "/v1/spaces/s1/agent/memory"),
         ("PATCH", "/v1/spaces/s1/agent/memory/m1"),
         ("DELETE", "/v1/spaces/s1/agent/memory/m1")]
+
+
+# --- spaces & ui context ---------------------------------------------------------
+
+
+def test_list_spaces_unwraps():
+    fx = wire(replies={"/v1/spaces": {"spaces": [{"id": "sp1", "name": "bao",
+                                                  "status": "active"}]}})
+    assert client(fx).list_spaces() == [{"id": "sp1", "name": "bao",
+                                         "status": "active"}]
+
+
+def test_get_ui_context_resolves_props_and_picks_newest():
+    fx = wire(replies={
+        "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
+        "/types/T1/properties": {"properties": [
+            {"id": "p_s", "xKey": "space_id"},
+            {"id": "p_o", "xKey": "object_id"},
+            {"id": "p_v", "xKey": "view"},
+            {"id": "p_u", "xKey": "updated_at"}]},
+        "/objects/query": {"records": [
+            {"id": "o1", "T1": {"p_s": "sp1", "p_o": "ob1",
+                                "p_v": "object", "p_u": 111}},
+            {"id": "o2", "T1": {"p_s": "sp2", "p_o": "",
+                                "p_v": "grid", "p_u": 222}}]}})
+    ctx = client(fx).get_ui_context("s1")
+    assert ctx == {"spaceId": "sp2", "objectId": "", "view": "grid",
+                   "updatedAt": 222}
+    # the pointer query filters on the type group's presence
+    assert fx.calls[-1] == ("POST", "/v1/spaces/s1/objects/query",
+                            {"filter": {"T1": {"$exists": True}}, "limit": 8})
+
+
+def test_get_ui_context_none_when_type_or_pointer_absent():
+    fx = wire(replies={"/types": {"types": []}})
+    assert client(fx).get_ui_context("s1") is None
+    fx = wire(replies={
+        "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
+        "/types/T1/properties": {"properties": []},
+        "/objects/query": {"records": []}})
+    assert client(fx).get_ui_context("s1") is None

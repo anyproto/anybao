@@ -120,14 +120,23 @@ the cell's span — into the ToolResult content:
 
 The stable block [core skills + tool docs + memory categories] is
 composed by `anybao serve` (content shapes are ADR-006's) and handed to
-the program as the `system` arg; the toolcaller passes it verbatim to
-every `use("llm@v1").chat`, and the adapter marks it `prefix_stable_upto`
-for caching. Stable-block content is fingerprinted; the fingerprint is
-recorded per run (prompt drift is diagnosable from traces). The rest of
-the conversation prompt is assembled GUEST-SIDE: `history@v1` renders
-the boot window (hierarchical chunks message → raw turn window),
-`autorecall@v1` injects topical hits as a tool result (ADR-007 §5), and
-the current user message (timestamp + ui-context suffix) closes it.
+the program as the `system` arg; the toolcaller appends a **runtime
+context** section (agent space id, chat id, agent name — from its args;
+amendment 2026-07-08: composed guest-side, the host writes no prompt
+wording, and the ids must be stated because the model has no other
+source for them) and passes the result unchanged to every
+`use("llm@v1").chat`; the whole thing is stable per instance, and the
+adapter marks it `prefix_stable_upto` for caching. Stable-block content
+is fingerprinted; the fingerprint is recorded per run (prompt drift is
+diagnosable from traces). The rest of the conversation prompt is
+assembled GUEST-SIDE: `history@v1` renders the boot window
+(hierarchical chunks message → raw turn window), `autorecall@v1`
+injects topical hits as a tool result (ADR-007 §5), and the current
+user message (timestamp + ui-context suffix — the `ui_context` pointer
+object any-ui keeps in the agent space, read via
+`any@v1.get_ui_context`; a missing pointer degrades the suffix to
+timestamp-only) closes it. The suffix rides the llm message only — the
+persisted turn keeps the raw `userText`.
 
 **Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
 cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,

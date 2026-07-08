@@ -42,7 +42,14 @@ is a GLOBAL backed by a recorded effect: `now()`, `rand()`, `env(name)`,
   `c.put_markdown` (surgical edit = get → single-match `str.replace` →
   put), `c.chat_send(space, chat_id, body)`, `c.create_memory` /
   `c.evolve_memory` / `c.delete_memory`, `c.list_types`,
-  `c.list_properties`, `c.backlinks`, `c.aggregate`.
+  `c.list_properties`, `c.backlinks`, `c.aggregate`,
+  `c.list_spaces()`, `c.get_ui_context(space)`.
+- **Where the ids come from — never guess them.** Your space and chat
+  ids are in the **Runtime context** section of this prompt. The user's
+  live view (space/object) rides the newest user message as a
+  `[now: … | user's view — …]` line — "here" / "this page" / "this
+  space" means THAT. Everything else: `c.list_spaces()` (use rows with
+  `status == "active"`). There is no space-id env var or global.
 - `use("recall@v1").recall(c, space)` — `search` / `hydrate(hits)` /
   `by_period(from, to)` / `neighbors(object_id)`.
 - `mem = use("memory@v1").memory(c, space)` — see the `_memory` skill
