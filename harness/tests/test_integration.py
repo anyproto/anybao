@@ -121,3 +121,51 @@ def test_trigger_store_persists_and_rolls_up(client, fresh_space):
     rolled = {x.id: x for x in store.load_all()}["sweep1"]
     assert rolled.run_count == 1 and rolled.last_status == "ok"
     assert rolled.last_run_ref == "run_local_1" and rolled.last_fuel == 1234
+
+
+# --- deploy + resolve (programs live in spaces, end to end) ------------------
+
+def test_deploy_program_then_resolve(client, fresh_space):
+    from anybao.deploy import Deployer, ProgramSource
+    from anybao.modules import AnyModuleResolver
+
+    code = "GREETING = 'hi'\n\ndef greet(name):\n    return GREETING + ' ' + name\n"
+    prog = ProgramSource("greeter", "v1", code=code,
+                         tool_md="## Tool Description\n\nGreets.\n\n"
+                                 "## Tool Schema\n### greet(name) [getter]\n\nreturns a greeting.\n")
+    dep = Deployer(client, space=fresh_space)
+    assert dep.deploy_one(prog) == "created"
+    assert dep.deploy_one(prog) == "unchanged"          # hash-gate, live
+
+    # resolve it back
+    r = AnyModuleResolver(client, current_space=fresh_space)
+    resolved = r("greeter@v1")
+    assert "def greet" in resolved.source
+    assert resolved.source_hash.startswith("sha256:")
+
+
+def test_deploy_then_use_in_wasi_guest(client, fresh_space):
+    """The full chain: deploy → AnyModuleResolver → use() in the guest."""
+    from pathlib import Path
+
+    from anyrt import trace as tr
+    from anyrt.builtin_effects import register_builtin_effects
+    from anyrt.effects import Broker, Registry
+    from anyrt.wasi import WasiEngine
+
+    from anybao.deploy import Deployer, ProgramSource
+    from anybao.modules import AnyModuleResolver
+
+    kernel = Path(__file__).resolve().parents[2] / "bin" / "kernel.wasm"
+    if not kernel.exists():
+        pytest.skip("bin/kernel.wasm missing — run `make kernel`")
+
+    Deployer(client, space=fresh_space).deploy_one(ProgramSource(
+        "greeter", "v1", "def greet(name):\n    return 'hi ' + name\n"))
+
+    reg = Registry()
+    register_builtin_effects(reg, resolver=AnyModuleResolver(client, current_space=fresh_space))
+    broker = Broker(reg, tr.TraceWriter(run={"id": "deploy-e2e"}))
+    eng = WasiEngine(broker, kernel_wasm=kernel)
+    r = eng.run_cell("g = use('greeter@v1')\ng.greet('bao')", cell_id="c1")
+    assert r.ok and r.last_value.repr == "'hi bao'"
