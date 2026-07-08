@@ -147,3 +147,44 @@ def test_ui_open_commands():
     assert cmds[0] == {"action": "open_space", "spaceId": "s2"}
     assert cmds[1] == {"action": "open_object", "spaceId": "s2",
                        "objectId": "o9", "source": "agent"}
+
+
+def test_create_type_invalidates_catalog():
+    cap = []
+    h = Helper(AnyClient(fake_any_with_type_create(cap)), default_space="s1")
+    h.create_object("book", {"name": "a"})   # warms catalog (1 types fetch)
+    h.create_type("Movie", xkey="movie")     # should invalidate
+    h.create_object("book", {"name": "b"})   # re-fetches catalog
+    type_fetches = [1 for m, p, _ in cap if m == "GET" and p.endswith("/types")]
+    assert len(type_fetches) == 2  # invalidation forced a refetch
+
+
+def fake_any_with_type_create(cap):
+    base = fake_any(cap)
+    def send(method, path, body):
+        if method == "POST" and path.endswith("/types"):
+            return 201, {"typeId": "mv1"}
+        return base(method, path, body)
+    return send
+
+
+def test_add_property_resolves_type_and_sets_index_meta():
+    cap = []
+    h = Helper(AnyClient(fake_any(cap)), default_space="s1")
+    h.add_property("book", "Rating", xkey="rating", kind="number", index="basic")
+    m, p, b = next(x for x in cap if x[0] == "POST" and x[1].endswith("/types/bk1/properties"))
+    assert b == {"name": "Rating", "xKey": "rating",
+                 "kind": "number", "meta": {"index": "basic"}}
+
+
+def test_aggregate_returns_records():
+    h = Helper(AnyClient(fake_any_agg()), default_space="s1")
+    assert h.aggregate([{"$count": "n"}]) == [{"id": "x", "n": 3}]
+
+
+def fake_any_agg():
+    def send(method, path, body):
+        if path.endswith("/objects/aggregate"):
+            return 200, {"records": [{"id": "x", "n": 3}]}
+        return 200, {}
+    return send

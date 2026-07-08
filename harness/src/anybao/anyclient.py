@@ -116,6 +116,16 @@ class AnyClient:
         r = self._call("GET", f"/v1/spaces/{space_id}/types/{type_id}/properties")
         return r.get("properties", r) if isinstance(r, dict) else r
 
+    def create_type(self, space_id: str, body: dict) -> dict:
+        return self._call("POST", f"/v1/spaces/{space_id}/types", body)
+
+    def add_property(self, space_id: str, type_id: str, body: dict) -> dict:
+        return self._call("POST", f"/v1/spaces/{space_id}/types/{type_id}/properties", body)
+
+    def aggregate_objects(self, space_id: str, pipeline: list) -> dict:
+        return self._call("POST", f"/v1/spaces/{space_id}/objects/aggregate",
+                          {"pipeline": pipeline})
+
     def set_properties(self, space_id: str, object_id: str, type_id: str, patch: dict) -> dict:
         return self._call("POST",
                           f"/v1/spaces/{space_id}/properties/{object_id}/set/{type_id}",

@@ -183,6 +183,38 @@ class Helper:
                 out[k] = v
         return out
 
+    # --- schema (agent builds collections) ---------------------------------
+    def create_type(self, name: str, *, xkey: str, description: str = "",
+                    space: str | None = None) -> dict:
+        """Create a user type. xKey is REQUIRED (the resolution handle);
+        derive it as a slug of name. Invalidates the space catalog."""
+        space = space or self._default_space
+        res = self._c.create_type(space, {"name": name, "xKey": xkey,
+                                          "description": description})
+        self.invalidate(space)
+        return {"typeId": res.get("typeId") or res.get("id"), "xKey": xkey}
+
+    def add_property(self, type_key: str, name: str, *, xkey: str, kind: str,
+                     index: str | None = None, scope: str | None = None,
+                     space: str | None = None) -> dict:
+        """Add a property to a user type. kind ∈ string/number/boolean/…;
+        `index` marks it for the search indexer (a scope slug).
+        Invalidates the catalog so the new prop resolves next write."""
+        space = space or self._default_space
+        tid = self.resolve_type(type_key, space)
+        body: dict = {"name": name, "xKey": xkey, "kind": kind}
+        if index:
+            body["meta"] = {"index": index}
+        if scope:
+            body["scope"] = scope
+        res = self._c.add_property(space, tid, body)
+        self.invalidate(space)
+        return res
+
+    def aggregate(self, pipeline: list, space: str | None = None) -> list[dict]:
+        r = self._c.aggregate_objects(space or self._default_space, pipeline)
+        return r.get("records", [])
+
     # --- chat --------------------------------------------------------------
     def chat_send(self, chat_id: str, text: str, *, space: str | None = None,
                   agent: dict | None = None) -> dict:

@@ -383,7 +383,7 @@
     "POST /spaces/{spaceId}/objects/aggregate": {
       "excluded": null,
       "fingerprint": "sha256:b3754be06cf6129e",
-      "helper": null
+      "helper": "helper.aggregate"
     },
     "POST /spaces/{spaceId}/objects/query": {
       "excluded": null,
@@ -488,12 +488,12 @@
     "POST /spaces/{spaceId}/types": {
       "excluded": null,
       "fingerprint": "sha256:522c88b8f4bed32b",
-      "helper": null
+      "helper": "helper.create_type"
     },
     "POST /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
       "fingerprint": "sha256:6abcb17c14cb40d7",
-      "helper": null
+      "helper": "helper.add_property"
     },
     "POST /ui/commands": {
       "excluded": null,
