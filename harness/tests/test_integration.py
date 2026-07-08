@@ -89,7 +89,7 @@ def test_helper_editor_append(client, fresh_space):
 # --- trigger persistence (TriggerStore over plain datasets) ------------------
 
 def test_trigger_store_persists_and_rolls_up(client, fresh_space):
-    from anybao.triggers import RunRecord, Scheduler, Trigger, TriggerStore
+    from anybao.triggers import Scheduler, Trigger, TriggerStore
 
     # the anchor object carries the agent_trigger type so its datasets
     # (agent_triggers / agent_trigger_runs) are writable
