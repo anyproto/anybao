@@ -7,5 +7,5 @@ dist/
 .direnv/
 result
 bin/
-host/target/
+runtime/target/
 traces/
