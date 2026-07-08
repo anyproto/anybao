@@ -104,7 +104,18 @@ enum Cmd {
 #[derive(Subcommand)]
 enum TraceCmd {
     /// human-side render of one run (turns = llm.chat spans)
-    Show { file: PathBuf },
+    Show {
+        file: PathBuf,
+        /// lift every clip limit (full text, code, outputs)
+        #[arg(long)]
+        full: bool,
+        /// include the system prompt (turn 1's otherwise-invisible channel)
+        #[arg(long)]
+        system: bool,
+        /// dump one record by seq, blob-resolved, pretty-printed
+        #[arg(long)]
+        seq: Option<i64>,
+    },
     /// distributions + tuning suggestions over a traces directory
     Stats { dir: PathBuf },
 }
@@ -172,8 +183,12 @@ fn main() -> Result<()> {
                 .with_context(|| format!("kernel at {}", kernel.display()))?;
             let cage = runner::Cage::new(&kernel_bytes)?;
             let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
-            let writer = trace::TraceWriter::new(json!({
+            let mut writer = trace::TraceWriter::new(json!({
                 "id": run_id, "program": spec, "host": "rust"}));
+            let trace_path = traces_dir.join(format!("{run_id}.jsonl"));
+            if let Err(e) = writer.stream_to(&trace_path) {
+                eprintln!("trace streaming unavailable ({e}); will write at run end");
+            }
             let broker = broker::Broker::new(
                 writer,
                 config,
@@ -190,10 +205,7 @@ fn main() -> Result<()> {
                 Arc::new(AtomicBool::new(false)),
                 timeout_s,
             )?;
-            std::fs::create_dir_all(&traces_dir)?;
-            out.broker
-                .writer
-                .dump(&traces_dir.join(format!("{run_id}.jsonl")))?;
+            out.broker.writer.dump(&trace_path)?;
             println!(
                 "{}",
                 json!({
@@ -237,9 +249,18 @@ fn main() -> Result<()> {
             })
         }
         Cmd::Trace {
-            cmd: TraceCmd::Show { file },
+            cmd:
+                TraceCmd::Show {
+                    file,
+                    full,
+                    system,
+                    seq,
+                },
         } => {
-            print!("{}", view::render(&file)?);
+            match seq {
+                Some(n) => print!("{}", view::show_record(&file, n)?),
+                None => print!("{}", view::render(&file, &view::ShowOpts { full, system })?),
+            }
             Ok(())
         }
         Cmd::Trace {

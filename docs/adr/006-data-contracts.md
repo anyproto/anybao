@@ -52,6 +52,16 @@ active`).
   `llm.chat` + `cell` records — ADR-001 §4b). What dies is the
   separately AUTHORED prose page (the dc* duplication); the
   navigability is owed as a viewer, not as a second data format.
+  **The viewer owes debug-log parity (revised 2026-07-08)** — what the
+  old dc* page carried per turn, `anyrt trace show` renders from the
+  trace: run status + wall time + fuel (from the terminal cell record,
+  errors in full), per-turn stop_reason / tokens / cacheRead, the cell
+  CODE, and the tool_result digest the model saw (mined from the next
+  provider request; error results never clipped). Clipped lines are
+  locators, `#seq` is the key: `--seq N` dumps one record
+  blob-resolved, `--full` lifts clips, `--system` prints the system
+  prompt. Blob-spilled records resolve through the sidecar before
+  rendering; turnless traces render the raw effect log.
   **Traces are DEVICE-LOCAL by default (revised 2026-07-08).** The trace
   (JSONL + blobs) is huge and rarely read; syncing it into `any` would
   bloat the user's synced space for diagnostic data. So it lives on the

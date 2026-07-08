@@ -175,8 +175,12 @@ pub struct RunCtx {
 impl RunCtx {
     fn broker(&self, spec: &str) -> Broker {
         let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
-        let writer = TraceWriter::new(json!({"id": run_id, "program": spec,
+        let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
+        let trace_path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
+        if let Err(e) = writer.stream_to(&trace_path) {
+            eprintln!("trace streaming unavailable ({e}); will write at run end");
+        }
         let mut b = Broker::new(
             writer,
             self.cfg.config.clone(),

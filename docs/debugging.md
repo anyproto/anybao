@@ -9,21 +9,34 @@ turn in `agent_turns` carries `userText`, `replies`, llm scalars, and a
 
 Traces land in `--traces-dir` (default `traces/` relative to where
 `anyrt` runs), one `run_<id>.jsonl` per run, plus a `.blobs` sidecar
-when values spill (ADR-001 §7).
+when values spill (ADR-001 §7). The file streams **in-flight**: the
+header lands at run start and every record appends as it commits, so
+`tail -f` works on a live run and a crashed run leaves a partial trace
+(`trace show` reports it as `status: incomplete`).
 
 ## The tools
 
 ```sh
 ls -t traces/ | head                          # newest runs
 
-# human render: #turn_N blocks (turns = llm.chat spans), model cells
-# with per-cell effects (mutations marked *), token usage per turn
+# human render: status/fuel/wall-time header, #turn_N blocks
+# (turns = llm.chat spans) with the user/assistant text, cell CODE,
+# stop_reason + tokens + cacheRead, per-cell effects (mutations
+# marked *), and the tool_result digest the model saw. Errors are
+# never clipped.
 anyrt trace show traces/run_<id>.jsonl
+anyrt trace show traces/run_<id>.jsonl --full      # lift all clips
+anyrt trace show traces/run_<id>.jsonl --system    # + system prompt
+anyrt trace show traces/run_<id>.jsonl --seq 42    # one record, full,
+                                                   # blob-resolved
 
 # the metrics view over a directory: fuel/duration/token
 # distributions (p50/p95), effect histogram, tuning suggestions
 anyrt trace stats traces/
 ```
+
+Clipped lines are locators, not the payload — every effect line prints
+its `#seq`; drill down with `--seq N` (or jq below).
 
 Raw access is just JSONL — one record per line (never pretty-print the
 file itself):

@@ -36,6 +36,17 @@ One record per effect call, in execution order. All v1 map views
 the log. Serialization: **JSONL** — one record per line, append-friendly,
 spill-friendly, diffable. Line 1 is a header record.
 
+**Written at commit time, not at run end (revised 2026-07-08).** The
+writer streams: the header lands when the run starts, every record
+appends (with flush) as it is committed, and blob spills append to the
+sidecar as they happen (spill order, not sorted — consumers key by
+hash). So an in-flight run is tail-able and a crashed run leaves a
+partial trace — exactly the run you most want to read. Records stay
+buffered in memory too; if a stream write ever fails the writer
+degrades to buffered mode and the end-of-run `dump()` (a no-op on a
+healthy stream) rewrites the whole file. Bytes are identical either
+way.
+
 ### 2. Record shape
 
 ```jsonc
