@@ -8,14 +8,19 @@ Program storage (mirrors internal/program): a `program`-typed object per
 program, source in `program_source`/"main"/{code}, split tool docs in
 `program_description`/"main"/{text} + one `program_methods` record per
 method, `program.any_tool` = has description AND ≥1 method. A program is
-`<name>@<version>` (the filename convention `name@vN.py`).
+`<name>@<version>` (the filename convention `name@vN.py`). Optional
+capability manifest (sidecar `name@vN.manifest.json`) is stored in
+`program_manifest`/"main" and mixed into the fingerprint — manifest =
+request, grants bind to the content hash (anybao.caps, 00-plan
+"Capabilities & trust").
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .anyclient import AnyClient
@@ -25,16 +30,24 @@ PROGRAM_TYPE = "program"
 _NAME_VER = re.compile(r"^(?P<name>.+)@(?P<version>v\d+)$")
 
 
-def _fingerprint(code: str, desc: str, method_tuples: list[tuple]) -> str:
+def _fingerprint(code: str, desc: str, method_tuples: list[tuple],
+                 manifest: dict | None = None) -> str:
     """Over the SPLIT form (code + description + sorted methods) so disk
     and in-space sides normalize identically — never over raw markdown
-    (which wouldn't round-trip). method_tuples: (bare_name, name, kind, text)."""
+    (which wouldn't round-trip). method_tuples: (bare_name, name, kind, text).
+    The manifest is part of the hash (CapBAC: manifest = request; editing
+    it MUST change the hash so grants stop matching — 00-plan
+    "Capabilities & trust") but is only mixed in when present, keeping
+    no-manifest fingerprints identical to the pre-manifest era."""
     h = hashlib.sha256()
     h.update(code.encode())
     h.update(b"\x00d\x00")
     h.update(desc.encode())
     for bare, name, kind, text in sorted(method_tuples):
         h.update(f"\x00m\x00{bare}\x00{name}\x00{kind}\x00{text}".encode())
+    if manifest:
+        h.update(b"\x00man\x00")
+        h.update(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode())
     return h.hexdigest()
 
 
@@ -44,6 +57,9 @@ class ProgramSource:
     version: str
     code: str
     tool_md: str = ""   # optional tool-description markdown
+    # optional capability manifest sidecar (CapBAC request half):
+    # {"capabilities": [...], "publisher": ..., "attestation": {...}?}
+    manifest: dict = field(default_factory=dict)
 
     @property
     def spec(self) -> str:
@@ -55,21 +71,25 @@ class ProgramSource:
     def fingerprint(self) -> str:
         desc, methods = self.split()
         return _fingerprint(code=self.code, desc=desc,
-                            method_tuples=[(m.bare_name, m.name, m.kind, m.text) for m in methods])
+                            method_tuples=[(m.bare_name, m.name, m.kind, m.text) for m in methods],
+                            manifest=self.manifest)
 
 
 def load_programs(src_dir: Path) -> list[ProgramSource]:
     """Read `<name>@vN.py` program files (+ optional `<name>@vN.md` tool
-    docs) from a directory."""
+    docs, optional `<name>@vN.manifest.json` capability manifests) from a
+    directory."""
     out: list[ProgramSource] = []
     for py in sorted(src_dir.glob("*.py")):
         m = _NAME_VER.match(py.stem)
         if not m:
             continue
         md = py.with_suffix(".md")
+        mf = py.with_suffix(".manifest.json")
         out.append(ProgramSource(
             name=m["name"], version=m["version"], code=py.read_text(),
-            tool_md=md.read_text() if md.exists() else ""))
+            tool_md=md.read_text() if md.exists() else "",
+            manifest=json.loads(mf.read_text()) if mf.exists() else {}))
     return out
 
 
@@ -101,7 +121,9 @@ class Deployer:
         methods = self._c.query(self._space, object_id, "program_methods")
         method_tuples = [(m.get("id", ""), m.get("name", ""), m.get("kind", "getter"),
                           m.get("text", "")) for m in methods]
-        return _fingerprint(code=code, desc=desc, method_tuples=method_tuples)
+        man_recs = self._c.query(self._space, object_id, "program_manifest")
+        manifest = man_recs[0].get("manifest", {}) if man_recs else {}
+        return _fingerprint(code=code, desc=desc, method_tuples=method_tuples, manifest=manifest)
 
     def deploy_one(self, p: ProgramSource) -> str:
         """Create-or-update one program. Returns 'created' | 'updated' |
@@ -130,6 +152,13 @@ class Deployer:
             status = "updated"
 
         self._c.upsert_record(self._space, oid, "program_source", "main", {"code": p.code})
+        if p.manifest:
+            self._c.upsert_record(self._space, oid, "program_manifest", "main",
+                                  {"manifest": p.manifest})
+        else:
+            # a program that lost its manifest must not keep a stale one
+            # (the in-space fingerprint would never converge)
+            self._clear_dataset(oid, "program_manifest")
         # rewrite docs: clear then write (a program that lost its .md drops docs)
         self._clear_docs(oid)
         if desc:
@@ -141,10 +170,13 @@ class Deployer:
 
     def _clear_docs(self, oid: str) -> None:
         for dataset in ("program_description", "program_methods"):
-            for rec in self._c.query(self._space, oid, dataset):
-                self._c.modify(self._space, {
-                    "objectId": oid, "dataset": dataset,
-                    "records": [{"id": rec["id"], "ops": [{"type": "$unset", "path": ""}]}]})
+            self._clear_dataset(oid, dataset)
+
+    def _clear_dataset(self, oid: str, dataset: str) -> None:
+        for rec in self._c.query(self._space, oid, dataset):
+            self._c.modify(self._space, {
+                "objectId": oid, "dataset": dataset,
+                "records": [{"id": rec["id"], "ops": [{"type": "$unset", "path": ""}]}]})
 
     def deploy_dir(self, src_dir: Path) -> dict[str, str]:
         """Deploy every program in a dir. Returns {spec: status}."""
