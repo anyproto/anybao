@@ -183,6 +183,65 @@ class Helper:
                 out[k] = v
         return out
 
+    # --- chat --------------------------------------------------------------
+    def chat_send(self, chat_id: str, text: str, *, space: str | None = None,
+                  agent: dict | None = None) -> dict:
+        """Post a message. `agent` (create-only) marks it agent-authored:
+        {name, debugLink?, done} — the UI liveness hint."""
+        body: dict = {"text": text}
+        if agent is not None:
+            body["agent"] = agent
+        return self._c.chat_send(space or self._default_space, chat_id, body)
+
+    def chat_edit(self, chat_id: str, msg_id: str, text: str, space: str | None = None) -> dict:
+        return self._c.chat_edit(space or self._default_space, chat_id, msg_id, text)
+
+    def chat_delete(self, chat_id: str, msg_id: str, space: str | None = None) -> dict:
+        return self._c.chat_delete(space or self._default_space, chat_id, msg_id)
+
+    def chat_react(self, chat_id: str, msg_id: str, emoji: str, space: str | None = None) -> dict:
+        return self._c.chat_react(space or self._default_space, chat_id, msg_id, emoji)
+
+    # --- editor ------------------------------------------------------------
+    def append_markdown(self, object_id: str, content: str, space: str | None = None) -> dict:
+        """Grow-by-append (O(chunk), no read/diff) — history/debug pages."""
+        return self._c.append_markdown(space or self._default_space, object_id, content)
+
+    def create_block(self, object_id: str, *, type: str, text: str = "",
+                     style: dict | None = None, parent_id: str = "", pos: str = "",
+                     space: str | None = None) -> dict:
+        block: dict = {"type": type, "text": text}
+        if style:
+            block["style"] = style
+        nav: dict = {}
+        if parent_id:
+            nav["parentId"] = parent_id
+        if pos:
+            nav["pos"] = pos
+        if nav:
+            block["nav"] = nav
+        return self._c.editor_block_create(space or self._default_space, object_id, block)
+
+    def patch_block(self, object_id: str, block_id: str, *, set: dict | None = None,
+                    unset: list[str] | None = None, space: str | None = None) -> dict:
+        patch: dict = {}
+        if set:
+            patch["set"] = set
+        if unset:
+            patch["unset"] = unset
+        return self._c.editor_block_patch(space or self._default_space, object_id, block_id, patch)
+
+    def delete_block(self, object_id: str, block_id: str, space: str | None = None) -> dict:
+        return self._c.editor_block_delete(space or self._default_space, object_id, block_id)
+
+    # --- ui command channel ------------------------------------------------
+    def open_space(self, space_id: str, source: str | None = None) -> dict:
+        return self._c.ui_command("open_space", space_id=space_id, source=source)
+
+    def open_object(self, space_id: str, object_id: str, source: str | None = None) -> dict:
+        return self._c.ui_command("open_object", space_id=space_id, object_id=object_id,
+                                  source=source)
+
     # --- passthroughs ------------------------------------------------------
     def list_spaces(self, status: str | None = None) -> list[dict]:
         return self._c.list_spaces(status)

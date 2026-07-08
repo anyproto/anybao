@@ -97,3 +97,53 @@ def test_catalog_cached_within_ttl():
     h.create_object("book", {"name": "b"})
     type_fetches = [1 for m, p, _ in cap if m == "GET" and p.endswith("/types")]
     assert len(type_fetches) == 1  # second create reused the catalog
+
+
+def capturing():
+    cap = []
+    return Helper(AnyClient(fake_any(cap)), default_space="s1"), cap
+
+
+def test_chat_send_with_agent_group():
+    h, cap = capturing()
+    h.chat_send("chat1", "hello", agent={"name": "bao", "done": True})
+    m, p, b = next(x for x in cap if x[1].endswith("/chat/messages"))
+    assert m == "POST" and b == {"text": "hello", "agent": {"name": "bao", "done": True}}
+
+
+def test_chat_react_path():
+    h, cap = capturing()
+    h.chat_react("chat1", "msg9", "👍")
+    m, p, _ = next(x for x in cap if "/reactions/" in x[1])
+    assert m == "POST" and p.endswith("/chat/messages/msg9/reactions/👍")
+
+
+def test_append_markdown_is_content():
+    h, cap = capturing()
+    h.append_markdown("doc1", "## more")
+    m, p, b = next(x for x in cap if x[1].endswith("/editor/markdown/append"))
+    assert m == "POST" and b == {"content": "## more"}
+
+
+def test_create_block_shape():
+    h, cap = capturing()
+    h.create_block("doc1", type="paragraph", text="hi", parent_id="b0", pos="aa")
+    m, p, b = next(x for x in cap if x[1].endswith("/editor/blocks"))
+    assert b == {"type": "paragraph", "text": "hi", "nav": {"parentId": "b0", "pos": "aa"}}
+
+
+def test_patch_block_set_unset():
+    h, cap = capturing()
+    h.patch_block("doc1", "b1", set={"text": "x"}, unset=["style.level"])
+    m, p, b = next(x for x in cap if "/editor/blocks/b1" in x[1])
+    assert m == "PATCH" and b == {"set": {"text": "x"}, "unset": ["style.level"]}
+
+
+def test_ui_open_commands():
+    h, cap = capturing()
+    h.open_space("s2")
+    h.open_object("s2", "o9", source="agent")
+    cmds = [b for m, p, b in cap if p == "/v1/ui/commands"]
+    assert cmds[0] == {"action": "open_space", "spaceId": "s2"}
+    assert cmds[1] == {"action": "open_object", "spaceId": "s2",
+                       "objectId": "o9", "source": "agent"}

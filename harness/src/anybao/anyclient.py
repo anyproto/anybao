@@ -128,6 +128,56 @@ class AnyClient:
     def create_chunk(self, space_id: str, object_id: str, body: dict) -> dict:
         return self._call("POST", f"/v1/spaces/{space_id}/objects/{object_id}/agent/chunks", body)
 
+    # --- chat messages ---
+    def chat_send(self, space_id: str, object_id: str, body: dict) -> dict:
+        return self._call("POST",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/chat/messages", body)
+
+    def chat_edit(self, space_id: str, object_id: str, msg_id: str, text: str) -> dict:
+        return self._call("PATCH",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/chat/messages/{msg_id}",
+                          {"text": text})
+
+    def chat_delete(self, space_id: str, object_id: str, msg_id: str) -> dict:
+        return self._call("DELETE",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/chat/messages/{msg_id}")
+
+    def chat_react(self, space_id: str, object_id: str, msg_id: str, emoji: str) -> dict:
+        return self._call("POST",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/chat/messages/{msg_id}"
+                          f"/reactions/{emoji}")
+
+    # --- editor blocks + append ---
+    def editor_block_create(self, space_id: str, object_id: str, block: dict) -> dict:
+        return self._call("POST",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/editor/blocks", block)
+
+    def editor_block_patch(self, space_id: str, object_id: str, block_id: str, patch: dict) -> dict:
+        return self._call("PATCH",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/editor/blocks/{block_id}",
+                          patch)
+
+    def editor_block_delete(self, space_id: str, object_id: str, block_id: str) -> dict:
+        return self._call("DELETE",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/editor/blocks/{block_id}")
+
+    def append_markdown(self, space_id: str, object_id: str, content: str) -> dict:
+        return self._call("POST",
+                          f"/v1/spaces/{space_id}/objects/{object_id}/editor/markdown/append",
+                          {"content": content})
+
+    # --- ui command channel (account-scoped, in-memory) ---
+    def ui_command(self, action: str, *, space_id: str | None = None,
+                   object_id: str | None = None, source: str | None = None) -> dict:
+        body: dict = {"action": action}
+        if space_id:
+            body["spaceId"] = space_id
+        if object_id:
+            body["objectId"] = object_id
+        if source:
+            body["source"] = source
+        return self._call("POST", "/v1/ui/commands", body)
+
     # --- search ---
     def search(self, space_id: str, query: str, *, scopes: list[str] | None = None,
                limit: int | None = None, mode: str | None = None) -> dict:

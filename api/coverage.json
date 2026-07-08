@@ -28,12 +28,12 @@
     "DELETE /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:6b509bbe48f11939",
-      "helper": null
+      "helper": "helper.chat_delete"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/editor/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:8a09f460aa870e63",
-      "helper": null
+      "helper": "helper.delete_block"
     },
     "GET /account": {
       "excluded": "harness/account profile",
@@ -233,12 +233,12 @@
     "PATCH /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:af4e1b62373fc5a4",
-      "helper": null
+      "helper": "helper.chat_edit"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:fe75e1db31df27d4",
-      "helper": null
+      "helper": "helper.patch_block"
     },
     "POST /auth": {
       "excluded": "harness auth/boot",
@@ -408,12 +408,12 @@
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages": {
       "excluded": null,
       "fingerprint": "sha256:bdf75663c6cbcf6b",
-      "helper": null
+      "helper": "helper.chat_send"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions/{emoji}": {
       "excluded": null,
       "fingerprint": "sha256:4557c692c39203cd",
-      "helper": null
+      "helper": "helper.chat_react"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/read": {
       "excluded": null,
@@ -428,12 +428,12 @@
     "POST /spaces/{spaceId}/objects/{objectId}/editor/blocks": {
       "excluded": null,
       "fingerprint": "sha256:ba3b9b2567cdbc77",
-      "helper": null
+      "helper": "helper.create_block"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/markdown/append": {
       "excluded": null,
       "fingerprint": "sha256:2948e60cc98a6f9e",
-      "helper": null
+      "helper": "helper.append_markdown"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files": {
       "excluded": null,
@@ -498,7 +498,7 @@
     "POST /ui/commands": {
       "excluded": null,
       "fingerprint": "sha256:0377cf73a433846c",
-      "helper": null
+      "helper": "helper.open_space / open_object"
     },
     "PUT /account/metadata": {
       "excluded": "harness/account profile",
