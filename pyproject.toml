@@ -12,7 +12,12 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["runtime/tests", "harness/tests"]
-addopts = "-q --import-mode=importlib"
+# Offline by default (`-m "not integration"`); integration tests hit a
+# real any server and are opt-in via `-m integration`.
+addopts = "-q --import-mode=importlib -m 'not integration'"
+markers = [
+    "integration: hits a real any server (skipped without one; run with -m integration)",
+]
 
 [tool.ruff]
 line-length = 100

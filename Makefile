@@ -23,5 +23,11 @@ bin/kernel.wasm: runtime/guest/app.py runtime/wit/kernel.wit
 test: kernel
 	uv run pytest
 
+# Integration tests against a real any server (skipped without one).
+# Start a server first: `any run --addr 127.0.0.1:7009` (or set
+# ANYBAO_TEST_SERVER). Validates the wire contract offline fakes can't.
+test-integration: kernel
+	uv run pytest -m integration
+
 lint:
 	uv run ruff check .
