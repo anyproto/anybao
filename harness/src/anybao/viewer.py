@@ -232,6 +232,221 @@ def render_trace(records: list[dict], blobs: dict[str, str] | None = None) -> st
     return "\n".join(lines) + "\n"
 
 
+# ---- run render — the trace viewer proper (M6, ADR-006 §1) -------------------
+#
+# render_trace above is the minimal timeline; render_run is the complete
+# human-side view of one run: summary header, then a `#turn_N` block per
+# turn (the anchor form traceRefs use) with the user text, assistant
+# output, each cell's code + effects + result + the digest the model
+# saw, mutations marked, and the llm usage/cost line.
+
+_DIGEST_LINES = 8
+
+
+def _usage_of(rec: dict) -> dict:
+    usage = rec.get("meta", {}).get("usage")
+    if not usage:
+        out = rec.get("output")
+        usage = out.get("usage") if isinstance(out, dict) else None
+    return usage or {}
+
+
+def _turn_messages(rec: dict, blobs: dict[str, str]) -> list | None:
+    """The llm.chat input messages, or None when spilled and the
+    sidecar is missing (degrade, never raise)."""
+    inp = _deref(rec.get("input"), blobs)
+    if isinstance(inp, dict) and isinstance(inp.get("messages"), list):
+        return inp["messages"]
+    return None
+
+
+def _delta_messages(turns: list[TurnView], i: int, blobs: dict[str, str]) -> list:
+    """Messages NEW in turn i's input relative to turn i-1's — each
+    llm.chat records the full array (ADR-001 resolved Q1), so the delta
+    is a suffix slice."""
+    msgs = _turn_messages(turns[i].record, blobs)
+    if msgs is None:
+        return []
+    prev = _turn_messages(turns[i - 1].record, blobs) if i else []
+    if prev is None:
+        return []
+    return msgs[len(prev):]
+
+
+def _user_texts(delta: list, first_turn: bool) -> list[str]:
+    """User-visible text in a delta. Turn 1's delta is the whole boot
+    window + the actual user message — take only the LAST text-bearing
+    user message there; later deltas are injections (all shown)."""
+    by_msg = []
+    for m in delta:
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        texts = [p.get("text", "") for p in m.get("parts", []) if p.get("type") == "text"]
+        if texts:
+            by_msg.append(texts)
+    if first_turn:
+        by_msg = by_msg[-1:]
+    return [t for texts in by_msg for t in texts]
+
+
+def _digest_map(turns: list[TurnView], blobs: dict[str, str]) -> dict[str, str]:
+    """call_id -> tool_result content from the llm.chat inputs — the
+    digest the model actually saw for each cell (ADR-005 §4)."""
+    out: dict[str, str] = {}
+    for t in turns:
+        for m in _turn_messages(t.record, blobs) or []:
+            if not isinstance(m, dict):
+                continue
+            for p in m.get("parts", []):
+                if p.get("type") == "tool_result" and p.get("call_id") not in out:
+                    out[p["call_id"]] = str(p.get("content", ""))
+    return out
+
+
+def _mark_effect_line(r: dict) -> str:
+    """Effect one-liner with mutations highlighted: `*` in the gutter."""
+    mark = "*" if r.get("meta", {}).get("class") == "mutate" else " "
+    return f"{mark} {_effect_line(r)}"
+
+
+def _llm_line(rec: dict) -> str:
+    usage = _usage_of(rec)
+    meta = rec.get("meta", {})
+    line = f"llm: tokens in={usage.get('in', '?')} out={usage.get('out', '?')}"
+    cost = usage.get("costUsd", meta.get("costUsd"))
+    if cost is not None:
+        line += f" cost=${cost:.4f}"
+    if "durMs" in meta:
+        line += f" ({meta['durMs']}ms)"
+    return line
+
+
+def _clip_lines(text: str, limit: int = _DIGEST_LINES) -> list[str]:
+    lines = text.splitlines() or [""]
+    out = [
+        ln if len(ln) <= _PREVIEW_LIMIT else ln[: _PREVIEW_LIMIT - 1] + "…"
+        for ln in lines[:limit]
+    ]
+    if len(lines) > limit:
+        out.append(f"… ({len(lines) - limit} more lines)")
+    return out
+
+
+def _run_totals(records: list[dict]) -> dict:
+    t = {"turns": 0, "cells": 0, "effects": 0, "mutations": 0,
+         "tok_in": 0, "tok_out": 0, "errors": 0}
+    for r in records:
+        kind = r.get("kind")
+        if kind == "effect":
+            t["effects"] += 1
+            if r.get("meta", {}).get("class") == "mutate":
+                t["mutations"] += 1
+            if r.get("error"):
+                t["errors"] += 1
+            if r.get("effect") == LLM_EFFECT:
+                t["turns"] += 1
+                usage = _usage_of(r)
+                t["tok_in"] += usage.get("in", 0)
+                t["tok_out"] += usage.get("out", 0)
+        elif kind == "cell":
+            t["cells"] += 1
+            if not r.get("ok"):
+                t["errors"] += 1
+    return t
+
+
+def _totals_str(t: dict) -> str:
+    return (
+        f"{t['turns']} turns, {t['cells']} cells, "
+        f"{t['effects']} effects ({t['mutations']} mutate), "
+        f"tokens in={t['tok_in']} out={t['tok_out']}"
+    )
+
+
+def _run_head(records: list[dict]) -> str:
+    run = records[0].get("run", {}) if records and records[0].get("kind") == "header" else {}
+    head = f"run {run.get('id', '?')}"
+    if run.get("program"):
+        head += f" — {run['program']}"
+    if run.get("chatId"):
+        head += f"  chat={run['chatId']}"
+    if run.get("startedAt") is not None:
+        head += f"  started={run['startedAt']}"
+    return head
+
+
+def _run_turn_lines(
+    turn: TurnView, user_texts: list[str], digests: dict[str, str], blobs: dict[str, str]
+) -> list[str]:
+    r = turn.record
+    lines = [f"#turn_{turn.n} (seq {r['seq']})"]
+    for t in user_texts:
+        lines.extend(f"  user: {tl}" for tl in t.splitlines() or [""])
+
+    output = _deref(r.get("output"), blobs)
+    if _is_blob_ref(output):
+        lines.append(f"  assistant: [output spilled, {output['bytes']} bytes]")
+    elif r.get("error"):
+        err = r["error"]
+        lines.append(f"  !! llm {err.get('type', 'error')}: {err.get('message', '')}")
+    elif isinstance(output, dict):
+        for p in output.get("parts", []):
+            if p.get("type") == "text":
+                lines.extend(f"  assistant: {tl}" for tl in p["text"].splitlines() or [""])
+            elif p.get("type") == "tool_call":
+                lines.append(f"  tool_call {p.get('name', '?')} ({p.get('id', '?')})")
+
+    for run in turn.cells:
+        lines.append(f"  cell {run.cell_id}:")
+        if run.code is not None:
+            lines.append("    code:")
+            lines.extend(f"      {cl}" for cl in run.code.splitlines() or [""])
+        if run.effects:
+            lines.append("    effects:")
+            lines.extend(f"    {_mark_effect_line(e)}" for e in run.effects)
+        lines.append(f"    {_cell_result_line(run.end)}")
+        if run.cell_id in digests:
+            lines.append("    digest:")
+            lines.extend(f"      {dl}" for dl in _clip_lines(digests[run.cell_id]))
+
+    if turn.effects:
+        lines.append("  effects:")
+        lines.extend(f"  {_mark_effect_line(e)}" for e in turn.effects)
+    lines.append(f"  {_llm_line(r)}")
+    return lines
+
+
+def render_run(records: list[dict], blobs: dict[str, str] | None = None) -> str:
+    """The complete human-side render of one run: summary header (run
+    id, program, chatId, totals), then turn-by-turn `#turn_N` blocks —
+    user text, assistant text/tool calls, per-cell code + effect
+    one-liners (mutations marked `*`) + result + the digest the model
+    saw, and the llm usage/cost line. Plain text, no ANSI."""
+    blobs = blobs or {}
+    view = build_view(records, blobs)
+    digests = _digest_map(view.turns, blobs)
+    lines = [_run_head(records), f"totals: {_totals_str(_run_totals(records))}", ""]
+
+    if view.preamble:
+        lines.append("before turn 1:")
+        lines.extend(f"  {_mark_effect_line(e)}" for e in view.preamble)
+        lines.append("")
+
+    for i, turn in enumerate(view.turns):
+        texts = _user_texts(_delta_messages(view.turns, i, blobs), first_turn=i == 0)
+        lines.extend(_run_turn_lines(turn, texts, digests, blobs))
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def render_run_summary(records: list[dict]) -> str:
+    """One line per run — the trigger-run-list form: id, program,
+    chat, totals, ok/error."""
+    t = _run_totals(records)
+    status = "error" if t["errors"] else "ok"
+    return f"{_run_head(records)}: {_totals_str(t)} — {status}"
+
+
 def turn_anchor(records: list[dict], n: int) -> dict:
     """Resolve a `#turn_N` anchor (1-based) to the Nth llm.chat effect
     record — ADR-006 § traceRef. Raises IndexError when out of range."""

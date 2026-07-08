@@ -2,7 +2,13 @@
 ADR-001 trace, fully offline."""
 
 import pytest
-from anybao.viewer import build_view, render_trace, turn_anchor
+from anybao.viewer import (
+    build_view,
+    render_run,
+    render_run_summary,
+    render_trace,
+    turn_anchor,
+)
 from anyrt import trace as tr
 
 
@@ -132,6 +138,125 @@ def test_blob_refs_render_as_byte_notes():
     # without the sidecar the turn degrades to a note instead of raising
     out2 = render_trace(w.records)
     assert "[output spilled," in out2
+
+
+# ---- render_run / render_run_summary (M6 trace viewer proper) ---------------
+
+DIGEST = "Last value: 3\n\nSide effects: any.search ×1"
+
+
+def make_convo_trace() -> tr.TraceWriter:
+    """Conversation-shaped: llm.chat inputs carry the growing messages
+    array (boot window, user text, tool_result digests) so the run
+    render can recover user text and per-cell digests from deltas."""
+    w = tr.TraceWriter(run={"id": "run_c", "program": "toolcaller", "chatId": "chat9"})
+    boot = {"role": "user", "parts": [{"type": "text", "text": "old history line"}]}
+    user = {"role": "user", "parts": [{"type": "text", "text": "count the notes"}]}
+    parts1 = [
+        {"type": "text", "text": "On it."},
+        {"type": "tool_call", "id": "cell_1", "name": "run_cell",
+         "args": {"code": "n = 3\nn"}},
+    ]
+    w.effect(
+        effect="llm.chat", cell=None,
+        input={"messages": [boot, user], "tier": "codegen"}, key="sha256:t1",
+        output=llm_output(parts1),
+        meta={"durMs": 300, "class": "read",
+              "usage": {"in": 100, "out": 9, "costUsd": 0.0123}},
+    )
+    w.effect(
+        effect="any.search", cell="cell_1",
+        input={"q": "notes"}, key="sha256:t2",
+        output={"hits": 3}, meta={"durMs": 12, "class": "read"},
+    )
+    w.effect(
+        effect="chat.send", cell="cell_1",
+        input={"text": "found"}, key="sha256:t3",
+        output=None, meta={"durMs": 2, "class": "mutate"},
+    )
+    w.cell(cell="cell_1", ok=True, metrics={"fuel_used": 5, "duration_ms": 7})
+    asst = {"role": "assistant", "parts": parts1}
+    result = {"role": "user", "parts": [
+        {"type": "tool_result", "call_id": "cell_1", "content": DIGEST},
+    ]}
+    w.effect(
+        effect="llm.chat", cell=None,
+        input={"messages": [boot, user, asst, result], "tier": "codegen"}, key="sha256:t4",
+        output=llm_output([{"type": "text", "text": "There are 3 notes."}], stop="done"),
+        meta={"usage": {"in": 150, "out": 12}},
+    )
+    return w
+
+
+def test_render_run_header_and_totals():
+    out = render_run(make_convo_trace().records)
+    assert out.startswith("run run_c — toolcaller  chat=chat9\n")
+    assert "totals: 2 turns, 1 cells, 4 effects (1 mutate), tokens in=250 out=21" in out
+
+
+def test_render_run_turn_blocks():
+    out = render_run(make_convo_trace().records)
+    assert "#turn_1 (seq 1)" in out and "#turn_2 (seq 5)" in out
+    # user text = the LAST text-bearing user message of turn 1's input
+    assert "user: count the notes" in out
+    assert "user: old history line" not in out
+    assert out.count("user:") == 1                 # turn 2's delta has no user text
+    assert "assistant: On it." in out
+    assert "tool_call run_cell (cell_1)" in out
+    assert "assistant: There are 3 notes." in out
+
+
+def test_render_run_marks_mutations():
+    out = render_run(make_convo_trace().records)
+    assert "* #3 chat.send [mutate, 2ms]" in out   # highlighted
+    assert "* #2 any.search" not in out            # reads unmarked
+    assert "#2 any.search [read, 12ms]" in out
+
+
+def test_render_run_cell_digest_and_llm_line():
+    out = render_run(make_convo_trace().records)
+    assert "result: ok  fuel=5 duration=7ms" in out
+    assert "digest:" in out
+    assert "Last value: 3" in out                  # the digest the model saw
+    assert "llm: tokens in=100 out=9 cost=$0.0123 (300ms)" in out
+    assert "llm: tokens in=150 out=12" in out
+
+
+def test_render_run_degrades_on_spilled_input_without_sidecar():
+    w = tr.TraceWriter(run={"id": "run_s"}, blob_threshold=32)
+    user = {"role": "user", "parts": [{"type": "text", "text": "x" * 64}]}
+    w.effect(
+        effect="llm.chat", cell=None,
+        input={"messages": [user], "tier": "codegen"}, key="sha256:s1",
+        output=llm_output([{"type": "text", "text": "done"}], stop="done"),
+    )
+    assert set(w.records[1]["input"]) == {"__blob", "bytes"}
+    out = render_run(w.records)                    # no blobs passed — no raise
+    assert "user:" not in out
+    out2 = render_run(w.records, w.blobs)          # with sidecar the text is back
+    assert "user: " + "x" * 64 in out2
+
+
+def test_render_run_summary_one_liner():
+    line = render_run_summary(make_convo_trace().records)
+    assert "\n" not in line
+    assert line == (
+        "run run_c — toolcaller  chat=chat9: 2 turns, 1 cells, "
+        "4 effects (1 mutate), tokens in=250 out=21 — ok"
+    )
+
+
+def test_render_run_summary_flags_errors():
+    w = tr.TraceWriter(run={"id": "run_e", "program": "p@v1"})
+    w.effect(
+        effect="llm.chat", cell=None, input={}, key="sha256:aa",
+        output=llm_output([
+            {"type": "tool_call", "id": "cell_x", "name": "run_cell",
+             "args": {"code": "boom()"}},
+        ]),
+    )
+    w.cell(cell="cell_x", ok=False, error={"type": "NameError", "message": "boom"})
+    assert render_run_summary(w.records).endswith("— error")
 
 
 def test_turn_anchor_resolves_nth_llm_chat():
