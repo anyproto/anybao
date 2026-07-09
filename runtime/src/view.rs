@@ -420,6 +420,117 @@ fn load_resolved(path: &Path) -> anyhow::Result<Vec<Value>> {
     Ok(records)
 }
 
+/// One `trace ls` row, derived from the records alone. Wall-clock
+/// comes from file mtime — records are deliberately time-free.
+struct LsRow {
+    id: String,
+    program: String,
+    status: &'static str,
+    dur: String,
+    turns: usize,
+    title: String,
+}
+
+/// Status/duration/turns mirror `render`; the title is turn 1's user
+/// text (the "title from chat"), mined exactly the way `render` mines
+/// the first turn's user delta.
+fn ls_row(records: &[Value]) -> LsRow {
+    let (status, dur) = match records.iter().rev().find(|r| r["kind"] == "cell") {
+        Some(r) => (
+            if r["interrupted"] == true {
+                "interrupted"
+            } else if r["ok"] == true {
+                "ok"
+            } else {
+                "FAILED"
+            },
+            format!(
+                "{:.1}s",
+                r["metrics"]["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0
+            ),
+        ),
+        None => ("incomplete", "?".into()),
+    };
+    let turns: Vec<_> = spans_of(records, "llm.chat")
+        .into_iter()
+        .filter(|(b, _)| b["parent"].is_null())
+        .collect();
+    let title = turns
+        .first()
+        .and_then(|(begin, end)| {
+            let (b, e) = seq_range(begin, *end);
+            let (req, _) = llm_exchange(&between(records, b, e))?;
+            user_delta(req, last_text_user_index(req), usize::MAX)
+                .into_iter()
+                .next()
+        })
+        .map(|t| clip(&t.split_whitespace().collect::<Vec<_>>().join(" "), 60))
+        .unwrap_or_default();
+    LsRow {
+        id: s(&records[0]["run"]["id"]),
+        program: s(&records[0]["run"]["program"]),
+        status,
+        dur,
+        turns: turns.len(),
+        title,
+    }
+}
+
+/// `trace ls` — the run finder: one line per run in `dir`, newest
+/// first (file mtime — the run's only wall-clock). Unreadable files
+/// render as a `?` row rather than sinking the listing.
+pub fn list(dir: &Path, program: Option<&str>, limit: usize) -> anyhow::Result<String> {
+    let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+        .filter_map(|p| {
+            let mtime = p.metadata().and_then(|m| m.modified()).ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    paths.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
+
+    let mut rows = Vec::new();
+    for (mtime, path) in &paths {
+        let row = match load_trace(path) {
+            Ok(records) if !records.is_empty() => ls_row(&records),
+            _ => LsRow {
+                id: path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                program: "?".into(),
+                status: "unreadable",
+                dur: "?".into(),
+                turns: 0,
+                title: String::new(),
+            },
+        };
+        if let Some(f) = program {
+            if !row.program.contains(f) {
+                continue;
+            }
+        }
+        rows.push((*mtime, row));
+    }
+
+    let total = rows.len();
+    let shown = if limit == 0 { total } else { total.min(limit) };
+    let mut out = String::new();
+    for (mtime, row) in rows.into_iter().take(shown) {
+        let when = chrono::DateTime::<chrono::Local>::from(mtime).format("%m-%d %H:%M");
+        out.push_str(&format!(
+            "{when}  {:<20}  {:<14}  {:<11}  {:>7}  {:>2}t  {}\n",
+            row.id, row.program, row.status, row.dur, row.turns, row.title
+        ));
+    }
+    if total > shown {
+        out.push_str(&format!("… {} more (-n 0 shows all)\n", total - shown));
+    }
+    Ok(out)
+}
+
 /// `--seq N` drill-down: one record, blob-resolved, pretty.
 pub fn show_record(path: &Path, seq: i64) -> anyhow::Result<String> {
     let records = load_resolved(path)?;
@@ -619,4 +730,76 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A minimal complete run: header, one turn (llm.chat span with its
+    /// provider http call), terminal cell record.
+    fn one_turn_trace(ok: bool) -> Vec<Value> {
+        vec![
+            json!({"kind": "header", "schema": 2,
+                   "run": {"id": "run_abc", "program": "toolcaller@v1", "host": "rust"}}),
+            json!({"kind": "span", "seq": 1, "phase": "begin", "span": "sp1",
+                   "parent": null, "name": "llm.chat", "cell": null,
+                   "input": {}, "key": "k1"}),
+            json!({"kind": "effect", "seq": 2, "effect": "http.post", "cell": null,
+                   "span": "sp1", "key": "k2", "error": null,
+                   "meta": {"class": "read", "durMs": 40},
+                   "input": {"url": "https://api.anthropic.com/v1/messages",
+                             "json": {"messages": [
+                               {"role": "user", "content": [
+                                 {"type": "text", "text": "what's the weather in Berlin?"}]}]}},
+                   "output": {"status": 200,
+                              "body": "{\"content\":[],\"usage\":{},\"stop_reason\":\"end_turn\"}"}}),
+            json!({"kind": "span", "seq": 3, "phase": "end", "span": "sp1",
+                   "name": "llm.chat", "cell": null, "ok": true,
+                   "output": null, "error": null, "meta": {"durMs": 41}}),
+            json!({"kind": "cell", "seq": 4, "cell": "main", "ok": ok,
+                   "error": null, "interrupted": false,
+                   "metrics": {"duration_ms": 5230, "fuel_used": 1}}),
+        ]
+    }
+
+    #[test]
+    fn ls_row_titles_by_turn_1_user_text() {
+        let row = ls_row(&one_turn_trace(true));
+        assert_eq!(row.id, "run_abc");
+        assert_eq!(row.program, "toolcaller@v1");
+        assert_eq!(row.status, "ok");
+        assert_eq!(row.dur, "5.2s");
+        assert_eq!(row.turns, 1);
+        assert_eq!(row.title, "what's the weather in Berlin?");
+    }
+
+    #[test]
+    fn ls_row_failed_run() {
+        assert_eq!(ls_row(&one_turn_trace(false)).status, "FAILED");
+    }
+
+    #[test]
+    fn ls_row_incomplete_without_terminal_cell() {
+        let mut records = one_turn_trace(true);
+        records.pop();
+        let row = ls_row(&records);
+        assert_eq!(row.status, "incomplete");
+        assert_eq!(row.dur, "?");
+    }
+
+    #[test]
+    fn ls_row_turnless_run_has_no_title() {
+        let records = vec![
+            json!({"kind": "header", "schema": 2,
+                   "run": {"id": "run_x", "program": "decay@v1", "host": "rust"}}),
+            json!({"kind": "cell", "seq": 1, "cell": "main", "ok": true,
+                   "error": null, "interrupted": false,
+                   "metrics": {"duration_ms": 100, "fuel_used": 1}}),
+        ];
+        let row = ls_row(&records);
+        assert_eq!(row.turns, 0);
+        assert_eq!(row.title, "");
+    }
 }

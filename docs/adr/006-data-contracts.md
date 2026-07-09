@@ -69,6 +69,16 @@ active`).
   beneath, and `#turn_N` counts only PARENTLESS `llm.chat` spans — a
   child llm call (the dedup judge) belongs to its facade, not to the
   turn sequence.
+  **The viewer also owes the run FINDER (added 2026-07-09)** — the old
+  UI's debug-object list (newest first, titled by the chat message).
+  `anyrt trace ls` renders it from the traces dir with NO format
+  change: one row per run — file mtime as the clock (records are
+  deliberately wall-clock-free; replay purity wins), run id, program,
+  status/duration from the terminal cell record, parentless-`llm.chat`
+  turn count, and turn 1's user text as the title, mined the same way
+  `show` mines the first turn. `--program` filters (cron runs drown
+  conversations ~25:1), and `trace show` accepts a bare run id
+  resolved against `traces/` so `ls` output feeds `show` directly.
   **Traces are DEVICE-LOCAL by default (revised 2026-07-08).** The trace
   (JSONL + blobs) is huge and rarely read; syncing it into `any` would
   bloat the user's synced space for diagnostic data. So it lives on the

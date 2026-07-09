@@ -103,8 +103,20 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum TraceCmd {
+    /// list runs, newest first: status, duration, turns, turn-1 title
+    Ls {
+        #[arg(default_value = "traces")]
+        dir: PathBuf,
+        /// only runs whose program contains this (e.g. "toolcaller")
+        #[arg(long)]
+        program: Option<String>,
+        /// max rows, 0 = all
+        #[arg(short = 'n', long, default_value_t = 30)]
+        limit: usize,
+    },
     /// human-side render of one run (turns = llm.chat spans)
     Show {
+        /// trace file, or a bare run id resolved against traces/
         file: PathBuf,
         /// lift every clip limit (full text, code, outputs)
         #[arg(long)]
@@ -118,6 +130,20 @@ enum TraceCmd {
     },
     /// distributions + tuning suggestions over a traces directory
     Stats { dir: PathBuf },
+}
+
+/// `trace show run_x` — a bare run id resolves against the default
+/// traces dir, so `trace ls` output feeds straight into `show`.
+fn resolve_trace(file: PathBuf) -> PathBuf {
+    if file.exists() {
+        return file;
+    }
+    let candidate = PathBuf::from("traces").join(format!("{}.jsonl", file.display()));
+    if candidate.exists() {
+        candidate
+    } else {
+        file
+    }
 }
 
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
@@ -250,6 +276,17 @@ fn main() -> Result<()> {
         }
         Cmd::Trace {
             cmd:
+                TraceCmd::Ls {
+                    dir,
+                    program,
+                    limit,
+                },
+        } => {
+            print!("{}", view::list(&dir, program.as_deref(), limit)?);
+            Ok(())
+        }
+        Cmd::Trace {
+            cmd:
                 TraceCmd::Show {
                     file,
                     full,
@@ -257,6 +294,7 @@ fn main() -> Result<()> {
                     seq,
                 },
         } => {
+            let file = resolve_trace(file);
             match seq {
                 Some(n) => print!("{}", view::show_record(&file, n)?),
                 None => print!("{}", view::render(&file, &view::ShowOpts { full, system })?),

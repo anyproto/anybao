@@ -17,7 +17,12 @@ header lands at run start and every record appends as it commits, so
 ## The tools
 
 ```sh
-ls -t traces/ | head                          # newest runs
+# the run finder: one row per run, newest first — time (file mtime),
+# run id, program, status, duration, turn count, and turn 1's user
+# text as the title. --program filters the cron noise out.
+anyrt trace ls                                # 30 newest, all programs
+anyrt trace ls --program toolcaller           # just conversations
+anyrt trace ls -n 0                           # everything
 
 # human render, chronological — nothing in the trace is invisible:
 # status/fuel/wall-time header, loose effects in place, #turn_N blocks
@@ -27,11 +32,10 @@ ls -t traces/ | head                          # newest runs
 # (~ autorecall.plan, ~ memory.save_with_dedup) as a header line with
 # their effects + nested llm calls indented beneath. Errors are never
 # clipped.
-anyrt trace show traces/run_<id>.jsonl
-anyrt trace show traces/run_<id>.jsonl --full      # lift all clips
-anyrt trace show traces/run_<id>.jsonl --system    # + system prompt
-anyrt trace show traces/run_<id>.jsonl --seq 42    # one record, full,
-                                                   # blob-resolved
+anyrt trace show run_<id>            # bare ids resolve against traces/
+anyrt trace show run_<id> --full     # lift all clips
+anyrt trace show run_<id> --system   # + system prompt
+anyrt trace show run_<id> --seq 42   # one record, full, blob-resolved
 
 # the metrics view over a directory: fuel/duration/token
 # distributions (p50/p95), effect histogram, tuning suggestions
