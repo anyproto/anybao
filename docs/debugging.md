@@ -19,11 +19,14 @@ header lands at run start and every record appends as it commits, so
 ```sh
 ls -t traces/ | head                          # newest runs
 
-# human render: status/fuel/wall-time header, #turn_N blocks
-# (turns = llm.chat spans) with the user/assistant text, cell CODE,
+# human render, chronological — nothing in the trace is invisible:
+# status/fuel/wall-time header, loose effects in place, #turn_N blocks
+# (parentless llm.chat spans) with the user/assistant text, cell CODE,
 # stop_reason + tokens + cacheRead, per-cell effects (mutations
-# marked *), and the tool_result digest the model saw. Errors are
-# never clipped.
+# marked *), the tool_result digest the model saw, and facade spans
+# (~ autorecall.plan, ~ memory.save_with_dedup) as a header line with
+# their effects + nested llm calls indented beneath. Errors are never
+# clipped.
 anyrt trace show traces/run_<id>.jsonl
 anyrt trace show traces/run_<id>.jsonl --full      # lift all clips
 anyrt trace show traces/run_<id>.jsonl --system    # + system prompt

@@ -100,27 +100,64 @@ fn between(records: &[Value], from_seq: i64, to_seq: i64) -> Vec<&Value> {
         .collect()
 }
 
-fn effect_line(r: &Value, limit: usize) -> String {
+/// URL → its meaningful tail: strip scheme+host, stub CID-ish segments.
+fn short_path(url: &str) -> String {
+    let path = url
+        .splitn(4, '/')
+        .nth(3)
+        .map(|p| format!("/{p}"))
+        .unwrap_or_else(|| url.to_string());
+    path.split('/')
+        .map(|seg| {
+            if seg.len() > 24 && seg.starts_with("bafy") {
+                format!("{}…", &seg[..8])
+            } else {
+                seg.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// One effect, rendered semantically — the wire body is noise unless
+/// something went wrong (errors always render in full) or --full asks.
+fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
+    let name = s(&r["effect"]);
     let class = s(&r["meta"]["class"]);
     let dur = r["meta"]["durMs"].as_i64().unwrap_or(0);
-    // errors render in full — when debugging, the error text is the payload
-    let out = if r["error"].is_null() {
-        format!("-> {}", clip(&r["output"].to_string(), limit))
-    } else {
-        format!("!! {}", r["error"])
-    };
-    let mark = if r["meta"]["class"] == "mutate" {
-        "*"
-    } else {
-        " "
-    };
+    let mark = if class == "mutate" { "*" } else { " " };
+    let head = format!("{pad}{mark} #{}", r["seq"]);
+    let full = limit == usize::MAX;
+
+    if !r["error"].is_null() {
+        return format!("{head} {name} [{class}, {dur}ms] !! {}", r["error"]);
+    }
+    if let Some(rest) = name.strip_prefix("http.") {
+        let path = short_path(r["input"]["url"].as_str().unwrap_or("?"));
+        let status = r["output"]["status"].as_i64().unwrap_or(0);
+        let mut line = format!("{head} {} {path} → {status} ({dur}ms)", rest.to_uppercase());
+        if status >= 400 || full {
+            line.push_str(&format!(" {}", s(&r["output"]["body"])));
+        }
+        return line;
+    }
+    if name == "module.resolve" {
+        return format!(
+            "{head} use {} ({})",
+            s(&r["input"]["spec"]),
+            s(&r["output"]["cache"])
+        );
+    }
+    if name == "kernel.boot" {
+        return format!(
+            "{head} kernel.boot (schema {}, kernel {})",
+            r["output"]["trace_schema"],
+            clip(&s(&r["output"]["kernel_sha256"]), 12)
+        );
+    }
     format!(
-        "  {mark} #{} {} [{}, {}ms] {}",
-        r["seq"],
-        s(&r["effect"]),
-        class,
-        dur,
-        out
+        "{head} {name} [{class}, {dur}ms] -> {}",
+        clip(&r["output"].to_string(), limit)
     )
 }
 
@@ -224,6 +261,148 @@ fn system_text(req: &Value) -> String {
     }
 }
 
+/// One llm response rendered: assistant text, tool_use code blocks,
+/// and the scalar llm line (tokens/cache/stop_reason/duration).
+fn llm_body(
+    out: &mut String,
+    resp: &Value,
+    end: Option<&Value>,
+    pad: &str,
+    lim: &Limits,
+    cells: &[(&Value, Option<&Value>)],
+) {
+    for block in resp["content"].as_array().unwrap_or(&Vec::new()) {
+        match block["type"].as_str() {
+            Some("text") => out.push_str(&format!(
+                "{pad}assistant: {}\n",
+                clip(&s(&block["text"]), lim.assistant)
+            )),
+            Some("tool_use") => {
+                let id = s(&block["id"]);
+                let executed = cells
+                    .iter()
+                    .any(|(cb, _)| cb["input"]["cell"].as_str() == Some(id.as_str()));
+                out.push_str(&format!(
+                    "{pad}cell {id}{}:\n",
+                    if executed { "" } else { " — never executed" }
+                ));
+                let code = block["input"]["code"].as_str().unwrap_or("");
+                out.push_str(&indent_block(code, &format!("{pad}|   "), lim.code_lines));
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    let stop = resp["stop_reason"].as_str().unwrap_or("?");
+    let u = &resp["usage"];
+    let dur = end
+        .map(|e| format!("{}ms", e["meta"]["durMs"]))
+        .unwrap_or_else(|| "no span end — run ended mid-turn".into());
+    out.push_str(&format!(
+        "{pad}llm: in={} out={} cacheRead={} stop={stop} ({dur})\n",
+        u["input_tokens"].as_i64().unwrap_or(0),
+        u["output_tokens"].as_i64().unwrap_or(0),
+        u["cache_read_input_tokens"].as_i64().unwrap_or(0),
+    ));
+}
+
+/// Why an llm span has no exchange — the error in full, or a marker.
+fn llm_error(out: &mut String, inner: &[&Value], end: Option<&Value>, pad: &str) {
+    let failed = inner
+        .iter()
+        .find(|r| r["kind"] == "effect" && !r["error"].is_null());
+    match (failed, end) {
+        (Some(r), _) => out.push_str(&format!(
+            "{pad}!! llm error: #{} {} {}\n",
+            r["seq"],
+            s(&r["effect"]),
+            r["error"]
+        )),
+        (None, Some(e)) if !e["error"].is_null() => {
+            out.push_str(&format!("{pad}!! llm error: {}\n", e["error"]))
+        }
+        _ => out.push_str(&format!(
+            "{pad}(incomplete turn — no llm exchange recorded)\n"
+        )),
+    }
+}
+
+fn span_end_of<'a>(records: &'a [Value], begin: &Value) -> Option<&'a Value> {
+    records
+        .iter()
+        .find(|e| e["kind"] == "span" && e["phase"] == "end" && e["span"] == begin["span"])
+}
+
+fn seq_range(begin: &Value, end: Option<&Value>) -> (i64, i64) {
+    (
+        begin["seq"].as_i64().unwrap_or(0),
+        end.map(|e| e["seq"].as_i64().unwrap_or(i64::MAX))
+            .unwrap_or(i64::MAX),
+    )
+}
+
+/// A facade span (autorecall.plan, memory.save_with_dedup, …): one
+/// header line, then its own effects and child llm calls in order —
+/// this is where trigger runs do their real work (ADR-006 §1: facade
+/// spans collapse composites, they must not hide them).
+fn facade_block(
+    out: &mut String,
+    records: &[Value],
+    begin: &Value,
+    end: Option<&Value>,
+    pad: &str,
+    lim: &Limits,
+    cells: &[(&Value, Option<&Value>)],
+) {
+    let name = s(&begin["name"]);
+    let (verdict, dur, counts) = match end {
+        Some(e) => (
+            if e["ok"] == true { "ok" } else { "FAILED" },
+            format!("{}ms", e["meta"]["durMs"]),
+            {
+                let m = e["meta"]["mutations"].as_i64().unwrap_or(0);
+                let eff = format!("{} effects", e["meta"]["effects"]);
+                if m > 0 {
+                    format!("{eff}, {m} mutate")
+                } else {
+                    eff
+                }
+            },
+        ),
+        None => ("NO END (trap?)", "?".into(), "?".into()),
+    };
+    out.push_str(&format!("{pad}~ {name} {verdict} ({dur}, {counts})\n"));
+    if let Some(e) = end {
+        if !e["error"].is_null() {
+            out.push_str(&format!("{pad}  error: {}\n", e["error"]));
+        }
+    }
+    let (b_seq, e_seq) = seq_range(begin, end);
+    let inner_pad = format!("{pad}  ");
+    for r in between(records, b_seq, e_seq) {
+        if r["kind"] == "effect" && r["span"] == begin["span"] {
+            out.push_str(&effect_line(r, lim.effect, &inner_pad));
+            out.push('\n');
+        }
+        if r["kind"] == "span" && r["phase"] == "begin" && r["parent"] == begin["span"] {
+            let cend = span_end_of(records, r);
+            if r["name"] == "llm.chat" {
+                let (cb, ce) = seq_range(r, cend);
+                let cinner = between(records, cb, ce);
+                out.push_str(&format!("{inner_pad}llm.chat:\n"));
+                match llm_exchange(&cinner) {
+                    Some((_, resp)) => {
+                        llm_body(out, &resp, cend, &format!("{inner_pad}  "), lim, cells)
+                    }
+                    None => llm_error(out, &cinner, cend, &format!("{inner_pad}  ")),
+                }
+            } else {
+                facade_block(out, records, r, cend, &inner_pad, lim, cells);
+            }
+        }
+    }
+}
+
 fn load_resolved(path: &Path) -> anyhow::Result<Vec<Value>> {
     let mut records = load_trace(path)?;
     let blobs = load_blobs(path)?;
@@ -261,7 +440,13 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         s(&header["run"]["program"])
     );
 
-    let turns = spans_of(&records, "llm.chat");
+    let all_llm = spans_of(&records, "llm.chat");
+    // #turn_N = PARENTLESS llm.chat spans; a child llm call (e.g. the
+    // dedup judge inside memory.save_with_dedup) renders under its facade
+    let turn_count = all_llm
+        .iter()
+        .filter(|(b, _)| b["parent"].is_null())
+        .count();
     let cells = spans_of(&records, "cell");
     let effects: Vec<&Value> = records.iter().filter(|r| r["kind"] == "effect").collect();
     let mutations = effects
@@ -270,14 +455,11 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         .count();
     let results = tool_results(&records);
 
-    // pre-extract each turn's llm exchange once (totals + body share it)
-    let exchanges: Vec<Option<(&Value, Value)>> = turns
+    // every llm exchange (nested included — their tokens are real spend)
+    let exchanges: Vec<Option<(&Value, Value)>> = all_llm
         .iter()
         .map(|(begin, end)| {
-            let b = begin["seq"].as_i64().unwrap_or(0);
-            let e = end
-                .map(|e| e["seq"].as_i64().unwrap_or(i64::MAX))
-                .unwrap_or(i64::MAX);
+            let (b, e) = seq_range(begin, *end);
             llm_exchange(&between(&records, b, e))
         })
         .collect();
@@ -325,12 +507,12 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
     }
     out.push_str(&format!(
         "totals: {} turns, {} cells, {} effects ({} mutate)\n",
-        turns.len(),
+        turn_count,
         cells.len(),
         effects.len(),
         mutations,
     ));
-    if !turns.is_empty() {
+    if !all_llm.is_empty() {
         out.push_str(&format!(
             "llm: {} — tokens in={} out={} cacheRead={} cacheWrite={}\n",
             if model.is_empty() { "?" } else { &model },
@@ -353,95 +535,55 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         }
     }
 
-    // no llm turns (extraction runs, triggers): the effect log IS the story
-    if turns.is_empty() {
-        out.push('\n');
-        for r in &effects {
-            out.push_str(&effect_line(r, lim.effect));
-            out.push('\n');
-        }
-    }
-
+    // chronological walk over top-level items: loose effects, turns
+    // (parentless llm.chat), model cells, facade spans. Nothing in the
+    // trace is invisible — everything renders exactly once.
+    let mut turn_no = 0usize;
     let mut prev_msgs = 0usize;
-    for (i, (begin, end)) in turns.iter().enumerate() {
-        let first_turn = i == 0;
-        let b_seq = begin["seq"].as_i64().unwrap_or(0);
-        let e_seq = end
-            .map(|e| e["seq"].as_i64().unwrap_or(i64::MAX))
-            .unwrap_or(i64::MAX);
-        let inner = between(&records, b_seq, e_seq);
-        out.push_str(&format!("\n#turn_{}\n", i + 1));
-        if let Some((req, resp)) = &exchanges[i] {
-            let skip = if first_turn {
-                last_text_user_index(req)
-            } else {
-                prev_msgs
-            };
-            for text in user_delta(req, skip, lim.user) {
-                out.push_str(&format!("  user: {text}\n"));
+    for rec in &records {
+        if rec["kind"] == "effect" && rec["span"].is_null() {
+            // loop plumbing is noise: the digest's trace.* reads and
+            // empty mailbox polls (a NON-empty drain is a user injection)
+            let name = s(&rec["effect"]);
+            let empty_drain = name == "mailbox.drain"
+                && rec["output"]["items"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false);
+            if !name.starts_with("trace.") && !empty_drain {
+                out.push_str(&effect_line(rec, lim.effect, "  "));
+                out.push('\n');
             }
-            prev_msgs = req["messages"].as_array().map(|m| m.len()).unwrap_or(0) + 1;
-            for block in resp["content"].as_array().unwrap_or(&Vec::new()) {
-                match block["type"].as_str() {
-                    Some("text") => out.push_str(&format!(
-                        "  assistant: {}\n",
-                        clip(&s(&block["text"]), lim.assistant)
-                    )),
-                    Some("tool_use") => {
-                        let id = s(&block["id"]);
-                        let executed = cells
-                            .iter()
-                            .any(|(cb, _)| cb["input"]["cell"].as_str() == Some(id.as_str()));
-                        out.push_str(&format!(
-                            "  cell {id}{}:\n",
-                            if executed { "" } else { " — never executed" }
-                        ));
-                        let code = block["input"]["code"].as_str().unwrap_or("");
-                        out.push_str(&indent_block(code, "  |   ", lim.code_lines));
-                        out.push('\n');
-                    }
-                    _ => {}
-                }
-            }
-            let stop = resp["stop_reason"].as_str().unwrap_or("?");
-            let u = &resp["usage"];
-            let dur = end
-                .map(|e| format!("{}ms", e["meta"]["durMs"]))
-                .unwrap_or_else(|| "no span end — run ended mid-turn".into());
-            out.push_str(&format!(
-                "  llm: in={} out={} cacheRead={} stop={stop} ({dur})\n",
-                u["input_tokens"].as_i64().unwrap_or(0),
-                u["output_tokens"].as_i64().unwrap_or(0),
-                u["cache_read_input_tokens"].as_i64().unwrap_or(0),
-            ));
-        } else {
-            // the turn never completed an exchange — surface why, in full
-            let failed = inner
-                .iter()
-                .find(|r| r["kind"] == "effect" && !r["error"].is_null());
-            match (failed, end) {
-                (Some(r), _) => out.push_str(&format!(
-                    "  !! llm error: #{} {} {}\n",
-                    r["seq"],
-                    s(&r["effect"]),
-                    r["error"]
-                )),
-                (None, Some(e)) if !e["error"].is_null() => {
-                    out.push_str(&format!("  !! llm error: {}\n", e["error"]))
-                }
-                _ => out.push_str("  (incomplete turn — no llm exchange recorded)\n"),
-            }
+            continue;
         }
-        // model cells executed after this turn's reply, before the next turn
-        let next_b = turns
-            .get(i + 1)
-            .map(|(b, _)| b["seq"].as_i64().unwrap_or(i64::MAX))
-            .unwrap_or(i64::MAX);
-        for (cb, ce) in &cells {
-            let cseq = cb["seq"].as_i64().unwrap_or(0);
-            if cseq > e_seq && cseq < next_b {
-                let id = s(&cb["input"]["cell"]);
-                let (verdict, dur, neff) = match ce {
+        if rec["kind"] != "span" || rec["phase"] != "begin" || !rec["parent"].is_null() {
+            continue;
+        }
+        let end = span_end_of(&records, rec);
+        let (b_seq, e_seq) = seq_range(rec, end);
+        let inner = between(&records, b_seq, e_seq);
+        match rec["name"].as_str().unwrap_or("") {
+            "llm.chat" => {
+                turn_no += 1;
+                out.push_str(&format!("\n#turn_{turn_no}\n"));
+                if let Some((req, resp)) = llm_exchange(&inner) {
+                    let skip = if turn_no == 1 {
+                        last_text_user_index(req)
+                    } else {
+                        prev_msgs
+                    };
+                    for text in user_delta(req, skip, lim.user) {
+                        out.push_str(&format!("  user: {text}\n"));
+                    }
+                    prev_msgs = req["messages"].as_array().map(|m| m.len()).unwrap_or(0) + 1;
+                    llm_body(&mut out, &resp, end, "  ", &lim, &cells);
+                } else {
+                    llm_error(&mut out, &inner, end, "  ");
+                }
+            }
+            "cell" => {
+                let id = s(&rec["input"]["cell"]);
+                let (verdict, dur, neff) = match end {
                     Some(e) => (
                         if e["ok"] == true { "ok" } else { "FAILED" },
                         format!("{}ms", e["meta"]["durMs"]),
@@ -450,17 +592,14 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
                     None => ("NO END (trap?)", "?".into(), "?".into()),
                 };
                 out.push_str(&format!("  cell {id} {verdict} ({dur}, {neff})\n"));
-                if let Some(e) = ce {
+                if let Some(e) = end {
                     if !e["error"].is_null() {
                         out.push_str(&format!("    error: {}\n", e["error"]));
                     }
                 }
-                let ce_seq = ce
-                    .map(|e| e["seq"].as_i64().unwrap_or(i64::MAX))
-                    .unwrap_or(i64::MAX);
-                for r in between(&records, cseq, ce_seq) {
+                for r in &inner {
                     if r["kind"] == "effect" {
-                        out.push_str(&effect_line(r, lim.effect));
+                        out.push_str(&effect_line(r, lim.effect, "  "));
                         out.push('\n');
                     }
                 }
@@ -472,6 +611,10 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
                     out.push_str(&indent_block(&clip(text, limit), "    | ", usize::MAX));
                     out.push('\n');
                 }
+            }
+            _ => {
+                out.push('\n');
+                facade_block(&mut out, &records, rec, end, "  ", &lim, &cells);
             }
         }
     }

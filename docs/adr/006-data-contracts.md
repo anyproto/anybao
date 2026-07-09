@@ -61,7 +61,14 @@ active`).
   locators, `#seq` is the key: `--seq N` dumps one record
   blob-resolved, `--full` lifts clips, `--system` prints the system
   prompt. Blob-spilled records resolve through the sidecar before
-  rendering; turnless traces render the raw effect log.
+  rendering. The body is a CHRONOLOGICAL walk — nothing in the trace
+  is invisible: loose effects render in place (loop plumbing —
+  `trace.*` reads, empty mailbox polls — filtered as noise), facade
+  spans (`autorecall.plan`, `memory.save_with_dedup`, …) render as one
+  header line plus their own effects and nested llm calls indented
+  beneath, and `#turn_N` counts only PARENTLESS `llm.chat` spans — a
+  child llm call (the dedup judge) belongs to its facade, not to the
+  turn sequence.
   **Traces are DEVICE-LOCAL by default (revised 2026-07-08).** The trace
   (JSONL + blobs) is huge and rarely read; syncing it into `any` would
   bloat the user's synced space for diagnostic data. So it lives on the

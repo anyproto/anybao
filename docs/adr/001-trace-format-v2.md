@@ -1,4 +1,4 @@
-# ADR-001: Trace format v2
+ # ADR-001: Trace format v2
 
 Status: **Accepted** (2026-07-07)
 Date: 2026-07-06
