@@ -57,3 +57,22 @@ the flake.
 Gotcha: `tests/fixtures/*.jsonl` are JSONL — one record per line is the
 parse contract. View pretty with `jq . <file>`; never reformat the
 buffer (a saved pretty-print breaks the parse).
+
+## Skill: analyze a toolcaller run
+
+"Why did bao do that?" — the whole user-message→final-reply exchange
+is ONE `toolcaller@v1` trace (cron jobs — extraction/rollup/linkgen —
+outnumber conversations ~25:1 in `traces/`, so always filter):
+
+```
+anyrt trace ls --program toolcaller   # conversations, newest first,
+                                      # titled by the user message
+anyrt trace show run_<id>             # the whole story: turns, cells,
+                                      # effects (* = mutate), results
+anyrt trace show run_<id> --seq 42    # drill into one record, full,
+                                      # blob-resolved
+```
+
+`anyrt` = `runtime/target/release/anyrt` (`make runtime`). A chat
+reply's `agent_turns` record carries `traceRef` = the run id. Full
+guide: [`docs/debugging.md`](docs/debugging.md).
