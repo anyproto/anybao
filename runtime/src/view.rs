@@ -715,17 +715,18 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         ));
     }
 
-    // The initial context the loop fed the model — system prompt is part
-    // of it, so --full shows it too (not just the explicit --system).
-    if opts.system || opts.full {
-        if let Some((req, _)) = exchanges.iter().flatten().next() {
-            let sys = system_text(req);
-            out.push_str(&format!(
-                "\nsystem prompt ({} chars):\n",
-                sys.chars().count()
-            ));
+    // System prompt: always announce it with its size; expand the full
+    // text only under --system (it's large and stable — noise unless you
+    // asked). --full does NOT expand it; pass --system for that.
+    if let Some((req, _)) = exchanges.iter().flatten().next() {
+        let sys = system_text(req);
+        let kb = sys.len() as f64 / 1024.0;
+        if opts.system {
+            out.push_str(&format!("\nsystem prompt ({kb:.1}KB):\n"));
             out.push_str(&indent_block(&sys, "  ", usize::MAX));
             out.push('\n');
+        } else {
+            out.push_str(&format!("\nsystem prompt ({kb:.1}KB) (hidden — pass --system)\n"));
         }
     }
 
