@@ -15,16 +15,30 @@ place.
 
 ## Decision
 
-### 0. Reuse the bao space; fresh chat object
+### 0. Reuse the bao space; the derived general chat
 
 anybao adopts the EXISTING bao space (review 2026-07-07) — this keeps
 the per-space memory brain (shape unchanged), space identity, programs
 history. Mixed-shape safety comes one level down: `agent_turns`/
-`agent_chunks` live ON the chat object, so anybao creates its own
-fresh chat object → clean v2 datasets for free; the old chat and its
-v1 datasets stay archived in place (no-backcompat: never read, never
-migrated). Adoption rule mirrors v1 (`name == "bao" && status ==
-active`).
+`agent_chunks` live ON the chat object, so anybao gets clean v2
+datasets from a fresh chat; the old chat and its v1 datasets stay
+archived in place (no-backcompat: never read, never migrated).
+Adoption rule mirrors v1 (`name == "bao" && status == active`).
+
+**Amended 2026-07-16 — use the space's derived general chat, not a
+self-created one.** The any server now derives exactly one "general"
+chat per space (fixed seed `any/general-chat/v1`), materialized on
+first sight and reported as `generalChatObjectId` on the single-space
+GET (`GET /v1/spaces/{spaceId}` → `anyclient.get_space`; the *list*
+route omits it). anybao resolves its chat from that field instead of
+find-or-creating a `name=="general"` chat object of its own. This is
+the space's one canonical chat, shared with every other client (the
+desktop UI, etc.), so the agent and a human land in the same thread —
+and the v2-datasets-on-a-fresh-object property still holds because
+this space's derived chat is itself fresh. The `--chat-name` serve
+flag is gone (no configured chat name to pick). Requires an any server
+new enough to derive the field; anybao errors loudly if it's absent
+rather than silently minting a private chat.
 
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
@@ -158,6 +172,33 @@ failure. v2 chunk record:
 - **Secrets are `localValue`-only, enforced** by the config helper
   (`secret: true` declarations refuse synced writes) and consumed only
   inside effect implementations (ADR-002 `ctx`).
+
+**Implemented 2026-07-16 (MVP — device-local scope + secrets deferred).**
+The config object now exists as a server built-in: the `agent_config`
+type (`internal/agentconfig`, a `DefaultHandler` dataset) on an object
+derived from seed `any/agent-config/v1`, materialized by the server and
+reported as `agentConfigObjectId` on the single-space GET — the same
+delivery path as `generalChatObjectId` (unconditional derive in
+`spaceToAPI`; object-level `Derive` has no create-free id compute, so
+gating on the `agent_space` create flag is deferred). anybao's
+`create_space` sends `agent_space: true` to eagerly provision it.
+
+Divergences from the design above, all deferred as follow-ups:
+- **Cascade is `space-override ?? default`, not `localValue ?? value ??
+  default`.** The harness holds the DEFAULT layer as data — `llm.tier.*`
+  in `runtime/src/config_defaults.json` (embedded via `include_str!`,
+  seeded by `bootstrap` in `main.rs`; `any.base_url` stays addr-derived)
+  — and overlays space-scope override records (`{key, value}` on the
+  config object, read at serve start) on top. Record-field local/account scope
+  (slice 22) is not yet wired — the object carries non-secret space
+  overrides only.
+- **Secrets stay device-local via env/`secrets` map**, not on the config
+  object. The API key is still `ANTHROPIC_API_KEY` → in-memory `secrets`
+  (host-injected via `credential.ref`, never in config, never read by
+  cells). Persisting it as a `localValue`-scoped record is the next step.
+- The behavioral knobs the design listed as config keys
+  (`loop.max_turns` etc.) are deliberately NOT config — they're hardcoded
+  module constants + per-run args in `toolcaller@v1.py`.
 
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 

@@ -286,13 +286,28 @@ impl Client {
         Ok(records_of(self.call("GET", &path, None)?, "spaces"))
     }
 
+    /// GET /v1/spaces/{spaceId} — the single-space handle. Unlike the
+    /// list route, this reply carries the derived `generalChatObjectId`
+    /// (server materializes the space's one general chat on first sight)
+    /// and `spaceIndexObjectId` — the fields anybao resolves its chat
+    /// against (ADR-006 §0).
+    pub fn get_space(&self, space_id: &str) -> Result<Value, AnyError> {
+        self.call("GET", &format!("/v1/spaces/{space_id}"), None)
+    }
+
     /// POST /v1/spaces — the `ensure_space` create half (ADR-006 §0).
-    /// Reply carries the new space `id`.
+    /// Reply carries the new space `id`. `agent_space: true` provisions
+    /// the per-space config object (ADR-006 §3) so the harness can
+    /// resolve `agentConfigObjectId` off the very first GET.
     pub fn create_space(&self, name: &str) -> Result<Value, AnyError> {
         self.call(
             "POST",
             "/v1/spaces",
-            Some(&json!({"name": name, "spaceType": "anytype.space"})),
+            Some(&json!({
+                "name": name,
+                "spaceType": "anytype.space",
+                "agent_space": true
+            })),
         )
     }
 
@@ -863,7 +878,7 @@ mod tests {
         );
         assert_eq!(
             calls[5].2,
-            Some(json!({"name": "bao", "spaceType": "anytype.space"}))
+            Some(json!({"name": "bao", "spaceType": "anytype.space", "agent_space": true}))
         );
         assert_eq!(calls[7].2, Some(json!({"query": "q", "limit": 3})));
     }

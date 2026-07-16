@@ -5846,6 +5846,9 @@
         "api.SpaceCreateRequest": {
             "type": "object",
             "properties": {
+                "agent_space": {
+                    "type": "boolean"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -5877,6 +5880,9 @@
         "api.SpaceInfo": {
             "type": "object",
             "properties": {
+                "agentConfigObjectId": {
+                    "type": "string"
+                },
                 "author": {
                     "type": "string"
                 },
@@ -5884,6 +5890,9 @@
                     "type": "string"
                 },
                 "description": {
+                    "type": "string"
+                },
+                "generalChatObjectId": {
                     "type": "string"
                 },
                 "iconCid": {

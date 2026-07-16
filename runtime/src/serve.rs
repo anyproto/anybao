@@ -29,7 +29,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct ServeConfig {
     pub addr: String,
     pub space_name: String,
-    pub chat_name: String,
     pub agent_name: String,
     pub programs: PathBuf,
     pub skills: PathBuf,
@@ -47,7 +46,7 @@ fn now_s() -> f64 {
         .as_secs_f64()
 }
 
-fn ensure_space(c: &Client, name: &str) -> Result<String> {
+pub fn ensure_space(c: &Client, name: &str) -> Result<String> {
     for sp in c.list_spaces(None)? {
         if sp["name"] == name && sp.get("status").map(|s| s == "active").unwrap_or(true) {
             return Ok(sp["id"].as_str().unwrap_or_default().to_string());
@@ -55,6 +54,55 @@ fn ensure_space(c: &Client, name: &str) -> Result<String> {
     }
     let created = c.create_space(name)?;
     Ok(created["id"].as_str().unwrap_or_default().to_string())
+}
+
+/// The space's single derived general chat object — every space has
+/// exactly one, materialized by the server and reported on the
+/// single-space GET (ADR-006 §0). anybao watches this instead of a
+/// self-created chat object, so it shares the space's canonical chat
+/// with any other client (desktop UI, etc.).
+fn general_chat(c: &Client, space: &str) -> Result<String> {
+    let info = c.get_space(space)?;
+    info["generalChatObjectId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .context("space has no generalChatObjectId — any server too old to derive it")
+}
+
+/// The space's single derived config object (ADR-006 §3), reported as
+/// `agentConfigObjectId` on the single-space GET (same delivery path as
+/// generalChatObjectId). Holds the space-scope override layer of the
+/// config cascade. Returns None (not an error) when the server is too
+/// old to derive it — the harness then runs on hardcoded defaults only.
+fn agent_config_object(c: &Client, space: &str) -> Option<String> {
+    c.get_space(space).ok()?["agentConfigObjectId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Space-scope config overrides read off the config object's
+/// `agent_config` dataset: one record per dotted key, `{key, value}`.
+/// These shadow the hardcoded `bootstrap` defaults (cascade:
+/// space-override ?? default). Device-local scope + secrets on this
+/// object are a follow-up (ADR-006 §3); today the object carries
+/// non-secret space overrides only. Best-effort: a query hiccup or an
+/// empty/fresh object yields no overrides rather than failing serve.
+fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> {
+    let rows = match c.query(space, obj, "agent_config", &json!({})) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("config overrides unavailable ({e}); using defaults");
+            return Vec::new();
+        }
+    };
+    rows.iter()
+        .filter_map(|r| {
+            let k = r.get("key")?.as_str()?.to_string();
+            Some((k, r.get("value")?.clone()))
+        })
+        .collect()
 }
 
 fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> Result<String> {
@@ -81,11 +129,24 @@ struct Shared {
     watcher: Mutex<Watcher>,
 }
 
-pub fn serve(cfg: ServeConfig) -> Result<()> {
+pub fn serve(mut cfg: ServeConfig) -> Result<()> {
     let client = Arc::new(Client::new(&cfg.addr));
     let space = ensure_space(&client, &cfg.space_name)?;
-    let chat = ensure_typed(&client, &space, &cfg.chat_name, "chat")?;
+    let chat = general_chat(&client, &space)?;
     let anchor = ensure_typed(&client, &space, "agent-triggers", "agent_trigger")?;
+
+    // Config cascade (ADR-006 §3): hardcoded defaults (from `bootstrap`)
+    // under the space-scope override layer read off the config object.
+    match agent_config_object(&client, &space) {
+        Some(obj) => {
+            let overrides = config_overrides(&client, &space, &obj);
+            println!("config obj={obj} overrides={}", overrides.len());
+            for (k, v) in overrides {
+                cfg.config.insert(k, v);
+            }
+        }
+        None => eprintln!("space has no agentConfigObjectId — running on config defaults"),
+    }
     let brain = client.get_brain(&space)?["objectId"]
         .as_str()
         .unwrap_or_default()

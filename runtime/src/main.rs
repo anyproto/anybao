@@ -68,8 +68,6 @@ enum Cmd {
         addr: String,
         #[arg(long, default_value = "bao")]
         space: String,
-        #[arg(long, default_value = "general")]
-        chat_name: String,
         #[arg(long, default_value = "bao")]
         agent_name: String,
         #[arg(long, default_value = "programs")]
@@ -86,6 +84,18 @@ enum Cmd {
         config: Option<PathBuf>,
         #[arg(long)]
         secrets: Option<PathBuf>,
+    },
+    /// publish programs + skills to the agent space (hash-gated), so a
+    /// running serve picks changes up on its next run — no restart
+    Deploy {
+        #[arg(long, default_value = "http://127.0.0.1:7001")]
+        addr: String,
+        #[arg(long, default_value = "bao")]
+        space: String,
+        #[arg(long, default_value = "programs")]
+        programs: PathBuf,
+        #[arg(long, default_value = "skills")]
+        skills: PathBuf,
     },
     /// trace tooling over device-local run files
     Trace {
@@ -160,8 +170,17 @@ fn load_secrets(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>> {
         .collect())
 }
 
-/// env bootstrap (first keys): ANTHROPIC_API_KEY + tier defaults land
-/// in config/secrets when files don't provide them.
+/// Config defaults (ADR-006 §3): the harness's DEFAULT layer, sourced
+/// from `config_defaults.json` (embedded at build — data, not Rust
+/// literals; edit the json to change model/tier defaults). Sits under
+/// any `--config` file and the space-scope override read off the config
+/// object at serve start. These are behavior settings, not secrets, so
+/// they seed unconditionally — `config.get("llm.tier.codegen")` resolves
+/// even with no API key and no config object yet (a fresh space just
+/// works). The API key is the only env-gated bit: a device-local secret
+/// that never enters config, only `secrets`.
+const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
+
 fn bootstrap(
     config: &mut BTreeMap<String, Value>,
     secrets: &mut BTreeMap<String, String>,
@@ -170,19 +189,13 @@ fn bootstrap(
     config
         .entry("any.base_url".into())
         .or_insert_with(|| json!(addr));
+    let defaults: BTreeMap<String, Value> =
+        serde_json::from_str(CONFIG_DEFAULTS).expect("config_defaults.json is valid JSON");
+    for (key, value) in defaults {
+        config.entry(key).or_insert(value);
+    }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         secrets.entry("llm.key.anthropic".into()).or_insert(key);
-        for (tier, model) in [
-            ("codegen", "claude-sonnet-5"),
-            ("classify", "claude-haiku-4-5-20251001"),
-        ] {
-            config.entry(format!("llm.tier.{tier}")).or_insert_with(|| {
-                json!({
-                "provider": "anthropic", "model": model,
-                "base_url": "https://api.anthropic.com",
-                "api_key_ref": "llm.key.anthropic"})
-            });
-        }
     }
 }
 
@@ -247,7 +260,6 @@ fn main() -> Result<()> {
         Cmd::Serve {
             addr,
             space,
-            chat_name,
             agent_name,
             programs,
             skills,
@@ -263,7 +275,6 @@ fn main() -> Result<()> {
             serve::serve(serve::ServeConfig {
                 addr,
                 space_name: space,
-                chat_name,
                 agent_name,
                 programs,
                 skills,
@@ -273,6 +284,20 @@ fn main() -> Result<()> {
                 config,
                 secrets,
             })
+        }
+        Cmd::Deploy {
+            addr,
+            space,
+            programs,
+            skills,
+        } => {
+            let client = anyapi::Client::new(&addr);
+            let space_id = serve::ensure_space(&client, &space)?;
+            let deployed = deploy::Deployer::new(&client, &space_id).deploy_dir(&programs)?;
+            println!("deploy → {deployed:?}");
+            let skilled = deploy::SkillDeployer::new(&client, &space_id).deploy_dir(&skills)?;
+            println!("skills → {skilled:?}");
+            Ok(())
         }
         Cmd::Trace {
             cmd:
