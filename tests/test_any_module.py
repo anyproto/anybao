@@ -218,6 +218,32 @@ def test_search_returns_full_envelope_and_optional_fields():
     assert fx.calls[1][2] == {"query": "q"}   # unset opts stay off the wire
 
 
+def test_search_enriches_hits_with_title_and_type():
+    fx = wire(replies={
+        "/search": {"hits": [
+            {"objectId": "o1", "data": "game", "dataset": "prop", "score": 0.3},
+            {"objectId": "o2", "data": "soul", "dataset": "editor_blocks",
+             "score": 0.1}], "mode": "hybrid"},
+        "/objects/query": {"records": [
+            {"id": "o1", "any": {"name": "Game", "types": ["ty_game", "nav", "editor"]}},
+            {"id": "o2", "any": {"name": "_soul", "types": ["agent_skill", "nav"]}}]},
+        "/types": {"types": [{"id": "ty_game", "name": "Game"},
+                             {"id": "agent_skill", "name": "Agent Skill"}]}})
+    hits = client(fx).search("s1", "game")["hits"]
+    assert (hits[0]["title"], hits[0]["type"]) == ("Game", "Game")
+    assert (hits[1]["title"], hits[1]["type"]) == ("_soul", "Agent Skill")
+    # one batch resolution over both ids, not a lookup per hit
+    resolves = [b for v, p, b in fx.calls if p.endswith("/objects/query")]
+    assert len(resolves) == 1
+    assert set(resolves[0]["filter"]["id"]["$in"]) == {"o1", "o2"}
+
+
+def test_search_enrich_false_skips_the_extra_query():
+    fx = wire(replies={"/search": {"hits": [{"objectId": "o1"}]}})
+    client(fx).search("s1", "q", enrich=False)
+    assert [p for v, p, _ in fx.calls] == ["/v1/spaces/s1/search"]
+
+
 def test_backlinks_unwraps_and_null_degrades_to_empty():
     fx = wire(replies={"/backlinks": {"backlinks": None}})
     assert client(fx).backlinks("s1", "o1") == []

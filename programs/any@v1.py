@@ -218,8 +218,16 @@ class Client:
                           f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
 
     # --- search & graph ----------------------------------------------------------
-    def search(self, space, query, scopes=None, limit=None, mode=None):
-        """Index search — the full `{hits, mode, vectorStatus}` envelope."""
+    def search(self, space, query, scopes=None, limit=None, mode=None,
+               enrich=True):
+        """Index search — the `{hits, mode, vectorStatus}` envelope. Each
+        hit is a matched RECORD, not a resolved object:
+        `{data (the matched text), dataset, objectId, recordId, scope,
+        score}`. With enrich=True (default) every hit also gets `title`
+        (the object's any.name) and `type` (its primary type's display
+        name), resolved in ONE batch query — so you can read what was
+        found without a follow-up lookup per hit. Pass enrich=False to
+        skip the extra query when you only need objectIds."""
         body = {"query": query}
         if scopes:
             body["scopes"] = scopes
@@ -227,7 +235,36 @@ class Client:
             body["limit"] = limit
         if mode:
             body["mode"] = mode
-        return self._call("post", f"/v1/spaces/{space}/search", body)
+        result = self._call("post", f"/v1/spaces/{space}/search", body)
+        if enrich:
+            self._enrich_hits(space, result.get("hits") or [])
+        return result
+
+    def _enrich_hits(self, space, hits):
+        """Add `title` + `type` to each search hit in place, best-effort:
+        one $in query resolves object names/types, list_types maps the
+        primary type id to its display name. Never raises — enrichment is
+        additive, a failure leaves the raw hits untouched."""
+        ids = list({h["objectId"] for h in hits if h.get("objectId")})
+        if not ids:
+            return
+        try:
+            objs = self.query_objects(space, filter={"id": {"$in": ids}})
+            by_id = {o["id"]: o for o in objs}
+            type_name = {t["id"]: t.get("name") for t in self.list_types(space)}
+        except AnyError:
+            return
+        for h in hits:
+            obj = by_id.get(h.get("objectId"))
+            if not obj:
+                continue
+            meta = obj.get("any") or {}
+            h["title"] = meta.get("name")
+            types = meta.get("types") or []
+            # primary type = first non-structural (skip nav/editor builtins)
+            primary = next((t for t in types if t not in ("nav", "editor")),
+                           types[0] if types else None)
+            h["type"] = type_name.get(primary, primary)
 
     def backlinks(self, space, object_id):
         """Objects that reference object_id through a links-format

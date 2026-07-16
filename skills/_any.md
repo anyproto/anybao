@@ -30,7 +30,12 @@ Core mechanics (get the client once: `c = use("any@v1").client()`):
 - **Search before create**: `c.search(space, query, ...)` is cheap
   (one indexed call, zero tokens). Check for an existing object (and
   memory `preference` items about the workflow) before spawning a new
-  one.
+  one. Each hit is `{title, type, data, objectId, dataset, score}`:
+  `data` is the matched text snippet, `title`/`type` the resolved
+  object name + type (enriched client-side), `objectId` what you query
+  for the full object. Hits are matched RECORDS, so several can share
+  one `objectId` — dedup on it. (`search(..., enrich=False)` skips the
+  title/type resolution when you only need ids.)
 
 Spaces:
 
