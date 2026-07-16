@@ -119,8 +119,25 @@ fn short_path(url: &str) -> String {
         .join("/")
 }
 
+/// Pretty-print a JSON Value as an indented block (--full). Unbounded —
+/// --full means "show everything", so no line cap.
+fn pretty_json(v: &Value, pad: &str) -> String {
+    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    indent_block(&text, pad, usize::MAX)
+}
+
+/// Pretty-print a string that may hold JSON (an http body): parsed +
+/// indented when it's JSON, indented raw otherwise.
+fn pretty_body(raw: &str, pad: &str) -> String {
+    match serde_json::from_str::<Value>(raw) {
+        Ok(v) => pretty_json(&v, pad),
+        Err(_) => indent_block(raw, pad, usize::MAX),
+    }
+}
+
 /// One effect, rendered semantically — the wire body is noise unless
 /// something went wrong (errors always render in full) or --full asks.
+/// Under --full the body is pretty-printed as an indented block.
 fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
     let name = s(&r["effect"]);
     let class = s(&r["meta"]["class"]);
@@ -136,8 +153,12 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
         let path = short_path(r["input"]["url"].as_str().unwrap_or("?"));
         let status = r["output"]["status"].as_i64().unwrap_or(0);
         let mut line = format!("{head} {} {path} → {status} ({dur}ms)", rest.to_uppercase());
-        if status >= 400 || full {
-            line.push_str(&format!(" {}", s(&r["output"]["body"])));
+        let body = s(&r["output"]["body"]);
+        if full && !body.is_empty() {
+            line.push('\n');
+            line.push_str(&pretty_body(&body, &format!("{pad}    ")));
+        } else if status >= 400 {
+            line.push_str(&format!(" {body}"));
         }
         return line;
     }
@@ -153,6 +174,12 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
             "{head} kernel.boot (schema {}, kernel {})",
             r["output"]["trace_schema"],
             clip(&s(&r["output"]["kernel_sha256"]), 12)
+        );
+    }
+    if full {
+        return format!(
+            "{head} {name} [{class}, {dur}ms] ->\n{}",
+            pretty_json(&r["output"], &format!("{pad}    "))
         );
     }
     format!(
