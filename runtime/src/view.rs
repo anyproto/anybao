@@ -154,9 +154,17 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
         let status = r["output"]["status"].as_i64().unwrap_or(0);
         let mut line = format!("{head} {} {path} → {status} ({dur}ms)", rest.to_uppercase());
         let body = s(&r["output"]["body"]);
-        if full && !body.is_empty() {
-            line.push('\n');
-            line.push_str(&pretty_body(&body, &format!("{pad}    ")));
+        if full {
+            // request first (the query/filter/body you sent), then response
+            let label = format!("{pad}    ");
+            let inner = format!("{pad}      ");
+            let req = &r["input"]["json"];
+            if !req.is_null() {
+                line.push_str(&format!("\n{label}req:\n{}", pretty_json(req, &inner)));
+            }
+            if !body.is_empty() {
+                line.push_str(&format!("\n{label}resp:\n{}", pretty_body(&body, &inner)));
+            }
         } else if status >= 400 {
             line.push_str(&format!(" {body}"));
         }
