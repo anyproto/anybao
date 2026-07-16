@@ -18,6 +18,9 @@ Core mechanics (get the client once: `c = use("any@v1").client()`):
 - Types are referenced by **xKey** (the stable slug, e.g. `"pages"`),
   NOT the display name; builtins use their id (`chat`, `editor`,
   `program`, `nav`).
+- `c.create_type(s, {"name", "properties": [{"name", "kind"}, …]})` —
+  idempotent composite; xKeys auto-slug from names; result is
+  immediately writable (never poll).
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":

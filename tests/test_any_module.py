@@ -116,15 +116,56 @@ def test_upsert_record_builds_whole_value_set_on_modify():
 
 
 def test_object_type_property_creation_paths():
-    fx = wire()
+    fx = wire(replies={"/types": {"types": [], "typeId": "t2"}})
     c = client(fx)
     c.create_object("s1", {"typeId": "t"})
     c.create_type("s1", {"name": "T"})
     c.add_property("s1", "t1", {"name": "P"})
     assert [(v, p) for v, p, _ in fx.calls] == [
         ("POST", "/v1/spaces/s1/objects"),
+        ("GET", "/v1/spaces/s1/types"),          # idempotency probe
         ("POST", "/v1/spaces/s1/types"),
         ("POST", "/v1/spaces/s1/types/t1/properties")]
+
+
+# --- create_type: the anyHelper composite --------------------------------------
+
+def test_create_type_composite_fans_out_properties():
+    fx = wire(replies={
+        "/types": {"types": [], "typeId": "t9"},
+        "/types/t9/properties": {"properties": [], "propId": "p1"}})
+    r = client(fx).create_type("s1", {
+        "name": "Comic Book",
+        "properties": [{"name": "Author"}, {"name": "year", "kind": "number"}]})
+    assert r == {"typeId": "t9", "created": True,
+                 "addedProps": {"author": "p1", "year": "p1"}}
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    # slugged xKey on the type, no inline properties on the wire
+    assert posts[0] == ("/v1/spaces/s1/types",
+                        {"name": "Comic Book", "xKey": "comic_book"})
+    assert posts[1][1] == {"name": "Author", "xKey": "author", "kind": "string"}
+    assert posts[2][1] == {"name": "year", "xKey": "year", "kind": "number"}
+
+
+def test_create_type_idempotent_adds_only_missing():
+    fx = wire(replies={
+        "/types": {"types": [{"id": "t9", "name": "Task", "xKey": "task"}]},
+        "/types/t9/properties": {
+            "properties": [{"id": "p1", "xKey": "status", "kind": "string"}],
+            "propId": "p2"}})
+    r = client(fx).create_type("s1", {
+        "name": "Task",
+        "properties": [{"name": "status"}, {"name": "priority"}]})
+    assert r == {"typeId": "t9", "created": False, "addedProps": {"priority": "p2"}}
+    posts = [p for v, p, _ in fx.calls if v == "POST"]
+    assert posts == ["/v1/spaces/s1/types/t9/properties"]  # no type POST, one prop
+
+
+def test_add_property_defaults_xkey_and_kind():
+    fx = wire(replies={"/types/t1/properties": {"propId": "p1"}})
+    client(fx).add_property("s1", "t1", {"name": "Due Date"})
+    assert fx.calls[-1][2] == {"name": "Due Date", "xKey": "due_date",
+                               "kind": "string"}
 
 
 def test_turns_chunks_chat_paths():

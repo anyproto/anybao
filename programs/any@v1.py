@@ -21,6 +21,26 @@ def sanitize_nuls(obj):
     return obj
 
 
+def _slugify_xkey(name):
+    """Stable snake_case programmatic key from a display name:
+    "Agent Memory" -> "agent_memory", "ComicBook" -> "comic_book"."""
+    out = []
+    prev_lower = False
+    for ch in str(name):
+        if ch.isalnum():
+            if ch.isupper() and prev_lower:
+                out.append("_")
+            out.append(ch.lower())
+            prev_lower = ch.islower() or ch.isdigit()
+        else:
+            out.append("_")
+            prev_lower = False
+    slug = "".join(out)
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_")
+
+
 class AnyError(Exception):
     """A >=400 reply, decoded from the server's error envelope
     `{"error": {"code", "message"}}`."""
@@ -139,9 +159,48 @@ class Client:
         return r.get("properties", r) if isinstance(r, dict) else r
 
     def create_type(self, space, body):
-        return self._call("post", f"/v1/spaces/{space}/types", body)
+        """Composite ensure-type (bobrik-watch anyHelper semantics): the
+        wire's POST /types takes NO inline properties (unknown fields
+        are silently dropped), so properties are added one add_property
+        call each. body: {"name", "xKey"?, "description"?,
+        "properties"?: [{"name", "xKey"?, "kind"?, "meta"?}]}. xKeys
+        default to a slug of the name ("Comic Book" -> "comic_book").
+        Idempotent: an existing type (matched by xKey or builtin id) is
+        reused and only MISSING properties (by xKey) are added.
+        Returns {"typeId": str, "created": bool,
+        "addedProps": {xKey: propId}}."""
+        body = dict(body or {})
+        props = body.pop("properties", None) or []
+        xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        tid = next((t["id"] for t in self.list_types(space)
+                    if t.get("xKey") == xkey or t.get("id") == xkey), None)
+        created = False
+        if tid is None:
+            req = {k: body[k] for k in ("name", "description", "iconCid")
+                   if k in body}
+            req["xKey"] = xkey
+            tid = self._call("post", f"/v1/spaces/{space}/types", req)["typeId"]
+            created = True
+        added = {}
+        if props:
+            have = {p.get("xKey") for p in self.list_properties(space, tid)}
+            for p in props:
+                pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
+                if pxkey in have:
+                    continue
+                extra = {k: p[k] for k in ("kind", "meta") if k in p}
+                extra["name"] = p.get("name") or pxkey
+                extra["xKey"] = pxkey
+                added[pxkey] = self.add_property(space, tid, extra)["propId"]
+        return {"typeId": tid, "created": created, "addedProps": added}
 
     def add_property(self, space, type_id, body):
+        """POST one property onto a type. body: {"name", "xKey"?, "kind"?
+        (default "string"), "meta"?}; xKey defaults to a slug of the
+        name. Returns {"propId": str}."""
+        body = dict(body or {})
+        body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
+        body.setdefault("kind", "string")
         return self._call("post", f"/v1/spaces/{space}/types/{type_id}/properties", body)
 
     # --- agent turns / chunks (server-assigned seq) ----------------------------
