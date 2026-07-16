@@ -23,6 +23,10 @@ MAX_TOKENS_TOTAL = 1_000_000
 TIER = "codegen"
 INLINE_TOKEN_BUDGET = 1000
 MAX_SIDE_EFFECT_LINES = 12
+# Fixed order of the built-in system skills in the prompt; unknown _-skills
+# sort after these.
+SYSTEM_SKILL_ORDER = ["_soul", "_core", "_any", "_memory", "_space_context",
+                      "_meta_skill"]
 
 
 def approx_tokens(text):
@@ -143,6 +147,72 @@ def _run_model_cells(parts, results):
                         "is_error": not cr["ok"]})
 
 
+# --- system prompt: composed guest-side from the space ----------------------
+# The agent loads its own context from `any` (the deployed _-prefixed
+# agent_skill objects + tool docs + memory categories), never the host
+# filesystem — isolation principle. The host injects no prompt wording.
+
+
+def _load_system_skills(c, space):
+    """`{name: markdown}` for the _-prefixed agent_skill objects in the
+    space. Returns {} if the skill type isn't there yet (fresh space)."""
+    type_id = next((t["id"] for t in c.list_types(space)
+                    if (t.get("xKey") or t.get("key")) == "agent_skill"), None)
+    if not type_id:
+        return {}
+    out = {}
+    for o in c.query_objects(space, filter={"any.types": type_id}):
+        name = (o.get("any") or {}).get("name") or ""
+        if name.startswith("_"):
+            out[name] = c.get_markdown(space, o["id"])
+    return out
+
+
+def _compose_skills(skills):
+    """Fixed order (SYSTEM_SKILL_ORDER first, unknown _-skills sorted
+    after), each trimmed, joined by blank lines."""
+    known = [n for n in SYSTEM_SKILL_ORDER if n in skills]
+    rest = sorted(n for n in skills if n not in SYSTEM_SKILL_ORDER)
+    return "\n\n".join(skills[n].strip() for n in known + rest)
+
+
+def _tool_docs(c, space):
+    """`## Tools` — every deployed any_tool program's description + method
+    inventory, read from the space."""
+    parts = []
+    for p in c.query_objects(space, filter={"program.any_tool": True}):
+        oid = p["id"]
+        block = [f"### {(p.get('program') or {}).get('name') or '?'}"]
+        desc = c.query(space, oid, "program_description")
+        if desc:
+            block.append(desc[0].get("text") or "")
+        for m in sorted(c.query(space, oid, "program_methods"),
+                        key=lambda m: m.get("pos") or 0):
+            block.append(f"- `{m.get('name', '')}` [{m.get('kind') or 'getter'}]")
+        parts.append("\n".join(block))
+    return ("## Tools\n\n" + "\n\n".join(parts)) if parts else ""
+
+
+def _memory_categories(c, space):
+    """The category-name inventory in the brain — the write path's
+    vocabulary anchor."""
+    brain = c.get_brain(space)
+    brain_id = brain.get("objectId") if isinstance(brain, dict) else None
+    if not brain_id:
+        return ""
+    items = c.query(space, brain_id, "agent_memory_items", limit=500)
+    cats = sorted({i.get("category") for i in items if i.get("category")})
+    return ("Memory categories in use: " + ", ".join(cats)) if cats else ""
+
+
+def compose_system(c, space):
+    """The full system prompt loaded from the space: skills + tool docs +
+    memory categories. Guest-side — the host injects nothing."""
+    parts = [_compose_skills(_load_system_skills(c, space)),
+             _tool_docs(c, space), _memory_categories(c, space)]
+    return "\n\n".join(p for p in parts if p)
+
+
 def main(args):
     space, chat_id = args["space"], args["chatId"]
     user_text = args["userText"]
@@ -150,21 +220,23 @@ def main(args):
     max_turns = args.get("maxTurns", MAX_TURNS)
     max_tokens = args.get("maxTokensTotal", MAX_TOKENS_TOTAL)
     agent_name = args.get("agentName", "bao")
-    # runtime context (ADR-005 §5): the ids the model must never guess.
-    # Appended guest-side — the host composes no prompt wording. Stable
-    # per instance, so the cached stable prefix is unaffected.
-    system = args.get("system", "") + (
+
+    c = use("any@v1").client()  # noqa: F821 - guest global
+    llm = use("llm@v1")  # noqa: F821
+    hist = use("history@v1")  # noqa: F821
+    ar = use("autorecall@v1")  # noqa: F821
+
+    # System prompt: composed guest-side from the space (skills + tool docs
+    # + memory categories) — the agent loads its own context from `any`, the
+    # host injects no prompt wording. Runtime context (the ids the model must
+    # never guess) is appended; stable per instance.
+    system = compose_system(c, space) + (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
         "- other spaces: `c.list_spaces()`; the user's live view rides the "
         "newest user message as a `[now: … | user's view — …]` line")
-
-    c = use("any@v1").client()  # noqa: F821 - guest global
-    llm = use("llm@v1")  # noqa: F821
-    hist = use("history@v1")  # noqa: F821
-    ar = use("autorecall@v1")  # noqa: F821
 
     # boot window (recency channel) + auto-recall (topical channel)
     turns = list(reversed(hist.recent_turns(c, space, chat_id, 200)))

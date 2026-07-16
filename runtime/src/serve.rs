@@ -6,10 +6,7 @@
 
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
-use crate::deploy::{
-    compose_system, load_skills_dir, memory_categories_section, tool_docs_section, Deployer,
-    SkillDeployer,
-};
+use crate::deploy::{Deployer, SkillDeployer};
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
@@ -156,20 +153,9 @@ pub fn serve(mut cfg: ServeConfig) -> Result<()> {
     println!("deploy → {deployed:?}");
     let skills = SkillDeployer::new(&client, &space).deploy_dir(&cfg.skills)?;
     println!("skills → {skills:?}");
-
-    let mut system = compose_system(&load_skills_dir(&cfg.skills)?, &[]);
-    if let Ok(section) = tool_docs_section(&client, &space) {
-        if !section.is_empty() {
-            system.push_str("\n\n");
-            system.push_str(&section);
-        }
-    }
-    if let Ok(section) = memory_categories_section(&client, &space) {
-        if !section.is_empty() {
-            system.push_str("\n\n");
-            system.push_str(&section);
-        }
-    }
+    // The system prompt is composed guest-side (toolcaller@v1) from the
+    // space — the host publishes skills above but injects no prompt wording
+    // (isolation: the agent's context comes from `any`, not the filesystem).
 
     let kernel_bytes = std::fs::read(&cfg.kernel)
         .with_context(|| format!("kernel at {}", cfg.kernel.display()))?;
@@ -203,7 +189,6 @@ pub fn serve(mut cfg: ServeConfig) -> Result<()> {
         space: space.clone(),
         chat: chat.clone(),
         anchor: anchor.clone(),
-        system,
     });
 
     control_api(shared.clone(), ctx.clone());
@@ -230,7 +215,6 @@ pub struct RunCtx {
     pub space: String,
     pub chat: String,
     pub anchor: String,
-    pub system: String,
 }
 
 impl RunCtx {
@@ -302,8 +286,7 @@ fn spawn_conversation(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
         let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
         let args = json!({
             "space": ctx.space, "chatId": ctx.chat, "userText": text,
-            "system": ctx.system, "agentName": ctx.cfg.agent_name,
-            "traceRef": run_id});
+            "agentName": ctx.cfg.agent_name, "traceRef": run_id});
         let result = ctx.run("toolcaller@v1", &args, mailbox, interrupt);
         if let Ok((trace_ref, rr)) = &result {
             if rr.status != "ok" {
