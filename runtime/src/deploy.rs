@@ -198,40 +198,99 @@ fn parse_name_version(stem: &str) -> Option<(&str, &str)> {
     Some((name, version))
 }
 
-/// Read `<name>@vN.py` program files (+ optional `<name>@vN.md` tool
-/// docs, optional `<name>@vN.manifest.json` capability manifests) from
-/// a directory.
+/// Read program sources from `src_dir`. Two layouts, mixed freely:
+///   - **flat**: `<name>@vN.py` (+ optional `<name>@vN.md` tool docs,
+///     `<name>@vN.manifest.json`) — a plain program / cron job.
+///   - **folder**: `<name>@vN/` holding `program.py` + authored
+///     `description.md` (→ Tool Description) + `schema.md` (→ Tool
+///     Schema, the `### name(sig) [kind]` method docs) + optional
+///     `manifest.json`. This is how a TOOL is authored: docs split into
+///     their own files, polished by hand. Anything else in the folder
+///     (tests, fixtures) is ignored — only the four files are read.
 pub fn load_programs(src_dir: &Path) -> anyhow::Result<Vec<ProgramSource>> {
     let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(src_dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("py"))
         .collect();
     paths.sort();
     let mut out = Vec::new();
-    for py in paths {
-        let stem = py.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let Some((name, version)) = parse_name_version(stem) else {
-            continue;
+    for p in paths {
+        let src = if p.is_dir() {
+            load_program_dir(&p)?
+        } else if p.extension().and_then(|e| e.to_str()) == Some("py") {
+            load_flat_program(&p)?
+        } else {
+            None
         };
-        let md = py.with_extension("md");
-        let mf = py.with_extension("manifest.json");
-        out.push(ProgramSource {
-            name: name.to_string(),
-            version: version.to_string(),
-            code: std::fs::read_to_string(&py)?,
-            tool_md: if md.exists() {
-                std::fs::read_to_string(&md)?
-            } else {
-                String::new()
-            },
-            manifest: if mf.exists() {
-                serde_json::from_str(&std::fs::read_to_string(&mf)?)?
-            } else {
-                json!({})
-            },
-        });
+        if let Some(src) = src {
+            out.push(src);
+        }
     }
     Ok(out)
+}
+
+fn read_opt(p: &Path) -> anyhow::Result<String> {
+    Ok(if p.exists() {
+        std::fs::read_to_string(p)?
+    } else {
+        String::new()
+    })
+}
+
+fn load_flat_program(py: &Path) -> anyhow::Result<Option<ProgramSource>> {
+    let stem = py.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let Some((name, version)) = parse_name_version(stem) else {
+        return Ok(None);
+    };
+    let mf = py.with_extension("manifest.json");
+    Ok(Some(ProgramSource {
+        name: name.to_string(),
+        version: version.to_string(),
+        code: std::fs::read_to_string(py)?,
+        tool_md: read_opt(&py.with_extension("md"))?,
+        manifest: load_manifest(&mf)?,
+    }))
+}
+
+fn load_program_dir(dir: &Path) -> anyhow::Result<Option<ProgramSource>> {
+    let stem = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let Some((name, version)) = parse_name_version(stem) else {
+        return Ok(None); // not a program folder (e.g. a shared helper dir)
+    };
+    let code_path = dir.join("program.py");
+    if !code_path.exists() {
+        return Ok(None);
+    }
+    let description = read_opt(&dir.join("description.md"))?;
+    let schema = read_opt(&dir.join("schema.md"))?;
+    Ok(Some(ProgramSource {
+        name: name.to_string(),
+        version: version.to_string(),
+        code: std::fs::read_to_string(&code_path)?,
+        tool_md: assemble_tool_md(&description, &schema),
+        manifest: load_manifest(&dir.join("manifest.json"))?,
+    }))
+}
+
+fn load_manifest(p: &Path) -> anyhow::Result<Value> {
+    Ok(if p.exists() {
+        serde_json::from_str(&std::fs::read_to_string(p)?)?
+    } else {
+        json!({})
+    })
+}
+
+/// Reassemble the split docs into the `## Tool Description` / `## Tool
+/// Schema` markdown that `split_tool_markdown` parses — so storage,
+/// fingerprint, and the any_tool rule are identical to the flat `.md`.
+fn assemble_tool_md(description: &str, schema: &str) -> String {
+    let mut parts = Vec::new();
+    if !description.trim().is_empty() {
+        parts.push(format!("## Tool Description\n\n{}", description.trim()));
+    }
+    if !schema.trim().is_empty() {
+        parts.push(format!("## Tool Schema\n\n{}", schema.trim()));
+    }
+    parts.join("\n\n")
 }
 
 /// Published overlay versions never mutate — edits bump `name@vN`.
