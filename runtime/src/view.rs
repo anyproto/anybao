@@ -172,6 +172,27 @@ fn llm_exchange<'a>(inner: &[&'a Value]) -> Option<(&'a Value, Value)> {
     Some((req, serde_json::from_str(body).ok()?))
 }
 
+/// The llm turn's request (the http.* effect's INPUT), independent of
+/// whether the call succeeded — a failed turn still recorded its input,
+/// so we can show what the user said even when there's no response.
+fn llm_request<'a>(inner: &[&'a Value]) -> Option<&'a Value> {
+    inner
+        .iter()
+        .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))
+        .map(|post| &post["input"]["json"])
+}
+
+/// Split the harness ui-context suffix (`\n\n[now: …]`, appended by
+/// toolcaller@v1) off a user message: `(human message, ui-context?)`.
+/// The locator carries the space/object ids the model saw — the audit
+/// line — so callers render it unclipped even in the skim view.
+fn split_ui_context(text: &str) -> (&str, Option<&str>) {
+    match text.rfind("\n\n[now:") {
+        Some(pos) => (text[..pos].trim_end(), Some(text[pos..].trim())),
+        None => (text.trim(), None),
+    }
+}
+
 /// Index of the last plain-text user message — turn 1's real
 /// userText; everything before it is the boot window.
 fn last_text_user_index(req: &Value) -> usize {
@@ -189,7 +210,7 @@ fn last_text_user_index(req: &Value) -> usize {
     idx
 }
 
-fn user_delta(req: &Value, prev_len: usize, limit: usize) -> Vec<String> {
+fn user_delta(req: &Value, prev_len: usize) -> Vec<String> {
     let msgs = req["messages"].as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
     for m in msgs.iter().skip(prev_len) {
@@ -198,7 +219,7 @@ fn user_delta(req: &Value, prev_len: usize, limit: usize) -> Vec<String> {
         }
         for block in m["content"].as_array().unwrap_or(&Vec::new()) {
             if block["type"] == "text" {
-                out.push(clip(&s(&block["text"]), limit));
+                out.push(s(&block["text"]));
             }
         }
     }
@@ -460,7 +481,7 @@ fn ls_row(records: &[Value]) -> LsRow {
         .and_then(|(begin, end)| {
             let (b, e) = seq_range(begin, *end);
             let (req, _) = llm_exchange(&between(records, b, e))?;
-            user_delta(req, last_text_user_index(req), usize::MAX)
+            user_delta(req, last_text_user_index(req))
                 .into_iter()
                 .next()
         })
@@ -677,19 +698,29 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
             "llm.chat" => {
                 turn_no += 1;
                 out.push_str(&format!("\n#turn_{turn_no}\n"));
-                if let Some((req, resp)) = llm_exchange(&inner) {
+                // User input + ui-context render from the request, BEFORE
+                // the exchange/error branch — so a turn that failed
+                // mid-call (e.g. a broker error) still shows what the user
+                // said and the ui-context locator that led there.
+                if let Some(req) = llm_request(&inner) {
                     let skip = if turn_no == 1 {
                         last_text_user_index(req)
                     } else {
                         prev_msgs
                     };
-                    for text in user_delta(req, skip, lim.user) {
-                        out.push_str(&format!("  user: {text}\n"));
+                    for text in user_delta(req, skip) {
+                        let (msg, ui) = split_ui_context(&text);
+                        out.push_str(&format!("  user: {}\n", clip(msg, lim.user)));
+                        if let Some(ui) = ui {
+                            // the locator is an audit line — never clipped
+                            out.push_str(&format!("  ui:   {ui}\n"));
+                        }
                     }
                     prev_msgs = req["messages"].as_array().map(|m| m.len()).unwrap_or(0) + 1;
-                    llm_body(&mut out, &resp, end, "  ", &lim, &cells);
-                } else {
-                    llm_error(&mut out, &inner, end, "  ");
+                }
+                match llm_exchange(&inner) {
+                    Some((_, resp)) => llm_body(&mut out, &resp, end, "  ", &lim, &cells),
+                    None => llm_error(&mut out, &inner, end, "  "),
                 }
             }
             "cell" => {
@@ -736,6 +767,20 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn split_ui_context_peels_the_now_locator() {
+        let (msg, ui) = split_ui_context(
+            "hey\n\n[now: Thu 2026-07-16 15:34 UTC | user's view — space: sp1, object: ob1]",
+        );
+        assert_eq!(msg, "hey");
+        assert_eq!(
+            ui,
+            Some("[now: Thu 2026-07-16 15:34 UTC | user's view — space: sp1, object: ob1]")
+        );
+        // no suffix → whole text is the message, no locator
+        assert_eq!(split_ui_context("just a message"), ("just a message", None));
+    }
 
     /// A minimal complete run: header, one turn (llm.chat span with its
     /// provider http call), terminal cell record.
