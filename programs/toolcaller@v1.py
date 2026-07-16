@@ -176,21 +176,39 @@ def _compose_skills(skills):
     return "\n\n".join(skills[n].strip() for n in known + rest)
 
 
+_TOOLS_INTRO = (
+    "## Tools\n\n"
+    "Each tool is a program reached with `use(\"<name>@v1\")`. Below: the "
+    "tool's description + a compact method SIGNATURE list — argument NAMES "
+    "only, no shapes (a bare `body`/`opts` hides real structure). Read the "
+    "method's `program_methods` record for its full doc; describe before you "
+    "call, don't guess shapes.")
+
+
 def _tool_docs(c, space):
-    """`## Tools` — every deployed any_tool program's description + method
-    inventory, read from the space."""
-    parts = []
+    """`## Tools` — each any_tool program's description + a one-line method
+    SIGNATURE list (kept short: there can be many tools, and the full
+    per-method schema is retrievable from program_methods on demand). Sorted
+    oldest-first (stable tools stay put, new tools append) so the cached
+    prompt prefix doesn't churn."""
+    tools = []
     for p in c.query_objects(space, filter={"program.any_tool": True}):
-        oid = p["id"]
-        block = [f"### {(p.get('program') or {}).get('name') or '?'}"]
+        oid, prog = p["id"], (p.get("program") or {})
         desc = c.query(space, oid, "program_description")
+        methods = sorted(c.query(space, oid, "program_methods"),
+                         key=lambda m: m.get("pos") or 0)
+        sigs = ", ".join(m.get("name", "") for m in methods)
+        block = [f"### {prog.get('name') or '?'}"]
         if desc:
             block.append(desc[0].get("text") or "")
-        for m in sorted(c.query(space, oid, "program_methods"),
-                        key=lambda m: m.get("pos") or 0):
-            block.append(f"- `{m.get('name', '')}` [{m.get('kind') or 'getter'}]")
-        parts.append("\n".join(block))
-    return ("## Tools\n\n" + "\n\n".join(parts)) if parts else ""
+        if sigs:
+            block.append(f"Methods: {sigs}")
+        tools.append((p.get("createdAt") or 0, prog.get("name") or "",
+                      "\n\n".join(block)))
+    if not tools:
+        return ""
+    tools.sort(key=lambda t: (t[0], t[1]))  # oldest first, name tiebreak
+    return _TOOLS_INTRO + "\n\n" + "\n\n".join(b for _, _, b in tools)
 
 
 def _memory_categories(c, space):
