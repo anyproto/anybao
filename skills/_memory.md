@@ -1,6 +1,6 @@
 # Skill: _memory
 
-Long-term memory policy (ADR-007). The store is small and high-signal:
+Long-term memory policy. The store is small and high-signal:
 distilled stable facts ONLY. The history channel (turns/chunks) already
 keeps everything verbatim — episodes and session summaries NEVER become
 memory items.
