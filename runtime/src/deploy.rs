@@ -450,14 +450,6 @@ impl<'a> Deployer<'a> {
 // --- skills — the system-prompt components (M4 "skills written fresh") ---
 
 pub const SKILL_TYPE: &str = "agent_skill";
-pub const SYSTEM_SKILL_ORDER: [&str; 6] = [
-    "_soul",
-    "_core",
-    "_any",
-    "_memory",
-    "_space_context",
-    "_meta_skill",
-];
 
 /// {name: markdown} from `<name>.md` files.
 pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
@@ -472,37 +464,6 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
         }
     }
     Ok(out)
-}
-
-/// Fixed-order composition; unknown system skills append sorted after
-/// the known ones; the user-skill inventory (titles only) lands right
-/// after _meta_skill, which explains it.
-pub fn compose_system(skills: &BTreeMap<String, String>, user_skill_lines: &[String]) -> String {
-    let mut ordered: Vec<&str> = SYSTEM_SKILL_ORDER
-        .iter()
-        .copied()
-        .filter(|n| skills.contains_key(*n))
-        .collect();
-    ordered.extend(
-        skills
-            .keys()
-            .map(String::as_str)
-            .filter(|n| !SYSTEM_SKILL_ORDER.contains(n)),
-    ); // BTreeMap keys are already sorted
-    let mut parts: Vec<String> = Vec::new();
-    for name in ordered {
-        parts.push(skills[name].trim().to_string());
-        if name == "_meta_skill" && !user_skill_lines.is_empty() {
-            parts.push(
-                user_skill_lines
-                    .iter()
-                    .map(|l| format!("- {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
-        }
-    }
-    parts.join("\n\n")
 }
 
 /// Ensure the agent_skill type exists WITH its name property and return
@@ -621,63 +582,6 @@ impl<'a> SkillDeployer<'a> {
         }
         Ok(out)
     }
-}
-
-/// The stable block's tool-docs slice (ADR-005 §5): every deployed
-/// any_tool program's description + method inventory.
-pub fn tool_docs_section(client: &Client, space: &str) -> Result<String, AnyError> {
-    let progs = client.query_objects(space, &json!({"filter": {"program.any_tool": true}}))?;
-    let mut parts: Vec<String> = Vec::new();
-    for p in progs {
-        let name = p["program"]["name"].as_str().unwrap_or("?");
-        let oid = p["id"].as_str().unwrap_or("");
-        let desc = client.query(space, oid, "program_description", &json!({}))?;
-        let mut methods = client.query(space, oid, "program_methods", &json!({}))?;
-        methods.sort_by_key(|m| m["pos"].as_i64().unwrap_or(0));
-        let mut block = vec![format!("### {name}")];
-        if let Some(d) = desc.first() {
-            block.push(d["text"].as_str().unwrap_or("").to_string());
-        }
-        for m in &methods {
-            block.push(format!(
-                "- `{}` [{}]",
-                m["name"].as_str().unwrap_or(""),
-                m["kind"].as_str().unwrap_or("getter")
-            ));
-        }
-        parts.push(block.join("\n"));
-    }
-    Ok(if parts.is_empty() {
-        String::new()
-    } else {
-        format!("## Tools\n\n{}", parts.join("\n\n"))
-    })
-}
-
-/// Category-name inventory (ADR-007 §5 — cheap, cache-stable; the write
-/// path's vocabulary anchor).
-pub fn memory_categories_section(client: &Client, space: &str) -> Result<String, AnyError> {
-    let brain = client.get_brain(space)?;
-    let brain_id = brain["objectId"].as_str().unwrap_or("");
-    let items = client.query(
-        space,
-        brain_id,
-        "agent_memory_items",
-        &json!({"limit": 500}),
-    )?;
-    let cats: std::collections::BTreeSet<&str> = items
-        .iter()
-        .filter_map(|i| i["category"].as_str())
-        .filter(|c| !c.is_empty())
-        .collect();
-    Ok(if cats.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "Memory categories in use: {}",
-            cats.into_iter().collect::<Vec<_>>().join(", ")
-        )
-    })
 }
 
 #[cfg(test)]
@@ -954,80 +858,6 @@ mod tests {
         let out = sd.deploy_dir(dir.path()).unwrap();
         assert_eq!(out.get("_core").map(String::as_str), Some("created"));
         assert_eq!(out.get("_soul").map(String::as_str), Some("created"));
-    }
-
-    #[test]
-    fn compose_system_fixed_order_then_sorted_rest() {
-        let mut skills = BTreeMap::new();
-        for (k, v) in [
-            ("_meta_skill", "META"),
-            ("_core", "CORE"),
-            ("zeta", "ZETA"),
-            ("_soul", "SOUL "),
-            ("alpha", "ALPHA"),
-        ] {
-            skills.insert(k.to_string(), v.to_string());
-        }
-        let out = compose_system(&skills, &["Skill One — does things".to_string()]);
-        assert_eq!(
-            out,
-            "SOUL\n\nCORE\n\nMETA\n\n- Skill One — does things\n\nALPHA\n\nZETA"
-        );
-    }
-
-    #[test]
-    fn compose_system_without_user_lines() {
-        let mut skills = BTreeMap::new();
-        skills.insert("_meta_skill".to_string(), "META".to_string());
-        assert_eq!(compose_system(&skills, &[]), "META");
-    }
-
-    #[test]
-    fn tool_docs_section_lists_deployed_tools() {
-        let c = client();
-        let d = Deployer::new(&c, "agent");
-        d.deploy_one(&ProgramSource::new("websearch", "v1", PROG, TOOL_MD))
-            .unwrap();
-        d.deploy_one(&ProgramSource::new("quiet", "v1", PROG, ""))
-            .unwrap(); // not a tool
-        let section = tool_docs_section(&c, "agent").unwrap();
-        assert!(section.starts_with("## Tools\n\n### websearch"));
-        assert!(section.contains("Does a thing."));
-        assert!(section.contains("- `go(x)` [getter]"));
-        assert!(!section.contains("quiet"));
-    }
-
-    #[test]
-    fn tool_docs_section_empty_space() {
-        let c = client();
-        assert_eq!(tool_docs_section(&c, "agent").unwrap(), "");
-    }
-
-    #[test]
-    fn memory_categories_sorted_unique() {
-        let c = client();
-        let brain = c.get_brain("sp").unwrap();
-        let brain_id = brain["objectId"].as_str().unwrap().to_string();
-        for (i, cat) in ["ops", "people", "ops", ""].iter().enumerate() {
-            c.upsert_record(
-                "sp",
-                &brain_id,
-                "agent_memory_items",
-                &format!("m{i}"),
-                &json!({"category": cat}),
-            )
-            .unwrap();
-        }
-        assert_eq!(
-            memory_categories_section(&c, "sp").unwrap(),
-            "Memory categories in use: ops, people"
-        );
-    }
-
-    #[test]
-    fn memory_categories_empty() {
-        let c = client();
-        assert_eq!(memory_categories_section(&c, "sp").unwrap(), "");
     }
 
     // --- name@vN parsing edges ---
