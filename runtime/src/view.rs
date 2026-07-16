@@ -217,6 +217,31 @@ fn llm_request<'a>(inner: &[&'a Value]) -> Option<&'a Value> {
         .map(|post| &post["input"]["json"])
 }
 
+/// Render the boot window — the messages the loop assembled BEFORE the
+/// current user turn (history tail + injected context), normally skipped
+/// on turn 1 as noise. Under --full it's the "what exactly did the loop
+/// feed the model" view. `skip` = how many leading messages precede the
+/// current user message. System prompt renders separately (--system/--full).
+fn boot_window(out: &mut String, req: &Value, skip: usize, pad: &str) {
+    if skip == 0 {
+        return;
+    }
+    let msgs = req["messages"].as_array().cloned().unwrap_or_default();
+    out.push_str(&format!("{pad}── initial context: {skip} message(s) ──\n"));
+    for (i, m) in msgs.iter().take(skip).enumerate() {
+        let role = s(&m["role"]);
+        for block in m["content"].as_array().unwrap_or(&Vec::new()) {
+            let body = match s(&block["type"]).as_str() {
+                "text" => s(&block["text"]),
+                "tool_use" => format!("[tool_use {} {}]", s(&block["name"]), block["input"]),
+                "tool_result" => format!("[tool_result {}]", tool_result_text(block)),
+                other => format!("[{other}]"),
+            };
+            out.push_str(&format!("{pad}[{i}] {role}: {body}\n"));
+        }
+    }
+}
+
 /// Split the harness ui-context suffix (`\n\n[now: …]`, appended by
 /// toolcaller@v1) off a user message: `(human message, ui-context?)`.
 /// The locator carries the space/object ids the model saw — the audit
@@ -690,7 +715,9 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         ));
     }
 
-    if opts.system {
+    // The initial context the loop fed the model — system prompt is part
+    // of it, so --full shows it too (not just the explicit --system).
+    if opts.system || opts.full {
         if let Some((req, _)) = exchanges.iter().flatten().next() {
             let sys = system_text(req);
             out.push_str(&format!(
@@ -743,6 +770,12 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
                     } else {
                         prev_msgs
                     };
+                    // --full on turn 1: show the boot window (system +
+                    // history the loop fed) so "what went to the model" is
+                    // visible, not just the current user delta.
+                    if turn_no == 1 && lim.user == usize::MAX {
+                        boot_window(&mut out, req, skip, "  ");
+                    }
                     for text in user_delta(req, skip) {
                         let (msg, ui) = split_ui_context(&text);
                         out.push_str(&format!("  user: {}\n", clip(msg, lim.user)));
