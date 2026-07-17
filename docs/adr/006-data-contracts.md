@@ -199,16 +199,49 @@ Divergences from the design above, all deferred as follow-ups:
   in `runtime/src/config_defaults.json` (embedded via `include_str!`,
   seeded by `bootstrap` in `main.rs`; `any.base_url` stays addr-derived)
   — and overlays space-scope override records (`{key, value}` on the
-  config object, read at serve start) on top. Record-field local/account scope
-  (slice 22) is not yet wired — the object carries non-secret space
-  overrides only.
-- **Secrets stay device-local via env/`secrets` map**, not on the config
-  object. The API key is still `ANTHROPIC_API_KEY` → in-memory `secrets`
-  (host-injected via `credential.ref`, never in config, never read by
-  cells). Persisting it as a `localValue`-scoped record is the next step.
+  config object, read at serve start) on top. Record-field *local* scope
+  (slice 22) is now wired for secrets (see the 2026-07-17 amendment);
+  *account* scope stays deferred until the SDK mirror lands.
+- ~~**Secrets stay device-local via env/`secrets` map**, not on the config
+  object.~~ **Resolved 2026-07-17 — secrets now persist device-locally on
+  the config object** (see the amendment below). The env var seeds the
+  store once; later starts read it back.
 - The behavioral knobs the design listed as config keys
   (`loop.max_turns` etc.) are deliberately NOT config — they're hardcoded
   module constants + per-run args in `toolcaller@v1.py`.
+
+**Amended 2026-07-17 — device-local secret persistence landed.** The
+`localValue ?? value ?? default` cascade's device layer now exists for
+secrets, closing the second divergence above. Why it was blocked and what
+changed:
+
+- **The blocker was server-side, not the SDK.** The SDK/HTTP `scope:
+  "local"` write route is mature (chat's unread flags use it). But the
+  `agent_config` dataset shipped schema-less (`DefaultHandler{}`, no
+  declared fields) → a *Dynamic* keyspace where undeclared fields default
+  to `ScopeSynced`, and the apply path rejects a *local* write to a synced
+  field. A device-local field is writable only when the dataset schema
+  **declares** it `ScopeLocal`. So the MVP could not persist a secret
+  locally without an upstream schema change — cleanly deferred rather than
+  worked around (isolation/upstream-fix doctrine).
+- **Upstream (`~/any/any`, `internal/agentconfig`):** the dataset now
+  declares a schema — `Dynamic: true` retained (undeclared dotted keys
+  still work, synced) plus explicit fields: `value` synced (space
+  override), `localValue` **`ScopeLocal`** (device-only, never synced),
+  `secret` synced marker. `DataVersion` stays `"1"` — additive, no older
+  writer rejected, config object not re-minted. A server HTTP test
+  (`handlers_agentconfig_scope_test.go`) proves the local write is
+  accepted, reads back, mints no DAG change, and is refused on the synced
+  route.
+- **Harness (`anyrt`):** a `set_local_field` client helper does the
+  server-required two-step (a synced upsert materializes the record id
+  carrying only `{key, secret}`, then a local `$set` writes the secret
+  into `localValue` — local scope cannot create records). `serve`
+  bootstraps once: a present device-local value is authoritative (env is a
+  noop); an empty store with `ANTHROPIC_API_KEY` in env persists it now;
+  both empty warns (serve still starts). The secret still lives only in
+  the in-memory `secrets` map at runtime and is never read by cells —
+  `localValue` is just its device-local at-rest home instead of the env.
 
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 

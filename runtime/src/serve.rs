@@ -79,15 +79,21 @@ fn agent_config_object(c: &Client, space: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The Anthropic API key's config key — the record id/`key` on the config
+/// object AND the `secrets` map ref the llm effect resolves (config
+/// defaults declare `api_key_ref: "llm.key.anthropic"`).
+const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
+
+/// The `agent_config` dataset name (mirrors the server-side type).
+const CONFIG_DATASET: &str = "agent_config";
+
 /// Space-scope config overrides read off the config object's
 /// `agent_config` dataset: one record per dotted key, `{key, value}`.
 /// These shadow the hardcoded `bootstrap` defaults (cascade:
-/// space-override ?? default). Device-local scope + secrets on this
-/// object are a follow-up (ADR-006 §3); today the object carries
-/// non-secret space overrides only. Best-effort: a query hiccup or an
+/// space-override ?? default). Best-effort: a query hiccup or an
 /// empty/fresh object yields no overrides rather than failing serve.
 fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> {
-    let rows = match c.query(space, obj, "agent_config", &json!({})) {
+    let rows = match c.query(space, obj, CONFIG_DATASET, &json!({})) {
         Ok(rows) => rows,
         Err(e) => {
             eprintln!("config overrides unavailable ({e}); using defaults");
@@ -100,6 +106,80 @@ fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> 
             Some((k, r.get("value")?.clone()))
         })
         .collect()
+}
+
+/// Device-local secret persistence (ADR-006 §3). Config secrets (the
+/// Anthropic API key) live as a never-synced `localValue` on their config
+/// record, not in synced space data. Bootstrap-once on serve start:
+///
+/// - stored device-local value present → it is authoritative; load it into
+///   `secrets` (any env var is a noop this run);
+/// - stored empty but env `ANTHROPIC_API_KEY` present (already in
+///   `secrets` via `bootstrap`) → persist it device-locally now, so later
+///   starts need no env;
+/// - both empty → warn (serve still starts; the llm effect fails on first
+///   use until a key is provided).
+///
+/// Best-effort: a read/write hiccup never fails serve — it falls back to
+/// whatever env supplied this run.
+fn bootstrap_secret(c: &Client, space: &str, obj: &str, secrets: &mut BTreeMap<String, String>) {
+    match stored_local_secret(c, space, obj, ANTHROPIC_SECRET_REF) {
+        Some(key) => {
+            secrets.insert(ANTHROPIC_SECRET_REF.into(), key);
+            println!("config: anthropic key loaded from device-local store");
+        }
+        None => match secrets.get(ANTHROPIC_SECRET_REF).cloned() {
+            Some(env_key) if !env_key.is_empty() => {
+                match persist_local_secret(c, space, obj, ANTHROPIC_SECRET_REF, &env_key) {
+                    Ok(()) => println!("config: anthropic key bootstrapped to device-local store"),
+                    Err(e) => eprintln!(
+                        "config: could not persist anthropic key device-locally ({e}); \
+                         using env value this run"
+                    ),
+                }
+            }
+            _ => eprintln!(
+                "WARN config: no anthropic key — set ANTHROPIC_API_KEY once to seed the \
+                 device-local store, or write a localValue on the config object; \
+                 llm effects will fail until one is set"
+            ),
+        },
+    }
+}
+
+/// Read the device-local `localValue` off the config record for `key`
+/// (None on any hiccup or when unset/empty).
+fn stored_local_secret(c: &Client, space: &str, obj: &str, key: &str) -> Option<String> {
+    let rows = c.query(space, obj, CONFIG_DATASET, &json!({})).ok()?;
+    rows.iter()
+        .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
+        .and_then(|r| r.get("localValue").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+/// The two-step local-scope write the server requires (ADR-006 §3): a
+/// synced upsert materializes the record — carrying only the non-secret
+/// key name + a `secret` marker — then a device-local `$set` writes the
+/// secret into the never-synced `localValue` field. Local scope cannot
+/// create records, hence the synced record first.
+fn persist_local_secret(c: &Client, space: &str, obj: &str, key: &str, secret: &str) -> Result<()> {
+    c.upsert_record(
+        space,
+        obj,
+        CONFIG_DATASET,
+        key,
+        &json!({"key": key, "secret": true}),
+    )?;
+    c.set_local_field(
+        space,
+        obj,
+        CONFIG_DATASET,
+        key,
+        "localValue",
+        &json!(secret),
+    )?;
+    Ok(())
 }
 
 fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> Result<String> {
@@ -133,7 +213,8 @@ pub fn serve(mut cfg: ServeConfig) -> Result<()> {
     let anchor = ensure_typed(&client, &space, "agent-triggers", "agent_trigger")?;
 
     // Config cascade (ADR-006 §3): hardcoded defaults (from `bootstrap`)
-    // under the space-scope override layer read off the config object.
+    // under the space-scope override layer read off the config object;
+    // secrets (the API key) persist device-locally on the same object.
     match agent_config_object(&client, &space) {
         Some(obj) => {
             let overrides = config_overrides(&client, &space, &obj);
@@ -141,8 +222,17 @@ pub fn serve(mut cfg: ServeConfig) -> Result<()> {
             for (k, v) in overrides {
                 cfg.config.insert(k, v);
             }
+            bootstrap_secret(&client, &space, &obj, &mut cfg.secrets);
         }
-        None => eprintln!("space has no agentConfigObjectId — running on config defaults"),
+        None => {
+            eprintln!("space has no agentConfigObjectId — running on config defaults");
+            if !cfg.secrets.contains_key(ANTHROPIC_SECRET_REF) {
+                eprintln!(
+                    "WARN config: no ANTHROPIC_API_KEY and no config object to read a \
+                     device-local key from; llm effects will fail"
+                );
+            }
+        }
     }
     let brain = client.get_brain(&space)?["objectId"]
         .as_str()
