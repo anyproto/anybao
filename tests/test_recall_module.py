@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 PROGRAMS = Path(__file__).resolve().parents[1] / "programs"
-ANY_SRC = (PROGRAMS / "any@v1.py").read_text()
-RECALL_SRC = (PROGRAMS / "recall@v1.py").read_text()
+ANY_SRC = (PROGRAMS / "any@v1" / "program.py").read_text()
+RECALL_SRC = (PROGRAMS / "recall@v1" / "program.py").read_text()
 
 HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",
        "recordId": "m1", "score": 0.9}

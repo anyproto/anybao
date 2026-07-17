@@ -173,6 +173,18 @@ impl ModuleResolver for AnyModuleResolver {
     }
 }
 
+/// Source path for a spec in a local programs dir — the same two
+/// layouts `deploy::load_programs` reads: flat `<spec>.py`, else the
+/// tool-authoring folder `<spec>/program.py`.
+pub fn local_source_path(dir: &std::path::Path, spec: &str) -> PathBuf {
+    let flat = dir.join(format!("{spec}.py"));
+    if flat.exists() {
+        flat
+    } else {
+        dir.join(spec).join("program.py")
+    }
+}
+
 /// Filesystem resolution over `programs/*.py` — the broker's existing
 /// `sys_module_resolve`, extracted so it composes with the space-backed
 /// path. Cache is keyed by spec: a hit replays the cached reply with
@@ -198,7 +210,7 @@ impl ModuleResolver for LocalDirResolver {
             out["cache"] = json!("hit");
             return Ok(out);
         }
-        let path = self.programs_dir.join(format!("{spec}.py"));
+        let path = local_source_path(&self.programs_dir, spec);
         let source = std::fs::read_to_string(&path).map_err(|_| {
             ResolveError::NotFound(format!("program not found: {spec} ({})", path.display()))
         })?;
@@ -363,6 +375,27 @@ mod tests {
         let again = r.resolve("tool@v1", None).unwrap();
         assert_eq!(again["cache"], json!("hit"));
         assert_eq!(again["source"], json!(CODE));
+    }
+
+    #[test]
+    fn local_dir_resolver_reads_folder_layout() {
+        // the tool-authoring layout: <spec>/program.py (deploy.rs twin);
+        // a flat <spec>.py, when both exist, wins
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("tool@v1")).unwrap();
+        std::fs::write(dir.path().join("tool@v1").join("program.py"), CODE).unwrap();
+        let mut r = LocalDirResolver::new(dir.path().to_path_buf());
+        let out = r.resolve("tool@v1", None).unwrap();
+        assert_eq!(out["source"], json!(CODE));
+        assert_eq!(out["objectId"], json!("tool@v1"));
+
+        std::fs::write(dir.path().join("flat@v1.py"), "x = 1\n").unwrap();
+        std::fs::create_dir(dir.path().join("flat@v1")).unwrap();
+        std::fs::write(dir.path().join("flat@v1").join("program.py"), "x = 2\n").unwrap();
+        assert_eq!(
+            local_source_path(dir.path(), "flat@v1"),
+            dir.path().join("flat@v1.py")
+        );
     }
 
     #[test]

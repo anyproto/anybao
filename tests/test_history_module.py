@@ -9,7 +9,7 @@ PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
 
 def _load():
     g: dict = {}
-    exec(compile((PROGRAMS_DIR / "history@v1.py").read_text(),
+    exec(compile((PROGRAMS_DIR / "history@v1" / "program.py").read_text(),
                  "history@v1.py", "exec"), g)
     return g
 

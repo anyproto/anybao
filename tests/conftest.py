@@ -197,8 +197,12 @@ def guest_use(any_server):
         if spec not in cache:
             g = {"effect": eff, "span": lambda n: (lambda f: f), "use": use,
                  "now": lambda: int(_time.time())}
-            src = (PROGRAMS_DIR / f"{spec}.py").read_text()
-            exec(compile(src, f"{spec}.py", "exec"), g)
+            # flat <spec>.py or the tool-authoring folder <spec>/program.py
+            # — same order as the runtime's local_source_path
+            path = PROGRAMS_DIR / f"{spec}.py"
+            if not path.exists():
+                path = PROGRAMS_DIR / spec / "program.py"
+            exec(compile(path.read_text(), f"{spec}.py", "exec"), g)
             mod = types.SimpleNamespace()
             mod.__dict__.update(g)
             cache[spec] = mod

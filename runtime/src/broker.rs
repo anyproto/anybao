@@ -600,7 +600,7 @@ impl Broker {
             out["cache"] = json!(cache_state);
             return Ok(out);
         }
-        let path = self.programs_dir.join(format!("{spec}.py"));
+        let path = crate::resolver::local_source_path(&self.programs_dir, spec);
         let source = std::fs::read_to_string(&path).map_err(|_| EffectFailure {
             type_: "KeyError".into(),
             message: format!("program not found: {spec} ({})", path.display()),

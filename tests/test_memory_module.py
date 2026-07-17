@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
-SRC = (PROGRAMS_DIR / "memory@v1.py").read_text()
+SRC = (PROGRAMS_DIR / "memory@v1" / "program.py").read_text()
 
 
 def load(use=None):
