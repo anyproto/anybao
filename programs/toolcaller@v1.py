@@ -9,7 +9,12 @@ record written through the any module. Everything nondeterministic is
 an effect, so a recorded conversation replays whole.
 
 args: {space, chatId, userText, system?, agentName?, traceRef?,
-maxTurns?, maxTokensTotal?, tier?, bootTokens?}.
+maxTurns?, maxTokensTotal?, tier?, bootTokens?, quiet?}.
+
+quiet (ADR-008 §5): a delegated sub-run — no chat bubbles, no boot
+window/auto-recall, no persisted turn/ROI, and the parent's mailbox is
+left alone; ceilings still bound the run and the replies return to the
+caller (the subagent@v1 wrapper).
 """
 
 import datetime
@@ -238,6 +243,7 @@ def main(args):
     max_turns = args.get("maxTurns", MAX_TURNS)
     max_tokens = args.get("maxTokensTotal", MAX_TOKENS_TOTAL)
     agent_name = args.get("agentName", "bao")
+    quiet = args.get("quiet", False)
 
     c = use("any@v1").client()  # noqa: F821 - guest global
     llm = use("llm@v1")  # noqa: F821
@@ -255,19 +261,29 @@ def main(args):
         f"- agent name: {agent_name}\n"
         "- other spaces: `c.list_spaces()`; the user's live view rides the "
         "newest user message as a `[now: … | user's view — …]` line")
+    if quiet:
+        system += (
+            "\n\n## Subagent\n\nYou are running as a subagent on a delegated "
+            "task. There is no interactive user on this thread: your final "
+            "reply is returned verbatim to the delegating agent — make it a "
+            "complete, self-contained report.")
 
-    # boot window (recency channel) + auto-recall (topical channel)
-    turns = list(reversed(hist.recent_turns(c, space, chat_id, 200)))
-    chunks = {}
-    for lvl in (1, 2, 3):
-        got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
-        if got:
-            chunks[lvl] = got
-    boot = hist.render_boot_window(turns, chunks,
-                                   total_tokens=args.get("bootTokens", 40000))
-    tail = hist.raw_tail(turns, total_tokens=args.get("bootTokens", 40000))
-    boot_min_seq = tail[0].get("seq") if tail else None
-    plan = ar.plan(c, space, user_text, boot_min_seq)
+    # boot window (recency channel) + auto-recall (topical channel);
+    # a quiet run starts fresh — only the task text (ADR-008 §5)
+    if quiet:
+        boot, plan = [], {"messages": [], "injected": []}
+    else:
+        turns = list(reversed(hist.recent_turns(c, space, chat_id, 200)))
+        chunks = {}
+        for lvl in (1, 2, 3):
+            got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
+            if got:
+                chunks[lvl] = got
+        boot = hist.render_boot_window(turns, chunks,
+                                       total_tokens=args.get("bootTokens", 40000))
+        tail = hist.raw_tail(turns, total_tokens=args.get("bootTokens", 40000))
+        boot_min_seq = tail[0].get("seq") if tail else None
+        plan = ar.plan(c, space, user_text, boot_min_seq)
 
     messages = [*boot,
                 {"role": "user",
@@ -276,7 +292,7 @@ def main(args):
                 *plan["messages"]]
 
     def bubble(text, done):
-        if text:
+        if text and not quiet:
             c.chat_send(space, chat_id, {"text": text,
                                          "agent": {"name": agent_name, "done": done}})
 
@@ -286,7 +302,8 @@ def main(args):
     replies = []
     while True:
         wrapup_reason = None
-        for msg in effect("mailbox.drain", {})["items"]:  # noqa: F821
+        # a quiet run must not consume the parent's inject/break stream
+        for msg in ([] if quiet else effect("mailbox.drain", {})["items"]):  # noqa: F821
             if msg["kind"] == "inject":
                 messages.append({"role": "user",
                                  "parts": [{"type": "text", "text": msg["text"]}]})
@@ -325,11 +342,12 @@ def main(args):
         _run_model_cells(reply["parts"], results)
         messages.append({"role": "user", "parts": results})
 
-    c.append_turn(space, chat_id, {
-        "userText": user_text, "replies": replies, "interrupted": False,
-        "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
-        "llm": {"stopReason": stop, "tokensIn": tokens}})
-    if plan["injected"]:
-        ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
+    if not quiet:
+        c.append_turn(space, chat_id, {
+            "userText": user_text, "replies": replies, "interrupted": False,
+            "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
+            "llm": {"stopReason": stop, "tokensIn": tokens}})
+        if plan["injected"]:
+            ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
     return {"stop": stop, "turns": turn, "tokens": tokens,
             "replies": replies, "injected": len(plan["injected"])}

@@ -72,6 +72,20 @@ class World:
             def get_ui_context(self, space):
                 return w.ui_ctx
 
+            # compose_system reads the space (skills/tools/brain);
+            # an empty space composes an empty prompt prefix
+            def list_types(self, space):
+                return []
+
+            def query_objects(self, space, filter=None, **kw):
+                return []
+
+            def query(self, space, oid, dataset, **kw):
+                return []
+
+            def get_brain(self, space):
+                return {}
+
         class Llm:
             @staticmethod
             def chat(messages, system="", tier="codegen", tools=None):
@@ -219,6 +233,31 @@ def test_unknown_stop_reason_raises():
     w = World([{"parts": [], "stop": "weird", "usage": {}}])
     with pytest.raises(RuntimeError, match="unhandled stop reason"):
         run(w)
+
+
+# --- quiet mode (ADR-008 §5) -------------------------------------------------
+
+
+def test_quiet_mode_isolates_the_run():
+    w = World([done_reply("report")], mailbox=[{"kind": "break"}])
+    out = run(w, quiet=True)
+    assert out["stop"] == "done" and out["replies"] == ["report"]
+    # no bubbles, no persisted turn, no ROI
+    assert w.chat_posts == [] and w.turns == [] and w.roi == []
+    # the parent's mailbox is NOT consumed
+    assert w.mail == [{"kind": "break"}]
+    # fresh context: exactly the task text, no boot window / recall plan
+    msgs = w.llm_calls[0]["messages"]
+    assert len(msgs) == 1 and msgs[0]["parts"][0]["text"].startswith("go")
+    assert "## Subagent" in w.llm_calls[0]["system"]
+
+
+def test_quiet_mode_ceiling_still_wraps_up():
+    w = World([tool_reply(), done_reply("summary")],
+              cells=[{"ok": True, "prints": [], "last": None, "error": None}])
+    out = run(w, quiet=True, maxTurns=1)
+    assert out["stop"] == "wrapup" and out["replies"] == ["summary"]
+    assert w.chat_posts == [] and w.turns == []
 
 
 # --- runtime context + ui-context suffix (ADR-005 §5) ---------------------------
