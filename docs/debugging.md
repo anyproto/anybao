@@ -78,14 +78,10 @@ curl -s -X POST http://127.0.0.1:7001/v1/spaces/$SPACE/query \
        \"sort\": [\"-seq\"], \"limit\": 1}" | jq -r '.records[0].traceRef'
 ```
 
-**Known broken (observed 2026-07-17):** the `traceRef` this returns
-names no trace file. `spawn_conversation` pre-generates a run id for
-the toolcaller args while `RunCtx::broker()` mints a *different* one
-for the trace writer, so `agent_turns.traceRef` and the on-disk
-`run_<id>.jsonl` diverge on every serve run. Until serve threads one
-id through both, map a reply to its trace by time + title:
-`anyrt trace ls --program toolcaller` (turn 1's user text is the row
-title).
+Turns written by serves older than 2026-07-18 carry refs that name no
+trace file (serve minted two ids per run back then); for those, map a
+reply to its trace by time + title: `anyrt trace ls --program
+toolcaller` (turn 1's user text is the row title).
 
 The agent can introspect its own runs from inside a conversation too —
 `trace.effects_of` / `trace.effect_get` are syscalls — so asking bao

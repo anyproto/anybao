@@ -321,8 +321,11 @@ pub struct RunCtx {
 }
 
 impl RunCtx {
-    fn broker(&self, spec: &str) -> Broker {
-        let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
+    pub fn new_run_id() -> String {
+        format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
+    }
+
+    fn broker(&self, spec: &str, run_id: String) -> Broker {
         let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
         let trace_path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
@@ -353,8 +356,11 @@ impl RunCtx {
         args: &Value,
         mailbox: SharedMailbox,
         interrupt: Arc<AtomicBool>,
+        // Some(id) ties this run's trace to an id already handed to the
+        // guest (agent_turns.traceRef); None mints a fresh one
+        run_id: Option<String>,
     ) -> Result<(String, RunResult)> {
-        let broker = self.broker(spec);
+        let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         let run_id = broker.writer.run_id();
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
@@ -388,11 +394,11 @@ fn spawn_conversation(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
     let shared = shared.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
+        let run_id = RunCtx::new_run_id();
         let args = json!({
             "space": ctx.space, "chatId": ctx.chat, "userText": text,
             "agentName": ctx.cfg.agent_name, "traceRef": run_id});
-        let result = ctx.run("toolcaller@v1", &args, mailbox, interrupt);
+        let result = ctx.run("toolcaller@v1", &args, mailbox, interrupt, Some(run_id));
         if let Ok((trace_ref, rr)) = &result {
             if rr.status != "ok" {
                 let _ = ctx.client.chat_send(
@@ -472,7 +478,7 @@ fn trigger_ticker(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
         for t in due {
             let mailbox: SharedMailbox = Default::default();
             let interrupt = Arc::new(AtomicBool::new(false));
-            let result = ctx.run(&t.program, &t.args, mailbox, interrupt);
+            let result = ctx.run(&t.program, &t.args, mailbox, interrupt, None);
             let rr = result.map(|(_, rr)| rr).unwrap_or_else(|e| RunResult {
                 status: "error".into(),
                 duration_ms: 0,
