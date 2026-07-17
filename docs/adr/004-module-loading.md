@@ -134,7 +134,9 @@ it differently, and the difference is the contract:
   space (`ensure_space`'s create belongs to serve/deploy). For parity,
   `--from-space` also runs serve's config bootstrap (defaults + env API
   keys), so llm-using programs work one-shot without a hand-built
-  `--config`.
+  `--config`. Parity extends to the gaps: like serve it wires no
+  private space and no aliases, so `private:`/overlay specs error
+  identically on both surfaces until those land.
 
 The two modes never mix within a run: a broker has either the local
 dir or the space resolver, so every `module.resolve` record in one
