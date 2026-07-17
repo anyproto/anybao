@@ -74,7 +74,11 @@ pub struct Broker {
     pub config: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, String>,
     pub env: BTreeMap<String, String>,
-    pub programs_dir: PathBuf,
+    /// Local programs dir for offline resolution (`anyrt run` only).
+    /// None in serve — chat replies are served by programs from any
+    /// objects; the serve broker structurally CANNOT read program
+    /// source off the filesystem (isolation principle).
+    pub programs_dir: Option<PathBuf>,
     /// Shared: the serve watcher pushes cross-thread; drained by the
     /// mailbox.drain syscall.
     pub mailbox: Arc<Mutex<VecDeque<Value>>>,
@@ -104,7 +108,7 @@ impl Broker {
         writer: TraceWriter,
         config: BTreeMap<String, Value>,
         secrets: BTreeMap<String, String>,
-        programs_dir: PathBuf,
+        programs_dir: Option<PathBuf>,
         classifier: Classifier,
     ) -> Self {
         Broker {
@@ -609,7 +613,14 @@ impl Broker {
             out["cache"] = json!(cache_state);
             return Ok(out);
         }
-        let path = crate::resolver::local_source_path(&self.programs_dir, spec);
+        let dir = self.programs_dir.as_ref().ok_or(EffectFailure {
+            type_: "KeyError".into(),
+            message: format!(
+                "module.resolve for {spec:?} without a resolver or a local \
+                 programs dir — serve resolves from the space only"
+            ),
+        })?;
+        let path = crate::resolver::local_source_path(dir, spec);
         let source = std::fs::read_to_string(&path).map_err(|_| EffectFailure {
             type_: "KeyError".into(),
             message: format!("program not found: {spec} ({})", path.display()),
@@ -715,9 +726,21 @@ mod tests {
             TraceWriter::new(json!({"id": run})),
             BTreeMap::new(),
             BTreeMap::new(),
-            PathBuf::from("programs"),
+            Some(PathBuf::from("programs")),
             Classifier::new(None),
         )
+    }
+
+    #[test]
+    fn serve_shaped_broker_refuses_local_resolution() {
+        // serve builds the broker with programs_dir: None; without a
+        // space resolver the disk path must refuse, not read the fs
+        let mut b = make_broker("r");
+        b.programs_dir = None;
+        let err = b
+            .call("module.resolve", json!({"spec": "toolcaller@v1"}))
+            .unwrap_err();
+        assert!(err.message.contains("serve resolves from the space only"));
     }
 
     /// A recorded trace with one http.get — built by hand so replay and

@@ -230,7 +230,9 @@ impl RunCtx {
             writer,
             self.cfg.config.clone(),
             self.cfg.secrets.clone(),
-            self.cfg.programs.clone(),
+            // no local programs dir: serve resolves modules from the
+            // space only (the resolver below) — never the filesystem
+            None,
             Classifier::new(Some(&self.cfg.addr)),
         );
         b.resolver = Some(Box::new(AnyModuleResolver::new(

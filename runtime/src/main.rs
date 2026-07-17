@@ -235,7 +235,7 @@ fn main() -> Result<()> {
                 writer,
                 config,
                 secrets,
-                programs,
+                Some(programs),
                 routes::Classifier::new(any_base.as_deref()),
             );
             let out = runner::run_program(
