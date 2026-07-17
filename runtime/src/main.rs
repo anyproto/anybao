@@ -134,6 +134,9 @@ enum TraceCmd {
         /// include the system prompt (turn 1's otherwise-invisible channel)
         #[arg(long)]
         system: bool,
+        /// per-turn metrics table (tokens/cache/cells/effects/costUsd)
+        #[arg(long)]
+        stats: bool,
         /// dump one record by seq, blob-resolved, pretty-printed
         #[arg(long)]
         seq: Option<i64>,
@@ -322,13 +325,17 @@ fn main() -> Result<()> {
                     file,
                     full,
                     system,
+                    stats,
                     seq,
                 },
         } => {
             let file = resolve_trace(file);
-            match seq {
-                Some(n) => print!("{}", view::show_record(&file, n)?),
-                None => print!("{}", view::render(&file, &view::ShowOpts { full, system })?),
+            match (seq, stats) {
+                (Some(n), _) => print!("{}", view::show_record(&file, n)?),
+                (None, true) => print!("{}", view::stats(&file)?),
+                (None, false) => {
+                    print!("{}", view::render(&file, &view::ShowOpts { full, system })?)
+                }
             }
             Ok(())
         }

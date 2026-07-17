@@ -74,7 +74,12 @@ rather than silently minting a private chat.
   provider request; error results never clipped). Clipped lines are
   locators, `#seq` is the key: `--seq N` dumps one record
   blob-resolved, `--full` lifts clips, `--system` prints the system
-  prompt. Blob-spilled records resolve through the sidecar before
+  prompt, and `--stats` renders the per-turn metrics table (stop /
+  tokens / cacheRead+Write / cells / effects / llm ms, with totals and
+  costUsd — priced offline from an embedded model-pricing table keyed
+  by the model the trace recorded; amended 2026-07-17. The turn-record
+  costUsd scalar stays unpopulated until pricing moves guest-side).
+  Blob-spilled records resolve through the sidecar before
   rendering. The body is a CHRONOLOGICAL walk — nothing in the trace
   is invisible: loose effects render in place (loop plumbing —
   `trace.*` reads, empty mailbox polls — filtered as noise), facade

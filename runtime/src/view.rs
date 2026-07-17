@@ -834,6 +834,186 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
     Ok(out)
 }
 
+/// Per-MTok USD prices keyed by model-id prefix (dated suffixes match) —
+/// viewer data, not config: the trace records the model, so a run is
+/// priceable offline. Edit the json to change rates.
+const MODEL_PRICING: &str = include_str!("model_pricing.json");
+
+struct Price {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+}
+
+fn price_for(model: &str) -> Option<Price> {
+    let table: BTreeMap<String, BTreeMap<String, f64>> =
+        serde_json::from_str(MODEL_PRICING).expect("model_pricing.json is valid JSON");
+    let (_, p) = table.iter().find(|(k, _)| model.starts_with(k.as_str()))?;
+    let get = |k: &str| p.get(k).copied().unwrap_or(0.0);
+    Some(Price {
+        input: get("in"),
+        output: get("out"),
+        cache_read: get("cacheRead"),
+        cache_write: get("cacheWrite"),
+    })
+}
+
+#[derive(Default)]
+struct TurnStats {
+    stop: String,
+    input: i64,
+    cache_read: i64,
+    cache_write: i64,
+    output: i64,
+    cells: usize,
+    effects: usize,
+    llm_ms: i64,
+}
+
+impl TurnStats {
+    fn cost_usd(&self, p: &Price) -> f64 {
+        (self.input as f64 * p.input
+            + self.cache_read as f64 * p.cache_read
+            + self.cache_write as f64 * p.cache_write
+            + self.output as f64 * p.output)
+            / 1e6
+    }
+}
+
+/// `trace show --stats` — the per-turn metrics table (ADR-006 viewer
+/// parity): stop / tokens / cache / cells / effects / llm time per
+/// parentless llm.chat span, totals, and costUsd priced from the model
+/// the trace recorded. A turn's cells and effects are everything from
+/// its llm.chat begin up to the next turn's begin.
+pub fn stats(path: &Path) -> anyhow::Result<String> {
+    let records = load_resolved(path)?;
+    let turns: Vec<_> = spans_of(&records, "llm.chat")
+        .into_iter()
+        .filter(|(b, _)| b["parent"].is_null())
+        .collect();
+    let starts: Vec<i64> = turns
+        .iter()
+        .map(|(b, _)| b["seq"].as_i64().unwrap_or(0))
+        .collect();
+    let model = turns
+        .first()
+        .and_then(|(b, e)| {
+            let (bs, es) = seq_range(b, *e);
+            llm_request(&between(&records, bs, es)).map(|req| s(&req["model"]))
+        })
+        .unwrap_or_default();
+
+    let mut rows = Vec::new();
+    for (i, (_begin, end)) in turns.iter().enumerate() {
+        let mut t = TurnStats::default();
+        if let Some(e) = end {
+            let u = &e["output"]["usage"];
+            t.input = u["in"].as_i64().unwrap_or(0);
+            t.cache_read = u["cacheRead"].as_i64().unwrap_or(0);
+            t.cache_write = u["cacheWrite"].as_i64().unwrap_or(0);
+            t.output = u["out"].as_i64().unwrap_or(0);
+            t.stop = s(&e["output"]["stop"]);
+            t.llm_ms = e["meta"]["durMs"].as_i64().unwrap_or(0);
+        } else {
+            t.stop = "NO END".into();
+        }
+        let from = starts[i];
+        let to = starts.get(i + 1).copied().unwrap_or(i64::MAX);
+        for r in &records {
+            let seq = r["seq"].as_i64().unwrap_or(-1);
+            if seq < from || seq >= to {
+                continue;
+            }
+            if r["kind"] == "effect" {
+                t.effects += 1;
+            }
+            if r["kind"] == "span" && r["phase"] == "begin" && r["name"] == "cell" {
+                t.cells += 1;
+            }
+        }
+        rows.push(t);
+    }
+
+    let price = price_for(&model);
+    let mut out = format!(
+        "run {} — {} ({})\n",
+        s(&records[0]["run"]["id"]),
+        s(&records[0]["run"]["program"]),
+        if model.is_empty() {
+            "no llm calls"
+        } else {
+            &model
+        }
+    );
+    if let Some(term) = records
+        .iter()
+        .find(|r| r["kind"] == "cell" && r["cell"] == "main")
+    {
+        out.push_str(&format!(
+            "status: {} — {:.1}s wall, fuel {}\n",
+            if term["ok"] == true { "ok" } else { "FAILED" },
+            term["metrics"]["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0,
+            term["metrics"]["fuel_used"]
+        ));
+    }
+    out.push('\n');
+    out.push_str(&format!(
+        "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
+        "turn", "stop", "in", "cacheRd", "cacheWr", "out", "cells", "effects", "llm_ms", "costUsd"
+    ));
+    let mut tot = TurnStats::default();
+    for (i, t) in rows.iter().enumerate() {
+        let cost = price
+            .as_ref()
+            .map(|p| format!("{:.4}", t.cost_usd(p)))
+            .unwrap_or_else(|| "-".into());
+        out.push_str(&format!(
+            "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
+            i + 1,
+            t.stop,
+            t.input,
+            t.cache_read,
+            t.cache_write,
+            t.output,
+            t.cells,
+            t.effects,
+            t.llm_ms,
+            cost
+        ));
+        tot.input += t.input;
+        tot.cache_read += t.cache_read;
+        tot.cache_write += t.cache_write;
+        tot.output += t.output;
+        tot.cells += t.cells;
+        tot.effects += t.effects;
+        tot.llm_ms += t.llm_ms;
+    }
+    let total_cost = price
+        .as_ref()
+        .map(|p| format!("{:.4}", tot.cost_usd(p)))
+        .unwrap_or_else(|| "-".into());
+    out.push_str(&format!(
+        "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
+        "tot",
+        "",
+        tot.input,
+        tot.cache_read,
+        tot.cache_write,
+        tot.output,
+        tot.cells,
+        tot.effects,
+        tot.llm_ms,
+        total_cost
+    ));
+    if price.is_none() && !model.is_empty() {
+        out.push_str(&format!(
+            "\n(no pricing for {model} — add it to model_pricing.json)\n"
+        ));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,6 +1058,96 @@ mod tests {
                    "error": null, "interrupted": false,
                    "metrics": {"duration_ms": 5230, "fuel_used": 1}}),
         ]
+    }
+
+    /// Two turns with usage + a cell between them: the table attributes
+    /// the cell and its effect to turn 1 and prices from the recorded
+    /// model (claude-sonnet-5: $3/$15, cache $0.30/$3.75 per MTok).
+    fn two_turn_trace() -> Vec<Value> {
+        vec![
+            json!({"kind": "header", "schema": 2,
+                   "run": {"id": "run_st", "program": "toolcaller@v1", "host": "rust"}}),
+            json!({"kind": "span", "seq": 1, "phase": "begin", "span": "t1",
+                   "parent": null, "name": "llm.chat", "input": {}}),
+            json!({"kind": "effect", "seq": 2, "effect": "http.post", "span": "t1",
+                   "error": null, "meta": {"class": "read", "durMs": 40},
+                   "input": {"url": "https://api.anthropic.com/v1/messages",
+                             "json": {"model": "claude-sonnet-5", "messages": []}},
+                   "output": {"status": 200, "body": "{}"}}),
+            json!({"kind": "span", "seq": 3, "phase": "end", "span": "t1",
+                   "name": "llm.chat", "ok": true, "error": null,
+                   "meta": {"durMs": 1000},
+                   "output": {"parts": [], "stop": "tool",
+                              "usage": {"in": 2, "out": 300,
+                                        "cacheRead": 0, "cacheWrite": 1_000_000}}}),
+            json!({"kind": "span", "seq": 4, "phase": "begin", "span": "c1",
+                   "parent": null, "name": "cell", "input": {}}),
+            json!({"kind": "effect", "seq": 5, "effect": "http.get", "span": "c1",
+                   "error": null, "meta": {"class": "read", "durMs": 5},
+                   "input": {}, "output": {}}),
+            json!({"kind": "span", "seq": 6, "phase": "end", "span": "c1",
+                   "name": "cell", "ok": true, "error": null, "meta": {"durMs": 7},
+                   "output": {}}),
+            json!({"kind": "span", "seq": 7, "phase": "begin", "span": "t2",
+                   "parent": null, "name": "llm.chat", "input": {}}),
+            json!({"kind": "span", "seq": 8, "phase": "end", "span": "t2",
+                   "name": "llm.chat", "ok": true, "error": null,
+                   "meta": {"durMs": 900},
+                   "output": {"parts": [], "stop": "done",
+                              "usage": {"in": 2, "out": 100,
+                                        "cacheRead": 1_000_000, "cacheWrite": 0}}}),
+            json!({"kind": "cell", "seq": 9, "cell": "main", "ok": true,
+                   "error": null, "interrupted": false,
+                   "metrics": {"duration_ms": 2500, "fuel_used": 42}}),
+        ]
+    }
+
+    #[test]
+    fn stats_table_per_turn_attribution_and_pricing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run_st.jsonl");
+        let lines: Vec<String> = two_turn_trace().iter().map(|r| r.to_string()).collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let out = stats(&path).unwrap();
+        assert!(out.contains("claude-sonnet-5"), "{out}");
+        // turn 1: the cell + its effect + the llm http effect belong to it
+        let t1 = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("1 "))
+            .unwrap();
+        assert!(t1.contains("tool"), "{t1}");
+        // 1M cacheWrite tokens at $3.75/MTok + 300 out at $15/MTok ≈ 3.7545
+        assert!(t1.contains("3.7545"), "{t1}");
+        let t2 = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("2 "))
+            .unwrap();
+        // 1M cacheRead at $0.30/MTok + 100 out ≈ 0.3015
+        assert!(t2.contains("0.3015"), "{t2}");
+        let tot = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("tot"))
+            .unwrap();
+        assert!(tot.contains("4.0560"), "{tot}");
+        assert!(out.contains("2.5s wall"), "{out}");
+    }
+
+    #[test]
+    fn stats_unknown_model_renders_dash_cost() {
+        let mut records = two_turn_trace();
+        records[2]["input"]["json"]["model"] = json!("thinkingmachines/Inkling");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run_x.jsonl");
+        let lines: Vec<String> = records.iter().map(|r| r.to_string()).collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let out = stats(&path).unwrap();
+        assert!(
+            out.contains("no pricing for thinkingmachines/Inkling"),
+            "{out}"
+        );
+        assert!(out
+            .lines()
+            .any(|l| l.trim_start().starts_with("1 ") && l.contains('-')));
     }
 
     #[test]
