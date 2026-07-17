@@ -90,7 +90,6 @@ tie). This is the **`any-dev`** skill's recipe:
 ```sh
 D=<scratchpad dir>
 mkdir -p $D && cp -r programs/* $D/   # folders too; re-copy after edits
-printf '{"any.base_url": "http://127.0.0.1:7001"}' > $D/config.json
 
 cat > $D/probe@v1.py <<'PY'
 def main(args):
@@ -98,11 +97,13 @@ def main(args):
     return {"spaces": [s["name"] for s in c.list_spaces()]}
 PY
 
-anyrt run probe@v1 --programs $D --config $D/config.json --args '{}'
+anyrt run probe@v1 --programs $D --args '{}'
 ```
 
-`--config` with `any.base_url` is required here — plain `run` does not
-bootstrap (only serve and `--from-space` do). Stale copies bite: the
+No `--config` needed for the default local server: plain `run`
+bootstraps like serve — `any.base_url` from `--addr` (default
+`http://127.0.0.1:7001`), model-tier defaults, API keys from env; a
+`--config` file overrides any of it. Stale copies bite: the
 scratch dir is a snapshot, so re-copy after touching `programs/`. When
 your dev program's deps should be the *deployed* ones, deploy the dev
 program and use Path A instead — the two resolution worlds never mix

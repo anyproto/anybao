@@ -26,7 +26,6 @@ gets. Wire truth is `api/swagger.vendored.json` (`jq '.paths | keys'`).
 D=<scratch dir>                       # session scratchpad, not the repo
 mkdir -p $D && cp -r programs/* $D/   # modules resolve from ONE dir —
                                       # -r: folder programs (any@v1/…) too
-printf '{"any.base_url": "http://127.0.0.1:7001"}' > $D/config.json
 ```
 
 The copy is a **snapshot** — stale copies bite (a method added to
@@ -46,7 +45,7 @@ Run it (pass inputs via `--args`, never bake secrets into the file):
 
 ```sh
 ./runtime/target/release/anyrt run dev@v1 --programs $D \
-    --config $D/config.json --traces-dir traces --args '{"k": "v"}'
+    --traces-dir traces --args '{"k": "v"}'
 ```
 
 Output is one JSON line: `{status, value, traceRef, durationMs,
@@ -54,10 +53,12 @@ fuelUsed, error}`. `value` is what `main` returned. On failure, or to
 see every effect: `anyrt trace show <traceRef>` (`trace ls --program
 dev` lists your runs).
 
-- `--config` is required — plain `anyrt run` does not bootstrap
-  `any.base_url` (only `serve` and `--from-space` do).
-- LLM-free programs need no API key; `use("llm@v1")` needs
-  `ANTHROPIC_API_KEY` via `--secrets`.
+- No `--config` needed for the default local server — `run` bootstraps
+  like serve: `any.base_url` from `--addr` (default
+  `http://127.0.0.1:7001`), model-tier defaults, API keys from env.
+  Pass `--config` only to override (the file wins over defaults).
+- LLM-free programs need no API key; `use("llm@v1")` picks up
+  `ANTHROPIC_API_KEY` from the environment (or `--secrets`).
 - One program per step beats one giant program: cheap to re-run, and
   each leaves its own trace.
 - To test **deployed** programs (the space form, serve's resolver)

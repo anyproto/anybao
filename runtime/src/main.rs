@@ -237,12 +237,16 @@ fn main() -> Result<()> {
             let args: Value = serde_json::from_str(&args).context("--args JSON")?;
             let mut config = load_map(&config)?;
             let mut secrets = load_secrets(&secrets)?;
+            // bootstrap parity with serve (closes dev D3): defaults +
+            // env keys seed under any --config file (or_insert — the
+            // file wins), so a scratch run needs no hand-built config;
+            // any.base_url comes from --addr, never the space (you
+            // can't read the space without already knowing the url)
+            bootstrap(&mut config, &mut secrets, &addr);
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
-            // space-backed resolver, no disk, bootstrap parity so
-            // llm-using programs work without hand-built config
+            // space-backed resolver, no disk
             let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> = match &from_space {
                 Some(space) => {
-                    bootstrap(&mut config, &mut secrets, &addr);
                     let base = config["any.base_url"].as_str().unwrap_or(&addr).to_string();
                     let client = Arc::new(anyapi::Client::new(&base));
                     let space_id = serve::find_space(&client, space)?;
