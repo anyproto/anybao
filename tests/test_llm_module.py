@@ -114,6 +114,19 @@ def test_openai_parse_and_build():
     assert req["tools"][0]["function"]["name"] == "run_cell"
 
 
+def test_openai_reasoning_captured_but_not_resent():
+    resp = {"choices": [{"message": {"content": "done",
+                                     "reasoning_content": "let me think"},
+                         "finish_reason": "stop"}], "usage": {}}
+    r = LLM["OpenAICompatAdapter"]().parse_response(resp)
+    assert r["parts"][0] == {"type": "thinking", "text": "let me think"}
+    assert r["parts"][1] == {"type": "text", "text": "done"}
+    # feeding the reply back: the thinking part must NOT reach the wire
+    back = LLM["OpenAICompatAdapter"]().build_request(
+        [{"role": "assistant", "parts": r["parts"]}], "", [], "m")
+    assert back["messages"][0] == {"role": "assistant", "content": "done"}
+
+
 def test_fenced_extracts_code_and_emulates_tool():
     fa = LLM["FencedAdapter"](LLM["OpenAICompatAdapter"]())
     resp = {"choices": [{"message": {"content": "Sure:\n```cell\nprint(1)\n```"},

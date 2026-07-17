@@ -89,6 +89,11 @@ _NORM_STOP = {"end_turn": "done", "stop_sequence": "done",
 # --- OpenAI-compatible (vLLM/llama.cpp/ollama/OpenRouter) --------------------
 
 class OpenAICompatAdapter:
+    """Reasoning models on this wire (DeepSeek convention, Together/
+    OpenRouter) return thinking as `reasoning_content`/`reasoning` on the
+    message — captured as a thinking part so it lands in the trace, but
+    advisory: the wire has no slot to resend it, the model re-reasons."""
+
     def build_request(self, messages, system, tools, model):
         api_msgs = []
         if system:
@@ -128,6 +133,9 @@ class OpenAICompatAdapter:
         choice = raw["choices"][0]
         msg = choice["message"]
         parts = []
+        think = msg.get("reasoning_content") or msg.get("reasoning")
+        if think:
+            parts.append({"type": "thinking", "text": think})
         if msg.get("content"):
             parts.append({"type": "text", "text": msg["content"]})
         for tc in msg.get("tool_calls", []) or []:

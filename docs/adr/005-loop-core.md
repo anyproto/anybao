@@ -46,7 +46,10 @@ sets the header AFTER the payload records (ADR-002). Adapters:
 `anthropic` (native; thinking `provider_state` round-tripped byte-exact;
 the `prefix_stable_upto` hint becomes `cache_control`), `openai-compat`
 (one adapter = vLLM/llama.cpp/SGLang/ollama/OpenRouter; hint ignored —
-their caching is automatic), `fenced` (fallback for tool-weak models:
+their caching is automatic; reasoning models' `reasoning_content`/
+`reasoning` is captured as a Thinking part so the trace keeps it, but
+never resent — the DeepSeek convention treats it as advisory output),
+`fenced` (fallback for tool-weak models:
 parses a ```cell block out of plain text into a ToolCall — the codeAct
 heritage makes the tool interface emulatable on any completion
 endpoint). Tier→provider/model resolution comes from the `config.get`
