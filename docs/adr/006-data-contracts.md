@@ -249,6 +249,61 @@ Divergences from the design above, all deferred as follow-ups:
    unified recall surface (§2), not merely parallel work.
 5. (Parallel, §4c): backlinks read surface.
 
+### 6. xKey normalization at the client boundary (added 2026-07-17)
+
+**Context.** The `any` server stores and validates typed values by
+content-id: a value lives at `record[typeId][propId]`, and
+`create_object` / `objects/query` take those ids verbatim — the server
+does **not** resolve xKeys (`handlers_objects.go` reads the `types` and
+`initialProperties` keys as literal strings; the SDK rejects unknown
+ids). So a thin pass-through guest client surfaces raw
+`bafyrei…`-shaped type and property ids to the agent, both on read
+(query records keyed by type id → prop id) and on write (the agent must
+supply ids). The LLM cannot reason about `bafyreicxj2…` where it means
+the type `task`; it printed raw ids and guessed at property handles.
+
+**Decision.** The guest `any@v1` client (`programs/any@v1/program.py`)
+normalizes to **xKeys** — the stable per-type/per-property slug — at the
+client boundary, so the agent reads and writes types and properties by
+xKey and never sees a raw content id. This is the bobrik-watch
+`anyHelper.js` catalog+resolver ported to the guest client (the same
+mechanism, in the same layer — a guest helper, not the host):
+
+- **Per-space catalog**, memoized for the client's lifetime (one cell):
+  the type list (`list_types`) + each type's property defs
+  (`list_properties`), giving both directions of the xKey↔id map.
+  Invalidated after `create_type` / `add_property`; resolvers refresh
+  once on a miss so a freshly-created type/prop resolves.
+- **Builtin vs user types**: builtins report `xKey == id` (`any`, `nav`,
+  `program`, `chat`, …); only user types (CID id, slug xKey) are
+  (reverse-)mapped. Reserved namespaces (`any`/`nav`/`program`/`_ver`)
+  pass through with their literal keys on both read and write.
+- **Writes** (`create_object`, `update_object`): `types` entries and
+  `initialProperties` / patch groups are named by xKey (ids still
+  accepted) and resolved to the ids the server writes by. An unknown
+  type or property key **raises** — never silently dropped (a misplaced
+  key once lost a whole batch of writes upstream). `update_object`
+  resolves every group before issuing any write, so a bad key cannot
+  land a partial update.
+- **Reads** (`query_objects`, `normalize=True` default): records come
+  back xKey-nested — user-type groups keyed by type xKey, their props by
+  prop xKey. `filter`/`sort` accept readable xKey paths
+  (`task.status`, `-task.priority`) and an `any.types` xKey value, all
+  resolved to the server's id paths. `normalize=False` returns the raw
+  id-keyed shape for the few internal callers that need the ids
+  themselves (graph edges in `recall.neighbors` are identified by
+  type/prop id).
+
+**Scope / non-goals.** The `any.types` VALUES inside a normalized
+record stay raw type ids (matching bobrik-watch) — they are a builtin
+namespace, read by id internally; only the group *keys* are slugged.
+The **host** Rust client (`runtime/src/anyapi.rs`) stays a raw
+pass-through: it is host-internal (deploy, boot, serve, resolver) and
+only ever touches builtin types, so it needs no catalog. Normalization
+issues extra `list_types` / `list_properties` http effects; under replay
+these are recorded and deterministic (no compatibility concern — no
+backcompat, traces regenerate).
+
 ## Consequences
 
 - History scales: token-budgeted window over hierarchical chunks = all

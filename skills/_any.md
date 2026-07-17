@@ -15,18 +15,28 @@ Core mechanics (get the client once: `c = use("any@v1").client()`):
   `c.list_properties(space, type_id)` for one type's property map
   (`[{id, name, xKey, kind}]`). Find an existing fit first; avoid
   inventing parallel types.
-- Types are referenced by **xKey** (the stable slug, e.g. `"pages"`),
-  NOT the display name; builtins use their id (`chat`, `editor`,
-  `program`, `nav`).
+- Types and properties are referenced by **xKey** (the stable slug,
+  e.g. `"pages"` / `"author"`), NOT the display name and NEVER the raw
+  content id — the client resolves xKeys to ids under the hood.
+  Builtins use their id (`chat`, `editor`, `program`, `nav`, `any`).
 - `c.create_type(s, {"name", "properties": [{"name", "kind"}, …]})` —
   idempotent composite; xKeys auto-slug from names; result is
-  immediately writable (never poll).
+  immediately writable (never poll). Returns `{typeId, xKey, created,
+  addedProps}` — carry the `xKey` forward, not the id.
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":
   {"any": {"name": "Dune"}, "book": {"author": "Frank Herbert",
-  "year": 1965}}})`. Properties placed anywhere else error — they are
-  never silently dropped.
+  "year": 1965}}})`. Edit an existing object the same way with
+  `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
+  {"rating": 9}})`. Properties placed anywhere else, or an unknown
+  type/property key, error — never silently dropped.
+- **Reads come back xKey-nested**: `c.query_objects(s, filter=…)`
+  returns each row as `{"id", "any": {…}, "<typeXKey>": {"<propXKey>":
+  value}}` (builtin `any`/`nav` groups verbatim). Filter/sort by xKey
+  too — `filter={"any.types": "book", "book.year": 1965}`,
+  `sort=["-book.year"]`. Pass `normalize=False` only when you need the
+  raw content ids.
 - **Search before create**: `c.search(space, query, ...)` is cheap
   (one indexed call, zero tokens). Check for an existing object (and
   memory `preference` items about the workflow) before spawning a new

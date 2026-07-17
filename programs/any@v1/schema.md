@@ -1,8 +1,11 @@
 ### create_object(space, body) [mutator]
-Create a typed object. `body`: `{"types": [typeId, …], "initialProperties": {"any": {"name": …}, "<typeId>": {propId: value}}}`. Properties are nested type groups keyed by type; anywhere else errors. Returns `{objectId}`.
+Create a typed object. `body`: `{"types": ["<typeXKey>", …], "initialProperties": {"any": {"name": …}, "<typeXKey>": {"<propXKey>": value}}}`. Types and property groups are named by **xKey** (the client resolves them to ids); reserved builtin groups (`any`, `nav`) use their literal keys. Properties are nested type groups keyed by type; anywhere else, or an unknown type/property key, **errors** (never silently dropped). Returns `{objectId}`.
 
-### query_objects(space, filter?, sort?, limit?, offset?) [getter]
-Cross-object query over the space's object collection. `filter` on `any.*` fields and type-property paths (e.g. `{"any.types": typeId}`, `{"id": {"$in": [...]}}`). Returns object rows.
+### update_object(space, object_id, body) [mutator]
+Update an existing object by xKey. `body`: `{"name"?, "markdown"?, "<typeXKey>": {"<propXKey>": value}, …}` — same nested type-group shape as create_object. `name` sets the display name, `markdown` replaces the editor body, each type group patches that type's properties. Groups resolve BEFORE any write, so a bad key can't leave a partial update. Returns `{objectId}`.
+
+### query_objects(space, filter?, sort?, limit?, offset?, normalize?) [getter]
+Cross-object query over the space's object collection. `filter` / `sort` take readable **xKey** paths — an `any.types` xKey value (`{"any.types": "task"}`), dotted type-property paths (`{"task.status": "open"}`, `sort: ["-task.priority"]`), plus builtin/`id` keys (`{"id": {"$in": [...]}}`) — all resolved to server ids. Records come back **xKey-normalized**: user-type groups keyed by type xKey, props by prop xKey (`{"id": …, "any": {…}, "task": {"status": "open"}}`); builtin namespaces (`any`, `nav`) pass through verbatim. Pass `normalize=False` for the raw id-keyed shape (when you need the content ids themselves).
 
 ### query(space, object_id, dataset, filter?, sort?, limit?) [getter]
 Per-object dataset query — `chat_messages`, `agent_turns`, `agent_memory_items`, `program_methods`, etc. Returns the dataset's records.
@@ -29,13 +32,13 @@ Every space on the account as raw rows (`{id, name, status, …}`). Operate on `
 The user's current view — the `ui_context` pointer any-ui maintains (`{spaceId, objectId, view, updatedAt}`). Resolves "here" / "this page" / "this object". `None` when unavailable.
 
 ### list_types(space) [getter]
-All types in the space (`{id, name, xKey}`). Discover before creating — reuse an existing type instead of inventing a parallel one.
+All types in the space (`{id, name, xKey}`). Discover before creating — reuse an existing type instead of inventing a parallel one. Reference a type by its **xKey** everywhere else (create/update/query resolve it); you never need the raw `id`.
 
 ### list_properties(space, type_id) [getter]
-One type's property catalog (`{id, name, xKey, kind}`) — the xKey↔propId map for reading/writing that type's values.
+One type's property catalog (`{id, name, xKey, kind}`) — the xKey↔propId map. Read/write that type's values by **xKey** (create/update/query resolve them); the `id` is informational.
 
 ### create_type(space, body) [mutator]
-Idempotent ensure-type. `body`: `{"name", "properties"?: [{"name", "kind"?}, …]}`. Reuses an existing type (by xKey or builtin id); xKeys auto-slug from names; result is immediately writable. Returns `{typeId, created, addedProps}`.
+Idempotent ensure-type. `body`: `{"name", "properties"?: [{"name", "kind"?}, …]}`. Reuses an existing type (by xKey or builtin id); xKeys auto-slug from names; result is immediately writable. Returns `{typeId, xKey, created, addedProps}` — use `xKey` (and the `addedProps` xKeys) for subsequent create/update/query calls.
 
 ### add_property(space, type_id, body) [mutator]
 Add one property to a type. `body`: `{"name", "kind"? (default "string"), "meta"?}`. Returns `{propId}`.

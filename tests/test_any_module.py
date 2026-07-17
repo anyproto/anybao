@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-SRC = (Path(__file__).resolve().parents[1] / "programs" / "any@v1.py").read_text()
+SRC = (Path(__file__).resolve().parents[1] / "programs" / "any@v1"
+       / "program.py").read_text()
 
 
 def wire(replies=None, status=200, config=None):
@@ -92,7 +93,9 @@ def test_query_drops_none_opts():
 
 def test_query_objects_wire_shape_and_unwrap():
     fx = wire(replies={"/objects/query": {"records": [{"id": "r"}]}})
-    assert client(fx).query_objects("s1", filter={"id": "x"}, limit=1) == [{"id": "r"}]
+    # normalize=False = pure passthrough: exact wire shape, no catalog fetch
+    assert client(fx).query_objects("s1", filter={"id": "x"}, limit=1,
+                                    normalize=False) == [{"id": "r"}]
     assert fx.calls == [("POST", "/v1/spaces/s1/objects/query",
                          {"filter": {"id": "x"}, "limit": 1})]
 
@@ -137,7 +140,7 @@ def test_create_type_composite_fans_out_properties():
     r = client(fx).create_type("s1", {
         "name": "Comic Book",
         "properties": [{"name": "Author"}, {"name": "year", "kind": "number"}]})
-    assert r == {"typeId": "t9", "created": True,
+    assert r == {"typeId": "t9", "xKey": "comic_book", "created": True,
                  "addedProps": {"author": "p1", "year": "p1"}}
     posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
     # slugged xKey on the type, no inline properties on the wire
@@ -156,7 +159,8 @@ def test_create_type_idempotent_adds_only_missing():
     r = client(fx).create_type("s1", {
         "name": "Task",
         "properties": [{"name": "status"}, {"name": "priority"}]})
-    assert r == {"typeId": "t9", "created": False, "addedProps": {"priority": "p2"}}
+    assert r == {"typeId": "t9", "xKey": "task", "created": False,
+                 "addedProps": {"priority": "p2"}}
     posts = [p for v, p, _ in fx.calls if v == "POST"]
     assert posts == ["/v1/spaces/s1/types/t9/properties"]  # no type POST, one prop
 
@@ -166,6 +170,114 @@ def test_add_property_defaults_xkey_and_kind():
     client(fx).add_property("s1", "t1", {"name": "Due Date"})
     assert fx.calls[-1][2] == {"name": "Due Date", "xKey": "due_date",
                                "kind": "string"}
+
+
+# --- xKey normalization (ADR-006 §6) -------------------------------------------
+
+# A catalog with one user type `task` (CID id) + builtin `nav` (id == xKey).
+_CAT = {
+    "/types": {"types": [
+        {"id": "bafyTASK", "name": "Task", "xKey": "task"},
+        {"id": "nav", "name": "Nav", "xKey": "nav"}]},
+    "/types/bafyTASK/properties": {"properties": [
+        {"id": "bafySTATUS", "name": "Status", "xKey": "status"},
+        {"id": "bafyPRIO", "name": "Priority", "xKey": "priority"}]}}
+
+
+def test_query_objects_normalizes_user_groups_keeps_builtins():
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": "o1", "any": {"name": "Ship", "types": ["bafyTASK"]},
+         "nav": {"parentId": "f1"},
+         "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}]}})
+    [rec] = client(fx).query_objects("s1", filter={"any.types": "task"})
+    # user group + its props rekeyed to xKeys; builtins (any/nav/id) verbatim
+    assert rec == {"id": "o1", "any": {"name": "Ship", "types": ["bafyTASK"]},
+                   "nav": {"parentId": "f1"},
+                   "task": {"status": "open", "priority": 3}}
+
+
+def test_query_objects_resolves_filter_and_sort_xkey_paths():
+    fx = wire(replies={**_CAT, "/objects/query": {"records": []}})
+    client(fx).query_objects("s1", filter={"any.types": "task",
+                                           "task.status": "open"},
+                             sort=["-task.priority"])
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    # any.types VALUE + dotted xKey paths resolved to server ids; builtin passthrough
+    assert body["filter"] == {"any.types": "bafyTASK",
+                              "bafyTASK.bafySTATUS": "open"}
+    assert body["sort"] == ["-bafyTASK.bafyPRIO"]
+
+
+def test_create_object_resolves_types_and_property_groups():
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
+    client(fx).create_object("s1", {
+        "types": ["task"],
+        "initialProperties": {"any": {"name": "Ship it"},
+                              "task": {"status": "open", "priority": 3}}})
+    body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
+    assert body == {"types": ["bafyTASK"], "initialProperties": {
+        "any": {"name": "Ship it"},                    # reserved: literal
+        "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}}
+
+
+def test_create_object_unknown_property_raises_never_drops():
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
+    with pytest.raises(ValueError, match='unknown property "nope" on type "task"'):
+        client(fx).create_object("s1", {
+            "types": ["task"], "initialProperties": {"task": {"nope": 1}}})
+    # nothing was written — the object POST never fired
+    assert not any(p == "/v1/spaces/s1/objects" for v, p, _ in fx.calls)
+
+
+def test_create_object_unknown_type_lists_available():
+    fx = wire(replies=_CAT)
+    with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
+        client(fx).create_object("s1", {"types": ["ghost"]})
+
+
+def test_update_object_writes_name_markdown_and_prop_groups():
+    fx = wire(replies=_CAT)
+    r = client(fx).update_object("s1", "o1", {
+        "name": "Renamed", "markdown": "# body",
+        "task": {"status": "done"}})
+    assert r == {"objectId": "o1"}
+    posts = [(p, b) for v, p, b in fx.calls if v in ("POST", "PUT")]
+    assert ("/v1/spaces/s1/objects/o1/editor/markdown", {"content": "# body"}) in posts
+    # name -> set/any patch; property group -> set/<typeId> patch
+    assert ("/v1/spaces/s1/properties/o1/set/any",
+            {"patch": {"name": "Renamed"}}) in posts
+    assert ("/v1/spaces/s1/properties/o1/set/bafyTASK",
+            {"patch": {"bafySTATUS": "done"}}) in posts
+
+
+def test_normalize_false_returns_raw_id_keyed_groups():
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": "o1", "bafyTASK": {"bafySTATUS": "open"}}]}})
+    [rec] = client(fx).query_objects("s1", normalize=False)
+    assert rec == {"id": "o1", "bafyTASK": {"bafySTATUS": "open"}}
+
+
+def test_catalog_refreshes_once_on_unknown_type_miss():
+    # First /types reply lacks `task`; resolution refreshes the catalog and
+    # the wire (stateful) then returns it. Proves refresh-on-miss.
+    seen = {"n": 0}
+
+    def fx(name, payload):
+        if name == "config.get":
+            return {"value": None}
+        path = payload["url"].removeprefix("http://any")
+        if path.endswith("/types"):
+            seen["n"] += 1
+            types = [] if seen["n"] == 1 else [
+                {"id": "bafyTASK", "name": "Task", "xKey": "task"}]
+            return {"status": 200, "headers": {}, "body": json.dumps({"types": types})}
+        if path.endswith("/objects"):
+            return {"status": 200, "headers": {}, "body": json.dumps({"objectId": "o9"})}
+        return {"status": 200, "headers": {}, "body": "{}"}
+
+    c = load(fx)["client"]("http://any")
+    c.create_object("s1", {"types": ["task"]})   # miss then hit
+    assert seen["n"] == 2
 
 
 def test_turns_chunks_chat_paths():
@@ -292,9 +404,10 @@ def test_get_ui_context_resolves_props_and_picks_newest():
     ctx = client(fx).get_ui_context("s1")
     assert ctx == {"spaceId": "sp2", "objectId": "", "view": "grid",
                    "updatedAt": 222}
-    # the pointer query filters on the type group's presence
-    assert fx.calls[-1] == ("POST", "/v1/spaces/s1/objects/query",
-                            {"filter": {"T1": {"$exists": True}}, "limit": 8})
+    # filters by the any.types xKey (resolved to the type id); records come
+    # back xKey-normalized so the pointer props read by their slug
+    q = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    assert q == {"filter": {"any.types": "T1"}, "limit": 8}
 
 
 def test_get_ui_context_none_when_type_or_pointer_absent():

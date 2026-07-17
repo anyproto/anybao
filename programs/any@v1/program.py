@@ -52,9 +52,22 @@ class AnyError(Exception):
         super().__init__(f"{status} {code}: {message}")
 
 
+# Builtin type namespaces whose group + property keys are already literal
+# handles (`any.name`, `any.types`, `nav.parentId`, `program.name`). They are
+# never reverse-mapped on read nor xKey-resolved on write — see the xKey
+# normalization contract in ADR-006 §6.
+_RESERVED_GROUPS = {"any", "nav", "program", "_ver"}
+
+
 class Client:
     def __init__(self, base_url):
         self._base = base_url.rstrip("/")
+        # Per-space type/property catalog, memoized for the client's lifetime
+        # (one cell). Resolves xKey<->id both ways so the agent reads/writes
+        # types and properties by their stable xKey slug, never raw content
+        # ids — ADR-006 §6. Invalidated after create_type / add_property.
+        self._types_cache = {}   # space -> {"by_id", "by_xkey", "rows"}
+        self._props_cache = {}   # (space, type_id) -> [prop rows]
 
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
@@ -72,14 +85,244 @@ class Client:
                            err.get("message", ""))
         return json.loads(raw) if raw else {}
 
+    # --- xKey catalog + resolution (ADR-006 §6) ------------------------------
+    # The server stores and validates by content-id: a value lives at
+    # record[typeId][propId], and create/query take those ids verbatim (it
+    # does NOT resolve xKeys). This layer is the bobrik-watch anyHelper
+    # catalog ported to the guest client: memoize the type list + each type's
+    # property defs per space, resolve readable xKeys -> ids on write, and
+    # reverse-map records -> xKey-nested on read. Builtins (id == xKey) pass
+    # through untouched.
+    def _catalog(self, space):
+        cat = self._types_cache.get(space)
+        if cat is None:
+            by_id, by_xkey, rows = {}, {}, []
+            for t in self.list_types(space):
+                tid = t.get("id")
+                if not tid or tid in by_id:
+                    continue           # dedup (nav is listed twice)
+                by_id[tid] = t
+                if t.get("xKey"):
+                    by_xkey.setdefault(t["xKey"], tid)
+                rows.append(t)
+            cat = {"by_id": by_id, "by_xkey": by_xkey, "rows": rows}
+            self._types_cache[space] = cat
+        return cat
+
+    def _type_props(self, space, type_id):
+        key = (space, type_id)
+        props = self._props_cache.get(key)
+        if props is None:
+            props = self.list_properties(space, type_id)
+            self._props_cache[key] = props
+        return props
+
+    def _cat_invalidate(self, space):
+        self._types_cache.pop(space, None)
+        for k in [k for k in self._props_cache if k[0] == space]:
+            self._props_cache.pop(k, None)
+
+    @staticmethod
+    def _is_user_type(row):
+        # Builtins report xKey == id (chat, program, nav, any); user types
+        # have a CID id and a slug xKey — only those are (reverse-)mapped.
+        return bool(row) and row.get("id") and row.get("id") != row.get("xKey")
+
+    def _resolve_type_seg(self, space, seg, _retried=False):
+        """A type xKey or id -> type id (or None). Refreshes the catalog once
+        on miss so a freshly-created type resolves."""
+        cat = self._catalog(space)
+        if seg in cat["by_id"]:
+            return seg
+        tid = cat["by_xkey"].get(seg)
+        if tid:
+            return tid
+        if not _retried:
+            self._cat_invalidate(space)
+            return self._resolve_type_seg(space, seg, True)
+        return None
+
+    def _resolve_prop_seg(self, space, type_id, seg, _retried=False):
+        """A prop id, xKey, or name under type_id -> prop id (or None)."""
+        for p in self._type_props(space, type_id):
+            if seg in (p.get("id"), p.get("xKey"), p.get("name")):
+                return p.get("id")
+        if not _retried:
+            self._cat_invalidate(space)
+            return self._resolve_prop_seg(space, type_id, seg, True)
+        return None
+
+    def _type_handles(self, space):
+        return ", ".join(f'"{t.get("xKey") or t.get("id")}" ({t.get("name")})'
+                         for t in self._catalog(space)["rows"])
+
+    def _resolve_type_or_raise(self, space, seg):
+        tid = self._resolve_type_seg(space, seg)
+        if not tid:
+            raise ValueError(
+                f'type "{seg}" doesn\'t exist. Available types: '
+                f"{self._type_handles(space)}")
+        return tid
+
+    def _resolve_prop_groups(self, space, groups):
+        """Nested write groups {typeXKey: {propXKey: val}} -> the id-keyed
+        shape the server writes by {typeId: {propId: val}}. Reserved builtin
+        namespaces (any/nav/program) pass through with literal prop keys.
+        Unknown type/property keys ERROR — never silently dropped (a
+        misplaced key once lost a whole batch of writes)."""
+        out = {}
+        for gk, gv in groups.items():
+            if gk in _RESERVED_GROUPS:
+                out[gk] = gv
+                continue
+            tid = self._resolve_type_or_raise(space, gk)
+            if not isinstance(gv, dict):
+                raise ValueError(
+                    f'value for type group "{gk}" must be a {{prop: value}} '
+                    f"object, got {type(gv).__name__}")
+            resolved = {}
+            for pk, pv in gv.items():
+                pid = self._resolve_prop_seg(space, tid, pk)
+                if not pid:
+                    raise ValueError(f'unknown property "{pk}" on type "{gk}"')
+                resolved[pid] = pv
+            out[tid] = {**out.get(tid, {}), **resolved}
+        return out
+
+    def _resolve_path(self, space, path):
+        """A readable dotted filter/sort key "typeXKey.propXKey" -> the
+        server's "typeId.propId". Keys whose head isn't a USER type (any.*,
+        nav.*, program.*, bare `id`, already-resolved id pairs) pass
+        through unchanged."""
+        if not isinstance(path, str) or "." not in path:
+            return path
+        head, _, tail = path.partition(".")
+        if head in _RESERVED_GROUPS:   # any.*/nav.*/program.* keys are literal
+            return path
+        tid = self._resolve_type_seg(space, head)
+        row = self._catalog(space)["by_id"].get(tid or "")
+        if not self._is_user_type(row):
+            return path
+        pid = self._resolve_prop_seg(space, tid, tail)
+        return f"{tid}.{pid}" if pid else path
+
+    def _resolve_type_value(self, space, v):
+        """Resolve type xKeys appearing as an `any.types` filter VALUE
+        (string, list, or operator dict like {$in:[...]}) so the agent can
+        filter by type xKey. Non-resolving entries pass through."""
+        if isinstance(v, str):
+            return self._resolve_type_seg(space, v) or v
+        if isinstance(v, list):
+            return [self._resolve_type_value(space, x) for x in v]
+        if isinstance(v, dict):
+            return {op: self._resolve_type_value(space, iv)
+                    for op, iv in v.items()}
+        return v
+
+    def _resolve_filter(self, space, filt):
+        if not isinstance(filt, dict):
+            return filt
+        out = {}
+        for k, v in filt.items():
+            out[self._resolve_path(space, k)] = (
+                self._resolve_type_value(space, v) if k == "any.types" else v)
+        return out
+
+    def _resolve_sort(self, space, sort):
+        if not isinstance(sort, list):
+            return sort
+        out = []
+        for e in sort:
+            if isinstance(e, str) and e.startswith("-"):
+                out.append("-" + self._resolve_path(space, e[1:]))
+            elif isinstance(e, str):
+                out.append(self._resolve_path(space, e))
+            else:
+                out.append(e)
+        return out
+
+    def _normalize_record(self, space, rec):
+        """Reverse-map a raw wire record to the readable xKey-nested shape:
+        record[typeId][propId] -> out[typeXKey][propXKey]. Builtin namespaces
+        (any/nav/program) and scalars (id, _ver, …) pass through verbatim —
+        their keys are already literal handles."""
+        if not isinstance(rec, dict):
+            return rec
+        cat = self._catalog(space)
+        # Refresh once if a group key references a type id we don't know yet
+        # (catalog stale after an out-of-band create).
+        for k, v in rec.items():
+            if (isinstance(v, dict) and k not in cat["by_id"]
+                    and k not in _RESERVED_GROUPS):
+                self._cat_invalidate(space)
+                cat = self._catalog(space)
+                break
+        out = {}
+        for k, v in rec.items():
+            row = cat["by_id"].get(k)
+            if not self._is_user_type(row) or not isinstance(v, dict):
+                out[k] = v
+                continue
+            label = {p["id"]: (p.get("xKey") or p.get("name") or p["id"])
+                     for p in self._type_props(space, k) if p.get("id")}
+            out[row.get("xKey") or k] = {label.get(pk, pk): pv
+                                         for pk, pv in v.items()}
+        return out
+
     # --- objects -------------------------------------------------------------
     def create_object(self, space, body):
+        """Create a typed object. `types` entries and `initialProperties`
+        group + property keys are given as xKeys (or ids) and resolved to the
+        content-ids the server writes by; reserved groups (any/nav) pass
+        through literal. Unknown type/property keys error — ADR-006 §6."""
+        body = dict(body or {})
+        if isinstance(body.get("types"), list):
+            body["types"] = [self._resolve_type_or_raise(space, t)
+                             for t in body["types"]]
+        if isinstance(body.get("initialProperties"), dict):
+            body["initialProperties"] = self._resolve_prop_groups(
+                space, body["initialProperties"])
         return self._call("post", f"/v1/spaces/{space}/objects", body)
 
-    def query_objects(self, space, **opts):
-        """Cross-object query over the per-space objects collection."""
-        return self._call("post", f"/v1/spaces/{space}/objects/query",
+    def update_object(self, space, object_id, body):
+        """Update an existing object's name / editor body / properties by
+        xKey. `body`: {"name"?, "markdown"?/"body"?, "<typeXKey>": {prop:
+        value}, …} — same nested type-group shape as create_object. Property
+        keys resolve to ids; groups are resolved BEFORE any write so a bad
+        key can't land a partial update. Returns {"objectId"}."""
+        body = dict(body or {})
+        markdown = body.pop("markdown", None)
+        body_md = body.pop("body", None)
+        if markdown is None:
+            markdown = body_md
+        name = body.pop("name", None)
+        groups = self._resolve_prop_groups(space, body)   # raises before write
+        if name is not None:
+            groups.setdefault("any", {}).setdefault("name", name)
+        if markdown is not None:
+            self.put_markdown(space, object_id, markdown)
+        for tid, patch in groups.items():
+            if patch:
+                self._call("post",
+                          f"/v1/spaces/{space}/properties/{object_id}/set/{tid}",
+                          {"patch": patch})
+        return {"objectId": object_id}
+
+    def query_objects(self, space, normalize=True, **opts):
+        """Cross-object query over the per-space objects collection. `filter`
+        / `sort` accept readable dotted xKey paths (`task.status`) and an
+        `any.types` xKey value, resolved to the server's id paths. Records
+        come back NORMALIZED (user-type groups keyed by type xKey, props by
+        prop xKey) unless normalize=False — pass that when you need the raw
+        content ids (e.g. graph edges) — ADR-006 §6."""
+        if "filter" in opts:
+            opts["filter"] = self._resolve_filter(space, opts["filter"])
+        if "sort" in opts:
+            opts["sort"] = self._resolve_sort(space, opts["sort"])
+        recs = self._call("post", f"/v1/spaces/{space}/objects/query",
                           opts).get("records", [])
+        return [self._normalize_record(space, r) for r in recs] if normalize \
+            else recs
 
     def query(self, space, object_id, dataset, **opts):
         """Per-object dataset query (chat_messages, agent_turns, …).
@@ -128,25 +371,19 @@ class Client:
         {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
         check freshness before trusting — or None when the UI has never
         reported (type or pointer absent)."""
-        tid = next((t["id"] for t in self.list_types(space)
-                    if t.get("xKey") == "ui_context"), None)
-        if tid is None:
-            return None
-        props = {p.get("xKey"): p["id"]
-                 for p in self.list_properties(space, tid) if p.get("id")}
-        recs = self.query_objects(space, filter={tid: {"$exists": True}},
-                                  limit=8)
+        recs = self.query_objects(space, filter={"any.types": "ui_context"},
+                                  limit=8)   # xKey-normalized (ADR-006 §6)
         latest, latest_at = None, 0
         for r in recs:
-            group = r.get(tid) or {}
-            at = group.get(props.get("updated_at", ""), 0) or 0
+            group = r.get("ui_context") or {}
+            at = group.get("updated_at", 0) or 0
             if latest is None or at > latest_at:
                 latest, latest_at = group, at
         if latest is None:
             return None
-        return {"spaceId": latest.get(props.get("space_id", ""), ""),
-                "objectId": latest.get(props.get("object_id", ""), ""),
-                "view": latest.get(props.get("view", ""), ""),
+        return {"spaceId": latest.get("space_id", ""),
+                "objectId": latest.get("object_id", ""),
+                "view": latest.get("view", ""),
                 "updatedAt": latest_at}
 
     # --- types & properties (catalog source) ----------------------------------
@@ -167,8 +404,9 @@ class Client:
         default to a slug of the name ("Comic Book" -> "comic_book").
         Idempotent: an existing type (matched by xKey or builtin id) is
         reused and only MISSING properties (by xKey) are added.
-        Returns {"typeId": str, "created": bool,
-        "addedProps": {xKey: propId}}."""
+        Returns {"typeId": str, "xKey": str, "created": bool,
+        "addedProps": {xKey: propId}} — the agent references the type and
+        its new properties by xKey afterwards, never the typeId."""
         body = dict(body or {})
         props = body.pop("properties", None) or []
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
@@ -192,7 +430,9 @@ class Client:
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
                 added[pxkey] = self.add_property(space, tid, extra)["propId"]
-        return {"typeId": tid, "created": created, "addedProps": added}
+        self._cat_invalidate(space)   # freshly (re)shaped type -> refresh xKey map
+        return {"typeId": tid, "xKey": xkey, "created": created,
+                "addedProps": added}
 
     def add_property(self, space, type_id, body):
         """POST one property onto a type. body: {"name", "xKey"?, "kind"?
@@ -201,7 +441,10 @@ class Client:
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
         body.setdefault("kind", "string")
-        return self._call("post", f"/v1/spaces/{space}/types/{type_id}/properties", body)
+        res = self._call("post",
+                         f"/v1/spaces/{space}/types/{type_id}/properties", body)
+        self._cat_invalidate(space)   # new prop -> refresh the propId map
+        return res
 
     # --- agent turns / chunks (server-assigned seq) ----------------------------
     def append_turn(self, space, chat_id, body):
