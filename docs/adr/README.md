@@ -21,6 +21,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 005 | Loop core                      | Accepted  |
 | 006 | Data contracts                 | Accepted  |
 | 007 | Memory & graph write policy    | Accepted  |
+| 008 | Agent tools & credentials      | Accepted  |
 
 **Design phase complete (2026-07-07): all seven ADRs accepted.**
 Next: the spike — loop skeleton + WasiEngine (wasmtime-py +

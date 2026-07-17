@@ -76,6 +76,7 @@ class Response:
         self.status = raw.get("status")
         self.headers = raw.get("headers") or {}
         self.text = raw.get("body") or ""
+        self.url = raw.get("url")  # final url, post-redirect (ADR-008 §2)
 
     def json(self):
         return json.loads(self.text)
@@ -88,8 +89,8 @@ def _batch(name, payloads):
     out = _effect("batch", {"name": name, "payloads": payloads})["results"]
     resolved = []
     for r in out:
-        if isinstance(r, dict) and "__error" in r:
-            resolved.append(EffectError(f"{r['__error']['type']}: {r['__error']['message']}"))
+        if isinstance(r, dict) and set(r) == {"error"}:  # host batch item failure
+            resolved.append(EffectError(f"{r['error']['type']}: {r['error']['message']}"))
         else:
             resolved.append(r)
     return resolved
@@ -111,6 +112,9 @@ class _Http:
 
     def get(self, url, **kw):
         return self._call("get", url, **kw)
+
+    def head(self, url, **kw):
+        return self._call("head", url, **kw)
 
     def post(self, url, **kw):
         return self._call("post", url, **kw)

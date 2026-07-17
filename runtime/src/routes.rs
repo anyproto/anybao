@@ -38,7 +38,7 @@ impl Classifier {
     }
 
     pub fn kind(&self, method: &str, url: &str) -> &'static str {
-        if method == "GET" {
+        if method == "GET" || method == "HEAD" {
             return "read";
         }
         if Self::is_llm(url) {

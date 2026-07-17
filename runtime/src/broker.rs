@@ -505,8 +505,16 @@ impl Broker {
             .get("timeout")
             .and_then(|t| t.as_f64())
             .unwrap_or(180.0);
-        let mut req =
-            ureq::request(&verb, &url).timeout(std::time::Duration::from_secs_f64(timeout));
+        // redirects: max follows for THIS request; 0 = manual (the 3xx
+        // and its location header come back as data — ADR-008 §2)
+        let mut req = match payload.get("redirects").and_then(|r| r.as_u64()) {
+            Some(max) => ureq::AgentBuilder::new()
+                .redirects(max as u32)
+                .build()
+                .request(&verb, &url),
+            None => ureq::request(&verb, &url),
+        }
+        .timeout(std::time::Duration::from_secs_f64(timeout));
         if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
             for (k, v) in headers {
                 if let Some(s) = v.as_str() {
@@ -544,6 +552,7 @@ impl Broker {
             }
         };
         let status = resp.status();
+        let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
         let headers: Map<String, Value> = resp
             .headers_names()
             .iter()
@@ -553,7 +562,7 @@ impl Broker {
             type_: "URLError".into(),
             message: e.to_string(),
         })?;
-        Ok(json!({"status": status, "headers": headers, "body": body}))
+        Ok(json!({"status": status, "headers": headers, "body": body, "url": final_url}))
     }
 
     fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {

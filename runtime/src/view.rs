@@ -726,7 +726,9 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
             out.push_str(&indent_block(&sys, "  ", usize::MAX));
             out.push('\n');
         } else {
-            out.push_str(&format!("\nsystem prompt ({kb:.1}KB) (hidden — pass --system)\n"));
+            out.push_str(&format!(
+                "\nsystem prompt ({kb:.1}KB) (hidden — pass --system)\n"
+            ));
         }
     }
 

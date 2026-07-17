@@ -396,6 +396,13 @@ mod tests {
             local_source_path(dir.path(), "flat@v1"),
             dir.path().join("flat@v1.py")
         );
+        // and end-to-end: a fresh resolver serves the flat file's content
+        std::fs::write(dir.path().join("tool@v1.py"), "flat").unwrap();
+        let mut r2 = LocalDirResolver::new(dir.path().to_path_buf());
+        assert_eq!(
+            r2.resolve("tool@v1", None).unwrap()["source"],
+            json!("flat")
+        );
     }
 
     #[test]

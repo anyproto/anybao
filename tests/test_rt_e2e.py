@@ -57,6 +57,14 @@ class FakeBackends(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        # compose_system reads the space at boot: type catalog + brain
+        if self.path.endswith("/types"):
+            return self._reply({"types": []})
+        if self.path.endswith("/agent/brain"):
+            return self._reply({"objectId": "brain1"})
+        return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
