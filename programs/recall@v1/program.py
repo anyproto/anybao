@@ -95,7 +95,10 @@ class Recall:
         reverse read (`…/backlinks`); each `{sourceId, typeId,
         propId}`."""
         forward = []
-        rows = self._c.query_objects(self._space, filter={"id": object_id}, limit=1)
+        # normalize=False: graph edges are identified by raw type/prop ids,
+        # so read the un-normalized (id-keyed) group shape (ADR-006 §6).
+        rows = self._c.query_objects(self._space, filter={"id": object_id},
+                                     limit=1, normalize=False)
         if rows:
             for type_id, group in rows[0].items():
                 if not isinstance(group, dict) or type_id in RESERVED_GROUPS:
