@@ -137,6 +137,10 @@ enum TraceCmd {
         /// per-turn metrics table (tokens/cache/cells/effects/costUsd)
         #[arg(long)]
         stats: bool,
+        /// dump the boot window verbatim (the messages the loop fed the
+        /// model before turn 1's user text)
+        #[arg(long)]
+        boot: bool,
         /// dump one record by seq, blob-resolved, pretty-printed
         #[arg(long)]
         seq: Option<i64>,
@@ -326,6 +330,7 @@ fn main() -> Result<()> {
                     full,
                     system,
                     stats,
+                    boot,
                     seq,
                 },
         } => {
@@ -333,9 +338,10 @@ fn main() -> Result<()> {
             match (seq, stats) {
                 (Some(n), _) => print!("{}", view::show_record(&file, n)?),
                 (None, true) => print!("{}", view::stats(&file)?),
-                (None, false) => {
-                    print!("{}", view::render(&file, &view::ShowOpts { full, system })?)
-                }
+                (None, false) => print!(
+                    "{}",
+                    view::render(&file, &view::ShowOpts { full, system, boot })?
+                ),
             }
             Ok(())
         }

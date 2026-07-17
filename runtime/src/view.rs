@@ -16,6 +16,7 @@ use std::path::Path;
 pub struct ShowOpts {
     pub full: bool,
     pub system: bool,
+    pub boot: bool,
 }
 
 struct Limits {
@@ -64,13 +65,31 @@ fn clip(text: &str, limit: usize) -> String {
     }
 }
 
+/// Clip for skim-view CONTENT: the tail is a locator, not just an
+/// ellipsis — how much is hidden and that --full lifts it (dev C1).
+/// Plain `clip` stays for identifiers (titles, hashes) where the
+/// locator would be noise.
+fn clip_loc(text: &str, limit: usize) -> String {
+    let t = text.trim();
+    let n = t.chars().count();
+    if n <= limit {
+        t.into()
+    } else {
+        let cut: String = t.chars().take(limit).collect();
+        format!("{cut}… (+{} chars — --full)", n - limit)
+    }
+}
+
 /// Indent a multi-line block, clipping to `max_lines`.
 fn indent_block(text: &str, pad: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let shown = lines.len().min(max_lines);
     let mut out: Vec<String> = lines[..shown].iter().map(|l| format!("{pad}{l}")).collect();
     if lines.len() > shown {
-        out.push(format!("{pad}… (+{} more lines)", lines.len() - shown));
+        out.push(format!(
+            "{pad}… (+{} more lines — --full)",
+            lines.len() - shown
+        ));
     }
     out.join("\n")
 }
@@ -192,7 +211,7 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
     }
     format!(
         "{head} {name} [{class}, {dur}ms] -> {}",
-        clip(&r["output"].to_string(), limit)
+        clip_loc(&r["output"].to_string(), limit)
     )
 }
 
@@ -305,22 +324,31 @@ fn tool_result_text(block: &Value) -> String {
     }
 }
 
-/// tool_use_id -> (result text the model saw, is_error). Mined from the
-/// tool_result blocks inside every provider request in the trace — the
-/// cell span itself doesn't carry the digest.
-fn tool_results(records: &[Value]) -> BTreeMap<String, (String, bool)> {
+/// tool_use_id -> (result text the model saw, is_error, source seq).
+/// Mined from the tool_result blocks inside every provider request in
+/// the trace — the cell span itself doesn't carry the digest; the seq
+/// names the request it was mined from, so --seq finds the full text
+/// even when the render clips it (dev C1).
+fn tool_results(records: &[Value]) -> BTreeMap<String, (String, bool, i64)> {
     let mut map = BTreeMap::new();
     for r in records {
         if r["kind"] != "effect" || !s(&r["effect"]).starts_with("http.") {
             continue;
         }
+        let seq = r["seq"].as_i64().unwrap_or(0);
         let empty = Vec::new();
         for m in r["input"]["json"]["messages"].as_array().unwrap_or(&empty) {
             for block in m["content"].as_array().unwrap_or(&empty) {
                 if block["type"] == "tool_result" {
                     if let Some(id) = block["tool_use_id"].as_str() {
                         let is_error = block["is_error"] == true;
-                        map.insert(id.to_string(), (tool_result_text(block), is_error));
+                        // first occurrence wins: the request right after
+                        // the cell, the closest record to drill into
+                        map.entry(id.to_string()).or_insert((
+                            tool_result_text(block),
+                            is_error,
+                            seq,
+                        ));
                     }
                 }
             }
@@ -356,7 +384,7 @@ fn llm_body(
         match block["type"].as_str() {
             Some("text") => out.push_str(&format!(
                 "{pad}assistant: {}\n",
-                clip(&s(&block["text"]), lim.assistant)
+                clip_loc(&s(&block["text"]), lim.assistant)
             )),
             Some("tool_use") => {
                 let id = s(&block["id"]);
@@ -715,20 +743,39 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
         ));
     }
 
-    // System prompt: always announce it with its size; expand the full
-    // text only under --system (it's large and stable — noise unless you
-    // asked). --full does NOT expand it; pass --system for that.
+    // Boot block (dev C2): everything turn 1 fed the model that the
+    // skim view doesn't show — system prompt size, boot-window message
+    // count, tool names — announced with the flag that expands each.
+    // The full text expands only on request (--system / --boot; --full
+    // also dumps the window inline at turn 1): large and stable = noise
+    // unless you asked.
     if let Some((req, _)) = exchanges.iter().flatten().next() {
         let sys = system_text(req);
         let kb = sys.len() as f64 / 1024.0;
+        let window = last_text_user_index(req);
+        let empty = Vec::new();
+        let tools: Vec<String> = req["tools"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .map(|t| s(&t["name"]))
+            .collect();
+        out.push_str(&format!(
+            "\nboot: system {kb:.1}KB (--system) · window {window} msgs (--boot) · tools: {}\n",
+            if tools.is_empty() {
+                "none".into()
+            } else {
+                tools.join(", ")
+            }
+        ));
         if opts.system {
             out.push_str(&format!("\nsystem prompt ({kb:.1}KB):\n"));
             out.push_str(&indent_block(&sys, "  ", usize::MAX));
             out.push('\n');
-        } else {
-            out.push_str(&format!(
-                "\nsystem prompt ({kb:.1}KB) (hidden — pass --system)\n"
-            ));
+        }
+        if opts.boot {
+            out.push('\n');
+            boot_window(&mut out, req, window, "  ");
         }
     }
 
@@ -781,7 +828,7 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
                     }
                     for text in user_delta(req, skip) {
                         let (msg, ui) = split_ui_context(&text);
-                        out.push_str(&format!("  user: {}\n", clip(msg, lim.user)));
+                        out.push_str(&format!("  user: {}\n", clip_loc(msg, lim.user)));
                         if let Some(ui) = ui {
                             // the locator is an audit line — never clipped
                             out.push_str(&format!("  ui:   {ui}\n"));
@@ -816,12 +863,12 @@ pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
                         out.push('\n');
                     }
                 }
-                if let Some((text, is_error)) = results.get(&id) {
+                if let Some((text, is_error, src)) = results.get(&id) {
                     // error results render in full — that's the payload
                     let limit = if *is_error { usize::MAX } else { lim.result };
                     let tag = if *is_error { "result !!" } else { "result" };
-                    out.push_str(&format!("    {tag}:\n"));
-                    out.push_str(&indent_block(&clip(text, limit), "    | ", usize::MAX));
+                    out.push_str(&format!("    {tag} (mined from #{src}):\n"));
+                    out.push_str(&indent_block(&clip_loc(text, limit), "    | ", usize::MAX));
                     out.push('\n');
                 }
             }
@@ -1100,6 +1147,28 @@ mod tests {
                    "error": null, "interrupted": false,
                    "metrics": {"duration_ms": 2500, "fuel_used": 42}}),
         ]
+    }
+
+    #[test]
+    fn clip_loc_tail_is_a_locator() {
+        assert_eq!(clip_loc("short", 10), "short");
+        let out = clip_loc(&"x".repeat(30), 10);
+        assert_eq!(out, format!("{}… (+20 chars — --full)", "x".repeat(10)));
+    }
+
+    #[test]
+    fn tool_results_keep_first_occurrence_seq() {
+        let req = |seq: i64| {
+            json!({"kind": "effect", "seq": seq, "effect": "http.post",
+                   "error": null, "meta": {},
+                   "input": {"json": {"messages": [
+                       {"role": "user", "content": [
+                           {"type": "tool_result", "tool_use_id": "t1",
+                            "content": "42"}]}]}},
+                   "output": {}})
+        };
+        let map = tool_results(&[req(7), req(20)]);
+        assert_eq!(map["t1"], ("42".into(), false, 7));
     }
 
     #[test]

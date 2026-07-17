@@ -79,8 +79,13 @@ rather than silently minting a private chat.
   costUsd — priced offline from an embedded model-pricing table keyed
   by the model the trace recorded; amended 2026-07-17. The turn-record
   costUsd scalar stays unpopulated until pricing moves guest-side).
-  Blob-spilled records resolve through the sidecar before
-  rendering. The body is a CHRONOLOGICAL walk — nothing in the trace
+  Turn 1's boot channel is announced in a `boot:` header line (system
+  prompt size, boot-window message count, tool names) with `--boot`
+  dumping the window verbatim; content clips carry their hidden size
+  (`… (+N chars — --full)`) and mined tool results name their source
+  record (`result (mined from #seq)`) so `--seq` always reaches the
+  full text (amended 2026-07-17). Blob-spilled records resolve through
+  the sidecar before rendering. The body is a CHRONOLOGICAL walk — nothing in the trace
   is invisible: loose effects render in place (loop plumbing —
   `trace.*` reads, empty mailbox polls — filtered as noise), facade
   spans (`autorecall.plan`, `memory.save_with_dedup`, …) render as one
