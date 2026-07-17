@@ -200,6 +200,9 @@ fn bootstrap(
     if let Ok(key) = std::env::var("GEMINI_API_KEY") {
         secrets.entry("google.key.gemini".into()).or_insert(key);
     }
+    if let Ok(key) = std::env::var("TOGETHER_API_KEY") {
+        secrets.entry("llm.key.together".into()).or_insert(key);
+    }
 }
 
 fn main() -> Result<()> {
