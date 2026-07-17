@@ -53,6 +53,19 @@ pub fn ensure_space(c: &Client, name: &str) -> Result<String> {
     Ok(created["id"].as_str().unwrap_or_default().to_string())
 }
 
+/// Strict lookup by name or id — `run --from-space` must not mint a
+/// space on a typo; ensure_space's create is serve/deploy-only.
+pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
+    for sp in c.list_spaces(None)? {
+        if (sp["name"] == name_or_id || sp["id"] == name_or_id)
+            && sp.get("status").map(|s| s == "active").unwrap_or(true)
+        {
+            return Ok(sp["id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    anyhow::bail!("space not found: {name_or_id:?} (run --from-space never creates one)")
+}
+
 /// The space's single derived general chat object — every space has
 /// exactly one, materialized by the server and reported on the
 /// single-space GET (ADR-006 §0). anybao watches this instead of a

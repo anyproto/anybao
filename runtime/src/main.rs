@@ -61,6 +61,14 @@ enum Cmd {
         secrets: Option<PathBuf>,
         #[arg(long, default_value_t = 120.0)]
         timeout_s: f64,
+        /// resolve use() from this space's deployed programs (name or
+        /// id) instead of the local dir — serve's resolver, one-shot
+        #[arg(long)]
+        from_space: Option<String>,
+        /// any server base url for --from-space (a --config
+        /// any.base_url wins over this)
+        #[arg(long, default_value = "http://127.0.0.1:7001")]
+        addr: String,
     },
     /// the agent: watch a chat, run conversations + triggers
     Serve {
@@ -223,10 +231,34 @@ fn main() -> Result<()> {
             config,
             secrets,
             timeout_s,
+            from_space,
+            addr,
         } => {
             let args: Value = serde_json::from_str(&args).context("--args JSON")?;
-            let config = load_map(&config)?;
-            let secrets = load_secrets(&secrets)?;
+            let mut config = load_map(&config)?;
+            let mut secrets = load_secrets(&secrets)?;
+            // bootstrap parity with serve (closes dev D3): defaults +
+            // env keys seed under any --config file (or_insert — the
+            // file wins), so a scratch run needs no hand-built config;
+            // any.base_url comes from --addr, never the space (you
+            // can't read the space without already knowing the url)
+            bootstrap(&mut config, &mut secrets, &addr);
+            // --from-space: serve's composition, one-shot (ADR-004 §6) —
+            // space-backed resolver, no disk
+            let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> = match &from_space {
+                Some(space) => {
+                    let base = config["any.base_url"].as_str().unwrap_or(&addr).to_string();
+                    let client = Arc::new(anyapi::Client::new(&base));
+                    let space_id = serve::find_space(&client, space)?;
+                    Some(Box::new(resolver::AnyModuleResolver::new(
+                        client,
+                        &space_id,
+                        None,
+                        Default::default(),
+                    )))
+                }
+                None => None,
+            };
             let any_base = config
                 .get("any.base_url")
                 .and_then(|v| v.as_str())
@@ -241,13 +273,14 @@ fn main() -> Result<()> {
             if let Err(e) = writer.stream_to(&trace_path) {
                 eprintln!("trace streaming unavailable ({e}); will write at run end");
             }
-            let broker = broker::Broker::new(
+            let mut broker = broker::Broker::new(
                 writer,
                 config,
                 secrets,
-                Some(programs),
+                resolver.is_none().then_some(programs),
                 routes::Classifier::new(any_base.as_deref()),
             );
+            broker.resolver = resolver;
             let out = runner::run_program(
                 &cage,
                 broker,

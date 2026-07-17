@@ -1,6 +1,6 @@
 # ADR-004: Module loading & resolution
 
-Status: **Accepted** (2026-07-07)
+Status: **Accepted** (2026-07-07), amended 2026-07-17 (§6)
 Date: 2026-07-07
 Builds on: ADR-001..003 (accepted); plan §4 Overlays, §5 isolation
 principle
@@ -116,7 +116,33 @@ attenuation). v2.0's permissive profile makes this cheap bookkeeping
 now, enforcement teeth later — same mechanism-first approach as the
 broker.
 
-### 6. Non-goals
+### 6. Runtime composition: which surface resolves where (amended 2026-07-17)
+
+The broker exposes one resolution slot; the two run surfaces compose
+it differently, and the difference is the contract:
+
+- **`serve`** — space-backed only (`AnyModuleResolver`): current space,
+  no private fallback yet, no aliases, and **no local programs dir** —
+  the serving broker structurally cannot read program source off disk.
+- **`anyrt run`** (default) — local dir only: `programs/<spec>.py` or
+  the folder layout's `programs/<spec>/program.py` (flat wins on a
+  tie, matching the deployer's two-layout contract). The dev loop.
+- **`anyrt run --from-space <space>`** — serve's composition, one-shot:
+  the same space-backed resolver, same no-disk rule (the local dir is
+  not consulted at all), so a run tests the *deployed* source. The
+  space argument resolves **strictly** by name or id — never creates a
+  space (`ensure_space`'s create belongs to serve/deploy). For parity,
+  `--from-space` also runs serve's config bootstrap (defaults + env API
+  keys), so llm-using programs work one-shot without a hand-built
+  `--config`. Parity extends to the gaps: like serve it wires no
+  private space and no aliases, so `private:`/overlay specs error
+  identically on both surfaces until those land.
+
+The two modes never mix within a run: a broker has either the local
+dir or the space resolver, so every `module.resolve` record in one
+trace answers from one world.
+
+### 7. Non-goals
 
 Skills and tool-docs reading (plain anyclient reads, harness-side);
 overlay manifest/trust format (plan §4, own ADR when overlays are
