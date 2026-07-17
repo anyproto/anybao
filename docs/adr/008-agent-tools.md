@@ -39,14 +39,22 @@ secret (`llm.key.anthropic` from `ANTHROPIC_API_KEY`).
   header: "x-goog-api-key"}`; the host injects the header value after
   the effect is recorded — the key never appears in the trace.
 
-### 2. `http.*` result gains `url` (amends ADR-002 §1)
+### 2. http redirect surface (amends ADR-002 §1)
 
-The http effect result (`{status, headers, body}`) gains `url`: the
-FINAL url after the client followed redirects. Grounded search returns
+Two additions, both recorded so replay stays pure:
+
+- The http result (`{status, headers, body}`) gains `url` — the FINAL
+  url after the client followed redirects.
+- Requests accept `redirects` — the max follow count for that request;
+  `0` = manual, the 3xx and its `location` header come back as data.
+
+Grounded search returns
 `vertexaisearch.cloud.google.com/grounding-api-redirect/…` source
-links; one recorded `http.head` per link resolves it to the real
-destination without downloading a body. The field is recorded, so
-replay stays pure.
+links; one recorded no-follow GET per link reads `location` to the
+real destination — the destination server is never touched (revised
+2026-07-17 from `http.head`: the redirect endpoint speaks HEAD, but
+ureq's HEAD handling chokes on it; no-follow GET is also strictly
+closer to bobrik's `redirect: manual`).
 
 ### 3. `webSearch@v1` (folder tool)
 
