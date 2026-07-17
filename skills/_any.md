@@ -31,6 +31,9 @@ Core mechanics (get the client once: `c = use("any@v1").client()`):
   `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
   {"rating": 9}})`. Properties placed anywhere else, or an unknown
   type/property key, error — never silently dropped.
+- **Append to a body with `c.append_markdown(s, obj_id, text)`** —
+  server-side append-only fast path; never get+put round-trip to add a
+  section (a concurrent get+put clobbers the body).
 - **Reads come back xKey-nested**: `c.query_objects(s, filter=…)`
   returns each row as `{"id", "any": {…}, "<typeXKey>": {"<propXKey>":
   value}}` (builtin `any`/`nav` groups verbatim). Filter/sort by xKey

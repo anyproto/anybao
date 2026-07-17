@@ -25,6 +25,9 @@ The object's editor body as markdown text.
 ### put_markdown(space, object_id, content) [mutator]
 Replace the object's editor body with `content` (markdown). Whole-body write.
 
+### append_markdown(space, object_id, content) [mutator]
+Append `content` (markdown) to the object's editor body — server-side append-only fast path. Prefer this over get+put for adding a section: no read-modify-write, so a concurrent edit can't be clobbered.
+
 ### list_spaces() [getter]
 Every space on the account as raw rows (`{id, name, status, …}`). Operate on `status == "active"` unless told otherwise.
 

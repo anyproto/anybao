@@ -312,9 +312,12 @@ def test_markdown_roundtrip_uses_content_key():
     c = client(fx)
     assert c.get_markdown("s1", "o1") == "# hi"
     c.put_markdown("s1", "o1", "# bye")
+    c.append_markdown("s1", "o1", "\n## more")
     assert fx.calls == [
         ("GET", "/v1/spaces/s1/objects/o1/editor/markdown", None),
-        ("PUT", "/v1/spaces/s1/objects/o1/editor/markdown", {"content": "# bye"})]
+        ("PUT", "/v1/spaces/s1/objects/o1/editor/markdown", {"content": "# bye"}),
+        ("POST", "/v1/spaces/s1/objects/o1/editor/markdown/append",
+         {"content": "\n## more"})]
 
 
 # --- search / backlinks -------------------------------------------------------------

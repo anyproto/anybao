@@ -8,7 +8,7 @@ c = use("any@v1").client()
 
 Surface: typed objects (`create_object` / `update_object` /
 `query_objects`), per-object datasets (`query` / `upsert_record` /
-`modify`), editor bodies (`get_markdown` / `put_markdown`), the type
+`modify`), editor bodies (`get_markdown` / `put_markdown` / `append_markdown`), the type
 catalog (`list_types` / `list_properties` / `create_type` /
 `add_property`), full-text search (`search`), the memory brain
 (`get_brain` / `create_memory` / `evolve_memory`), chat (`chat_send`),

@@ -358,6 +358,16 @@ class Client:
                           f"/v1/spaces/{space}/objects/{object_id}/editor/markdown",
                           {"content": content})
 
+    def append_markdown(self, space, object_id, content):
+        """Append to the editor body (server-side append-only fast
+        path) — no read-modify-write, so it can't clobber the body the
+        way a get+put race can. Returns the api.MarkdownSetResponse
+        dict."""
+        return self._call(
+            "post",
+            f"/v1/spaces/{space}/objects/{object_id}/editor/markdown/append",
+            {"content": content})
+
     # --- spaces & ui context ---------------------------------------------------
     def list_spaces(self):
         """Every space on the account as raw rows ({id, name, status, …});
