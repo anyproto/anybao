@@ -89,8 +89,8 @@ def _batch(name, payloads):
     out = _effect("batch", {"name": name, "payloads": payloads})["results"]
     resolved = []
     for r in out:
-        if isinstance(r, dict) and "__error" in r:
-            resolved.append(EffectError(f"{r['__error']['type']}: {r['__error']['message']}"))
+        if isinstance(r, dict) and set(r) == {"error"}:  # host batch item failure
+            resolved.append(EffectError(f"{r['error']['type']}: {r['error']['message']}"))
         else:
             resolved.append(r)
     return resolved
