@@ -28,6 +28,9 @@ Replace the object's editor body with `content` (markdown). Whole-body write.
 ### list_spaces() [getter]
 Every space on the account as raw rows (`{id, name, status, …}`). Operate on `status == "active"` unless told otherwise.
 
+### create_space(name, description?) [mutator]
+Create a new top-level space. Returns the single-space row: `id` (the new space id) plus `generalChatObjectId` (its derived general chat — write chat there, never create chat objects). The space starts empty — resolve/create types in it before typed writes (types and xKeys are per-space). Check `list_spaces()` first to avoid minting a duplicate.
+
 ### get_ui_context(space) [getter]
 The user's current view — the `ui_context` pointer any-ui maintains (`{spaceId, objectId, view, updatedAt}`). Resolves "here" / "this page" / "this object". `None` when unavailable.
 

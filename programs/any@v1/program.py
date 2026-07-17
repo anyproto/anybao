@@ -364,6 +364,19 @@ class Client:
         operate on status == "active" unless asked otherwise."""
         return self._call("get", "/v1/spaces").get("spaces", [])
 
+    def create_space(self, name, description=None):
+        """Create a new top-level space. Returns the full single-space
+        row — `id` is the new space id, and `generalChatObjectId` its
+        derived general chat (every space has exactly one; write chat
+        there, never create chat objects). The space starts empty:
+        resolve/create types against it before typed writes (types and
+        xKeys are per-space). Check `list_spaces()` first — don't mint
+        a duplicate of an existing active space."""
+        body = {"name": name, "spaceType": "anytype.space"}
+        if description:
+            body["description"] = description
+        return self._call("post", "/v1/spaces", body)
+
     def get_ui_context(self, space):
         """The user's current view: the `ui_context` pointer object
         any-ui maintains in the agent space (xKey contract with any-ui:

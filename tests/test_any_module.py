@@ -388,6 +388,20 @@ def test_list_spaces_unwraps():
                                          "status": "active"}]
 
 
+def test_create_space_wire_shape_and_full_row_reply():
+    fx = wire(replies={"/v1/spaces": {
+        "id": "sp9", "name": "AI Startups",
+        "generalChatObjectId": "chat9"}})
+    r = client(fx).create_space("AI Startups")
+    assert r["id"] == "sp9" and r["generalChatObjectId"] == "chat9"
+    assert fx.calls == [("POST", "/v1/spaces",
+                         {"name": "AI Startups", "spaceType": "anytype.space"})]
+    # description only rides the wire when given
+    client(fx).create_space("x", description="d")
+    assert fx.calls[-1][2] == {"name": "x", "spaceType": "anytype.space",
+                               "description": "d"}
+
+
 def test_get_ui_context_resolves_props_and_picks_newest():
     fx = wire(replies={
         "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
