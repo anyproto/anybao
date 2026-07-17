@@ -198,10 +198,16 @@ impl ModuleResolver for LocalDirResolver {
             out["cache"] = json!("hit");
             return Ok(out);
         }
+        // flat `<spec>.py` first, then the folder layout's `<spec>/program.py`
         let path = self.programs_dir.join(format!("{spec}.py"));
-        let source = std::fs::read_to_string(&path).map_err(|_| {
-            ResolveError::NotFound(format!("program not found: {spec} ({})", path.display()))
-        })?;
+        let source = std::fs::read_to_string(&path)
+            .or_else(|_| std::fs::read_to_string(self.programs_dir.join(spec).join("program.py")))
+            .map_err(|_| {
+                ResolveError::NotFound(format!(
+                    "program not found: {spec} ({} or {spec}/program.py)",
+                    path.display()
+                ))
+            })?;
         let out = json!({
             "spaceId": "local", "objectId": spec, "marker": 0,
             "sourceHash": format!("sha256:{}", hex::encode(Sha256::digest(source.as_bytes()))),
@@ -363,6 +369,20 @@ mod tests {
         let again = r.resolve("tool@v1", None).unwrap();
         assert_eq!(again["cache"], json!("hit"));
         assert_eq!(again["source"], json!(CODE));
+    }
+
+    #[test]
+    fn local_dir_resolver_reads_folder_layout() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("tool@v1")).unwrap();
+        std::fs::write(dir.path().join("tool@v1").join("program.py"), CODE).unwrap();
+        let mut r = LocalDirResolver::new(dir.path().to_path_buf());
+        let out = r.resolve("tool@v1", None).unwrap();
+        assert_eq!(out["source"], json!(CODE));
+        // a flat file with the same spec wins over the folder
+        std::fs::write(dir.path().join("tool@v1.py"), "flat").unwrap();
+        let mut r2 = LocalDirResolver::new(dir.path().to_path_buf());
+        assert_eq!(r2.resolve("tool@v1", None).unwrap()["source"], json!("flat"));
     }
 
     #[test]

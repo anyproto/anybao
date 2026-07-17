@@ -601,11 +601,17 @@ impl Broker {
             out["cache"] = json!(cache_state);
             return Ok(out);
         }
+        // flat `<spec>.py` first, then the folder layout's `<spec>/program.py`
         let path = self.programs_dir.join(format!("{spec}.py"));
-        let source = std::fs::read_to_string(&path).map_err(|_| EffectFailure {
-            type_: "KeyError".into(),
-            message: format!("program not found: {spec} ({})", path.display()),
-        })?;
+        let source = std::fs::read_to_string(&path)
+            .or_else(|_| std::fs::read_to_string(self.programs_dir.join(spec).join("program.py")))
+            .map_err(|_| EffectFailure {
+                type_: "KeyError".into(),
+                message: format!(
+                    "program not found: {spec} ({} or {spec}/program.py)",
+                    path.display()
+                ),
+            })?;
         let mut h = Sha256::new();
         h.update(source.as_bytes());
         let out = json!({
