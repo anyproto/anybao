@@ -544,6 +544,7 @@ impl Broker {
             }
         };
         let status = resp.status();
+        let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
         let headers: Map<String, Value> = resp
             .headers_names()
             .iter()
@@ -553,7 +554,7 @@ impl Broker {
             type_: "URLError".into(),
             message: e.to_string(),
         })?;
-        Ok(json!({"status": status, "headers": headers, "body": body}))
+        Ok(json!({"status": status, "headers": headers, "body": body, "url": final_url}))
     }
 
     fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {

@@ -76,6 +76,7 @@ class Response:
         self.status = raw.get("status")
         self.headers = raw.get("headers") or {}
         self.text = raw.get("body") or ""
+        self.url = raw.get("url")  # final url, post-redirect (ADR-008 §2)
 
     def json(self):
         return json.loads(self.text)
@@ -111,6 +112,9 @@ class _Http:
 
     def get(self, url, **kw):
         return self._call("get", url, **kw)
+
+    def head(self, url, **kw):
+        return self._call("head", url, **kw)
 
     def post(self, url, **kw):
         return self._call("post", url, **kw)

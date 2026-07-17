@@ -33,8 +33,10 @@ def http_get(ctx, url, *, params=None, headers=None, timeout=None): ...
 **Pythonic surface (not JS land).** The old harness mimicked JS
 (`fetch`, `console.log`); anybao's effect catalog mimics Python idioms —
 the model has seen far more requests-style Python than JS-in-Python:
-`http.get/post/put/delete(...)` with `params=/headers=/json=` returning
-a `Response` (`.status`, `.json()`, `.text`); **`print()` is the
+`http.get/head/post/put/delete(...)` with `params=/headers=/json=`
+returning a `Response` (`.status`, `.json()`, `.text`, and `.url` — the
+final post-redirect url, added by ADR-008 §2; `head` classifies as
+`read` like `get`); **`print()` is the
 model-facing output channel** (the console.log role — traced as a
 structured-value record, primary input to the digest); snake_case
 everywhere. Granular verbs also fix classification: `http.get` is

@@ -177,8 +177,8 @@ fn load_secrets(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>> {
 /// object at serve start. These are behavior settings, not secrets, so
 /// they seed unconditionally — `config.get("llm.tier.codegen")` resolves
 /// even with no API key and no config object yet (a fresh space just
-/// works). The API key is the only env-gated bit: a device-local secret
-/// that never enters config, only `secrets`.
+/// works). API keys are the only env-gated bits (ADR-008 §1): device-
+/// local secrets that never enter config, only `secrets`.
 const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
 
 fn bootstrap(
@@ -196,6 +196,9 @@ fn bootstrap(
     }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         secrets.entry("llm.key.anthropic".into()).or_insert(key);
+    }
+    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
+        secrets.entry("google.key.gemini".into()).or_insert(key);
     }
 }
 
