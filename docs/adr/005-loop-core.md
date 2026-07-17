@@ -32,10 +32,11 @@ Part      = Text{text}
           | ToolResult{call_id, content, is_error}
           | Thinking{text?, provider_state?}    # opaque blob, round-tripped
 LLMReply  = {parts: [Part], stop: "done"|"tool"|"length", usage: Usage}
+Usage     = {in, out, cacheRead, cacheWrite}    # tokens; cache* may be 0
 ```
 
-`use("llm@v1").chat(messages, *, system, tier, tools,
-prefix_stable_upto=None)` lives in the guest: it translates the neutral
+`use("llm@v1").chat(messages, *, system, tier, tools)` lives in the
+guest: it translates the neutral
 messages to a provider wire and issues ONE `http.post` syscall (route-
 classified `read`/`llm.chat`), wrapped in an `llm.chat` span so the
 trace and the digest read it as one call. Because the crossing is a
@@ -44,9 +45,12 @@ recorded effect, the full request and response are in the trace
 `credential` (config `ref` + header); the host resolves the secret and
 sets the header AFTER the payload records (ADR-002). Adapters:
 `anthropic` (native; thinking `provider_state` round-tripped byte-exact;
-the `prefix_stable_upto` hint becomes `cache_control`), `openai-compat`
-(one adapter = vLLM/llama.cpp/SGLang/ollama/OpenRouter; hint ignored —
-their caching is automatic; reasoning models' `reasoning_content`/
+`cache_control` breakpoints set automatically at end of system and end
+of conversation — no caller hint needed, the loop's prefix is
+append-only, so each call writes the cache the next one reads; amended
+2026-07-17, was a never-implemented `prefix_stable_upto` param),
+`openai-compat` (one adapter = vLLM/llama.cpp/SGLang/ollama/OpenRouter —
+their caching is automatic, `cached_tokens` surfaces as `usage.cacheRead`; reasoning models' `reasoning_content`/
 `reasoning` is captured as a Thinking part so the trace keeps it, but
 never resent — the DeepSeek convention treats it as advisory output),
 `fenced` (fallback for tool-weak models:
@@ -129,7 +133,7 @@ amendment 2026-07-08: composed guest-side, the host writes no prompt
 wording, and the ids must be stated because the model has no other
 source for them) and passes the result unchanged to every
 `use("llm@v1").chat`; the whole thing is stable per instance, and the
-adapter marks it `prefix_stable_upto` for caching. Stable-block content
+adapter's system-end cache breakpoint covers it. Stable-block content
 is fingerprinted; the fingerprint is recorded per run (prompt drift is
 diagnosable from traces). The rest of the conversation prompt is
 assembled GUEST-SIDE: `history@v1` renders the boot window

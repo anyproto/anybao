@@ -28,13 +28,18 @@ class LlmError(Exception):
 # --- Anthropic (native) -----------------------------------------------------
 
 class AnthropicAdapter:
-    """Native: thinking blocks round-trip via opaque provider_state."""
+    """Native: thinking blocks round-trip via opaque provider_state.
+    Caching (ADR-005 §1): breakpoints at end of system and end of the
+    conversation — the loop's prefix is append-only, so each call
+    writes the cache the next call reads."""
 
     def build_request(self, messages, system, tools, model):
         api_msgs = [self._to_anthropic_msg(m) for m in messages]
+        self._mark_cache(api_msgs)
         req = {"model": model, "messages": api_msgs, "max_tokens": 4096}
         if system:
-            req["system"] = system
+            req["system"] = [{"type": "text", "text": system,
+                              "cache_control": {"type": "ephemeral"}}]
         if tools:
             req["tools"] = [
                 {"name": t["name"], "description": t.get("description", ""),
@@ -63,6 +68,19 @@ class AnthropicAdapter:
                 )
         return {"role": m["role"], "content": blocks}
 
+    @staticmethod
+    def _mark_cache(api_msgs):
+        for msg in reversed(api_msgs):
+            blocks = msg["content"]
+            for i in range(len(blocks) - 1, -1, -1):
+                if blocks[i].get("type") in ("thinking", "redacted_thinking"):
+                    continue  # cache_control is invalid on thinking blocks
+                # copy — a provider_state block is shared with the neutral
+                # message and must round-trip byte-exact next call
+                blocks[i] = {**blocks[i],
+                             "cache_control": {"type": "ephemeral"}}
+                return
+
     def parse_response(self, raw):
         parts = []
         for block in raw.get("content", []):
@@ -79,7 +97,10 @@ class AnthropicAdapter:
         stop = _NORM_STOP.get(raw.get("stop_reason", ""), "done")
         u = raw.get("usage", {})
         return {"parts": parts, "stop": stop,
-                "usage": {"in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0)}}
+                "usage": {"in": u.get("input_tokens", 0),
+                          "out": u.get("output_tokens", 0),
+                          "cacheRead": u.get("cache_read_input_tokens", 0),
+                          "cacheWrite": u.get("cache_creation_input_tokens", 0)}}
 
 
 _NORM_STOP = {"end_turn": "done", "stop_sequence": "done",
@@ -145,8 +166,12 @@ class OpenAICompatAdapter:
         fr = choice.get("finish_reason", "stop")
         stop = "tool" if fr == "tool_calls" else ("length" if fr == "length" else "done")
         u = raw.get("usage", {})
+        det = u.get("prompt_tokens_details") or {}
         return {"parts": parts, "stop": stop,
-                "usage": {"in": u.get("prompt_tokens", 0), "out": u.get("completion_tokens", 0)}}
+                "usage": {"in": u.get("prompt_tokens", 0),
+                          "out": u.get("completion_tokens", 0),
+                          "cacheRead": det.get("cached_tokens", 0),
+                          "cacheWrite": 0}}
 
 
 # --- Fenced fallback (tool-weak / bare completion models) -------------------

@@ -65,7 +65,7 @@ def test_anthropic_parse_tool():
     assert r["parts"][0] == {"type": "text", "text": "Let me compute."}
     assert r["parts"][1] == {"type": "tool_call", "id": "toolu_1",
                              "name": "run_cell", "args": {"code": "1+1"}}
-    assert r["usage"] == {"in": 100, "out": 30}
+    assert r["usage"] == {"in": 100, "out": 30, "cacheRead": 0, "cacheWrite": 0}
 
 
 def test_anthropic_parse_done_and_length():
@@ -84,7 +84,9 @@ def test_anthropic_build_request_roundtrips_blocks():
     ]
     req = LLM["AnthropicAdapter"]().build_request(
         msgs, "SYS", [{"name": "run_cell"}], "claude-x")
-    assert req["system"] == "SYS" and req["tools"][0]["name"] == "run_cell"
+    assert req["system"] == [{"type": "text", "text": "SYS",
+                              "cache_control": {"type": "ephemeral"}}]
+    assert req["tools"][0]["name"] == "run_cell"
     assert req["messages"][1]["content"][0]["type"] == "tool_use"
     assert req["messages"][2]["content"][0]["type"] == "tool_result"
 
@@ -106,12 +108,48 @@ def test_openai_parse_and_build():
     r = LLM["OpenAICompatAdapter"]().parse_response(OPENAI_TOOL_RESP)
     assert r["stop"] == "tool"
     assert r["parts"][0]["args"] == {"code": "1+1"}
-    assert r["usage"] == {"in": 90, "out": 20}
+    assert r["usage"] == {"in": 90, "out": 20, "cacheRead": 0, "cacheWrite": 0}
     req = LLM["OpenAICompatAdapter"]().build_request(
         [{"role": "user", "parts": [{"type": "text", "text": "hi"}]}],
         "SYS", [{"name": "run_cell"}], "gpt-x")
     assert req["messages"][0] == {"role": "system", "content": "SYS"}
     assert req["tools"][0]["function"]["name"] == "run_cell"
+
+
+def test_anthropic_cache_breakpoint_on_conversation_end():
+    msgs = [
+        {"role": "user", "parts": [{"type": "text", "text": "hi"}]},
+        {"role": "user", "parts": [
+            {"type": "tool_result", "call_id": "t1", "content": "42",
+             "is_error": False}]},
+    ]
+    req = LLM["AnthropicAdapter"]().build_request(msgs, "", [], "m")
+    assert "cache_control" not in req["messages"][0]["content"][-1]
+    assert req["messages"][1]["content"][-1]["cache_control"] == \
+        {"type": "ephemeral"}
+
+
+def test_anthropic_cache_breakpoint_skips_thinking_and_keeps_it_verbatim():
+    signed = {"type": "thinking", "thinking": "hmm", "signature": "SIG"}
+    msgs = [{"role": "assistant", "parts": [
+        {"type": "text", "text": "ok"},
+        {"type": "thinking", "text": "hmm", "provider_state": signed}]}]
+    req = LLM["AnthropicAdapter"]().build_request(msgs, "", [], "m")
+    blocks = req["messages"][0]["content"]
+    assert blocks[1] == signed and "cache_control" not in blocks[1]
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert signed == {"type": "thinking", "thinking": "hmm",
+                      "signature": "SIG"}  # shared dict never mutated
+
+
+def test_openai_cached_tokens_surface_as_cache_read():
+    resp = {"choices": [{"message": {"content": "ok"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 5,
+                      "prompt_tokens_details": {"cached_tokens": 80}}}
+    r = LLM["OpenAICompatAdapter"]().parse_response(resp)
+    assert r["usage"] == {"in": 100, "out": 5, "cacheRead": 80,
+                         "cacheWrite": 0}
 
 
 def test_openai_reasoning_captured_but_not_resent():
@@ -187,7 +225,8 @@ def test_chat_anthropic_url_credential_and_parse():
     assert post["headers"]["anthropic-version"] == "2023-06-01"
     # the credential names the ref + header — never a key value
     assert post["credential"] == {"ref": "llm.keys.anthropic", "header": "x-api-key"}
-    assert post["json"]["model"] == "claude-x" and post["json"]["system"] == "SYS"
+    assert post["json"]["model"] == "claude-x"
+    assert post["json"]["system"][0]["text"] == "SYS"
     assert reply["stop"] == "tool" and reply["parts"][1]["args"] == {"code": "1+1"}
 
 
@@ -202,7 +241,9 @@ def test_chat_openai_compat_url_and_bearer_credential():
     assert post["url"] == "http://localhost:8000/v1/chat/completions"
     assert post["credential"] == {"ref": "llm.keys.local",
                                   "header": "Authorization", "prefix": "Bearer "}
-    assert reply["stop"] == "tool" and reply["usage"] == {"in": 90, "out": 20}
+    assert reply["stop"] == "tool"
+    assert reply["usage"] == {"in": 90, "out": 20, "cacheRead": 0,
+                              "cacheWrite": 0}
 
 
 def test_chat_fenced_tier_emulates_tool_call():
