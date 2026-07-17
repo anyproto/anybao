@@ -25,25 +25,40 @@ anyrt trace ls --program toolcaller           # just conversations
 anyrt trace ls -n 0                           # everything
 
 # human render, chronological — nothing in the trace is invisible:
-# status/fuel/wall-time header, loose effects in place, #turn_N blocks
-# (parentless llm.chat spans) with the user/assistant text, cell CODE,
-# stop_reason + tokens + cacheRead, per-cell effects (mutations
-# marked *), the tool_result digest the model saw, and facade spans
+# status/fuel/wall-time header, a boot: line naming what turn 1 fed
+# the model (system prompt size, boot-window message count, tool
+# names), loose effects in place, #turn_N blocks (parentless llm.chat
+# spans) with the user/assistant text, cell CODE, stop_reason +
+# tokens + cacheRead, per-cell effects (mutations marked *), the
+# tool_result digest the model saw, and facade spans
 # (~ autorecall.plan, ~ memory.save_with_dedup) as a header line with
 # their effects + nested llm calls indented beneath. Errors are never
 # clipped.
 anyrt trace show run_<id>            # bare ids resolve against traces/
-anyrt trace show run_<id> --full     # lift all clips
-anyrt trace show run_<id> --system   # + system prompt
+anyrt trace show run_<id> --full     # lift all clips (also inlines the
+                                     # boot window at turn 1)
+anyrt trace show run_<id> --system   # + system prompt text
+anyrt trace show run_<id> --boot     # + boot window verbatim (history
+                                     # tail + injected context)
 anyrt trace show run_<id> --seq 42   # one record, full, blob-resolved
 
-# the metrics view over a directory: fuel/duration/token
+# per-RUN cost/usage table: one row per turn — stop, in, cacheRead,
+# cacheWrite, out, cells, effects, llm ms — with totals and costUsd.
+# Prices come from runtime/src/model_pricing.json keyed by the model
+# the trace recorded (per-MTok USD; edit the json to change rates;
+# unknown models render '-').
+anyrt trace show run_<id> --stats
+
+# the metrics view over a DIRECTORY: fuel/duration/token
 # distributions (p50/p95), effect histogram, tuning suggestions
 anyrt trace stats traces/
 ```
 
-Clipped lines are locators, not the payload — every effect line prints
-its `#seq`; drill down with `--seq N` (or jq below).
+Clipped lines are locators, not the payload: content clips end
+`… (+N chars — --full)` so you know how much is hidden, every effect
+line prints its `#seq`, and result blocks name the record they were
+mined from (`result (mined from #77):` — the provider request right
+after the cell). Drill into any of them with `--seq N` (or jq below).
 
 Raw access is just JSONL — one record per line (never pretty-print the
 file itself):

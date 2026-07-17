@@ -69,6 +69,7 @@ anyrt trace ls --program toolcaller   # conversations, newest first,
                                       # titled by the user message
 anyrt trace show run_<id>             # the whole story: turns, cells,
                                       # effects (* = mutate), results
+anyrt trace show run_<id> --stats     # per-turn tokens/cache/cost table
 anyrt trace show run_<id> --seq 42    # drill into one record, full,
                                       # blob-resolved
 ```
