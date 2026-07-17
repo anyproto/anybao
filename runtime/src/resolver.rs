@@ -382,7 +382,10 @@ mod tests {
         // a flat file with the same spec wins over the folder
         std::fs::write(dir.path().join("tool@v1.py"), "flat").unwrap();
         let mut r2 = LocalDirResolver::new(dir.path().to_path_buf());
-        assert_eq!(r2.resolve("tool@v1", None).unwrap()["source"], json!("flat"));
+        assert_eq!(
+            r2.resolve("tool@v1", None).unwrap()["source"],
+            json!("flat")
+        );
     }
 
     #[test]
