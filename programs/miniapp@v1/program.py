@@ -106,6 +106,7 @@ def _slice(text, frm, to):
             {"from": f, "to": t, "totalLines": total})
 
 
+@span("miniapp.create", kind="mutator")  # noqa: F821 - guest global
 def create(space, name, source, state=None, readme=""):
     """Create a mini app. Errors (as {ok: False, error}) if the name is
     taken — names are the addressing key."""
@@ -134,6 +135,7 @@ def create(space, name, source, state=None, readme=""):
     return out
 
 
+@span("miniapp.update", kind="mutator")  # noqa: F821 - guest global
 def update(space, name, source=None, state=None, readme=None, title=None):
     """Update any subset of source/state/readme (None = leave as is;
     clearing state is set_state's job). `title` renames the OBJECT —
@@ -161,6 +163,7 @@ def update(space, name, source=None, state=None, readme=None, title=None):
     return out
 
 
+@span("miniapp.edit", kind="mutator")  # noqa: F821 - guest global
 def edit(space, name, old_string, new_string, replace_all=False, block="source"):
     """Surgical string replacement in `source` or `state` — the cheap
     path for small changes (no full-source round-trip through tokens)."""
@@ -192,6 +195,7 @@ def edit(space, name, old_string, new_string, replace_all=False, block="source")
     return out
 
 
+@span("miniapp.get", kind="getter")  # noqa: F821 - guest global
 def get(space, name, frm=None, to=None):
     """The whole app, or None. `state` comes back parsed (raw string if
     unparseable); frm/to slice the source (1-indexed, inclusive)."""
@@ -213,6 +217,7 @@ def get(space, name, frm=None, to=None):
     return out
 
 
+@span("miniapp.get_source", kind="getter")  # noqa: F821 - guest global
 def get_source(space, name, frm=None, to=None):
     """Just the HTML source (or a 1-indexed inclusive line slice), or
     None when the app doesn't exist."""
@@ -227,6 +232,7 @@ def get_source(space, name, frm=None, to=None):
     return {"name": name, "source": sliced, "range": rng}
 
 
+@span("miniapp.list", kind="getter")  # noqa: F821 - guest global
 def list(space):  # noqa: A001 - the tool surface name (ADR-008 §6)
     """Every mini app in the space: [{id, name}], name-sorted."""
     c = _client()
@@ -235,6 +241,7 @@ def list(space):  # noqa: A001 - the tool surface name (ADR-008 §6)
     return sorted([a for a in apps if a["name"]], key=lambda a: a["name"])
 
 
+@span("miniapp.set_state", kind="mutator")  # noqa: F821 - guest global
 def set_state(space, name, state):
     """Overwrite the persisted state (what useAnytypeState reads).
     `None` clears it; anything else is JSONified."""
@@ -249,6 +256,7 @@ def set_state(space, name, state):
     return {"ok": True, "id": oid, "name": name}
 
 
+@span("miniapp.get_state", kind="getter")  # noqa: F821 - guest global
 def get_state(space, name):
     """The parsed state object, or None (missing app, empty state, or
     unparseable JSON)."""
@@ -265,6 +273,7 @@ def get_state(space, name):
         return None
 
 
+@span("miniapp.upsert_readme", kind="mutator")  # noqa: F821 - guest global
 def upsert_readme(space, name, readme):
     """Set the readme markdown ("" clears)."""
     if not isinstance(readme, str):

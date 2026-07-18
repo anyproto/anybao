@@ -231,7 +231,7 @@ _TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
 _EXCERPT = 400
 
 
-@span("llm.chat")  # noqa: F821 - guest global
+@span("llm.chat", kind="getter")  # noqa: F821 - guest global
 def chat(messages, system="", tier="codegen", tools=None):
     """One model call: resolve the tier's provider config, translate the
     neutral messages to the provider wire, POST through the http syscall

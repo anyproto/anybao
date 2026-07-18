@@ -130,11 +130,13 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
 
 # --- thin reads over the any@v1 client ---------------------------------------
 
+@span("history.recent_turns", kind="getter")  # noqa: F821 - guest global
 def recent_turns(client, space, chat_id, limit):
     """Newest turns first (descending seq)."""
     return client.query(space, chat_id, "agent_turns", sort=["-seq"], limit=limit)
 
 
+@span("history.chunks_at_level", kind="getter")  # noqa: F821 - guest global
 def chunks_at_level(client, space, chat_id, level, limit):
     """Newest chunks of one level first (descending seq)."""
     return client.query(space, chat_id, "agent_chunks",

@@ -12,7 +12,7 @@ only; child cells share the kernel namespace with the parent's
 _MAX_TURNS = 30  # a delegated subtask, not a whole conversation
 
 
-@span("subagent.delegate")  # noqa: F821 - guest global
+@span("subagent.delegate", kind="mutator")  # noqa: F821 - guest global
 def delegate(space, task, opts=None):
     """Run `task` to completion in a quiet child loop; returns
     {report, stop, turns, tokens}. `opts` may override maxTurns /

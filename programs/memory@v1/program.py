@@ -79,6 +79,7 @@ class Memory:
         self._space = space
         self._chat = llm_chat
 
+    @span("memory.add", kind="mutator")  # noqa: F821 - guest global
     def add(self, category, context, **fields):
         """Create a memory item; `category` (lowercase slug) + `context`
         (one-liner) are required (ADR-007 §1). Returns `{"itemId": id}`
@@ -88,6 +89,7 @@ class Memory:
         reply = self._c.create_memory(self._space, body)
         return {"itemId": reply["recordIds"][0]}
 
+    @span("memory.evolve", kind="mutator")  # noqa: F821 - guest global
     def evolve(self, item_id, **fields):
         """Evolve mutable fields (author-only; server bumps modifiedAt).
         Fields outside the allow-list raise here — never silently sent."""
@@ -100,11 +102,13 @@ class Memory:
         self._c.evolve_memory(self._space, item_id, fields)
         return {"itemId": item_id}
 
+    @span("memory.delete", kind="mutator")  # noqa: F821 - guest global
     def delete(self, item_id):
         """Delete a memory item (author-only)."""
         self._c.delete_memory(self._space, item_id)
         return {"itemId": item_id}
 
+    @span("memory.bump_access", kind="mutator")  # noqa: F821 - guest global
     def bump_access(self, item_id, current_count):
         """accessCount = current + 1 on recall — the ROI signal that
         tells extracted-but-never-recalled from earning-its-keep
@@ -137,6 +141,7 @@ class Memory:
         return verdict
 
     @span("memory.save_with_dedup")  # noqa: F821 - guest global
+    @span("memory.save_with_dedup", kind="mutator")  # noqa: F821 - guest global
     def save_with_dedup(self, candidate, recall):
         """The ADR-007 §2 save path: recall over scope `agent` supplies
         dedup candidates, the classify-tier judge returns `{"action":

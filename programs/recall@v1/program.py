@@ -36,6 +36,7 @@ class Recall:
         self._chat = chat_object_id
 
     # --- semantic ----------------------------------------------------------
+    @span("recall.search", kind="getter")  # noqa: F821 - guest global
     def search(self, query, scopes=DEFAULT_SCOPES, limit=10):
         """Index search across scopes; returns the server hits
         (`{scope, objectId, dataset, recordId, score, …}`) unwrapped
@@ -43,6 +44,7 @@ class Recall:
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 
+    @span("recall.hydrate", kind="getter")  # noqa: F821 - guest global
     def hydrate(self, hits):
         """Hit pointers → (hit, record) pairs (hit order kept, missing
         dropped), one `$in` query per (object, dataset). The shared
@@ -59,6 +61,7 @@ class Recall:
 
     # --- temporal ----------------------------------------------------------
     @span("recall.by_period")  # noqa: F821 - guest global
+    @span("recall.by_period", kind="getter")  # noqa: F821 - guest global
     def by_period(self, from_ts, to_ts):
         """Everything that happened in [from_ts, to_ts] (unix seconds,
         inclusive): memory items by validFrom, turns by createdAt,
@@ -87,6 +90,7 @@ class Recall:
 
     # --- graph -------------------------------------------------------------
     @span("recall.neighbors")  # noqa: F821 - guest global
+    @span("recall.neighbors", kind="getter")  # noqa: F821 - guest global
     def neighbors(self, object_id):
         """1-hop graph neighbors of an object. Forward = links-format
         property values on its row (arrays of `any://<objectId>` URIs;

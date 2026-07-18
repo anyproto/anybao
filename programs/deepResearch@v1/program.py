@@ -164,7 +164,7 @@ def _sources_md(sources):
                      for s in sources)
 
 
-@span("deepResearch.research")  # noqa: F821 - guest global
+@span("deepResearch.research", kind="mutator")  # noqa: F821 - guest global
 def research(space, question, opts=None):
     """Research `question` and write the results into `space` as linked
     pages. Returns {ok, overviewPageId, subPages, answer, sources, ...};
