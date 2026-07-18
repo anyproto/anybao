@@ -464,6 +464,12 @@ fn facade_block(
     cells: &[(&Value, Option<&Value>)],
 ) {
     let name = s(&begin["name"]);
+    // narrative kind rides the end record's meta (ADR-001 §4d) — show it on
+    // the collapsed line so read/write/bind intent is legible at a glance.
+    let name = match end.and_then(|e| e["meta"]["kind"].as_str()) {
+        Some(k) => format!("{name} [{k}]"),
+        None => name.to_string(),
+    };
     let (verdict, dur, counts) = match end {
         Some(e) => (
             if e["ok"] == true { "ok" } else { "FAILED" },
