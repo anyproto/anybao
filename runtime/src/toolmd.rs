@@ -12,12 +12,16 @@
 //! <method body>
 //! ```
 //!
-//! `kind` ∈ getter|mutator|setup|program (default getter). Bare method
-//! name (record id) is the text before `(`. Duplicate bare names get a
+//! `kind` ∈ getter|mutator|setup (default getter). Bare method name
+//! (record id) is the text before `(`. Duplicate bare names get a
 //! `-<pos>` suffix. Behavior is a verbatim port — the fingerprint in
 //! deploy.rs hashes this splitter's output, so parity is load-bearing.
+//!
+//! `[program]` (bobrik's hide-from-discovery kind) is retired: anybao
+//! hides a method by NOT documenting it, not by a kind (ADR-005 §5). An
+//! unrecognized `[tag]` is left as part of the heading, not a kind.
 
-const KINDS: [&str; 4] = ["getter", "mutator", "setup", "program"];
+const KINDS: [&str; 3] = ["getter", "mutator", "setup"];
 const TOOLS_HEADINGS: [&str; 3] = ["# Tools", "## Tools", "## Tool Schema"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +30,7 @@ pub struct MethodDoc {
     pub bare_name: String,
     /// full heading (signature)
     pub name: String,
-    /// getter | mutator | setup | program
+    /// getter | mutator | setup
     pub kind: String,
     /// method body
     pub text: String,
@@ -93,8 +97,9 @@ fn bare_name(name: &str) -> &str {
     }
 }
 
-/// `\s*\[(getter|mutator|setup|program)\]\s*$` — strip a trailing kind
-/// tag; returns (heading-without-tag, kind or None).
+/// `\s*\[(getter|mutator|setup)\]\s*$` — strip a trailing kind tag;
+/// returns (heading-without-tag, kind or None). An unrecognized tag
+/// (e.g. the retired `[program]`) is left on the heading, kind None.
 fn strip_kind_tag(heading: &str) -> (String, Option<String>) {
     let t = heading.trim_end();
     if t.ends_with(']') {
@@ -210,6 +215,16 @@ An overload with the same bare name.\n";
         let (_, methods) = split_tool_markdown("## Tool Schema\n### noKind(x)\nbody\n");
         assert_eq!(methods[0].kind, "getter");
         assert_eq!(methods[0].text, "body");
+    }
+
+    #[test]
+    fn program_kind_retired_tag_stays_on_heading() {
+        // [program] is no longer a kind (ADR-005 §5): an unrecognized tag is
+        // left as part of the heading, and the method falls back to getter.
+        let (_, methods) = split_tool_markdown("## Tool Schema\n### delegate(x) [program]\nbody\n");
+        assert_eq!(methods[0].name, "delegate(x) [program]");
+        assert_eq!(methods[0].bare_name, "delegate");
+        assert_eq!(methods[0].kind, "getter");
     }
 
     #[test]

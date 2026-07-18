@@ -203,9 +203,21 @@ _TOOLS_INTRO = (
     "## Tools\n\n"
     "Each tool is a program reached with `use(\"<name>@v1\")`. Below: the "
     "tool's description + a compact method SIGNATURE list — argument NAMES "
-    "only, no shapes (a bare `body`/`opts` hides real structure). Read the "
-    "method's `program_methods` record for its full doc; describe before you "
-    "call, don't guess shapes.")
+    "only, no shapes (a bare `body`/`opts` hides real structure), each "
+    "tagged `[getter]` (reads), `[mutator]` (writes / side effects), or "
+    "`[setup]` (a binder you call once to get a handle). Read the method's "
+    "`program_methods` record for its full doc; describe before you call, "
+    "don't guess shapes.")
+
+
+def _method_sig(m):
+    """One method's line for the tool list: `name(sig) [kind]`, the
+    authored heading form (ADR-005 §5) — the kind marks read/write/bind
+    intent at the point of choice. Every deployed method carries a kind
+    (deploy defaults it to getter), so the tag is always present."""
+    name = m.get("name", "")
+    kind = m.get("kind")
+    return f"{name} [{kind}]" if kind else name
 
 
 def _tool_docs(c, space):
@@ -220,7 +232,7 @@ def _tool_docs(c, space):
         desc = c.query(space, oid, "program_description")
         methods = sorted(c.query(space, oid, "program_methods"),
                          key=lambda m: m.get("pos") or 0)
-        sigs = ", ".join(m.get("name", "") for m in methods)
+        sigs = ", ".join(_method_sig(m) for m in methods)
         block = [f"### {prog.get('name') or '?'}"]
         if desc:
             block.append(desc[0].get("text") or "")

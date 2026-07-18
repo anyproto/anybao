@@ -133,6 +133,18 @@ def run(world, **args):
                       "traceRef": "run_x", **args})
 
 
+def test_method_sig_renders_kind_tag():
+    # ADR-005 §5: the tool-list signature carries the authored [kind].
+    g = {"effect": None, "use": None, "subcell": None, "now": lambda: 0}
+    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
+    sig = g["_method_sig"]
+    assert sig({"name": "add(category, context)", "kind": "mutator"}) \
+        == "add(category, context) [mutator]"
+    assert sig({"name": "memory(client, space)", "kind": "setup"}) \
+        == "memory(client, space) [setup]"
+    assert sig({"name": "bare()"}) == "bare()"   # no kind -> no tag
+
+
 def test_done_turn_posts_reply_and_persists_turn():
     w = World([done_reply("hello")])
     out = run(w)

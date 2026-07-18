@@ -1,4 +1,4 @@
-### delegate(space, task, opts?) [program]
+### delegate(space, task, opts?) [mutator]
 Run `task` (a self-contained instruction string) in a quiet child
 toolcaller loop over `space`. The child composes its system prompt
 from the same space (all tools available) but starts with fresh

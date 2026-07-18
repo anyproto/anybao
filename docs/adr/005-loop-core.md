@@ -163,6 +163,33 @@ cheap. stdlib mechanics are never in the prompt (the model knows them;
 imports self-teach on error). Content authored in M4 (core skill,
 through the audit); assembled here in M2.
 
+**Tool-method discovery & the kind vocabulary (amendment 2026-07-18)** —
+`_tool_docs` renders each `any_tool`'s description plus a one-line
+method list. Two rules govern what the model sees:
+
+- **Visibility is by documentation, not by a flag.** A method appears in
+  the discovery surface iff it has a `program_methods` record (i.e. a
+  `### name(sig) [kind]` heading in the tool's `schema.md`). To keep a
+  method callable but hidden — a facade helper the harness uses but the
+  agent shouldn't (bobrik's motivation for a hidden kind) — simply do
+  not document it; leading-underscore names already never emit a record.
+  There is **no hide-by-kind**. This retires bobrik's `[program]` kind,
+  whose only job there was `methods.filter(m => m.kind !== "program")`;
+  anybao hides by omission, so `[program]` is dropped from the
+  vocabulary (toolmd) and `subagent.delegate` — a real entry point the
+  agent must see — is a `[mutator]` (it drives a child loop that acts).
+
+- **The kind is shown, at the point of choice.** The method line renders
+  the authored kind — `save_with_dedup(candidate, recall) [mutator]`,
+  `memory(client, space, llm_chat?) [setup]` — so read/write/bind intent
+  is legible before the model fetches the full `program_methods` doc.
+  The vocabulary is the SAME narrative set the span carries as
+  `meta.kind` (ADR-001 §4d), one meaning across discovery and trace:
+  `getter` (read), `mutator` (write / side-effecting), `setup` (a
+  binder/constructor, e.g. `use("memory@v1").memory(c, space)`). Kind is
+  narrative only — it never gates capability or the boundary read/mutate
+  class (ADR-002).
+
 ### 6. Purity
 
 The loop is a pure function over (history, policies, mailbox) with ALL
