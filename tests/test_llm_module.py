@@ -18,7 +18,7 @@ SRC = (PROGRAMS_DIR / "llm@v1" / "program.py").read_text()
 def load(effect=None):
     g = {
         "effect": effect or (lambda name, payload: pytest.fail(f"unexpected effect {name!r}")),
-        "span": lambda name: (lambda f: f),
+        "span": lambda name, kind=None: (lambda f: f),
         "use": lambda spec: pytest.fail(f"unexpected use({spec!r})"),
     }
     exec(compile(SRC, "llm@v1.py", "exec"), g)

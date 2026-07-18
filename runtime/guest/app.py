@@ -314,19 +314,44 @@ def _json_safe(v):
     return repr(v)
 
 
-def span(name):
+def _span_input(argnames, drop_self, args, kwargs):
+    """Facade input keyed by PARAMETER NAME (ADR-003 §4b): a leading
+    `self` is dropped, extra positionals fall back to `argN`, kwargs
+    merge in. Trace-serializable via _json_safe — never the bound
+    instance, never an opaque positional `args` list."""
+    names = argnames[1:] if drop_self else argnames
+    posargs = args[1:] if drop_self else args
+    inp = {}
+    for i, v in enumerate(posargs):
+        inp[names[i] if i < len(names) else f"arg{i}"] = _json_safe(v)
+    for k, v in kwargs.items():
+        inp[k] = _json_safe(v)
+    return inp
+
+
+def span(name, kind=None):
     """Decorator: group one facade call's effects under a single trace
     input/output pair, so views show `name(args) -> out` like a host
-    effect; the inner effect records stay underneath (expand to see)."""
+    effect (ADR-001 §4c); the inner effect records stay underneath
+    (expand to see). This is the guest-side effect wrapper for tool
+    methods (ADR-003 §4b).
+
+    `kind` (getter|mutator|setup|program) is the guest-DECLARED narrative
+    classification recorded on the span (ADR-001 §4d) — it is NOT the
+    mutation oracle: `meta.mutations` (count of inner mutate effects,
+    boundary-owned) is. A raised exception ends the span ok:false with a
+    clean {type, message} (no traceback) and re-raises."""
     def deco(fn):
+        argnames = fn.__code__.co_varnames[:fn.__code__.co_argcount]
+        drop_self = bool(argnames) and argnames[0] == "self"
+
         @functools.wraps(fn)
         def wrapped(*args, **kwargs):
-            inp = {}
-            if args:
-                inp["args"] = _json_safe(list(args))
-            if kwargs:
-                inp["kwargs"] = _json_safe(kwargs)
-            _effect("span.begin", {"name": name, "input": inp})
+            payload = {"name": name,
+                       "input": _span_input(argnames, drop_self, args, kwargs)}
+            if kind is not None:
+                payload["kind"] = kind
+            _effect("span.begin", payload)
             try:
                 out = fn(*args, **kwargs)
             except BaseException as e:

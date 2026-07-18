@@ -270,6 +270,7 @@ class Client:
         return out
 
     # --- objects -------------------------------------------------------------
+    @span("any.create_object", kind="mutator")  # noqa: F821 - guest global
     def create_object(self, space, body):
         """Create a typed object. `types` entries and `initialProperties`
         group + property keys are given as xKeys (or ids) and resolved to the
@@ -284,6 +285,7 @@ class Client:
                 space, body["initialProperties"])
         return self._call("post", f"/v1/spaces/{space}/objects", body)
 
+    @span("any.update_object", kind="mutator")  # noqa: F821 - guest global
     def update_object(self, space, object_id, body):
         """Update an existing object's name / editor body / properties by
         xKey. `body`: {"name"?, "markdown"?/"body"?, "<typeXKey>": {prop:
@@ -308,6 +310,7 @@ class Client:
                           {"patch": patch})
         return {"objectId": object_id}
 
+    @span("any.query_objects", kind="getter")  # noqa: F821 - guest global
     def query_objects(self, space, normalize=True, **opts):
         """Cross-object query over the per-space objects collection. `filter`
         / `sort` accept readable dotted xKey paths (`task.status`) and an
@@ -324,6 +327,7 @@ class Client:
         return [self._normalize_record(space, r) for r in recs] if normalize \
             else recs
 
+    @span("any.query", kind="getter")  # noqa: F821 - guest global
     def query(self, space, object_id, dataset, **opts):
         """Per-object dataset query (chat_messages, agent_turns, …).
         None-valued opts are dropped so callers can pass through
@@ -332,9 +336,11 @@ class Client:
         body.update({k: v for k, v in opts.items() if v is not None})
         return self._call("post", f"/v1/spaces/{space}/query", body).get("records", [])
 
+    @span("any.modify", kind="mutator")  # noqa: F821 - guest global
     def modify(self, space, body):
         return self._call("post", f"/v1/spaces/{space}/modify", body)
 
+    @span("any.upsert_record", kind="mutator")  # noqa: F821 - guest global
     def upsert_record(self, space, object_id, dataset, record_id, value):
         """Write one dataset record (whole-value $set, upsert) — the
         generic path for plain (unregistered) datasets like
@@ -344,20 +350,24 @@ class Client:
             "records": [{"id": record_id, "upsert": True,
                          "ops": [{"type": "$set", "path": "", "value": value}]}]})
 
+    @span("any.aggregate", kind="getter")  # noqa: F821 - guest global
     def aggregate(self, space, pipeline):
         return self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                           {"pipeline": pipeline})
 
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
+    @span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
     def get_markdown(self, space, object_id):
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/editor/markdown")
         return r.get("content", "")
 
+    @span("any.put_markdown", kind="mutator")  # noqa: F821 - guest global
     def put_markdown(self, space, object_id, content):
         return self._call("put",
                           f"/v1/spaces/{space}/objects/{object_id}/editor/markdown",
                           {"content": content})
 
+    @span("any.append_markdown", kind="mutator")  # noqa: F821 - guest global
     def append_markdown(self, space, object_id, content):
         """Append to the editor body (server-side append-only fast
         path) — no read-modify-write, so it can't clobber the body the
@@ -369,11 +379,13 @@ class Client:
             {"content": content})
 
     # --- spaces & ui context ---------------------------------------------------
+    @span("any.list_spaces", kind="getter")  # noqa: F821 - guest global
     def list_spaces(self):
         """Every space on the account as raw rows ({id, name, status, …});
         operate on status == "active" unless asked otherwise."""
         return self._call("get", "/v1/spaces").get("spaces", [])
 
+    @span("any.create_space", kind="mutator")  # noqa: F821 - guest global
     def create_space(self, name, description=None):
         """Create a new top-level space. Returns the full single-space
         row — `id` is the new space id, and `generalChatObjectId` its
@@ -387,6 +399,7 @@ class Client:
             body["description"] = description
         return self._call("post", "/v1/spaces", body)
 
+    @span("any.get_ui_context", kind="getter")  # noqa: F821 - guest global
     def get_ui_context(self, space):
         """The user's current view: the `ui_context` pointer object
         any-ui maintains in the agent space (xKey contract with any-ui:
@@ -410,14 +423,17 @@ class Client:
                 "updatedAt": latest_at}
 
     # --- types & properties (catalog source) ----------------------------------
+    @span("any.list_types", kind="getter")  # noqa: F821 - guest global
     def list_types(self, space):
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])
 
+    @span("any.list_properties", kind="getter")  # noqa: F821 - guest global
     def list_properties(self, space, type_id):
         # [{id, name, xKey, kind}] — the xKey↔propId catalog map.
         r = self._call("get", f"/v1/spaces/{space}/types/{type_id}/properties")
         return r.get("properties", r) if isinstance(r, dict) else r
 
+    @span("any.create_type", kind="mutator")  # noqa: F821 - guest global
     def create_type(self, space, body):
         """Composite ensure-type (bobrik-watch anyHelper semantics): the
         wire's POST /types takes NO inline properties (unknown fields
@@ -457,6 +473,7 @@ class Client:
         return {"typeId": tid, "xKey": xkey, "created": created,
                 "addedProps": added}
 
+    @span("any.add_property", kind="mutator")  # noqa: F821 - guest global
     def add_property(self, space, type_id, body):
         """POST one property onto a type. body: {"name", "xKey"?, "kind"?
         (default "string"), "meta"?}; xKey defaults to a slug of the
@@ -470,20 +487,24 @@ class Client:
         return res
 
     # --- agent turns / chunks (server-assigned seq) ----------------------------
+    @span("any.append_turn", kind="mutator")  # noqa: F821 - guest global
     def append_turn(self, space, chat_id, body):
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/agent/turns", body)
 
+    @span("any.create_chunk", kind="mutator")  # noqa: F821 - guest global
     def create_chunk(self, space, chat_id, body):
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/agent/chunks", body)
 
     # --- chat messages ---------------------------------------------------------
+    @span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
     def chat_send(self, space, chat_id, body):
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
 
     # --- search & graph ----------------------------------------------------------
+    @span("any.search", kind="getter")  # noqa: F821 - guest global
     def search(self, space, query, scopes=None, limit=None, mode=None,
                enrich=True):
         """Index search — the `{hits, mode, vectorStatus}` envelope. Each
@@ -532,6 +553,7 @@ class Client:
                            types[0] if types else None)
             h["type"] = type_name.get(primary, primary)
 
+    @span("any.backlinks", kind="getter")  # noqa: F821 - guest global
     def backlinks(self, space, object_id):
         """Objects that reference object_id through a links-format
         property. Returns the `backlinks` list unwrapped from the
@@ -540,22 +562,26 @@ class Client:
         return r.get("backlinks") or []
 
     # --- agent memory (write path; reads go through /query on the brain) --------
+    @span("any.get_brain", kind="getter")  # noqa: F821 - guest global
     def get_brain(self, space):
         """The derived per-space brain object id hosting
         agent_memory_items. `{objectId}` — deterministic, no create race."""
         return self._call("get", f"/v1/spaces/{space}/agent/brain")
 
+    @span("any.create_memory", kind="mutator")  # noqa: F821 - guest global
     def create_memory(self, space, fields):
         """Create a memory item (category + context required). Server
         resolves the brain object. Returns ModifyResult — recordIds[0]
         is the item id."""
         return self._call("post", f"/v1/spaces/{space}/agent/memory", fields)
 
+    @span("any.evolve_memory", kind="mutator")  # noqa: F821 - guest global
     def evolve_memory(self, space, item_id, fields):
         """Evolve a memory item's mutable fields (author only;
         modifiedAt bumped server-side). The route is PATCH-only."""
         return self._call("patch", f"/v1/spaces/{space}/agent/memory/{item_id}", fields)
 
+    @span("any.delete_memory", kind="mutator")  # noqa: F821 - guest global
     def delete_memory(self, space, item_id):
         return self._call("delete", f"/v1/spaces/{space}/agent/memory/{item_id}")
 

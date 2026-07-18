@@ -53,7 +53,8 @@ impl crate::bindings::KernelImports for &mut Host {
                 "span.begin" => {
                     let n = p["name"].as_str().unwrap_or("").to_string();
                     let input = p.get("input").cloned().unwrap_or(json!({}));
-                    Ok(json!({"span": self.broker.try_span_begin(&n, input)?}))
+                    let kind = p.get("kind").and_then(|k| k.as_str()).map(String::from);
+                    Ok(json!({"span": self.broker.try_span_begin(&n, kind, input)?}))
                 }
                 "span.end" => {
                     self.broker.span_end(

@@ -78,27 +78,45 @@ def _render_value(cell_id, meta, i):
     return f"[{meta['size']} bytes, {meta['schema']} — {sel} to walk]"
 
 
+def _op_name(e):
+    """Display name for a digest row — a span's facade name (`any.
+    create_object`) or a bare effect's name (`http.post`). effects_of
+    returns both, as immediate children of the cell (ADR-001 §4d)."""
+    return e.get("name") or e.get("effect")
+
+
 def _side_effects(entries):
     entries = [e for e in entries
-               if e["effect"] not in ("trace.effects_of", "trace.effect_get")]
+               if e.get("effect") not in ("trace.effects_of", "trace.effect_get")]
     if not entries:
         return ""
     counts = {}
     mutations = []
+    failures = []
     for e in entries:
-        counts[e["effect"]] = counts.get(e["effect"], 0) + 1
+        name = _op_name(e)
+        counts[name] = counts.get(name, 0) + 1
+        # `class` is boundary truth for both rows: a raw mutate effect, or a
+        # span whose inner effects mutated (meta.mutations) — not meta.kind.
         if e.get("class") == "mutate":
             mutations.append(e)
+        if e.get("error"):
+            failures.append(e)
     lines = [f"{name} ×{n}" for name, n in sorted(counts.items())]
     for m in mutations[:MAX_SIDE_EFFECT_LINES]:
-        lines.append(f"  mutate {m['effect']} #{m['seq']}")
+        lines.append(f"  mutate {_op_name(m)} #{m['seq']}")
+    for f in failures[:MAX_SIDE_EFFECT_LINES]:
+        lines.append(f"  failed {_op_name(f)} #{f['seq']}: {f['error']}")
     return "Side effects: " + ", ".join(lines[:MAX_SIDE_EFFECT_LINES])
 
 
 def _hints(entries):
+    # Batch hint targets raw syscalls, not composite facade spans.
     counts = {}
     for e in entries:
-        counts[e["effect"]] = counts.get(e["effect"], 0) + 1
+        name = e.get("effect")
+        if name:
+            counts[name] = counts.get(name, 0) + 1
     return [f"hint: {n}× sequential {name} — one round-trip via "
             f'effect("batch", {{"name": "{name}", "payloads": [...]}})'
             for name, n in counts.items() if n >= 4]

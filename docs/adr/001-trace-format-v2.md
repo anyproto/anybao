@@ -183,6 +183,51 @@ composite from its recorded output without executing the guest code) —
 that changes execution semantics and gets its own decision if ever
 wanted. The guest-side `span` facade shape is ADR-003 §4b.
 
+### 4d. Span method-kind + the immediate-children view (amendment 2026-07-18)
+
+Composite **tool-method** spans (the `any@v1` client, the ADR-008
+tools) are what the agent actually calls all turn long; two additions
+let them read as first-class operations — at bobrik's `[kind]`-tagged
+granularity — without weakening the narrative/boundary split.
+
+**`meta.kind` on the span-end record.** A facade may declare its
+method's kind — `getter | mutator | setup | program`, the authored
+`### name(sig) [kind]` vocabulary (parsed by toolmd, stored in
+`program_methods` since folder-tool authoring; this is its first
+runtime consumer). It rides the end record's `meta`:
+
+```jsonc
+{"kind": "span", "seq": 31, "phase": "end", "span": "s1",
+ "name": "any.create_object", "cell": "toolu_abc",
+ "ok": true, "output": {"objectId": "..."},
+ "meta": {"durMs": 88, "effects": 3, "mutations": 1, "kind": "mutator"}}
+```
+
+`meta.kind` is **narrative** — the author's declared intent, like
+`name`, and like the whole span it carries zero authority. It is NOT
+the mutation oracle: `meta.mutations` (the count of inner
+`class:"mutate"` effect records) stays the boundary-backed truth (§6,
+ADR-002 — class derives from (method, url) at the boundary, guest code
+cannot fake it). A declared `getter` whose span contains a mutate, or a
+`mutator` with `mutations:0`, is a legible inconsistency a view or lint
+may flag; the log never lets the label override the boundary fact.
+`meta.kind` is absent when undeclared, so span-free and kind-free
+traces stay byte-identical to the pre-amendment schema.
+
+**The per-cell effects view surfaces immediate children, not just bare
+effects.** `trace.effects_of` (ADR-003 §4) returned only `kind:"effect"`
+records under the *exact* queried span — so an effect nested in a child
+span vanished from the view and the span itself never appeared.
+Consequence: wrapping a facade in a span *removed* it from the digest
+instead of collapsing it to a line. The view now returns a cell's (or
+span's) **immediate children**: bare effect records whose `span` is the
+queried scope, **plus** child span-end records whose `parent` is that
+scope, in `seq` order. A composite call renders as one line
+(`any.create_object {…} -> {…}`, kind- and mutation-marked from
+`meta`), its inner effects reachable by drilling into the child span.
+This is a derived view only (§1) — strict/loose replay still consume
+the intact log unchanged.
+
 ### 5. Two replay modes
 
 - **`replay` (strict)** — the default for golden tests and deterministic

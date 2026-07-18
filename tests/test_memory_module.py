@@ -17,7 +17,7 @@ SRC = (PROGRAMS_DIR / "memory@v1" / "program.py").read_text()
 def load(use=None):
     g = {
         "effect": lambda name, payload: pytest.fail(f"unexpected effect {name!r}"),
-        "span": lambda name: (lambda f: f),
+        "span": lambda name, kind=None: (lambda f: f),
         "use": use or (lambda spec: pytest.fail(f"unexpected use({spec!r})")),
     }
     exec(compile(SRC, "memory@v1.py", "exec"), g)

@@ -183,6 +183,42 @@ registry effects, so they cannot be capability-granted and produce
 `kind: "span"` records only. Exceptions re-raise after an `ok: false`
 end record; non-JSON inputs/outputs degrade to `repr()`.
 
+**`kind` and clean method errors (amendment 2026-07-18).** The
+decorator takes an optional `kind` — the guest-declared narrative
+classification recorded on the span (ADR-001 §4d):
+
+```python
+@span("any.create_object", kind="mutator")
+def create_object(self, space, body): ...   # http.post inside
+```
+
+The guest-side effect wrapper a tool author reaches for — bobrik's
+`@effect` role, one clean `method(input) -> output` trace line with the
+inner syscalls collapsed underneath — IS this decorator. The name stays
+`span`, not `effect`: the guest global `effect` is the raw host channel
+(`effect("http.post", …)`), and one name cannot be both the channel and
+a decorator factory. `kind` mirrors the authored `### name(sig) [kind]`
+doc; author keeps the two in sync, the same accepted
+description-in-two-places drift as tool docs (schema vs code) — no
+runtime path reads one from the other.
+
+**Input is recorded by parameter name, and a leading `self` is
+dropped.** The decorator reads `fn.__code__.co_varnames` (pure, no
+`inspect`) so a method span records `{"space": …, "body": {…}}` — never
+the bound instance, never an opaque positional `args` list. This
+changes a span's canonical input form and therefore its `key`
+(ADR-001 §3), so golden traces carrying spans regenerate with this
+change (no-backcompat principle — the cleaner shape wins).
+
+**Method-boundary errors are clean.** A raised exception ends the span
+`ok: false` with `{type, message}` (no traceback) and re-raises; the
+cell digest (ADR-005) surfaces that method-level line
+(`any.create_object failed: AnyError not_found: …`) as the primary
+error, the full inner effect trace reachable via `effects.of(cell)` /
+`anyrt trace show` — legible at the boundary, internals on demand. This
+is bobrik's contract (clean tool errors; dig into the trace when
+something is off), now backed by the log instead of a parallel store.
+
 ### 5. Limits, interruption & metrics (per cell)
 
 | Limit           | Mechanism (wasi)                       |

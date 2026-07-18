@@ -61,6 +61,9 @@ pub enum MockUnmatched {
 struct SpanFrame {
     id: String,
     name: String,
+    /// Guest-declared narrative kind (getter|mutator|setup|program),
+    /// recorded on the end record's meta (ADR-001 §4d). None = undeclared.
+    kind: Option<String>,
     t0: Instant,
     effects: u64,
     mutations: u64,
@@ -136,7 +139,12 @@ impl Broker {
 
     /// Open a guest-declared span (ADR-001 §4c). In strict replay the
     /// begin record is a checkpoint, consumed on (name, key).
-    pub fn try_span_begin(&mut self, name: &str, input: Value) -> Result<String, EffectFailure> {
+    pub fn try_span_begin(
+        &mut self,
+        name: &str,
+        kind: Option<String>,
+        input: Value,
+    ) -> Result<String, EffectFailure> {
         self.span_n += 1;
         let sid = format!("s{}", self.span_n); // execution order => deterministic
         let key = input_key(name, &input);
@@ -153,6 +161,7 @@ impl Broker {
         self.span_stack.push(SpanFrame {
             id: sid.clone(),
             name: name.into(),
+            kind,
             t0: Instant::now(),
             effects: 0,
             mutations: 0,
@@ -164,7 +173,7 @@ impl Broker {
     /// wiring must use `try_span_begin`.
     #[allow(dead_code)] // record-mode convenience kept for tools
     pub fn span_begin(&mut self, name: &str, input: Value) -> String {
-        self.try_span_begin(name, input)
+        self.try_span_begin(name, None, input)
             .expect("span.begin diverged — replay wiring must use try_span_begin")
     }
 
@@ -187,10 +196,16 @@ impl Broker {
                 .expect_span_end(&top.name, ok)?;
         }
         let cell = self.current_cell.clone();
-        let meta = json!({
+        let mut meta = json!({
             "durMs": top.t0.elapsed().as_millis() as i64,
             "effects": top.effects, "mutations": top.mutations,
         });
+        if let Some(k) = &top.kind {
+            // narrative label (ADR-001 §4d); mutations stays the oracle
+            meta.as_object_mut()
+                .unwrap()
+                .insert("kind".into(), json!(k));
+        }
         self.writer
             .span_end(&top.id, &top.name, cell.as_deref(), ok, output, error, meta);
         Ok(())
@@ -657,26 +672,49 @@ impl Broker {
         Ok(json!({"results": results}))
     }
 
+    /// A cell's (or span's) IMMEDIATE children (ADR-001 §4d): bare effect
+    /// records directly in the scope, PLUS child span-end records whose
+    /// parent is the scope — so a composite tool call renders as one line,
+    /// its inner effects reachable by drilling into the child span. A span
+    /// nested one level down appears as a single row here, not its effects.
     fn sys_effects_of(&self, payload: &Value) -> Result<Value, EffectFailure> {
         let cell = payload.get("cell").and_then(|c| c.as_str());
         let span = payload.get("span").and_then(|s| s.as_str());
+        // "directly in the scope": for a span query, the record's own span
+        // (effects) / parent (spans) equals it; for a cell-only query, that
+        // link is null (top level of the cell).
+        let direct = |link: Option<&Value>| match span {
+            Some(s) => link.map(|v| v == s).unwrap_or(false),
+            None => link.is_none_or(|v| v.is_null()),
+        };
         let out: Vec<Value> = self
             .writer
             .records
             .iter()
-            .filter(|r| {
-                r["kind"] == "effect"
-                    && cell.is_none_or(|c| r["cell"] == c)
-                    && span.is_none_or(|s| r.get("span").map(|v| v == s).unwrap_or(false))
-            })
-            .map(|r| {
-                json!({
+            .filter(|r| cell.is_none_or(|c| r["cell"] == c))
+            .filter_map(|r| match r["kind"].as_str() {
+                Some("effect") if direct(r.get("span")) => Some(json!({
                     "seq": r["seq"], "effect": r["effect"],
                     "class": r["meta"].get("class").cloned().unwrap_or(Value::Null),
                     "mocked": r["meta"].get("mocked").cloned().unwrap_or(Value::Null),
                     "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
                     "span": r.get("span").cloned().unwrap_or(Value::Null),
-                })
+                })),
+                Some("span") if r["phase"] == "end" && direct(r.get("parent")) => {
+                    let muts = r["meta"]["mutations"].as_u64().unwrap_or(0);
+                    Some(json!({
+                        // a span row is a collapsed op: `name` (not `effect`),
+                        // narrative `kind`, and a boundary-backed `class` from
+                        // the inner mutate count so the digest marks mutations.
+                        "seq": r["seq"], "span": r["span"], "name": r["name"],
+                        "kind": r["meta"].get("kind").cloned().unwrap_or(Value::Null),
+                        "class": if muts > 0 { json!("mutate") } else { json!("read") },
+                        "ok": r["ok"], "mutations": muts,
+                        "effects": r["meta"].get("effects").cloned().unwrap_or(json!(0)),
+                        "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
+                    }))
+                }
+                _ => None,
             })
             .collect();
         Ok(json!({"records": out}))
@@ -910,7 +948,7 @@ mod tests {
         let mut b2 = make_broker("sp2");
         b2.mode = Mode::Replay;
         b2.cursor = Some(ReplayCursor::new(&b1.writer.records));
-        b2.try_span_begin("helper.sync", json!({"kwargs": {"n": 1}}))
+        b2.try_span_begin("helper.sync", None, json!({"kwargs": {"n": 1}}))
             .unwrap();
         b2.call("kernel.boot", json!({"p": 1})).unwrap();
         b2.span_end(true, Some(json!({"n": 1})), None).unwrap();
@@ -921,9 +959,67 @@ mod tests {
         b3.mode = Mode::Replay;
         b3.cursor = Some(ReplayCursor::new(&b1.writer.records));
         let err = b3
-            .try_span_begin("helper.sync", json!({"kwargs": {"n": 999}}))
+            .try_span_begin("helper.sync", None, json!({"kwargs": {"n": 999}}))
             .unwrap_err();
         assert_eq!(err.type_, "DivergenceError");
+    }
+
+    #[test]
+    fn effects_of_returns_immediate_children_and_span_rows() {
+        // ADR-001 §4d: a cell-scope view surfaces the cell's IMMEDIATE
+        // children — bare effects plus a one-row collapse of each child span,
+        // never the effects nested inside those spans.
+        let mut b = make_broker("io1");
+        b.current_cell = Some("c1".into());
+        b.call("kernel.boot", json!({"top": 1})).unwrap(); // bare, top-level
+        let sid = b
+            .try_span_begin(
+                "any.query_objects",
+                Some("getter".into()),
+                json!({"space": "s"}),
+            )
+            .unwrap();
+        b.call("kernel.boot", json!({"inner": 1})).unwrap(); // nested in the span
+        b.span_end(true, Some(json!(["row"])), None).unwrap();
+
+        let out = b.call("trace.effects_of", json!({"cell": "c1"})).unwrap();
+        let recs = out["records"].as_array().unwrap();
+        assert_eq!(recs.len(), 2); // bare effect + span row, NOT the inner effect
+        let eff = recs.iter().find(|r| r.get("effect").is_some()).unwrap();
+        assert_eq!(eff["effect"], "kernel.boot");
+        let row = recs.iter().find(|r| r.get("name").is_some()).unwrap();
+        assert_eq!(row["name"], "any.query_objects");
+        assert_eq!(row["kind"], "getter"); // narrative, declared
+        assert_eq!(row["class"], "read"); // boundary: 0 inner mutations
+        assert_eq!(row["ok"], true);
+        assert!(row.get("effect").is_none()); // a span row, not an effect
+
+        // span-scope query drills in: the inner effect is addressable there.
+        let inner = b.call("trace.effects_of", json!({"span": sid})).unwrap();
+        let irecs = inner["records"].as_array().unwrap();
+        assert_eq!(irecs.len(), 1);
+        assert_eq!(irecs[0]["effect"], "kernel.boot");
+    }
+
+    #[test]
+    fn span_end_records_declared_kind_in_meta() {
+        let mut b = make_broker("k1");
+        b.try_span_begin(
+            "any.create_object",
+            Some("mutator".into()),
+            json!({"space": "s"}),
+        )
+        .unwrap();
+        b.span_end(true, Some(json!({"objectId": "o1"})), None)
+            .unwrap();
+        let end = b
+            .writer
+            .records
+            .iter()
+            .find(|r| r["kind"] == "span" && r["phase"] == "end")
+            .unwrap();
+        assert_eq!(end["meta"]["kind"], "mutator");
+        assert_eq!(end["meta"]["mutations"], 0); // narrative kind != the oracle
     }
 
     #[test]
