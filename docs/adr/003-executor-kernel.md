@@ -143,10 +143,22 @@ by the trace instead of a parallel store:
 values.get(cell_id, i)        # i-th printed value of that cell
 values.get(cell_id, "last")   # its last-expression value
 values.list()                 # index: {cell_id: {n_prints, has_last, sizes}}
-effects.of(cell_id)           # that cell's effect records (trace view):
-                              # [{seq, effect, class, key, meta, ...}]
-effects.get(seq)              # one full record incl. output (blob-resolved)
+effects.of(cell_id)           # a scope's IMMEDIATE children (ADR-001 §4d):
+effects.of(span="s3")         #   bare effects + child span rows, each row
+                              #   carrying its own `span` id — recurse to
+                              #   drill into a facade's inner effects
+effects.get(seq)              # one full record (effect OR span) incl. output
 ```
+
+**Span drill-down (amendment 2026-07-18).** The clean collapsed facade
+line is the default; the dig-in path is the same trace, on demand — the
+agent's half of "clean tool errors, dig into the trace when something is
+off" (ADR-003 §4b). `effects.of` takes either a `cell_id` (the cell's
+top level) or `span=<id>` (one facade's immediate children); a span row
+in either result carries the `span` id to recurse on. `effects.get`
+resolves span records too (a `#seq` the digest cites for a facade is a
+span-end record), so `effects.get(seq).span` → `effects.of(span=…)`
+walks from a digest line down to the raw syscalls underneath.
 
 `values.get`/`effects.of` are guest globals: the toolcaller's in-guest
 digest (ADR-005) reads them together with `trace.effects_of` to render

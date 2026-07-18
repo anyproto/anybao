@@ -291,10 +291,20 @@ values = _Values()
 class _Effects:
     """Trace views (ADR-003 §4) — the effects half of the kernel API."""
 
-    def of(self, cell_id):
-        return _effect("trace.effects_of", {"cell": cell_id})["records"]
+    def of(self, cell_id=None, *, span=None):
+        """A scope's IMMEDIATE children (ADR-001 §4d): pass a `cell_id`
+        for the cell's top level, or `span=<id>` to expand one facade
+        span into its inner effects + child span rows. Each span row
+        carries its own `span` id — recurse to drill deeper."""
+        q = {}
+        if cell_id is not None:
+            q["cell"] = cell_id
+        if span is not None:
+            q["span"] = span
+        return _effect("trace.effects_of", q)["records"]
 
     def get(self, seq):
+        """One full record by seq — an effect or a span (ADR-003 §4)."""
         return _effect("trace.effect_get", {"seq": seq})
 
 

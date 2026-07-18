@@ -723,13 +723,16 @@ impl Broker {
     fn sys_effect_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
         let seq = payload.get("seq").and_then(|s| s.as_i64()).unwrap_or(-1);
         for r in &self.writer.records {
-            if r["kind"] == "effect" && r["seq"] == seq {
+            // effect OR span (a digest-cited #seq for a facade is a span
+            // record) — so effects.get walks from a digest line to the span,
+            // whose `span` id then feeds effects.of(span=…) (ADR-001 §4d).
+            if matches!(r["kind"].as_str(), Some("effect" | "span")) && r["seq"] == seq {
                 return Ok(r.clone());
             }
         }
         Err(EffectFailure {
             type_: "KeyError".into(),
-            message: format!("no effect record with seq {seq}"),
+            message: format!("no effect or span record with seq {seq}"),
         })
     }
 }
@@ -999,6 +1002,17 @@ mod tests {
         let irecs = inner["records"].as_array().unwrap();
         assert_eq!(irecs.len(), 1);
         assert_eq!(irecs[0]["effect"], "kernel.boot");
+
+        // a facade's cited #seq resolves via effect_get to its span record,
+        // whose `span` id then feeds effects.of(span=…) — the drill path.
+        let span_seq = row["seq"].as_i64().unwrap();
+        let rec = b
+            .call("trace.effect_get", json!({"seq": span_seq}))
+            .unwrap();
+        assert_eq!(rec["kind"], "span");
+        assert_eq!(rec["phase"], "end");
+        assert_eq!(rec["name"], "any.query_objects");
+        assert_eq!(rec["span"], sid);
     }
 
     #[test]
