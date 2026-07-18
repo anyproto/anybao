@@ -23,7 +23,10 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 007 | Memory & graph write policy    | Accepted  |
 | 008 | Agent tools & credentials      | Accepted  |
 
-**Design phase complete (2026-07-07): all seven ADRs accepted.**
-Next: the spike — loop skeleton + WasiEngine (wasmtime-py +
-python.wasm + effect host functions) + one golden replay test from a
-converted real-conversation trace, offline in CI.
+**Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
+accepted 2026-07-17.** Implementation followed the
+[milestone plan](../01-implementation-plan.md): M0–M6 all landed by
+2026-07-08 (Rust `anyrt` runtime, wasm CPython guest kernel); ADR-008's
+tool surface landed 2026-07-17. ADRs now evolve by amendment alongside
+the code they govern — open work is tracked as Task objects in the
+dev space, not here.
