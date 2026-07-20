@@ -56,9 +56,9 @@ pub struct Config {
     pub overlays: BTreeMap<String, String>,
     pub traces_dir: PathBuf,
     pub cache_dir: PathBuf,
-    /// local kernel wasm — transitional until ADR-009 §4 wires the
-    /// space source; then an explicitly-passed `--kernel` = dev override
-    pub kernel: PathBuf,
+    /// explicit local kernel override (dev bypass, ADR-009 §4);
+    /// None = fetch from the space through the content-hash cache
+    pub kernel: Option<PathBuf>,
     /// local asset dirs — transitional until serve goes space-only
     /// (ADR-009 §5); not part of anybao.toml
     pub programs: PathBuf,
@@ -78,7 +78,7 @@ impl Default for Config {
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
             cache_dir: default_cache_dir(),
-            kernel: "bin/kernel.wasm".into(),
+            kernel: None,
             programs: "programs".into(),
             skills: "skills".into(),
             config: BTreeMap::new(),
@@ -270,7 +270,7 @@ cache = "/var/cache/anybao"
         assert_eq!(c.control_port, 7010);
         assert!(c.overlays.is_empty());
         assert_eq!(c.traces_dir, PathBuf::from("traces"));
-        assert_eq!(c.kernel, PathBuf::from("bin/kernel.wasm"));
+        assert_eq!(c.kernel, None); // no override: kernel comes from the space
     }
 
     #[test]

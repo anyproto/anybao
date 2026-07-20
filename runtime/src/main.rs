@@ -8,6 +8,7 @@ mod caps;
 mod config;
 mod deploy;
 mod drift;
+mod kernelcache;
 mod replay;
 mod resolver;
 mod routes;
@@ -50,8 +51,10 @@ enum Cmd {
         spec: String,
         #[arg(long, default_value = "{}")]
         args: String,
-        #[arg(long, default_value = "bin/kernel.wasm")]
-        kernel: PathBuf,
+        /// kernel wasm [default: bin/kernel.wasm; with --from-space,
+        /// omitted = fetch from the space via the cache]
+        #[arg(long)]
+        kernel: Option<PathBuf>,
         #[arg(long, default_value = "programs")]
         programs: PathBuf,
         #[arg(long, default_value = "traces")]
@@ -86,8 +89,10 @@ enum Cmd {
         programs: PathBuf,
         #[arg(long, default_value = "skills")]
         skills: PathBuf,
-        #[arg(long, default_value = "bin/kernel.wasm")]
-        kernel: PathBuf,
+        /// local kernel override — bypasses the space (dev); omitted =
+        /// fetch from the space via the content-hash cache
+        #[arg(long)]
+        kernel: Option<PathBuf>,
         /// [default: config paths.traces]
         #[arg(long)]
         traces_dir: Option<PathBuf>,
@@ -267,26 +272,43 @@ fn main() -> Result<()> {
             bootstrap(&mut config, &mut secrets, &addr);
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
-            let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> = match &from_space {
+            let from: Option<(Arc<anyapi::Client>, String)> = match &from_space {
                 Some(space) => {
                     let base = config["any.base_url"].as_str().unwrap_or(&addr).to_string();
                     let client = Arc::new(anyapi::Client::new(&base));
                     let space_id = serve::find_space(&client, space)?;
-                    Some(Box::new(resolver::AnyModuleResolver::new(
-                        client,
-                        &space_id,
-                        None,
-                        Default::default(),
-                    )))
+                    Some((client, space_id))
                 }
                 None => None,
             };
+            let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> =
+                from.as_ref().map(|(client, space_id)| {
+                    Box::new(resolver::AnyModuleResolver::new(
+                        client.clone(),
+                        space_id,
+                        None,
+                        Default::default(),
+                    )) as Box<dyn resolver::ModuleResolver + Send>
+                });
             let any_base = config
                 .get("any.base_url")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let kernel_bytes = std::fs::read(&kernel)
-                .with_context(|| format!("kernel at {}", kernel.display()))?;
+            // kernel: explicit path wins; --from-space defaults to the
+            // space via the cache (ADR-009 §4); local run to the local
+            // build
+            let kernel_bytes = match (&kernel, &from) {
+                (Some(path), _) => {
+                    std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
+                }
+                (None, Some((client, space_id))) => {
+                    kernelcache::kernel_bytes(client, space_id, &config::default_cache_dir())?
+                }
+                (None, None) => {
+                    let path = std::path::Path::new("bin/kernel.wasm");
+                    std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
+                }
+            };
             let cage = runner::Cage::new(&kernel_bytes)?;
             let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
             let mut writer = trace::TraceWriter::new(json!({

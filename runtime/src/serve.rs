@@ -229,8 +229,14 @@ pub fn serve(mut cfg: Config) -> Result<()> {
     // space — the host publishes skills above but injects no prompt wording
     // (isolation: the agent's context comes from `any`, not the filesystem).
 
-    let kernel_bytes = std::fs::read(&cfg.kernel)
-        .with_context(|| format!("kernel at {}", cfg.kernel.display()))?;
+    // ADR-009 §4: an explicitly-passed --kernel is a dev override that
+    // bypasses the space; otherwise boot from the space via the cache.
+    let kernel_bytes = match &cfg.kernel {
+        Some(path) => {
+            std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
+        }
+        None => crate::kernelcache::kernel_bytes(&client, &space, &cfg.cache_dir)?,
+    };
     let cage = Cage::new(&kernel_bytes)?;
     std::fs::create_dir_all(&cfg.traces_dir)?;
 
