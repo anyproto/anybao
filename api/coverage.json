@@ -123,12 +123,12 @@
     "GET /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
       "fingerprint": "sha256:132159a396957554",
-      "helper": null
+      "helper": "file_info"
     },
     "GET /spaces/{spaceId}/files/{fileId}/content": {
       "excluded": null,
       "fingerprint": "sha256:772d51ff49827fc9",
-      "helper": null
+      "helper": "download_file"
     },
     "GET /spaces/{spaceId}/files/{fileId}/status": {
       "excluded": null,
@@ -438,7 +438,7 @@
     "POST /spaces/{spaceId}/objects/{objectId}/files": {
       "excluded": null,
       "fingerprint": "sha256:71550fd9b637e539",
-      "helper": null
+      "helper": "attach_file"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query": {
       "excluded": null,

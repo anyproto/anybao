@@ -121,6 +121,24 @@ pub trait Transport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Box<dyn Iterator<Item = String>>, AnyError>;
+    /// Raw-bytes request (file upload): bytes in, JSON reply out.
+    /// Defaulted so JSON-only doubles keep compiling (ADR-009 §4).
+    fn send_raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        content_type: &str,
+    ) -> Result<(u16, Value), AnyError> {
+        let _ = (method, path, body, content_type);
+        Err(transport_err("raw bytes unsupported by this transport"))
+    }
+    /// Raw-bytes response (file download). Non-2xx replies surface as
+    /// AnyError here — there is no JSON channel on this path.
+    fn read_raw(&self, path: &str) -> Result<Vec<u8>, AnyError> {
+        let _ = path;
+        Err(transport_err("raw bytes unsupported by this transport"))
+    }
 }
 
 fn transport_err(e: impl fmt::Display) -> AnyError {
@@ -164,6 +182,22 @@ impl HttpTransport {
     }
 }
 
+/// Decode a response body as the (status, JSON) pair `send` promises.
+fn json_response(resp: ureq::Response) -> Result<(u16, Value), AnyError> {
+    let status = resp.status();
+    let raw = resp.into_string().map_err(transport_err)?;
+    let data = if raw.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&raw).map_err(|e| AnyError {
+            status,
+            code: "bad_json".into(),
+            message: e.to_string(),
+        })?
+    };
+    Ok((status, data))
+}
+
 impl Transport for HttpTransport {
     fn send(
         &self,
@@ -172,18 +206,7 @@ impl Transport for HttpTransport {
         body: Option<&Value>,
     ) -> Result<(u16, Value), AnyError> {
         let resp = Self::dispatch(self.request(method, path), body)?;
-        let status = resp.status();
-        let raw = resp.into_string().map_err(transport_err)?;
-        let data = if raw.is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&raw).map_err(|e| AnyError {
-                status,
-                code: "bad_json".into(),
-                message: e.to_string(),
-            })?
-        };
-        Ok((status, data))
+        json_response(resp)
     }
 
     fn open_stream(
@@ -198,6 +221,44 @@ impl Transport for HttpTransport {
         Ok(Box::new(RawLines {
             reader: BufReader::new(resp.into_reader()),
         }))
+    }
+
+    fn send_raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        content_type: &str,
+    ) -> Result<(u16, Value), AnyError> {
+        let req = self
+            .agent
+            .request(method, &format!("{}{}", self.base, path))
+            .set("Content-Type", content_type);
+        let resp = match req.send_bytes(body) {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r, // error envelope is data
+            Err(e) => return Err(transport_err(e)),
+        };
+        json_response(resp)
+    }
+
+    fn read_raw(&self, path: &str) -> Result<Vec<u8>, AnyError> {
+        let resp = Self::dispatch(self.request("GET", path), None)?;
+        let status = resp.status();
+        if status >= 400 {
+            let (_, data) = json_response(resp)?;
+            let err = data.get("error").cloned().unwrap_or(json!({}));
+            return Err(AnyError {
+                status,
+                code: err["code"].as_str().unwrap_or("unknown").to_string(),
+                message: err["message"].as_str().unwrap_or("").to_string(),
+            });
+        }
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut buf)
+            .map_err(transport_err)?;
+        Ok(buf)
     }
 }
 
@@ -248,6 +309,34 @@ fn records_of(reply: Value, key: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Map the server's `{"error": {code, message}}` envelope to AnyError
+/// on non-2xx; pass data through otherwise.
+fn unwrap_envelope(status: u16, data: Value) -> Result<Value, AnyError> {
+    if status >= 400 {
+        let err = data.get("error").cloned().unwrap_or(json!({}));
+        return Err(AnyError {
+            status,
+            code: err["code"].as_str().unwrap_or("unknown").to_string(),
+            message: err["message"].as_str().unwrap_or("").to_string(),
+        });
+    }
+    Ok(data)
+}
+
+/// Percent-encode one query-string value (RFC 3986 unreserved set).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub struct Client {
     transport: Box<dyn Transport + Send + Sync>,
 }
@@ -266,15 +355,7 @@ impl Client {
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, AnyError> {
         let sanitized = body.map(sanitize_nuls); // write guard
         let (status, data) = self.transport.send(method, path, sanitized.as_ref())?;
-        if status >= 400 {
-            let err = data.get("error").cloned().unwrap_or(json!({}));
-            return Err(AnyError {
-                status,
-                code: err["code"].as_str().unwrap_or("unknown").to_string(),
-                message: err["message"].as_str().unwrap_or("").to_string(),
-            });
-        }
-        Ok(data)
+        unwrap_envelope(status, data)
     }
 
     // --- spaces ---
@@ -309,6 +390,42 @@ impl Client {
                 "agent_space": true
             })),
         )
+    }
+
+    // --- files (ADR-009 §4) ---
+    /// POST /v1/spaces/{s}/objects/{o}/files?name=… — attach raw bytes
+    /// to an object; the reply is the server's FileInfo (fileId, size,
+    /// rootCid, …).
+    pub fn attach_file(
+        &self,
+        space_id: &str,
+        object_id: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<Value, AnyError> {
+        let path = format!(
+            "/v1/spaces/{space_id}/objects/{object_id}/files?name={}",
+            urlencode(name)
+        );
+        let (status, data) =
+            self.transport
+                .send_raw("POST", &path, bytes, "application/octet-stream")?;
+        unwrap_envelope(status, data)
+    }
+
+    /// GET /v1/spaces/{s}/files/{f} — one file's FileInfo.
+    pub fn file_info(&self, space_id: &str, file_id: &str) -> Result<Value, AnyError> {
+        self.call(
+            "GET",
+            &format!("/v1/spaces/{space_id}/files/{file_id}"),
+            None,
+        )
+    }
+
+    /// GET /v1/spaces/{s}/files/{f}/content — the raw bytes.
+    pub fn download_file(&self, space_id: &str, file_id: &str) -> Result<Vec<u8>, AnyError> {
+        self.transport
+            .read_raw(&format!("/v1/spaces/{space_id}/files/{file_id}/content"))
     }
 
     // --- objects ---
@@ -857,6 +974,50 @@ mod tests {
                                      "ops": [{"type": "$set", "path": "localValue", "value": "sk-secret"}]}]})
             )
         );
+    }
+
+    #[test]
+    fn attach_file_wire_shape_percent_encodes_name() {
+        let (c, log) = stub_client();
+        c.attach_file("sp", "obj", "kernel v1.wasm", b"wasm-bytes")
+            .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[0].0, "POST");
+        assert_eq!(
+            calls[0].1,
+            "/v1/spaces/sp/objects/obj/files?name=kernel%20v1.wasm"
+        );
+        assert_eq!(calls[0].2, Some(json!({"rawBytes": 10})));
+    }
+
+    #[test]
+    fn download_file_wire_shape_returns_bytes() {
+        let stub = crate::testutil::StubTransport::new();
+        stub.push_raw(b"the-bytes".to_vec());
+        let log = stub.log();
+        let c = Client::with_transport(Box::new(stub));
+        let bytes = c.download_file("sp", "file1").unwrap();
+        assert_eq!(bytes, b"the-bytes");
+        assert_eq!(
+            log.lock().unwrap()[0].1,
+            "/v1/spaces/sp/files/file1/content"
+        );
+    }
+
+    #[test]
+    fn fake_space_file_round_trip() {
+        let c = Client::with_transport(Box::new(crate::testutil::FakeSpace::new()));
+        let info = c
+            .attach_file("sp", "obj1", "kernel.wasm", b"abc123")
+            .unwrap();
+        let fid = info["fileId"].as_str().unwrap();
+        assert_eq!(info["size"], json!(6));
+        assert_eq!(c.download_file("sp", fid).unwrap(), b"abc123");
+        let meta = c.file_info("sp", fid).unwrap();
+        assert_eq!(meta["name"], json!("kernel.wasm"));
+        assert_eq!(meta["objectId"], json!("obj1"));
+        // unknown file id is a 404, not empty bytes
+        assert!(c.download_file("sp", "nope").is_err());
     }
 
     #[test]

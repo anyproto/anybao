@@ -18,6 +18,7 @@ pub struct StubTransport {
     calls: CallLog,
     replies: Mutex<VecDeque<(u16, Value)>>,
     stream: Mutex<Vec<String>>,
+    raw_replies: Mutex<VecDeque<Vec<u8>>>,
 }
 
 impl StubTransport {
@@ -32,6 +33,10 @@ impl StubTransport {
 
     pub fn push(&self, status: u16, body: Value) {
         self.replies.lock().unwrap().push_back((status, body));
+    }
+
+    pub fn push_raw(&self, bytes: Vec<u8>) {
+        self.raw_replies.lock().unwrap().push_back(bytes);
     }
 
     pub fn set_stream(&self, lines: &[&str]) {
@@ -69,6 +74,41 @@ impl Transport for StubTransport {
             .push(("POST".to_string(), path.to_string(), body.cloned()));
         Ok(Box::new(self.stream.lock().unwrap().clone().into_iter()))
     }
+
+    // raw calls land in the same log; the body is summarized as its
+    // byte length (wire-shape tests assert method/path, not payloads)
+    fn send_raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<(u16, Value), AnyError> {
+        self.calls.lock().unwrap().push((
+            method.to_string(),
+            path.to_string(),
+            Some(json!({"rawBytes": body.len()})),
+        ));
+        Ok(self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or((200, json!({}))))
+    }
+
+    fn read_raw(&self, path: &str) -> Result<Vec<u8>, AnyError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("GET".to_string(), path.to_string(), None));
+        Ok(self
+            .raw_replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default())
+    }
 }
 
 /// A minimal in-memory `any` server: per-space objects with property
@@ -90,9 +130,12 @@ struct State {
     types: BTreeMap<String, Vec<Value>>,
     props: BTreeMap<(String, String), Vec<Value>>,
     markdown: BTreeMap<(String, String), String>,
+    /// (space, fileId) → (objectId, name, bytes)
+    files: BTreeMap<(String, String), (String, String, Vec<u8>)>,
     next_obj: u64,
     next_type: u64,
     next_prop: u64,
+    next_file: u64,
 }
 
 impl FakeSpace {
@@ -273,6 +316,19 @@ impl Transport for FakeSpace {
                     .insert((sp.to_string(), oid.to_string()), content);
                 json!({"ok": true})
             }
+            ("GET", ["v1", "spaces", sp, "files", fid]) => {
+                match s.files.get(&(sp.to_string(), fid.to_string())) {
+                    Some((oid, name, bytes)) => json!({"fileId": fid, "objectId": oid,
+                                                       "name": name, "size": bytes.len()}),
+                    None => {
+                        return Ok((
+                            404,
+                            json!({"error": {"code": "not_found",
+                                             "message": format!("no file {fid}")}}),
+                        ))
+                    }
+                }
+            }
             ("GET", ["v1", "spaces", _, "agent", "brain"]) => json!({"objectId": "brain"}),
             _ => {
                 return Ok((
@@ -291,5 +347,57 @@ impl Transport for FakeSpace {
         _body: Option<&Value>,
     ) -> Result<Box<dyn Iterator<Item = String>>, AnyError> {
         Ok(Box::new(std::iter::empty()))
+    }
+
+    fn send_raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<(u16, Value), AnyError> {
+        let mut s = self.state.lock().unwrap();
+        let (route, query) = path.split_once('?').unwrap_or((path, ""));
+        let segs: Vec<&str> = route.trim_start_matches('/').split('/').collect();
+        match (method, segs.as_slice()) {
+            ("POST", ["v1", "spaces", sp, "objects", oid, "files"]) => {
+                let name = query
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix("name="))
+                    .unwrap_or("")
+                    .to_string();
+                s.next_file += 1;
+                let fid = format!("file{}", s.next_file);
+                s.files.insert(
+                    (sp.to_string(), fid.clone()),
+                    (oid.to_string(), name.clone(), body.to_vec()),
+                );
+                Ok((
+                    201,
+                    json!({"fileId": fid, "objectId": oid, "name": name,
+                           "size": body.len()}),
+                ))
+            }
+            _ => Ok((
+                404,
+                json!({"error": {"code": "no_route",
+                                 "message": format!("{method} {path}")}}),
+            )),
+        }
+    }
+
+    fn read_raw(&self, path: &str) -> Result<Vec<u8>, AnyError> {
+        let s = self.state.lock().unwrap();
+        let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        if let ["v1", "spaces", sp, "files", fid, "content"] = segs.as_slice() {
+            if let Some((_, _, bytes)) = s.files.get(&(sp.to_string(), fid.to_string())) {
+                return Ok(bytes.clone());
+            }
+        }
+        Err(AnyError {
+            status: 404,
+            code: "not_found".into(),
+            message: format!("no file at {path}"),
+        })
     }
 }
