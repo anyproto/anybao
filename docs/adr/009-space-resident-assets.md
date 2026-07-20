@@ -1,6 +1,6 @@
 # ADR-009: Space-resident assets, host config, overlays, lib mode
 
-Status: **Proposed**
+Status: **Accepted** (2026-07-21)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -83,11 +83,11 @@ anyrt deploy --source <folder> --target <spaceId | overlayName>
 (`--target` takes a raw space id or an overlay name from
 `[overlays]`; hash-gated as today. The source folder's asset kinds
 are its subfolders — `<src>/programs/`, `<src>/skills/`, future kinds
-alongside — so one repo folder is self-describing.) Any space
-deployed this way is a
+alongside — plus a `README.md` at the root, so one repo folder is
+self-describing.) Any space deployed this way is a
 repo other spaces import from — the package-overlay model. Each repo
-carries a **README object**; its content is the overlay's
-description. The agent is made aware of configured overlays as
+carries a **README object** (deployed from the source root's
+`README.md`); its content is the overlay's description. The agent is made aware of configured overlays as
 name + description (from the README) — repo *contents* are not
 injected into context; discovery is `list_programs`, which gains the
 ability to list a given space's programs. Example of what this
@@ -232,6 +232,6 @@ lib API (the crate stays sync/thread-based).
    sends the next event or heartbeat (or the 2 s reconnect sleep).
    Likely fix: a read timeout on the stream socket so the loop wakes
    periodically to check the flag — decide during the lib-mode commit.
-4. Bootstrap of a fresh overlay space: `--target` takes strict ids and
-   never creates. Who mints the space id — the any client/UI, or a
-   small `anyrt` helper that creates a space and prints its id?
+4. ~~Bootstrap of a fresh overlay space: who mints the space id?~~
+   **Resolved 2026-07-21**: not anyrt's job — spaces are created
+   externally (any CLI); `--target` stays strict, no helper.
