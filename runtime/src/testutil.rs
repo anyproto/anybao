@@ -153,7 +153,14 @@ impl State {
     fn create_object(&mut self, space: &str, body: &Value) -> Value {
         self.next_obj += 1;
         let oid = format!("obj{}", self.next_obj);
-        let props = body.get("initialProperties").cloned().unwrap_or(json!({}));
+        let mut props = body.get("initialProperties").cloned().unwrap_or(json!({}));
+        // mirror the server: requested types are queryable as any.types
+        if let Some(types) = body.get("types") {
+            if props.get("any").is_none() {
+                props["any"] = json!({});
+            }
+            props["any"]["types"] = types.clone();
+        }
         self.objects.insert((space.to_string(), oid.clone()), props);
         json!({"objectId": oid})
     }
@@ -166,7 +173,13 @@ impl State {
             .iter()
             .filter(|((sp, _), _)| sp == space)
             .filter(|(_, props)| {
-                filter.is_none_or(|f| f.iter().all(|(k, want)| group_get(props, k) == Some(want)))
+                filter.is_none_or(|f| {
+                    f.iter().all(|(k, want)| match group_get(props, k) {
+                        // array-valued property (any.types) matches on membership
+                        Some(Value::Array(a)) => a.contains(want),
+                        got => got == Some(want),
+                    })
+                })
             })
             .take(limit)
             .map(|((_, oid), props)| {

@@ -7,7 +7,7 @@
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
 use crate::config::Config;
-use crate::deploy::{Deployer, SkillDeployer};
+use crate::deploy::{ensure_typed, Deployer, SkillDeployer};
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
@@ -180,24 +180,6 @@ fn persist_local_secret(c: &Client, space: &str, obj: &str, key: &str, secret: &
         &json!(secret),
     )?;
     Ok(())
-}
-
-fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> Result<String> {
-    let rows = c.query_objects(
-        space,
-        &json!({
-        "filter": {"any.name": name, "any.types": type_id}, "limit": 1}),
-    )?;
-    if let Some(r) = rows.first() {
-        return Ok(r["id"].as_str().unwrap_or_default().to_string());
-    }
-    let created = c.create_object(
-        space,
-        &json!({
-        "types": [type_id],
-        "initialProperties": {"any": {"name": name}}}),
-    )?;
-    Ok(created["objectId"].as_str().unwrap_or_default().to_string())
 }
 
 struct Shared {

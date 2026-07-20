@@ -506,6 +506,139 @@ impl<'a> Deployer<'a> {
     }
 }
 
+/// Find-or-create a `type_id`-typed object by `any.name` — the trigger
+/// anchor / kernel object / README pattern (unregistered custom type
+/// keys work; the server materializes them).
+pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyhow::Result<String> {
+    let rows = c.query_objects(
+        space,
+        &json!({
+        "filter": {"any.name": name, "any.types": type_id}, "limit": 1}),
+    )?;
+    if let Some(r) = rows.first() {
+        return Ok(r["id"].as_str().unwrap_or_default().to_string());
+    }
+    let created = c.create_object(
+        space,
+        &json!({
+        "types": [type_id],
+        "initialProperties": {"any": {"name": name}}}),
+    )?;
+    Ok(created["objectId"].as_str().unwrap_or_default().to_string())
+}
+
+// --- kernel — the componentized CPython guest, space-resident (ADR-009 §4) ---
+
+pub const KERNEL_TYPE: &str = "agent_kernel";
+pub const KERNEL_DATASET: &str = "agent_kernel";
+/// Fixed convention — no config knob (ADR-009 §4).
+pub const KERNEL_OBJECT_NAME: &str = "anyrt-kernel";
+
+/// Publishes kernel.wasm as a file on the space's one `agent_kernel`
+/// object; the dataset record "main" carries the content identity the
+/// boot protocol checks against its cache.
+pub struct KernelDeployer<'a> {
+    client: &'a Client,
+    space: String,
+}
+
+impl<'a> KernelDeployer<'a> {
+    pub fn new(client: &'a Client, space: &str) -> Self {
+        KernelDeployer {
+            client,
+            space: space.to_string(),
+        }
+    }
+
+    /// Hash-gated on the record's sha256. Returns "created" |
+    /// "updated" | "unchanged".
+    pub fn deploy(&self, kernel_bytes: &[u8]) -> anyhow::Result<&'static str> {
+        let sha = hex::encode(Sha256::digest(kernel_bytes));
+        let oid = ensure_typed(self.client, &self.space, KERNEL_OBJECT_NAME, KERNEL_TYPE)?;
+        let rows = self
+            .client
+            .query(&self.space, &oid, KERNEL_DATASET, &json!({}))?;
+        let existing = rows
+            .iter()
+            .find(|r| r["id"].as_str() == Some("main"))
+            .cloned();
+        if let Some(ref rec) = existing {
+            if rec["sha256"].as_str() == Some(sha.as_str()) {
+                return Ok("unchanged");
+            }
+        }
+        let info = self
+            .client
+            .attach_file(&self.space, &oid, "kernel.wasm", kernel_bytes)?;
+        let file_id = info["fileId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("attach_file reply has no fileId: {info}"))?;
+        let uploaded_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.client.upsert_record(
+            &self.space,
+            &oid,
+            KERNEL_DATASET,
+            "main",
+            &json!({"sha256": sha, "size": kernel_bytes.len(),
+                    "fileId": file_id, "name": "kernel.wasm",
+                    "uploadedAt": uploaded_at}),
+        )?;
+        Ok(if existing.is_some() {
+            "updated"
+        } else {
+            "created"
+        })
+    }
+}
+
+// --- repo deploy — a source folder published to a space (ADR-009 §2) ---
+
+pub const README_TYPE: &str = "readme";
+
+/// The overlay's description object, from the source root's README.md.
+/// Hash-gated by content comparison (a fresh object reads back "").
+pub fn deploy_readme(client: &Client, space: &str, content: &str) -> anyhow::Result<&'static str> {
+    let oid = ensure_typed(client, space, "README", README_TYPE)?;
+    if client.get_markdown(space, &oid)? == content {
+        return Ok("unchanged");
+    }
+    client.put_markdown(space, &oid, content)?;
+    Ok("updated")
+}
+
+#[derive(Debug, Default)]
+pub struct RepoSummary {
+    pub programs: BTreeMap<String, String>,
+    pub skills: BTreeMap<String, String>,
+    pub readme: Option<&'static str>,
+}
+
+/// Deploy one repo folder: `<src>/programs/`, `<src>/skills/`, and a
+/// root `README.md` (each optional — kinds are the subfolders present).
+pub fn deploy_repo(client: &Client, space: &str, src: &Path) -> anyhow::Result<RepoSummary> {
+    let mut out = RepoSummary::default();
+    let programs = src.join("programs");
+    if programs.is_dir() {
+        out.programs = Deployer::new(client, space).deploy_dir(&programs)?;
+    }
+    let skills = src.join("skills");
+    if skills.is_dir() {
+        out.skills = SkillDeployer::new(client, space).deploy_dir(&skills)?;
+    }
+    let readme = src.join("README.md");
+    if readme.is_file() {
+        out.readme = Some(deploy_readme(
+            client,
+            space,
+            &std::fs::read_to_string(&readme)?,
+        )?);
+    }
+    Ok(out)
+}
+
 // --- skills — the system-prompt components (M4 "skills written fresh") ---
 
 pub const SKILL_TYPE: &str = "agent_skill";
@@ -917,6 +1050,94 @@ mod tests {
         let out = sd.deploy_dir(dir.path()).unwrap();
         assert_eq!(out.get("_core").map(String::as_str), Some("created"));
         assert_eq!(out.get("_soul").map(String::as_str), Some("created"));
+    }
+
+    // --- kernel publish (ADR-009 §4) ---
+
+    #[test]
+    fn kernel_deploy_is_hash_gated() {
+        let c = client();
+        let kd = KernelDeployer::new(&c, "agent");
+        assert_eq!(kd.deploy(b"wasm-v1").unwrap(), "created");
+        assert_eq!(kd.deploy(b"wasm-v1").unwrap(), "unchanged");
+
+        // one agent_kernel object; record carries the content identity
+        let objs = c
+            .query_objects(
+                "agent",
+                &json!({"filter": {"any.name": KERNEL_OBJECT_NAME}}),
+            )
+            .unwrap();
+        assert_eq!(objs.len(), 1);
+        let oid = objs[0]["id"].as_str().unwrap();
+        let rec = c.query("agent", oid, KERNEL_DATASET, &json!({})).unwrap();
+        let main = rec.iter().find(|r| r["id"] == json!("main")).unwrap();
+        let fid1 = main["fileId"].as_str().unwrap().to_string();
+        assert_eq!(main["size"], json!(7));
+        assert_eq!(
+            main["sha256"].as_str().unwrap(),
+            hex::encode(Sha256::digest(b"wasm-v1"))
+        );
+        assert_eq!(c.download_file("agent", &fid1).unwrap(), b"wasm-v1");
+
+        // byte change → new file, record repointed
+        assert_eq!(kd.deploy(b"wasm-v2!").unwrap(), "updated");
+        let rec = c.query("agent", oid, KERNEL_DATASET, &json!({})).unwrap();
+        let main = rec.iter().find(|r| r["id"] == json!("main")).unwrap();
+        let fid2 = main["fileId"].as_str().unwrap();
+        assert_ne!(fid1, fid2);
+        assert_eq!(main["size"], json!(8));
+        assert_eq!(c.download_file("agent", fid2).unwrap(), b"wasm-v2!");
+    }
+
+    // --- repo deploy (ADR-009 §2) ---
+
+    #[test]
+    fn repo_deploy_publishes_all_kinds() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("programs")).unwrap();
+        std::fs::create_dir(dir.path().join("skills")).unwrap();
+        std::fs::write(dir.path().join("programs/tool@v1.py"), PROG).unwrap();
+        std::fs::write(dir.path().join("skills/_core.md"), "core").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# my repo\n").unwrap();
+
+        let c = client();
+        let out = deploy_repo(&c, "agent", dir.path()).unwrap();
+        assert_eq!(
+            out.programs.get("tool@v1").map(String::as_str),
+            Some("created")
+        );
+        assert_eq!(out.skills.get("_core").map(String::as_str), Some("created"));
+        assert_eq!(out.readme, Some("updated"));
+
+        // README round-trips as the overlay description object
+        let objs = c
+            .query_objects("agent", &json!({"filter": {"any.name": "README"}}))
+            .unwrap();
+        let oid = objs[0]["id"].as_str().unwrap();
+        assert_eq!(c.get_markdown("agent", oid).unwrap(), "# my repo\n");
+
+        // rerun: everything hash-gated
+        let again = deploy_repo(&c, "agent", dir.path()).unwrap();
+        assert_eq!(
+            again.programs.get("tool@v1").map(String::as_str),
+            Some("unchanged")
+        );
+        assert_eq!(
+            again.skills.get("_core").map(String::as_str),
+            Some("unchanged")
+        );
+        assert_eq!(again.readme, Some("unchanged"));
+    }
+
+    #[test]
+    fn repo_deploy_tolerates_missing_kinds() {
+        let dir = tempdir().unwrap(); // empty folder: no kinds at all
+        let c = client();
+        let out = deploy_repo(&c, "agent", dir.path()).unwrap();
+        assert!(out.programs.is_empty());
+        assert!(out.skills.is_empty());
+        assert_eq!(out.readme, None);
     }
 
     // --- name@vN parsing edges ---

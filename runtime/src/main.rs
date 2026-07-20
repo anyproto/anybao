@@ -102,19 +102,27 @@ enum Cmd {
         #[arg(long)]
         secrets: Option<PathBuf>,
     },
-    /// publish programs + skills to the agent space (hash-gated), so a
-    /// running serve picks changes up on its next run — no restart
+    /// publish a repo folder (programs/, skills/, README.md) + the
+    /// kernel to a space (hash-gated), so a running serve picks changes
+    /// up on its next run — no restart (ADR-009 §2)
     Deploy {
+        /// repo folder: <src>/programs/, <src>/skills/, README.md
+        #[arg(long, default_value = ".")]
+        source: PathBuf,
+        /// target space id, or an overlay name from [overlays];
+        /// strict — never creates [default: the working space]
+        #[arg(long)]
+        target: Option<String>,
+        /// kernel wasm to publish (skipped with a note when absent)
+        #[arg(long, default_value = "bin/kernel.wasm")]
+        kernel: PathBuf,
         /// any server base url [default: config addr]
         #[arg(long)]
         addr: Option<String>,
-        /// target space name [default: config agent.space]
+        /// working space name for the no-target default [default:
+        /// config agent.space]
         #[arg(long)]
         space: Option<String>,
-        #[arg(long, default_value = "programs")]
-        programs: PathBuf,
-        #[arg(long, default_value = "skills")]
-        skills: PathBuf,
         /// anybao.toml host config [default: ./anybao.toml when present]
         #[arg(long)]
         config_file: Option<PathBuf>,
@@ -351,10 +359,11 @@ fn main() -> Result<()> {
             serve::serve(cfg)
         }
         Cmd::Deploy {
+            source,
+            target,
+            kernel,
             addr,
             space,
-            programs,
-            skills,
             config_file,
         } => {
             let mut cfg = config::Config::load(config_file.as_deref())?;
@@ -364,11 +373,27 @@ fn main() -> Result<()> {
                 ..Default::default()
             });
             let client = anyapi::Client::new(&cfg.addr);
-            let space_id = serve::ensure_space(&client, &cfg.agent_space)?;
-            let deployed = deploy::Deployer::new(&client, &space_id).deploy_dir(&programs)?;
-            println!("deploy → {deployed:?}");
-            let skilled = deploy::SkillDeployer::new(&client, &space_id).deploy_dir(&skills)?;
-            println!("skills → {skilled:?}");
+            let space_id = match &target {
+                // overlay name from config, else a raw space id — strict
+                Some(t) => {
+                    let id = cfg.overlays.get(t).cloned().unwrap_or_else(|| t.clone());
+                    serve::find_space(&client, &id)?
+                }
+                None => serve::ensure_space(&client, &cfg.agent_space)?,
+            };
+            let repo = deploy::deploy_repo(&client, &space_id, &source)?;
+            println!("deploy → {:?}", repo.programs);
+            println!("skills → {:?}", repo.skills);
+            if let Some(st) = repo.readme {
+                println!("readme → {st}");
+            }
+            match std::fs::read(&kernel) {
+                Ok(bytes) => {
+                    let st = deploy::KernelDeployer::new(&client, &space_id).deploy(&bytes)?;
+                    println!("kernel → {st} ({} bytes)", bytes.len());
+                }
+                Err(_) => println!("kernel → skipped (no file at {})", kernel.display()),
+            }
             Ok(())
         }
         Cmd::Trace {
