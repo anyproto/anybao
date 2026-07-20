@@ -310,6 +310,25 @@ mod tests {
     }
 
     #[test]
+    fn unqualified_never_resolves_into_overlays() {
+        // ADR-004 §2 / ADR-009 §2: a program living only in an overlay
+        // is invisible to unqualified specs — the alias is the only way
+        let c = Client::with_transport(Box::new(FakeSpace::new()));
+        seed_program(&c, "code", "tool", "v1", CODE);
+        let mut aliases = BTreeMap::new();
+        aliases.insert("agent".to_string(), "code".to_string());
+        let mut r = AnyModuleResolver::new(std::sync::Arc::new(c), "user", None, aliases);
+        assert!(matches!(
+            r.resolve("tool@v1", None),
+            Err(ResolveError::NotFound(_))
+        ));
+        assert_eq!(
+            r.resolve("agent:tool@v1", None).unwrap()["spaceId"],
+            json!("code")
+        );
+    }
+
+    #[test]
     fn private_alias_without_private_space_errors() {
         let c = Client::with_transport(Box::new(FakeSpace::new()));
         let mut r = AnyModuleResolver::new(std::sync::Arc::new(c), "cur", None, BTreeMap::new());

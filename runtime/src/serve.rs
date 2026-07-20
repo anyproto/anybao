@@ -188,6 +188,19 @@ struct Shared {
     watcher: Mutex<Watcher>,
 }
 
+/// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
+/// verbatim; a missing `agent` entry binds the alias to the working
+/// space — the degenerate single-space shape.
+pub fn alias_map(
+    overlays: &BTreeMap<String, String>,
+    working_space: &str,
+) -> BTreeMap<String, String> {
+    let mut m = overlays.clone();
+    m.entry("agent".into())
+        .or_insert_with(|| working_space.to_string());
+    m
+}
+
 pub fn serve(mut cfg: Config) -> Result<()> {
     let client = Arc::new(Client::new(&cfg.addr));
     let space = ensure_space(&client, &cfg.agent_space)?;
@@ -229,13 +242,26 @@ pub fn serve(mut cfg: Config) -> Result<()> {
     // space — the host publishes skills above but injects no prompt wording
     // (isolation: the agent's context comes from `any`, not the filesystem).
 
+    // Overlays (ADR-009 §2): validate every configured space id up
+    // front — a typo'd overlay must fail boot, not the first use().
+    let aliases = alias_map(&cfg.overlays, &space);
+    for (name, id) in &aliases {
+        if id != &space {
+            client
+                .get_space(id)
+                .map_err(|e| anyhow::anyhow!("overlay {name:?} space {id}: {e}"))?;
+        }
+    }
+    let code_space = aliases["agent"].clone();
+
     // ADR-009 §4: an explicitly-passed --kernel is a dev override that
-    // bypasses the space; otherwise boot from the space via the cache.
+    // bypasses the space; otherwise boot from the agent overlay via
+    // the content-hash cache.
     let kernel_bytes = match &cfg.kernel {
         Some(path) => {
             std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
         }
-        None => crate::kernelcache::kernel_bytes(&client, &space, &cfg.cache_dir)?,
+        None => crate::kernelcache::kernel_bytes(&client, &code_space, &cfg.cache_dir)?,
     };
     let cage = Cage::new(&kernel_bytes)?;
     std::fs::create_dir_all(&cfg.traces_dir)?;
@@ -267,6 +293,8 @@ pub fn serve(mut cfg: Config) -> Result<()> {
         space: space.clone(),
         chat: chat.clone(),
         anchor: anchor.clone(),
+        aliases,
+        code_space,
     });
 
     control_api(shared.clone(), ctx.clone());
@@ -293,6 +321,11 @@ pub struct RunCtx {
     pub space: String,
     pub chat: String,
     pub anchor: String,
+    /// resolver alias namespace (ADR-009 §2) — overlays + the `agent`
+    /// default
+    pub aliases: BTreeMap<String, String>,
+    /// the agent overlay's space id (= aliases["agent"])
+    pub code_space: String,
 }
 
 impl RunCtx {
@@ -320,7 +353,7 @@ impl RunCtx {
             self.client.clone(),
             &self.space,
             None,
-            Default::default(),
+            self.aliases.clone(),
         )));
         b
     }
@@ -370,10 +403,19 @@ fn spawn_conversation(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         let run_id = RunCtx::new_run_id();
+        // agent code resolves through the explicit alias (ADR-009 §2);
+        // codeSpace lets the guest read overlay data (skills) directly
         let args = json!({
             "space": ctx.space, "chatId": ctx.chat, "userText": text,
-            "agentName": ctx.cfg.agent_name, "traceRef": run_id});
-        let result = ctx.run("toolcaller@v1", &args, mailbox, interrupt, Some(run_id));
+            "agentName": ctx.cfg.agent_name, "traceRef": run_id,
+            "codeSpace": ctx.code_space});
+        let result = ctx.run(
+            "agent:toolcaller@v1",
+            &args,
+            mailbox,
+            interrupt,
+            Some(run_id),
+        );
         if let Ok((trace_ref, rr)) = &result {
             if rr.status != "ok" {
                 let _ = ctx.client.chat_send(
@@ -583,5 +625,27 @@ fn handle_control(
             Ok(trigger_to_record(t))
         }
         _ => anyhow::bail!("no route: {method} {path}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alias_map_defaults_agent_to_working_space() {
+        let m = alias_map(&BTreeMap::new(), "ws1");
+        assert_eq!(m.get("agent").map(String::as_str), Some("ws1"));
+    }
+
+    #[test]
+    fn alias_map_keeps_configured_overlays_verbatim() {
+        let mut overlays = BTreeMap::new();
+        overlays.insert("agent".to_string(), "codeSpace".to_string());
+        overlays.insert("std".to_string(), "stdSpace".to_string());
+        let m = alias_map(&overlays, "ws1");
+        assert_eq!(m.get("agent").map(String::as_str), Some("codeSpace"));
+        assert_eq!(m.get("std").map(String::as_str), Some("stdSpace"));
+        assert_eq!(m.len(), 2);
     }
 }

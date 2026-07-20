@@ -70,9 +70,13 @@ enum Cmd {
         #[arg(long)]
         from_space: Option<String>,
         /// any server base url for --from-space (a --config
-        /// any.base_url wins over this)
-        #[arg(long, default_value = "http://127.0.0.1:7001")]
-        addr: String,
+        /// any.base_url wins over this) [default: config addr]
+        #[arg(long)]
+        addr: Option<String>,
+        /// anybao.toml host config for --from-space overlays/cache
+        /// [default: ./anybao.toml when present]
+        #[arg(long)]
+        config_file: Option<PathBuf>,
     },
     /// the agent: watch a chat, run conversations + triggers
     /// (defaults come from anybao.toml, ADR-009 §1; flags override)
@@ -260,8 +264,13 @@ fn main() -> Result<()> {
             timeout_s,
             from_space,
             addr,
+            config_file,
         } => {
             let args: Value = serde_json::from_str(&args).context("--args JSON")?;
+            // host config supplies overlays/cache/addr default for
+            // --from-space parity with serve (ADR-009 §2)
+            let host = config::Config::load(config_file.as_deref())?;
+            let addr = addr.unwrap_or_else(|| host.addr.clone());
             let mut config = load_map(&config)?;
             let mut secrets = load_secrets(&secrets)?;
             // bootstrap parity with serve (closes dev D3): defaults +
@@ -287,7 +296,7 @@ fn main() -> Result<()> {
                         client.clone(),
                         space_id,
                         None,
-                        Default::default(),
+                        serve::alias_map(&host.overlays, space_id),
                     )) as Box<dyn resolver::ModuleResolver + Send>
                 });
             let any_base = config
@@ -295,14 +304,15 @@ fn main() -> Result<()> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             // kernel: explicit path wins; --from-space defaults to the
-            // space via the cache (ADR-009 §4); local run to the local
-            // build
+            // agent overlay via the cache (ADR-009 §4); local run to
+            // the local build
             let kernel_bytes = match (&kernel, &from) {
                 (Some(path), _) => {
                     std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
                 }
                 (None, Some((client, space_id))) => {
-                    kernelcache::kernel_bytes(client, space_id, &config::default_cache_dir())?
+                    let aliases = serve::alias_map(&host.overlays, space_id);
+                    kernelcache::kernel_bytes(client, &aliases["agent"], &host.cache_dir)?
                 }
                 (None, None) => {
                     let path = std::path::Path::new("bin/kernel.wasm");
