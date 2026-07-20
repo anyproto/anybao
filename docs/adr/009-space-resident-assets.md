@@ -15,12 +15,13 @@ every `serve` start), `bin/kernel.wasm` (read off disk at boot). Host
 configuration is scattered across flags; there is no config file, and
 the crate is bin-only. Two goals force the change:
 
-1. **Fully space-resident agent** — code loads from spaces declared in
-   config; `anyrt deploy` is the only publish step. This implements
-   the already-decided `agent:` overlay split: agent CODE (shipped
-   programs/skills/kernel, churns every deploy) separated from user
-   DATA (chat, memory, user-authored skills/programs — permanent).
-   Update the agent by bumping the overlay; user data never churns.
+1. **Fully space-resident agent** — assets load from spaces declared
+   in config; `anyrt deploy` is the only publish step. A deployed
+   space is a **repo** (package-overlay sense): a filesystem folder of
+   programs, skills — more kinds later — published to a space, which
+   other spaces then import from. The shipped agent is just one such
+   repo; update it by bumping the overlay, the working space never
+   churns.
 2. **Lib mode** — other Rust apps embed the runtime (run the agent,
    run one program, replay traces) with config built programmatically.
 
@@ -70,12 +71,32 @@ cache = "~/.cache/anybao"  # default: $XDG_CACHE_HOME/anybao
 - Lib mode builds the same resolved `Config` via a builder — no file,
   no env reads (cache dir et al. passed explicitly).
 
-### 2. The `agent` overlay — code/data split
+### 2. Overlays are repos
 
-The code space is **just an overlay named `agent`** — no dedicated
-config concept. Its space holds shipped programs, skills, and the
-kernel; `anyrt deploy` writes it (programs + skills + kernel,
-hash-gated as today). The working space keeps chat, brain, memory,
+An **overlay is a repo**: a filesystem folder holding programs and
+skills (more asset kinds later), published to a space with
+
+```
+anyrt deploy --source <folder> --target <spaceId | overlayName>
+```
+
+(`--target` takes a raw space id or an overlay name from
+`[overlays]`; hash-gated as today. The source folder's asset kinds
+are its subfolders — `<src>/programs/`, `<src>/skills/`, future kinds
+alongside — so one repo folder is self-describing.) Any space
+deployed this way is a
+repo other spaces import from — the package-overlay model. Each repo
+carries a **README object**; its content is the overlay's
+description. The agent is made aware of configured overlays as
+name + description (from the README) — repo *contents* are not
+injected into context; discovery is `list_programs`, which gains the
+ability to list a given space's programs. Example of what this
+enables later (not in scope): a `connectors` repo the agent knows
+about by description and browses on demand.
+
+The `agent` overlay is special **only** in that serve injects its
+programs and skills into the initial context (§3); it is deployed the
+regular way. The working space keeps chat, brain, memory,
 `agent_config`, and everything the user or the running agent authors.
 
 Resolution (ADR-004 §2 intact, now wired):
@@ -124,7 +145,12 @@ Data contract, in the `agent` overlay space:
   `{sha256, size, fileId, name, uploadedAt}`.
 - Bytes attached via the files API (`POST
   /spaces/{id}/objects/{oid}/files?name=kernel.wasm`, raw
-  octet-stream). Deploy is hash-gated on the record's `sha256`.
+  octet-stream). Published by `anyrt deploy --kernel <path>` (default
+  `bin/kernel.wasm`; meaningful for the `agent` overlay target),
+  hash-gated on the record's `sha256`.
+- Failure to load the kernel from the space at boot (missing object,
+  download error, digest mismatch) is a **hard error** — no silent
+  fallback.
 
 Boot protocol: read the record → cache hit on
 `<cache>/kernel/<sha256>.wasm` uses local bytes; miss downloads
@@ -191,11 +217,21 @@ lib API (the crate stays sync/thread-based).
 
 ## Open questions (for review)
 
-1. `agent_kernel` object + file-attach against the live server is
-   unverified (the `agent_trigger` ensure-typed precedent suggests it
-   works); fallback is a plain untyped anchor object.
-2. File durability tier right after a 20 MB attach on a local server —
-   deploy should not need to wait on `durable`; confirm.
-3. `stop()` latency is bounded by the next SSE frame/heartbeat
-   (blocking reads); a read timeout on the stream is the likely fix —
-   decide during the lib-mode commit.
+1. ~~`agent_kernel` object + file-attach against the live server is
+   unverified.~~ **Resolved 2026-07-21**: acceptable unverified; any
+   kernel-load failure at boot is a hard error (§4), no fallback.
+2. The files API marks each attach with a `durable` flag (server-side
+   background processing — chunking/pinning the blob after the upload
+   returns). Whether a `GET .../content` immediately after attach can
+   race that processing on a local server is untested. Position:
+   deploy does NOT poll `/files/{id}/status`; if an early boot download
+   fails it is the §4 hard error and a retry (re-run serve) succeeds
+   once processing settles.
+3. `stop()` latency: the chat watcher blocks in a socket read on the
+   SSE stream, so the shutdown flag is only observed when the server
+   sends the next event or heartbeat (or the 2 s reconnect sleep).
+   Likely fix: a read timeout on the stream socket so the loop wakes
+   periodically to check the flag — decide during the lib-mode commit.
+4. Bootstrap of a fresh overlay space: `--target` takes strict ids and
+   never creates. Who mints the space id — the any client/UI, or a
+   small `anyrt` helper that creates a space and prints its id?
