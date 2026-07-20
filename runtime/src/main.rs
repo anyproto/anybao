@@ -5,6 +5,7 @@
 mod anyapi;
 mod broker;
 mod caps;
+mod config;
 mod deploy;
 mod drift;
 mod replay;
@@ -71,23 +72,31 @@ enum Cmd {
         addr: String,
     },
     /// the agent: watch a chat, run conversations + triggers
+    /// (defaults come from anybao.toml, ADR-009 §1; flags override)
     Serve {
-        #[arg(long, default_value = "http://127.0.0.1:7001")]
-        addr: String,
-        #[arg(long, default_value = "bao")]
-        space: String,
-        #[arg(long, default_value = "bao")]
-        agent_name: String,
+        /// any server base url [default: config addr]
+        #[arg(long)]
+        addr: Option<String>,
+        /// working space name [default: config agent.space]
+        #[arg(long)]
+        space: Option<String>,
+        #[arg(long)]
+        agent_name: Option<String>,
         #[arg(long, default_value = "programs")]
         programs: PathBuf,
         #[arg(long, default_value = "skills")]
         skills: PathBuf,
         #[arg(long, default_value = "bin/kernel.wasm")]
         kernel: PathBuf,
-        #[arg(long, default_value = "traces")]
-        traces_dir: PathBuf,
-        #[arg(long, default_value_t = 7010)]
-        control_port: u16,
+        /// [default: config paths.traces]
+        #[arg(long)]
+        traces_dir: Option<PathBuf>,
+        /// [default: config agent.control_port]
+        #[arg(long)]
+        control_port: Option<u16>,
+        /// anybao.toml host config [default: ./anybao.toml when present]
+        #[arg(long)]
+        config_file: Option<PathBuf>,
         #[arg(long)]
         config: Option<PathBuf>,
         #[arg(long)]
@@ -96,14 +105,19 @@ enum Cmd {
     /// publish programs + skills to the agent space (hash-gated), so a
     /// running serve picks changes up on its next run — no restart
     Deploy {
-        #[arg(long, default_value = "http://127.0.0.1:7001")]
-        addr: String,
-        #[arg(long, default_value = "bao")]
-        space: String,
+        /// any server base url [default: config addr]
+        #[arg(long)]
+        addr: Option<String>,
+        /// target space name [default: config agent.space]
+        #[arg(long)]
+        space: Option<String>,
         #[arg(long, default_value = "programs")]
         programs: PathBuf,
         #[arg(long, default_value = "skills")]
         skills: PathBuf,
+        /// anybao.toml host config [default: ./anybao.toml when present]
+        #[arg(long)]
+        config_file: Option<PathBuf>,
     },
     /// trace tooling over device-local run files
     Trace {
@@ -312,33 +326,45 @@ fn main() -> Result<()> {
             kernel,
             traces_dir,
             control_port,
+            config_file,
             config,
             secrets,
         } => {
-            let mut config = load_map(&config)?;
-            let mut secrets = load_secrets(&secrets)?;
-            bootstrap(&mut config, &mut secrets, &addr);
-            serve::serve(serve::ServeConfig {
+            let mut cfg = config::Config::load(config_file.as_deref())?;
+            cfg.apply(config::CliOverrides {
                 addr,
-                space_name: space,
+                space,
                 agent_name,
-                programs,
-                skills,
-                kernel,
-                traces_dir,
                 control_port,
-                config,
-                secrets,
-            })
+                traces_dir,
+            });
+            cfg.programs = programs;
+            cfg.skills = skills;
+            cfg.kernel = kernel;
+            // guest cascade (ADR-009 §1): the [config] table already
+            // seeded cfg.config; the --config JSON file shadows it
+            for (k, v) in load_map(&config)? {
+                cfg.config.insert(k, v);
+            }
+            cfg.secrets = load_secrets(&secrets)?;
+            bootstrap(&mut cfg.config, &mut cfg.secrets, &cfg.addr);
+            serve::serve(cfg)
         }
         Cmd::Deploy {
             addr,
             space,
             programs,
             skills,
+            config_file,
         } => {
-            let client = anyapi::Client::new(&addr);
-            let space_id = serve::ensure_space(&client, &space)?;
+            let mut cfg = config::Config::load(config_file.as_deref())?;
+            cfg.apply(config::CliOverrides {
+                addr,
+                space,
+                ..Default::default()
+            });
+            let client = anyapi::Client::new(&cfg.addr);
+            let space_id = serve::ensure_space(&client, &cfg.agent_space)?;
             let deployed = deploy::Deployer::new(&client, &space_id).deploy_dir(&programs)?;
             println!("deploy → {deployed:?}");
             let skilled = deploy::SkillDeployer::new(&client, &space_id).deploy_dir(&skills)?;

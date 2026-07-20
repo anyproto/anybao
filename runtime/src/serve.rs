@@ -6,6 +6,7 @@
 
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
+use crate::config::Config;
 use crate::deploy::{Deployer, SkillDeployer};
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
@@ -18,23 +19,9 @@ use crate::triggers::{
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-pub struct ServeConfig {
-    pub addr: String,
-    pub space_name: String,
-    pub agent_name: String,
-    pub programs: PathBuf,
-    pub skills: PathBuf,
-    pub kernel: PathBuf,
-    pub traces_dir: PathBuf,
-    pub control_port: u16,
-    pub config: BTreeMap<String, Value>,
-    pub secrets: BTreeMap<String, String>,
-}
 
 fn now_s() -> f64 {
     SystemTime::now()
@@ -219,9 +206,9 @@ struct Shared {
     watcher: Mutex<Watcher>,
 }
 
-pub fn serve(mut cfg: ServeConfig) -> Result<()> {
+pub fn serve(mut cfg: Config) -> Result<()> {
     let client = Arc::new(Client::new(&cfg.addr));
-    let space = ensure_space(&client, &cfg.space_name)?;
+    let space = ensure_space(&client, &cfg.agent_space)?;
     let chat = general_chat(&client, &space)?;
     let anchor = ensure_typed(&client, &space, "agent-triggers", "agent_trigger")?;
 
@@ -314,7 +301,7 @@ pub fn serve(mut cfg: ServeConfig) -> Result<()> {
 pub struct RunCtx {
     pub cage: Arc<Cage>,
     pub client: Arc<Client>,
-    pub cfg: ServeConfig,
+    pub cfg: Config,
     pub space: String,
     pub chat: String,
     pub anchor: String,

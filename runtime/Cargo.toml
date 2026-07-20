@@ -8,7 +8,9 @@ description = "anyrt — the anybao runtime: wasmtime cage + the syscall surface
 # pinned to the wasmtime-py major the Python reference host embeds
 wasmtime = { version = "46", features = ["component-model"] }
 wasmtime-wasi = "46"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"          # default Map = BTreeMap → sorted keys = canonical JSON
+toml = "0.8"              # anybao.toml host config (ADR-009 §1)
 sha2 = "0.10"
 hex = "0.4"
 ureq = { version = "2", features = ["tls", "json"] }
