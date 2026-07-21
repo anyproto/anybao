@@ -7,6 +7,9 @@ Update an existing object by xKey. `body`: `{"name"?, "markdown"?, "<typeXKey>":
 ### query_objects(space, filter?, sort?, limit?, offset?, normalize?) [getter]
 Cross-object query over the space's object collection. `filter` / `sort` take readable **xKey** paths — an `any.types` xKey value (`{"any.types": "task"}`), dotted type-property paths (`{"task.status": "open"}`, `sort: ["-task.priority"]`), plus builtin/`id` keys (`{"id": {"$in": [...]}}`) — all resolved to server ids. Records come back **xKey-normalized**: user-type groups keyed by type xKey, props by prop xKey (`{"id": …, "any": {…}, "task": {"status": "open"}}`); builtin namespaces (`any`, `nav`) pass through verbatim. Pass `normalize=False` for the raw id-keyed shape (when you need the content ids themselves).
 
+### list_programs(space, tools_only?) [getter]
+Programs deployed in a space — an overlay/repo (see the `## Repos` section of your prompt) or the working space. Returns `[{name, version, anyTool, description}]` sorted by name. Import one from another space with `use("<repo-alias>:<name>@<version>")`; `tools_only=True` keeps rows exposing a tool surface.
+
 ### query(space, object_id, dataset, filter?, sort?, limit?) [getter]
 Per-object dataset query — `chat_messages`, `agent_turns`, `agent_memory_items`, `program_methods`, etc. Returns the dataset's records.
 

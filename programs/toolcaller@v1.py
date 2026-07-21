@@ -176,8 +176,8 @@ def _run_model_cells(parts, results):
 # filesystem — isolation principle. The host injects no prompt wording.
 
 
-def _load_system_skills(c, space):
-    """`{name: markdown}` for the _-prefixed agent_skill objects in the
+def _skills_in(c, space):
+    """`{name: markdown}` for the _-prefixed agent_skill objects in one
     space. Returns {} if the skill type isn't there yet (fresh space)."""
     type_id = next((t["id"] for t in c.list_types(space)
                     if (t.get("xKey") or t.get("key")) == "agent_skill"), None)
@@ -191,6 +191,17 @@ def _load_system_skills(c, space):
     return out
 
 
+def _load_system_skills(c, space, code_space=None):
+    """Two-tier skills (ADR-009 §3): shipped skills from the agent code
+    overlay, user skills from the working space, merged by name — the
+    working space wins (same shadowing doctrine as programs)."""
+    code_space = code_space or space
+    out = _skills_in(c, code_space)
+    if code_space != space:
+        out.update(_skills_in(c, space))
+    return out
+
+
 def _compose_skills(skills):
     """Fixed order (SYSTEM_SKILL_ORDER first, unknown _-skills sorted
     after), each trimmed, joined by blank lines."""
@@ -201,7 +212,8 @@ def _compose_skills(skills):
 
 _TOOLS_INTRO = (
     "## Tools\n\n"
-    "Each tool is a program reached with `use(\"<name>@v1\")`. Below: the "
+    "Each tool is a program reached with `use(...)` — the exact spec is on "
+    "the tool's `Import:` line. Below: the "
     "tool's description + a compact method SIGNATURE list — argument NAMES "
     "only, no shapes (a bare `body`/`opts` hides real structure), each "
     "tagged `[getter]` (reads), `[mutator]` (writes / side effects), or "
@@ -220,30 +232,39 @@ def _method_sig(m):
     return f"{name} [{kind}]" if kind else name
 
 
-def _tool_docs(c, space):
+def _tool_docs(c, space, code_space=None):
     """`## Tools` — each any_tool program's description + a one-line method
     SIGNATURE list (kept short: there can be many tools, and the full
-    per-method schema is retrievable from program_methods on demand). Sorted
-    oldest-first (stable tools stay put, new tools append) so the cached
-    prompt prefix doesn't churn."""
-    tools = []
-    for p in c.query_objects(space, filter={"program.any_tool": True}):
-        oid, prog = p["id"], (p.get("program") or {})
-        desc = c.query(space, oid, "program_description")
-        methods = sorted(c.query(space, oid, "program_methods"),
-                         key=lambda m: m.get("pos") or 0)
-        sigs = ", ".join(_method_sig(m) for m in methods)
-        block = [f"### {prog.get('name') or '?'}"]
-        if desc:
-            block.append(desc[0].get("text") or "")
-        if sigs:
-            block.append(f"Methods: {sigs}")
-        tools.append((p.get("createdAt") or 0, prog.get("name") or "",
-                      "\n\n".join(block)))
+    per-method schema is retrievable from program_methods on demand).
+    Two-tier (ADR-009 §2): shipped tools from the agent code overlay
+    (imported `agent:<name>@vN`), user-space tools unqualified, merged
+    by name — the working space wins. Sorted oldest-first (stable tools
+    stay put, new tools append) so the cached prompt prefix doesn't
+    churn."""
+    code_space = code_space or space
+    sources = ([(code_space, "agent:"), (space, "")]
+               if code_space != space else [(space, "")])
+    tools = {}
+    for sp, prefix in sources:
+        for p in c.query_objects(sp, filter={"program.any_tool": True}):
+            oid, prog = p["id"], (p.get("program") or {})
+            name = prog.get("name") or "?"
+            desc = c.query(sp, oid, "program_description")
+            methods = sorted(c.query(sp, oid, "program_methods"),
+                             key=lambda m: m.get("pos") or 0)
+            sigs = ", ".join(_method_sig(m) for m in methods)
+            spec = f"{prefix}{name}@{prog.get('version') or 'v1'}"
+            block = [f"### {name}", f'Import: `use("{spec}")`']
+            if desc:
+                block.append(desc[0].get("text") or "")
+            if sigs:
+                block.append(f"Methods: {sigs}")
+            # dict by name: a later source (the working space) shadows
+            tools[name] = (p.get("createdAt") or 0, name, "\n\n".join(block))
     if not tools:
         return ""
-    tools.sort(key=lambda t: (t[0], t[1]))  # oldest first, name tiebreak
-    return _TOOLS_INTRO + "\n\n" + "\n\n".join(b for _, _, b in tools)
+    rows = sorted(tools.values(), key=lambda t: (t[0], t[1]))
+    return _TOOLS_INTRO + "\n\n" + "\n\n".join(b for _, _, b in rows)
 
 
 def _memory_categories(c, space):
@@ -258,11 +279,38 @@ def _memory_categories(c, space):
     return ("Memory categories in use: " + ", ".join(cats)) if cats else ""
 
 
-def compose_system(c, space):
-    """The full system prompt loaded from the space: skills + tool docs +
-    memory categories. Guest-side — the host injects nothing."""
-    parts = [_compose_skills(_load_system_skills(c, space)),
-             _tool_docs(c, space), _memory_categories(c, space)]
+def _repo_inventory(c, overlays):
+    """`## Repos` — the configured overlays as name + first README line
+    (ADR-009 §2). Repo CONTENTS stay out of context — the agent browses
+    on demand with `list_programs`."""
+    lines = []
+    for name, sid in sorted((overlays or {}).items()):
+        desc = ""
+        try:
+            ro = c.query_objects(sid, filter={"any.name": "README"}, limit=1)
+            if ro:
+                md = (c.get_markdown(sid, ro[0]["id"]) or "").strip()
+                desc = next((ln.lstrip("# ").strip()
+                             for ln in md.splitlines() if ln.strip()), "")
+        except Exception:
+            desc = ""  # a repo with no README still lists
+        lines.append(f"- `{name}` (space `{sid}`)" + (f" — {desc}" if desc else ""))
+    if not lines:
+        return ""
+    return ("## Repos\n\n"
+            "Configured program overlays (package repositories). Import a "
+            'repo\'s program with `use("<repo>:<name>@vN")`; list what a repo '
+            "offers with `c.list_programs(<spaceId>)`.\n\n" + "\n".join(lines))
+
+
+def compose_system(c, space, code_space=None, overlays=None):
+    """The full system prompt loaded from the space(s): skills + tool
+    docs (both two-tier: agent code overlay + working space, working
+    wins) + repo inventory + memory categories. Guest-side — the host
+    injects nothing."""
+    parts = [_compose_skills(_load_system_skills(c, space, code_space)),
+             _tool_docs(c, space, code_space), _repo_inventory(c, overlays),
+             _memory_categories(c, space)]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -274,6 +322,8 @@ def main(args):
     max_tokens = args.get("maxTokensTotal", MAX_TOKENS_TOTAL)
     agent_name = args.get("agentName", "bao")
     quiet = args.get("quiet", False)
+    code_space = args.get("codeSpace") or space
+    overlays = args.get("overlays") or {}
 
     c = use("any@v1").client()  # noqa: F821 - guest global
     llm = use("llm@v1")  # noqa: F821
@@ -284,11 +334,17 @@ def main(args):
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    system = compose_system(c, space) + (
+    code_line = (
+        f"- agent code space (the `agent:` overlay): `{code_space}` — "
+        'shipped programs import as `use("agent:<name>@vN")`; your own '
+        "programs in the working space import unqualified and SHADOW "
+        "shipped ones by name\n") if code_space != space else ""
+    system = compose_system(c, space, code_space, overlays) + (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
+        + code_line +
         "- other spaces: `c.list_spaces()`; the user's live view rides the "
         "newest user message as a `[now: … | user's view — …]` line")
     if quiet:

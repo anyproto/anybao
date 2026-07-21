@@ -327,6 +327,26 @@ class Client:
         return [self._normalize_record(space, r) for r in recs] if normalize \
             else recs
 
+    @span("any.list_programs", kind="getter")  # noqa: F821 - guest global
+    def list_programs(self, space, tools_only=False):
+        """Programs deployed in a space — an overlay/repo or your own
+        working space (ADR-009 §2). Returns [{name, version, anyTool,
+        description}] sorted by name. Import one from another space with
+        `use("<alias-or-spaceId>:<name>@<version>")`."""
+        out = []
+        for p in self.query_objects(space, filter={"any.types": "program"},
+                                    limit=200):
+            prog = p.get("program") or {}
+            if tools_only and not prog.get("any_tool"):
+                continue
+            desc = self.query(space, p["id"], "program_description", limit=1)
+            out.append({"name": prog.get("name") or "",
+                        "version": prog.get("version") or "",
+                        "anyTool": bool(prog.get("any_tool")),
+                        "description": ((desc[0].get("text") or "").strip()
+                                        if desc else "")})
+        return sorted(out, key=lambda r: (r["name"], r["version"]))
+
     @span("any.query", kind="getter")  # noqa: F821 - guest global
     def query(self, space, object_id, dataset, **opts):
         """Per-object dataset query (chat_messages, agent_turns, …).

@@ -404,11 +404,19 @@ fn spawn_conversation(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
     std::thread::spawn(move || {
         let run_id = RunCtx::new_run_id();
         // agent code resolves through the explicit alias (ADR-009 §2);
-        // codeSpace lets the guest read overlay data (skills) directly
+        // codeSpace lets the guest read overlay data (skills) directly.
+        // Other overlays ride along for the prompt's repo inventory —
+        // `agent` is excluded (it has its own Runtime-context line).
+        let overlays: Map<String, Value> = ctx
+            .aliases
+            .iter()
+            .filter(|(name, _)| name.as_str() != "agent")
+            .map(|(name, id)| (name.clone(), json!(id)))
+            .collect();
         let args = json!({
             "space": ctx.space, "chatId": ctx.chat, "userText": text,
             "agentName": ctx.cfg.agent_name, "traceRef": run_id,
-            "codeSpace": ctx.code_space});
+            "codeSpace": ctx.code_space, "overlays": overlays});
         let result = ctx.run(
             "agent:toolcaller@v1",
             &args,

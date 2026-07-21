@@ -297,3 +297,120 @@ def test_context_suffix_degrades_to_timestamp_without_pointer():
     run(w)
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
     assert "[now: " in user and "user's view" not in user
+
+
+# --- two-tier composition (ADR-009 §2/§3) -------------------------------------
+
+def _helpers():
+    g = {"effect": None, "use": None, "subcell": None, "now": lambda: 0}
+    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
+    return g
+
+
+class TwoSpaces:
+    """Fake any-client over a code space + a working space."""
+
+    def __init__(self):
+        self.skills = {
+            "code": [("s1", "_core", "# shipped core"),
+                     ("s2", "_extra", "# shipped extra")],
+            "user": [("u1", "_core", "# user core")]}
+        self.tools = {
+            "code": [("p1", "webSearch", "v1", 1, "searches the web"),
+                     ("p2", "shippedOnly", "v1", 2, "only shipped")],
+            "user": [("q1", "webSearch", "v1", 9, "my patched search")]}
+        self.readmes = {"conn": ("r1", "# Connectors\n\nintegrations live here")}
+
+    def list_types(self, space):
+        return [{"id": "skillT", "xKey": "agent_skill"}]
+
+    def query_objects(self, space, filter=None, limit=None, **kw):
+        if filter == {"any.types": "skillT"}:
+            return [{"id": oid, "any": {"name": name}}
+                    for oid, name, _ in self.skills.get(space, [])]
+        if filter == {"program.any_tool": True}:
+            return [{"id": oid, "createdAt": at,
+                     "program": {"name": n, "version": v, "any_tool": True}}
+                    for oid, n, v, at, _ in self.tools.get(space, [])]
+        if filter == {"any.name": "README"}:
+            row = self.readmes.get(space)
+            return [{"id": row[0]}] if row else []
+        return []
+
+    def query(self, space, oid, dataset, **kw):
+        if dataset == "program_description":
+            for o, _, _, _, desc in self.tools.get(space, []):
+                if o == oid:
+                    return [{"id": "main", "text": desc}]
+        return []
+
+    def get_markdown(self, space, oid):
+        for o, _, md in self.skills.get(space, []):
+            if o == oid:
+                return md
+        row = self.readmes.get(space)
+        if row and row[0] == oid:
+            return row[1]
+        return ""
+
+    def get_brain(self, space):
+        return {}
+
+
+def test_skills_merge_working_space_wins():
+    g = _helpers()
+    skills = g["_load_system_skills"](TwoSpaces(), "user", "code")
+    # user copy shadows the shipped _core; shipped-only _extra survives
+    assert skills == {"_core": "# user core", "_extra": "# shipped extra"}
+
+
+def test_skills_degenerate_single_space_reads_once():
+    g = _helpers()
+    skills = g["_load_system_skills"](TwoSpaces(), "code", "code")
+    assert skills == {"_core": "# shipped core", "_extra": "# shipped extra"}
+
+
+def test_tool_docs_two_tier_prefixes_and_shadows():
+    g = _helpers()
+    docs = g["_tool_docs"](TwoSpaces(), "user", "code")
+    # shipped-only tool imports through the agent: alias
+    assert 'Import: `use("agent:shippedOnly@v1")`' in docs
+    # the user-space webSearch shadows the shipped one: unqualified import
+    assert 'Import: `use("webSearch@v1")`' in docs
+    assert 'Import: `use("agent:webSearch@v1")`' not in docs
+    assert "my patched search" in docs and "searches the web" not in docs
+
+
+def test_tool_docs_degenerate_has_no_prefix():
+    g = _helpers()
+    docs = g["_tool_docs"](TwoSpaces(), "code", "code")
+    assert 'Import: `use("webSearch@v1")`' in docs
+    assert "agent:" not in docs
+
+
+def test_repo_inventory_lists_readme_first_line():
+    g = _helpers()
+    inv = g["_repo_inventory"](TwoSpaces(), {"conn": "conn", "bare": "bareSpace"})
+    assert "## Repos" in inv
+    assert "- `conn` (space `conn`) — Connectors" in inv
+    assert "- `bare` (space `bareSpace`)" in inv          # no README: still listed
+    assert "list_programs" in inv
+
+
+def test_repo_inventory_empty_overlays_is_absent():
+    g = _helpers()
+    assert g["_repo_inventory"](TwoSpaces(), {}) == ""
+
+
+def test_runtime_context_names_the_code_space():
+    w = World([done_reply("hi")])
+    run(w, codeSpace="codeSp1", overlays={"conn": "connSp"})
+    system = w.llm_calls[0]["system"]
+    assert "agent code space (the `agent:` overlay): `codeSp1`" in system
+    assert 'use("agent:<name>@vN")' in system
+
+
+def test_runtime_context_degenerate_omits_code_line():
+    w = World([done_reply("hi")])
+    run(w)  # no codeSpace arg → code space == working space
+    assert "agent code space" not in w.llm_calls[0]["system"]

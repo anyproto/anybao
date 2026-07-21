@@ -435,3 +435,41 @@ def test_get_ui_context_none_when_type_or_pointer_absent():
         "/types/T1/properties": {"properties": []},
         "/objects/query": {"records": []}})
     assert client(fx).get_ui_context("s1") is None
+
+
+# --- list_programs (ADR-009 §2: repo browsing) --------------------------------
+
+_PROG_REPLIES = {
+    "/types": {"types": [{"id": "bafyPROG", "name": "Program", "xKey": "program"}]},
+    "/types/bafyPROG/properties": {"properties": [
+        {"id": "bafyNAME", "name": "Name", "xKey": "name"},
+        {"id": "bafyVER", "name": "Version", "xKey": "version"},
+        {"id": "bafyTOOL", "name": "Any Tool", "xKey": "any_tool"}]},
+    "/objects/query": {"records": [
+        {"id": "p1", "any": {"name": "webSearch", "types": ["bafyPROG"]},
+         "bafyPROG": {"bafyNAME": "webSearch", "bafyVER": "v1",
+                      "bafyTOOL": True}},
+        {"id": "p2", "any": {"name": "helper", "types": ["bafyPROG"]},
+         "bafyPROG": {"bafyNAME": "helper", "bafyVER": "v2",
+                      "bafyTOOL": False}}]},
+    "/query": {"records": [{"id": "main", "text": "Does a thing.  "}]},
+}
+
+
+def test_list_programs_lists_a_space_sorted():
+    fx = wire(replies=dict(_PROG_REPLIES))
+    rows = client(fx).list_programs("repo1")
+    assert rows == [
+        {"name": "helper", "version": "v2", "anyTool": False,
+         "description": "Does a thing."},
+        {"name": "webSearch", "version": "v1", "anyTool": True,
+         "description": "Does a thing."}]
+    # the object query targeted the requested space with the program filter
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    assert body["filter"] == {"any.types": "bafyPROG"}
+
+
+def test_list_programs_tools_only_filters():
+    fx = wire(replies=dict(_PROG_REPLIES))
+    rows = client(fx).list_programs("repo1", tools_only=True)
+    assert [r["name"] for r in rows] == ["webSearch"]
