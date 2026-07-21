@@ -10,3 +10,4 @@ bin/
 runtime/target/
 traces/
 *.log
+/anybao.toml
