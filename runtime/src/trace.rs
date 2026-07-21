@@ -72,7 +72,7 @@ impl TraceWriter {
         if let Some(f) = self.sink.as_mut() {
             let line = canonical_json(&rec);
             if writeln!(f, "{line}").and_then(|_| f.flush()).is_err() {
-                eprintln!("trace stream write failed; buffering until dump");
+                tracing::warn!("trace stream write failed; buffering until dump");
                 self.sink = None;
             }
         }

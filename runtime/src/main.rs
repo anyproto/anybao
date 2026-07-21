@@ -248,6 +248,14 @@ fn bootstrap(
 }
 
 fn main() -> Result<()> {
+    // bin-only: lib embedders install their own subscriber (or none)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .init();
     match Cli::parse().cmd {
         Cmd::Run {
             spec,

@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{error, info, warn};
 
 fn now_s() -> f64 {
     SystemTime::now()
@@ -97,7 +98,7 @@ fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> 
     let rows = match c.query(space, obj, CONFIG_DATASET, &json!({})) {
         Ok(rows) => rows,
         Err(e) => {
-            eprintln!("config overrides unavailable ({e}); using defaults");
+            warn!("config overrides unavailable ({e}); using defaults");
             return Vec::new();
         }
     };
@@ -127,20 +128,20 @@ fn bootstrap_secret(c: &Client, space: &str, obj: &str, secrets: &mut BTreeMap<S
     match stored_local_secret(c, space, obj, ANTHROPIC_SECRET_REF) {
         Some(key) => {
             secrets.insert(ANTHROPIC_SECRET_REF.into(), key);
-            println!("config: anthropic key loaded from device-local store");
+            info!("config: anthropic key loaded from device-local store");
         }
         None => match secrets.get(ANTHROPIC_SECRET_REF).cloned() {
             Some(env_key) if !env_key.is_empty() => {
                 match persist_local_secret(c, space, obj, ANTHROPIC_SECRET_REF, &env_key) {
-                    Ok(()) => println!("config: anthropic key bootstrapped to device-local store"),
-                    Err(e) => eprintln!(
+                    Ok(()) => info!("config: anthropic key bootstrapped to device-local store"),
+                    Err(e) => warn!(
                         "config: could not persist anthropic key device-locally ({e}); \
                          using env value this run"
                     ),
                 }
             }
-            _ => eprintln!(
-                "WARN config: no anthropic key — set ANTHROPIC_API_KEY once to seed the \
+            _ => warn!(
+                "config: no anthropic key — set ANTHROPIC_API_KEY once to seed the \
                  device-local store, or write a localValue on the config object; \
                  llm effects will fail until one is set"
             ),
@@ -214,17 +215,17 @@ pub fn serve(mut cfg: Config) -> Result<()> {
     match agent_config_object(&client, &space) {
         Some(obj) => {
             let overrides = config_overrides(&client, &space, &obj);
-            println!("config obj={obj} overrides={}", overrides.len());
+            info!("config obj={obj} overrides={}", overrides.len());
             for (k, v) in overrides {
                 cfg.config.insert(k, v);
             }
             bootstrap_secret(&client, &space, &obj, &mut cfg.secrets);
         }
         None => {
-            eprintln!("space has no agentConfigObjectId — running on config defaults");
+            warn!("space has no agentConfigObjectId — running on config defaults");
             if !cfg.secrets.contains_key(ANTHROPIC_SECRET_REF) {
-                eprintln!(
-                    "WARN config: no ANTHROPIC_API_KEY and no config object to read a \
+                warn!(
+                    "config: no ANTHROPIC_API_KEY and no config object to read a \
                      device-local key from; llm effects will fail"
                 );
             }
@@ -298,7 +299,7 @@ pub fn serve(mut cfg: Config) -> Result<()> {
 
     control_api(shared.clone(), ctx.clone());
     trigger_ticker(shared.clone(), ctx.clone());
-    println!(
+    info!(
         "anyrt serving space={space} chat={chat} control=127.0.0.1:{}",
         ctx.cfg.control_port
     );
@@ -307,7 +308,7 @@ pub fn serve(mut cfg: Config) -> Result<()> {
         // reconnect loop: each feed drops its snapshot, so no replay
         match watch_chat(&shared, &ctx) {
             Ok(()) => {}
-            Err(e) => eprintln!("feed error: {e}; reconnecting in 2s"),
+            Err(e) => warn!("feed error: {e}; reconnecting in 2s"),
         }
         std::thread::sleep(Duration::from_secs(2));
     }
@@ -337,7 +338,7 @@ impl RunCtx {
                                              "host": "rust"}));
         let trace_path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
         if let Err(e) = writer.stream_to(&trace_path) {
-            eprintln!("trace streaming unavailable ({e}); will write at run end");
+            warn!("trace streaming unavailable ({e}); will write at run end");
         }
         let mut b = Broker::new(
             writer,
@@ -457,7 +458,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>) -> Result<()> {
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
                         let text = record["text"].as_str().unwrap_or("").to_string();
-                        println!("conversation started: {:?}", &text[..text.len().min(60)]);
+                        info!("conversation started: {:?}", &text[..text.len().min(60)]);
                         spawn_conversation(shared, ctx, text);
                     }
                 }
@@ -542,7 +543,7 @@ fn control_api(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
         let server = match tiny_http::Server::http(("127.0.0.1", ctx.cfg.control_port)) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("control API bind failed: {e}");
+                error!("control API bind failed: {e}");
                 return;
             }
         };

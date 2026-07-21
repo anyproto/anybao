@@ -20,6 +20,8 @@ uuid = { version = "1", features = ["v4"] }
 cron = "0.12"            # trigger cron expressions (every_s needs nothing)
 chrono = "0.4"           # cron's time source
 tiny_http = "0.12"       # the localhost trigger control API
+tracing = "0.1"          # runtime logs (embedders subscribe or get silence)
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # bin-side fmt
 
 [dev-dependencies]
 tempfile = "3"
