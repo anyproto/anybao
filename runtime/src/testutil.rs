@@ -132,10 +132,17 @@ struct State {
     markdown: BTreeMap<(String, String), String>,
     /// (space, fileId) → (objectId, name, bytes)
     files: BTreeMap<(String, String), (String, String, Vec<u8>)>,
+    /// inviteToken → spaceId (ADR-009 §8)
+    invites: BTreeMap<String, String>,
+    /// space → [(recordId, identity)] pending join requests
+    pending: BTreeMap<String, Vec<(String, String)>>,
+    /// (space, identity) → (permission, status)
+    members: BTreeMap<(String, String), (String, String)>,
     next_obj: u64,
     next_type: u64,
     next_prop: u64,
     next_file: u64,
+    next_req: u64,
 }
 
 impl FakeSpace {
@@ -341,6 +348,75 @@ impl Transport for FakeSpace {
                         ))
                     }
                 }
+            }
+            // --- sharing (ADR-009 §8) ---
+            ("POST", ["v1", "spaces", sp, "invites"]) => {
+                let token = format!("inv_{sp}");
+                s.invites.insert(token.clone(), sp.to_string());
+                json!({"inviteToken": token, "spaceId": sp})
+            }
+            ("POST", ["v1", "spaces", "join"]) => {
+                let token = body["inviteToken"].as_str().unwrap_or("");
+                let Some(sp) = s.invites.get(token).cloned() else {
+                    return Ok((
+                        400,
+                        json!({"error": {"code": "invite.invalid",
+                                         "message": "unknown invite"}}),
+                    ));
+                };
+                s.next_req += 1;
+                let rid = format!("req{}", s.next_req);
+                let identity = body["metadata"]["name"].as_str().unwrap_or("joiner");
+                s.pending
+                    .entry(sp.clone())
+                    .or_default()
+                    .push((rid, identity.to_string()));
+                return Ok((202, json!({"id": sp, "status": "joining"})));
+            }
+            ("GET", ["v1", "spaces", sp, "members", "requests"]) => {
+                let reqs: Vec<Value> = s
+                    .pending
+                    .get(*sp)
+                    .map(|v| {
+                        v.iter()
+                            .map(|(rid, id)| json!({"recordId": rid, "identity": id}))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                json!({"requests": reqs})
+            }
+            ("POST", ["v1", "spaces", sp, "acl", "accept"]) => {
+                let rid = body["requestRecordId"].as_str().unwrap_or("");
+                let perm = body["permission"].as_str().unwrap_or("none").to_string();
+                let Some(list) = s.pending.get_mut(*sp) else {
+                    return Ok((
+                        404,
+                        json!({"error": {"code": "request.not_found",
+                                         "message": "no pending requests"}}),
+                    ));
+                };
+                let Some(pos) = list.iter().position(|(r, _)| r == rid) else {
+                    return Ok((
+                        404,
+                        json!({"error": {"code": "request.not_found",
+                                         "message": format!("no request {rid}")}}),
+                    ));
+                };
+                let (_, identity) = list.remove(pos);
+                s.members
+                    .insert((sp.to_string(), identity), (perm, "active".into()));
+                json!({})
+            }
+            ("GET", ["v1", "spaces", sp, "members"]) => {
+                let members: Vec<Value> = s
+                    .members
+                    .iter()
+                    .filter(|((space, _), _)| space == sp)
+                    .map(|((_, id), (perm, status))| {
+                        json!({"identity": id, "permission": perm, "status": status})
+                    })
+                    .collect();
+                json!({"members": members})
             }
             ("GET", ["v1", "spaces", _, "agent", "brain"]) => json!({"objectId": "brain"}),
             _ => {

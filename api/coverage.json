@@ -148,7 +148,7 @@
     "GET /spaces/{spaceId}/members": {
       "excluded": null,
       "fingerprint": "sha256:5c63cf769c659144",
-      "helper": null
+      "helper": "members"
     },
     "GET /spaces/{spaceId}/members/me": {
       "excluded": null,
@@ -158,7 +158,7 @@
     "GET /spaces/{spaceId}/members/requests": {
       "excluded": null,
       "fingerprint": "sha256:5c63cf769c659144",
-      "helper": null
+      "helper": "join_requests"
     },
     "GET /spaces/{spaceId}/members/subscribe": {
       "excluded": null,
@@ -268,7 +268,7 @@
     "POST /spaces/join": {
       "excluded": null,
       "fingerprint": "sha256:834e4297c5a3e7ab",
-      "helper": null
+      "helper": "join_space"
     },
     "POST /spaces/one-to-one": {
       "excluded": null,
@@ -293,7 +293,7 @@
     "POST /spaces/{spaceId}/acl/accept": {
       "excluded": null,
       "fingerprint": "sha256:e5227629d08b5538",
-      "helper": null
+      "helper": "acl_accept"
     },
     "POST /spaces/{spaceId}/acl/add": {
       "excluded": null,
@@ -368,7 +368,7 @@
     "POST /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:49f30fb16b351f40",
-      "helper": null
+      "helper": "create_invite"
     },
     "POST /spaces/{spaceId}/modify": {
       "excluded": "raw modify \u2014 helper wraps internally",

@@ -392,6 +392,70 @@ impl Client {
         )
     }
 
+    // --- sharing (ADR-009 §8) ---
+    /// POST /v1/spaces/{s}/invites — mint the space's RequestToJoin
+    /// invite. Reply `{inviteToken, spaceId}`. The token carries NO
+    /// permission — the grant happens at `acl_accept`.
+    pub fn create_invite(&self, space_id: &str) -> Result<Value, AnyError> {
+        self.call("POST", &format!("/v1/spaces/{space_id}/invites"), None)
+    }
+
+    /// POST /v1/spaces/join — request membership with an invite token.
+    /// Returns (status, SpaceInfo): 201 = joined, 202 = pending the
+    /// owner's approval.
+    pub fn join_space(
+        &self,
+        invite_token: &str,
+        metadata: Option<&Value>,
+    ) -> Result<(u16, Value), AnyError> {
+        let mut body = json!({"inviteToken": invite_token});
+        if let Some(m) = metadata {
+            body["metadata"] = m.clone();
+        }
+        let (status, data) = self
+            .transport
+            .send("POST", "/v1/spaces/join", Some(&body))?;
+        Ok((status, unwrap_envelope(status, data)?))
+    }
+
+    /// GET /v1/spaces/{s}/members/requests — pending join requests
+    /// (`[{recordId, identity, name, ...}]`).
+    pub fn join_requests(&self, space_id: &str) -> Result<Vec<Value>, AnyError> {
+        Ok(records_of(
+            self.call(
+                "GET",
+                &format!("/v1/spaces/{space_id}/members/requests"),
+                None,
+            )?,
+            "requests",
+        ))
+    }
+
+    /// POST /v1/spaces/{s}/acl/accept — approve one pending join
+    /// request with a permission (`reader` = view-only, ADR-009 §8).
+    pub fn acl_accept(
+        &self,
+        space_id: &str,
+        request_record_id: &str,
+        permission: &str,
+    ) -> Result<(), AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/acl/accept"),
+            Some(&json!({"requestRecordId": request_record_id,
+                         "permission": permission})),
+        )?;
+        Ok(())
+    }
+
+    /// GET /v1/spaces/{s}/members — the space's member list.
+    pub fn members(&self, space_id: &str) -> Result<Vec<Value>, AnyError> {
+        Ok(records_of(
+            self.call("GET", &format!("/v1/spaces/{space_id}/members"), None)?,
+            "members",
+        ))
+    }
+
     // --- files (ADR-009 §4) ---
     /// POST /v1/spaces/{s}/objects/{o}/files?name=… — attach raw bytes
     /// to an object; the reply is the server's FileInfo (fileId, size,
@@ -1018,6 +1082,63 @@ mod tests {
         assert_eq!(meta["objectId"], json!("obj1"));
         // unknown file id is a 404, not empty bytes
         assert!(c.download_file("sp", "nope").is_err());
+    }
+
+    #[test]
+    fn sharing_wire_shapes() {
+        let (c, log) = stub_client();
+        c.create_invite("sp").unwrap();
+        c.join_space("tok123", Some(&json!({"name": "bao"})))
+            .unwrap();
+        c.join_requests("sp").unwrap();
+        c.acl_accept("sp", "req1", "reader").unwrap();
+        c.members("sp").unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[0].1, "/v1/spaces/sp/invites");
+        assert_eq!(
+            (calls[1].1.as_str(), calls[1].2.clone()),
+            (
+                "/v1/spaces/join",
+                Some(json!({"inviteToken": "tok123", "metadata": {"name": "bao"}}))
+            )
+        );
+        assert_eq!(calls[2].1, "/v1/spaces/sp/members/requests");
+        assert_eq!(
+            (calls[3].1.as_str(), calls[3].2.clone()),
+            (
+                "/v1/spaces/sp/acl/accept",
+                Some(json!({"permission": "reader", "requestRecordId": "req1"}))
+            )
+        );
+        assert_eq!(calls[4].1, "/v1/spaces/sp/members");
+    }
+
+    #[test]
+    fn join_flow_round_trip_over_fake_space() {
+        // publisher mints an invite; joiner requests; approval as
+        // reader lands them active — the ADR-009 §8 handshake
+        let c = Client::with_transport(Box::new(crate::testutil::FakeSpace::new()));
+        let inv = c.create_invite("repo").unwrap();
+        let token = inv["inviteToken"].as_str().unwrap();
+
+        let (status, info) = c.join_space(token, Some(&json!({"name": "bao"}))).unwrap();
+        assert_eq!(status, 202); // pending the owner's approval
+        assert_eq!(info["status"], json!("joining"));
+
+        let reqs = c.join_requests("repo").unwrap();
+        assert_eq!(reqs.len(), 1);
+        let rid = reqs[0]["recordId"].as_str().unwrap();
+
+        c.acl_accept("repo", rid, "reader").unwrap();
+        assert!(c.join_requests("repo").unwrap().is_empty());
+        let members = c.members("repo").unwrap();
+        assert_eq!(members[0]["permission"], json!("reader"));
+        assert_eq!(members[0]["status"], json!("active"));
+
+        // a bogus token is a 400, not a silent pend
+        assert!(c.join_space("nope", None).is_err());
+        // accepting a vanished request is a 404
+        assert!(c.acl_accept("repo", rid, "reader").is_err());
     }
 
     #[test]
