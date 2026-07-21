@@ -255,25 +255,46 @@ pub enum OverlayMembership {
     Pending,
 }
 
+/// The overlay space's status in THIS account's space list (a local
+/// read — deliberately NOT `get_space`, which for a never-tracked id
+/// sends the server on an unbounded remote load that can wedge the
+/// whole Spaces surface; observed live 2026-07-21, upstream fix
+/// pending). None = the account doesn't track the space at all.
+fn tracked_status(client: &Client, id: &str) -> Result<Option<String>> {
+    for sp in client.list_spaces(None)? {
+        if sp["id"] == id {
+            return Ok(Some(sp["status"].as_str().unwrap_or("active").to_string()));
+        }
+    }
+    Ok(None)
+}
+
 /// ADR-009 §8: probe one overlay; when this account isn't a member yet
 /// and an invite is configured, send the join request and PROCEED —
 /// never block or poll. The invite may be a RequestToJoin token (owner
 /// approval grants `reader`) or a public GUEST token (read-only, no
 /// approval — the server auto-detects). A missing invite is a hard
-/// boot error.
+/// boot error. Membership is read off the SPACE LIST (local), never a
+/// remote-loading single-space GET.
 pub fn probe_or_join_overlay(
     client: &Client,
     name: &str,
     overlay: &crate::config::Overlay,
 ) -> Result<OverlayMembership> {
     let id = &overlay.space;
-    let missing = match client.get_space(id) {
-        Ok(_) => return Ok(OverlayMembership::Member),
-        Err(e) => e,
-    };
+    match tracked_status(client, id)? {
+        Some(status) if status == "active" => return Ok(OverlayMembership::Member),
+        // tracked but still joining/loading (a prior join, a guest
+        // load in progress) — nothing to send, just not ready yet
+        Some(status) => {
+            info!("overlay {name:?}: space tracked, status {status:?} — waiting for it");
+            return Ok(OverlayMembership::Pending);
+        }
+        None => {}
+    }
     let Some(invite) = &overlay.invite else {
         anyhow::bail!(
-            "overlay {name:?} space {id}: {missing} — not joined and no invite \
+            "overlay {name:?} space {id}: not joined and no invite \
              configured; set `{name} = {{ space = \"{id}\", invite = \"…\" }}` \
              in [overlays] (ADR-009 §8)"
         );
@@ -486,7 +507,9 @@ impl RunCtx {
         if pending.is_empty() {
             return Ok(());
         }
-        pending.retain(|_, sid| self.client.get_space(sid).is_err());
+        pending.retain(|_, sid| {
+            !matches!(tracked_status(&self.client, sid), Ok(Some(ref st)) if st == "active")
+        });
         if pending.is_empty() {
             info!("overlays synced — agent ready");
             return Ok(());
@@ -873,42 +896,53 @@ mod tests {
         (Client::with_transport(Box::new(stub)), log)
     }
 
-    const NOT_FOUND: fn() -> (u16, Value) = || {
-        (
-            404,
-            json!({"error": {"code": "space.not_found", "message": "nope"}}),
-        )
-    };
+    fn spaces_reply(rows: Value) -> (u16, Value) {
+        (200, json!({"spaces": rows}))
+    }
 
     #[test]
-    fn probe_member_when_space_visible() {
-        let (c, log) = scripted(&[(200, json!({"id": "repo"}))]);
+    fn probe_member_when_space_active_in_list() {
+        // membership is a LOCAL space-list read — never a single-space
+        // GET (which remote-loads never-tracked ids server-side)
+        let (c, log) = scripted(&[spaces_reply(json!([{"id": "repo", "status": "active"}]))]);
         let m = probe_or_join_overlay(&c, "agent", &overlay("repo", None)).unwrap();
         assert_eq!(m, OverlayMembership::Member);
-        assert_eq!(log.lock().unwrap().len(), 1); // just the get_space probe
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "/v1/spaces");
+    }
+
+    #[test]
+    fn probe_pending_when_tracked_but_loading() {
+        // a prior join / guest load in progress: tracked, not active —
+        // nothing to send, just wait
+        let (c, log) = scripted(&[spaces_reply(json!([{"id": "repo", "status": "loading"}]))]);
+        let m = probe_or_join_overlay(&c, "agent", &overlay("repo", Some("tok"))).unwrap();
+        assert_eq!(m, OverlayMembership::Pending);
+        assert_eq!(log.lock().unwrap().len(), 1); // no join call
     }
 
     #[test]
     fn probe_joins_and_proceeds_pending() {
-        // 404 probe → join 202 → PENDING, no polling (ADR-009 §8)
+        // untracked → join 202 → PENDING, no polling (ADR-009 §8)
         let (c, log) = scripted(&[
-            NOT_FOUND(),
+            spaces_reply(json!([])),
             (202, json!({"id": "repo", "status": "joining"})),
         ]);
         let m = probe_or_join_overlay(&c, "agent", &overlay("repo", Some("tok"))).unwrap();
         assert_eq!(m, OverlayMembership::Pending);
         let calls = log.lock().unwrap();
-        assert_eq!(calls.len(), 2); // probe + join — nothing else
+        assert_eq!(calls.len(), 2); // list + join — nothing else
         assert_eq!(calls[1].1, "/v1/spaces/join");
         assert_eq!(calls[1].2.as_ref().unwrap()["inviteToken"], json!("tok"));
     }
 
     #[test]
     fn probe_tolerates_already_tracked_409() {
-        // guest-token join racing the probe: 409 space.already_member —
-        // pending, not a boot failure (ADR-009 §8)
+        // guest-token join racing the list read: 409 space.already_member
+        // — pending, not a boot failure (ADR-009 §8)
         let (c, _) = scripted(&[
-            NOT_FOUND(),
+            spaces_reply(json!([])),
             (
                 409,
                 json!({"error": {"code": "space.already_member",
@@ -921,7 +955,7 @@ mod tests {
 
     #[test]
     fn probe_without_invite_names_the_fix() {
-        let (c, _) = scripted(&[NOT_FOUND()]);
+        let (c, _) = scripted(&[spaces_reply(json!([]))]);
         let err = probe_or_join_overlay(&c, "agent", &overlay("repo", None)).unwrap_err();
         assert!(err.to_string().contains("no invite"), "{err}");
         assert!(err.to_string().contains("[overlays]"), "{err}");
@@ -955,7 +989,7 @@ mod tests {
 
     #[test]
     fn readiness_clears_once_spaces_are_visible() {
-        let (c, _) = scripted(&[(200, json!({"id": "repo"}))]);
+        let (c, _) = scripted(&[spaces_reply(json!([{"id": "repo", "status": "active"}]))]);
         let mut pending: BTreeMap<String, String> =
             [("agent".to_string(), "repo".to_string())].into();
         recheck(&c, &mut pending).unwrap();
