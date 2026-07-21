@@ -245,6 +245,67 @@ pub fn serve(cfg: Config) -> Result<()> {
     start(cfg)?.join()
 }
 
+const JOIN_POLL_S: u64 = 2;
+const JOIN_WAIT_S: u64 = 180;
+
+/// ADR-009 §8: make sure this account is a member of the overlay's
+/// space — join with the configured invite when it isn't, then wait
+/// for the space to sync to this device. Anything else is a hard boot
+/// error naming the fix.
+pub fn ensure_overlay_membership(
+    client: &Client,
+    name: &str,
+    overlay: &crate::config::Overlay,
+) -> Result<()> {
+    ensure_overlay_membership_with(
+        client,
+        name,
+        overlay,
+        (JOIN_WAIT_S / JOIN_POLL_S) as u32,
+        std::thread::sleep,
+    )
+}
+
+fn ensure_overlay_membership_with(
+    client: &Client,
+    name: &str,
+    overlay: &crate::config::Overlay,
+    poll_attempts: u32,
+    sleep: impl Fn(Duration),
+) -> Result<()> {
+    let id = &overlay.space;
+    let missing = match client.get_space(id) {
+        Ok(_) => return Ok(()),
+        Err(e) => e,
+    };
+    let Some(invite) = &overlay.invite else {
+        anyhow::bail!(
+            "overlay {name:?} space {id}: {missing} — not joined and no invite \
+             configured; set `{name} = {{ space = \"{id}\", invite = \"…\" }}` \
+             in [overlays] (ADR-009 §8)"
+        );
+    };
+    let (status, _info) = client
+        .join_space(invite, Some(&json!({"name": "anybao"})))
+        .map_err(|e| anyhow::anyhow!("overlay {name:?}: join request failed: {e}"))?;
+    if status == 202 {
+        info!("overlay {name:?}: join requested — waiting for the publisher's approval");
+    } else {
+        info!("overlay {name:?}: joined");
+    }
+    for _ in 0..poll_attempts {
+        sleep(Duration::from_secs(JOIN_POLL_S));
+        if client.get_space(id).is_ok() {
+            info!("overlay {name:?}: space {id} synced");
+            return Ok(());
+        }
+    }
+    anyhow::bail!(
+        "overlay {name:?} space {id}: joined but not synced within {JOIN_WAIT_S}s — \
+         is the publisher's approver running? rerun serve once approved"
+    )
+}
+
 /// Everything serve does up to the watch loop, which is spawned —
 /// returns immediately with the handle (the lib-mode surface).
 pub fn start(mut cfg: Config) -> Result<AgentHandle> {
@@ -286,16 +347,16 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // space; the host injects no prompt wording (isolation: the agent's
     // context comes from `any`, not the filesystem).
 
-    // Overlays (ADR-009 §2): validate every configured space id up
-    // front — a typo'd overlay must fail boot, not the first use().
-    let aliases = alias_map(&cfg.overlays, &space);
-    for (name, id) in &aliases {
-        if id != &space {
-            client
-                .get_space(id)
-                .map_err(|e| anyhow::anyhow!("overlay {name:?} space {id}: {e}"))?;
+    // Overlays (ADR-009 §2, §8): every configured space must be
+    // visible before boot proceeds — join with the invite when this
+    // account isn't a member yet; a typo'd overlay fails boot here,
+    // not on the first use().
+    for (name, overlay) in &cfg.overlays {
+        if overlay.space != space {
+            ensure_overlay_membership(&client, name, overlay)?;
         }
     }
+    let aliases = alias_map(&cfg.overlays, &space);
     let code_space = aliases["agent"].clone();
 
     // ADR-009 §4: an explicitly-passed --kernel is a dev override that
@@ -733,6 +794,77 @@ fn handle_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Overlay;
+    use crate::testutil::StubTransport;
+
+    fn overlay(space: &str, invite: Option<&str>) -> Overlay {
+        Overlay {
+            space: space.into(),
+            invite: invite.map(str::to_string),
+        }
+    }
+
+    fn scripted(replies: &[(u16, Value)]) -> (Client, crate::testutil::CallLog) {
+        let stub = StubTransport::new();
+        for (status, body) in replies {
+            stub.push(*status, body.clone());
+        }
+        let log = stub.log();
+        (Client::with_transport(Box::new(stub)), log)
+    }
+
+    const NOT_FOUND: fn() -> (u16, Value) = || {
+        (
+            404,
+            json!({"error": {"code": "space.not_found", "message": "nope"}}),
+        )
+    };
+
+    #[test]
+    fn membership_noop_when_space_visible() {
+        let (c, log) = scripted(&[(200, json!({"id": "repo"}))]);
+        ensure_overlay_membership_with(&c, "agent", &overlay("repo", None), 3, |_| {}).unwrap();
+        assert_eq!(log.lock().unwrap().len(), 1); // just the get_space probe
+    }
+
+    #[test]
+    fn membership_joins_then_waits_for_sync() {
+        // 404 probe → join 202 → poll 404 → poll 200: the §8 handshake
+        let (c, log) = scripted(&[
+            NOT_FOUND(),
+            (202, json!({"id": "repo", "status": "joining"})),
+            NOT_FOUND(),
+            (200, json!({"id": "repo"})),
+        ]);
+        ensure_overlay_membership_with(&c, "agent", &overlay("repo", Some("tok")), 3, |_| {})
+            .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[1].1, "/v1/spaces/join");
+        assert_eq!(calls[1].2.as_ref().unwrap()["inviteToken"], json!("tok"));
+    }
+
+    #[test]
+    fn membership_without_invite_names_the_fix() {
+        let (c, _) = scripted(&[NOT_FOUND()]);
+        let err = ensure_overlay_membership_with(&c, "agent", &overlay("repo", None), 3, |_| {})
+            .unwrap_err();
+        assert!(err.to_string().contains("no invite"), "{err}");
+        assert!(err.to_string().contains("[overlays]"), "{err}");
+    }
+
+    #[test]
+    fn membership_approval_timeout_is_actionable() {
+        let (c, _) = scripted(&[
+            NOT_FOUND(),
+            (202, json!({"status": "joining"})),
+            NOT_FOUND(),
+            NOT_FOUND(),
+        ]);
+        let err =
+            ensure_overlay_membership_with(&c, "agent", &overlay("repo", Some("tok")), 2, |_| {})
+                .unwrap_err();
+        assert!(err.to_string().contains("approver"), "{err}");
+    }
 
     #[test]
     fn alias_map_defaults_agent_to_working_space() {
