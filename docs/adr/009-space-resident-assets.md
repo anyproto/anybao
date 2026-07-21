@@ -205,11 +205,15 @@ mechanics are:
   inline table with an invite token —
   `agent = { space = "bafy...", invite = "b58token..." }`. Values stay
   strictly ids; the invite is the any-server RequestToJoin token.
-- **Join-on-boot**: serve's overlay validation, on a space it cannot
-  see, sends `POST /spaces/join {inviteToken}` when an invite is
-  configured (a 202 means pending approval) and polls the space every
-  2 s for up to 180 s until it syncs; timeout or a missing invite is a
-  hard boot error naming the fix.
+- **Join-and-proceed** (no polling): serve's overlay probe, on a space
+  it cannot see, sends `POST /spaces/join {inviteToken}` when an
+  invite is configured and then PROCEEDS — the kernel/cage boot is
+  deferred while overlays are pending. Readiness is re-checked when a
+  chat message arrives: still pending → the host replies with the
+  space's status (an operational bubble, same precedent as the
+  failure bubble — not prompt wording); synced → boot completes
+  lazily and the message is handled normally. Standing triggers skip
+  ticks until ready. A missing invite is still a hard boot error.
 - **Read-only doctrine**: joiners get **`reader`** permission — the
   server's vocabulary for view-only. The any server's invites carry NO
   permission; the grant is chosen at approval

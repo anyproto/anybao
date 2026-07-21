@@ -65,12 +65,18 @@ EOF
 ANTHROPIC_API_KEY=... ./runtime/target/release/anyrt serve
 ```
 
-Watch for, in order:
-1. `overlay "agent": join requested — waiting for the publisher's approval`
-2. approver terminal: `accepted anybao into bao-repo as reader`
-3. `overlay "agent": space … synced`
-4. kernel download into `~/.cache/anybao/kernel/<sha>.wasm`
-5. `anyrt serving space=… chat=…`
+Serve does NOT block on the join (ADR-009 §8 — no polling). Watch for:
+1. `overlay "agent": join requested — the publisher's approval is pending`
+2. `boot deferred — overlays still joining/syncing: ["agent"]`
+3. `anyrt serving space=… chat=…` (already watching the chat)
+4. approver terminal: `accepted anybao into bao-repo as reader`
+
+If you message bao BEFORE the sync lands, it answers with a status
+bubble (`Not ready yet: overlay `agent` (space …) still joining/
+syncing …`). The first message AFTER the space syncs completes the
+boot lazily — kernel download into `~/.cache/anybao/kernel/<sha>.wasm`,
+then `boot completed — kernel loaded, agent ready` — and is answered
+normally.
 
 The recreated bao space stays EMPTY of programs/skills — serve is
 space-only and must not bootstrap it (nothing deploys at serve start).

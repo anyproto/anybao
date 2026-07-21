@@ -245,37 +245,27 @@ pub fn serve(cfg: Config) -> Result<()> {
     start(cfg)?.join()
 }
 
-const JOIN_POLL_S: u64 = 2;
-const JOIN_WAIT_S: u64 = 180;
-
-/// ADR-009 §8: make sure this account is a member of the overlay's
-/// space — join with the configured invite when it isn't, then wait
-/// for the space to sync to this device. Anything else is a hard boot
-/// error naming the fix.
-pub fn ensure_overlay_membership(
-    client: &Client,
-    name: &str,
-    overlay: &crate::config::Overlay,
-) -> Result<()> {
-    ensure_overlay_membership_with(
-        client,
-        name,
-        overlay,
-        (JOIN_WAIT_S / JOIN_POLL_S) as u32,
-        std::thread::sleep,
-    )
+/// One overlay's membership state after the boot probe (ADR-009 §8).
+#[derive(Debug, PartialEq, Eq)]
+pub enum OverlayMembership {
+    /// space visible on this device — usable now
+    Member,
+    /// join requested (or still syncing) — boot proceeds, readiness is
+    /// re-checked when a chat message arrives
+    Pending,
 }
 
-fn ensure_overlay_membership_with(
+/// ADR-009 §8: probe one overlay; when this account isn't a member yet
+/// and an invite is configured, send the join request and PROCEED —
+/// never block or poll. A missing invite is a hard boot error.
+pub fn probe_or_join_overlay(
     client: &Client,
     name: &str,
     overlay: &crate::config::Overlay,
-    poll_attempts: u32,
-    sleep: impl Fn(Duration),
-) -> Result<()> {
+) -> Result<OverlayMembership> {
     let id = &overlay.space;
     let missing = match client.get_space(id) {
-        Ok(_) => return Ok(()),
+        Ok(_) => return Ok(OverlayMembership::Member),
         Err(e) => e,
     };
     let Some(invite) = &overlay.invite else {
@@ -289,21 +279,23 @@ fn ensure_overlay_membership_with(
         .join_space(invite, Some(&json!({"name": "anybao"})))
         .map_err(|e| anyhow::anyhow!("overlay {name:?}: join request failed: {e}"))?;
     if status == 202 {
-        info!("overlay {name:?}: join requested — waiting for the publisher's approval");
+        info!("overlay {name:?}: join requested — the publisher's approval is pending");
     } else {
-        info!("overlay {name:?}: joined");
+        info!("overlay {name:?}: joined, waiting for first sync");
     }
-    for _ in 0..poll_attempts {
-        sleep(Duration::from_secs(JOIN_POLL_S));
-        if client.get_space(id).is_ok() {
-            info!("overlay {name:?}: space {id} synced");
-            return Ok(());
+    Ok(OverlayMembership::Pending)
+}
+
+/// Load kernel bytes (dev override or space+cache, ADR-009 §4) and
+/// compile the cage.
+fn load_cage(client: &Client, cfg: &Config, code_space: &str) -> Result<Arc<Cage>> {
+    let kernel_bytes = match &cfg.kernel {
+        Some(path) => {
+            std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
         }
-    }
-    anyhow::bail!(
-        "overlay {name:?} space {id}: joined but not synced within {JOIN_WAIT_S}s — \
-         is the publisher's approver running? rerun serve once approved"
-    )
+        None => crate::kernelcache::kernel_bytes(client, code_space, &cfg.cache_dir)?,
+    };
+    Cage::new(&kernel_bytes)
 }
 
 /// Everything serve does up to the watch loop, which is spawned —
@@ -347,28 +339,29 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // space; the host injects no prompt wording (isolation: the agent's
     // context comes from `any`, not the filesystem).
 
-    // Overlays (ADR-009 §2, §8): every configured space must be
-    // visible before boot proceeds — join with the invite when this
-    // account isn't a member yet; a typo'd overlay fails boot here,
-    // not on the first use().
+    // Overlays (ADR-009 §2, §8): probe each configured space; unseen +
+    // invite → join request sent, boot proceeds with the cage deferred
+    // (no polling — readiness is re-checked per incoming message).
+    let mut pending: BTreeMap<String, String> = BTreeMap::new();
     for (name, overlay) in &cfg.overlays {
-        if overlay.space != space {
-            ensure_overlay_membership(&client, name, overlay)?;
+        if overlay.space != space
+            && probe_or_join_overlay(&client, name, overlay)? == OverlayMembership::Pending
+        {
+            pending.insert(name.clone(), overlay.space.clone());
         }
     }
     let aliases = alias_map(&cfg.overlays, &space);
     let code_space = aliases["agent"].clone();
 
-    // ADR-009 §4: an explicitly-passed --kernel is a dev override that
-    // bypasses the space; otherwise boot from the agent overlay via
-    // the content-hash cache.
-    let kernel_bytes = match &cfg.kernel {
-        Some(path) => {
-            std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
-        }
-        None => crate::kernelcache::kernel_bytes(&client, &code_space, &cfg.cache_dir)?,
+    let cage = if pending.is_empty() {
+        Some(load_cage(&client, &cfg, &code_space)?)
+    } else {
+        info!(
+            "boot deferred — overlays still joining/syncing: {:?}",
+            pending.keys().collect::<Vec<_>>()
+        );
+        None
     };
-    let cage = Cage::new(&kernel_bytes)?;
     std::fs::create_dir_all(&cfg.traces_dir)?;
 
     let instance = format!("anyrt-{}", std::process::id());
@@ -392,7 +385,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     });
 
     let ctx = Arc::new(RunCtx {
-        cage,
+        cage: Mutex::new(cage),
+        pending_overlays: Mutex::new(pending),
         client: client.clone(),
         cfg,
         space: space.clone(),
@@ -444,7 +438,11 @@ fn sliced_sleep(total: Duration, stop: &AtomicBool) {
 }
 
 pub struct RunCtx {
-    pub cage: Arc<Cage>,
+    /// None while overlay sync defers boot (ADR-009 §8) — filled
+    /// lazily by `ensure_ready`
+    pub cage: Mutex<Option<Arc<Cage>>>,
+    /// overlays whose spaces haven't synced yet: name → space id
+    pub pending_overlays: Mutex<BTreeMap<String, String>>,
     pub client: Arc<Client>,
     pub cfg: Config,
     pub space: String,
@@ -460,6 +458,39 @@ pub struct RunCtx {
 impl RunCtx {
     pub fn new_run_id() -> String {
         format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
+    }
+
+    /// Cheap readiness check (no network) — the trigger ticker skips
+    /// while boot is deferred.
+    pub fn is_ready(&self) -> bool {
+        self.cage.lock().unwrap().is_some()
+    }
+
+    /// Lazily finish boot (ADR-009 §8): re-probe pending overlays,
+    /// then kernel → cage. The error text is user-facing status — the
+    /// watcher bubbles it into the chat while not ready.
+    pub fn ensure_ready(&self) -> Result<Arc<Cage>> {
+        if let Some(cage) = self.cage.lock().unwrap().clone() {
+            return Ok(cage);
+        }
+        {
+            let mut pending = self.pending_overlays.lock().unwrap();
+            pending.retain(|_, sid| self.client.get_space(sid).is_err());
+            if !pending.is_empty() {
+                let list = pending
+                    .iter()
+                    .map(|(name, sid)| format!("overlay `{name}` (space `{sid}`)"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::bail!(
+                    "{list} still joining/syncing — waiting for the publisher's approval"
+                );
+            }
+        }
+        let cage = load_cage(&self.client, &self.cfg, &self.code_space)?;
+        *self.cage.lock().unwrap() = Some(cage.clone());
+        info!("boot completed — kernel loaded, agent ready");
+        Ok(cage)
     }
 
     fn broker(&self, spec: &str, run_id: String) -> Broker {
@@ -497,9 +528,10 @@ impl RunCtx {
         // guest (agent_turns.traceRef); None mints a fresh one
         run_id: Option<String>,
     ) -> Result<(String, RunResult)> {
+        let cage = self.ensure_ready()?;
         let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         let run_id = broker.writer.run_id();
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let outcome = run_program(&cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
         outcome.broker.writer.dump(&path)?;
         Ok((
@@ -592,8 +624,25 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
                         let text = record["text"].as_str().unwrap_or("").to_string();
-                        info!("conversation started: {:?}", &text[..text.len().min(60)]);
-                        spawn_conversation(shared, ctx, text);
+                        // deferred boot (ADR-009 §8): a message while
+                        // overlays are pending gets a status bubble —
+                        // the one host-authored operational reply
+                        match ctx.ensure_ready() {
+                            Ok(_) => {
+                                info!("conversation started: {:?}", &text[..text.len().min(60)]);
+                                spawn_conversation(shared, ctx, text);
+                            }
+                            Err(status) => {
+                                warn!("not ready: {status}");
+                                let _ = ctx.client.chat_send(
+                                    &ctx.space,
+                                    &ctx.chat,
+                                    &json!({
+                                    "text": format!("Not ready yet: {status}."),
+                                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -628,6 +677,11 @@ fn trigger_ticker(
         sliced_sleep(Duration::from_secs(5), &stop);
         if stop.load(Ordering::Relaxed) {
             return;
+        }
+        // deferred boot (ADR-009 §8): don't burn trigger runs (and the
+        // circuit breaker) while overlays are still syncing
+        if !ctx.is_ready() {
+            continue;
         }
         let due: Vec<Trigger> = {
             let mut reg = shared.triggers.lock().unwrap();
@@ -821,49 +875,81 @@ mod tests {
     };
 
     #[test]
-    fn membership_noop_when_space_visible() {
+    fn probe_member_when_space_visible() {
         let (c, log) = scripted(&[(200, json!({"id": "repo"}))]);
-        ensure_overlay_membership_with(&c, "agent", &overlay("repo", None), 3, |_| {}).unwrap();
+        let m = probe_or_join_overlay(&c, "agent", &overlay("repo", None)).unwrap();
+        assert_eq!(m, OverlayMembership::Member);
         assert_eq!(log.lock().unwrap().len(), 1); // just the get_space probe
     }
 
     #[test]
-    fn membership_joins_then_waits_for_sync() {
-        // 404 probe → join 202 → poll 404 → poll 200: the §8 handshake
+    fn probe_joins_and_proceeds_pending() {
+        // 404 probe → join 202 → PENDING, no polling (ADR-009 §8)
         let (c, log) = scripted(&[
             NOT_FOUND(),
             (202, json!({"id": "repo", "status": "joining"})),
-            NOT_FOUND(),
-            (200, json!({"id": "repo"})),
         ]);
-        ensure_overlay_membership_with(&c, "agent", &overlay("repo", Some("tok")), 3, |_| {})
-            .unwrap();
+        let m = probe_or_join_overlay(&c, "agent", &overlay("repo", Some("tok"))).unwrap();
+        assert_eq!(m, OverlayMembership::Pending);
         let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2); // probe + join — nothing else
         assert_eq!(calls[1].1, "/v1/spaces/join");
         assert_eq!(calls[1].2.as_ref().unwrap()["inviteToken"], json!("tok"));
     }
 
     #[test]
-    fn membership_without_invite_names_the_fix() {
+    fn probe_without_invite_names_the_fix() {
         let (c, _) = scripted(&[NOT_FOUND()]);
-        let err = ensure_overlay_membership_with(&c, "agent", &overlay("repo", None), 3, |_| {})
-            .unwrap_err();
+        let err = probe_or_join_overlay(&c, "agent", &overlay("repo", None)).unwrap_err();
         assert!(err.to_string().contains("no invite"), "{err}");
         assert!(err.to_string().contains("[overlays]"), "{err}");
     }
 
+    fn deferred_ctx(client: Client, pending: &[(&str, &str)]) -> RunCtx {
+        RunCtx {
+            cage: Mutex::new(None),
+            pending_overlays: Mutex::new(
+                pending
+                    .iter()
+                    .map(|(n, s)| (n.to_string(), s.to_string()))
+                    .collect(),
+            ),
+            client: Arc::new(client),
+            cfg: Config::default(),
+            space: "user".into(),
+            chat: "chat".into(),
+            anchor: "anchor".into(),
+            aliases: BTreeMap::new(),
+            code_space: "repo".into(),
+        }
+    }
+
     #[test]
-    fn membership_approval_timeout_is_actionable() {
-        let (c, _) = scripted(&[
-            NOT_FOUND(),
-            (202, json!({"status": "joining"})),
-            NOT_FOUND(),
-            NOT_FOUND(),
-        ]);
-        let err =
-            ensure_overlay_membership_with(&c, "agent", &overlay("repo", Some("tok")), 2, |_| {})
-                .unwrap_err();
-        assert!(err.to_string().contains("approver"), "{err}");
+    fn ensure_ready_reports_pending_overlay_status() {
+        // FakeSpace has no get_space route → the space is still unseen
+        let ctx = deferred_ctx(
+            Client::with_transport(Box::new(crate::testutil::FakeSpace::new())),
+            &[("agent", "repo")],
+        );
+        assert!(!ctx.is_ready());
+        let err = ctx.ensure_ready().err().expect("must be pending");
+        assert!(err.to_string().contains("overlay `agent`"), "{err}");
+        assert!(err.to_string().contains("still joining/syncing"), "{err}");
+    }
+
+    #[test]
+    fn ensure_ready_surfaces_kernel_errors_after_sync() {
+        // overlays synced (none pending) but the kernel isn't deployed
+        // yet — the lazy boot error names the fix
+        let ctx = deferred_ctx(
+            Client::with_transport(Box::new(crate::testutil::FakeSpace::new())),
+            &[],
+        );
+        let err = ctx.ensure_ready().err().expect("kernel is absent");
+        assert!(
+            err.to_string().contains("run `anyrt deploy` first"),
+            "{err}"
+        );
     }
 
     #[test]
