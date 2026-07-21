@@ -291,6 +291,49 @@ impl Config {
     }
 }
 
+/// Config defaults (ADR-006 §3): the harness's DEFAULT layer, sourced
+/// from `config_defaults.json` (embedded at build — data, not Rust
+/// literals; edit the json to change model/tier defaults). Sits under
+/// any `--config` file and the space-scope override read off the config
+/// object at serve start.
+pub const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
+
+/// Guest-config bootstrap: seed `any.base_url` from `addr`, layer
+/// `CONFIG_DEFAULTS` under existing keys, pick up provider API keys
+/// from env (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `TOGETHER_API_KEY`
+/// — or_insert; ADR-008 §1: keys enter `secrets`, never config). The
+/// ONE env-reading lib fn — embedders call it after building a Config,
+/// or seed the maps themselves and skip it.
+pub fn bootstrap_maps(
+    config: &mut BTreeMap<String, Value>,
+    secrets: &mut BTreeMap<String, String>,
+    addr: &str,
+) {
+    config
+        .entry("any.base_url".into())
+        .or_insert_with(|| Value::String(addr.to_string()));
+    let defaults: BTreeMap<String, Value> =
+        serde_json::from_str(CONFIG_DEFAULTS).expect("config_defaults.json is valid JSON");
+    for (key, value) in defaults {
+        config.entry(key).or_insert(value);
+    }
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        secrets.entry("llm.key.anthropic".into()).or_insert(key);
+    }
+    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
+        secrets.entry("google.key.gemini".into()).or_insert(key);
+    }
+    if let Ok(key) = std::env::var("TOGETHER_API_KEY") {
+        secrets.entry("llm.key.together".into()).or_insert(key);
+    }
+}
+
+/// [`bootstrap_maps`] over a whole [`Config`] — the embedder's form.
+pub fn bootstrap(cfg: &mut Config) {
+    let addr = cfg.addr.clone();
+    bootstrap_maps(&mut cfg.config, &mut cfg.secrets, &addr);
+}
+
 /// TOML → JSON for the `[config]` guest layer. Datetimes are rejected —
 /// no guest config key is a date, and letting one through would leak
 /// toml's private serialization shape into `config.get`.
@@ -394,6 +437,25 @@ traces = "t"
         assert_eq!(c.overlays["std"].invite, None);
         // a typo'd key inside the table still fails loudly
         assert!(Config::from_toml("[overlays]\nagent = { spaec = \"x\" }").is_err());
+    }
+
+    #[test]
+    fn bootstrap_layers_defaults_under_existing_keys() {
+        let mut c = Config::builder()
+            .addr("http://x:1")
+            .config_value("llm.tier.codegen", json!({"provider": "mine"}))
+            .build();
+        bootstrap(&mut c);
+        // existing key wins; absent defaults land; addr seeds base_url
+        assert_eq!(c.config["llm.tier.codegen"]["provider"], json!("mine"));
+        assert_eq!(c.config["any.base_url"], json!("http://x:1"));
+        assert!(c.config.contains_key("llm.tier.classify"));
+        // a pre-set base_url is never clobbered
+        let mut c2 = Config::builder().addr("http://y:2").build();
+        c2.config
+            .insert("any.base_url".into(), json!("http://kept:9"));
+        bootstrap(&mut c2);
+        assert_eq!(c2.config["any.base_url"], json!("http://kept:9"));
     }
 
     #[test]

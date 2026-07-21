@@ -194,41 +194,6 @@ fn load_secrets(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>> {
         .collect())
 }
 
-/// Config defaults (ADR-006 §3): the harness's DEFAULT layer, sourced
-/// from `config_defaults.json` (embedded at build — data, not Rust
-/// literals; edit the json to change model/tier defaults). Sits under
-/// any `--config` file and the space-scope override read off the config
-/// object at serve start. These are behavior settings, not secrets, so
-/// they seed unconditionally — `config.get("llm.tier.codegen")` resolves
-/// even with no API key and no config object yet (a fresh space just
-/// works). API keys are the only env-gated bits (ADR-008 §1): device-
-/// local secrets that never enter config, only `secrets`.
-const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
-
-fn bootstrap(
-    config: &mut BTreeMap<String, Value>,
-    secrets: &mut BTreeMap<String, String>,
-    addr: &str,
-) {
-    config
-        .entry("any.base_url".into())
-        .or_insert_with(|| json!(addr));
-    let defaults: BTreeMap<String, Value> =
-        serde_json::from_str(CONFIG_DEFAULTS).expect("config_defaults.json is valid JSON");
-    for (key, value) in defaults {
-        config.entry(key).or_insert(value);
-    }
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        secrets.entry("llm.key.anthropic".into()).or_insert(key);
-    }
-    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
-        secrets.entry("google.key.gemini".into()).or_insert(key);
-    }
-    if let Ok(key) = std::env::var("TOGETHER_API_KEY") {
-        secrets.entry("llm.key.together".into()).or_insert(key);
-    }
-}
-
 fn main() -> Result<()> {
     // bin-only: lib embedders install their own subscriber (or none)
     tracing_subscriber::fmt()
@@ -264,7 +229,7 @@ fn main() -> Result<()> {
             // file wins), so a scratch run needs no hand-built config;
             // any.base_url comes from --addr, never the space (you
             // can't read the space without already knowing the url)
-            bootstrap(&mut config, &mut secrets, &addr);
+            config::bootstrap_maps(&mut config, &mut secrets, &addr);
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
             let from: Option<(Arc<anyapi::Client>, String)> = match &from_space {
@@ -360,7 +325,7 @@ fn main() -> Result<()> {
                 cfg.config.insert(k, v);
             }
             cfg.secrets = load_secrets(&secrets)?;
-            bootstrap(&mut cfg.config, &mut cfg.secrets, &cfg.addr);
+            config::bootstrap(&mut cfg);
             serve::serve(cfg)
         }
         Cmd::Deploy {
