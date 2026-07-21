@@ -20,7 +20,7 @@ use crate::triggers::{
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
@@ -203,7 +203,48 @@ pub fn alias_map(
     m
 }
 
-pub fn serve(mut cfg: Config) -> Result<()> {
+/// The embedder's handle on a running agent (ADR-009 §6): `ctx` is the
+/// per-turn API (`RunCtx::run`); `stop()` flips the shutdown flag and
+/// joins the watch/ticker/control threads. In-flight conversation
+/// threads are not joined — a running turn finishes on its own.
+pub struct AgentHandle {
+    pub ctx: Arc<RunCtx>,
+    shutdown: Arc<AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl AgentHandle {
+    /// Signal shutdown and join the service threads. Latency is
+    /// bounded by the SSE stream: the watcher only observes the flag
+    /// on the next frame/heartbeat (or the sliced reconnect sleep).
+    pub fn stop(mut self) -> Result<()> {
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.join_all()
+    }
+
+    /// Block until the service threads exit (the CLI path — they only
+    /// exit on `stop()` from another handle-holder or a bind failure).
+    pub fn join(mut self) -> Result<()> {
+        self.join_all()
+    }
+
+    fn join_all(&mut self) -> Result<()> {
+        for t in self.threads.drain(..) {
+            t.join()
+                .map_err(|_| anyhow::anyhow!("agent service thread panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+/// The blocking CLI surface: start + wait forever.
+pub fn serve(cfg: Config) -> Result<()> {
+    start(cfg)?.join()
+}
+
+/// Everything serve does up to the watch loop, which is spawned —
+/// returns immediately with the handle (the lib-mode surface).
+pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let client = Arc::new(Client::new(&cfg.addr));
     let space = ensure_space(&client, &cfg.agent_space)?;
     let chat = general_chat(&client, &space)?;
@@ -297,20 +338,44 @@ pub fn serve(mut cfg: Config) -> Result<()> {
         code_space,
     });
 
-    control_api(shared.clone(), ctx.clone());
-    trigger_ticker(shared.clone(), ctx.clone());
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut threads = vec![
+        control_api(shared.clone(), ctx.clone(), shutdown.clone()),
+        trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
+    ];
     info!(
         "anyrt serving space={space} chat={chat} control=127.0.0.1:{}",
         ctx.cfg.control_port
     );
 
-    loop {
-        // reconnect loop: each feed drops its snapshot, so no replay
-        match watch_chat(&shared, &ctx) {
-            Ok(()) => {}
-            Err(e) => warn!("feed error: {e}; reconnecting in 2s"),
-        }
-        std::thread::sleep(Duration::from_secs(2));
+    {
+        let (shared, ctx, stop) = (shared.clone(), ctx.clone(), shutdown.clone());
+        threads.push(std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                // reconnect loop: each feed drops its snapshot, no replay
+                match watch_chat(&shared, &ctx, &stop) {
+                    Ok(()) => {}
+                    Err(e) => warn!("feed error: {e}; reconnecting in 2s"),
+                }
+                sliced_sleep(Duration::from_secs(2), &stop);
+            }
+        }));
+    }
+
+    Ok(AgentHandle {
+        ctx,
+        shutdown,
+        threads,
+    })
+}
+
+/// Sleep in 100ms slices so a shutdown flag is observed promptly.
+fn sliced_sleep(total: Duration, stop: &AtomicBool) {
+    let mut left = total;
+    while !stop.load(Ordering::Relaxed) && !left.is_zero() {
+        let step = left.min(Duration::from_millis(100));
+        std::thread::sleep(step);
+        left -= step;
     }
 }
 
@@ -439,13 +504,18 @@ fn spawn_conversation(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
     });
 }
 
-fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>) -> Result<()> {
+fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Result<()> {
     for frame in ctx.client.subscribe_dataset(
         &ctx.space,
         &ctx.chat,
         "chat_messages",
         &json!({"sort": ["-createdAt"], "limit": 64}),
     )? {
+        // shutdown is observed per frame — the read itself blocks until
+        // the server's next event/heartbeat (ADR-009 open Q3)
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         match frame.event.as_str() {
             "ready" | "snapshot" => continue,
             "closed" => return Ok(()),
@@ -485,9 +555,16 @@ fn records_in(data: &Value) -> Vec<Value> {
     out
 }
 
-fn trigger_ticker(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
+fn trigger_ticker(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(5));
+        sliced_sleep(Duration::from_secs(5), &stop);
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
         let due: Vec<Trigger> = {
             let mut reg = shared.triggers.lock().unwrap();
             let sched = shared.scheduler.lock().unwrap();
@@ -533,12 +610,16 @@ fn trigger_ticker(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
                 );
             }
         }
-    });
+    })
 }
 
 // --- the localhost control API -------------------------------------------------
 
-fn control_api(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
+fn control_api(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let server = match tiny_http::Server::http(("127.0.0.1", ctx.cfg.control_port)) {
             Ok(s) => s,
@@ -547,7 +628,17 @@ fn control_api(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
                 return;
             }
         };
-        for mut req in server.incoming_requests() {
+        // recv_timeout instead of incoming_requests: the accept loop
+        // must observe the shutdown flag (ADR-009 §6)
+        while !stop.load(Ordering::Relaxed) {
+            let mut req = match server.recv_timeout(Duration::from_millis(250)) {
+                Ok(Some(r)) => r,
+                Ok(None) => continue,
+                Err(e) => {
+                    error!("control API accept failed: {e}");
+                    return;
+                }
+            };
             let path = req.url().to_string();
             let method = req.method().as_str().to_string();
             let mut body = String::new();
@@ -568,7 +659,7 @@ fn control_api(shared: Arc<Shared>, ctx: Arc<RunCtx>) {
                     ),
             );
         }
-    });
+    })
 }
 
 fn handle_control(

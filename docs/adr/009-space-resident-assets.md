@@ -227,11 +227,14 @@ lib API (the crate stays sync/thread-based).
    deploy does NOT poll `/files/{id}/status`; if an early boot download
    fails it is the §4 hard error and a retry (re-run serve) succeeds
    once processing settles.
-3. `stop()` latency: the chat watcher blocks in a socket read on the
-   SSE stream, so the shutdown flag is only observed when the server
-   sends the next event or heartbeat (or the 2 s reconnect sleep).
-   Likely fix: a read timeout on the stream socket so the loop wakes
-   periodically to check the flag — decide during the lib-mode commit.
+3. ~~`stop()` latency: read timeout or accept heartbeat bound?~~
+   **Resolved 2026-07-21 (lib-mode commit)**: no read timeout — the
+   watcher observes the flag per SSE frame/heartbeat (the server
+   heartbeats; a dead TCP peer ends the read via FIN), the reconnect
+   sleep and ticker use sliced sleeps, the control API accepts with
+   `recv_timeout(250ms)`. In-flight conversation threads are not
+   joined by `stop()` — a running turn finishes on its own. Revisit
+   with a stream read timeout only if heartbeat gaps bite in practice.
 4. ~~Bootstrap of a fresh overlay space: who mints the space id?~~
    **Resolved 2026-07-21**: not anyrt's job — spaces are created
    externally (any CLI); `--target` stays strict, no helper.

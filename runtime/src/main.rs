@@ -1,35 +1,12 @@
-//! anyrt — the anybao runtime: wasmtime cage + broker/trace + the
-//! syscall surface (ADR-002). Guest modules (the whole agent) load
-//! from program space; the binary carries no product logic.
-
-mod anyapi;
-mod broker;
-mod caps;
-mod config;
-mod deploy;
-mod drift;
-mod kernelcache;
-mod replay;
-mod resolver;
-mod routes;
-mod runner;
-mod serve;
-mod stats;
-#[cfg(test)]
-mod testutil;
-mod toolmd;
-mod trace;
-mod triggers;
-mod view;
-
-pub(crate) mod bindings {
-    wasmtime::component::bindgen!({
-        world: "kernel",
-        path: "wit",
-    });
-}
+//! anyrt — the CLI over the anyrt library (ADR-009 §6): clap parsing,
+//! env-var bootstrap, the fmt log subscriber, and process exit codes
+//! live here; everything else is `anyrt::*`.
 
 use anyhow::{Context, Result};
+use anyrt::{
+    anyapi, config, deploy, drift, kernelcache, resolver, runner, serve, stats, trace, view,
+};
+use anyrt::{broker, routes};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

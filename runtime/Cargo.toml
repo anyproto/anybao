@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2021"
 description = "anyrt — the anybao runtime: wasmtime cage + the syscall surface (ADR-002)"
 
+# lib + thin bin (ADR-009 §6): embedders depend on the lib; the CLI
+# wraps it
+[lib]
+name = "anyrt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "anyrt"
+path = "src/main.rs"
+
 [dependencies]
 # pinned to the wasmtime-py major the Python reference host embeds
 wasmtime = { version = "46", features = ["component-model"] }

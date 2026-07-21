@@ -91,7 +91,79 @@ pub struct CliOverrides {
     pub traces_dir: Option<PathBuf>,
 }
 
+/// Programmatic construction for lib embedders (ADR-009 §6) — no file,
+/// no env reads beyond [`Config::default`]'s cache-dir probe (set
+/// `cache_dir` explicitly to avoid even that).
+pub struct ConfigBuilder {
+    cfg: Config,
+}
+
+impl ConfigBuilder {
+    pub fn addr(mut self, v: impl Into<String>) -> Self {
+        self.cfg.addr = v.into();
+        self
+    }
+
+    pub fn agent_space(mut self, v: impl Into<String>) -> Self {
+        self.cfg.agent_space = v.into();
+        self
+    }
+
+    pub fn agent_name(mut self, v: impl Into<String>) -> Self {
+        self.cfg.agent_name = v.into();
+        self
+    }
+
+    pub fn control_port(mut self, v: u16) -> Self {
+        self.cfg.control_port = v;
+        self
+    }
+
+    /// Add one overlay (`name = spaceId`, strictly ids — ADR-009 §2).
+    pub fn overlay(mut self, name: impl Into<String>, space_id: impl Into<String>) -> Self {
+        self.cfg.overlays.insert(name.into(), space_id.into());
+        self
+    }
+
+    pub fn traces_dir(mut self, v: impl Into<PathBuf>) -> Self {
+        self.cfg.traces_dir = v.into();
+        self
+    }
+
+    pub fn cache_dir(mut self, v: impl Into<PathBuf>) -> Self {
+        self.cfg.cache_dir = v.into();
+        self
+    }
+
+    /// Explicit local kernel (dev bypass); unset = fetch from the space.
+    pub fn kernel_path(mut self, v: impl Into<PathBuf>) -> Self {
+        self.cfg.kernel = Some(v.into());
+        self
+    }
+
+    /// One guest-visible config key (the `[config]` cascade layer).
+    pub fn config_value(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.cfg.config.insert(key.into(), value);
+        self
+    }
+
+    pub fn secret(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.cfg.secrets.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn build(self) -> Config {
+        self.cfg
+    }
+}
+
 impl Config {
+    pub fn builder() -> ConfigBuilder {
+        ConfigBuilder {
+            cfg: Config::default(),
+        }
+    }
+
     /// CLI entry: read `path` (or `./anybao.toml` when present — no
     /// file at all is fine) and resolve over the defaults. An explicit
     /// `--config-file` that doesn't exist is an error; the implicit

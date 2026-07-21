@@ -82,6 +82,8 @@ pub struct Cage {
     pub component: Component,
     pub linker: Linker<Host>,
     pub kernel_sha256: String,
+    ticker_stop: Arc<AtomicBool>,
+    ticker: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Cage {
@@ -95,17 +97,33 @@ impl Cage {
         let mut linker: Linker<Host> = Linker::new(&engine);
         add_to_linker_sync(&mut linker)?;
         bindings::Kernel::add_to_linker::<Host, HostData>(&mut linker, |h| h)?;
-        let ticker = engine.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
-            ticker.increment_epoch();
+        let ticker_stop = Arc::new(AtomicBool::new(false));
+        let (ticker_engine, stop) = (engine.clone(), ticker_stop.clone());
+        let ticker = std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
+                ticker_engine.increment_epoch();
+            }
         });
         Ok(Arc::new(Cage {
             engine,
             component,
             linker,
             kernel_sha256: hex::encode(Sha256::digest(kernel_bytes)),
+            ticker_stop,
+            ticker: std::sync::Mutex::new(Some(ticker)),
         }))
+    }
+}
+
+impl Drop for Cage {
+    /// Embedders create/drop cages — the epoch ticker must not leak
+    /// (ADR-009 §6). Join is bounded by one tick.
+    fn drop(&mut self) {
+        self.ticker_stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.ticker.lock().unwrap().take() {
+            let _ = t.join();
+        }
     }
 }
 
