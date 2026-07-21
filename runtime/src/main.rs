@@ -150,6 +150,18 @@ enum TraceCmd {
         #[arg(long)]
         seq: Option<i64>,
     },
+    /// live-render a run as records land (show's line format); exits
+    /// when the run completes
+    Follow {
+        /// trace file, or a bare run id resolved against traces/
+        /// [default: the newest run in --dir]
+        file: Option<PathBuf>,
+        #[arg(long, default_value = "traces")]
+        dir: PathBuf,
+        /// with no file: only runs whose program contains this
+        #[arg(long)]
+        program: Option<String>,
+    },
     /// distributions + tuning suggestions over a traces directory
     Stats { dir: PathBuf },
 }
@@ -417,6 +429,27 @@ fn main() -> Result<()> {
                 ),
             }
             Ok(())
+        }
+        Cmd::Trace {
+            cmd: TraceCmd::Follow { file, dir, program },
+        } => {
+            let path = match file {
+                Some(f) => resolve_trace(f),
+                None => {
+                    let mut waited = false;
+                    loop {
+                        if let Some(p) = view::latest_run(&dir, program.as_deref()) {
+                            break p;
+                        }
+                        if !waited {
+                            eprintln!("waiting for a run in {}…", dir.display());
+                            waited = true;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            };
+            view::follow(&path)
         }
         Cmd::Trace {
             cmd: TraceCmd::Stats { dir },

@@ -646,6 +646,122 @@ pub fn list(dir: &Path, program: Option<&str>, limit: usize) -> anyhow::Result<S
     Ok(out)
 }
 
+// --- trace follow — live view over a streaming run file (CLI output) --------
+
+/// Newest run file in `dir` whose header program contains `program`
+/// (None = any) — `trace follow`'s no-argument target.
+pub fn latest_run(dir: &Path, program: Option<&str>) -> Option<std::path::PathBuf> {
+    let mut rows: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .collect();
+    rows.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    for (_, path) in rows {
+        let Some(want) = program else {
+            return Some(path);
+        };
+        let header = std::fs::File::open(&path).ok().and_then(|f| {
+            use std::io::BufRead;
+            std::io::BufReader::new(f).lines().next()?.ok()
+        });
+        let is_match = header
+            .and_then(|l| serde_json::from_str::<Value>(&l).ok())
+            .map(|h| s(&h["run"]["program"]).contains(want))
+            .unwrap_or(false);
+        if is_match {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// One record's live line — the `show` vocabulary, rendered as records
+/// land: effect lines verbatim, ▶/◀ span markers (llm.chat ends carry
+/// the reply text), the terminal cell as the run's status.
+fn follow_line(r: &Value) -> Option<String> {
+    match r["kind"].as_str().unwrap_or("") {
+        "header" => Some(format!(
+            "run {} — {}",
+            s(&r["run"]["id"]),
+            s(&r["run"]["program"])
+        )),
+        "effect" => Some(effect_line(r, 160, "  ")),
+        "span" if r["phase"] == "begin" => Some(format!("▶ #{} {}", r["seq"], s(&r["name"]))),
+        "span" => {
+            let ok = r["ok"] == true;
+            let dur = r["meta"]["durMs"].as_i64().unwrap_or(0);
+            let mut line = format!(
+                "◀ #{} {} {} ({dur}ms)",
+                r["seq"],
+                s(&r["name"]),
+                if ok { "ok" } else { "FAIL" }
+            );
+            if r["name"] == "llm.chat" {
+                let stop = s(&r["output"]["stop"]);
+                if !stop.is_empty() {
+                    line.push_str(&format!(" stop={stop}"));
+                }
+                if let Some(parts) = r["output"]["parts"].as_array() {
+                    for part in parts {
+                        if part["type"] == "text" {
+                            let text = part["text"].as_str().unwrap_or("");
+                            line.push_str(&format!("\n  reply: {}", clip(text, 400)));
+                        }
+                    }
+                }
+            }
+            if !r["error"].is_null() {
+                line.push_str(&format!(" !! {}", r["error"]));
+            }
+            Some(line)
+        }
+        "cell" => {
+            let ok = r["ok"] == true;
+            let mut line = format!("cell {} {}", s(&r["cell"]), if ok { "ok" } else { "FAIL" });
+            if !r["error"].is_null() {
+                line.push_str(&format!(" !! {}", r["error"]));
+            }
+            Some(line)
+        }
+        _ => None,
+    }
+}
+
+/// Live-follow a streaming run file: render each complete JSONL line
+/// as it lands, return when the run's terminal `main` cell record
+/// arrives. Prints directly — this IS the CLI output. Blob-spilled
+/// values render as their stubs (drill in with `show --seq` after).
+pub fn follow(path: &Path) -> anyhow::Result<()> {
+    println!("following {}", path.display());
+    let mut seen = 0usize;
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        // only complete lines — a partially-written tail waits for its \n
+        let complete = &text[..text.rfind('\n').map(|i| i + 1).unwrap_or(0)];
+        let lines: Vec<&str> = complete.lines().collect();
+        let mut finished = false;
+        for line in lines.iter().skip(seen) {
+            let Ok(r) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if let Some(l) = follow_line(&r) {
+                println!("{l}");
+            }
+            if r["kind"] == "cell" && r["cell"] == "main" {
+                finished = true;
+            }
+        }
+        seen = lines.len();
+        if finished {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// `--seq N` drill-down: one record, blob-resolved, pretty.
 pub fn show_record(path: &Path, seq: i64) -> anyhow::Result<String> {
     let records = load_resolved(path)?;
@@ -1070,6 +1186,38 @@ pub fn stats(path: &Path) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follow_lines_render_the_show_vocabulary() {
+        use serde_json::json;
+        // header
+        let h = json!({"kind": "header",
+                       "run": {"id": "run_x", "program": "agent:toolcaller@v1"}});
+        assert_eq!(follow_line(&h).unwrap(), "run run_x — agent:toolcaller@v1");
+        // effect: same formatter as show
+        let e = json!({"kind": "effect", "seq": 3, "effect": "module.resolve",
+                       "error": null, "input": {"spec": "any@v1"},
+                       "output": {"cache": "miss"}, "meta": {"class": "read"}});
+        assert_eq!(follow_line(&e).unwrap(), "    #3 use any@v1 (miss)");
+        // llm.chat span end carries the reply text + stop
+        let end = json!({"kind": "span", "seq": 9, "phase": "end",
+                        "name": "llm.chat", "ok": true, "error": null,
+                        "meta": {"durMs": 1200},
+                        "output": {"stop": "done",
+                                   "parts": [{"type": "text", "text": "hi there"}]}});
+        let line = follow_line(&end).unwrap();
+        assert!(
+            line.starts_with("◀ #9 llm.chat ok (1200ms) stop=done"),
+            "{line}"
+        );
+        assert!(line.contains("reply: hi there"), "{line}");
+        // terminal cell
+        let c = json!({"kind": "cell", "cell": "main", "ok": true, "error": null});
+        assert_eq!(follow_line(&c).unwrap(), "cell main ok");
+        // span begin
+        let b = json!({"kind": "span", "seq": 5, "phase": "begin", "name": "cell"});
+        assert_eq!(follow_line(&b).unwrap(), "▶ #5 cell");
+    }
     use serde_json::json;
 
     #[test]
