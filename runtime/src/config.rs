@@ -59,10 +59,6 @@ pub struct Config {
     /// explicit local kernel override (dev bypass, ADR-009 §4);
     /// None = fetch from the space through the content-hash cache
     pub kernel: Option<PathBuf>,
-    /// local asset dirs — transitional until serve goes space-only
-    /// (ADR-009 §5); not part of anybao.toml
-    pub programs: PathBuf,
-    pub skills: PathBuf,
     /// guest-visible config map (pre-`bootstrap`)
     pub config: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, String>,
@@ -79,8 +75,6 @@ impl Default for Config {
             traces_dir: "traces".into(),
             cache_dir: default_cache_dir(),
             kernel: None,
-            programs: "programs".into(),
-            skills: "skills".into(),
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
         }

@@ -1,5 +1,6 @@
-//! `anyrt serve` — the outer loop: ensure space/chat/anchor, deploy
-//! programs + skills, compose the system prompt, then watch the chat
+//! `anyrt serve` — the outer loop: ensure space/chat/anchor, resolve
+//! overlays + the kernel from the space (space-only, ADR-009 §5 —
+//! `anyrt deploy` is the publish step), then watch the chat
 //! (drop-snapshot SSE), tick triggers, and answer the localhost
 //! control API. Conversations and trigger runs are guest programs
 //! through the shared cage.
@@ -7,7 +8,7 @@
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
 use crate::config::Config;
-use crate::deploy::{ensure_typed, Deployer, SkillDeployer};
+use crate::deploy::ensure_typed;
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
@@ -234,13 +235,11 @@ pub fn serve(mut cfg: Config) -> Result<()> {
         .unwrap_or_default()
         .to_string();
 
-    let deployed = Deployer::new(&client, &space).deploy_dir(&cfg.programs)?;
-    println!("deploy → {deployed:?}");
-    let skills = SkillDeployer::new(&client, &space).deploy_dir(&cfg.skills)?;
-    println!("skills → {skills:?}");
+    // serve is space-only (ADR-009 §5): programs, skills, and the kernel
+    // are already IN the space(s) — `anyrt deploy` is the publish step.
     // The system prompt is composed guest-side (toolcaller@v1) from the
-    // space — the host publishes skills above but injects no prompt wording
-    // (isolation: the agent's context comes from `any`, not the filesystem).
+    // space; the host injects no prompt wording (isolation: the agent's
+    // context comes from `any`, not the filesystem).
 
     // Overlays (ADR-009 §2): validate every configured space id up
     // front — a typo'd overlay must fail boot, not the first use().

@@ -43,6 +43,10 @@ later starts need **no** env var:
   you provide one (re-run once with the env var set).
 - **Fresh space re-bootstraps.** A new space (or a deleted-and-recreated
   one) has an empty store, so its first start needs the env var again.
+- **Deploy before the first serve.** serve is space-only (ADR-009 §5):
+  it reads programs, skills, and the kernel from the space — run
+  `anyrt deploy` once against a fresh space (or its `agent` overlay)
+  before starting it.
 - **Server requirement.** The `any` server must declare `localValue`
   local-scope on the `agent_config` dataset (`internal/agentconfig`). An
   older server rejects the local write; serve then logs

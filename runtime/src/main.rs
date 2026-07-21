@@ -89,10 +89,6 @@ enum Cmd {
         space: Option<String>,
         #[arg(long)]
         agent_name: Option<String>,
-        #[arg(long, default_value = "programs")]
-        programs: PathBuf,
-        #[arg(long, default_value = "skills")]
-        skills: PathBuf,
         /// local kernel override — bypasses the space (dev); omitted =
         /// fetch from the space via the content-hash cache
         #[arg(long)]
@@ -361,8 +357,6 @@ fn main() -> Result<()> {
             addr,
             space,
             agent_name,
-            programs,
-            skills,
             kernel,
             traces_dir,
             control_port,
@@ -378,8 +372,6 @@ fn main() -> Result<()> {
                 control_port,
                 traces_dir,
             });
-            cfg.programs = programs;
-            cfg.skills = skills;
             cfg.kernel = kernel;
             // guest cascade (ADR-009 §1): the [config] table already
             // seeded cfg.config; the --config JSON file shadows it
