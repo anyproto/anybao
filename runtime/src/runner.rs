@@ -76,6 +76,13 @@ impl crate::bindings::KernelImports for &mut Host {
     }
 }
 
+/// The componentized CPython guest, compiled INTO the binary (ADR-009
+/// §4): binary + kernel are one artifact — no space publish, no cache,
+/// no load-order question. `make kernel` must run before the crate
+/// builds (the Makefile runtime targets depend on it).
+pub const EMBEDDED_KERNEL: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.wasm"));
+
 /// Process-wide cage: compile once, instantiate per run.
 pub struct Cage {
     pub engine: Engine,
@@ -87,6 +94,12 @@ pub struct Cage {
 }
 
 impl Cage {
+    /// The embedded kernel — the normal path; `new` stays for dev
+    /// overrides (`--kernel <path>`) and embedders with custom builds.
+    pub fn embedded() -> Result<Arc<Self>> {
+        Cage::new(EMBEDDED_KERNEL)
+    }
+
     pub fn new(kernel_bytes: &[u8]) -> Result<Arc<Self>> {
         use sha2::{Digest, Sha256};
         let mut cfg = Config::new();

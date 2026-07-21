@@ -1,6 +1,7 @@
 # ADR-009: Space-resident assets, host config, overlays, lib mode
 
-Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4, §8)
+Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
+embedded, §8)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -51,11 +52,10 @@ control_port = 7010
 
 [overlays]                 # named module sources (the alias namespace);
 agent = "bafy..."          #   values are STRICTLY space ids, never names.
-std = "bafy..."            #   `agent` = shipped programs, skills, kernel.
+std = "bafy..."            #   `agent` = shipped programs + skills.
 
 [paths]
 traces = "traces"
-cache = "~/.cache/anybao"  # default: $XDG_CACHE_HOME/anybao
 
 [config]                   # guest-visible cascade layer: FLAT quoted
 "llm.tier.chat" = { provider = "anthropic", model = "..." }  # dotted keys
@@ -68,13 +68,14 @@ cache = "~/.cache/anybao"  # default: $XDG_CACHE_HOME/anybao
 - Discovery: `--config-file <path>`; default `./anybao.toml` when
   present, else pure defaults. Unknown keys are a parse error (typos
   fail loudly; single-repo tool, no forward-compat lenience).
-- Lib mode builds the same resolved `Config` via a builder — no file,
-  no env reads (cache dir et al. passed explicitly).
+- Lib mode builds the same resolved `Config` via a builder — no
+  file, no env reads.
 
 ### 2. Overlays are repos
 
 An **overlay is a repo**: a filesystem folder holding programs and
-skills (more asset kinds later), published to a space with
+skills (more asset kinds later; the kernel is NOT one — it is
+embedded in the binary, §4), published to a space with
 
 ```
 anyrt deploy --source <folder> --target <spaceId | overlayName>
@@ -134,38 +135,24 @@ The host passes `codeSpace = overlays["agent"]` in spawn args; it
 still injects no prompt wording (ADR-005 unchanged). This is the one
 guest-side change in this ADR.
 
-### 4. Kernel in the space + content-hash cache
+### 4. Kernel embedded in the binary
 
-Data contract, in the `agent` overlay space (amended 2026-07-21 — the
-kernel is JUST a file, no dataset: server datasets are registered and
-a custom `agent_kernel` dataset is rejected with `unknown dataset`;
-the files API itself carries no plaintext hash, no list ordering, and
-no delete, so a current-file pointer must live somewhere — it lives
-in the object's markdown body):
+(Amended 2026-07-21, superseding two earlier shapes — a dataset
+record, then a files-API upload + markdown manifest.) The kernel is
+the runtime's OWN guest half, versioned with the binary — shipping it
+through a space added a publish step, a download/cache protocol, and
+a sync dependency for zero gain. Instead:
 
-- One object, `any.name = "anyrt-kernel"`, type `agent_kernel` (same
-  ensure-typed pattern as the trigger anchor). Object name is a fixed
-  convention — no config knob.
-- Bytes attached via the files API (`POST
-  /spaces/{id}/objects/{oid}/files?name=kernel-<sha256>.wasm`, raw
-  octet-stream) — the file name carries the plaintext sha.
-- The object's **markdown body is the manifest** (human-readable in
-  any UI): free-form prose plus `sha256: <hex>` and `fileId: <id>`
-  lines — the pointer to the current file. Published by `anyrt deploy
-  --kernel <path>` (default `bin/kernel.wasm`; meaningful for the
-  `agent` overlay target), hash-gated on the manifest's `sha256`.
-- Failure to load the kernel from the space at boot (missing object,
-  download error, digest mismatch) is a **hard error** — no silent
-  fallback.
-
-Boot protocol: read the record → cache hit on
-`<cache>/kernel/<sha256>.wasm` uses local bytes; miss downloads
-(`GET .../files/{fileId}/content`), verifies the digest (mismatch =
-hard error naming both hashes), writes tmp + rename. No eviction —
-one ~20 MB file per kernel version; the user prunes the cache dir.
-`--kernel <path>`, when explicitly passed, is a dev override that
-bypasses the space. `kernel.boot` still records `kernel_sha256`
-(ADR-001) — provenance is unchanged, only the byte source moves.
+- `bin/kernel.wasm` is **compiled into `anyrt`** via `include_bytes!`
+  (`runner::EMBEDDED_KERNEL`, `Cage::embedded()`); binary + kernel
+  are ONE artifact. `make kernel` precedes the cargo build (the
+  Makefile runtime targets depend on it).
+- `--kernel <path>` (run/serve) stays as the dev override for testing
+  a rebuilt kernel without recompiling anyrt.
+- The space carries programs and skills only; deploy does not touch
+  the kernel. `kernel.boot` still records `kernel_sha256` (ADR-001) —
+  provenance unchanged.
+- No kernel cache — `[paths].cache` is gone from the config.
 
 ### 5. serve is space-only (breaking)
 
@@ -213,13 +200,13 @@ mechanics are:
   strictly ids; the invite is the any-server RequestToJoin token.
 - **Join-and-proceed** (no polling): serve's overlay probe, on a space
   it cannot see, sends `POST /spaces/join {inviteToken}` when an
-  invite is configured and then PROCEEDS — the kernel/cage boot is
-  deferred while overlays are pending. Readiness is re-checked when a
-  chat message arrives: still pending → the host replies with the
-  space's status (an operational bubble, same precedent as the
-  failure bubble — not prompt wording); synced → boot completes
-  lazily and the message is handled normally. Standing triggers skip
-  ticks until ready. A missing invite is still a hard boot error.
+  invite is configured and then PROCEEDS (the cage boots eagerly —
+  the kernel is embedded, §4; only program resolution waits).
+  Readiness is re-checked when a chat message arrives: still pending
+  → the host replies with the space's status (an operational bubble,
+  same precedent as the failure bubble — not prompt wording); synced
+  → the message is handled normally. Standing triggers skip ticks
+  until ready. A missing invite is still a hard boot error.
 - **Read-only doctrine**: joiners get **`reader`** permission — the
   server's vocabulary for view-only. The any server's invites carry NO
   permission; the grant is chosen at approval
@@ -237,7 +224,7 @@ mechanics are:
 
 Overlay manifest/trust format beyond what ADR-008 already fixes
 (publishing third-party overlays is future work); space→disk sync
-(the filesystem stays authoring-only); kernel cache eviction; async
+(the filesystem stays authoring-only); async
 lib API (the crate stays sync/thread-based).
 
 ## Consequences

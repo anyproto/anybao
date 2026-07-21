@@ -15,7 +15,6 @@ pub mod caps;
 pub mod config;
 pub mod deploy;
 pub mod drift;
-pub mod kernelcache;
 pub mod replay;
 pub mod resolver;
 pub mod routes;

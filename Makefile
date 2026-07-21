@@ -8,14 +8,16 @@ bin/kernel.wasm: runtime/guest/app.py runtime/wit/kernel.wit
 	mkdir -p bin
 	uv run componentize-py -d runtime/wit -w kernel componentize -p runtime/guest app -o bin/kernel.wasm
 
-# The Rust runtime (runtime/target/release/anyrt).
-runtime:
+# The Rust runtime (runtime/target/release/anyrt). The kernel wasm is
+# EMBEDDED into the binary (include_bytes!, ADR-009 §4), so the cargo
+# build needs bin/kernel.wasm to exist first.
+runtime: kernel
 	cargo build --release --manifest-path runtime/Cargo.toml
 
 api-drift: runtime      ## vendored swagger vs coverage manifest (nonzero on drift)
 	./runtime/target/release/anyrt drift
 
-runtime-check:     ## clippy + fmt gate for runtime/
+runtime-check: kernel     ## clippy + fmt gate for runtime/
 	cargo clippy --manifest-path runtime/Cargo.toml -- -D warnings
 	cargo fmt --manifest-path runtime/Cargo.toml --check
 

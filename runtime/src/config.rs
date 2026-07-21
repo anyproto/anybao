@@ -82,7 +82,6 @@ pub struct AgentSection {
 #[serde(deny_unknown_fields, default)]
 pub struct PathsSection {
     pub traces: Option<PathBuf>,
-    pub cache: Option<PathBuf>,
 }
 
 /// The resolved host config — what serve/deploy (and lib embedders)
@@ -95,9 +94,8 @@ pub struct Config {
     pub control_port: u16,
     pub overlays: BTreeMap<String, Overlay>,
     pub traces_dir: PathBuf,
-    pub cache_dir: PathBuf,
-    /// explicit local kernel override (dev bypass, ADR-009 §4);
-    /// None = fetch from the space through the content-hash cache
+    /// explicit local kernel override (dev, ADR-009 §4);
+    /// None = the kernel embedded in the binary
     pub kernel: Option<PathBuf>,
     /// guest-visible config map (pre-`bootstrap`)
     pub config: BTreeMap<String, Value>,
@@ -113,7 +111,6 @@ impl Default for Config {
             control_port: 7010,
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
-            cache_dir: default_cache_dir(),
             kernel: None,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
@@ -131,9 +128,8 @@ pub struct CliOverrides {
     pub traces_dir: Option<PathBuf>,
 }
 
-/// Programmatic construction for lib embedders (ADR-009 §6) — no file,
-/// no env reads beyond [`Config::default`]'s cache-dir probe (set
-/// `cache_dir` explicitly to avoid even that).
+/// Programmatic construction for lib embedders (ADR-009 §6) — no
+/// file, no env reads.
 pub struct ConfigBuilder {
     cfg: Config,
 }
@@ -193,12 +189,7 @@ impl ConfigBuilder {
         self
     }
 
-    pub fn cache_dir(mut self, v: impl Into<PathBuf>) -> Self {
-        self.cfg.cache_dir = v.into();
-        self
-    }
-
-    /// Explicit local kernel (dev bypass); unset = fetch from the space.
+    /// Explicit local kernel (dev); unset = the embedded kernel.
     pub fn kernel_path(mut self, v: impl Into<PathBuf>) -> Self {
         self.cfg.kernel = Some(v.into());
         self
@@ -275,9 +266,6 @@ impl Config {
         if let Some(traces) = fc.paths.traces {
             c.traces_dir = traces;
         }
-        if let Some(cache) = fc.paths.cache {
-            c.cache_dir = expand_tilde(&cache);
-        }
         for (key, value) in fc.config {
             c.config.insert(key, toml_to_json(value)?);
         }
@@ -300,29 +288,6 @@ impl Config {
         if let Some(traces) = o.traces_dir {
             self.traces_dir = traces;
         }
-    }
-}
-
-/// `$XDG_CACHE_HOME/anybao`, falling back `~/.cache/anybao`. Env reads
-/// live here (CLI-side resolution); lib embedders set `cache_dir`
-/// explicitly and never hit this.
-pub fn default_cache_dir() -> PathBuf {
-    match std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
-        Some(base) => PathBuf::from(base).join("anybao"),
-        None => match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join(".cache").join("anybao"),
-            None => PathBuf::from(".cache/anybao"),
-        },
-    }
-}
-
-fn expand_tilde(p: &Path) -> PathBuf {
-    match p.strip_prefix("~") {
-        Ok(rest) => match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join(rest),
-            None => p.to_path_buf(),
-        },
-        Err(_) => p.to_path_buf(),
     }
 }
 
@@ -369,7 +334,6 @@ std = "bafystd"
 
 [paths]
 traces = "t"
-cache = "/var/cache/anybao"
 
 [config]
 "agent.persona" = "terse"
@@ -387,7 +351,6 @@ cache = "/var/cache/anybao"
         assert_eq!(c.overlays["agent"].invite, None);
         assert_eq!(c.overlays["std"].space, "bafystd");
         assert_eq!(c.traces_dir, PathBuf::from("t"));
-        assert_eq!(c.cache_dir, PathBuf::from("/var/cache/anybao"));
         assert_eq!(c.config["agent.persona"], json!("terse"));
         assert_eq!(
             c.config["llm.tier.chat"],
@@ -459,13 +422,5 @@ cache = "/var/cache/anybao"
     fn datetime_in_config_rejected() {
         let e = Config::from_toml("[config]\n\"a.b\" = 1979-05-27").unwrap_err();
         assert!(e.to_string().contains("datetime"), "{e}");
-    }
-
-    #[test]
-    fn tilde_cache_expands_against_home() {
-        let c = Config::from_toml("[paths]\ncache = \"~/.cache/anybao\"").unwrap();
-        if let Some(home) = std::env::var_os("HOME") {
-            assert_eq!(c.cache_dir, PathBuf::from(home).join(".cache/anybao"));
-        }
     }
 }

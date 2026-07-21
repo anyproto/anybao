@@ -3,9 +3,7 @@
 //! live here; everything else is `anyrt::*`.
 
 use anyhow::{Context, Result};
-use anyrt::{
-    anyapi, config, deploy, drift, kernelcache, resolver, runner, serve, stats, trace, view,
-};
+use anyrt::{anyapi, config, deploy, drift, resolver, runner, serve, stats, trace, view};
 use anyrt::{broker, routes};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -28,8 +26,7 @@ enum Cmd {
         spec: String,
         #[arg(long, default_value = "{}")]
         args: String,
-        /// kernel wasm [default: bin/kernel.wasm; with --from-space,
-        /// omitted = fetch from the space via the cache]
+        /// local kernel override (dev) [default: the embedded kernel]
         #[arg(long)]
         kernel: Option<PathBuf>,
         #[arg(long, default_value = "programs")]
@@ -66,8 +63,7 @@ enum Cmd {
         space: Option<String>,
         #[arg(long)]
         agent_name: Option<String>,
-        /// local kernel override — bypasses the space (dev); omitted =
-        /// fetch from the space via the content-hash cache
+        /// local kernel override (dev) [default: the embedded kernel]
         #[arg(long)]
         kernel: Option<PathBuf>,
         /// [default: config paths.traces]
@@ -84,9 +80,9 @@ enum Cmd {
         #[arg(long)]
         secrets: Option<PathBuf>,
     },
-    /// publish a repo folder (programs/, skills/, README.md) + the
-    /// kernel to a space (hash-gated), so a running serve picks changes
-    /// up on its next run — no restart (ADR-009 §2)
+    /// publish a repo folder (programs/, skills/, README.md) to a
+    /// space (hash-gated), so a running serve picks changes up on its
+    /// next run — no restart (ADR-009 §2)
     Deploy {
         /// repo folder: <src>/programs/, <src>/skills/, README.md
         #[arg(long, default_value = ".")]
@@ -95,9 +91,6 @@ enum Cmd {
         /// strict — never creates [default: the working space]
         #[arg(long)]
         target: Option<String>,
-        /// kernel wasm to publish (skipped with a note when absent)
-        #[arg(long, default_value = "bin/kernel.wasm")]
-        kernel: PathBuf,
         /// any server base url [default: config addr]
         #[arg(long)]
         addr: Option<String>,
@@ -284,23 +277,14 @@ fn main() -> Result<()> {
                 .get("any.base_url")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            // kernel: explicit path wins; --from-space defaults to the
-            // agent overlay via the cache (ADR-009 §4); local run to
-            // the local build
-            let kernel_bytes = match (&kernel, &from) {
-                (Some(path), _) => {
-                    std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
-                }
-                (None, Some((client, space_id))) => {
-                    let aliases = serve::alias_map(&host.overlays, space_id);
-                    kernelcache::kernel_bytes(client, &aliases["agent"], &host.cache_dir)?
-                }
-                (None, None) => {
-                    let path = std::path::Path::new("bin/kernel.wasm");
-                    std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
-                }
+            // kernel is embedded (ADR-009 §4); --kernel is a dev override
+            let cage = match &kernel {
+                Some(path) => runner::Cage::new(
+                    &std::fs::read(path)
+                        .with_context(|| format!("kernel at {}", path.display()))?,
+                )?,
+                None => runner::Cage::embedded()?,
             };
-            let cage = runner::Cage::new(&kernel_bytes)?;
             let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
             let mut writer = trace::TraceWriter::new(json!({
                 "id": run_id, "program": spec, "host": "rust"}));
@@ -370,7 +354,6 @@ fn main() -> Result<()> {
         Cmd::Deploy {
             source,
             target,
-            kernel,
             addr,
             space,
             config_file,
@@ -399,13 +382,6 @@ fn main() -> Result<()> {
             println!("skills → {:?}", repo.skills);
             if let Some(st) = repo.readme {
                 println!("readme → {st}");
-            }
-            match std::fs::read(&kernel) {
-                Ok(bytes) => {
-                    let st = deploy::KernelDeployer::new(&client, &space_id).deploy(&bytes)?;
-                    println!("kernel → {st} ({} bytes)", bytes.len());
-                }
-                Err(_) => println!("kernel → skipped (no file at {})", kernel.display()),
             }
             Ok(())
         }

@@ -1,7 +1,7 @@
 //! Lib-mode smoke test (ADR-009 §6): the public surface an embedder
 //! uses — Config builder + TOML, the injectable any-client transport,
-//! module resolution, kernel cache — exercised without wasm or a
-//! server. The full agent path stays in the pytest e2e suite.
+//! module resolution — exercised without a server. The full agent
+//! path stays in the pytest e2e suite.
 
 use anyrt::anyapi::{AnyError, Client, Transport};
 use anyrt::config::Config;
@@ -40,7 +40,6 @@ fn config_builder_composes_a_host_config() {
         .overlay("agent", "bafycode")
         .overlay("std", "bafystd")
         .traces_dir("/tmp/t")
-        .cache_dir("/tmp/c")
         .config_value("llm.tier.chat", json!({"provider": "anthropic"}))
         .secret("llm.key.anthropic", "sk-x")
         .build();
@@ -78,15 +77,4 @@ fn local_dir_resolver_is_public() {
     let mut r = LocalDirResolver::new(dir.path().to_path_buf());
     let hit = r.resolve("hello@v1", None).unwrap();
     assert!(hit["source"].as_str().unwrap().contains("return 7"));
-}
-
-#[test]
-fn kernelcache_boot_error_is_reachable() {
-    let t = CannedTransport {
-        replies: std::sync::Mutex::new(vec![(200, json!({"records": []}))]),
-    };
-    let c = Client::with_transport(Box::new(t));
-    let dir = tempfile::tempdir().unwrap();
-    let err = anyrt::kernelcache::kernel_bytes(&c, "sp", dir.path()).unwrap_err();
-    assert!(err.to_string().contains("anyrt deploy"), "{err}");
 }
