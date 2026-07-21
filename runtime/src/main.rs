@@ -385,7 +385,11 @@ fn main() -> Result<()> {
             let space_id = match &target {
                 // overlay name from config, else a raw space id — strict
                 Some(t) => {
-                    let id = cfg.overlays.get(t).cloned().unwrap_or_else(|| t.clone());
+                    let id = cfg
+                        .overlays
+                        .get(t)
+                        .map(|o| o.space.clone())
+                        .unwrap_or_else(|| t.clone());
                     serve::find_space(&client, &id)?
                 }
                 None => serve::ensure_space(&client, &cfg.agent_space)?,

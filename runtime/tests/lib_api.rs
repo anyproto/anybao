@@ -45,7 +45,7 @@ fn config_builder_composes_a_host_config() {
         .secret("llm.key.anthropic", "sk-x")
         .build();
     assert_eq!(cfg.addr, "http://127.0.0.1:9009");
-    assert_eq!(cfg.overlays["agent"], "bafycode");
+    assert_eq!(cfg.overlays["agent"].space, "bafycode");
     assert_eq!(cfg.config["llm.tier.chat"]["provider"], json!("anthropic"));
     assert_eq!(cfg.secrets["llm.key.anthropic"], "sk-x");
     assert_eq!(cfg.kernel, None); // default: kernel from the space
@@ -54,7 +54,7 @@ fn config_builder_composes_a_host_config() {
 #[test]
 fn config_from_toml_is_public() {
     let cfg = Config::from_toml("[overlays]\nagent = \"bafy1\"").unwrap();
-    assert_eq!(cfg.overlays["agent"], "bafy1");
+    assert_eq!(cfg.overlays["agent"].space, "bafy1");
 }
 
 #[test]

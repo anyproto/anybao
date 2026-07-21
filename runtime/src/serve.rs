@@ -191,13 +191,16 @@ struct Shared {
 }
 
 /// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
-/// verbatim; a missing `agent` entry binds the alias to the working
-/// space — the degenerate single-space shape.
+/// (its space id) verbatim; a missing `agent` entry binds the alias to
+/// the working space — the degenerate single-space shape.
 pub fn alias_map(
-    overlays: &BTreeMap<String, String>,
+    overlays: &BTreeMap<String, crate::config::Overlay>,
     working_space: &str,
 ) -> BTreeMap<String, String> {
-    let mut m = overlays.clone();
+    let mut m: BTreeMap<String, String> = overlays
+        .iter()
+        .map(|(name, o)| (name.clone(), o.space.clone()))
+        .collect();
     m.entry("agent".into())
         .or_insert_with(|| working_space.to_string());
     m
@@ -740,8 +743,20 @@ mod tests {
     #[test]
     fn alias_map_keeps_configured_overlays_verbatim() {
         let mut overlays = BTreeMap::new();
-        overlays.insert("agent".to_string(), "codeSpace".to_string());
-        overlays.insert("std".to_string(), "stdSpace".to_string());
+        overlays.insert(
+            "agent".to_string(),
+            crate::config::Overlay {
+                space: "codeSpace".to_string(),
+                invite: None,
+            },
+        );
+        overlays.insert(
+            "std".to_string(),
+            crate::config::Overlay {
+                space: "stdSpace".to_string(),
+                invite: Some("tok".to_string()),
+            },
+        );
         let m = alias_map(&overlays, "ws1");
         assert_eq!(m.get("agent").map(String::as_str), Some("codeSpace"));
         assert_eq!(m.get("std").map(String::as_str), Some("stdSpace"));

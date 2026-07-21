@@ -21,11 +21,51 @@ pub struct FileConfig {
     pub addr: Option<String>,
     pub agent: AgentSection,
     /// named module sources (the alias namespace); values are STRICTLY
-    /// space ids, never names (ADR-009 §2)
-    pub overlays: BTreeMap<String, String>,
+    /// space ids, never names (ADR-009 §2). Bare id, or a table with a
+    /// join invite (§8): `agent = { space = "…", invite = "…" }`.
+    pub overlays: BTreeMap<String, OverlayEntry>,
     pub paths: PathsSection,
     /// guest-visible cascade layer: flat quoted dotted keys
     pub config: toml::Table,
+}
+
+/// TOML form of one overlay: bare space id or inline table.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum OverlayEntry {
+    Id(String),
+    Full(OverlayTable),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverlayTable {
+    pub space: String,
+    #[serde(default)]
+    pub invite: Option<String>,
+}
+
+/// One resolved overlay (ADR-009 §2, §8): the space id plus an
+/// optional RequestToJoin invite token for serve's join-on-boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overlay {
+    pub space: String,
+    pub invite: Option<String>,
+}
+
+impl From<OverlayEntry> for Overlay {
+    fn from(e: OverlayEntry) -> Self {
+        match e {
+            OverlayEntry::Id(space) => Overlay {
+                space,
+                invite: None,
+            },
+            OverlayEntry::Full(t) => Overlay {
+                space: t.space,
+                invite: t.invite,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -53,7 +93,7 @@ pub struct Config {
     pub agent_space: String,
     pub agent_name: String,
     pub control_port: u16,
-    pub overlays: BTreeMap<String, String>,
+    pub overlays: BTreeMap<String, Overlay>,
     pub traces_dir: PathBuf,
     pub cache_dir: PathBuf,
     /// explicit local kernel override (dev bypass, ADR-009 §4);
@@ -121,7 +161,30 @@ impl ConfigBuilder {
 
     /// Add one overlay (`name = spaceId`, strictly ids — ADR-009 §2).
     pub fn overlay(mut self, name: impl Into<String>, space_id: impl Into<String>) -> Self {
-        self.cfg.overlays.insert(name.into(), space_id.into());
+        self.cfg.overlays.insert(
+            name.into(),
+            Overlay {
+                space: space_id.into(),
+                invite: None,
+            },
+        );
+        self
+    }
+
+    /// Overlay with a RequestToJoin invite for join-on-boot (§8).
+    pub fn overlay_with_invite(
+        mut self,
+        name: impl Into<String>,
+        space_id: impl Into<String>,
+        invite: impl Into<String>,
+    ) -> Self {
+        self.cfg.overlays.insert(
+            name.into(),
+            Overlay {
+                space: space_id.into(),
+                invite: Some(invite.into()),
+            },
+        );
         self
     }
 
@@ -204,7 +267,11 @@ impl Config {
         if let Some(port) = fc.agent.control_port {
             c.control_port = port;
         }
-        c.overlays = fc.overlays;
+        c.overlays = fc
+            .overlays
+            .into_iter()
+            .map(|(name, entry)| (name, entry.into()))
+            .collect();
         if let Some(traces) = fc.paths.traces {
             c.traces_dir = traces;
         }
@@ -316,8 +383,9 @@ cache = "/var/cache/anybao"
         assert_eq!(c.agent_space, "myspace");
         assert_eq!(c.agent_name, "mybot");
         assert_eq!(c.control_port, 7777);
-        assert_eq!(c.overlays["agent"], "bafyagent");
-        assert_eq!(c.overlays["std"], "bafystd");
+        assert_eq!(c.overlays["agent"].space, "bafyagent");
+        assert_eq!(c.overlays["agent"].invite, None);
+        assert_eq!(c.overlays["std"].space, "bafystd");
         assert_eq!(c.traces_dir, PathBuf::from("t"));
         assert_eq!(c.cache_dir, PathBuf::from("/var/cache/anybao"));
         assert_eq!(c.config["agent.persona"], json!("terse"));
@@ -344,6 +412,25 @@ cache = "/var/cache/anybao"
         assert!(Config::from_toml("adr = \"typo\"").is_err());
         assert!(Config::from_toml("[agent]\nspaec = \"x\"").is_err());
         assert!(Config::from_toml("[paths]\ntrace = \"x\"").is_err());
+    }
+
+    #[test]
+    fn overlay_table_form_carries_invite() {
+        let c = Config::from_toml(
+            "[overlays]\nagent = { space = \"bafy1\", invite = \"tok\" }\nstd = \"bafy2\"",
+        )
+        .unwrap();
+        assert_eq!(
+            c.overlays["agent"],
+            Overlay {
+                space: "bafy1".into(),
+                invite: Some("tok".into())
+            }
+        );
+        assert_eq!(c.overlays["std"].space, "bafy2");
+        assert_eq!(c.overlays["std"].invite, None);
+        // a typo'd key inside the table still fails loudly
+        assert!(Config::from_toml("[overlays]\nagent = { spaec = \"x\" }").is_err());
     }
 
     #[test]
