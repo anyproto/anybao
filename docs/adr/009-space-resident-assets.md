@@ -1,6 +1,6 @@
 # ADR-009: Space-resident assets, host config, overlays, lib mode
 
-Status: **Accepted** (2026-07-21)
+Status: **Accepted** (2026-07-21), amended 2026-07-21 (§8)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -195,7 +195,35 @@ grants bind to content hashes (ADR-008). Gating overlay imports later
 over the frame chain (ADR-004 §5) — overlay maps are host config, so
 enforcement needs no resolver change. Explicitly out of scope here.
 
-### 8. Non-goals
+### 8. Overlay membership: join-on-boot + reader approval (interim, amended 2026-07-21)
+
+An overlay published by another account must be *joined* before its
+space syncs to this device. Until guest-key spaces land, the interim
+mechanics are:
+
+- **Config**: an `[overlays]` entry is either the bare space id or an
+  inline table with an invite token —
+  `agent = { space = "bafy...", invite = "b58token..." }`. Values stay
+  strictly ids; the invite is the any-server RequestToJoin token.
+- **Join-on-boot**: serve's overlay validation, on a space it cannot
+  see, sends `POST /spaces/join {inviteToken}` when an invite is
+  configured (a 202 means pending approval) and polls the space every
+  2 s for up to 180 s until it syncs; timeout or a missing invite is a
+  hard boot error naming the fix.
+- **Read-only doctrine**: joiners get **`reader`** permission — the
+  server's vocabulary for view-only. The any server's invites carry NO
+  permission; the grant is chosen at approval
+  (`POST .../acl/accept {requestRecordId, permission: "reader"}`), so
+  read-only is enforced by the approving publisher, not the token.
+  This delivers 00-plan's trust posture: a readonly overlay ⇒ only the
+  publisher writes ⇒ authenticity by CRDT ACL.
+- **Approval**: `tools/approve_joins.py` — a standalone, stdlib-only
+  daemon run by the repo account against ITS server; it watches ALL
+  the account's spaces and accepts every pending join request as
+  `reader`. **TEMPORARY workaround (2026-07-21) until guest-key
+  spaces**; it is ops tooling, not part of the runtime contract.
+
+### 9. Non-goals
 
 Overlay manifest/trust format beyond what ADR-008 already fixes
 (publishing third-party overlays is future work); space→disk sync
