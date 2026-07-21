@@ -1,10 +1,11 @@
 //! Kernel-from-space boot protocol + content-hash cache (ADR-009 §4).
-//! Read the space's `agent_kernel`/"main" record, serve bytes from
+//! Read the kernel object's markdown manifest (sha256 + fileId — the
+//! kernel itself is just an attached file), serve bytes from
 //! `<cache>/kernel/<sha256>.wasm`, download + digest-verify on miss.
 //! Every failure here is a hard boot error — no silent fallback.
 
 use crate::anyapi::Client;
-use crate::deploy::{KERNEL_DATASET, KERNEL_OBJECT_NAME, KERNEL_TYPE};
+use crate::deploy::{parse_kernel_manifest, KERNEL_OBJECT_NAME, KERNEL_TYPE};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -23,17 +24,9 @@ pub fn kernel_bytes(client: &Client, space: &str, cache_dir: &Path) -> Result<Ve
         .with_context(|| {
             format!("no {KERNEL_OBJECT_NAME} object in space {space} — run `anyrt deploy` first")
         })?;
-    let recs = client.query(space, oid, KERNEL_DATASET, &json!({}))?;
-    let main = recs
-        .iter()
-        .find(|r| r["id"].as_str() == Some("main"))
-        .context("kernel object has no main record — run `anyrt deploy` first")?;
-    let sha = main["sha256"]
-        .as_str()
-        .context("kernel record: no sha256")?;
-    let file_id = main["fileId"]
-        .as_str()
-        .context("kernel record: no fileId")?;
+    let pointer = parse_kernel_manifest(&client.get_markdown(space, oid)?)
+        .context("kernel object has no manifest — run `anyrt deploy` first")?;
+    let (sha, file_id) = (pointer.sha256.as_str(), pointer.file_id.as_str());
 
     let cached = cache_dir.join("kernel").join(format!("{sha}.wasm"));
     if let Ok(bytes) = std::fs::read(&cached) {
@@ -71,14 +64,15 @@ mod tests {
         hex::encode(Sha256::digest(bytes))
     }
 
-    /// Stub scripted with the two JSON lookups; raw bytes optional.
+    /// Stub scripted with the object lookup + the markdown manifest;
+    /// raw bytes optional.
     fn scripted(raw: Option<&[u8]>) -> Client {
         let stub = StubTransport::new();
         stub.push(200, json!({"records": [{"id": "kobj"}]}));
         stub.push(
             200,
-            json!({"records": [{"id": "main", "sha256": sha_of(WASM),
-                                "fileId": "f1", "size": WASM.len()}]}),
+            json!({"content": format!("# anyrt kernel\n\nsha256: {}\nfileId: f1\n",
+                                      sha_of(WASM))}),
         );
         if let Some(bytes) = raw {
             stub.push_raw(bytes.to_vec());

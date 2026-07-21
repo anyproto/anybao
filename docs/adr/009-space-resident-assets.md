@@ -1,6 +1,6 @@
 # ADR-009: Space-resident assets, host config, overlays, lib mode
 
-Status: **Accepted** (2026-07-21), amended 2026-07-21 (§8)
+Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4, §8)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -136,18 +136,24 @@ guest-side change in this ADR.
 
 ### 4. Kernel in the space + content-hash cache
 
-Data contract, in the `agent` overlay space:
+Data contract, in the `agent` overlay space (amended 2026-07-21 — the
+kernel is JUST a file, no dataset: server datasets are registered and
+a custom `agent_kernel` dataset is rejected with `unknown dataset`;
+the files API itself carries no plaintext hash, no list ordering, and
+no delete, so a current-file pointer must live somewhere — it lives
+in the object's markdown body):
 
 - One object, `any.name = "anyrt-kernel"`, type `agent_kernel` (same
   ensure-typed pattern as the trigger anchor). Object name is a fixed
   convention — no config knob.
-- Dataset `agent_kernel`, record `"main"`:
-  `{sha256, size, fileId, name, uploadedAt}`.
 - Bytes attached via the files API (`POST
-  /spaces/{id}/objects/{oid}/files?name=kernel.wasm`, raw
-  octet-stream). Published by `anyrt deploy --kernel <path>` (default
-  `bin/kernel.wasm`; meaningful for the `agent` overlay target),
-  hash-gated on the record's `sha256`.
+  /spaces/{id}/objects/{oid}/files?name=kernel-<sha256>.wasm`, raw
+  octet-stream) — the file name carries the plaintext sha.
+- The object's **markdown body is the manifest** (human-readable in
+  any UI): free-form prose plus `sha256: <hex>` and `fileId: <id>`
+  lines — the pointer to the current file. Published by `anyrt deploy
+  --kernel <path>` (default `bin/kernel.wasm`; meaningful for the
+  `agent` overlay target), hash-gated on the manifest's `sha256`.
 - Failure to load the kernel from the space at boot (missing object,
   download error, digest mismatch) is a **hard error** — no silent
   fallback.

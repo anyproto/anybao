@@ -530,13 +530,46 @@ pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyho
 // --- kernel — the componentized CPython guest, space-resident (ADR-009 §4) ---
 
 pub const KERNEL_TYPE: &str = "agent_kernel";
-pub const KERNEL_DATASET: &str = "agent_kernel";
 /// Fixed convention — no config knob (ADR-009 §4).
 pub const KERNEL_OBJECT_NAME: &str = "anyrt-kernel";
 
+/// The current kernel's identity, parsed from the kernel object's
+/// markdown body. The kernel itself is JUST an attached file — but the
+/// files API has no plaintext hash, no list ordering, and no delete,
+/// so the object body is the pointer to the current file (and shows
+/// the sha in any UI). Server datasets are registered — a custom
+/// `agent_kernel` dataset is rejected (500 unknown dataset), hence no
+/// dataset here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelPointer {
+    pub sha256: String,
+    pub file_id: String,
+}
+
+/// Parse the manifest lines (`sha256: …` / `fileId: …`) out of the
+/// kernel object's markdown; other lines are free-form.
+pub fn parse_kernel_manifest(md: &str) -> Option<KernelPointer> {
+    let field = |key: &str| {
+        md.lines()
+            .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
+            .filter(|v| !v.is_empty())
+    };
+    Some(KernelPointer {
+        sha256: field("sha256:")?,
+        file_id: field("fileId:")?,
+    })
+}
+
+fn kernel_manifest(sha: &str, file_id: &str, size: usize) -> String {
+    format!(
+        "# anyrt kernel\n\nCurrent kernel.wasm (ADR-009 §4). Managed by `anyrt deploy`.\n\n\
+         sha256: {sha}\nfileId: {file_id}\nsize: {size}\n"
+    )
+}
+
 /// Publishes kernel.wasm as a file on the space's one `agent_kernel`
-/// object; the dataset record "main" carries the content identity the
-/// boot protocol checks against its cache.
+/// object (named `kernel-<sha256>.wasm`); the object's markdown body
+/// points at the current file.
 pub struct KernelDeployer<'a> {
     client: &'a Client,
     space: String,
@@ -550,41 +583,30 @@ impl<'a> KernelDeployer<'a> {
         }
     }
 
-    /// Hash-gated on the record's sha256. Returns "created" |
+    /// Hash-gated on the manifest's sha256. Returns "created" |
     /// "updated" | "unchanged".
     pub fn deploy(&self, kernel_bytes: &[u8]) -> anyhow::Result<&'static str> {
         let sha = hex::encode(Sha256::digest(kernel_bytes));
         let oid = ensure_typed(self.client, &self.space, KERNEL_OBJECT_NAME, KERNEL_TYPE)?;
-        let rows = self
-            .client
-            .query(&self.space, &oid, KERNEL_DATASET, &json!({}))?;
-        let existing = rows
-            .iter()
-            .find(|r| r["id"].as_str() == Some("main"))
-            .cloned();
-        if let Some(ref rec) = existing {
-            if rec["sha256"].as_str() == Some(sha.as_str()) {
+        let existing = parse_kernel_manifest(&self.client.get_markdown(&self.space, &oid)?);
+        if let Some(ref cur) = existing {
+            if cur.sha256 == sha {
                 return Ok("unchanged");
             }
         }
-        let info = self
-            .client
-            .attach_file(&self.space, &oid, "kernel.wasm", kernel_bytes)?;
+        let info = self.client.attach_file(
+            &self.space,
+            &oid,
+            &format!("kernel-{sha}.wasm"),
+            kernel_bytes,
+        )?;
         let file_id = info["fileId"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("attach_file reply has no fileId: {info}"))?;
-        let uploaded_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        self.client.upsert_record(
+        self.client.put_markdown(
             &self.space,
             &oid,
-            KERNEL_DATASET,
-            "main",
-            &json!({"sha256": sha, "size": kernel_bytes.len(),
-                    "fileId": file_id, "name": "kernel.wasm",
-                    "uploadedAt": uploaded_at}),
+            &kernel_manifest(&sha, file_id, kernel_bytes.len()),
         )?;
         Ok(if existing.is_some() {
             "updated"
@@ -1061,7 +1083,8 @@ mod tests {
         assert_eq!(kd.deploy(b"wasm-v1").unwrap(), "created");
         assert_eq!(kd.deploy(b"wasm-v1").unwrap(), "unchanged");
 
-        // one agent_kernel object; record carries the content identity
+        // one agent_kernel object; the markdown manifest points at the
+        // current file (no dataset — a file + a pointer, ADR-009 §4)
         let objs = c
             .query_objects(
                 "agent",
@@ -1070,24 +1093,35 @@ mod tests {
             .unwrap();
         assert_eq!(objs.len(), 1);
         let oid = objs[0]["id"].as_str().unwrap();
-        let rec = c.query("agent", oid, KERNEL_DATASET, &json!({})).unwrap();
-        let main = rec.iter().find(|r| r["id"] == json!("main")).unwrap();
-        let fid1 = main["fileId"].as_str().unwrap().to_string();
-        assert_eq!(main["size"], json!(7));
-        assert_eq!(
-            main["sha256"].as_str().unwrap(),
-            hex::encode(Sha256::digest(b"wasm-v1"))
-        );
-        assert_eq!(c.download_file("agent", &fid1).unwrap(), b"wasm-v1");
+        let sha1 = hex::encode(Sha256::digest(b"wasm-v1"));
+        let p1 = parse_kernel_manifest(&c.get_markdown("agent", oid).unwrap()).unwrap();
+        assert_eq!(p1.sha256, sha1);
+        assert_eq!(c.download_file("agent", &p1.file_id).unwrap(), b"wasm-v1");
+        // the attached file carries the sha in its name
+        let meta = c.file_info("agent", &p1.file_id).unwrap();
+        assert_eq!(meta["name"], json!(format!("kernel-{sha1}.wasm")));
 
-        // byte change → new file, record repointed
+        // byte change → new file, manifest repointed
         assert_eq!(kd.deploy(b"wasm-v2!").unwrap(), "updated");
-        let rec = c.query("agent", oid, KERNEL_DATASET, &json!({})).unwrap();
-        let main = rec.iter().find(|r| r["id"] == json!("main")).unwrap();
-        let fid2 = main["fileId"].as_str().unwrap();
-        assert_ne!(fid1, fid2);
-        assert_eq!(main["size"], json!(8));
-        assert_eq!(c.download_file("agent", fid2).unwrap(), b"wasm-v2!");
+        let p2 = parse_kernel_manifest(&c.get_markdown("agent", oid).unwrap()).unwrap();
+        assert_ne!(p1.file_id, p2.file_id);
+        assert_eq!(p2.sha256, hex::encode(Sha256::digest(b"wasm-v2!")));
+        assert_eq!(c.download_file("agent", &p2.file_id).unwrap(), b"wasm-v2!");
+    }
+
+    #[test]
+    fn kernel_manifest_round_trips_and_tolerates_prose() {
+        let md = kernel_manifest("abc123", "file9", 42);
+        assert_eq!(
+            parse_kernel_manifest(&md),
+            Some(KernelPointer {
+                sha256: "abc123".into(),
+                file_id: "file9".into()
+            })
+        );
+        // free-form prose around the fields is fine; a missing field -> None
+        assert_eq!(parse_kernel_manifest("# hello\n\nno fields here"), None);
+        assert_eq!(parse_kernel_manifest("sha256: x"), None); // no fileId
     }
 
     // --- repo deploy (ADR-009 §2) ---
