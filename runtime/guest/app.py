@@ -377,28 +377,32 @@ def span(name, kind=None):
 # ---- use() module loading (ADR-004) ----------------------------------------
 
 _module_cache: dict = {}   # (objectId, marker) -> module object
-_frame_stack: list = []    # defining-space chain (§5); top = current requester
 
 
-def use(spec):
-    """Load a space program by `name@vN` spec (ADR-004 §1). Probe every
-    call (host cache validates by marker); a program's own use() calls
-    resolve against ITS defining space via the frame chain."""
-    frm = _frame_stack[-1] if _frame_stack else None
-    r = _effect("module.resolve", {"spec": spec, "frm": frm})
-    ck = (r["objectId"], r["marker"])
-    if ck in _module_cache:
-        return _module_cache[ck]
-    mod = types.ModuleType(spec.split("@")[0].split(":")[-1])
-    mod.__dict__.update(_fresh_ns())
-    mod.__dict__["use"] = use
-    _frame_stack.append(r["objectId"])
-    try:
+def _bound_use(owner):
+    """A use() carrying its OWNER's identity (ADR-004 §2.4/§5): every
+    loaded module gets its own binding, so its use() calls resolve in
+    its defining space no matter WHEN they run — top-level or from a
+    function called long after load (a push/pop frame stack only covers
+    top-level and broke exactly there). Cell code gets the unowned
+    binding (owner None → the working space)."""
+    def use(spec):
+        """Load a space program by `name@vN` spec (ADR-004 §1). Probe
+        every call (host cache validates by marker)."""
+        r = _effect("module.resolve", {"spec": spec, "frm": owner})
+        ck = (r["objectId"], r["marker"])
+        if ck in _module_cache:
+            return _module_cache[ck]
+        mod = types.ModuleType(spec.split("@")[0].split(":")[-1])
+        mod.__dict__.update(_fresh_ns())
+        mod.__dict__["use"] = _bound_use(r["objectId"])
         exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
-    finally:
-        _frame_stack.pop()
-    _module_cache[ck] = mod
-    return mod
+        _module_cache[ck] = mod
+        return mod
+    return use
+
+
+use = _bound_use(None)
 
 # ---- value metadata for the digest (ADR-003 ValueRef / ADR-005 §4) ---------
 
