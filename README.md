@@ -10,9 +10,11 @@ bobrik harness — design and rationale in
 
 ## Two modes
 
-**Embedded (Rust library)** — apps (e.g. the any-ui desktop app) run
-the agent in-process. The wasm kernel is compiled into the crate — no
-assets to ship:
+**Embedded (Rust library)** — apps run the agent in-process. The
+any-ui desktop (Tauri) app bundles anyrt exactly this way: a Cargo
+path dep on `../anybao/runtime`, the wasm kernel compiled into the
+crate — no agent binary, no asset tree to ship. Build order matters:
+`make kernel` before any cargo build of a consumer:
 
 ```rust
 let mut cfg = anyrt::Config::builder()
@@ -59,6 +61,31 @@ is the only publish step; a running serve picks changes up on its next
 conversation. The agent's code comes from the `agent` overlay (a repo
 space joined read-only); your own space can shadow it by name
 (ADR-004/ADR-009).
+
+## Standalone stack: any + anyrt + browser UI
+
+The dedicated (non-Tauri) way to run the whole thing — one any server,
+one agent process, the UI in a browser:
+
+```fish
+# 1. the any server (needs a real nodeconf for sharing/guest joins —
+#    without one it boots the sanitized embedded fallback and joins NO
+#    network):
+cd ~/any/any && ./bin/any run --config ./any-config.yml   # 127.0.0.1:7001
+
+# 2. the agent (this repo; anybao.toml carries space + agent overlay):
+make runtime && ./runtime/target/release/anyrt serve
+#   first run on a fresh space: ANTHROPIC_API_KEY=... anyrt serve
+#   (key persists device-locally after — docs/config-secrets.md)
+
+# 3. the UI, in a browser (any-ui repo): vite proxies /v1 to the server
+cd ~/any/any-ui && pnpm dev            # VITE_API_TARGET overrides the
+# open http://localhost:5173           # default http://127.0.0.1:7001
+```
+
+Browser mode has NO embedded agent — `anyrt serve` IS the agent. Don't
+also run the desktop app against the same working space: two agents on
+one chat means doubled replies.
 
 ## Build
 
