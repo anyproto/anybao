@@ -35,13 +35,15 @@ cd ~/any/anybao
 # (the kernel is embedded in the anyrt binary — nothing to publish)
 ```
 
-## 3. Invite + approver
+## 3. Invite
 
 ```fish
 cd ~/any/any
-set TOKEN (./bin/any --addr 127.0.0.1:7003 invite create $REPO_ID)  # inviteToken
-python ~/any/anybao/tools/approve_joins.py --addr http://127.0.0.1:7003
-# leave running; it accepts every joiner as reader (view-only)
+# public read-only guest key (idempotent; no approval daemon needed):
+set TOKEN (./bin/any --addr 127.0.0.1:7003 invite guest-key $REPO_ID)
+# invite-only alternative: `invite create` + manual `acl accept
+# --permission reader` per joiner (the guest key replaced the interim
+# approve_joins.py daemon)
 ```
 
 ## 4. Client: empty bao + overlay config
@@ -70,7 +72,6 @@ Serve does NOT block on the join (ADR-009 §8 — no polling). Watch for:
 1. `overlay "agent": join requested — the publisher's approval is pending`
 2. `overlays still joining/syncing: ["agent"] — will answer with status until synced`
 3. `anyrt serving space=… chat=…` (already watching the chat)
-4. approver terminal: `accepted anybao into bao-repo as reader`
 
 If you message bao BEFORE the sync lands, it answers with a status
 bubble (`Not ready yet: overlay `agent` (space …) still joining/

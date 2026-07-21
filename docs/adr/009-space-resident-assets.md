@@ -214,11 +214,17 @@ mechanics are:
   read-only is enforced by the approving publisher, not the token.
   This delivers 00-plan's trust posture: a readonly overlay ⇒ only the
   publisher writes ⇒ authenticity by CRDT ACL.
-- **Approval**: `tools/approve_joins.py` — a standalone, stdlib-only
-  daemon run by the repo account against ITS server; it watches ALL
-  the account's spaces and accepts every pending join request as
-  `reader`. **TEMPORARY workaround (2026-07-21) until guest-key
-  spaces**; it is ops tooling, not part of the runtime contract.
+- **Guest keys (amended 2026-07-21, same day — upstream landed)**: the
+  any server now mints a space's public read-only GUEST key
+  (`POST /v1/spaces/{id}/guest-key`, owner-only, idempotent; CLI
+  `any invite guest-key`) returned as an invite token for the SAME
+  `POST /v1/spaces/join`, auto-detected — no join request, no
+  approval, enforced read-only by construction. The config shape is
+  unchanged: `invite` simply carries a guest token. serve tolerates
+  the 409 already-tracked/deleted replies as pending-sync. The
+  `approve_joins.py` interim daemon is DELETED — RequestToJoin +
+  reader-approval remains valid for invite-only (non-public) repos,
+  approved manually (`any acl accept`).
 
 ### 9. Non-goals
 

@@ -257,7 +257,10 @@ pub enum OverlayMembership {
 
 /// ADR-009 §8: probe one overlay; when this account isn't a member yet
 /// and an invite is configured, send the join request and PROCEED —
-/// never block or poll. A missing invite is a hard boot error.
+/// never block or poll. The invite may be a RequestToJoin token (owner
+/// approval grants `reader`) or a public GUEST token (read-only, no
+/// approval — the server auto-detects). A missing invite is a hard
+/// boot error.
 pub fn probe_or_join_overlay(
     client: &Client,
     name: &str,
@@ -275,11 +278,22 @@ pub fn probe_or_join_overlay(
              in [overlays] (ADR-009 §8)"
         );
     };
-    let (status, _info) = client
-        .join_space(invite, Some(&json!({"name": "anybao"})))
-        .map_err(|e| anyhow::anyhow!("overlay {name:?}: join request failed: {e}"))?;
+    let status = match client.join_space(invite, Some(&json!({"name": "anybao"}))) {
+        Ok((status, _info)) => status,
+        // 409 space.already_member / space.deleted: the account already
+        // tracks the space (raced our probe, or a locally-deleted guest
+        // space) — pending; the message-driven recheck settles it.
+        Err(e) if e.status == 409 => {
+            info!("overlay {name:?}: {e} — treating as pending sync");
+            return Ok(OverlayMembership::Pending);
+        }
+        Err(e) => anyhow::bail!("overlay {name:?}: join request failed: {e}"),
+    };
     if status == 202 {
-        info!("overlay {name:?}: join requested — the publisher's approval is pending");
+        // member invite: the publisher's approval is pending; guest
+        // token: the space is loading in the background — either way,
+        // wait for it to arrive.
+        info!("overlay {name:?}: join accepted — waiting for the space to arrive");
     } else {
         info!("overlay {name:?}: joined, waiting for first sync");
     }
@@ -887,6 +901,22 @@ mod tests {
         assert_eq!(calls.len(), 2); // probe + join — nothing else
         assert_eq!(calls[1].1, "/v1/spaces/join");
         assert_eq!(calls[1].2.as_ref().unwrap()["inviteToken"], json!("tok"));
+    }
+
+    #[test]
+    fn probe_tolerates_already_tracked_409() {
+        // guest-token join racing the probe: 409 space.already_member —
+        // pending, not a boot failure (ADR-009 §8)
+        let (c, _) = scripted(&[
+            NOT_FOUND(),
+            (
+                409,
+                json!({"error": {"code": "space.already_member",
+                                 "message": "already tracks the space"}}),
+            ),
+        ]);
+        let m = probe_or_join_overlay(&c, "agent", &overlay("repo", Some("guestTok"))).unwrap();
+        assert_eq!(m, OverlayMembership::Pending);
     }
 
     #[test]
