@@ -232,14 +232,20 @@ _EXCERPT = 400
 
 
 @span("llm.chat", kind="getter")  # noqa: F821 - guest global
-def chat(messages, system="", tier="codegen", tools=None):
+def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     """One model call: resolve the tier's provider config, translate the
     neutral messages to the provider wire, POST through the http syscall
     (the host injects the api key from `credential.ref` — the key never
-    enters the guest or the trace), parse back to a neutral Reply."""
+    enters the guest or the trace), parse back to a neutral Reply.
+    `max_tokens` lifts the adapter's default output cap (4096) — long
+    structured outputs (e.g. enrich extraction) truncate to
+    stop="length" without it; both wire formats take the key
+    top-level."""
     prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
     adapter = build_adapter(prov["provider"], prov.get("fenced", False))
     req = adapter.build_request(messages, system, tools or [], prov["model"])
+    if max_tokens:
+        req["max_tokens"] = max_tokens
     if prov["provider"] == "anthropic":
         url = prov["base_url"].rstrip("/") + "/v1/messages"
         headers = {"anthropic-version": "2023-06-01"}
