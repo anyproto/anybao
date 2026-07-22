@@ -1,20 +1,27 @@
 name: release
 
+# Fan-out / fan-in (same shape as any's _build-any.yml): verify → build
+# matrix (one job per platform) → publish ONE release with every asset.
+# Unlike any's Go backend (CGO-free, cross-compiles all desktop targets
+# from ubuntu), anyrt is Rust — darwin builds need an Apple toolchain, so
+# each platform builds natively on its own runner.
 on:
   push:
     tags: ["v*"]
 
+# Only the publish job creates the release; build jobs are read-only.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  # tags fire regardless of branch — only release tags cut from main
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # tags fire regardless of branch — only release tags cut from main
       - name: verify tag is on main
         run: |
           git fetch origin main
@@ -22,6 +29,21 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} is not on main; refusing to release" >&2
             exit 1
           }
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-linux
+          - runner: macos-15
+            target: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
       - uses: DeterminateSystems/magic-nix-cache-action@v9
       - uses: actions/cache@v4
@@ -30,7 +52,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: nix develop -c uv sync
       # builds bin/kernel.wasm first; the binary embeds it via include_bytes!
       - run: nix develop -c make runtime
@@ -38,11 +60,37 @@ jobs:
         run: |
           mkdir -p dist
           cp runtime/target/release/anyrt dist/
-          tar -C dist -czf "anyrt-${GITHUB_REF_NAME}-x86_64-linux.tar.gz" anyrt
-          sha256sum "anyrt-${GITHUB_REF_NAME}-x86_64-linux.tar.gz" > "anyrt-${GITHUB_REF_NAME}-x86_64-linux.tar.gz.sha256"
+          tar -C dist -czf "anyrt-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" anyrt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anyrt-${{ matrix.target }}
+          path: anyrt-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      # checksums computed here, in one place, so every platform's .sha256
+      # comes from the same sha256sum invocation (macs lack sha256sum)
+      - name: checksums
+        run: |
+          cd artifacts
+          for f in anyrt-*.tar.gz; do
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -la
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            anyrt-${{ github.ref_name }}-x86_64-linux.tar.gz
-            anyrt-${{ github.ref_name }}-x86_64-linux.tar.gz.sha256
+            artifacts/anyrt-*.tar.gz
+            artifacts/anyrt-*.tar.gz.sha256
           generate_release_notes: true
