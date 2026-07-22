@@ -1,0 +1,48 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # tags fire regardless of branch — only release tags cut from main
+      - name: verify tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "tag ${GITHUB_REF_NAME} is not on main; refusing to release" >&2
+            exit 1
+          }
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+      - run: nix develop -c uv sync
+      # builds bin/kernel.wasm first; the binary embeds it via include_bytes!
+      - run: nix develop -c make runtime
+      - name: package
+        run: |
+          mkdir -p dist
+          cp runtime/target/release/anyrt dist/
+          tar -C dist -czf "anyrt-${GITHUB_REF_NAME}-x86_64-linux.tar.gz" anyrt
+          sha256sum "anyrt-${GITHUB_REF_NAME}-x86_64-linux.tar.gz" > "anyrt-${GITHUB_REF_NAME}-x86_64-linux.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            anyrt-${{ github.ref_name }}-x86_64-linux.tar.gz
+            anyrt-${{ github.ref_name }}-x86_64-linux.tar.gz.sha256
+          generate_release_notes: true
