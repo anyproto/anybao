@@ -13,6 +13,7 @@ import base64  # noqa: F401
 import bisect  # noqa: F401
 import builtins as _b
 import collections  # noqa: F401
+import contextlib  # noqa: F401
 import copy  # noqa: F401
 import dataclasses  # noqa: F401
 import datetime  # noqa: F401  (guest sees only the proxy)
@@ -207,9 +208,9 @@ _PROXIES = {
 # tier 1: pure stdlib, passes through (ADR-002 §4)
 _ALLOWED = {
     "math", "json", "re", "itertools", "functools", "collections",
-    "textwrap", "heapq", "bisect", "statistics", "dataclasses", "enum",
-    "typing", "decimal", "fractions", "base64", "hashlib", "string",
-    "copy", "unicodedata",
+    "contextlib", "textwrap", "heapq", "bisect", "statistics",
+    "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
+    "hashlib", "string", "copy", "unicodedata",
 }
 
 

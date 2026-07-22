@@ -104,7 +104,9 @@ Cells execute in a constructed namespace containing **only**:
 - **Module allowlist with three tiers**, resolved by our
   MetaPathFinder (the only importer):
   1. *Pure stdlib* — passes through: `math`, `json`, `re`, `itertools`,
-     `functools`, `collections`, `textwrap`, `heapq`, `bisect`,
+     `functools`, `collections`, `contextlib` (added 2026-07-22: pure
+     control flow, zero ambient authority; ruff SIM105 steers guest
+     code toward `contextlib.suppress`), `textwrap`, `heapq`, `bisect`,
      `statistics`, `dataclasses`, `enum`, `typing`, `decimal`,
      `fractions`, `base64`, `hashlib`, `uuid`(v5 only — v1/v4 are
      nondeterministic; see open Q2), `unicodedata`.
