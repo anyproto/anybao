@@ -86,6 +86,17 @@ fn agent_config_object(c: &Client, space: &str) -> Option<String> {
 /// defaults declare `api_key_ref: "llm.key.anthropic"`).
 const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 
+/// Provider secret refs with device-local persistence: (secrets-map ref /
+/// config record key, seeding env var) — the same pairs `bootstrap_maps`
+/// reads from env. Anthropic is required (the agent loop is dead without
+/// it, so its absence warns); the rest are optional providers whose
+/// effects fail individually until a key is set.
+const PROVIDER_SECRET_REFS: &[(&str, &str)] = &[
+    (ANTHROPIC_SECRET_REF, "ANTHROPIC_API_KEY"),
+    ("google.key.gemini", "GEMINI_API_KEY"),
+    ("llm.key.together", "TOGETHER_API_KEY"),
+];
+
 /// The `agent_config` dataset name (mirrors the server-side type).
 const CONFIG_DATASET: &str = "agent_config";
 
@@ -111,48 +122,55 @@ fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> 
 }
 
 /// Device-local secret persistence (ADR-006 §3). Config secrets (the
-/// Anthropic API key) live as a never-synced `localValue` on their config
-/// record, not in synced space data. Bootstrap-once on serve start:
+/// provider API keys, [`PROVIDER_SECRET_REFS`]) live as a never-synced
+/// `localValue` on their config record, not in synced space data.
+/// Bootstrap-once on serve start, per ref:
 ///
 /// - stored device-local value present → it is authoritative; load it into
 ///   `secrets` (any env var is a noop this run);
-/// - stored empty but env `ANTHROPIC_API_KEY` present (already in
-///   `secrets` via `bootstrap`) → persist it device-locally now, so later
-///   starts need no env;
-/// - both empty → warn (serve still starts; the llm effect fails on first
-///   use until a key is provided).
+/// - stored empty but the seeding env var present (already in `secrets`
+///   via `bootstrap`) → persist it device-locally now, so later starts
+///   need no env;
+/// - both empty → warn for the required Anthropic key (serve still
+///   starts; the llm effect fails on first use until a key is provided);
+///   silent for optional providers.
 ///
 /// Best-effort: a read/write hiccup never fails serve — it falls back to
 /// whatever env supplied this run.
-fn bootstrap_secret(c: &Client, space: &str, obj: &str, secrets: &mut BTreeMap<String, String>) {
-    match stored_local_secret(c, space, obj, ANTHROPIC_SECRET_REF) {
-        Some(key) => {
-            secrets.insert(ANTHROPIC_SECRET_REF.into(), key);
-            info!("config: anthropic key loaded from device-local store");
-        }
-        None => match secrets.get(ANTHROPIC_SECRET_REF).cloned() {
-            Some(env_key) if !env_key.is_empty() => {
-                match persist_local_secret(c, space, obj, ANTHROPIC_SECRET_REF, &env_key) {
-                    Ok(()) => info!("config: anthropic key bootstrapped to device-local store"),
-                    Err(e) => warn!(
-                        "config: could not persist anthropic key device-locally ({e}); \
-                         using env value this run"
-                    ),
-                }
+fn bootstrap_secrets(c: &Client, space: &str, obj: &str, secrets: &mut BTreeMap<String, String>) {
+    let rows = c
+        .query(space, obj, CONFIG_DATASET, &json!({}))
+        .unwrap_or_default();
+    for &(secret_ref, env_var) in PROVIDER_SECRET_REFS {
+        match stored_local_secret(&rows, secret_ref) {
+            Some(key) => {
+                secrets.insert(secret_ref.into(), key);
+                info!("config: {secret_ref} loaded from device-local store");
             }
-            _ => warn!(
-                "config: no anthropic key — set ANTHROPIC_API_KEY once to seed the \
-                 device-local store, or write a localValue on the config object; \
-                 llm effects will fail until one is set"
-            ),
-        },
+            None => match secrets.get(secret_ref).cloned() {
+                Some(env_key) if !env_key.is_empty() => {
+                    match persist_local_secret(c, space, obj, secret_ref, &env_key) {
+                        Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
+                        Err(e) => warn!(
+                            "config: could not persist {secret_ref} device-locally ({e}); \
+                             using env value this run"
+                        ),
+                    }
+                }
+                _ if secret_ref == ANTHROPIC_SECRET_REF => warn!(
+                    "config: no anthropic key — set {env_var} once to seed the \
+                     device-local store, or write a localValue on the config object; \
+                     llm effects will fail until one is set"
+                ),
+                _ => {}
+            },
+        }
     }
 }
 
-/// Read the device-local `localValue` off the config record for `key`
-/// (None on any hiccup or when unset/empty).
-fn stored_local_secret(c: &Client, space: &str, obj: &str, key: &str) -> Option<String> {
-    let rows = c.query(space, obj, CONFIG_DATASET, &json!({})).ok()?;
+/// The device-local `localValue` for `key` from already-queried config
+/// rows (None when unset/empty).
+fn stored_local_secret(rows: &[Value], key: &str) -> Option<String> {
     rows.iter()
         .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
         .and_then(|r| r.get("localValue").and_then(|v| v.as_str()))
@@ -342,7 +360,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
 
     // Config cascade (ADR-006 §3): hardcoded defaults (from `bootstrap`)
     // under the space-scope override layer read off the config object;
-    // secrets (the API key) persist device-locally on the same object.
+    // secrets (the provider API keys) persist device-locally on the same
+    // object.
     match agent_config_object(&client, &space) {
         Some(obj) => {
             let overrides = config_overrides(&client, &space, &obj);
@@ -350,7 +369,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             for (k, v) in overrides {
                 cfg.config.insert(k, v);
             }
-            bootstrap_secret(&client, &space, &obj, &mut cfg.secrets);
+            bootstrap_secrets(&client, &space, &obj, &mut cfg.secrets);
         }
         None => {
             warn!("space has no agentConfigObjectId — running on config defaults");

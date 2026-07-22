@@ -243,6 +243,16 @@ changed:
   the in-memory `secrets` map at runtime and is never read by cells —
   `localValue` is just its device-local at-rest home instead of the env.
 
+**Amended 2026-07-22 — persistence covers all provider keys.** The
+bootstrap above ran for the Anthropic key only; `GEMINI_API_KEY` /
+`TOGETHER_API_KEY` were env-per-run, so an embedder launch without env
+(e.g. a Dock-launched app) lost web search. `serve` now runs the same
+load-authoritative / persist-from-env cycle over every provider ref
+(`llm.key.anthropic`, `google.key.gemini`, `llm.key.together` — the
+`PROVIDER_SECRET_REFS` table, mirroring `bootstrap_maps`'s env pairs).
+Only the required Anthropic key warns when absent; the optional
+providers stay silent until their effect needs them.
+
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
 - Trigger object properties: `name`, `kind` (`cron | event`), `spec`
