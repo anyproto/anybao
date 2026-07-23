@@ -1,7 +1,8 @@
 # ADR-009: Space-resident assets, host config, overlays, lib mode
 
 Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
-embedded, §8), 2026-07-23 (§4 compile cache)
+embedded, §8), 2026-07-23 (§4 compile cache, §8 snapshot backlog +
+deferred messages)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -200,7 +201,7 @@ grants bind to content hashes (ADR-008). Gating overlay imports later
 over the frame chain (ADR-004 §5) — overlay maps are host config, so
 enforcement needs no resolver change. Explicitly out of scope here.
 
-### 8. Overlay membership: join-on-boot + reader approval (interim, amended 2026-07-21)
+### 8. Overlay membership: join-on-boot + reader approval (interim, amended 2026-07-21, 2026-07-23)
 
 An overlay published by another account must be *joined* before its
 space syncs to this device. Until guest-key spaces land, the interim
@@ -237,6 +238,28 @@ mechanics are:
   `approve_joins.py` interim daemon is DELETED — RequestToJoin +
   reader-approval remains valid for invite-only (non-public) repos,
   approved manually (`any acl accept`).
+- **Snapshot backlog (amended 2026-07-23)**: the watch feed's snapshot
+  frame is no longer dropped. User messages newer than the agent's
+  last reply — texts sent while the runtime was down or booting — are
+  answered, oldest first: the window is sorted `-createdAt`, so the
+  backlog is every user message before the first agent-authored one
+  (walking newest→oldest). The watcher's seen-set dedups across
+  reconnect snapshots; the window is the subscribe limit (64) — an
+  unanswered message older than that stays dropped, by construction.
+- **Deferred messages (amended 2026-07-23)**: a message that would
+  start a conversation while overlays are still pending is queued in
+  memory and answered once ready (previously it was consumed and
+  dropped forever). A live message still gets the status bubble first
+  (unchanged); a snapshot-backlog message defers silently — a burst of
+  stale "not ready" bubbles is noise. Concurrent starts (watch thread
+  vs the drain) collapse under one watcher lock: whoever is second
+  injects into the live run's mailbox instead.
+- **Bounded readiness polling (amends "no polling" above)**: the
+  trigger ticker probes readiness each 5s tick — a local space-list
+  read, only while overlays are pending; a lock-check no-op once
+  synced. Purely message-driven rechecking left the deferred queue
+  undrainable — and standing triggers dead — until a NEW chat message
+  happened to arrive after sync.
 
 ### 9. Non-goals
 

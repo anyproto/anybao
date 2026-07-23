@@ -1,9 +1,10 @@
 //! `anyrt serve` — the outer loop: ensure space/chat/anchor, resolve
 //! overlays from the space (space-only, ADR-009 §5 — `anyrt deploy`
 //! is the publish step; the kernel is embedded), then watch the chat
-//! (drop-snapshot SSE), tick triggers, and answer the localhost
-//! control API. Conversations and trigger runs are guest programs
-//! through the shared cage.
+//! (SSE; the snapshot seeds the unanswered-message backlog, ADR-009
+//! §8), tick triggers, and answer the localhost control API.
+//! Conversations and trigger runs are guest programs through the
+//! shared cage.
 
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
@@ -206,6 +207,10 @@ struct Shared {
     triggers: Mutex<BTreeMap<String, Trigger>>,
     scheduler: Mutex<Scheduler>,
     watcher: Mutex<Watcher>,
+    /// User texts awaiting readiness (ADR-009 §8): snapshot backlog and
+    /// live messages that arrived while overlays were pending. Drained
+    /// by the trigger ticker once ensure_ready clears.
+    backlog: Mutex<Vec<String>>,
 }
 
 /// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
@@ -435,6 +440,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         triggers: Mutex::new(registry),
         scheduler: Mutex::new(sched),
         watcher: Mutex::new(Watcher::default()),
+        backlog: Mutex::new(Vec::new()),
     });
 
     let ctx = Arc::new(RunCtx {
@@ -463,7 +469,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), shutdown.clone());
         threads.push(std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                // reconnect loop: each feed drops its snapshot, no replay
+                // reconnect loop: each feed's snapshot re-seeds the
+                // backlog scan; the watcher's seen-set dedups replays
                 match watch_chat(&shared, &ctx, &stop) {
                     Ok(()) => {}
                     Err(e) => warn!("feed error: {e}; reconnecting in 2s"),
@@ -512,8 +519,8 @@ impl RunCtx {
         format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
     }
 
-    /// Cheap readiness check (no network) — the trigger ticker skips
-    /// while overlays are pending.
+    /// Cheap readiness check (no network, never clears pending —
+    /// that's `ensure_ready`'s probe).
     pub fn is_ready(&self) -> bool {
         self.pending_overlays.lock().unwrap().is_empty()
     }
@@ -599,15 +606,23 @@ impl RunCtx {
     }
 }
 
-fn spawn_conversation(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
+/// Start a run for `text` — or, when one is already live on this chat,
+/// inject into its mailbox instead. Check-and-register happens under
+/// ONE watcher lock: the watch thread and the ticker's backlog drain
+/// may race to start.
+fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
     let mailbox: SharedMailbox = Default::default();
+    {
+        let mut w = shared.watcher.lock().unwrap();
+        if let Some(live) = w.live.get(&ctx.chat) {
+            live.lock()
+                .unwrap()
+                .push_back(json!({"kind": "inject", "text": text}));
+            return;
+        }
+        w.live.insert(ctx.chat.clone(), mailbox.clone());
+    }
     let interrupt = Arc::new(AtomicBool::new(false));
-    shared
-        .watcher
-        .lock()
-        .unwrap()
-        .live
-        .insert(ctx.chat.clone(), mailbox.clone());
     let shared = shared.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
@@ -661,8 +676,38 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             return Ok(());
         }
         match frame.event.as_str() {
-            "ready" | "snapshot" => continue,
+            "ready" => continue,
             "closed" => return Ok(()),
+            // snapshot backlog (ADR-009 §8): user messages newer than
+            // the agent's last reply — texts sent while the runtime was
+            // down or booting — are answered instead of dropped. The
+            // watcher's seen-set dedups across reconnect snapshots.
+            "snapshot" => {
+                let backlog = snapshot_backlog(&frame.data);
+                if backlog.is_empty() {
+                    continue;
+                }
+                let ready = ctx.ensure_ready().is_ok();
+                for record in backlog {
+                    let action = shared
+                        .watcher
+                        .lock()
+                        .unwrap()
+                        .on_message(&ctx.chat, &record);
+                    if let WatchAction::Start = action {
+                        let text = record["text"].as_str().unwrap_or("").to_string();
+                        if ready {
+                            info!("backlog conversation: {:?}", preview(&text));
+                            start_or_inject(shared, ctx, text);
+                        } else {
+                            // no bubble for stale messages — a burst of
+                            // "not ready" is noise; the ticker drains
+                            // the queue once overlays sync
+                            shared.backlog.lock().unwrap().push(text);
+                        }
+                    }
+                }
+            }
             "changes" => {
                 for record in records_in(&frame.data) {
                     let action = shared
@@ -674,11 +719,12 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         let text = record["text"].as_str().unwrap_or("").to_string();
                         // deferred boot (ADR-009 §8): a message while
                         // overlays are pending gets a status bubble —
-                        // the one host-authored operational reply
+                        // the one host-authored operational reply —
+                        // and queues for a real answer once synced
                         match ctx.ensure_ready() {
                             Ok(_) => {
-                                info!("conversation started: {:?}", &text[..text.len().min(60)]);
-                                spawn_conversation(shared, ctx, text);
+                                info!("conversation started: {:?}", preview(&text));
+                                start_or_inject(shared, ctx, text);
                             }
                             Err(status) => {
                                 warn!("not ready: {status}");
@@ -689,6 +735,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                                     "text": format!("Not ready yet: {status}."),
                                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                                 );
+                                shared.backlog.lock().unwrap().push(text);
                             }
                         }
                     }
@@ -698,6 +745,31 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
         }
     }
     Ok(())
+}
+
+/// User messages newer than the agent's last reply, oldest first. The
+/// snapshot window is sorted `-createdAt`: walk from the newest record
+/// and stop at the first agent-authored one — everything before it is
+/// unanswered. Snapshot records are bare docs (each carries its own
+/// `id`), unlike the `{id, doc}` entries of `changes` frames.
+fn snapshot_backlog(data: &Value) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for rec in data["records"].as_array().unwrap_or(&Vec::new()) {
+        if rec.get("agent").map(|a| !a.is_null()).unwrap_or(false) {
+            break;
+        }
+        if rec["text"].as_str().is_some_and(|t| !t.is_empty()) {
+            out.push(rec.clone());
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// Log-safe head of a message (char-boundary aware — byte slicing
+/// panics mid-codepoint).
+fn preview(text: &str) -> String {
+    text.chars().take(60).collect()
 }
 
 fn records_in(data: &Value) -> Vec<Value> {
@@ -727,9 +799,18 @@ fn trigger_ticker(
             return;
         }
         // deferred boot (ADR-009 §8): don't burn trigger runs (and the
-        // circuit breaker) while overlays are still syncing
-        if !ctx.is_ready() {
+        // circuit breaker) while overlays are still syncing. This is a
+        // PROBE, not the cheap check — readiness must clear without
+        // waiting for a chat message (the backlog drain below and
+        // trigger start both hang off it); a no-op once synced.
+        if ctx.ensure_ready().is_err() {
             continue;
+        }
+        // answer user messages deferred while overlays were syncing
+        let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
+        for text in deferred {
+            info!("deferred conversation: {:?}", preview(&text));
+            start_or_inject(&shared, &ctx, text);
         }
         let due: Vec<Trigger> = {
             let mut reg = shared.triggers.lock().unwrap();
@@ -1013,6 +1094,68 @@ mod tests {
             [("agent".to_string(), "repo".to_string())].into();
         recheck(&c, &mut pending).unwrap();
         assert!(pending.is_empty());
+    }
+
+    fn msg(id: &str, text: &str, agent: bool) -> Value {
+        let mut m = json!({"id": id, "text": text, "createdAt": 1});
+        if agent {
+            m["agent"] = json!({"name": "bao", "done": true});
+        }
+        m
+    }
+
+    #[test]
+    fn snapshot_backlog_stops_at_the_agents_last_reply() {
+        // newest-first window: two unanswered user messages, then the
+        // agent's reply, then answered history — backlog is the two,
+        // oldest first
+        let data = json!({"records": [
+            msg("u3", "third", false),
+            msg("u2", "second", false),
+            msg("a1", "reply", true),
+            msg("u1", "answered", false),
+        ]});
+        let backlog = snapshot_backlog(&data);
+        let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["u2", "u3"]);
+    }
+
+    #[test]
+    fn snapshot_backlog_empty_when_reply_is_newest() {
+        let data = json!({"records": [
+            msg("a1", "reply", true),
+            msg("u1", "answered", false),
+        ]});
+        assert!(snapshot_backlog(&data).is_empty());
+    }
+
+    #[test]
+    fn snapshot_backlog_takes_whole_window_without_a_reply() {
+        // fresh chat / reply scrolled out of the window: everything
+        // visible is unanswered
+        let data = json!({"records": [msg("u2", "b", false), msg("u1", "a", false)]});
+        let backlog = snapshot_backlog(&data);
+        let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["u1", "u2"]);
+    }
+
+    #[test]
+    fn snapshot_backlog_skips_textless_records() {
+        // null docs and attachment-only messages can't start a run
+        let data = json!({"records": [
+            msg("u2", "real", false),
+            null,
+            msg("u1", "", false),
+        ]});
+        let backlog = snapshot_backlog(&data);
+        let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["u2"]);
+    }
+
+    #[test]
+    fn preview_respects_char_boundaries() {
+        let s = "é".repeat(80); // 2 bytes per char — byte-60 is mid-codepoint
+        assert_eq!(preview(&s).chars().count(), 60);
     }
 
     #[test]
