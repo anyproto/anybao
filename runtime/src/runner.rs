@@ -77,9 +77,10 @@ impl crate::bindings::KernelImports for &mut Host {
 }
 
 /// The componentized CPython guest, compiled INTO the binary (ADR-009
-/// §4): binary + kernel are one artifact — no space publish, no cache,
-/// no load-order question. `make kernel` must run before the crate
-/// builds (the Makefile runtime targets depend on it).
+/// §4): binary + kernel are one artifact — no space publish, no
+/// artifact cache, no load-order question (the wasmtime *compile*
+/// cache in `Cage::new` is a different thing). `make kernel` must run
+/// before the crate builds (the Makefile runtime targets depend on it).
 pub const EMBEDDED_KERNEL: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.wasm"));
 
@@ -105,6 +106,16 @@ impl Cage {
         let mut cfg = Config::new();
         cfg.consume_fuel(true);
         cfg.epoch_interruption(true);
+        // On-disk compile cache (ADR-009 §4): keyed by engine config +
+        // wasm hash, so a rebuilt kernel invalidates itself. Compilation
+        // latency only — execution and the trace are untouched.
+        // Best-effort: an unusable cache dir must not fail the boot.
+        match wasmtime::Cache::from_file(None) {
+            Ok(cache) => {
+                cfg.cache(Some(cache));
+            }
+            Err(e) => tracing::warn!("wasmtime compile cache unavailable ({e}); compiling cold"),
+        }
         let engine = Engine::new(&cfg)?;
         let component = Component::from_binary(&engine, kernel_bytes)?;
         let mut linker: Linker<Host> = Linker::new(&engine);
