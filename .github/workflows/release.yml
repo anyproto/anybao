@@ -44,8 +44,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      # Stock toolchains, deliberately NOT `nix develop` (unlike ci.yml):
+      # linking inside the devshell bakes /nix/store/... install names
+      # (libiconv) into the darwin binary, and dyld aborts on user machines
+      # where no store exists (#2). The build needs only uv + python 3.13
+      # (componentize-py -> kernel.wasm) and stable rust — rustls-only, no
+      # native libs, kernel embedded via include_bytes!.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
           path: |
@@ -53,9 +61,12 @@ jobs:
             ~/.cargo/git
             runtime/target
           key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/Cargo.lock') }}
-      - run: nix develop -c uv sync
+      - run: uv sync
       # builds bin/kernel.wasm first; the binary embeds it via include_bytes!
-      - run: nix develop -c make runtime
+      - run: make runtime
+      # the shipped binary must at least load on a bare runner — this is
+      # exactly where the v0.1.1 darwin asset would have failed
+      - run: runtime/target/release/anyrt --help > /dev/null
       - name: package
         run: |
           mkdir -p dist
