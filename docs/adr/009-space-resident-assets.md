@@ -1,7 +1,7 @@
 # ADR-009: Space-resident assets, host config, overlays, lib mode
 
 Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
-embedded, §8)
+embedded, §8), 2026-07-23 (§4 compile cache)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -153,6 +153,18 @@ a sync dependency for zero gain. Instead:
   the kernel. `kernel.boot` still records `kernel_sha256` (ADR-001) —
   provenance unchanged.
 - No kernel cache — `[paths].cache` is gone from the config.
+- **Compile cache (amended 2026-07-23)**: distinct from the (dead)
+  artifact cache above, `Cage::new` enables wasmtime's on-disk
+  *compile* cache (`Config::cache`, default wasmtime cache dir). It is
+  keyed by engine config + wasm hash, so a rebuilt kernel invalidates
+  itself; it affects compilation latency only, never execution
+  semantics or the trace. First launch after a kernel change still
+  compiles cold (in dev builds, slowly — an any-ui-side
+  `[profile.dev.package]` opt-level override on the cranelift crates
+  is the complementary fix); every subsequent launch, including
+  release `serve` restarts, loads the cached artifact near-instantly.
+  Best-effort: an unusable cache dir logs a warning and compiles cold
+  rather than failing the boot.
 
 ### 5. serve is space-only (breaking)
 
