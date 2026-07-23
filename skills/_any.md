@@ -6,7 +6,10 @@ first. When the user says "create", "track", "save", "add", "organize"
 type) unless they explicitly say otherwise. Objects are the default
 unit of work.
 
-Core mechanics (get the client once: `c = use("any@v1").client()`):
+Core mechanics (get the client once: `c = use("agent:any@v1").client()`
+— in cell code always qualify harness modules with the `agent:` overlay
+alias; unqualified `use("any@v1")` resolves only in your working space
+and fails in the standard overlay setup, ADR-004 §2):
 
 - Everything in a space is a **typed object**. Types define which
   properties objects can have.
