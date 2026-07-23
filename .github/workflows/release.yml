@@ -56,6 +56,24 @@ jobs:
       - run: nix develop -c uv sync
       # builds bin/kernel.wasm first; the binary embeds it via include_bytes!
       - run: nix develop -c make runtime
+      # The Nix linker bakes absolute /nix/store/... install names into the
+      # darwin binary (libiconv today); those paths exist on no user machine,
+      # so dyld aborts before main. Rewrite them to the system dylibs,
+      # re-sign, then prove the fixed binary actually loads.
+      - name: fix darwin install names
+        if: matrix.target == 'aarch64-darwin'
+        run: |
+          BIN=runtime/target/release/anyrt
+          otool -L "$BIN" | awk '/\/nix\/store\//{print $1}' | while read -r DEP; do
+            install_name_tool -change "$DEP" "/usr/lib/$(basename "$DEP")" "$BIN"
+          done
+          codesign --force --sign - "$BIN"
+          if otool -L "$BIN" | grep -q '/nix/store/'; then
+            echo "nix store paths remain in anyrt:" >&2
+            otool -L "$BIN" >&2
+            exit 1
+          fi
+          "$BIN" --help > /dev/null
       - name: package
         run: |
           mkdir -p dist
