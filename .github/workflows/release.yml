@@ -58,8 +58,9 @@ jobs:
       - run: nix develop -c make runtime
       # The Nix linker bakes absolute /nix/store/... install names into the
       # darwin binary (libiconv today); those paths exist on no user machine,
-      # so dyld aborts before main. Rewrite them to the system dylibs,
-      # re-sign, then prove the fixed binary actually loads.
+      # so dyld aborts before main. The grep gate is load-bearing: the runner
+      # has Nix, so the --help load check alone can't catch a missed rewrite.
+      # Root-cause fix would be building the release leg outside the devshell.
       - name: fix darwin install names
         if: matrix.target == 'aarch64-darwin'
         run: |
