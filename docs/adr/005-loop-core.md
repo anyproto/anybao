@@ -71,7 +71,12 @@ drain mailbox (mailbox.drain syscall) → use("llm@v1").chat → stop?
            append the turn via any@v1 (ADR-006 shapes — the write lands
            in the trace), return
   length → ask the model to wrap up text-only (a final constrained
-           call), chat_send the summary (v1's max_tokens handling, kept)
+           call), chat_send the summary (v1's max_tokens handling,
+           kept). A truncated reply can carry a tool_call that never
+           ran; the wrap-up user message MUST lead with a synthetic
+           is_error ToolResult per dangling call ("not executed:
+           <reason>") before the summarize text — the provider rejects
+           a tool_use with no tool_result in the next message.
 ```
 
 Interim assistant text before tool calls surfaces as `done: false`

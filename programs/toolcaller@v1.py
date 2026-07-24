@@ -146,9 +146,20 @@ def _texts(parts):
 
 
 def _wrapup(messages, llm, system, tier, reason):
-    messages.append({"role": "user", "parts": [{"type": "text", "text":
+    # A length-truncated assistant reply can carry a tool_call that
+    # never ran; the provider rejects a tool_use with no tool_result at
+    # the head of the next message (ADR-005 §2), so answer each
+    # dangling call with a synthetic error result first.
+    parts = []
+    last = messages[-1] if messages else {}
+    if last.get("role") == "assistant":
+        parts = [{"type": "tool_result", "call_id": p["id"],
+                  "content": f"not executed: {reason}", "is_error": True}
+                 for p in last["parts"] if p["type"] == "tool_call"]
+    parts.append({"type": "text", "text":
         f"[{reason}] No more cells. Summarize what you did, what is done, "
-        f"and what is still pending."}]})
+        f"and what is still pending."})
+    messages.append({"role": "user", "parts": parts})
     reply = llm.chat(messages, system=system, tier=tier, tools=[])
     messages.append({"role": "assistant", "parts": reply["parts"]})
     return _texts(reply["parts"])
