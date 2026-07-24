@@ -6,8 +6,9 @@ string fields: `source` (full HTML), `state` (JSON text), `readme`
 (markdown). Writes are per-field $set ops, so updating state never
 rewrites source. The object's `any.name` is the addressing slug —
 every method here takes the app by name. Every source write runs the
-runtime-script guard (react/react-dom/useAnytypeState must load before
-the author's inline script).
+runtime-script guard: author copies of the react/react-dom/
+useAnytypeState tags are stripped and all three are prepended in load
+order (they must precede the author's inline script).
 """
 
 import json
@@ -18,13 +19,15 @@ _DATASET = "mini_app"
 _RECORD = "main"
 
 # the embed loads these by relative src; they must precede the
-# author's inline <script>
-_RUNTIME_SCRIPTS = [
-    ("react.js", re.compile(r"<script[^>]*src=[\"']\./react\.js[\"']")),
-    ("react-dom.js", re.compile(r"<script[^>]*src=[\"']\./react-dom\.js[\"']")),
-    ("useAnytypeState.js",
-     re.compile(r"<script[^>]*src=[\"']\./useAnytypeState\.js[\"']")),
-]
+# author's inline <script>, react before react-dom
+_RUNTIME_SCRIPTS = ["react.js", "react-dom.js", "useAnytypeState.js"]
+
+
+def _tag_rx(name):
+    """The full (empty-body) runtime script element plus its line."""
+    return re.compile(
+        r"[ \t]*<script[^>]*src=[\"']\./" + re.escape(name)
+        + r"[\"'][^>]*>\s*</script>[ \t]*\n?")
 
 
 def _client():
@@ -57,13 +60,30 @@ def _set_fields(c, space, oid, fields):
 
 
 def _guard(html):
-    """(html, warnings|None): prepend the missing runtime script tags."""
-    missing = [n for n, rx in _RUNTIME_SCRIPTS if not rx.search(html)]
-    if not missing:
+    """(html, warnings|None): normalize the runtime script tags — strip
+    the author's copies, prepend all three in load order. Presence-only
+    injection let a wrong-ordered source (react-dom before react) pass
+    untouched and break in every embed; only these three tags are ever
+    touched."""
+    stripped, found = html, []
+    for name in _RUNTIME_SCRIPTS:
+        stripped, n = _tag_rx(name).subn("", stripped)
+        if n:
+            found.append(name)
+    inject = "".join(f'<script src="./{n}"></script>\n'
+                     for n in _RUNTIME_SCRIPTS)
+    out = inject + stripped
+    if out == html:
         return html, None
-    inject = "".join(f'<script src="./{n}"></script>\n' for n in missing)
-    return inject + html, [
-        "auto-injected missing runtime script(s): " + ", ".join(missing)]
+    warnings = []
+    missing = [n for n in _RUNTIME_SCRIPTS if n not in found]
+    if missing:
+        warnings.append(
+            "auto-injected missing runtime script(s): " + ", ".join(missing))
+    if found:
+        warnings.append("moved runtime script tag(s) to canonical load "
+                        "order: " + ", ".join(found))
+    return out, warnings
 
 
 def _ser_state(state):
