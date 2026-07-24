@@ -111,6 +111,9 @@ within a run (ADR-004 §6).
 
 ## See also
 
+- [`docs/testing-agent-changes.md`](testing-agent-changes.md) — the
+  persistent test rig (:7009): full chat + UI against a scratch
+  server, without touching real bao.
 - [`docs/debugging.md`](debugging.md) — the trace toolbox
   (`ls`/`show --full/--system/--stats/--boot/--seq`/`stats`).
 - [`docs/adr/004-module-loading.md`](adr/004-module-loading.md) §6 —
