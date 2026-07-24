@@ -36,7 +36,7 @@ class AnthropicAdapter:
     def build_request(self, messages, system, tools, model):
         api_msgs = [self._to_anthropic_msg(m) for m in messages]
         self._mark_cache(api_msgs)
-        req = {"model": model, "messages": api_msgs, "max_tokens": 4096}
+        req = {"model": model, "messages": api_msgs, "max_tokens": 32768}
         if system:
             req["system"] = [{"type": "text", "text": system,
                               "cache_control": {"type": "ephemeral"}}]
@@ -237,10 +237,10 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     neutral messages to the provider wire, POST through the http syscall
     (the host injects the api key from `credential.ref` — the key never
     enters the guest or the trace), parse back to a neutral Reply.
-    `max_tokens` lifts the adapter's default output cap (4096) — long
-    structured outputs (e.g. enrich extraction) truncate to
-    stop="length" without it; both wire formats take the key
-    top-level."""
+    `max_tokens` overrides the adapter's default output cap (32768 —
+    bobrik's proven sweet spot: headroom for big cells, costs nothing
+    unused since billing is on actual output) — both wire formats take
+    the key top-level."""
     prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
     adapter = build_adapter(prov["provider"], prov.get("fenced", False))
     req = adapter.build_request(messages, system, tools or [], prov["model"])

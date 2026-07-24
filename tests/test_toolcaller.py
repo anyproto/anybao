@@ -193,6 +193,34 @@ def test_turn_ceiling_wraps_up_not_cuts():
     assert w.llm_calls[-1]["tools"] == []                        # no more cells
 
 
+def test_length_stop_with_dangling_tool_call_gets_synthetic_result():
+    # a max_tokens-truncated reply still carries the tool_call; the
+    # wrap-up message must answer it or the provider 400s (ADR-005 §2)
+    truncated = {"parts": [{"type": "tool_call", "id": "cell_cut",
+                            "name": "run_cell", "args": {"code": "x"}}],
+                 "stop": "length", "usage": {"in": 10, "out": 4096}}
+    w = World([truncated, done_reply("summary")])
+    out = run(w)
+    assert out["stop"] == "wrapup" and out["replies"] == ["summary"]
+    wrap_msg = w.llm_calls[-1]["messages"][-1]
+    assert wrap_msg["role"] == "user"
+    first, last = wrap_msg["parts"][0], wrap_msg["parts"][-1]
+    assert first == {"type": "tool_result", "call_id": "cell_cut",
+                     "content": "not executed: response length limit",
+                     "is_error": True}
+    assert "response length limit" in last["text"]
+
+
+def test_length_stop_text_only_wraps_up_without_results():
+    truncated = {"parts": [{"type": "text", "text": "long tex"}],
+                 "stop": "length", "usage": {"in": 10, "out": 4096}}
+    w = World([truncated, done_reply("summary")])
+    out = run(w)
+    assert out["stop"] == "wrapup"
+    wrap_msg = w.llm_calls[-1]["messages"][-1]
+    assert [p["type"] for p in wrap_msg["parts"]] == ["text"]
+
+
 def test_mailbox_inject_and_soft_break_are_drained_effects():
     w = World([done_reply("wrapped")],
               mailbox=[{"kind": "inject", "text": "also X"}, {"kind": "break"}])

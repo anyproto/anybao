@@ -123,10 +123,13 @@ source. Surface (snake_case):
 `get(name, from?, to?)`, `get_source(name, from?, to?)`, `list()`,
 `set_state(name, state)`, `get_state(name)`,
 `upsert_readme(name, readme)`. Every source write runs the
-runtime-script guard: missing `./react.js` / `./react-dom.js` /
-`./useAnytypeState.js` script tags are prepended and reported as
-warnings (the embed loads them by relative src; they must precede the
-author's inline script).
+runtime-script guard: author-written `./react.js` / `./react-dom.js` /
+`./useAnytypeState.js` script tags are stripped and all three are
+prepended in canonical load order, reported as warnings (the embed
+loads them by relative src; they must precede the author's inline
+script, react before react-dom — presence-only injection let a
+wrong-ordered source through broken). Only these three tags are
+touched; everything else in the source is the author's.
 
 ### 7. Authoring & testing discipline
 

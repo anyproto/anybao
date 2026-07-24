@@ -10,8 +10,9 @@ reads/writes the app's `state` field across reloads). No JSX, no build
 step, no external CDNs: a mount div plus one inline script,
 `var h = React.createElement`, render with
 `ReactDOM.createRoot(document.getElementById("app")).render(h(App))`.
-The required `<script src="./react.js">`-style tags are auto-injected
-when missing (returned as `warnings`).
+The required `<script src="./react.js">`-style tags are normalized on
+every source write — your copies are stripped and the three are
+prepended in load order (reported as `warnings`) — so just omit them.
 
 ```python
 ma = use("miniapp@v1")
