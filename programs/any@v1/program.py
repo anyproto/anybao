@@ -311,7 +311,10 @@ class Client:
         return {"objectId": object_id}
 
     @span("any.query_objects", kind="getter")  # noqa: F821 - guest global
-    def query_objects(self, space, normalize=True, **opts):
+    def query_objects(self, space, *, normalize=True, **opts):
+        # normalize is keyword-only: a positional dict here used to land
+        # in `normalize` and silently drop the caller's filter — a query
+        # for everything where a filtered query was intended.
         """Cross-object query over the per-space objects collection. `filter`
         / `sort` accept readable dotted xKey paths (`task.status`) and an
         `any.types` xKey value, resolved to the server's id paths. Records
