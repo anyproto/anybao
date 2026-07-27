@@ -48,8 +48,11 @@ that are down (deploy + chat need no restarts).
 make runtime
 
 # 1. the test any server (leave running; rebuild ~/any/any first if
-#    its binary is stale — symptom: 500 "collection handle is closed")
-cd ~/any/any && ./any --addr 127.0.0.1:7009 --data-dir ~/any/any-test-7009 run
+#    its binary is stale — symptom: 500 "collection handle is closed").
+#    --config is REQUIRED: without it the server boots on a fake
+#    nodeconf (lol1-any-sync-node…) — local same-account work seems
+#    fine but cross-account overlay joins hang forever
+cd ~/any/any && ./any run --config ./any-config.yml --data-dir ~/any/any-test-7009 --addr 127.0.0.1:7009
 
 # 2. publish the repo to the overlay (hash-gated; rerun after each edit —
 #    a running serve picks it up on the next conversation, no restart)
