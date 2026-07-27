@@ -298,12 +298,27 @@ impl Config {
 /// object at serve start.
 pub const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
 
+/// Secret refs with env seeding + device-local persistence: (secrets-map
+/// ref / config record key, seeding env var). One list drives both
+/// [`bootstrap_maps`] (env → `secrets`) and serve's device-local store
+/// (ADR-006 §3). LLM/search providers plus connector keys for the
+/// connectors overlay (ADR-008 §1: the secret-ref pattern needs no new
+/// mechanism per provider — a new connector is one line here).
+pub const PROVIDER_SECRET_REFS: &[(&str, &str)] = &[
+    ("llm.key.anthropic", "ANTHROPIC_API_KEY"),
+    ("google.key.gemini", "GEMINI_API_KEY"),
+    ("llm.key.together", "TOGETHER_API_KEY"),
+    ("connector.key.linear", "LINEAR_API_KEY"),
+    ("connector.key.github", "GITHUB_TOKEN"),
+    ("connector.key.granola", "GRANOLA_API_KEY"),
+];
+
 /// Guest-config bootstrap: seed `any.base_url` from `addr`, layer
 /// `CONFIG_DEFAULTS` under existing keys, pick up provider API keys
-/// from env (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `TOGETHER_API_KEY`
-/// — or_insert; ADR-008 §1: keys enter `secrets`, never config). The
-/// ONE env-reading lib fn — embedders call it after building a Config,
-/// or seed the maps themselves and skip it.
+/// from env ([`PROVIDER_SECRET_REFS`] — or_insert; ADR-008 §1: keys
+/// enter `secrets`, never config). The ONE env-reading lib fn —
+/// embedders call it after building a Config, or seed the maps
+/// themselves and skip it.
 pub fn bootstrap_maps(
     config: &mut BTreeMap<String, Value>,
     secrets: &mut BTreeMap<String, String>,
@@ -317,14 +332,10 @@ pub fn bootstrap_maps(
     for (key, value) in defaults {
         config.entry(key).or_insert(value);
     }
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        secrets.entry("llm.key.anthropic".into()).or_insert(key);
-    }
-    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
-        secrets.entry("google.key.gemini".into()).or_insert(key);
-    }
-    if let Ok(key) = std::env::var("TOGETHER_API_KEY") {
-        secrets.entry("llm.key.together".into()).or_insert(key);
+    for &(secret_ref, env_var) in PROVIDER_SECRET_REFS {
+        if let Ok(key) = std::env::var(env_var) {
+            secrets.entry(secret_ref.into()).or_insert(key);
+        }
     }
 }
 

@@ -87,16 +87,12 @@ fn agent_config_object(c: &Client, space: &str) -> Option<String> {
 /// defaults declare `api_key_ref: "llm.key.anthropic"`).
 const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 
-/// Provider secret refs with device-local persistence: (secrets-map ref /
-/// config record key, seeding env var) — the same pairs `bootstrap_maps`
-/// reads from env. Anthropic is required (the agent loop is dead without
-/// it, so its absence warns); the rest are optional providers whose
+/// Provider secret refs with device-local persistence — the shared list
+/// in [`crate::config::PROVIDER_SECRET_REFS`] (env seeding uses the same
+/// pairs). Anthropic is required (the agent loop is dead without it, so
+/// its absence warns); the rest are optional providers/connectors whose
 /// effects fail individually until a key is set.
-const PROVIDER_SECRET_REFS: &[(&str, &str)] = &[
-    (ANTHROPIC_SECRET_REF, "ANTHROPIC_API_KEY"),
-    ("google.key.gemini", "GEMINI_API_KEY"),
-    ("llm.key.together", "TOGETHER_API_KEY"),
-];
+use crate::config::PROVIDER_SECRET_REFS;
 
 /// The `agent_config` dataset name (mirrors the server-side type).
 const CONFIG_DATASET: &str = "agent_config";
