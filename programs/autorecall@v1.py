@@ -1,4 +1,6 @@
-"""autorecall@v1 — auto-recall injection (ADR-007 §5): the recall-side
+"""Auto-recall injection — loop plumbing, not an agent tool.
+
+ADR-007 §5: the recall-side
 STRUCTURAL mechanism (memory behavior must not depend on model
 initiative).
 

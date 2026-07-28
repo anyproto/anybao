@@ -1,11 +1,14 @@
-"""The client for the `any` server — everything in a space is a
-typed object; this is how you read and write it.
+"""The `any` server client — read and write everything in a space.
+
+Everything is a typed object.
 
 `c = client()`, then `space` is an explicit first argument on every
 call (cross-space is normal). Types and properties are named by xKey
 — the client resolves them to server content ids, and query rows come
 back xKey-nested (never raw ids). Errors raise `AnyError` ({code,
 message} from the wire). The full API: `help(c)`."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # Built on the http syscall: JSON transport, error-envelope mapping
 # (AnyError), the NUL write guard, typed per-route calls.
@@ -350,20 +353,10 @@ class Client:
             prog = p.get("program") or {}
             if tools_only and not prog.get("any_tool"):
                 continue
-            summary = (prog.get("summary") or "").strip()
-            if not summary:
-                # 2026-07-28 migration bridge (ADR-010 §4): until deploy
-                # writes the summary property, fall back to the doc
-                # dataset's first line. Delete with the datasets.
-                desc = self.query(space, p["id"], "program_description",
-                                  limit=1)
-                text = (desc[0].get("text") or "") if desc else ""
-                summary = next((ln.strip() for ln in text.splitlines()
-                                if ln.strip()), "")
             out.append({"name": prog.get("name") or "",
                         "version": prog.get("version") or "",
                         "anyTool": bool(prog.get("any_tool")),
-                        "summary": summary})
+                        "summary": (prog.get("summary") or "").strip()})
         return sorted(out, key=lambda r: (r["name"], r["version"]))
 
     @span("any.query", kind="getter")  # noqa: F821 - guest global

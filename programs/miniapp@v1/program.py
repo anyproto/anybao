@@ -1,5 +1,4 @@
-"""Author and manage Mini Apps — small embeddable HTML/JS apps the
-user opens as objects in their space.
+"""Author and manage Mini Apps — embeddable HTML/JS apps in the space.
 
 One app = one `mini_app` object addressed by NAME (lowercase, no
 spaces, e.g. "coin-flipper"); `source` (full HTML), persisted `state`
@@ -7,6 +6,8 @@ spaces, e.g. "coin-flipper"); `source` (full HTML), persisted `state`
 rewrite source. Prefer `edit()` for small changes and
 `get_source(..., frm=, to=)` for big reads. Authoring contract:
 `help(ma.create)`."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # ADR-008 §6. Content lives in the per-object dataset `mini_app`,
 # single record "main", flat string fields; writes are per-field $set

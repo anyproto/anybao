@@ -1,6 +1,8 @@
 # ADR-010: Native introspection — docstrings as the single doc surface
 
-Status: **Accepted** (2026-07-28)
+Status: **Accepted** (2026-07-28), amended 2026-07-28 (§1 hard caps;
+§4 toolhood is declared, not derived — the shape heuristic misfired
+on loop plumbing; §5 summary not indexed)
 Date: 2026-07-28
 Builds on: ADR-001 §4d (kind vocabulary), ADR-002 (kernel namespace —
 amends §3/§4), ADR-004 (module loading), ADR-005 §5 (prompt assembly —
@@ -36,10 +38,11 @@ the code is the only one that cannot drift from itself.
 Docstrings are the ONLY authored program documentation.
 
 - **Module docstring** = the program description, and it is SHORT:
-  first line = the one-liner (≤ 80 chars), whole docstring ≤ ~6
-  lines. It enters the standing prompt for every tool (§3), so the
-  budget is a contract, not a style hint — deploy rejects an
-  overlong one (ADR-005 §5 prompt-tax doctrine, with teeth).
+  first line = the one-liner (hard cap 80 chars), whole docstring
+  ~6 lines by convention, hard cap 12 lines / 800 chars. It enters
+  the standing prompt for every tool (§3), so the caps are a
+  contract, not a style hint — deploy rejects an overlong one
+  (ADR-005 §5 prompt-tax doctrine, with teeth).
 - **Function docstring** = the method doc: first line = the summary
   (the only line inventories show), the body states what the
   signature cannot — return shape, field trims, rate budgets,
@@ -94,24 +97,30 @@ mid-conversation and what the prompt carries (§3) are the same bytes.
   hide-by-documentation and no hide-by-kind: underscore is the only
   hiding mechanism.
 
-### 4. Toolhood and the one-liner are derived, then cached
+### 4. Toolhood is declared; the one-liner is derived, then cached
 
-Two properties on the program object are DERIVED by deploy from code
-shape — caches, not authored metadata:
+(Amended 2026-07-28: pure shape-derivation misfired — loop plumbing
+that spans its internals, e.g. autorecall, is shaped exactly like a
+tool. Toolhood is a claim about intended audience, so it is
+DECLARED.)
 
-- `any_tool`: module docstring present AND ≥1 public
-  `@span`-decorated function. `getTools` and prompt-compose filter
-  on it before exec'ing anything.
+- `any_tool`: the source declares `__any_tool__ = True` at module
+  top level. Deploy VALIDATES the declared shape — module docstring
+  within §1's caps AND ≥1 public `@span`-tagged function (any
+  nesting: class methods count) — and rejects a marked program that
+  lacks it. `getTools` and prompt-compose filter on the property
+  before exec'ing anything.
 - `summary` (new string property): the module docstring's first
-  line. This is what listing surfaces show WITHOUT exec'ing source —
-  `list_programs` returns `{name, version, anyTool, summary}`, so
-  browsing a connectors repo reads as an annotated inventory; the
-  flow stays list → `use()` → `help(mod)` for depth.
+  line, derived for every program that has one. This is what listing
+  surfaces show WITHOUT exec'ing source — `list_programs` returns
+  `{name, version, anyTool, summary}`, so browsing a connectors repo
+  reads as an annotated inventory; the flow stays list → `use()` →
+  `help(mod)` for depth.
 
 Derivation is a static source scan (first statement string literal;
-`@span(` above a public `def`) — a convention check, not a parser; a
-program that defeats the scan is breaking §3's top-level convention
-anyway.
+the marker line; `@span(` above a `def`) — a convention check, not a
+parser; a program that defeats the scan is breaking §3's top-level
+convention anyway.
 
 ### 5. Program objects carry source, nothing else
 
@@ -122,9 +131,10 @@ anyway.
   `internal/program/`).
 - **Accepted loss**: method docs leave the search index (source is
   code, never indexed). Discovery = prompt inventory + `help()`.
-  The `summary` property may be marked searchable via property meta
-  (name + one-liner recall) — decided at implementation; indexing
-  full docstrings is a future option only if evidence demands it.
+  Decided at implementation (2026-07-28): `summary` is NOT indexed
+  either — builtin type decls carry no `meta["index"]` flag and the
+  SDK change isn't warranted; revisit only if evidence demands
+  program recall.
 - any-ui's ProgramView renders from `program_source` (docstring +
   source); tracked in any-ui, the contract here is: the doc datasets
   are gone.

@@ -1,4 +1,4 @@
-"""toolcaller@v1 — the conversation loop as a guest program (ADR-005).
+"""The conversation loop as a guest program (ADR-005).
 
 One invocation = main(args) driving the whole turn cycle inside the
 cage: boot window + auto-recall injection, the llm loop, model cells

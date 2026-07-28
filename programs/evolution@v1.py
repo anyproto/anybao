@@ -1,4 +1,6 @@
-"""evolution@v1 — neighbor context/keyword refresh (ADR-007 §4.2,
+"""Neighbor context/keyword refresh for memory items (cron).
+
+(ADR-007 §4.2,
 A-MEM's evolve step): mechanism present, trigger ships DISABLED —
 activation is gated on its eval.
 

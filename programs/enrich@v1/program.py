@@ -1,5 +1,4 @@
-"""Enrich a space from a markdown transcript — structured, sourced
-facts, applied only after user review.
+"""Enrich a space from a transcript — sourced facts, user-reviewed.
 
 `propose(space, transcript_id)` drafts an enrich_proposal object
 (nothing applied). Stage 2 is YOURS: consolidate by EDITING its items
@@ -7,6 +6,8 @@ in place — group facets, set targetObjectId, drop redundant; never
 rewrite text/source, that kills provenance. The user reviews the
 proposal OBJECT, then `apply(space, proposalId)`. Never apply before
 approval. Slow (2 LLM passes); failures return {ok: False, error}."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # The anybao respawn of bobrik-watch's meetingEnrich@v1 +
 # enrichApply@v1 pair. propose() = the mechanical token-heavy stage 1

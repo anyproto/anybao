@@ -6,6 +6,8 @@ scoring) inside a cell — a sub-call, not a way to talk to the user.
 text|tool_call|tool_result|thinking, …}`, the reply `{parts, stop:
 done|tool|length, usage: {in, out}}`."""
 
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
 # ADR-005 §1: adapters translate neutral <-> provider wire, PURE and
 # offline-testable; the single http.post syscall is the effect
 # boundary. The api key never enters the guest — the request names a

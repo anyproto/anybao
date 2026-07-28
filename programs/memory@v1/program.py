@@ -6,6 +6,8 @@ supplies lookalikes, a fast-tier judge decides merge | supersede |
 create. Raw `add` skips dedup; use only when the fact is known new.
 Reads go through recall@v1 or the brain's dataset, not here."""
 
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
 # ADR-007 §1/§2 (any docs/11-agent-memory.md): search-before-save
 # dedup with a classify-tier judge, no similarity threshold; the
 # humble merge keeps machine re-sightings from blurring user-stated

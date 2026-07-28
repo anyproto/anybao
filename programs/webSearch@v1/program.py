@@ -6,6 +6,8 @@ still return. Use for anything needing current facts — prices,
 versions, dates, news. For a multi-page investigation written into
 the space, use `deepResearch@v1` instead."""
 
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
 # Gemini generateContent + the google_search grounding tool (ADR-008
 # §3); multi-query fan-out rides the batch effect (one guest→host
 # crossing). Provider/model from config `search.provider.websearch`;

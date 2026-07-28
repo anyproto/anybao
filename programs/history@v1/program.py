@@ -1,10 +1,11 @@
-"""Conversation history reads over `agent_turns`/`agent_chunks` and
-the token-budgeted boot window.
+"""Conversation history reads (turns/chunks) + the boot window.
 
 Turns and chunks live on the chat object in the user space. Expand
 any chunk by querying `agent_chunks` for its `#seq` and reading the
 raw turns in its `fromSeq`–`toSeq` range. `recent_turns` /
 `chunks_at_level` take the any@v1 client as their first argument."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # Loop plumbing context (ADR-006 §1/§2): build_turn shapes the
 # agent_turns v2 payload the loop persists; raw_tail /

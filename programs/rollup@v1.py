@@ -1,4 +1,6 @@
-"""rollup@v1 — hierarchical history rollup (ADR-006 §2), the cron
+"""Hierarchical history rollup — the chunk pyramid (cron).
+
+ADR-006 §2, the cron
 trigger job that keeps the boot window's decreasing-resolution pyramid
 fed: uncovered turns → L1 chunks (batches of `batch`), uncovered L1
 chunks → L2, … up to `maxLevel`. L2+ summaries come from CHILD

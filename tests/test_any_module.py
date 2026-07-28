@@ -454,27 +454,25 @@ _PROG_REPLIES = {
         {"id": "p2", "any": {"name": "helper", "types": ["bafyPROG"]},
          "bafyPROG": {"bafyNAME": "helper", "bafyVER": "v2",
                       "bafyTOOL": False}}]},
-    "/query": {"records": [{"id": "main", "text": "Does a thing.  \nmore"}]},
 }
 
 
 def test_list_programs_lists_a_space_sorted():
-    # summary from the object property when present (ADR-010 §4);
-    # first line of the doc dataset as the migration bridge otherwise
+    # summary is the cached object property (ADR-010 §4) — a program
+    # deployed without one just lists with an empty summary
     fx = wire(replies=dict(_PROG_REPLIES))
     rows = client(fx).list_programs("repo1")
     assert rows == [
         {"name": "helper", "version": "v2", "anyTool": False,
-         "summary": "Does a thing."},
+         "summary": ""},
         {"name": "webSearch", "version": "v1", "anyTool": True,
          "summary": "Web search one-liner."}]
     # the object query targeted the requested space with the program filter
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
     assert body["filter"] == {"any.types": "bafyPROG"}
-    # the prop-carrying program never paid the dataset query
-    queried = [b for v, p, b in fx.calls if p.endswith("/query")
-               and b.get("objectId") == "p1"]
-    assert queried == []
+    # one round-trip per listing — no per-program dataset reads
+    assert not [p for v, p, b in fx.calls if p.endswith("/query")
+                and not p.endswith("/objects/query")]
 
 
 def test_list_programs_tools_only_filters():
