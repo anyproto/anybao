@@ -123,6 +123,9 @@ class _Http:
     def put(self, url, **kw):
         return self._call("put", url, **kw)
 
+    def patch(self, url, **kw):
+        return self._call("patch", url, **kw)
+
     def delete(self, url, **kw):
         return self._call("delete", url, **kw)
 
