@@ -223,13 +223,14 @@ fn main() -> Result<()> {
             let host = config::Config::load(config_file.as_deref())?;
             let addr = addr.unwrap_or_else(|| host.addr.clone());
             let mut config = load_map(&config)?;
-            let mut secrets = load_secrets(&secrets)?;
-            // bootstrap parity with serve (closes dev D3): defaults +
-            // env keys seed under any --config file (or_insert — the
-            // file wins), so a scratch run needs no hand-built config;
+            let secrets = load_secrets(&secrets)?;
+            // bootstrap parity with serve (closes dev D3): defaults
+            // seed under any --config file (or_insert — the file
+            // wins), so a scratch run needs no hand-built config;
             // any.base_url comes from --addr, never the space (you
-            // can't read the space without already knowing the url)
-            config::bootstrap_maps(&mut config, &mut secrets, &addr);
+            // can't read the space without already knowing the url).
+            // Secrets come from --secrets only — env is not read.
+            config::bootstrap_maps(&mut config, &addr);
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
             let from: Option<(Arc<anyapi::Client>, String)> = match &from_space {

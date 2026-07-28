@@ -42,9 +42,9 @@ _NOT_CONNECTED = (
     + _TOKEN_URL + " (Repository: Issues, Pull requests, Contents, Metadata; "
     + "Account: Notifications for list_notifications — Read-only covers the "
     + "wrapped getters; grant Read and write on Issues/Pull requests if you "
-    + "intend request() writes), then set GITHUB_TOKEN in the runtime "
-    + "environment once (serve seeds the device-local secret store on start) "
-    + "or write a localValue for connector.key.github on the config object."
+    + "intend request() writes), then import an .env file containing "
+    + "connector.key.github=<token> (any-ui: Help > Import connector keys; "
+    + "CLI: a .connectors.env beside anybao.toml)."
 )
 
 

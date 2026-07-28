@@ -60,20 +60,23 @@ then read the run: `anyrt trace ls traces-test --program toolcaller`,
 
 Every connector names an http-effect credential ref (anybao ADR-008):
 
-| ref | header | seed env var |
-|---|---|---|
-| `connector.key.linear` | Authorization, RAW (no Bearer) | `LINEAR_API_KEY` |
-| `connector.key.github` | Authorization, Bearer | `GITHUB_TOKEN` |
-| `connector.key.granola` | Authorization, Bearer | `GRANOLA_API_KEY` |
-| `connector.key.attio` | Authorization, Bearer | `ATTIO_API_TOKEN` |
-| `connector.key.figma` | X-Figma-Token | `FIGMA_TOKEN` |
-| `connector.key.intercom` | Authorization, Bearer | `INTERCOM_ACCESS_TOKEN` |
+| ref | header |
+|---|---|
+| `connector.key.linear` | Authorization, RAW (no Bearer) |
+| `connector.key.github` | Authorization, Bearer |
+| `connector.key.granola` | Authorization, Bearer |
+| `connector.key.attio` | Authorization, Bearer |
+| `connector.key.figma` | X-Figma-Token |
+| `connector.key.intercom` | Authorization, Bearer |
 
 The host injects the header after recording — secrets never enter
-guest code or the trace. Seed once via env (serve persists
-device-locally) or write a localValue on the config object. A missing
-key surfaces as an actionable `{ok: false, error}` from every method,
-not a traceback.
+guest code or the trace. Keys are seeded by importing a dotenv-style
+.env keyed by the ref itself (`connector.key.linear=…`): any-ui Help →
+Import connector keys, or a `.connectors.env` beside `anybao.toml`
+(rotation and revoke work the same way — see anybao
+docs/config-secrets.md; env vars are no longer read). A missing key
+surfaces as an actionable `{ok: false, error}` from every method, not
+a traceback.
 
 ## Status
 

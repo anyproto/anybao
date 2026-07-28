@@ -29,10 +29,10 @@ _SCOPE_HINT = ("Attio tokens default to NO scopes — create/edit the integratio
 
 _NOT_CONNECTED = (
     "Attio not connected — create an access token at Workspace settings -> "
-    "Developers (developers.attio.com), grant the read scopes, then set "
-    "ATTIO_API_TOKEN in the runtime environment once (serve seeds the "
-    "device-local secret store on start) or write a localValue for "
-    "connector.key.attio on the config object. " + _SCOPE_HINT
+    "Developers (developers.attio.com), grant the read scopes, then import "
+    "an .env file containing connector.key.attio=<token> (any-ui: Help > "
+    "Import connector keys; CLI: a .connectors.env beside anybao.toml). "
+    + _SCOPE_HINT
 )
 
 

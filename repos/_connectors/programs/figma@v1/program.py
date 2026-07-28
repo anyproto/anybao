@@ -31,10 +31,9 @@ _SCOPES = "current_user:read, file_metadata:read, file_content:read, file_commen
 
 _NOT_CONNECTED = (
     "Figma not connected — create a Personal Access Token at " + _TOKEN_URL
-    + ", ticking read scopes (" + _SCOPES + "), then set FIGMA_TOKEN in the "
-    + "runtime environment once (serve seeds the device-local secret store "
-    + "on start) or write a localValue for connector.key.figma on the "
-    + "config object."
+    + ", ticking read scopes (" + _SCOPES + "), then import an .env file "
+    + "containing connector.key.figma=<token> (any-ui: Help > Import "
+    + "connector keys; CLI: a .connectors.env beside anybao.toml)."
 )
 
 

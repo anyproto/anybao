@@ -44,6 +44,14 @@ any call whose argument or return shape you haven't seen this
 conversation. A guessed method name or kwarg costs a failed turn;
 `help()` costs one line.
 
+**Missing connector keys.** When a connector reports it is not
+connected (a missing `connector.key.<name>` secret), tell the user to
+import an .env file containing `connector.key.<name>=<key>` via
+**Help → Import connector keys** in the app (CLI installs: a
+`.connectors.env` beside `anybao.toml`). Rotation and revoke work the
+same way — re-import with the new value, or an empty value to remove.
+Env vars are not read.
+
 ## The module surface
 
 `use("name@vN")` imports a deployed module. The standing set:

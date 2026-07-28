@@ -29,9 +29,9 @@ _TIMEOUT_S = 60
 _NOT_CONNECTED = (
     "Intercom not connected — create an Access Token in the Developer Hub "
     "(Settings -> Developers -> your app -> Configure -> Authentication), "
-    "then set INTERCOM_ACCESS_TOKEN in the runtime environment once (serve "
-    "seeds the device-local secret store on start) or write a localValue "
-    "for connector.key.intercom on the config object."
+    "then import an .env file containing connector.key.intercom=<token> "
+    "(any-ui: Help > Import connector keys; CLI: a .connectors.env beside "
+    "anybao.toml)."
 )
 
 

@@ -81,7 +81,8 @@ def test_missing_secret_maps_to_connect_help():
     out = gh.whoami()
     assert out["ok"] is False
     assert "GitHub not connected" in out["error"]
-    assert "GITHUB_TOKEN" in out["error"]
+    assert "connector.key.github" in out["error"]
+    assert "Import connector keys" in out["error"]
 
 
 def test_401_maps_to_token_expired():

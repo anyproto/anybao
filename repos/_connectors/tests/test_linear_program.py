@@ -83,7 +83,8 @@ def test_missing_secret_maps_to_connect_help():
     out = ln.whoami()
     assert out["ok"] is False
     assert "linear.app/settings/api" in out["error"]
-    assert "LINEAR_API_KEY" in out["error"]
+    assert "connector.key.linear" in out["error"]
+    assert "Import connector keys" in out["error"]
 
 
 def test_graphql_errors_array_maps_to_error():

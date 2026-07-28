@@ -33,10 +33,9 @@ _TIMEOUT_S = 60
 _NOT_CONNECTED = (
     "Granola not connected — create an API key in " + _KEY_PATH
     + " (requires a Granola Business or Enterprise plan; free/Basic plans "
-    + "cannot mint a key), then set GRANOLA_API_KEY in the runtime "
-    + "environment once (serve seeds the device-local secret store on "
-    + "start) or write a localValue for connector.key.granola on the "
-    + "config object."
+    + "cannot mint a key), then import an .env file containing "
+    + "connector.key.granola=<key> (any-ui: Help > Import connector keys; "
+    + "CLI: a .connectors.env beside anybao.toml)."
 )
 
 

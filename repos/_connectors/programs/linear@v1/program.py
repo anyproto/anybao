@@ -28,9 +28,9 @@ _TIMEOUT_S = 60
 
 _NOT_CONNECTED = (
     "Linear not connected — create a personal API key at " + _KEY_URL
-    + ", then set LINEAR_API_KEY in the runtime environment once (serve "
-    + "seeds the device-local secret store on start) or write a localValue "
-    + "for connector.key.linear on the config object."
+    + ", then import an .env file containing connector.key.linear=<key> "
+    + "(any-ui: Help > Import connector keys; CLI: a .connectors.env "
+    + "beside anybao.toml)."
 )
 
 
