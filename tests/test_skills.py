@@ -4,7 +4,7 @@ content assertions over the markdown itself."""
 
 from pathlib import Path
 
-SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
+SKILLS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "skills"
 
 # The fixed lead order the composer honors (runtime/src/deploy.rs).
 SYSTEM_SKILL_ORDER = ("_soul", "_core", "_any", "_memory",

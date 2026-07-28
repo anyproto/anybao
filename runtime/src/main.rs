@@ -29,7 +29,7 @@ enum Cmd {
         /// local kernel override (dev) [default: the embedded kernel]
         #[arg(long)]
         kernel: Option<PathBuf>,
-        #[arg(long, default_value = "programs")]
+        #[arg(long, default_value = "repos/_agent/programs")]
         programs: PathBuf,
         #[arg(long, default_value = "traces")]
         traces_dir: PathBuf,

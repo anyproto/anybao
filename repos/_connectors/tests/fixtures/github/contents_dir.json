@@ -1,0 +1,178 @@
+[
+  {
+    "name": ".custom-vars",
+    "path": ".custom-vars",
+    "sha": "2057eead32513cc51d4c734fe6e0b3c299b44925",
+    "size": 576,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/.custom-vars?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/.custom-vars",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/2057eead32513cc51d4c734fe6e0b3c299b44925",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/.custom-vars",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/.custom-vars?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/2057eead32513cc51d4c734fe6e0b3c299b44925",
+      "html": "https://github.com/zarkone/literally.el/blob/master/.custom-vars"
+    }
+  },
+  {
+    "name": ".gitignore",
+    "path": ".gitignore",
+    "sha": "c3158d753f6559a8e2b738781beb8ed602c62a49",
+    "size": 279,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/.gitignore?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/.gitignore",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/c3158d753f6559a8e2b738781beb8ed602c62a49",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/.gitignore",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/.gitignore?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/c3158d753f6559a8e2b738781beb8ed602c62a49",
+      "html": "https://github.com/zarkone/literally.el/blob/master/.gitignore"
+    }
+  },
+  {
+    "name": ".gitmodules",
+    "path": ".gitmodules",
+    "sha": "b1eb542f5598b699cf63363438dc42a3b0d438ef",
+    "size": 93,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/.gitmodules?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/.gitmodules",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/b1eb542f5598b699cf63363438dc42a3b0d438ef",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/.gitmodules",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/.gitmodules?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/b1eb542f5598b699cf63363438dc42a3b0d438ef",
+      "html": "https://github.com/zarkone/literally.el/blob/master/.gitmodules"
+    }
+  },
+  {
+    "name": "README.org",
+    "path": "README.org",
+    "sha": "42b570eb9440e3de5169b86c27e21c9acdc5db16",
+    "size": 1601,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/README.org?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/README.org",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/42b570eb9440e3de5169b86c27e21c9acdc5db16",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/README.org",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/README.org?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/42b570eb9440e3de5169b86c27e21c9acdc5db16",
+      "html": "https://github.com/zarkone/literally.el/blob/master/README.org"
+    }
+  },
+  {
+    "name": "init.el",
+    "path": "init.el",
+    "sha": "96b37580d629af3d993a7ded9ab6371f7823267b",
+    "size": 6155,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/init.el?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/init.el",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/96b37580d629af3d993a7ded9ab6371f7823267b",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/init.el",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/init.el?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/96b37580d629af3d993a7ded9ab6371f7823267b",
+      "html": "https://github.com/zarkone/literally.el/blob/master/init.el"
+    }
+  },
+  {
+    "name": "ligature.el",
+    "path": "ligature.el",
+    "sha": "f59687dfeafaa36452e2eb9f999ac279e5d70e0f",
+    "size": 0,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/ligature.el?ref=master",
+    "html_url": "https://github.com/mickeynp/ligature.el/tree/f59687dfeafaa36452e2eb9f999ac279e5d70e0f",
+    "git_url": "https://api.github.com/repos/mickeynp/ligature.el/git/trees/f59687dfeafaa36452e2eb9f999ac279e5d70e0f",
+    "download_url": null,
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/ligature.el?ref=master",
+      "git": "https://api.github.com/repos/mickeynp/ligature.el/git/trees/f59687dfeafaa36452e2eb9f999ac279e5d70e0f",
+      "html": "https://github.com/mickeynp/ligature.el/tree/f59687dfeafaa36452e2eb9f999ac279e5d70e0f"
+    }
+  },
+  {
+    "name": "literally.org",
+    "path": "literally.org",
+    "sha": "240352fdc1b69c61519f9cc7dfd3f2ec73264e17",
+    "size": 44217,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/literally.org?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/literally.org",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/240352fdc1b69c61519f9cc7dfd3f2ec73264e17",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/literally.org",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/literally.org?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/240352fdc1b69c61519f9cc7dfd3f2ec73264e17",
+      "html": "https://github.com/zarkone/literally.el/blob/master/literally.org"
+    }
+  },
+  {
+    "name": "pitch-signature.html",
+    "path": "pitch-signature.html",
+    "sha": "703b67c630352851b176b32244518841882ece63",
+    "size": 6395,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/pitch-signature.html?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/pitch-signature.html",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/703b67c630352851b176b32244518841882ece63",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/pitch-signature.html",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/pitch-signature.html?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/703b67c630352851b176b32244518841882ece63",
+      "html": "https://github.com/zarkone/literally.el/blob/master/pitch-signature.html"
+    }
+  },
+  {
+    "name": "scrot.png",
+    "path": "scrot.png",
+    "sha": "df3085ae695c84c4bdb50cd30fc58face322a04a",
+    "size": 225268,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/scrot.png?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/scrot.png",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/df3085ae695c84c4bdb50cd30fc58face322a04a",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/scrot.png",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/scrot.png?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/df3085ae695c84c4bdb50cd30fc58face322a04a",
+      "html": "https://github.com/zarkone/literally.el/blob/master/scrot.png"
+    }
+  },
+  {
+    "name": "snippets",
+    "path": "snippets",
+    "sha": "e3072c0211866dca7a80ebd55afd4d4b6a61a44f",
+    "size": 0,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/snippets?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/tree/master/snippets",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/trees/e3072c0211866dca7a80ebd55afd4d4b6a61a44f",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/snippets?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/trees/e3072c0211866dca7a80ebd55afd4d4b6a61a44f",
+      "html": "https://github.com/zarkone/literally.el/tree/master/snippets"
+    }
+  },
+  {
+    "name": "term-title.el",
+    "path": "term-title.el",
+    "sha": "30718f47e4fb56a6264ec24fbb6358b575428f80",
+    "size": 3449,
+    "url": "https://api.github.com/repos/zarkone/literally.el/contents/term-title.el?ref=master",
+    "html_url": "https://github.com/zarkone/literally.el/blob/master/term-title.el",
+    "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/30718f47e4fb56a6264ec24fbb6358b575428f80",
+    "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/term-title.el",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/zarkone/literally.el/contents/term-title.el?ref=master",
+      "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/30718f47e4fb56a6264ec24fbb6358b575428f80",
+      "html": "https://github.com/zarkone/literally.el/blob/master/term-title.el"
+    }
+  }
+]

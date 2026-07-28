@@ -52,7 +52,7 @@ traces = "traces"
 | command | what it does |
 |---|---|
 | `anyrt serve` | run the agent: watch the chat, run conversations + cron triggers |
-| `anyrt deploy --source . --target <space\|overlay>` | publish a repo folder (`programs/`, `skills/`, `README.md`) to a space, hash-gated |
+| `anyrt deploy --source repos/_agent --target <space\|overlay>` | publish a repo folder (`programs/`, `skills/`, `README.md`) to a space, hash-gated |
 | `anyrt run <name@vN>` | run one guest program from the local dir (offline dev) |
 | `anyrt trace ls --program toolcaller` | list runs, newest first |
 | `anyrt trace show <run_id>` | render one run: turns, cells, effects (`--stats`, `--seq N`) |

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-SRC = (Path(__file__).resolve().parents[1] / "programs" / "any@v1"
+SRC = (Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs" / "any@v1"
        / "program.py").read_text()
 
 

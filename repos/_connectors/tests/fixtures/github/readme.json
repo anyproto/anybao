@@ -1,0 +1,18 @@
+{
+  "name": "README.org",
+  "path": "README.org",
+  "sha": "42b570eb9440e3de5169b86c27e21c9acdc5db16",
+  "size": 1601,
+  "url": "https://api.github.com/repos/zarkone/literally.el/contents/README.org?ref=master",
+  "html_url": "https://github.com/zarkone/literally.el/blob/master/README.org",
+  "git_url": "https://api.github.com/repos/zarkone/literally.el/git/blobs/42b570eb9440e3de5169b86c27e21c9acdc5db16",
+  "download_url": "https://raw.githubusercontent.com/zarkone/literally.el/master/README.org",
+  "type": "file",
+  "content": "IytUSVRMRTogTXkgRW1hY3MgY29uZmlnCiMrQVVUSE9SOiBBbmF0b2xpaSBT\nbW9saWFuaW5vdiA8emFya29uZUB5YS5ydT4KCiMrQ0FQVElPTjogbGl0ZXJh\nbGx5LmVsIGNvbmZpZyBzY3JlZW5zaG90CltbLi9zY3JvdC5wbmddXQoKU2Vl\nIFtbZmlsZTpsaXRlcmFsbHkub3JnXVtjb25maWd1cmF0aW9uIGluIC5vcmcg\nZm9ybWF0XV0gZm9yIGRldGFpbHMuCgoqKiBSYXRpb25hbGUKUHJldmlvdXNs\neSwgSSB1c2VkIG11bHRpLWZpbGUgZW1hY3MgY29uZmlnOiA9aW5pdC5lbD0g\nbG9hZHMgbG90cyBvZgpmaWxlcyB3aXRoIGNvcnJlc3BvbmRpbmcgY29uZmln\ndXJhdGlvbiBjb2RlLiBGb3IgZXhhbXBsZSwKPXNldHVwLWNsb2p1cmUuZWw9\nIGNvbnRhaW5zIHRoZSBjb2RlIHdoaWNoIGlzIHJlbGF0ZWQgdG8gQ2xvanVy\nZQpzZXR1cCAtLSBqdXN0IGNvZGUsIHdpdGhvdXQgdXNpbmcgYW55IGtpbmQg\nb2YgdG9vbHMgbGlrZSA9dXNlLXBhY2thZ2U9CgpCdXQgYXQgc29tZSBwb2lu\ndCBvZiB0aW1lIEkgZGVjaWRlZCB0byBnZXQgYmFjayB0byBvbmUgYmlnIGlu\naXQuZWw6CnNvbWV0aW1lcyBpIHF1aWNrbHkgYWRkXGVkaXQgc29tZSBjb25m\naWd1cmF0aW9uIG9uLWZseSBhbmQgdGhlbiBkb24ndApyZWJvb3QgZW1hY3Mu\nIE9yLCBtb3JlIHJhcmVseSwgc29tZXRoaW5nIGJyZWFrcyBhZnRlciB1cGRh\ndGUgb2YKcGFja2FnZXNcZW1hY3MgaXRzZWxmIGFuZCBJIHJlc3RhcnQgZW1h\nY3MgZGFlbW9uLiBTaW5jZSA9bG9hZC1maWxlPQppcyBydW50aW1lIGZuIGZv\nciBsb2FkaW5nIGVtYWNzIGxpc3AgY29kZSwgSSBkb24ndCBnZXQgY2xlYXIg\nbG9jYXRpb24KaWYgPWluaXQuZWw9IGxvYWRpbmcgZmFpbHM6IGZyb20gaW50\nZXJwcmV0ZXIgcGVyc3BlY3RpdmUgaXQncyBhbGwgaW4gPWluaXQuZWw9Cgoj\nK0JFR0lOX0VYQU1QTEUKV2FybmluZyAoaW5pdGlhbGl6YXRpb24pOiBBbiBl\ncnJvciBvY2N1cnJlZCB3aGlsZSBsb2FkaW5nIOKAmC9ob21lL3phcmtvbmUv\nLmVtYWNzLmQvaW5pdC5lbOKAmToKClN5bWJvbCdzIHZhbHVlIGFzIHZhcmlh\nYmxlIGlzIHZvaWQ6IGFzbGtqMTEhCiMrRU5EX0VYQU1QTEUKCkFub3RoZXIg\ncHJvYmxlbSBpcyB0aGF0IGl0J3MgaGFyZCB0byByZW1lbWJlciB3aHkgc29t\nZSBjb25maWcgY29kZSB3YXMKYWRkZWQgbG9uZyB0aW1lIGFnby4gSSBob3Bl\nIHRoYXQgbGl0ZXJhdGUgcHJvZ3JhbW1pbmcgYXBwcm9hY2ggd2lsbApmb3Jj\nZSBtZSB0byBjb21tZW50IGFsbCB0aGUgY2hhbmdlcy4KCkFuZCBhbm90aGVy\nIHJlYXNvbiB3aHkgSSBkZWNpZGVkIHRvIHBvcnQgbXkgY29uZmlnIHRvIG9y\nZyBpcyB0aGF0IEkgdGhpbmsKaXQncyBhIGdvb2QgY2hhbmNlIHRvIHJlbW92\nZSBvbGQgZ2FyYmFnZSBhbmQgYWRvcHQgbmV3LCBiZXR0ZXIKc29sdXRpb25z\nIGFuZCBhcHByb2FjaGVzLgoKU2VlIFtbZmlsZTpsaXRlcmFsbHkub3JnXV0g\nZm9yIGFjdHVhbCBjb25maWd1cmF0aW9uIGRlc2NyaXB0aW9uCgoqKiBBY2tu\nb3dsZWRnbWVudHMKClRoYW5rcyBodHRwczovL2dpdGh1Yi5jb20vYW5ncnli\nYWNvbi9kb3RlbWFjcyAtLSB2ZXJ5IG5pY2Utb3JnYW5pemVkCmVtYWNzIGNv\nbmZpZywgdXNlZCBhcyBhIHNrZWxldG9uLgo=\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/zarkone/literally.el/contents/README.org?ref=master",
+    "git": "https://api.github.com/repos/zarkone/literally.el/git/blobs/42b570eb9440e3de5169b86c27e21c9acdc5db16",
+    "html": "https://github.com/zarkone/literally.el/blob/master/README.org"
+  }
+}

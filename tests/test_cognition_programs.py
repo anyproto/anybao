@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 
 def run_main(src_name, fake, args):

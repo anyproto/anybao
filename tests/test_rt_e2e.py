@@ -115,7 +115,7 @@ def run_rt(base, spec, args):
     (scratch / "secrets.json").write_text(json.dumps({"llm.key": "sk-test"}))
     proc = subprocess.run(
         [rt_binary(), "run", spec, "--args", json.dumps(args),
-         "--kernel", KERNEL, "--programs", ROOT / "programs",
+         "--kernel", KERNEL, "--programs", ROOT / "repos" / "_agent" / "programs",
          "--traces-dir", scratch / "traces",
          "--config", scratch / "config.json",
          "--secrets", scratch / "secrets.json"],

@@ -15,22 +15,22 @@ with the same tools as the agent's.
 ## Read the docs first
 
 The API contract is the **docstrings in
-`programs/any@v1/program.py`** — read the method you're about to call
+`repos/_agent/programs/any@v1/program.py`** — read the method you're about to call
 before calling it. Semantics (xKey rules, property-write shapes, space
-discipline) live in `skills/_any.md` — the same guidance the agent
+discipline) live in `repos/_agent/skills/_any.md` — the same guidance the agent
 gets. Wire truth is `api/swagger.vendored.json` (`jq '.paths | keys'`).
 
 ## Recipe
 
 ```sh
 D=<scratch dir>                       # session scratchpad, not the repo
-mkdir -p $D && cp -r programs/* $D/   # modules resolve from ONE dir —
+mkdir -p $D && cp -r repos/_agent/programs/* $D/   # modules resolve from ONE dir —
                                       # -r: folder programs (any@v1/…) too
 ```
 
 The copy is a **snapshot** — stale copies bite (a method added to
 `any@v1` after the copy won't exist in `$D`). Re-run the `cp -r` after
-any edit to `programs/`, and prefer a fresh `$D` per session.
+any edit to the repo's `programs/`, and prefer a fresh `$D` per session.
 
 Write `$D/dev@v1.py` — **import-free** (guest never imports the host;
 `use()`, `effect()`, `json` are the globals you get), one `main(args)`:
@@ -110,11 +110,11 @@ file it (task in the dev space + report to the user):
    the name" is the gold standard). All responses do carry a `code` —
    `writeError` in `internal/server/errors.go` — the gap is domain
    errors mapped to `internal` instead of a real code.
-2. **anyHelper polish (programs/any@v1.py)** — the error IS typed and
+2. **anyHelper polish (repos/_agent/programs/any@v1/program.py)** — the error IS typed and
    the client could act on it: translate known codes into actionable
    hints in the raised `AnyError` (the agent reads tracebacks), fill a
    missing wrapper, fix a docstring. Fewer turns next time.
-3. **Guidance (skills/_any.md)** — the server and client are fine but
+3. **Guidance (repos/_agent/skills/_any.md)** — the server and client are fine but
    the contract was unwritten or contradicted.
 
 A workaround you didn't surface is a bug you buried — and a turn the

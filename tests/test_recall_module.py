@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-PROGRAMS = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 ANY_SRC = (PROGRAMS / "any@v1" / "program.py").read_text()
 RECALL_SRC = (PROGRAMS / "recall@v1" / "program.py").read_text()
 

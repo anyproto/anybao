@@ -4,7 +4,7 @@ client-taking thin reads, so no guest globals are needed)."""
 
 from pathlib import Path
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 
 def _load():

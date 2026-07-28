@@ -3,10 +3,12 @@
 anybao — the Rust runtime (`runtime/`, binary `anyrt`: effect boundary,
 trace/replay, cell executor, `any` client, deploy, the agent loop +
 triggers) plus the componentized CPython guest kernel it runs, on top of
-the `any` server (`~/any/any`). The agent itself lives in `programs/` +
-`skills/` (space-resident guest units; serve is space-only — `anyrt
-deploy --source . --target <space|overlay>` publishes, ADR-009). The
-respawn of the bobrik harness.
+the `any` server (`~/any/any`). The agent itself lives in
+`repos/_agent/` (programs + skills — space-resident guest units;
+serve is space-only — `anyrt deploy --source repos/_agent --target
+<space|overlay>` publishes, ADR-009); the service connectors in
+`repos/_connectors/` (see `repos/CLAUDE.md`). The respawn of the
+bobrik harness.
 
 ## Read first, in this order
 
@@ -30,7 +32,7 @@ respawn of the bobrik harness.
 - **Isolation principle**: nothing executes side effects except through
   the effect boundary (broker). Everything nondeterministic is an
   effect. If it isn't in the trace, it didn't happen.
-- **Guest never imports the host**: `programs/` are import-free sources
+- **Guest never imports the host**: repo `programs/` are import-free sources
   exec'd in the wasm kernel; they reach the runtime only through the
   effect boundary + `use()`.
 - **`any`-server quirks are fixed upstream** (in `~/any/any` / SDK),

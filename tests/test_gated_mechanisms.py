@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 DAY = 86400
 NOW = 1_700_000_000

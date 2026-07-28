@@ -5,7 +5,7 @@ guards, caps, the accessCount bump, and the ROI log."""
 from pathlib import Path
 from types import SimpleNamespace
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 SRC = (PROGRAMS_DIR / "autorecall@v1.py").read_text()
 
 MEM_HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",

@@ -22,7 +22,7 @@ import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROGRAMS_DIR = ROOT / "programs"
+PROGRAMS_DIR = ROOT / "repos" / "_agent" / "programs"
 APP_PY = ROOT / "runtime" / "guest" / "app.py"
 
 _n = 0
@@ -66,19 +66,22 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
 '''
 
 
-def local_source(spec):
+def local_source(spec, programs_dir=None):
     """programs/<spec>.py or programs/<spec>/program.py — the same
     resolution order as the runtime's local_source_path."""
-    p = PROGRAMS_DIR / f"{spec}.py"
+    root = programs_dir or PROGRAMS_DIR
+    p = root / f"{spec}.py"
     if not p.exists():
-        p = PROGRAMS_DIR / spec / "program.py"
+        p = root / spec / "program.py"
     return p.read_text()
 
 
-def load_kernel(effect=None, any_client=None, llm_chat=None):
+def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None):
     """A fresh kernel app module wired to test fakes. `effect(name,
     payload) -> output` serves pass-through effects; `any_client` /
-    `llm_chat`, when given, shadow the real any@v1 / llm@v1 modules."""
+    `llm_chat`, when given, shadow the real any@v1 / llm@v1 modules.
+    `programs_dir` overrides the source root (another repo's tests —
+    e.g. repos/_connectors — resolve their own programs/)."""
     def host_effect(name, payload_json):
         payload = json.loads(payload_json)
         try:
@@ -89,7 +92,7 @@ def load_kernel(effect=None, any_client=None, llm_chat=None):
                 elif spec == "llm@v1" and llm_chat is not None:
                     src = LLM_SHIM
                 else:
-                    src = local_source(spec)
+                    src = local_source(spec, programs_dir)
                 out = {"objectId": spec, "marker": "m0", "source": src}
             elif name in ("span.begin", "span.end"):
                 out = {}

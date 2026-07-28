@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-SRC = (Path(__file__).resolve().parents[1] / "programs" / "toolcaller@v1.py").read_text()
+SRC = (Path(__file__).resolve().parents[1] / "repos" / "_agent"
+       / "programs" / "toolcaller@v1.py").read_text()
 
 
 def tool_reply(code="1+1", cid="cell_x", usage=None):

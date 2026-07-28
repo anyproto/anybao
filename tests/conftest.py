@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 DEFAULT_SERVER = "http://127.0.0.1:7009"
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 
 class AnyError(Exception):

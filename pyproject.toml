@@ -10,7 +10,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "repos/_connectors/tests"]
 # Offline by default (`-m "not integration"`); integration tests hit a
 # real any server and are opt-in via `-m integration`.
 addopts = "-q -m 'not integration'"

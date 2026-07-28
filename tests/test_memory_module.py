@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 SRC = (PROGRAMS_DIR / "memory@v1" / "program.py").read_text()
 
 

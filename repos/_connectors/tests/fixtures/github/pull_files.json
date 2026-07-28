@@ -1,0 +1,38 @@
+[
+  {
+    "sha": "294e97bcec8475e2b0c1623ce9715bf9faf59b76",
+    "filename": "query/cond_parse.go",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 2,
+    "changes": 4,
+    "blob_url": "https://github.com/anyproto/any-store/blob/1f36585c5ce875ec01cf4c1762d67bb9b72cfe44/query%2Fcond_parse.go",
+    "raw_url": "https://github.com/anyproto/any-store/raw/1f36585c5ce875ec01cf4c1762d67bb9b72cfe44/query%2Fcond_parse.go",
+    "contents_url": "https://api.github.com/repos/anyproto/any-store/contents/query%2Fcond_parse.go?ref=1f36585c5ce875ec01cf4c1762d67bb9b72cfe44",
+    "patch": "@@ -169,7 +169,7 @@ func parseAnd(val *anyenc.Value) (res Filter, err error) {\n \t\t}\n \t\tif isOp {\n \t\t\tif !isTopLevel(op) {\n-\t\t\t\terr = fmt.Errorf(\"unknow top level operator: %s\", string(key))\n+\t\t\t\terr = fmt.Errorf(\"operator %s is not valid at the top level\", string(key))\n \t\t\t\treturn\n \t\t\t}\n \n@@ -556,7 +556,7 @@ func isOperator(key []byte) (ok bool, op Operator, err error) {\n \t\tcase bytes.Equal(key, opBytesText):\n \t\t\treturn true, opText, nil\n \t\tdefault:\n-\t\t\treturn true, 0, fmt.Errorf(\"unknow operator: %s\", string(key))\n+\t\t\treturn true, 0, &UnknownOperatorError{Op: string(key)}\n \t\t}\n \t}\n \treturn false, 0, nil"
+  },
+  {
+    "sha": "23fd657d09384d0cb8b619a9b84c76353def14b6",
+    "filename": "query/cond_parse_test.go",
+    "status": "modified",
+    "additions": 34,
+    "deletions": 0,
+    "changes": 34,
+    "blob_url": "https://github.com/anyproto/any-store/blob/1f36585c5ce875ec01cf4c1762d67bb9b72cfe44/query%2Fcond_parse_test.go",
+    "raw_url": "https://github.com/anyproto/any-store/raw/1f36585c5ce875ec01cf4c1762d67bb9b72cfe44/query%2Fcond_parse_test.go",
+    "contents_url": "https://api.github.com/repos/anyproto/any-store/contents/query%2Fcond_parse_test.go?ref=1f36585c5ce875ec01cf4c1762d67bb9b72cfe44",
+    "patch": "@@ -1,6 +1,7 @@\n package query\n \n import (\n+\t\"errors\"\n \t\"testing\"\n \n \t\"github.com/stretchr/testify/assert\"\n@@ -183,6 +184,39 @@ func TestParseCondition(t *testing.T) {\n \t})\n }\n \n+// TestUnknownOperator pins the unknown-operator contract: an operator outside\n+// the grammar is reported as ErrUnknownOperator and names the operator it\n+// choked on, so a caller parsing an untrusted filter can answer with a\n+// bad-request that says which token was wrong.\n+func TestUnknownOperator(t *testing.T) {\n+\tfor _, q := range []string{\n+\t\t`{\"tags\": {\"$contains\": \"x\"}}`,\n+\t\t`{\"$contains\": \"x\"}`,\n+\t\t`{\"$and\": [{\"a\": {\"$contains\": 1}}]}`,\n+\t\t`{\"a\": {\"$not\": {\"$contains\": 1}}}`,\n+\t} {\n+\t\tf, err := ParseCondition(fastjson.MustParse(q))\n+\t\trequire.Error(t, err, q)\n+\t\tassert.Nil(t, f, q)\n+\n+\t\tassert.True(t, errors.Is(err, ErrUnknownOperator), q)\n+\n+\t\tvar uoe *UnknownOperatorError\n+\t\trequire.True(t, errors.As(err, &uoe), q)\n+\t\tassert.Equal(t, \"$contains\", uoe.Op, q)\n+\t}\n+}\n+\n+// A known operator in a position that does not accept it is a distinct fault\n+// from an unrecognized one, and must not be reported as ErrUnknownOperator.\n+func TestOperatorNotValidAtTopLevel(t *testing.T) {\n+\tf, err := ParseCondition(fastjson.MustParse(`{\"$eq\": 1}`))\n+\trequire.Error(t, err)\n+\tassert.Nil(t, f)\n+\tassert.False(t, errors.Is(err, ErrUnknownOperator))\n+\tassert.Contains(t, err.Error(), \"not valid at the top level\")\n+}\n+\n func BenchmarkParseCondition(b *testing.B) {\n \tbench := func(b *testing.B, query string) {\n \t\tjq := fastjson.MustParse(query)"
+  },
+  {
+    "sha": "4eede890f92fdb3efc807815888ae1f5f6194659",
+    "filename": "query/errors.go",
+    "status": "added",
+    "additions": 27,
+    "deletions": 0,
+    "changes": 27,
+    "blob_url": "https://github.com/anyproto/any-store/blob/1f36585c5ce875ec01cf4c1762d67bb9b72cfe44/query%2Ferrors.go",
+    "raw_url": "https://github.com/anyproto/any-store/raw/1f36585c5ce875ec01cf4c1762d67bb9b72cfe44/query%2Ferrors.go",
+    "contents_url": "https://api.github.com/repos/anyproto/any-store/contents/query%2Ferrors.go?ref=1f36585c5ce875ec01cf4c1762d67bb9b72cfe44",
+    "patch": "@@ -0,0 +1,27 @@\n+package query\n+\n+import \"errors\"\n+\n+// ErrUnknownOperator is returned when a filter names an operator that is not\n+// part of the grammar, e.g. {\"tags\": {\"$contains\": \"x\"}}. It is a client fault:\n+// callers parsing untrusted filters can errors.Is it to answer with a bad-request\n+// rather than an internal error.\n+//\n+// Use errors.As with *UnknownOperatorError to recover the offending operator and\n+// name it back to the caller.\n+var ErrUnknownOperator = errors.New(\"unknown operator\")\n+\n+// UnknownOperatorError carries the operator that was not recognized. It wraps\n+// ErrUnknownOperator, so errors.Is(err, ErrUnknownOperator) reports true.\n+type UnknownOperatorError struct {\n+\t// Op is the unrecognized operator, including the leading '$'.\n+\tOp string\n+}\n+\n+func (e *UnknownOperatorError) Error() string {\n+\treturn \"unknown operator: \" + e.Op\n+}\n+\n+func (e *UnknownOperatorError) Unwrap() error {\n+\treturn ErrUnknownOperator\n+}"
+  }
+]

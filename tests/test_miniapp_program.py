@@ -6,7 +6,7 @@ object/dataset surface goes through the live server."""
 from pathlib import Path
 
 SRC = (Path(__file__).resolve().parents[1]
-       / "programs" / "miniapp@v1" / "program.py").read_text()
+       / "repos" / "_agent" / "programs" / "miniapp@v1" / "program.py").read_text()
 
 CANONICAL = ('<script src="./react.js"></script>\n'
              '<script src="./react-dom.js"></script>\n'

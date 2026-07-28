@@ -5,7 +5,7 @@ llm@v1 modules injected through the `use` seam."""
 from pathlib import Path
 from types import SimpleNamespace
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 SRC = (PROGRAMS_DIR / "rollup@v1.py").read_text()
 
 

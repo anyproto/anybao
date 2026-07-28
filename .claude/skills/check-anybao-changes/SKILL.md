@@ -24,7 +24,7 @@ Look for the changed unit in the output (`"any@v1": "updated"`,
 `"_any": "updated"`).
 
 **Caveat — system prompt vs programs.** `deploy` refreshes program code
-live, but the serve's **system prompt** (composed from `skills/` at
+live, but the serve's **system prompt** (composed from the deployed skills at
 startup) is NOT reloaded. If the change is to skill/system-prompt TEXT
 that must reach the model's context, restart the serve in the `rt` pane
 (`tmux send-keys -t <pane> C-c` then re-run its `anyrt serve …` command).
