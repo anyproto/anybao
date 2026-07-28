@@ -117,6 +117,36 @@ def test_help_prints_through_the_cell_printer():
     assert out["prints"][0]["repr"] == "f(a: int) -> int\nAdd one."
 
 
+def test_tool_docs_composes_from_real_programs():
+    """The ## Tools block (toolcaller `_tool_docs`, ADR-010 §3) built
+    from REAL program sources through the real kernel: docstring +
+    signature lines, kind tags from @span, binder pattern intact."""
+    app = load_kernel(effect=lambda n, p: {})
+    tc = app.use("toolcaller@v1")
+
+    class C:
+        def query_objects(self, space, filter=None, **kw):
+            return [
+                {"id": "p1", "createdAt": 1, "program":
+                    {"name": "webSearch", "version": "v1", "any_tool": True}},
+                {"id": "p2", "createdAt": 2, "program":
+                    {"name": "memory", "version": "v1", "any_tool": True}},
+            ]
+
+    docs = tc._tool_docs(C(), "space")
+    assert docs.startswith("## Tools")
+    assert "### webSearch" in docs
+    assert "Grounded web search" in docs                       # module docstring
+    assert ("search(*queries) [getter] — Run one or more web searches; "
+            "one formatted string per query.") in docs
+    assert "### memory" in docs
+    assert "memory(client, space, llm_chat=None) [setup]" in docs
+    # handle methods stay behind help(m) — no method line for them
+    assert "  save_with_dedup(" not in docs
+    assert "_provider" not in docs         # underscore names hidden
+    assert "\n  main(" not in docs         # entry point excluded
+
+
 def test_import_error_teaches_inspect_and_help():
     app = load_kernel()
     out = app._run_cell(

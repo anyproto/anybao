@@ -1,13 +1,17 @@
-"""deepResearch@v1 — multi-phase grounded research (ADR-008 §4).
+"""Deep research on ONE question — grounded answers written into the
+space as linked pages.
 
-Four phases: one grounded Gemini call on the question; follow-up
-decomposition via llm@v1 (classify tier, JSON-only); batched grounded
-calls on the follow-ups; write-out through any@v1 — one sub-page per
-follow-up plus an overview page that links them (`any://` urls) and
-lists the deduped sources. No bookmark/collection objects — the
-overview page is the hub. The api key never enters the guest
-(credential ref, host-injected — ADR-002).
-"""
+Slow (30s-3min) and writes multiple objects: one sub-page per
+follow-up question plus an overview page linking them — the hub; tell
+the user its name when done. Reach for it when the user asks for
+research / a report / a deep dive, not for a quick fact (that's
+`webSearch@v1`)."""
+
+# ADR-008 §4, four phases: grounded Gemini call → follow-up
+# decomposition via llm@v1 (classify tier, 3-7 questions) → batched
+# grounded follow-up calls → write-out through any@v1 (`any://` urls,
+# deduped sources; no bookmark/collection objects). The api key never
+# enters the guest (credential ref, host-injected — ADR-002).
 
 import json
 
@@ -166,9 +170,14 @@ def _sources_md(sources):
 
 @span("deepResearch.research", kind="mutator")  # noqa: F821 - guest global
 def research(space, question, opts=None):
-    """Research `question` and write the results into `space` as linked
-    pages. Returns {ok, overviewPageId, subPages, answer, sources, ...};
-    never raises for provider-side failures ({ok: False, error})."""
+    """Research `question`; write the result pages into `space`.
+
+    `opts`: `{"chatId": …}` posts progress bubbles to that chat while
+    running (with `"agentName"`, default "bao"); omit for a silent
+    run. Returns `{ok: True, overviewPageId, overviewPageName,
+    subPages: [{id, name}], answer, sources: [{url, title, domain}],
+    searchQueries, timing, usage}`; provider/config failures return
+    `{ok: False, error}` instead of raising."""
     opts = opts or {}
     if not isinstance(question, str) or not question.strip():
         return {"ok": False, "error": "question is required"}

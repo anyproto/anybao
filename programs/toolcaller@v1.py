@@ -224,54 +224,42 @@ def _compose_skills(skills):
 _TOOLS_INTRO = (
     "## Tools\n\n"
     "Each tool is a program reached with `use(...)` — the exact spec is on "
-    "the tool's `Import:` line. Below: the "
-    "tool's description + a compact method SIGNATURE list — argument NAMES "
-    "only, no shapes (a bare `body`/`opts` hides real structure), each "
-    "tagged `[getter]` (reads), `[mutator]` (writes / side effects), or "
-    "`[setup]` (a binder you call once to get a handle). Read the method's "
-    "`program_methods` record for its full doc; describe before you call, "
-    "don't guess shapes.")
-
-
-def _method_sig(m):
-    """One method's line for the tool list: `name(sig) [kind]`, the
-    authored heading form (ADR-005 §5) — the kind marks read/write/bind
-    intent at the point of choice. Every deployed method carries a kind
-    (deploy defaults it to getter), so the tag is always present."""
-    name = m.get("name", "")
-    kind = m.get("kind")
-    return f"{name} [{kind}]" if kind else name
+    "the tool's `Import:` line. Below, per tool: its description, then one "
+    "`name(signature) [kind] — summary` line per method, rendered from the "
+    "code itself. `[getter]` reads, `[mutator]` writes / side effects, "
+    "`[setup]` is a binder you call once to get a handle (the handle's API: "
+    "`help(handle)`). Full method doc — return shape, options — via "
+    "`help(mod.method)`; describe before you call, don't guess shapes.")
 
 
 def _tool_docs(c, space, code_space=None):
-    """`## Tools` — each any_tool program's description + a one-line method
-    SIGNATURE list (kept short: there can be many tools, and the full
-    per-method schema is retrievable from program_methods on demand).
+    """`## Tools` — each any_tool program rendered by `describe()` from
+    its code (ADR-010 §3): module docstring + one `name(sig) [kind] —
+    summary` line per public method. ONE renderer with `help()` — the
+    prompt block and an interactive `help(mod)` show the same bytes.
     Two-tier (ADR-009 §2): shipped tools from the agent code overlay
     (imported `agent:<name>@vN`), user-space tools unqualified, merged
     by name — the working space wins. Sorted oldest-first (stable tools
     stay put, new tools append) so the cached prompt prefix doesn't
-    churn."""
+    churn. A tool whose source fails to load still lists — name +
+    error line — instead of sinking the whole compose."""
     code_space = code_space or space
     sources = ([(code_space, "agent:"), (space, "")]
                if code_space != space else [(space, "")])
     tools = {}
     for sp, prefix in sources:
         for p in c.query_objects(sp, filter={"program.any_tool": True}):
-            oid, prog = p["id"], (p.get("program") or {})
+            prog = p.get("program") or {}
             name = prog.get("name") or "?"
-            desc = c.query(sp, oid, "program_description")
-            methods = sorted(c.query(sp, oid, "program_methods"),
-                             key=lambda m: m.get("pos") or 0)
-            sigs = ", ".join(_method_sig(m) for m in methods)
             spec = f"{prefix}{name}@{prog.get('version') or 'v1'}"
-            block = [f"### {name}", f'Import: `use("{spec}")`']
-            if desc:
-                block.append(desc[0].get("text") or "")
-            if sigs:
-                block.append(f"Methods: {sigs}")
+            try:
+                body = describe(use(spec))  # noqa: F821 - guest globals
+            except Exception as e:
+                body = f"(unavailable: {type(e).__name__}: {e})"
+            block = [f"### {name}", f'Import: `use("{spec}")`', body]
             # dict by name: a later source (the working space) shadows
-            tools[name] = (p.get("createdAt") or 0, name, "\n\n".join(block))
+            tools[name] = (p.get("createdAt") or 0, name,
+                           "\n\n".join(b for b in block if b))
     if not tools:
         return ""
     rows = sorted(tools.values(), key=lambda t: (t[0], t[1]))

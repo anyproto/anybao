@@ -1,15 +1,19 @@
-"""miniapp@v1 — author and manage Mini App objects (ADR-008 §6).
+"""Author and manage Mini Apps — small embeddable HTML/JS apps the
+user opens as objects in their space.
 
-One mini app = one object of the builtin `mini_app` type. The content
-lives in the per-object dataset `mini_app`, single record "main", flat
-string fields: `source` (full HTML), `state` (JSON text), `readme`
-(markdown). Writes are per-field $set ops, so updating state never
-rewrites source. The object's `any.name` is the addressing slug —
-every method here takes the app by name. Every source write runs the
-runtime-script guard: author copies of the react/react-dom/
-useAnytypeState tags are stripped and all three are prepended in load
-order (they must precede the author's inline script).
-"""
+One app = one `mini_app` object addressed by NAME (lowercase, no
+spaces, e.g. "coin-flipper"); `source` (full HTML), persisted `state`
+(JSON), and `readme` live as separate fields, so state updates never
+rewrite source. Prefer `edit()` for small changes and
+`get_source(..., frm=, to=)` for big reads. Authoring contract:
+`help(ma.create)`."""
+
+# ADR-008 §6. Content lives in the per-object dataset `mini_app`,
+# single record "main", flat string fields; writes are per-field $set
+# ops. Every source write runs the runtime-script guard: author
+# copies of the react/react-dom/useAnytypeState tags are stripped and
+# all three are prepended in load order (they must precede the
+# author's inline script).
 
 import json
 import re
@@ -128,8 +132,21 @@ def _slice(text, frm, to):
 
 @span("miniapp.create", kind="mutator")  # noqa: F821 - guest global
 def create(space, name, source, state=None, readme=""):
-    """Create a mini app. Errors (as {ok: False, error}) if the name is
-    taken — names are the addressing key."""
+    """Create a mini app; returns {ok, id, name, warnings?}.
+
+    Errors (as {ok: False, error}) if the name is taken — names are
+    the addressing key; use `update` to change an existing app.
+
+    Writing an app: the iframe preloads `React`, `ReactDOM`, and
+    `useAnytypeState(initial)` — the persistent `React.useState` (it
+    reads/writes the app's `state` field across reloads). No JSX, no
+    build step, no external CDNs: a mount div plus one inline script,
+    `var h = React.createElement`, render with
+    `ReactDOM.createRoot(document.getElementById("app")).render(h(App))`.
+    The required `<script src="./react.js">`-style tags are normalized
+    on every source write — your copies are stripped and the three are
+    prepended in load order (reported as `warnings`) — so just omit
+    them."""
     if not name or not isinstance(name, str):
         return {"ok": False, "error": "name is required"}
     if not source or not isinstance(source, str):
@@ -157,9 +174,12 @@ def create(space, name, source, state=None, readme=""):
 
 @span("miniapp.update", kind="mutator")  # noqa: F821 - guest global
 def update(space, name, source=None, state=None, readme=None, title=None):
-    """Update any subset of source/state/readme (None = leave as is;
-    clearing state is set_state's job). `title` renames the OBJECT —
-    avoid: name is the addressing key, lookups by the old name break."""
+    """Update any subset of source/state/readme → {ok, id, name, warnings?}.
+
+    None/omitted fields stay untouched (so update cannot CLEAR state —
+    that's `set_state(space, name, None)`). `title` renames the
+    OBJECT — avoid: name is the addressing key, lookups by the old
+    name break."""
     c = _client()
     oid = _find(c, space, name)
     if not oid:
@@ -185,8 +205,14 @@ def update(space, name, source=None, state=None, readme=None, title=None):
 
 @span("miniapp.edit", kind="mutator")  # noqa: F821 - guest global
 def edit(space, name, old_string, new_string, replace_all=False, block="source"):
-    """Surgical string replacement in `source` or `state` — the cheap
-    path for small changes (no full-source round-trip through tokens)."""
+    """Surgical string replacement in `source` or `state` — the cheap path.
+
+    For small changes: no full-source round-trip through tokens.
+
+    `old_string` must match exactly once unless `replace_all=True`
+    (ambiguity errors tell you the match count). Returns `{ok, id,
+    name, block, replacements, length_before, length_after,
+    warnings?}`; failures carry `{ok: False, error, length_before?}`."""
     if block not in ("source", "state"):
         return {"ok": False, "error": "block must be 'source' or 'state'"}
     c = _client()
@@ -217,8 +243,11 @@ def edit(space, name, old_string, new_string, replace_all=False, block="source")
 
 @span("miniapp.get", kind="getter")  # noqa: F821 - guest global
 def get(space, name, frm=None, to=None):
-    """The whole app, or None. `state` comes back parsed (raw string if
-    unparseable); frm/to slice the source (1-indexed, inclusive)."""
+    """The whole app {id, name, source, state, readme}, or None.
+
+    `state` comes back parsed (raw string if unparseable, None if
+    absent); frm/to slice the source (1-indexed, inclusive) and add a
+    `range: {from, to, totalLines}` descriptor."""
     c = _client()
     oid = _find(c, space, name)
     if not oid:
@@ -239,8 +268,10 @@ def get(space, name, frm=None, to=None):
 
 @span("miniapp.get_source", kind="getter")  # noqa: F821 - guest global
 def get_source(space, name, frm=None, to=None):
-    """Just the HTML source (or a 1-indexed inclusive line slice), or
-    None when the app doesn't exist."""
+    """Just {name, source}, or None when the app doesn't exist.
+
+    `frm`/`to` (1-indexed, inclusive) slice the source and add a
+    `range` descriptor — read a big app in windows instead of whole."""
     c = _client()
     oid = _find(c, space, name)
     if not oid:
@@ -278,8 +309,10 @@ def set_state(space, name, state):
 
 @span("miniapp.get_state", kind="getter")  # noqa: F821 - guest global
 def get_state(space, name):
-    """The parsed state object, or None (missing app, empty state, or
-    unparseable JSON)."""
+    """The parsed state object, or None.
+
+    None when the app is missing, state is empty, or the stored text
+    isn't valid JSON."""
     c = _client()
     oid = _find(c, space, name)
     if not oid:

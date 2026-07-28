@@ -1,10 +1,14 @@
-"""recall@v1 — recall primitives over one space: one surface, three
-axes (ADR-007 §5). Semantic (`search` over the any index), temporal
-(`by_period` fan-out across memory items / turns / chunks), graph
-(`neighbors` — forward links-format property refs + the server's
-reverse `/backlinks` read). Read-only: everything goes through the
-any@v1 client passed to `recall(client, space, …)`.
-"""
+"""Recall over one space — one surface, three axes; read-only.
+
+Semantic: `search` over the any index. Temporal: `by_period` merges
+memory items, turns, chunks in a time range. Graph: `neighbors` walks
+forward link properties plus server backlinks. Bind with
+`recall(c, space, brain_object_id=…, chat_object_id=…)` (c = any@v1
+client); `hydrate` turns search hits into full records in one read."""
+
+# ADR-007 §5. The temporal sources live on different objects (memory
+# items on the brain, turns/chunks on the chat object) — a None id
+# just skips that source.
 
 _any = use("any@v1")  # noqa: F821 - guest global
 
@@ -38,17 +42,21 @@ class Recall:
     # --- semantic ----------------------------------------------------------
     @span("recall.search", kind="getter")  # noqa: F821 - guest global
     def search(self, query, scopes=DEFAULT_SCOPES, limit=10):
-        """Index search across scopes; returns the server hits
-        (`{scope, objectId, dataset, recordId, score, …}`) unwrapped
-        from the `{hits, mode, vectorStatus}` envelope."""
+        """Index search across scopes; returns the raw server hits.
+
+        Each `{scope, objectId, dataset, recordId, score, …}`,
+        unwrapped from the `{hits, mode, vectorStatus}` envelope.
+        Default scopes ("agent", "history", "basic"), limit 10."""
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 
     @span("recall.hydrate", kind="getter")  # noqa: F821 - guest global
     def hydrate(self, hits):
-        """Hit pointers → (hit, record) pairs (hit order kept, missing
-        dropped), one `$in` query per (object, dataset). The shared
-        step under auto-recall rendering and the dedup judge."""
+        """Hit pointers → (hit, record) pairs, in one batched read.
+
+        Hit order kept, missing records dropped; one `$in` query per
+        (object, dataset). The shared step under auto-recall rendering
+        and the dedup judge."""
         wanted = {}
         for h in hits:
             wanted.setdefault((h["objectId"], h["dataset"]), []).append(h["recordId"])
@@ -60,13 +68,13 @@ class Recall:
         return [(h, r) for h, r in pairs if r is not None]
 
     # --- temporal ----------------------------------------------------------
-    @span("recall.by_period")  # noqa: F821 - guest global
     @span("recall.by_period", kind="getter")  # noqa: F821 - guest global
     def by_period(self, from_ts, to_ts):
-        """Everything that happened in [from_ts, to_ts] (unix seconds,
-        inclusive): memory items by validFrom, turns by createdAt,
-        chunks by period overlap. Merged, time-sorted, each record
-        tagged with `source` ∈ memory/turn/chunk."""
+        """Everything in [from_ts, to_ts] (unix seconds, inclusive).
+
+        Memory items by validFrom, turns by createdAt, chunks by
+        period overlap. Merged, time-sorted, each record tagged with
+        `source` ∈ memory/turn/chunk."""
         out = []
         if self._brain:
             items = self._c.query(
@@ -89,15 +97,15 @@ class Recall:
         return out
 
     # --- graph -------------------------------------------------------------
-    @span("recall.neighbors")  # noqa: F821 - guest global
     @span("recall.neighbors", kind="getter")  # noqa: F821 - guest global
     def neighbors(self, object_id):
-        """1-hop graph neighbors of an object. Forward = links-format
-        property values on its row (arrays of `any://<objectId>` URIs;
-        edge label = property, targetId returned as a bare object id).
-        Backlinks = objects that reference it, from the server's
-        reverse read (`…/backlinks`); each `{sourceId, typeId,
-        propId}`."""
+        """1-hop neighborhood: {"forward": [...], "backlinks": [...]}.
+
+        Forward = links-format property values on the object's row
+        (arrays of `any://<objectId>` URIs; edge label = property,
+        targetId a bare object id). Backlinks = objects that reference
+        it, from the server's reverse read (`…/backlinks`); each
+        `{sourceId, typeId, propId}`."""
         forward = []
         # normalize=False: graph edges are identified by raw type/prop ids,
         # so read the un-normalized (id-keyed) group shape (ADR-006 §6).
@@ -139,7 +147,12 @@ class Recall:
                 if (p.get("format") or {}).get("type") == "links"}
 
 
+@span("recall.recall", kind="setup")  # noqa: F821 - guest global
 def recall(client, space, brain_object_id=None, chat_object_id=None):
-    """Bind recall to one space over a client from any@v1."""
+    """Bind recall to one space over an any@v1 client — then `help(r)`.
+
+    `brain_object_id` feeds the memory source of `by_period` (get it
+    from `c.get_brain(space)`), `chat_object_id` the turns/chunks
+    sources; a None id skips that source."""
     return Recall(client, space, brain_object_id=brain_object_id,
                   chat_object_id=chat_object_id)

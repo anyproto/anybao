@@ -1,14 +1,17 @@
-"""memory@v1 — the memory write facade as a guest module (ADR-007 §1, §2).
+"""The memory WRITE facade over a space's brain (agent_memory_items).
 
-add / evolve / delete over the brain's `agent_memory_items` (any
-docs/11-agent-memory.md), the recall-side accessCount bump (§4.3, ships
-ON), and `save_with_dedup` — the ADR-007 §2 search-before-save path:
-recall over scope `agent` supplies dedup candidates, the classify-tier
-judge decides merge | supersede | create (no similarity threshold), and
-the humble merge keeps machine re-sightings from blurring user-stated
-text or lowering confidence. Policy only: all I/O flows through the
-injected any@v1 client, the recall@v1 object, and the llm@v1 chat.
-"""
+Bind `m = memory(c, space)` (c = any@v1 client), then save through
+`m.save_with_dedup(candidate, rec)` (rec = recall@v1) — recall
+supplies lookalikes, a fast-tier judge decides merge | supersede |
+create. Raw `add` skips dedup; use only when the fact is known new.
+Reads go through recall@v1 or the brain's dataset, not here."""
+
+# ADR-007 §1/§2 (any docs/11-agent-memory.md): search-before-save
+# dedup with a classify-tier judge, no similarity threshold; the
+# humble merge keeps machine re-sightings from blurring user-stated
+# text or lowering confidence. accessCount bump = §4.3, ships ON.
+# Policy only — all I/O flows through the injected any@v1 client,
+# the recall@v1 object, and the llm@v1 chat.
 
 import json
 import re
@@ -81,9 +84,11 @@ class Memory:
 
     @span("memory.add", kind="mutator")  # noqa: F821 - guest global
     def add(self, category, context, **fields):
-        """Create a memory item; `category` (lowercase slug) + `context`
-        (one-liner) are required (ADR-007 §1). Returns `{"itemId": id}`
-        — recordIds[0] of the ModifyResult."""
+        """Create an item unconditionally; prefer `save_with_dedup`.
+
+        `category` (lowercase slug) + `context` (one-liner) are
+        required (ADR-007 §1). Returns `{"itemId": id}` — recordIds[0]
+        of the ModifyResult."""
         body = {"category": category, "context": context, **fields}
         _require(body, "memory item")
         reply = self._c.create_memory(self._space, body)
@@ -110,8 +115,9 @@ class Memory:
 
     @span("memory.bump_access", kind="mutator")  # noqa: F821 - guest global
     def bump_access(self, item_id, current_count):
-        """accessCount = current + 1 on recall — the ROI signal that
-        tells extracted-but-never-recalled from earning-its-keep
+        """accessCount = current + 1 on recall — the memory ROI signal.
+
+        Tells extracted-but-never-recalled from earning-its-keep
         (ADR-007 §4.3; ships ON from day one)."""
         new = current_count + 1
         self.evolve(item_id, accessCount=new)
@@ -140,14 +146,17 @@ class Memory:
             raise ValueError(f"judge returned unknown action: {verdict!r}")
         return verdict
 
-    @span("memory.save_with_dedup")  # noqa: F821 - guest global
     @span("memory.save_with_dedup", kind="mutator")  # noqa: F821 - guest global
     def save_with_dedup(self, candidate, recall):
-        """The ADR-007 §2 save path: recall over scope `agent` supplies
-        dedup candidates, the classify-tier judge returns `{"action":
-        merge|supersede|create, "mergedInto"?: itemId}`. Merge is a
-        SUCCESS, not an error: `{"deduplicated": True, "mergedInto",
-        "action"}`."""
+        """The default save path — dedup via recall + judge.
+
+        `candidate`: item fields (`category` + `context` required,
+        plus `body`, `tags`, `edges`, `confidence`, `source`, …);
+        `recall`: a recall@v1 object over the same space. Recall over
+        scope `agent` supplies dedup candidates, the classify-tier
+        judge decides merge | supersede | create (ADR-007 §2). Merge
+        is a SUCCESS, not an error: `{"deduplicated": True,
+        "mergedInto", "action"}`; otherwise `{"itemId", "action"}`."""
         _require(candidate, "dedup candidate")
         hits = recall.search(candidate["context"], scopes=["agent"])
         verdict = self._judge(candidate, hits, recall)
@@ -182,10 +191,15 @@ class Memory:
         return {**self.add(**fields), "action": "supersede"}
 
 
+@span("memory.memory", kind="setup")  # noqa: F821 - guest global
 def memory(client, space, llm_chat=None):
-    """Memory over one space's brain. `client` is an any@v1 client
-    (create_memory/evolve_memory/delete_memory); the judge's model call
-    defaults to llm@v1 chat and is injectable for tests."""
+    """Bind the memory facade to one space's brain — then `help(m)`.
+
+    The brain is server-resolved, no object id needed.
+
+    `client` is an any@v1 client (create_memory/evolve_memory/
+    delete_memory); the judge's model call defaults to llm@v1 chat
+    and is injectable for tests."""
     if llm_chat is None:
         llm_chat = use("llm@v1").chat  # noqa: F821 - guest global
     return Memory(client, space, llm_chat)

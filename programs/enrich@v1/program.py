@@ -1,34 +1,26 @@
-"""enrich@v1 — markdown (typically a call transcript) → a structured,
-sourced enrichment PROPOSAL against a space, plus the deterministic
-apply of a reviewed one. The anybao respawn of bobrik-watch's
-meetingEnrich@v1 + enrichApply@v1 pair.
+"""Enrich a space from a markdown transcript — structured, sourced
+facts, applied only after user review.
 
-propose() is stage 1 — the mechanical, token-heavy work, kept out of
-the agent's context:
-  1. read the transcript's editor_blocks (each line prefixed with its
-     stable block id) and SYNTHESIZE knowledge units — each cites the
-     source block ids it derives from (multi-block, scattered, implied;
-     final state only).
-  2. ground each unit against the target space (scope-basic search;
-     hits arrive title-resolved).
-  3. reconcile → new|enrich|conflict|redundant.
-  4. persist a draft `enrich_proposal` object — one
-     `enrich_proposal_items` record per kept item — and return a
-     compact handle.
-Stage 2 (consolidate: group/dedup/retarget by EDITING the items) is the
-agent's job, not code. Stage 3 is apply(): a thin wrapper over the
-server's deterministic POST /enrich/apply, which creates targets for
-`new` items, sets real properties, writes `enriched_data` provenance
-onto each target, and deletes the ephemeral proposal. propose() never
-writes to target objects.
+`propose(space, transcript_id)` drafts an enrich_proposal object
+(nothing applied). Stage 2 is YOURS: consolidate by EDITING its items
+in place — group facets, set targetObjectId, drop redundant; never
+rewrite text/source, that kills provenance. The user reviews the
+proposal OBJECT, then `apply(space, proposalId)`. Never apply before
+approval. Slow (2 LLM passes); failures return {ok: False, error}."""
 
-Item record shape (server contract — any internal/enrichproposal):
-  { text, source, outcome: "enrich|new",
-    targetObjectId, targetKind: "collection|property",
-    targetProperty: "<typeXKey>.<propXKey>", value, newType, newName }
-`source` is `any://<space>/<transcript>#<blockId>,…` — provenance that
-survives into enriched_data after the proposal is deleted.
-"""
+# The anybao respawn of bobrik-watch's meetingEnrich@v1 +
+# enrichApply@v1 pair. propose() = the mechanical token-heavy stage 1
+# (synthesize block-cited units from editor_blocks → ground against
+# the space → reconcile new|enrich|conflict|redundant → persist the
+# draft); it never writes to target objects. apply() wraps the
+# server's deterministic POST /enrich/apply.
+#
+# Item record shape (server contract — any internal/enrichproposal):
+#   { text, source, outcome: "enrich|new",
+#     targetObjectId, targetKind: "collection|property",
+#     targetProperty: "<typeXKey>.<propXKey>", value, newType, newName }
+# `source` is `any://<space>/<transcript>#<blockId>,…` — provenance
+# that survives into enriched_data after the proposal is deleted.
 
 import contextlib
 import json
@@ -205,9 +197,11 @@ def _source(space, transcript_id, blocks):
 
 @span("enrich.analyze", kind="getter")  # noqa: F821 - guest global
 def analyze(space, opts=None):
-    """The stage-1 analysis core, NO persistence: extract → ground →
-    reconcile. opts: {transcriptId | transcript, limit?}. Returns the
-    raw report {ok, space, transcriptId, units, grounded, actions,
+    """The stage-1 analysis core WITHOUT persistence — previews, tests.
+
+    extract → ground → reconcile. opts: {transcriptId (block-cited
+    sources) | transcript (raw text, no citations), limit?}. Returns
+    the raw report {ok, space, transcriptId, units, grounded, actions,
     tally} — or {ok: False, error}."""
     opts = opts or {}
     anymod = use("any@v1")  # noqa: F821 - guest global
@@ -261,10 +255,17 @@ def analyze(space, opts=None):
 
 @span("enrich.propose", kind="mutator")  # noqa: F821 - guest global
 def propose(space, transcript_id, opts=None):
-    """TOOL entry, stage 1. Runs analyze() and persists a DRAFT
-    enrich_proposal (one enrich_proposal_items record per kept item;
-    `redundant` dropped, `conflict` demoted to enrich for review).
-    Returns a compact handle — the agent consolidates the items next."""
+    """Stage 1: analyze the transcript and persist a DRAFT proposal.
+
+    One enrich_proposal_items record per kept item (`redundant`
+    dropped, `conflict` demoted to enrich for review); item shape:
+    `{text, source, outcome, targetObjectId, targetKind:
+    "collection"|"property", targetProperty: "<typeXKey>.<propXKey>",
+    value, newType, newName}`. `opts`: `{"limit": grounding
+    candidates per unit (default 6)}`. Returns `{ok: True,
+    proposalId, proposalLink, space, transcriptId, items, errors,
+    tally}` — nothing written to target objects; you consolidate the
+    items next."""
     opts = opts or {}
     anymod = use("any@v1")  # noqa: F821 - guest global
     if not space:
@@ -341,12 +342,16 @@ def propose(space, transcript_id, opts=None):
 
 @span("enrich.apply", kind="mutator")  # noqa: F821 - guest global
 def apply(space, proposal_id):
-    """TOOL entry, stage 3. Deterministic server-side apply of a
-    reviewed proposal; deletes it afterward. Idempotent — a re-apply of
-    a deleted/unknown proposal returns {ok: False} (404
-    enrich.empty_proposal). Hits POST /enrich/apply directly — the
-    endpoint is this program's surface, not part of the any@v1
-    client."""
+    """Stage 3: apply a REVIEWED proposal server-side; deletes it after.
+
+    No LLM (shared with the any-ui Apply button): creates ONE object
+    per grouped newType+newName, sets real properties for `property`
+    items, writes an enriched_data provenance record onto every
+    target. Returns `{ok: True, proposalId, created, propertiesSet,
+    enrichedDataWritten, proposalDeleted, failures}` — non-empty
+    `failures` still means the rest applied. Re-apply of a
+    deleted/unknown proposal → {ok: False} (404
+    enrich.empty_proposal)."""
     if not space:
         return {"ok": False, "error": "space required"}
     if not proposal_id:

@@ -1,12 +1,16 @@
-"""webSearch@v1 — grounded web search via Gemini + Google Search (ADR-008 §3).
+"""Grounded web search — synthesized answers with real source urls.
 
-One query = one generateContent call with the google_search grounding
-tool; each query yields ONE formatted string: the synthesized answer
-with its grounding sources listed inline. Multi-query fan-out rides the
-batch effect (one guest→host crossing). The api key never enters the
-guest: the request names a credential ref and the host injects the
-header (ADR-002).
-"""
+Pass several queries at once (one round-trip): `ws.search("a", "b")`.
+A failed query yields an `[ERROR] …` string in its slot; the others
+still return. Use for anything needing current facts — prices,
+versions, dates, news. For a multi-page investigation written into
+the space, use `deepResearch@v1` instead."""
+
+# Gemini generateContent + the google_search grounding tool (ADR-008
+# §3); multi-query fan-out rides the batch effect (one guest→host
+# crossing). Provider/model from config `search.provider.websearch`;
+# the api key never enters the guest — the request names a credential
+# ref and the host injects the header (ADR-002).
 
 import json
 
@@ -110,9 +114,14 @@ def _format(idx, query, p):
 
 @span("webSearch.search", kind="getter")  # noqa: F821 - guest global
 def search(*queries):
-    """Run one or more web searches; returns one formatted string per
-    query (answer + sources). A failed query yields an [ERROR] string
-    in place — the batch never raises as a whole."""
+    """Run one or more web searches; one formatted string per query.
+
+    Variadic (a single list argument is also accepted). Each result,
+    in query order: `[N] <query>` + the primary source url + a 4-8
+    sentence synthesized answer + a `Sources:` list of the remaining
+    grounding sources. A failed query yields `[ERROR] query N ("…")
+    failed: <reason>` in its slot — the call itself never raises for
+    a provider-side failure. Empty input returns `[]`."""
     if len(queries) == 1 and isinstance(queries[0], (list, tuple)):
         queries = tuple(queries[0])  # leniency: search([q1, q2]) == search(q1, q2)
     queries = [q if isinstance(q, str) else (q or {}).get("query", "")

@@ -1,23 +1,28 @@
-"""any@v1 — the space-data client for the `any` server, built on the
-http syscall: JSON transport, error-envelope mapping (AnyError), the
-NUL write guard, and typed per-route calls. `space` is always an
-explicit argument — cross-space access is normal. Get a bound client
-via `client()` (base url from config `any.base_url`) or `client(url)`.
-"""
+"""The client for the `any` server — everything in a space is a
+typed object; this is how you read and write it.
+
+`c = client()`, then `space` is an explicit first argument on every
+call (cross-space is normal). Types and properties are named by xKey
+— the client resolves them to server content ids, and query rows come
+back xKey-nested (never raw ids). Errors raise `AnyError` ({code,
+message} from the wire). The full API: `help(c)`."""
+
+# Built on the http syscall: JSON transport, error-envelope mapping
+# (AnyError), the NUL write guard, typed per-route calls.
 
 import json
 
 
-def sanitize_nuls(obj):
+def _sanitize_nuls(obj):
     """Strip NUL bytes from strings before any write — anyenc/fastjson
     rejects \\x00 in JSON strings, so we guard at the write boundary.
     Binary-ish HTTP bodies are the realistic source."""
     if isinstance(obj, str):
         return obj.replace("\x00", "�") if "\x00" in obj else obj
     if isinstance(obj, dict):
-        return {k: sanitize_nuls(v) for k, v in obj.items()}
+        return {k: _sanitize_nuls(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [sanitize_nuls(v) for v in obj]
+        return [_sanitize_nuls(v) for v in obj]
     return obj
 
 
@@ -72,7 +77,7 @@ class Client:
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
         if body is not None:
-            payload["json"] = sanitize_nuls(body)   # write guard
+            payload["json"] = _sanitize_nuls(body)   # write guard
         reply = effect("http." + verb, payload)  # noqa: F821 - guest global
         raw = reply.get("body") or ""
         if reply["status"] >= 400:
@@ -287,8 +292,9 @@ class Client:
 
     @span("any.update_object", kind="mutator")  # noqa: F821 - guest global
     def update_object(self, space, object_id, body):
-        """Update an existing object's name / editor body / properties by
-        xKey. `body`: {"name"?, "markdown"?/"body"?, "<typeXKey>": {prop:
+        """Update an object's name / editor body / properties by xKey.
+
+        `body`: {"name"?, "markdown"?/"body"?, "<typeXKey>": {prop:
         value}, …} — same nested type-group shape as create_object. Property
         keys resolve to ids; groups are resolved BEFORE any write so a bad
         key can't land a partial update. Returns {"objectId"}."""
@@ -332,22 +338,32 @@ class Client:
 
     @span("any.list_programs", kind="getter")  # noqa: F821 - guest global
     def list_programs(self, space, tools_only=False):
-        """Programs deployed in a space — an overlay/repo or your own
-        working space (ADR-009 §2). Returns [{name, version, anyTool,
-        description}] sorted by name. Import one from another space with
-        `use("<alias-or-spaceId>:<name>@<version>")`."""
+        """Programs deployed in a space: [{name, version, anyTool, summary}].
+
+        An overlay/repo or your own working space (ADR-009 §2), sorted
+        by name — `summary` is the program's one-liner (ADR-010 §4);
+        for depth, `use()` it and `help(mod)`. Import one from another
+        space with `use("<alias-or-spaceId>:<name>@<version>")`."""
         out = []
         for p in self.query_objects(space, filter={"any.types": "program"},
                                     limit=200):
             prog = p.get("program") or {}
             if tools_only and not prog.get("any_tool"):
                 continue
-            desc = self.query(space, p["id"], "program_description", limit=1)
+            summary = (prog.get("summary") or "").strip()
+            if not summary:
+                # 2026-07-28 migration bridge (ADR-010 §4): until deploy
+                # writes the summary property, fall back to the doc
+                # dataset's first line. Delete with the datasets.
+                desc = self.query(space, p["id"], "program_description",
+                                  limit=1)
+                text = (desc[0].get("text") or "") if desc else ""
+                summary = next((ln.strip() for ln in text.splitlines()
+                                if ln.strip()), "")
             out.append({"name": prog.get("name") or "",
                         "version": prog.get("version") or "",
                         "anyTool": bool(prog.get("any_tool")),
-                        "description": ((desc[0].get("text") or "").strip()
-                                        if desc else "")})
+                        "summary": summary})
         return sorted(out, key=lambda r: (r["name"], r["version"]))
 
     @span("any.query", kind="getter")  # noqa: F821 - guest global
@@ -361,12 +377,17 @@ class Client:
 
     @span("any.modify", kind="mutator")  # noqa: F821 - guest global
     def modify(self, space, body):
+        """Low-level dataset write; prefer upsert_record / create_object.
+
+        `body`: {objectId, dataset, records: [{id, upsert?, ops:
+        [{type, path, value}]}]} — for partial ops."""
         return self._call("post", f"/v1/spaces/{space}/modify", body)
 
     @span("any.upsert_record", kind="mutator")  # noqa: F821 - guest global
     def upsert_record(self, space, object_id, dataset, record_id, value):
-        """Write one dataset record (whole-value $set, upsert) — the
-        generic path for plain (unregistered) datasets like
+        """Write one dataset record (whole-value $set, upsert).
+
+        The generic path for plain (unregistered) datasets like
         agent_triggers."""
         return self.modify(space, {
             "objectId": object_id, "dataset": dataset,
@@ -375,27 +396,33 @@ class Client:
 
     @span("any.aggregate", kind="getter")  # noqa: F821 - guest global
     def aggregate(self, space, pipeline):
+        """Run an aggregation pipeline over the space's objects.
+
+        For counts / grouping when a plain query won't do."""
         return self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                           {"pipeline": pipeline})
 
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
     @span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
     def get_markdown(self, space, object_id):
+        """The object's editor body as markdown TEXT (a string, not a dict)."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/editor/markdown")
         return r.get("content", "")
 
     @span("any.put_markdown", kind="mutator")  # noqa: F821 - guest global
     def put_markdown(self, space, object_id, content):
+        """Replace the object's editor body with `content` (markdown).
+        Whole-body write — prefer append_markdown when adding."""
         return self._call("put",
                           f"/v1/spaces/{space}/objects/{object_id}/editor/markdown",
                           {"content": content})
 
     @span("any.append_markdown", kind="mutator")  # noqa: F821 - guest global
     def append_markdown(self, space, object_id, content):
-        """Append to the editor body (server-side append-only fast
-        path) — no read-modify-write, so it can't clobber the body the
-        way a get+put race can. Returns the api.MarkdownSetResponse
-        dict."""
+        """Append to the editor body (server-side append-only fast path).
+
+        No read-modify-write, so it can't clobber the body the way a
+        get+put race can. Returns the api.MarkdownSetResponse dict."""
         return self._call(
             "post",
             f"/v1/spaces/{space}/objects/{object_id}/editor/markdown/append",
@@ -404,14 +431,16 @@ class Client:
     # --- spaces & ui context ---------------------------------------------------
     @span("any.list_spaces", kind="getter")  # noqa: F821 - guest global
     def list_spaces(self):
-        """Every space on the account as raw rows ({id, name, status, …});
-        operate on status == "active" unless asked otherwise."""
+        """Every space on the account as raw rows ({id, name, status, …}).
+
+        Operate on status == "active" unless asked otherwise."""
         return self._call("get", "/v1/spaces").get("spaces", [])
 
     @span("any.create_space", kind="mutator")  # noqa: F821 - guest global
     def create_space(self, name, description=None):
-        """Create a new top-level space. Returns the full single-space
-        row — `id` is the new space id, and `generalChatObjectId` its
+        """Create a new top-level space; returns the full single-space row.
+
+        `id` is the new space id, and `generalChatObjectId` its
         derived general chat (every space has exactly one; write chat
         there, never create chat objects). The space starts empty:
         resolve/create types against it before typed writes (types and
@@ -424,8 +453,9 @@ class Client:
 
     @span("any.get_ui_context", kind="getter")  # noqa: F821 - guest global
     def get_ui_context(self, space):
-        """The user's current view: the `ui_context` pointer object
-        any-ui maintains in the agent space (xKey contract with any-ui:
+        """The user's current view — the `ui_context` pointer any-ui keeps.
+
+        Maintained in the agent space (xKey contract with any-ui:
         props space_id / object_id / view / updated_at). Returns
         {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
         check freshness before trusting — or None when the UI has never
@@ -448,20 +478,25 @@ class Client:
     # --- types & properties (catalog source) ----------------------------------
     @span("any.list_types", kind="getter")  # noqa: F821 - guest global
     def list_types(self, space):
+        """Every type in the space: rows of {id, xKey, name, …} (builtins included)."""
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])
 
     @span("any.list_properties", kind="getter")  # noqa: F821 - guest global
     def list_properties(self, space, type_id):
-        # [{id, name, xKey, kind}] — the xKey↔propId catalog map.
+        """A type's property definitions: [{id, name, xKey, kind}].
+
+        The xKey↔propId catalog map; property writes on custom types
+        are keyed by these ids."""
         r = self._call("get", f"/v1/spaces/{space}/types/{type_id}/properties")
         return r.get("properties", r) if isinstance(r, dict) else r
 
     @span("any.create_type", kind="mutator")  # noqa: F821 - guest global
     def create_type(self, space, body):
-        """Composite ensure-type (bobrik-watch anyHelper semantics): the
-        wire's POST /types takes NO inline properties (unknown fields
-        are silently dropped), so properties are added one add_property
-        call each. body: {"name", "xKey"?, "description"?,
+        """Create a type, then add each property (composite ensure-type).
+
+        bobrik-watch anyHelper semantics: the wire's POST /types takes
+        NO inline properties (unknown fields are silently dropped), so
+        properties are added one add_property call each. body: {"name", "xKey"?, "description"?,
         "properties"?: [{"name", "xKey"?, "kind"?, "meta"?}]}. xKeys
         default to a slug of the name ("Comic Book" -> "comic_book").
         Idempotent: an existing type (matched by xKey or builtin id) is
@@ -512,17 +547,22 @@ class Client:
     # --- agent turns / chunks (server-assigned seq) ----------------------------
     @span("any.append_turn", kind="mutator")  # noqa: F821 - guest global
     def append_turn(self, space, chat_id, body):
+        """Append an `agent_turns` record (server-assigned seq).
+        Harness-level; conversations write these for you."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/agent/turns", body)
 
     @span("any.create_chunk", kind="mutator")  # noqa: F821 - guest global
     def create_chunk(self, space, chat_id, body):
+        """Append a compressed history chunk record (harness-level; rollup)."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/agent/chunks", body)
 
     # --- chat messages ---------------------------------------------------------
     @span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
     def chat_send(self, space, chat_id, body):
+        """Post a message to a chat object. `body`: `{"text": ...}`.
+        Use the space's general chat id."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
 
@@ -530,8 +570,9 @@ class Client:
     @span("any.search", kind="getter")  # noqa: F821 - guest global
     def search(self, space, query, scopes=None, limit=None, mode=None,
                enrich=True):
-        """Index search — the `{hits, mode, vectorStatus}` envelope. Each
-        hit is a matched RECORD, not a resolved object:
+        """Index search; returns the `{hits, mode, vectorStatus}` envelope.
+
+        Each hit is a matched RECORD, not a resolved object:
         `{data (the matched text), dataset, objectId, recordId, scope,
         score}`. With enrich=True (default) every hit also gets `title`
         (the object's any.name) and `type` (its primary type's display
@@ -578,8 +619,9 @@ class Client:
 
     @span("any.backlinks", kind="getter")  # noqa: F821 - guest global
     def backlinks(self, space, object_id):
-        """Objects that reference object_id through a links-format
-        property. Returns the `backlinks` list unwrapped from the
+        """Objects that reference object_id through a links-format property.
+
+        Returns the `backlinks` list unwrapped from the
         envelope — each `{objectId, typeId, propId}` (never null)."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/backlinks")
         return r.get("backlinks") or []
@@ -587,31 +629,44 @@ class Client:
     # --- agent memory (write path; reads go through /query on the brain) --------
     @span("any.get_brain", kind="getter")  # noqa: F821 - guest global
     def get_brain(self, space):
-        """The derived per-space brain object id hosting
-        agent_memory_items. `{objectId}` — deterministic, no create race."""
+        """The per-space brain object id hosting agent_memory_items.
+
+        `{objectId}` — derived, deterministic, no create race."""
         return self._call("get", f"/v1/spaces/{space}/agent/brain")
 
     @span("any.create_memory", kind="mutator")  # noqa: F821 - guest global
     def create_memory(self, space, fields):
-        """Create a memory item (category + context required). Server
-        resolves the brain object. Returns ModifyResult — recordIds[0]
-        is the item id."""
+        """Create a memory item (category + context required).
+
+        Server resolves the brain object. Returns ModifyResult —
+        recordIds[0] is the item id."""
         return self._call("post", f"/v1/spaces/{space}/agent/memory", fields)
 
     @span("any.evolve_memory", kind="mutator")  # noqa: F821 - guest global
     def evolve_memory(self, space, item_id, fields):
-        """Evolve a memory item's mutable fields (author only;
-        modifiedAt bumped server-side). The route is PATCH-only."""
+        """Evolve a memory item's mutable fields (author-only).
+
+        modifiedAt is bumped server-side; the route is PATCH-only."""
         return self._call("patch", f"/v1/spaces/{space}/agent/memory/{item_id}", fields)
 
     @span("any.delete_memory", kind="mutator")  # noqa: F821 - guest global
     def delete_memory(self, space, item_id):
+        """Delete a memory item by id (author-only)."""
         return self._call("delete", f"/v1/spaces/{space}/agent/memory/{item_id}")
 
 
 def client(base_url=None):
-    """Bind a Client to the server; base url from config `any.base_url`
-    unless given explicitly."""
+    """Bind a Client to the server; the client's API: `help(c)`.
+
+    Base url from config `any.base_url` unless given explicitly.
+    Surface: typed objects (create_object / update_object /
+    query_objects), per-object datasets (query / upsert_record /
+    modify), editor bodies (get_markdown / put_markdown /
+    append_markdown), the type catalog (list_types / list_properties /
+    create_type / add_property), search, backlinks, the memory brain
+    (get_brain / create_memory / evolve_memory), chat (chat_send /
+    append_turn), spaces (list_spaces / create_space), programs
+    (list_programs), and the user's live view (get_ui_context)."""
     if base_url is None:
         base_url = effect("config.get", {"key": "any.base_url"})["value"]  # noqa: F821
     return Client(base_url)

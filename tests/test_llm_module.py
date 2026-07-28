@@ -182,9 +182,9 @@ def test_fenced_plain_text_is_done():
     assert r["stop"] == "done" and r["parts"][0]["text"] == "All done."
 
 
-def test_build_adapter_exported_for_host_side_exec():
-    assert isinstance(LLM["build_adapter"]("anthropic", False), LLM["AnthropicAdapter"])
-    fenced = LLM["build_adapter"]("openai-compat", True)
+def test_build_adapter_selects_and_fences():
+    assert isinstance(LLM["_build_adapter"]("anthropic", False), LLM["AnthropicAdapter"])
+    fenced = LLM["_build_adapter"]("openai-compat", True)
     assert isinstance(fenced, LLM["FencedAdapter"])
 
 
