@@ -1,11 +1,15 @@
-"""Delegate a self-contained subtask to a fresh agent loop; get its
-report back as a value — nothing posted to chat, no history touched.
+"""Delegate a self-contained subtask to a quiet fresh agent loop.
+
+The report comes back as a value — nothing posted to chat, no
+history touched.
 
 Delegate when intermediate steps would only clutter your context (a
 survey, a batch transformation, a research errand). Write the task
 like a good ticket: goal, inputs (ids, names), what the report must
 contain — the child starts blank and knows nothing of this
 conversation. Blocking, sequential; don't nest beyond one level."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # Thin wrapper, not a second loop (ADR-008 §5):
 # use("toolcaller@v1").main(quiet=True) — same space, full tool

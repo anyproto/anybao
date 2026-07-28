@@ -1,4 +1,6 @@
-"""linkgen@v1 — the hourly link-generation sweep (ADR-007 §4.1):
+"""Hourly link-generation sweep over memory items (cron).
+
+ADR-007 §4.1:
 A-MEM's write-time linking run async over memory items created since
 the last sweep. Seed-search neighbors (scopes agent+history+basic) →
 classify-tier LLM proposes typed links from the CURATED edge vocabulary

@@ -6,6 +6,8 @@ forward link properties plus server backlinks. Bind with
 `recall(c, space, brain_object_id=…, chat_object_id=…)` (c = any@v1
 client); `hydrate` turns search hits into full records in one read."""
 
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
 # ADR-007 §5. The temporal sources live on different objects (memory
 # items on the brain, turns/chunks on the chat object) — a None id
 # just skips that source.

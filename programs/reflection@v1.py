@@ -1,4 +1,6 @@
-"""reflection@v1 — reflection sweep (ADR-007 §4.2): mechanism present,
+"""Reflection sweep over the memory store (cron).
+
+ADR-007 §4.2: mechanism present,
 trigger ships DISABLED — activation is gated on its eval.
 
 Two moves over the never-recalled tail (accessCount 0, older than

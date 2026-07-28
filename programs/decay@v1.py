@@ -1,4 +1,6 @@
-"""decay@v1 — salience decay sweep (ADR-007 §4.2): mechanism present,
+"""Salience decay sweep (cron).
+
+ADR-007 §4.2: mechanism present,
 trigger ships DISABLED — activation is gated on its eval (never
 validated in production by amemory; metrics-first doctrine).
 

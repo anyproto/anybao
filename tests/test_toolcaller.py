@@ -373,10 +373,6 @@ class TwoSpaces:
         return []
 
     def query(self, space, oid, dataset, **kw):
-        if dataset == "program_description":
-            for o, _, _, _, desc in self.tools.get(space, []):
-                if o == oid:
-                    return [{"id": "main", "text": desc}]
         return []
 
     def get_markdown(self, space, oid):

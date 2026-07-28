@@ -1,11 +1,12 @@
-"""Deep research on ONE question — grounded answers written into the
-space as linked pages.
+"""Deep research on ONE question, written into the space as pages.
 
 Slow (30s-3min) and writes multiple objects: one sub-page per
 follow-up question plus an overview page linking them — the hub; tell
 the user its name when done. Reach for it when the user asks for
 research / a report / a deep dive, not for a quick fact (that's
 `webSearch@v1`)."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # ADR-008 §4, four phases: grounded Gemini call → follow-up
 # decomposition via llm@v1 (classify tier, 3-7 questions) → batched

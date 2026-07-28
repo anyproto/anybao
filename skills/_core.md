@@ -24,10 +24,17 @@ fetches them in a later cell.
 
 Plain Python, top-level statements. The last expression is captured.
 `print()` freely — it goes to you, never to the user. Only the curated
-stdlib imports work (`json`, `re`, `math`, …). Anything nondeterministic
-is a GLOBAL backed by a recorded effect: `now()`, `rand()`, `env(name)`,
-`uuid4()`, plus proxied `datetime`/`random`/`time`. Raw web:
-`http.get(url)`, `http.post(url, json=...)` (`.json()` on the response).
+stdlib imports work (`json`, `re`, `math`, `inspect`, …). Anything
+nondeterministic is a GLOBAL backed by a recorded effect: `now()`,
+`rand()`, `env(name)`, `uuid4()`, plus proxied
+`datetime`/`random`/`time`. Raw web: `http.get(url)`,
+`http.post(url, json=...)` (`.json()` on the response).
+
+**Discover APIs natively, never guess.** `help(mod)` prints a module's
+description + method signatures; `help(mod.method)` / `help(handle)`
+the full doc (return shape, options). It works on any `use()`'d
+module — a repo connector included — and on bound handles. Docstrings
+are the single doc source; there is no separate schema to fetch.
 
 ## The module surface
 

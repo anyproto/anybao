@@ -1,24 +1,26 @@
-//! Deploy tool — the Rust twin of anybao/deploy.py + skills.py: the
-//! generic program/skill publisher (plan §4). Reads a source dir and
-//! writes to a TARGET space (the agent overlay, a std overlay, any
-//! package space). Hash-gated: unchanged programs skip all writes.
+//! Deploy tool — the generic program/skill publisher (plan §4). Reads
+//! a source dir and writes to a TARGET space (the agent overlay, a std
+//! overlay, any package space). Hash-gated: unchanged programs skip
+//! all writes.
 //!
-//! Program storage (mirrors internal/program): a `program`-typed object
-//! per program, source in `program_source`/"main"/{code}, split tool
-//! docs in `program_description`/"main"/{text} + one `program_methods`
-//! record per method, `program.any_tool` = has description AND ≥1
-//! method. A program is `<name>@<version>` (filename `name@vN.py`).
+//! Program storage (mirrors internal/program, ADR-010 §5/§6): a
+//! `program`-typed object per program, source in
+//! `program_source`/"main"/{code} — docs live in the source's
+//! docstrings, there are no doc datasets. Deploy DERIVES the cached
+//! properties from a static source scan (ADR-010 §4): `summary` = the
+//! module docstring's first line; `any_tool` = the source declares
+//! `__any_tool__ = True`, validated to carry the tool shape (docstring
+//! within budget + ≥1 public `@span`-tagged def). A program is
+//! `<name>@<version>` (filename `name@vN.py` or `name@vN/program.py`).
 //! Optional capability manifest (sidecar `name@vN.manifest.json`) is
 //! stored in `program_manifest`/"main" and mixed into the fingerprint —
 //! manifest = request, grants bind to the content hash (00-plan
-//! "Capabilities & trust"). The fingerprint MUST match the Python
-//! deployer byte-for-byte: both sides hash the same split form.
+//! "Capabilities & trust").
 
 // the ported surface IS the contract; the bin grows into it
 #![allow(dead_code)]
 
 use crate::anyapi::{AnyError, Client};
-use crate::toolmd::{split_tool_markdown, MethodDoc};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -109,25 +111,88 @@ fn python_json_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// Fingerprint over the SPLIT form (code + description + sorted
-/// methods) so disk and in-space sides normalize identically — never
-/// over raw markdown (which wouldn't round-trip). method_tuples:
-/// (bare_name, name, kind, text).
-pub fn fingerprint(
-    code: &str,
-    desc: &str,
-    method_tuples: &[(String, String, String, String)],
-    manifest: &Value,
-) -> String {
+// --- static source scan (ADR-010 §4): a convention check, not a parser ---
+
+/// The module docstring: the source's first statement when it is a
+/// string literal (shebang/encoding/comment/blank lines skipped).
+/// Triple- or single-quoted; the quotes are stripped.
+pub fn module_docstring(code: &str) -> Option<String> {
+    let mut rest = code;
+    loop {
+        let line_end = rest.find('\n').map(|i| i + 1).unwrap_or(rest.len());
+        let line = rest[..line_end].trim();
+        if line.is_empty() || line.starts_with('#') {
+            if line_end == rest.len() {
+                return None;
+            }
+            rest = &rest[line_end..];
+            continue;
+        }
+        break;
+    }
+    for q in ["\"\"\"", "'''", "\"", "'"] {
+        if let Some(body) = rest.trim_start().strip_prefix(q) {
+            let end = body.find(q)?;
+            return Some(body[..end].to_string());
+        }
+    }
+    None
+}
+
+/// First non-empty docstring line, trimmed — the cached one-liner.
+pub fn summary_of(docstring: &str) -> String {
+    docstring
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// The source declares itself an agent tool (ADR-010 §4).
+pub fn has_any_tool_marker(code: &str) -> bool {
+    code.lines()
+        .any(|l| l.trim_start().starts_with("__any_tool__ = True"))
+}
+
+/// ≥1 `@span(...)`-decorated def whose name is public — any nesting
+/// (class methods count). Comments/blank lines between decorator and
+/// def are tolerated; any other statement resets the pending state.
+pub fn has_public_span_def(code: &str) -> bool {
+    let mut pending = false;
+    for line in code.lines() {
+        let t = line.trim_start();
+        if t.starts_with("@span(") {
+            pending = true;
+        } else if t.starts_with('@') || t.starts_with('#') || t.is_empty() {
+            // another decorator / comment / blank: keep the pending span
+        } else if let Some(rest) = t.strip_prefix("def ") {
+            if pending && !rest.starts_with('_') {
+                return true;
+            }
+            pending = false;
+        } else {
+            pending = false;
+        }
+    }
+    false
+}
+
+/// ADR-010 §1 hard caps for a tool's module docstring.
+const SUMMARY_MAX_CHARS: usize = 80;
+const DOCSTRING_MAX_LINES: usize = 12;
+const DOCSTRING_MAX_CHARS: usize = 800;
+
+/// Fingerprint over code + the derived properties + manifest. The
+/// derived values are hashed too so a derivation-logic change (new
+/// scan rules) re-deploys even when the code bytes are identical.
+pub fn fingerprint(code: &str, summary: &str, any_tool: bool, manifest: &Value) -> String {
     let mut h = Sha256::new();
     h.update(code.as_bytes());
-    h.update(b"\x00d\x00");
-    h.update(desc.as_bytes());
-    let mut sorted: Vec<&(String, String, String, String)> = method_tuples.iter().collect();
-    sorted.sort();
-    for (bare, name, kind, text) in sorted {
-        h.update(format!("\x00m\x00{bare}\x00{name}\x00{kind}\x00{text}").as_bytes());
-    }
+    h.update(b"\x00s\x00");
+    h.update(summary.as_bytes());
+    h.update(b"\x00t\x00");
+    h.update(if any_tool { b"1" } else { b"0" });
     if truthy(manifest) {
         h.update(b"\x00man\x00");
         let mut canon = String::new();
@@ -142,20 +207,17 @@ pub struct ProgramSource {
     pub name: String,
     pub version: String,
     pub code: String,
-    /// optional tool-description markdown
-    pub tool_md: String,
     /// optional capability manifest sidecar (CapBAC request half):
     /// {"capabilities": [...], "publisher": ..., "attestation": {...}?}
     pub manifest: Value,
 }
 
 impl ProgramSource {
-    pub fn new(name: &str, version: &str, code: &str, tool_md: &str) -> Self {
+    pub fn new(name: &str, version: &str, code: &str) -> Self {
         ProgramSource {
             name: name.to_string(),
             version: version.to_string(),
             code: code.to_string(),
-            tool_md: tool_md.to_string(),
             manifest: json!({}),
         }
     }
@@ -169,21 +231,62 @@ impl ProgramSource {
         format!("{}@{}", self.name, self.version)
     }
 
-    pub fn split(&self) -> (String, Vec<MethodDoc>) {
-        if self.tool_md.is_empty() {
-            (String::new(), Vec::new())
-        } else {
-            split_tool_markdown(&self.tool_md)
+    pub fn summary(&self) -> String {
+        module_docstring(&self.code)
+            .map(|d| summary_of(&d))
+            .unwrap_or_default()
+    }
+
+    pub fn any_tool(&self) -> bool {
+        has_any_tool_marker(&self.code)
+    }
+
+    /// ADR-010 §4: a program marked `__any_tool__ = True` must carry
+    /// the tool shape — module docstring within §1's caps and ≥1
+    /// public `@span`-tagged def. Errors say what to fix.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.any_tool() {
+            return Ok(());
         }
+        let spec = self.spec();
+        let Some(doc) = module_docstring(&self.code) else {
+            anyhow::bail!(
+                "{spec} declares __any_tool__ but has no module docstring — \
+                 write a short one (first line = the one-liner, ADR-010 §1)"
+            );
+        };
+        let summary = summary_of(&doc);
+        if summary.is_empty() {
+            anyhow::bail!("{spec}: module docstring has no content (ADR-010 §1)");
+        }
+        if summary.chars().count() > SUMMARY_MAX_CHARS {
+            anyhow::bail!(
+                "{spec}: docstring first line is {} chars — the one-liner \
+                 caps at {SUMMARY_MAX_CHARS} (ADR-010 §1)",
+                summary.chars().count()
+            );
+        }
+        let lines = doc.trim().lines().count();
+        if lines > DOCSTRING_MAX_LINES || doc.chars().count() > DOCSTRING_MAX_CHARS {
+            anyhow::bail!(
+                "{spec}: module docstring is {lines} lines / {} chars — it is \
+                 standing prompt, cap {DOCSTRING_MAX_LINES} lines / \
+                 {DOCSTRING_MAX_CHARS} chars (ADR-010 §1; move depth into \
+                 method docstrings)",
+                doc.chars().count()
+            );
+        }
+        if !has_public_span_def(&self.code) {
+            anyhow::bail!(
+                "{spec} declares __any_tool__ but no public @span-tagged def — \
+                 span every tool method (ADR-010 §1)"
+            );
+        }
+        Ok(())
     }
 
     pub fn fingerprint(&self) -> String {
-        let (desc, methods) = self.split();
-        let tuples: Vec<(String, String, String, String)> = methods
-            .into_iter()
-            .map(|m| (m.bare_name, m.name, m.kind, m.text))
-            .collect();
-        fingerprint(&self.code, &desc, &tuples, &self.manifest)
+        fingerprint(&self.code, &self.summary(), self.any_tool(), &self.manifest)
     }
 }
 
@@ -199,14 +302,13 @@ fn parse_name_version(stem: &str) -> Option<(&str, &str)> {
 }
 
 /// Read program sources from `src_dir`. Two layouts, mixed freely:
-///   - **flat**: `<name>@vN.py` (+ optional `<name>@vN.md` tool docs,
-///     `<name>@vN.manifest.json`) — a plain program / cron job.
-///   - **folder**: `<name>@vN/` holding `program.py` + authored
-///     `description.md` (→ Tool Description) + `schema.md` (→ Tool
-///     Schema, the `### name(sig) [kind]` method docs) + optional
-///     `manifest.json`. This is how a TOOL is authored: docs split into
-///     their own files, polished by hand. Anything else in the folder
-///     (tests, fixtures) is ignored — only the four files are read.
+///   - **flat**: `<name>@vN.py` (+ optional `<name>@vN.manifest.json`).
+///   - **folder**: `<name>@vN/` holding `program.py` + optional
+///     `manifest.json`. Anything else in the folder (tests, fixtures)
+///     is ignored.
+///
+/// Docs are the source's docstrings (ADR-010 §1) — there are no doc
+/// sidecar files.
 pub fn load_programs(src_dir: &Path) -> anyhow::Result<Vec<ProgramSource>> {
     let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(src_dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -246,7 +348,6 @@ fn load_flat_program(py: &Path) -> anyhow::Result<Option<ProgramSource>> {
         name: name.to_string(),
         version: version.to_string(),
         code: std::fs::read_to_string(py)?,
-        tool_md: read_opt(&py.with_extension("md"))?,
         manifest: load_manifest(&mf)?,
     }))
 }
@@ -260,13 +361,10 @@ fn load_program_dir(dir: &Path) -> anyhow::Result<Option<ProgramSource>> {
     if !code_path.exists() {
         return Ok(None);
     }
-    let description = read_opt(&dir.join("description.md"))?;
-    let schema = read_opt(&dir.join("schema.md"))?;
     Ok(Some(ProgramSource {
         name: name.to_string(),
         version: version.to_string(),
         code: std::fs::read_to_string(&code_path)?,
-        tool_md: assemble_tool_md(&description, &schema),
         manifest: load_manifest(&dir.join("manifest.json"))?,
     }))
 }
@@ -277,20 +375,6 @@ fn load_manifest(p: &Path) -> anyhow::Result<Value> {
     } else {
         json!({})
     })
-}
-
-/// Reassemble the split docs into the `## Tool Description` / `## Tool
-/// Schema` markdown that `split_tool_markdown` parses — so storage,
-/// fingerprint, and the any_tool rule are identical to the flat `.md`.
-fn assemble_tool_md(description: &str, schema: &str) -> String {
-    let mut parts = Vec::new();
-    if !description.trim().is_empty() {
-        parts.push(format!("## Tool Description\n\n{}", description.trim()));
-    }
-    if !schema.trim().is_empty() {
-        parts.push(format!("## Tool Schema\n\n{}", schema.trim()));
-    }
-    parts.join("\n\n")
 }
 
 /// Published overlay versions never mutate — edits bump `name@vN`.
@@ -329,21 +413,30 @@ impl<'a> Deployer<'a> {
         self
     }
 
-    /// Existing program object id by name+version, or None.
-    fn find_program(&self, name: &str, version: &str) -> Result<Option<String>, AnyError> {
+    /// Existing program object by name+version: (id, program prop
+    /// group) — the props feed the in-space fingerprint.
+    fn find_program(&self, name: &str, version: &str) -> Result<Option<(String, Value)>, AnyError> {
         let recs = self.client.query_objects(
             &self.space,
             &json!({"filter": {format!("{PROGRAM_TYPE}.name"): name,
                                format!("{PROGRAM_TYPE}.version"): version},
                     "limit": 1}),
         )?;
-        Ok(recs
-            .first()
-            .and_then(|r| r["id"].as_str())
-            .map(str::to_string))
+        Ok(recs.first().and_then(|r| {
+            r["id"].as_str().map(|id| {
+                (
+                    id.to_string(),
+                    r.get(PROGRAM_TYPE).cloned().unwrap_or(json!({})),
+                )
+            })
+        }))
     }
 
-    fn in_space_fingerprint(&self, object_id: &str) -> Result<Option<String>, AnyError> {
+    fn in_space_fingerprint(
+        &self,
+        object_id: &str,
+        props: &Value,
+    ) -> Result<Option<String>, AnyError> {
         let src = self
             .client
             .query(&self.space, object_id, "program_source", &json!({}))?;
@@ -351,27 +444,8 @@ impl<'a> Deployer<'a> {
             return Ok(None);
         };
         let code = main["code"].as_str().unwrap_or("");
-        let desc_recs =
-            self.client
-                .query(&self.space, object_id, "program_description", &json!({}))?;
-        let desc = desc_recs
-            .first()
-            .and_then(|r| r["text"].as_str())
-            .unwrap_or("");
-        let methods = self
-            .client
-            .query(&self.space, object_id, "program_methods", &json!({}))?;
-        let tuples: Vec<(String, String, String, String)> = methods
-            .iter()
-            .map(|m| {
-                (
-                    m["id"].as_str().unwrap_or("").to_string(),
-                    m["name"].as_str().unwrap_or("").to_string(),
-                    m["kind"].as_str().unwrap_or("getter").to_string(),
-                    m["text"].as_str().unwrap_or("").to_string(),
-                )
-            })
-            .collect();
+        let summary = props["summary"].as_str().unwrap_or("");
+        let any_tool = props["any_tool"].as_bool().unwrap_or(false);
         let man_recs = self
             .client
             .query(&self.space, object_id, "program_manifest", &json!({}))?;
@@ -380,15 +454,19 @@ impl<'a> Deployer<'a> {
             .and_then(|r| r.get("manifest"))
             .cloned()
             .unwrap_or(json!({}));
-        Ok(Some(fingerprint(code, desc, &tuples, &manifest)))
+        Ok(Some(fingerprint(code, summary, any_tool, &manifest)))
     }
 
     /// Create-or-update one program. Returns "created" | "updated" |
-    /// "unchanged" (hash-gated).
+    /// "unchanged" (hash-gated). Validates the ADR-010 §1/§4 tool
+    /// contract before any write.
     pub fn deploy_one(&self, p: &ProgramSource) -> anyhow::Result<&'static str> {
-        let mut oid = self.find_program(&p.name, &p.version)?;
-        if let Some(ref existing) = oid {
-            if self.in_space_fingerprint(existing)?.as_deref() == Some(p.fingerprint().as_str()) {
+        p.validate()?;
+        let found = self.find_program(&p.name, &p.version)?;
+        if let Some((ref existing, ref props)) = found {
+            if self.in_space_fingerprint(existing, props)?.as_deref()
+                == Some(p.fingerprint().as_str())
+            {
                 return Ok("unchanged");
             }
             if self.frozen {
@@ -396,10 +474,8 @@ impl<'a> Deployer<'a> {
             }
         }
 
-        let (desc, methods) = p.split();
-        let any_tool = !desc.is_empty() && !methods.is_empty();
-
-        let status = match oid {
+        let (any_tool, summary) = (p.any_tool(), p.summary());
+        let (oid, status) = match found {
             None => {
                 let res = self.client.create_object(
                     &self.space,
@@ -408,30 +484,25 @@ impl<'a> Deployer<'a> {
                     "initialProperties": {
                         "any": {"name": p.name},
                         PROGRAM_TYPE: {"name": p.name, "version": p.version,
-                                       "any_tool": any_tool},
+                                       "any_tool": any_tool, "summary": summary},
                     }}),
                 )?;
-                oid = Some(
-                    res["objectId"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("create_object reply has no objectId: {res}")
-                        })?
-                        .to_string(),
-                );
-                "created"
+                let oid = res["objectId"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("create_object reply has no objectId: {res}"))?
+                    .to_string();
+                (oid, "created")
             }
-            Some(ref existing) => {
+            Some((existing, _)) => {
                 self.client.set_properties(
                     &self.space,
-                    existing,
+                    &existing,
                     PROGRAM_TYPE,
-                    &json!({"any_tool": any_tool}),
+                    &json!({"any_tool": any_tool, "summary": summary}),
                 )?;
-                "updated"
+                (existing, "updated")
             }
         };
-        let oid = oid.expect("object id is set on both branches");
 
         self.client.upsert_record(
             &self.space,
@@ -453,34 +524,7 @@ impl<'a> Deployer<'a> {
             // (the in-space fingerprint would never converge)
             self.clear_dataset(&oid, "program_manifest")?;
         }
-        // rewrite docs: clear then write (a program that lost its .md drops docs)
-        self.clear_docs(&oid)?;
-        if !desc.is_empty() {
-            self.client.upsert_record(
-                &self.space,
-                &oid,
-                "program_description",
-                "main",
-                &json!({"text": desc}),
-            )?;
-        }
-        for m in &methods {
-            self.client.upsert_record(
-                &self.space,
-                &oid,
-                "program_methods",
-                &m.bare_name,
-                &json!({"name": m.name, "kind": m.kind, "text": m.text, "pos": m.pos}),
-            )?;
-        }
         Ok(status)
-    }
-
-    fn clear_docs(&self, oid: &str) -> Result<(), AnyError> {
-        for dataset in ["program_description", "program_methods"] {
-            self.clear_dataset(oid, dataset)?;
-        }
-        Ok(())
     }
 
     fn clear_dataset(&self, oid: &str, dataset: &str) -> Result<(), AnyError> {
@@ -716,100 +760,156 @@ mod tests {
     use tempfile::tempdir;
 
     const PROG: &str = "def main(args):\n    return 1\n";
-    const TOOL_MD: &str = "## Tool Description\n\nDoes a thing.\n\n\
-## Tool Schema\n### go(x) [getter]\n\nruns go.\n";
+
+    /// A well-formed tool source: docstring + marker + spanned def.
+    const TOOL: &str = concat!(
+        "\"\"\"One-liner summary.\n",
+        "\n",
+        "Body line of the docstring.\"\"\"\n",
+        "\n",
+        "__any_tool__ = True\n",
+        "\n",
+        "\n",
+        "@span(\"t.go\", kind=\"getter\")\n",
+        "def go(x):\n",
+        "    \"\"\"Run go.\"\"\"\n",
+        "    return x\n",
+    );
 
     fn manifest() -> Value {
         json!({"capabilities": ["net.http"], "publisher": "acme"})
     }
 
-    // --- fingerprint: golden parity with the Python deployer ---
-    // Expected hex values computed with anybao.deploy.ProgramSource
-    // against the Python reference sources (py-reference), 2026-07-08.
+    // --- static source scan (ADR-010 §4) ---
 
     #[test]
-    fn fingerprint_golden_matches_python() {
-        let p = ProgramSource::new("t", "v1", PROG, TOOL_MD);
+    fn module_docstring_forms() {
         assert_eq!(
-            p.fingerprint(),
-            "56803ac081bcfc341a0dba40bf97077be5faf781198284877b3bdc1ecf084cf7"
+            module_docstring(TOOL).as_deref(),
+            Some("One-liner summary.\n\nBody line of the docstring.")
         );
+        // comments/blank lines before the docstring are skipped
+        assert_eq!(
+            module_docstring("#!/usr/bin/env python\n# note\n\n'''doc'''\n").as_deref(),
+            Some("doc")
+        );
+        assert_eq!(
+            module_docstring("\"one line\"\nx = 1\n").as_deref(),
+            Some("one line")
+        );
+        // first statement not a string → no docstring
+        assert_eq!(module_docstring(PROG), None);
+        assert_eq!(module_docstring(""), None);
     }
 
     #[test]
-    fn fingerprint_golden_with_manifest() {
-        let p = ProgramSource::new("t", "v1", PROG, TOOL_MD).with_manifest(manifest());
-        assert_eq!(
-            p.fingerprint(),
-            "95a1703493a548efe052a1fec89a76dead1a5d5cebe388398cc90cba94ec9794"
-        );
+    fn summary_is_first_nonempty_line() {
+        assert_eq!(summary_of("\nOne-liner.\nrest"), "One-liner.");
+        assert_eq!(summary_of(""), "");
     }
 
     #[test]
-    fn fingerprint_golden_no_docs() {
-        let p = ProgramSource::new("t", "v1", PROG, "");
-        assert_eq!(
-            p.fingerprint(),
-            "0debfbfca65bc345eff4696d3e06a62f026011552eae6094b39b7365c2618cb2"
-        );
+    fn span_def_scan() {
+        assert!(has_public_span_def(TOOL));
+        // indented (class method) spans count
+        assert!(has_public_span_def(
+            "class C:\n    @span(\"c.m\", kind=\"getter\")\n    def m(self):\n        pass\n"
+        ));
+        // an underscore def doesn't
+        assert!(!has_public_span_def(
+            "@span(\"x\")\ndef _hidden():\n    pass\n"
+        ));
+        // a statement between decorator and def resets the pending span
+        assert!(!has_public_span_def(
+            "@span(\"x\")\nY = 1\ndef go():\n    pass\n"
+        ));
+        // comments/other decorators between span and def are tolerated
+        assert!(has_public_span_def(
+            "@span(\"x\")\n# note\n@other\ndef go():\n    pass\n"
+        ));
+        assert!(!has_public_span_def(PROG));
     }
 
     #[test]
-    fn fingerprint_golden_multi_method_sorted() {
-        // dup bare names + unicode + method sorting all in play
-        let md = "## Tool Description\nDesc — with unicode ✓\n\n# Tools\n\
-## zeta(a) [mutator]\nlast\n## alpha(b)\nfirst\n## alpha(c) [setup]\ndup\n";
-        let p = ProgramSource::new("x", "v2", "code2", md);
+    fn validate_enforces_the_tool_contract() {
+        // marked but no docstring
+        let p = ProgramSource::new("t", "v1", "__any_tool__ = True\ndef f():\n    pass\n");
+        assert!(p
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("no module docstring"));
+        // marked but no spanned public def
+        let p = ProgramSource::new(
+            "t",
+            "v1",
+            "\"\"\"Doc.\"\"\"\n__any_tool__ = True\ndef f():\n    pass\n",
+        );
+        assert!(p.validate().unwrap_err().to_string().contains("@span"));
+        // overlong one-liner
+        let long = format!(
+            "\"\"\"{}\"\"\"\n__any_tool__ = True\n@span(\"x\")\ndef f():\n    pass\n",
+            "x".repeat(81)
+        );
+        let p = ProgramSource::new("t", "v1", &long);
+        assert!(p.validate().unwrap_err().to_string().contains("caps at 80"));
+        // overlong docstring body
+        let fat = format!(
+            "\"\"\"ok\n{}\"\"\"\n__any_tool__ = True\n@span(\"x\")\ndef f():\n    pass\n",
+            "line\n".repeat(13)
+        );
+        let p = ProgramSource::new("t", "v1", &fat);
+        assert!(p
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("standing prompt"));
+        // an UNMARKED program is free-form: long dev docstrings are fine
+        let dev = format!("\"\"\"dev doc\n{}\"\"\"\n", "line\n".repeat(40));
+        assert!(ProgramSource::new("t", "v1", &dev).validate().is_ok());
+        // the well-formed tool passes
+        assert!(ProgramSource::new("t", "v1", TOOL).validate().is_ok());
+    }
+
+    // --- fingerprint ---
+
+    #[test]
+    fn fingerprint_sensitivity() {
+        let p = ProgramSource::new("t", "v1", TOOL);
+        let code_change = ProgramSource::new("t", "v1", &format!("{TOOL}# x"));
+        assert_ne!(p.fingerprint(), code_change.fingerprint());
+        // stable across instances
         assert_eq!(
             p.fingerprint(),
-            "6f06490dfb670434306d2c0575cba93335397a286c98f542dbdf749c4bfe0423"
+            ProgramSource::new("t", "v1", TOOL).fingerprint()
         );
+        // empty manifest keeps the no-manifest fingerprint
+        assert_eq!(
+            p.fingerprint(),
+            ProgramSource::new("t", "v1", TOOL)
+                .with_manifest(json!({}))
+                .fingerprint()
+        );
+        // manifest presence and edits change the hash
+        let with_man = ProgramSource::new("t", "v1", TOOL).with_manifest(manifest());
+        let edited = ProgramSource::new("t", "v1", TOOL)
+            .with_manifest(json!({"capabilities": ["net.http", "chat.send"], "publisher": "acme"}));
+        assert_ne!(p.fingerprint(), with_man.fingerprint());
+        assert_ne!(with_man.fingerprint(), edited.fingerprint());
     }
 
     #[test]
-    fn fingerprint_golden_unicode_manifest_ensure_ascii() {
-        // exercises json.dumps(ensure_ascii=True) parity: é, ✓,
-        //  and an astral surrogate pair
+    fn python_canonical_json_unicode() {
+        // json.dumps(ensure_ascii=True, sort_keys=True) parity: é, ✓,
+        // control chars, and an astral surrogate pair
         let man = json!({"publisher": "acmé ✓", "capabilities": ["net.http"],
                          "note": "line\nbreak \"q\" \u{7f} 🎉"});
-        let p = ProgramSource::new("t", "v1", "c", "").with_manifest(man.clone());
         let mut canon = String::new();
         python_canonical_json(&man, &mut canon);
         assert_eq!(
             canon,
             r#"{"capabilities":["net.http"],"note":"line\nbreak \"q\" \u007f \ud83c\udf89","publisher":"acm\u00e9 \u2713"}"#
         );
-        assert_eq!(
-            p.fingerprint(),
-            "c63e2485799b0b7a56acb8c09e3bff6d51a7e5d6ae054e0dde526ba2b41bb6ad"
-        );
-    }
-
-    #[test]
-    fn fingerprint_sensitivity() {
-        let p = ProgramSource::new("t", "v1", PROG, TOOL_MD);
-        let code_change = ProgramSource::new("t", "v1", &format!("{PROG}# x"), TOOL_MD);
-        let md_change = ProgramSource::new("t", "v1", PROG, &format!("{TOOL_MD}more"));
-        assert_ne!(p.fingerprint(), code_change.fingerprint());
-        assert_ne!(p.fingerprint(), md_change.fingerprint());
-        // stable across instances
-        assert_eq!(
-            p.fingerprint(),
-            ProgramSource::new("t", "v1", PROG, TOOL_MD).fingerprint()
-        );
-        // empty manifest keeps the pre-manifest fingerprint
-        assert_eq!(
-            p.fingerprint(),
-            ProgramSource::new("t", "v1", PROG, TOOL_MD)
-                .with_manifest(json!({}))
-                .fingerprint()
-        );
-        // manifest edit changes the hash again
-        let with_man = ProgramSource::new("t", "v1", PROG, TOOL_MD).with_manifest(manifest());
-        let edited = ProgramSource::new("t", "v1", PROG, TOOL_MD)
-            .with_manifest(json!({"capabilities": ["net.http", "chat.send"], "publisher": "acme"}));
-        assert_ne!(p.fingerprint(), with_man.fingerprint());
-        assert_ne!(with_man.fingerprint(), edited.fingerprint());
     }
 
     // --- load_programs ---
@@ -818,15 +918,14 @@ mod tests {
     fn load_programs_parses_name_version() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("websearch@v1.py"), PROG).unwrap();
-        std::fs::write(dir.path().join("websearch@v1.md"), TOOL_MD).unwrap();
         std::fs::write(dir.path().join("notaprogram.py"), "x").unwrap(); // no @vN → skipped
+        std::fs::create_dir(dir.path().join("tool@v2")).unwrap();
+        std::fs::write(dir.path().join("tool@v2/program.py"), TOOL).unwrap();
+        std::fs::write(dir.path().join("tool@v2/notes.md"), "ignored").unwrap();
         let progs = load_programs(dir.path()).unwrap();
-        assert_eq!(progs.len(), 1);
-        assert_eq!(
-            (progs[0].name.as_str(), progs[0].version.as_str()),
-            ("websearch", "v1")
-        );
-        assert_eq!(progs[0].tool_md, TOOL_MD);
+        let specs: Vec<String> = progs.iter().map(|p| p.spec()).collect();
+        assert_eq!(specs, ["tool@v2", "websearch@v1"]);
+        assert_eq!(progs[0].code, TOOL);
     }
 
     #[test]
@@ -855,30 +954,29 @@ mod tests {
     fn deploy_creates_then_unchanged() {
         let c = client();
         let d = Deployer::new(&c, "agent");
-        let p = ProgramSource::new("websearch", "v1", PROG, TOOL_MD);
+        let p = ProgramSource::new("tool", "v1", TOOL);
 
         assert_eq!(d.deploy_one(&p).unwrap(), "created");
         // redeploy identical → hash-gated skip
         assert_eq!(d.deploy_one(&p).unwrap(), "unchanged");
-        // the written source round-trips
+        // the written source round-trips; derived props are cached
         let src = c
             .query("agent", "obj1", "program_source", &json!({}))
             .unwrap();
-        assert_eq!(src[0]["code"], json!(PROG));
-        let methods = c
-            .query("agent", "obj1", "program_methods", &json!({}))
+        assert_eq!(src[0]["code"], json!(TOOL));
+        let tools = c
+            .query_objects("agent", &json!({"filter": {"program.any_tool": true}}))
             .unwrap();
-        assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0]["id"], json!("go"));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["program"]["summary"], json!("One-liner summary."));
     }
 
     #[test]
     fn deploy_updates_on_code_change() {
         let c = client();
         let d = Deployer::new(&c, "agent");
-        d.deploy_one(&ProgramSource::new("t", "v1", PROG, TOOL_MD))
-            .unwrap();
-        let changed = ProgramSource::new("t", "v1", &format!("{PROG}# changed"), TOOL_MD);
+        d.deploy_one(&ProgramSource::new("t", "v1", TOOL)).unwrap();
+        let changed = ProgramSource::new("t", "v1", &format!("{TOOL}# changed"));
         assert_eq!(d.deploy_one(&changed).unwrap(), "updated");
         let src = c
             .query("agent", "obj1", "program_source", &json!({}))
@@ -887,29 +985,39 @@ mod tests {
     }
 
     #[test]
-    fn deploy_without_tooldoc_is_not_a_tool() {
+    fn deploy_unmarked_is_not_a_tool() {
         let c = client();
         let d = Deployer::new(&c, "agent");
-        d.deploy_one(&ProgramSource::new("lib", "v1", PROG, ""))
+        d.deploy_one(&ProgramSource::new("lib", "v1", PROG))
             .unwrap();
         let progs = c
             .query_objects("agent", &json!({"filter": {"program.any_tool": true}}))
             .unwrap();
         assert!(progs.is_empty());
-        let desc = c
-            .query("agent", "obj1", "program_description", &json!({}))
-            .unwrap();
-        assert!(desc.is_empty());
+    }
+
+    #[test]
+    fn deploy_rejects_invalid_tool() {
+        let c = client();
+        let d = Deployer::new(&c, "agent");
+        let bad = ProgramSource::new("t", "v1", "__any_tool__ = True\n");
+        let err = d.deploy_one(&bad).unwrap_err();
+        assert!(err.to_string().contains("no module docstring"));
+        // nothing was written
+        assert!(c
+            .query_objects("agent", &json!({"filter": {"program.name": "t"}}))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn frozen_space_rejects_changes_but_allows_unchanged() {
         let c = client();
-        let p = ProgramSource::new("t", "v1", PROG, TOOL_MD);
+        let p = ProgramSource::new("t", "v1", TOOL);
         Deployer::new(&c, "agent").deploy_one(&p).unwrap();
         let frozen = Deployer::new(&c, "agent").frozen(true);
         assert_eq!(frozen.deploy_one(&p).unwrap(), "unchanged");
-        let changed = ProgramSource::new("t", "v1", "new code", TOOL_MD);
+        let changed = ProgramSource::new("t", "v1", "\"\"\"new\"\"\"\n");
         let err = frozen.deploy_one(&changed).unwrap_err();
         assert!(err.downcast_ref::<FrozenVersionError>().is_some());
         assert!(err
@@ -921,7 +1029,7 @@ mod tests {
     fn deploy_writes_manifest_record_and_hash_gates() {
         let c = client();
         let d = Deployer::new(&c, "agent");
-        let p = ProgramSource::new("t", "v1", PROG, TOOL_MD).with_manifest(manifest());
+        let p = ProgramSource::new("t", "v1", TOOL).with_manifest(manifest());
         assert_eq!(d.deploy_one(&p).unwrap(), "created");
         let man = c
             .query("agent", "obj1", "program_manifest", &json!({}))
@@ -929,12 +1037,11 @@ mod tests {
         assert_eq!(man[0]["manifest"], manifest());
         assert_eq!(d.deploy_one(&p).unwrap(), "unchanged"); // manifest round-trips
                                                             // manifest edit → new hash → update; dropped manifest clears the record
-        let edited = ProgramSource::new("t", "v1", PROG, TOOL_MD)
+        let edited = ProgramSource::new("t", "v1", TOOL)
             .with_manifest(json!({"capabilities": ["net.http", "chat.send"]}));
         assert_eq!(d.deploy_one(&edited).unwrap(), "updated");
         assert_eq!(
-            d.deploy_one(&ProgramSource::new("t", "v1", PROG, TOOL_MD))
-                .unwrap(),
+            d.deploy_one(&ProgramSource::new("t", "v1", TOOL)).unwrap(),
             "updated"
         );
         assert!(c

@@ -1,4 +1,6 @@
-"""extraction@v1 — background memory extraction (ADR-007 §1b): a
+"""Background memory extraction from conversations (cron).
+
+ADR-007 §1b: a
 batched trigger job over newly persisted turns, off the hot path.
 
 HIGH bar (the §1a audit): candidates only matching stable-fact shapes —

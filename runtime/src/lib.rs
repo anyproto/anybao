@@ -23,7 +23,6 @@ pub mod serve;
 pub mod stats;
 #[cfg(test)]
 pub mod testutil;
-pub mod toolmd;
 pub mod trace;
 pub mod triggers;
 pub mod view;
