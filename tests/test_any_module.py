@@ -72,7 +72,7 @@ def test_nul_sanitized_on_write():
 
 def test_sanitize_leaves_clean_strings_identical():
     obj = {"a": "clean", "b": [1, 2]}
-    assert load(wire())["sanitize_nuls"](obj) == obj
+    assert load(wire())["_sanitize_nuls"](obj) == obj
 
 
 # --- queries -------------------------------------------------------------------
@@ -444,29 +444,37 @@ _PROG_REPLIES = {
     "/types/bafyPROG/properties": {"properties": [
         {"id": "bafyNAME", "name": "Name", "xKey": "name"},
         {"id": "bafyVER", "name": "Version", "xKey": "version"},
-        {"id": "bafyTOOL", "name": "Any Tool", "xKey": "any_tool"}]},
+        {"id": "bafyTOOL", "name": "Any Tool", "xKey": "any_tool"},
+        {"id": "bafySUM", "name": "Summary", "xKey": "summary"}]},
     "/objects/query": {"records": [
         {"id": "p1", "any": {"name": "webSearch", "types": ["bafyPROG"]},
          "bafyPROG": {"bafyNAME": "webSearch", "bafyVER": "v1",
-                      "bafyTOOL": True}},
+                      "bafyTOOL": True,
+                      "bafySUM": "Web search one-liner."}},
         {"id": "p2", "any": {"name": "helper", "types": ["bafyPROG"]},
          "bafyPROG": {"bafyNAME": "helper", "bafyVER": "v2",
                       "bafyTOOL": False}}]},
-    "/query": {"records": [{"id": "main", "text": "Does a thing.  "}]},
+    "/query": {"records": [{"id": "main", "text": "Does a thing.  \nmore"}]},
 }
 
 
 def test_list_programs_lists_a_space_sorted():
+    # summary from the object property when present (ADR-010 §4);
+    # first line of the doc dataset as the migration bridge otherwise
     fx = wire(replies=dict(_PROG_REPLIES))
     rows = client(fx).list_programs("repo1")
     assert rows == [
         {"name": "helper", "version": "v2", "anyTool": False,
-         "description": "Does a thing."},
+         "summary": "Does a thing."},
         {"name": "webSearch", "version": "v1", "anyTool": True,
-         "description": "Does a thing."}]
+         "summary": "Web search one-liner."}]
     # the object query targeted the requested space with the program filter
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
     assert body["filter"] == {"any.types": "bafyPROG"}
+    # the prop-carrying program never paid the dataset query
+    queried = [b for v, p, b in fx.calls if p.endswith("/query")
+               and b.get("objectId") == "p1"]
+    assert queried == []
 
 
 def test_list_programs_tools_only_filters():

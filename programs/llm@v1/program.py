@@ -1,16 +1,15 @@
-"""llm@v1 — model calls as a guest module (ADR-005 §1).
+"""Model calls in the neutral message shape — the loop's own surface.
 
-Neutral message model in the loop; adapters translate to/from each
-provider wire. Translation is PURE and offline-testable (recorded
-response -> neutral parts, and reverse); the single `http.post` syscall
-is the effect boundary. The api key never enters the guest: the request
-names a `credential` (config ref + header) and the HOST injects the
-secret header.
+Use for one-off structured judgments (classification, extraction,
+scoring) inside a cell — a sub-call, not a way to talk to the user.
+`chat(messages, system=…, tier="classify")`; Part is `{type:
+text|tool_call|tool_result|thinking, …}`, the reply `{parts, stop:
+done|tool|length, usage: {in, out}}`."""
 
-Neutral shapes (dicts, JSON-serializable for the trace):
-  Part: {type: text|tool_call|tool_result|thinking, ...}
-  Reply: {parts: [Part], stop: done|tool|length, usage: {in, out}}
-"""
+# ADR-005 §1: adapters translate neutral <-> provider wire, PURE and
+# offline-testable; the single http.post syscall is the effect
+# boundary. The api key never enters the guest — the request names a
+# `credential` (config ref + header), the HOST injects the header.
 
 import json
 
@@ -34,6 +33,7 @@ class AnthropicAdapter:
     writes the cache the next call reads."""
 
     def build_request(self, messages, system, tools, model):
+        """Neutral messages → the Anthropic wire request dict."""
         api_msgs = [self._to_anthropic_msg(m) for m in messages]
         self._mark_cache(api_msgs)
         req = {"model": model, "messages": api_msgs, "max_tokens": 32768}
@@ -82,6 +82,7 @@ class AnthropicAdapter:
                 return
 
     def parse_response(self, raw):
+        """Anthropic response JSON → the neutral Reply."""
         parts = []
         for block in raw.get("content", []):
             bt = block["type"]
@@ -116,6 +117,7 @@ class OpenAICompatAdapter:
     advisory: the wire has no slot to resend it, the model re-reasons."""
 
     def build_request(self, messages, system, tools, model):
+        """Neutral messages → the OpenAI-compatible wire request dict."""
         api_msgs = []
         if system:
             api_msgs.append({"role": "system", "content": system})
@@ -151,6 +153,7 @@ class OpenAICompatAdapter:
         return [msg]
 
     def parse_response(self, raw):
+        """OpenAI-compatible response JSON → the neutral Reply."""
         choice = raw["choices"][0]
         msg = choice["message"]
         parts = []
@@ -185,6 +188,7 @@ class FencedAdapter:
         self._inner = inner  # a text-only provider adapter builds the request
 
     def build_request(self, messages, system, tools, model):
+        """Delegate to the base adapter with the ```cell emulation applied."""
         instr = (
             "\n\nTo run Python, reply with a fenced block:\n```cell\n<code>\n```\n"
             "Reply with plain text (no block) when done."
@@ -192,6 +196,7 @@ class FencedAdapter:
         return self._inner.build_request(messages, (system or "") + instr, [], model)
 
     def parse_response(self, raw):
+        """Base parse, then lift fenced ```cell blocks to tool calls."""
         reply = self._inner.parse_response(raw)
         text = " ".join(p["text"] for p in reply["parts"] if p["type"] == "text")
         code = _extract_fenced(text)
@@ -218,9 +223,9 @@ ADAPTERS = {
 }
 
 
-def build_adapter(provider, fenced):
+def _build_adapter(provider, fenced):
     """Adapter for a tier's provider; `fenced` wraps it in the ```cell
-    emulation. Also exec'd host-side by the llm-seed CLI."""
+    emulation."""
     base = ADAPTERS[provider]()
     return FencedAdapter(base) if fenced else base
 
@@ -233,16 +238,20 @@ _EXCERPT = 400
 
 @span("llm.chat", kind="getter")  # noqa: F821 - guest global
 def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
-    """One model call: resolve the tier's provider config, translate the
-    neutral messages to the provider wire, POST through the http syscall
-    (the host injects the api key from `credential.ref` — the key never
-    enters the guest or the trace), parse back to a neutral Reply.
-    `max_tokens` overrides the adapter's default output cap (32768 —
-    bobrik's proven sweet spot: headroom for big cells, costs nothing
-    unused since billing is on actual output) — both wire formats take
-    the key top-level."""
+    """One model call; returns the neutral Reply.
+
+    `messages`: `[{"role": "user"|"assistant", "parts": [Part]}]` —
+    Part is `{"type": "text", "text"}` for plain turns;
+    `tool_call`/`tool_result`/`thinking` parts round-trip loop
+    traffic. `tier`: "codegen" (default, the strong model) or
+    "classify" (fast/cheap — one-off judgments). `tools`: `[{name,
+    description, input_schema?}]`, empty for plain completions.
+    `max_tokens` overrides the default 32768 output cap (lower it for
+    small classify-style calls). Returns `{parts, stop:
+    "done"|"tool"|"length", usage: {in, out}}`; a ≥400 provider
+    status raises `LlmError(status, body_excerpt)`."""
     prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
-    adapter = build_adapter(prov["provider"], prov.get("fenced", False))
+    adapter = _build_adapter(prov["provider"], prov.get("fenced", False))
     req = adapter.build_request(messages, system, tools or [], prov["model"])
     if max_tokens:
         req["max_tokens"] = max_tokens

@@ -133,18 +133,6 @@ def run(world, **args):
                       "traceRef": "run_x", **args})
 
 
-def test_method_sig_renders_kind_tag():
-    # ADR-005 §5: the tool-list signature carries the authored [kind].
-    g = {"effect": None, "use": None, "subcell": None, "now": lambda: 0}
-    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
-    sig = g["_method_sig"]
-    assert sig({"name": "add(category, context)", "kind": "mutator"}) \
-        == "add(category, context) [mutator]"
-    assert sig({"name": "memory(client, space)", "kind": "setup"}) \
-        == "memory(client, space) [setup]"
-    assert sig({"name": "bare()"}) == "bare()"   # no kind -> no tag
-
-
 def test_done_turn_posts_reply_and_persists_turn():
     w = World([done_reply("hello")])
     out = run(w)
@@ -329,8 +317,27 @@ def test_context_suffix_degrades_to_timestamp_without_pointer():
 
 # --- two-tier composition (ADR-009 §2/§3) -------------------------------------
 
+class FakeToolModule:
+    """Stands in for a use()'d tool module; describe() is faked to
+    return the description carried in the tool fixture row."""
+
+    def __init__(self, desc):
+        self.desc = desc
+
+
 def _helpers():
-    g = {"effect": None, "use": None, "subcell": None, "now": lambda: 0}
+    # _tool_docs renders each tool via describe(use(spec)) (ADR-010
+    # §3): the fake use() resolves "name@vN" / "agent:name@vN" back to
+    # the fixture row (source encoded in the description strings), the
+    # fake describe() prints it.
+    def fake_use(spec):
+        if "broken" in spec:
+            raise ValueError("boom")
+        return FakeToolModule(spec)
+
+    g = {"effect": None, "use": fake_use, "subcell": None,
+         "now": lambda: 0,
+         "describe": lambda mod: f"described:{mod.desc}"}
     exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
     return g
 
@@ -401,12 +408,14 @@ def test_skills_degenerate_single_space_reads_once():
 def test_tool_docs_two_tier_prefixes_and_shadows():
     g = _helpers()
     docs = g["_tool_docs"](TwoSpaces(), "user", "code")
-    # shipped-only tool imports through the agent: alias
+    # shipped-only tool imports through the agent: alias; its body is
+    # describe(use(spec)) — rendered from code, not from datasets
     assert 'Import: `use("agent:shippedOnly@v1")`' in docs
+    assert "described:agent:shippedOnly@v1" in docs
     # the user-space webSearch shadows the shipped one: unqualified import
     assert 'Import: `use("webSearch@v1")`' in docs
-    assert 'Import: `use("agent:webSearch@v1")`' not in docs
-    assert "my patched search" in docs and "searches the web" not in docs
+    assert "described:webSearch@v1" in docs
+    assert "agent:webSearch" not in docs
 
 
 def test_tool_docs_degenerate_has_no_prefix():
@@ -414,6 +423,17 @@ def test_tool_docs_degenerate_has_no_prefix():
     docs = g["_tool_docs"](TwoSpaces(), "code", "code")
     assert 'Import: `use("webSearch@v1")`' in docs
     assert "agent:" not in docs
+
+
+def test_tool_docs_broken_tool_lists_with_error():
+    # a tool whose source fails to load must not sink the compose
+    g = _helpers()
+    two = TwoSpaces()
+    two.tools["code"].append(("p3", "broken", "v1", 3, "x"))
+    docs = g["_tool_docs"](two, "code", "code")
+    assert "### broken" in docs
+    assert "(unavailable: ValueError: boom)" in docs
+    assert "### webSearch" in docs  # the rest still composed
 
 
 def test_repo_inventory_lists_readme_first_line():
