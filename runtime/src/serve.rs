@@ -82,6 +82,18 @@ fn agent_config_object(c: &Client, space: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The space's derived secrets object (`agent_secrets` dataset),
+/// reported as `agentSecretsObjectId` on the single-space GET. None =
+/// the any server predates the config/secrets split — secrets then stay
+/// on the config object (legacy layout) and the guest read-guard covers
+/// that object instead.
+fn agent_secrets_object(c: &Client, space: &str) -> Option<String> {
+    c.get_space(space).ok()?["agentSecretsObjectId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// The Anthropic API key's config key — the record id/`key` on the config
 /// object AND the `secrets` map ref the llm effect resolves (config
 /// defaults declare `api_key_ref: "llm.key.anthropic"`).
@@ -89,6 +101,18 @@ const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 
 /// The `agent_config` dataset name (mirrors the server-side type).
 const CONFIG_DATASET: &str = "agent_config";
+
+/// The `agent_secrets` dataset + its local-scope value field (mirrors
+/// the server-side `internal/agentsecrets` type): the dedicated home of
+/// device-local secrets, split out of `agent_config` so the broker can
+/// block guest reads of the whole dataset by name/object id while the
+/// config object stays guest-readable.
+const SECRETS_DATASET: &str = "agent_secrets";
+const SECRETS_FIELD: &str = "value";
+
+/// Legacy secret field on `agent_config` rows (pre-split installs and
+/// servers without `agentSecretsObjectId`).
+const LEGACY_SECRETS_FIELD: &str = "localValue";
 
 /// Space-scope config overrides read off the config object's
 /// `agent_config` dataset: one record per dotted key, `{key, value}`.
@@ -136,20 +160,20 @@ fn bootstrap_secrets(
     c: &Client,
     space: &str,
     obj: &str,
+    dataset: &str,
+    field: &str,
     secrets: &mut BTreeMap<String, String>,
     overrides: &BTreeMap<String, String>,
 ) {
-    let rows = c
-        .query(space, obj, CONFIG_DATASET, &json!({}))
-        .unwrap_or_default();
+    let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
 
     // 1. Hard seeds: write-through, open ref set, empty deletes.
     for (secret_ref, value) in overrides {
-        let stored = stored_local_secret(&rows, secret_ref);
+        let stored = stored_local_secret(&rows, secret_ref, field);
         if value.is_empty() {
             secrets.remove(secret_ref);
             if stored.is_some() {
-                match persist_local_secret(c, space, obj, secret_ref, "") {
+                match persist_local_secret(c, space, obj, dataset, field, secret_ref, "") {
                     Ok(()) => info!("config: {secret_ref} removed from device-local store"),
                     Err(e) => warn!("config: could not remove {secret_ref} device-locally ({e})"),
                 }
@@ -161,7 +185,7 @@ fn bootstrap_secrets(
             Some(ref s) if s == value => {
                 info!("config: {secret_ref} loaded from device-local store")
             }
-            other => match persist_local_secret(c, space, obj, secret_ref, value) {
+            other => match persist_local_secret(c, space, obj, dataset, field, secret_ref, value) {
                 Ok(()) if other.is_some() => info!("config: {secret_ref} rotated (hard seed)"),
                 Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
                 Err(e) => warn!(
@@ -184,7 +208,7 @@ fn bootstrap_secrets(
             continue;
         }
         let stored = row
-            .get("localValue")
+            .get(field)
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
         if let Some(key) = stored {
@@ -199,12 +223,12 @@ fn bootstrap_secrets(
         .filter(|(k, v)| {
             !v.is_empty()
                 && !overrides.contains_key(*k)
-                && stored_local_secret(&rows, k).is_none()
+                && stored_local_secret(&rows, k, field).is_none()
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (secret_ref, key) in soft {
-        match persist_local_secret(c, space, obj, &secret_ref, &key) {
+        match persist_local_secret(c, space, obj, dataset, field, &secret_ref, &key) {
             Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
             Err(e) => warn!(
                 "config: could not persist {secret_ref} device-locally ({e}); \
@@ -222,12 +246,65 @@ fn bootstrap_secrets(
     }
 }
 
-/// The device-local `localValue` for `key` from already-queried config
-/// rows (None when unset/empty).
-fn stored_local_secret(rows: &[Value], key: &str) -> Option<String> {
+/// One-time layout migration: secret rows found on the CONFIG object
+/// (legacy pre-split layout — `secret: true` + `localValue`) are
+/// rewritten onto the dedicated secrets object and deleted from
+/// `agent_config`. Idempotent (nothing to move → no-op) and
+/// best-effort: a failed move leaves the row in place for the next
+/// boot; the value is device-local either way.
+fn migrate_legacy_secrets(c: &Client, space: &str, config_obj: &str, secrets_obj: &str) {
+    let rows = c
+        .query(space, config_obj, CONFIG_DATASET, &json!({}))
+        .unwrap_or_default();
+    let mut moved: Vec<String> = Vec::new();
+    for row in &rows {
+        if row.get("secret").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let Some(secret_ref) = row.get("key").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let value = row
+            .get(LEGACY_SECRETS_FIELD)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !value.is_empty() {
+            if let Err(e) = persist_local_secret(
+                c,
+                space,
+                secrets_obj,
+                SECRETS_DATASET,
+                SECRETS_FIELD,
+                secret_ref,
+                value,
+            ) {
+                warn!("config: could not migrate {secret_ref} to agent_secrets ({e}); kept");
+                continue;
+            }
+        }
+        moved.push(secret_ref.to_string());
+    }
+    if moved.is_empty() {
+        return;
+    }
+    match c.delete_records(space, config_obj, CONFIG_DATASET, &moved) {
+        Ok(_) => info!(
+            "config: migrated {} secret(s) from agent_config to agent_secrets",
+            moved.len()
+        ),
+        Err(e) => warn!(
+            "config: migrated {} secret(s) but could not delete the legacy rows ({e})",
+            moved.len()
+        ),
+    }
+}
+
+/// The device-local secret value for `key` from already-queried rows
+/// (None when unset/empty).
+fn stored_local_secret(rows: &[Value], key: &str, field: &str) -> Option<String> {
     rows.iter()
         .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
-        .and_then(|r| r.get("localValue").and_then(|v| v.as_str()))
+        .and_then(|r| r.get(field).and_then(|v| v.as_str()))
         .map(str::to_string)
         .filter(|s| !s.is_empty())
 }
@@ -237,22 +314,17 @@ fn stored_local_secret(rows: &[Value], key: &str) -> Option<String> {
 /// key name + a `secret` marker — then a device-local `$set` writes the
 /// secret into the never-synced `localValue` field. Local scope cannot
 /// create records, hence the synced record first.
-fn persist_local_secret(c: &Client, space: &str, obj: &str, key: &str, secret: &str) -> Result<()> {
-    c.upsert_record(
-        space,
-        obj,
-        CONFIG_DATASET,
-        key,
-        &json!({"key": key, "secret": true}),
-    )?;
-    c.set_local_field(
-        space,
-        obj,
-        CONFIG_DATASET,
-        key,
-        "localValue",
-        &json!(secret),
-    )?;
+fn persist_local_secret(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    field: &str,
+    key: &str,
+    secret: &str,
+) -> Result<()> {
+    c.upsert_record(space, obj, dataset, key, &json!({"key": key, "secret": true}))?;
+    c.set_local_field(space, obj, dataset, key, field, &json!(secret))?;
     Ok(())
 }
 
@@ -420,17 +492,54 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // under the space-scope override layer read off the config object;
     // secrets (the provider API keys) persist device-locally on the same
     // object.
-    match agent_config_object(&client, &space) {
-        Some(obj) => {
-            let overrides = config_overrides(&client, &space, &obj);
-            info!("config obj={obj} overrides={}", overrides.len());
-            for (k, v) in overrides {
-                cfg.config.insert(k, v);
+    let config_obj = agent_config_object(&client, &space);
+    let secrets_obj = agent_secrets_object(&client, &space);
+    if let Some(obj) = &config_obj {
+        let overrides = config_overrides(&client, &space, obj);
+        info!("config obj={obj} overrides={}", overrides.len());
+        for (k, v) in overrides {
+            cfg.config.insert(k, v);
+        }
+    }
+    // The guest read-guard target: the secrets object (split layout) or,
+    // on a pre-split any server, the config object the secrets still
+    // live on. Threaded into every run's Broker (sys_http).
+    let secrets_guard = match (&config_obj, &secrets_obj) {
+        (_, Some(sobj)) => {
+            if let Some(cobj) = &config_obj {
+                migrate_legacy_secrets(&client, &space, cobj, sobj);
             }
             let overrides = std::mem::take(&mut cfg.secret_overrides);
-            bootstrap_secrets(&client, &space, &obj, &mut cfg.secrets, &overrides);
+            bootstrap_secrets(
+                &client,
+                &space,
+                sobj,
+                SECRETS_DATASET,
+                SECRETS_FIELD,
+                &mut cfg.secrets,
+                &overrides,
+            );
+            Some(sobj.clone())
         }
-        None => {
+        (Some(cobj), None) => {
+            warn!(
+                "any server predates the agent_secrets split — secrets stay on the \
+                 config object (guest reads of it are blocked); update the server \
+                 to move them"
+            );
+            let overrides = std::mem::take(&mut cfg.secret_overrides);
+            bootstrap_secrets(
+                &client,
+                &space,
+                cobj,
+                CONFIG_DATASET,
+                LEGACY_SECRETS_FIELD,
+                &mut cfg.secrets,
+                &overrides,
+            );
+            Some(cobj.clone())
+        }
+        (None, None) => {
             warn!("space has no agentConfigObjectId — running on config defaults");
             if !cfg.secrets.contains_key(ANTHROPIC_SECRET_REF) {
                 warn!(
@@ -438,8 +547,9 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
                      device-local key from; llm effects will fail"
                 );
             }
+            None
         }
-    }
+    };
     let brain = client.get_brain(&space)?["objectId"]
         .as_str()
         .unwrap_or_default()
@@ -507,6 +617,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         anchor: anchor.clone(),
         aliases,
         code_space,
+        secrets_guard,
     });
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -566,6 +677,10 @@ pub struct RunCtx {
     pub aliases: BTreeMap<String, String>,
     /// the agent overlay's space id (= aliases["agent"])
     pub code_space: String,
+    /// the object guest http reads must never touch (the secrets
+    /// object, or the config object on a pre-split server) — threaded
+    /// into every Broker
+    pub secrets_guard: Option<String>,
 }
 
 impl RunCtx {
@@ -618,6 +733,7 @@ impl RunCtx {
             None,
             Classifier::new(Some(&self.cfg.addr)),
         );
+        b.secrets_guard = self.secrets_guard.clone();
         b.resolver = Some(Box::new(AnyModuleResolver::new(
             self.client.clone(),
             &self.space,

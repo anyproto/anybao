@@ -98,6 +98,12 @@ pub struct Broker {
     pub blobs: BTreeMap<String, String>,
     /// None = permissive default profile (ADR-002 §2).
     pub grants: Option<GrantSet>,
+    /// Guest http requests that reference the `agent_secrets` dataset —
+    /// or this object id (the per-space secrets object; on a pre-split
+    /// any server, the config object secrets still live on) — are
+    /// refused before execution (ADR-008: secrets never enter guest
+    /// code or traces; connectors authenticate via `credential: {ref}`).
+    pub secrets_guard: Option<String>,
     span_stack: Vec<SpanFrame>,
     span_n: u64,
     resolve_cache: BTreeMap<String, Value>,
@@ -131,6 +137,7 @@ impl Broker {
             mock_unmatched: MockUnmatched::Fail,
             blobs: BTreeMap::new(),
             grants: None,
+            secrets_guard: None,
             span_stack: Vec::new(),
             span_n: 0,
             resolve_cache: BTreeMap::new(),
@@ -506,6 +513,7 @@ impl Broker {
                 message: "http call without url".into(),
             })?
             .to_string();
+        self.secrets_read_guard(&url, payload)?;
         if let Some(params) = payload.get("params").and_then(|p| p.as_object()) {
             let qs: Vec<String> = params
                 .iter()
@@ -582,6 +590,45 @@ impl Broker {
             message: e.to_string(),
         })?;
         Ok(json!({"status": status, "headers": headers, "body": body, "url": final_url}))
+    }
+
+    /// Refuse guest http requests that would touch stored secrets: a
+    /// body whose `dataset` names `agent_secrets` (exact field match —
+    /// covers query/subscribe/modify/aggregate/delete-records on ANY
+    /// space, since the server only acts on a literal dataset name), or
+    /// a url/body referencing the guarded object id (object-scoped
+    /// routes on the home space's secrets object). Fired BEFORE
+    /// execution, so the refusal is the recorded fact — deterministic
+    /// on replay, and no secret ever reaches the trace. Content-based
+    /// on purpose: host aliasing (localhost vs 127.0.0.1) can't dodge
+    /// it, and a benign body that merely MENTIONS the words in text
+    /// fields passes.
+    fn secrets_read_guard(&self, url: &str, payload: &Value) -> Result<(), EffectFailure> {
+        let forbidden = |what: &str| EffectFailure {
+            type_: "forbidden".into(),
+            message: format!(
+                "{what} is host-only: secrets never enter guest code — connectors \
+                 authenticate via credential: {{ref}}; keys are added/rotated via \
+                 Help > Import connector keys (CLI: .connectors.env beside \
+                 anybao.toml)"
+            ),
+        };
+        let body = payload.get("json");
+        let body_dataset = body
+            .and_then(|b| b.get("dataset"))
+            .and_then(|d| d.as_str());
+        if body_dataset == Some("agent_secrets") {
+            return Err(forbidden("the agent_secrets dataset"));
+        }
+        if let Some(id) = &self.secrets_guard {
+            let body_object = body
+                .and_then(|b| b.get("objectId"))
+                .and_then(|o| o.as_str());
+            if url.contains(id.as_str()) || body_object == Some(id.as_str()) {
+                return Err(forbidden("the secrets object"));
+            }
+        }
+        Ok(())
     }
 
     fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
@@ -770,6 +817,73 @@ mod tests {
             Some(PathBuf::from("programs")),
             Classifier::new(None),
         )
+    }
+
+    #[test]
+    fn secrets_guard_blocks_dataset_and_object() {
+        let mut b = make_broker("run_guard");
+        b.secrets_guard = Some("bafysecretsobj".into());
+
+        // dataset reference in the body → refused (any space)
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": "http://127.0.0.1:7001/v1/spaces/s/query",
+                       "json": {"objectId": "whatever", "dataset": "agent_secrets"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "forbidden");
+        assert!(err.message.contains("credential"));
+
+        // guarded object id in the url → refused
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:7001/v1/spaces/s/objects/bafysecretsobj/editor/markdown"}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "forbidden");
+
+        // guarded object id as the body objectId → refused
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": "http://127.0.0.1:7001/v1/spaces/s/query",
+                       "json": {"objectId": "bafysecretsobj", "dataset": "agent_config"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "forbidden");
+
+        // refusals are recorded facts (one effect record each)
+        let denials = b
+            .writer
+            .records
+            .iter()
+            .filter(|r| {
+                r.get("error")
+                    .map(|e| e["type"] == "forbidden")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(denials, 3);
+    }
+
+    #[test]
+    fn secrets_guard_ignores_benign_mentions() {
+        let mut b = make_broker("run_guard_ok");
+        b.secrets_guard = Some("bafysecretsobj".into());
+        // a chat message TALKING about agent_secrets is not a read of it —
+        // the words appear in a text field, not the dataset field. The
+        // request fails at network level (no server), never at the guard.
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/o/chat/messages",
+                       "json": {"text": "the agent_secrets dataset is guarded"},
+                       "timeout": 0.05}),
+            )
+            .unwrap_err();
+        assert_ne!(err.type_, "forbidden");
     }
 
     #[test]

@@ -1,47 +1,22 @@
-# Config secrets — first-time bootstrap
+# Config secrets — seeding, rotation, storage
 
-Config secrets (today: the Anthropic API key) persist **device-locally**
-on the per-space config object — a never-synced `localValue` record
-(ADR-006 §3). You seed them from the environment **once**; after that the
-env var is no longer needed.
+Config secrets (the Anthropic key, connector keys, any other ref)
+persist **device-locally** as never-synced local values (ADR-006 §3) on
+the per-space **secrets object** — the derived `agent_secrets` dataset
+(seed `any/agent-secrets/v1`, reported as
+`SpaceInfo.agentSecretsObjectId`), split out of `agent_config` so
+config stays guest-readable while secrets are not. Env vars are **not
+read** (removed 2026-07-28); the only seeding paths are the ones below.
 
-## First start (seed from env)
+## Seeding and rotation: `.connectors.env` (hard seeds)
 
-Before the **first** `anyrt serve` for a space, have the key in your
-environment — e.g. source your `.env`:
-
-```fish
-source .env            # exports ANTHROPIC_API_KEY (and any other keys)
-make runtime
-./runtime/target/release/anyrt serve --addr http://127.0.0.1:7001 --space bao
-```
-
-On this first start serve persists the key device-locally and logs:
+Put a dotenv-style `.connectors.env` **next to the config file**
+(fallback: cwd), keyed by the SECRET REF itself:
 
 ```
-config: anthropic key bootstrapped to device-local store
-```
-
-## Later starts (no env needed)
-
-The key now lives on the config object (never synced off this device), so
-later starts need **no** env var:
-
-```fish
-./runtime/target/release/anyrt serve --addr http://127.0.0.1:7001 --space bao
-# config: anthropic key loaded from device-local store
-```
-
-## Rotation and revoke: `.connectors.env` (hard seeds)
-
-Env seeding can only bootstrap — it never overwrites a stored value. To
-rotate (or revoke) keys, put a dotenv-style `.connectors.env` **next to
-the config file** (fallback: cwd), keyed by the SECRET REF itself:
-
-```
+llm.key.anthropic=sk-ant-…
 connector.key.linear=lin_api_…
 connector.key.github=github_pat_…
-llm.key.anthropic=sk-ant-…
 connector.key.granola=          # empty value DELETES the stored secret
 ```
 
@@ -52,35 +27,56 @@ untouched, so the file need not be complete. The ref set is **open** —
 any `connector.key.<x>` (or other ref) is stored, so a new connector
 needs no runtime change. Comments (`#`) and quotes are fine; malformed
 lines are skipped. This file holds plaintext keys — it is gitignored;
-keep it that way. Lib embedders (any-ui) feed the same mechanism from
-memory via `Config::secret_overrides` /
-`ConfigBuilder::secret_override` instead of a file.
+keep it that way.
 
-## Rules
+In any-ui the same mechanism is fed **from memory** (no file
+persisted): Help → Import connector keys parses the picked .env into
+`Config::secret_overrides` and restarts the agent. Lib embedders use
+`ConfigBuilder::secret_override`.
 
-- **Precedence: hard seeds > stored > env.** A `.connectors.env` entry
-  (or embedder override) always wins and writes through; otherwise the
-  stored device-local value is authoritative — an env var present on a
-  later start is a noop (it does not overwrite the store).
-- **Both missing → warn, not persist.** If neither the store nor the env
-  has a key, serve still starts but logs
-  `WARN config: no anthropic key …`; llm effects fail on first use until
-  you provide one (re-run once with the env var set).
-- **Fresh space re-bootstraps.** A new space (or a deleted-and-recreated
-  one) has an empty store, so its first start needs the env var again.
-- **Deploy before the first serve.** serve is space-only (ADR-009 §5):
-  it reads programs, skills, and the kernel from the space — run
-  `anyrt deploy` once against a fresh space (or its `agent` overlay)
-  before starting it.
-- **Server requirement.** The `any` server must declare `localValue`
-  local-scope on the `agent_config` dataset (`internal/agentconfig`). An
-  older server rejects the local write; serve then logs
-  `could not persist … using env value this run` and you stay on the
-  env-every-start path until the server is updated.
+## Soft seeds (embedder bootstrap)
 
-Every ref in `config::PROVIDER_SECRET_REFS` env-bootstraps and
-persists this way (anthropic, gemini, together, and the connector keys
-— see the connectors README auth table for the env-var names); the
-Anthropic key is the only one whose absence warns. Stored secrets load
-generically — any secret-marked config record, not just the provider
-list.
+Entries an embedder places in `Config::secrets` (e.g. a bundled
+demo-keys resource) are **soft**: used this run, persisted only when
+nothing is stored, never overwriting. Precedence: **hard seeds >
+stored > soft seeds**.
+
+## Later starts
+
+Stored secrets load generically — every secret-marked record, any ref:
+
+```
+config: llm.key.anthropic loaded from device-local store
+```
+
+No anthropic key anywhere → serve still starts but warns; llm effects
+fail on first use until one is imported. A fresh space (or a
+deleted-and-recreated one) has an empty store — re-import.
+
+## Guest read-guard
+
+The runtime refuses guest http requests that reference the
+`agent_secrets` dataset (exact `dataset` field match — any space) or
+the guarded object id — a `forbidden` EffectFailure carrying the
+import instructions, raised **before** execution so the refusal is the
+recorded fact and no secret ever reaches a trace or the model context.
+Guest code never needs the values: the host injects `credential:
+{ref}` headers after recording (ADR-008), and a missing key surfaces
+as each connector's actionable not-connected error.
+
+## Legacy layout and migration
+
+On an any server that predates the split, secrets live on the CONFIG
+object (`agent_config` rows, `localValue` field): serve warns, keeps
+working against that layout, and points the read-guard at the config
+object instead. Once the server is updated, the next boot **migrates
+automatically** — legacy secret rows are rewritten onto the secrets
+object and deleted from `agent_config`.
+
+## Server requirements
+
+The `any` server must provide `internal/agentsecrets` (the derived
+secrets object + `agent_secrets` dataset with the local-scope `value`
+field, `SpaceInfo.agentSecretsObjectId`) — and, for the legacy layout,
+`internal/agentconfig`'s local-scope `localValue`. Deploy before the
+first serve as usual (ADR-009 §5): serve is space-only.
