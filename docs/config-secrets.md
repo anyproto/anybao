@@ -32,11 +32,36 @@ later starts need **no** env var:
 # config: anthropic key loaded from device-local store
 ```
 
+## Rotation and revoke: `.connectors.env` (hard seeds)
+
+Env seeding can only bootstrap — it never overwrites a stored value. To
+rotate (or revoke) keys, put a dotenv-style `.connectors.env` **next to
+the config file** (fallback: cwd), keyed by the SECRET REF itself:
+
+```
+connector.key.linear=lin_api_…
+connector.key.github=github_pat_…
+llm.key.anthropic=sk-ant-…
+connector.key.granola=          # empty value DELETES the stored secret
+```
+
+On every serve start, each ref in the file is written through to the
+device-local store: missing → `bootstrapped`, different → `rotated
+(hard seed)`, empty → `removed`. Refs absent from the file are
+untouched, so the file need not be complete. The ref set is **open** —
+any `connector.key.<x>` (or other ref) is stored, so a new connector
+needs no runtime change. Comments (`#`) and quotes are fine; malformed
+lines are skipped. This file holds plaintext keys — it is gitignored;
+keep it that way. Lib embedders (any-ui) feed the same mechanism from
+memory via `Config::secret_overrides` /
+`ConfigBuilder::secret_override` instead of a file.
+
 ## Rules
 
-- **Stored value wins.** Once persisted, the device-local value is
-  authoritative — an env var present on a later start is a noop (it does
-  not overwrite the store).
+- **Precedence: hard seeds > stored > env.** A `.connectors.env` entry
+  (or embedder override) always wins and writes through; otherwise the
+  stored device-local value is authoritative — an env var present on a
+  later start is a noop (it does not overwrite the store).
 - **Both missing → warn, not persist.** If neither the store nor the env
   has a key, serve still starts but logs
   `WARN config: no anthropic key …`; llm effects fail on first use until
@@ -53,5 +78,9 @@ later starts need **no** env var:
   `could not persist … using env value this run` and you stay on the
   env-every-start path until the server is updated.
 
-Only the Anthropic key auto-persists today; other keys
-(`GEMINI_API_KEY`, `TOGETHER_API_KEY`) still come from the environment.
+Every ref in `config::PROVIDER_SECRET_REFS` env-bootstraps and
+persists this way (anthropic, gemini, together, and the connector keys
+— see the connectors README auth table for the env-var names); the
+Anthropic key is the only one whose absence warns. Stored secrets load
+generically — any secret-marked config record, not just the provider
+list.

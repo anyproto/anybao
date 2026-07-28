@@ -119,48 +119,107 @@ fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> 
 }
 
 /// Device-local secret persistence (ADR-006 §3). Config secrets (the
-/// provider API keys, [`PROVIDER_SECRET_REFS`]) live as a never-synced
-/// `localValue` on their config record, not in synced space data.
-/// Bootstrap-once on serve start, per ref:
+/// provider API keys, [`PROVIDER_SECRET_REFS`] and any other ref) live
+/// as a never-synced `localValue` on their config record, not in synced
+/// space data. On serve start, three passes:
 ///
-/// - stored device-local value present → it is authoritative; load it into
-///   `secrets` (any env var is a noop this run);
-/// - stored empty but the seeding env var present (already in `secrets`
-///   via `bootstrap`) → persist it device-locally now, so later starts
-///   need no env;
-/// - both empty → warn for the required Anthropic key (serve still
-///   starts; the llm effect fails on first use until a key is provided);
-///   silent for optional providers.
+/// 1. HARD seeds (`Config::secret_overrides` — the `.connectors.env`
+///    file or an embedder's in-memory feed; open ref set): persisted
+///    write-through — a stored value that differs is ROTATED, an empty
+///    override DELETES the stored secret. This is the rotation path;
+///    env vars never rotate.
+/// 2. Stored device-local values (every secret-marked record, not just
+///    the provider list) load into `secrets`; stored wins over env.
+/// 3. Soft seeds ([`PROVIDER_SECRET_REFS`] env vars, already in
+///    `secrets` via `bootstrap`): persisted only when nothing is
+///    stored, so later starts need no env. No key at all → warn for
+///    the required Anthropic ref (serve still starts; the llm effect
+///    fails on first use until a key is provided); silent otherwise.
 ///
 /// Best-effort: a read/write hiccup never fails serve — it falls back to
-/// whatever env supplied this run.
-fn bootstrap_secrets(c: &Client, space: &str, obj: &str, secrets: &mut BTreeMap<String, String>) {
+/// whatever env/overrides supplied this run.
+fn bootstrap_secrets(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    secrets: &mut BTreeMap<String, String>,
+    overrides: &BTreeMap<String, String>,
+) {
     let rows = c
         .query(space, obj, CONFIG_DATASET, &json!({}))
         .unwrap_or_default();
-    for &(secret_ref, env_var) in PROVIDER_SECRET_REFS {
-        match stored_local_secret(&rows, secret_ref) {
-            Some(key) => {
-                secrets.insert(secret_ref.into(), key);
-                info!("config: {secret_ref} loaded from device-local store");
-            }
-            None => match secrets.get(secret_ref).cloned() {
-                Some(env_key) if !env_key.is_empty() => {
-                    match persist_local_secret(c, space, obj, secret_ref, &env_key) {
-                        Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
-                        Err(e) => warn!(
-                            "config: could not persist {secret_ref} device-locally ({e}); \
-                             using env value this run"
-                        ),
-                    }
+
+    // 1. Hard seeds: write-through, open ref set, empty deletes.
+    for (secret_ref, value) in overrides {
+        let stored = stored_local_secret(&rows, secret_ref);
+        if value.is_empty() {
+            secrets.remove(secret_ref);
+            if stored.is_some() {
+                match persist_local_secret(c, space, obj, secret_ref, "") {
+                    Ok(()) => info!("config: {secret_ref} removed from device-local store"),
+                    Err(e) => warn!("config: could not remove {secret_ref} device-locally ({e})"),
                 }
-                _ if secret_ref == ANTHROPIC_SECRET_REF => warn!(
-                    "config: no anthropic key — set {env_var} once to seed the \
-                     device-local store, or write a localValue on the config object; \
-                     llm effects will fail until one is set"
+            }
+            continue;
+        }
+        secrets.insert(secret_ref.clone(), value.clone());
+        match stored {
+            Some(ref s) if s == value => {
+                info!("config: {secret_ref} loaded from device-local store")
+            }
+            other => match persist_local_secret(c, space, obj, secret_ref, value) {
+                Ok(()) if other.is_some() => info!("config: {secret_ref} rotated (hard seed)"),
+                Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
+                Err(e) => warn!(
+                    "config: could not persist {secret_ref} device-locally ({e}); \
+                     using the seeded value this run"
                 ),
-                _ => {}
             },
+        }
+    }
+
+    // 2. Stored secrets — every secret-marked record, overrides win.
+    for row in &rows {
+        if row.get("secret").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let Some(secret_ref) = row.get("key").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if overrides.contains_key(secret_ref) {
+            continue;
+        }
+        let stored = row
+            .get("localValue")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        if let Some(key) = stored {
+            secrets.insert(secret_ref.into(), key.into());
+            info!("config: {secret_ref} loaded from device-local store");
+        }
+    }
+
+    // 3. Soft env seeds: persist-if-missing, provider refs only.
+    for &(secret_ref, env_var) in PROVIDER_SECRET_REFS {
+        if overrides.contains_key(secret_ref) || stored_local_secret(&rows, secret_ref).is_some() {
+            continue;
+        }
+        match secrets.get(secret_ref).cloned() {
+            Some(env_key) if !env_key.is_empty() => {
+                match persist_local_secret(c, space, obj, secret_ref, &env_key) {
+                    Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
+                    Err(e) => warn!(
+                        "config: could not persist {secret_ref} device-locally ({e}); \
+                         using env value this run"
+                    ),
+                }
+            }
+            _ if secret_ref == ANTHROPIC_SECRET_REF => warn!(
+                "config: no anthropic key — set {env_var} once to seed the \
+                 device-local store, or write a localValue on the config object; \
+                 llm effects will fail until one is set"
+            ),
+            _ => {}
         }
     }
 }
@@ -370,7 +429,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             for (k, v) in overrides {
                 cfg.config.insert(k, v);
             }
-            bootstrap_secrets(&client, &space, &obj, &mut cfg.secrets);
+            let overrides = std::mem::take(&mut cfg.secret_overrides);
+            bootstrap_secrets(&client, &space, &obj, &mut cfg.secrets, &overrides);
         }
         None => {
             warn!("space has no agentConfigObjectId — running on config defaults");

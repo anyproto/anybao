@@ -13,3 +13,4 @@ traces/
 /anybao.toml
 traces-test/
 anybao.test.toml
+.connectors.env

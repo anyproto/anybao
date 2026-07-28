@@ -100,6 +100,14 @@ pub struct Config {
     /// guest-visible config map (pre-`bootstrap`)
     pub config: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, String>,
+    /// Hard secret seeds — write-through to the device-local store at
+    /// serve start (rotate when different, EMPTY VALUE DELETES), unlike
+    /// `secrets` whose entries are soft (stored value wins). Ref names
+    /// are open — any `connector.key.<x>` (or other ref) is accepted.
+    /// Sources: a `.connectors.env` beside the config file (CLI), or an
+    /// embedder feeding parsed keys from memory (any-ui import dialog /
+    /// bundled demo seeds).
+    pub secret_overrides: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -114,6 +122,7 @@ impl Default for Config {
             kernel: None,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
+            secret_overrides: BTreeMap::new(),
         }
     }
 }
@@ -206,6 +215,14 @@ impl ConfigBuilder {
         self
     }
 
+    /// Hard secret seed — persisted device-locally at serve start,
+    /// overwriting a stored value that differs (rotation); an empty
+    /// value deletes the stored secret. See [`Config::secret_overrides`].
+    pub fn secret_override(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.cfg.secret_overrides.insert(key.into(), value.into());
+        self
+    }
+
     pub fn build(self) -> Config {
         self.cfg
     }
@@ -221,7 +238,9 @@ impl Config {
     /// CLI entry: read `path` (or `./anybao.toml` when present — no
     /// file at all is fine) and resolve over the defaults. An explicit
     /// `--config-file` that doesn't exist is an error; the implicit
-    /// default is optional.
+    /// default is optional. A [`SECRETS_ENV_FILE`] sibling of the
+    /// config file (or in cwd when no config path resolves) is parsed
+    /// into `secret_overrides` — the hard-seed rotation path.
     pub fn load(path: Option<&Path>) -> Result<Config> {
         let text = match path {
             Some(p) => Some(
@@ -233,10 +252,19 @@ impl Config {
                 p.exists().then(|| std::fs::read_to_string(p)).transpose()?
             }
         };
-        match text {
-            Some(t) => Config::from_toml(&t),
-            None => Ok(Config::default()),
+        let mut cfg = match text {
+            Some(t) => Config::from_toml(&t)?,
+            None => Config::default(),
+        };
+        let secrets_dir = path
+            .and_then(Path::parent)
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let secrets_path = secrets_dir.join(SECRETS_ENV_FILE);
+        if let Ok(t) = std::fs::read_to_string(&secrets_path) {
+            cfg.secret_overrides.append(&mut parse_secrets_env(&t));
         }
+        Ok(cfg)
     }
 
     pub fn from_toml(text: &str) -> Result<Config> {
@@ -311,7 +339,47 @@ pub const PROVIDER_SECRET_REFS: &[(&str, &str)] = &[
     ("connector.key.linear", "LINEAR_API_KEY"),
     ("connector.key.github", "GITHUB_TOKEN"),
     ("connector.key.granola", "GRANOLA_API_KEY"),
+    ("connector.key.attio", "ATTIO_API_TOKEN"),
+    ("connector.key.figma", "FIGMA_TOKEN"),
+    ("connector.key.intercom", "INTERCOM_ACCESS_TOKEN"),
 ];
+
+/// The dotenv-style hard-seed file picked up from the config file's
+/// directory (fallback: cwd). Lines are `ref=value` keyed by the SECRET
+/// REF itself (`connector.key.linear=lin_…`), not env-var names; `#`
+/// comments and blank lines ignored, optional single/double quotes
+/// stripped. Ref names are open — unknown refs are stored too, so a new
+/// connector needs no runtime change. An EMPTY value deletes the stored
+/// secret (explicit revoke). This is the pre-secret-system shortcut:
+/// values sit in plaintext — keep the file out of version control.
+pub const SECRETS_ENV_FILE: &str = ".connectors.env";
+
+/// Parse [`SECRETS_ENV_FILE`] content → hard-seed map. Malformed lines
+/// (no `=`) are skipped.
+pub fn parse_secrets_env(text: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        map.insert(key.to_string(), value.to_string());
+    }
+    map
+}
 
 /// Guest-config bootstrap: seed `any.base_url` from `addr`, layer
 /// `CONFIG_DEFAULTS` under existing keys, pick up provider API keys
@@ -429,6 +497,51 @@ traces = "t"
         assert!(Config::from_toml("adr = \"typo\"").is_err());
         assert!(Config::from_toml("[agent]\nspaec = \"x\"").is_err());
         assert!(Config::from_toml("[paths]\ntrace = \"x\"").is_err());
+    }
+
+    #[test]
+    fn secrets_env_parses_generically() {
+        let m = parse_secrets_env(
+            "# comment\n\
+             connector.key.linear=lin_123\n\
+             connector.key.github = \"gho_456\"  \n\
+             connector.key.customxyz='abc'\n\
+             connector.key.granola=\n\
+             malformed line\n\
+             =novalue\n\
+             \n\
+             llm.key.anthropic=sk-ant-1",
+        );
+        assert_eq!(m["connector.key.linear"], "lin_123");
+        assert_eq!(m["connector.key.github"], "gho_456"); // quotes stripped
+        assert_eq!(m["connector.key.customxyz"], "abc"); // unknown ref accepted
+        assert_eq!(m["connector.key.granola"], ""); // empty = delete request
+        assert_eq!(m["llm.key.anthropic"], "sk-ant-1");
+        assert_eq!(m.len(), 5); // malformed + keyless lines skipped
+    }
+
+    #[test]
+    fn load_picks_up_secrets_env_beside_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("anybao.toml");
+        std::fs::write(&cfg_path, "[agent]\nspace = \"s\"\n").unwrap();
+        std::fs::write(
+            dir.path().join(SECRETS_ENV_FILE),
+            "connector.key.linear=lin_999\n",
+        )
+        .unwrap();
+        let c = Config::load(Some(&cfg_path)).unwrap();
+        assert_eq!(c.secret_overrides["connector.key.linear"], "lin_999");
+        assert!(c.secrets.is_empty()); // hard seeds land in overrides only
+    }
+
+    #[test]
+    fn load_without_secrets_file_leaves_overrides_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("anybao.toml");
+        std::fs::write(&cfg_path, "").unwrap();
+        let c = Config::load(Some(&cfg_path)).unwrap();
+        assert!(c.secret_overrides.is_empty());
     }
 
     #[test]
