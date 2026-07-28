@@ -29,9 +29,9 @@ cd ~/any/anybao   # anyrt lives here
 
 # 0. after each connector edit: unit tests + deploy (hash-gated,
 #    a running serve picks it up on the next conversation)
-uv run pytest ../anybao-connectors/tests
+uv run pytest repos/_connectors/tests
 ./runtime/target/release/anyrt deploy --addr http://127.0.0.1:7003 \
-    --source ~/any/anybao-connectors --target <_connectorsrepo space id>
+    --source repos/_connectors --target <_connectorsrepo space id>
 
 # 1. wipe the rig chat history — each question starts from a clean
 #    slate so behavior measures the model's priors + our docs, not

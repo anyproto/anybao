@@ -38,6 +38,18 @@ anyrt deploy --source repos/_connectors --target connectors [--config-file anyba
   Method docstrings: first line = self-contained summary (inventories
   show only it), body = return shape, options, budgets. `help()` in
   the guest renders exactly what you write.
+- **Result shapes — trim, don't rename (C1).** Kept result fields
+  carry the upstream API's exact names and nesting (`html_url`,
+  `updated_at`, `user.login`; GraphQL camelCase verbatim — a GraphQL
+  selection IS the trim). Trim to a small field subset and cap string
+  lengths, but never translate names: the model's priors are the
+  upstream docs, and renamed fields cost a keys()-discovery turn per
+  fresh context or, worse, silent `.get()` Nones (github@v1 A/B,
+  2026-07-28). Derived keys only where upstream has no scalar
+  (`repo`, `is_pr`, decoded `text`, `kind`) — and NAME every method's
+  return shape in its docstring (`→ {ok, path, text}`), especially
+  derived keys: an undocumented derived key re-triggers the raw-API
+  prior (G3).
 - **Guest never imports the host**: sources are exec'd in the wasm
   kernel; `use()`, `effect()`, `span()`, `http` are provided globals
   (`# noqa: F821 - guest global`), stdlib imports limited to the

@@ -33,7 +33,7 @@ repo offers; per-tool docs live in the space (`program_description` /
 
 ```sh
 # from the anybao checkout (anyrt + config live there):
-anyrt deploy --source ~/any/anybao-connectors --target connectors \
+anyrt deploy --source repos/_connectors --target connectors \
     --config-file anybao.test.toml
 ```
 

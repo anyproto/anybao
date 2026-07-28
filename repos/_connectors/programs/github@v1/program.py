@@ -39,11 +39,12 @@ _TIMEOUT_S = 60
 
 _NOT_CONNECTED = (
     "GitHub not connected — create a fine-grained Personal Access Token at "
-    + _TOKEN_URL + " with Read-only permissions (Repository: Issues, Pull "
-    + "requests, Contents, Metadata; Account: Notifications for "
-    + "list_notifications), then set GITHUB_TOKEN in the runtime environment "
-    + "once (serve seeds the device-local secret store on start) or write a "
-    + "localValue for connector.key.github on the config object."
+    + _TOKEN_URL + " (Repository: Issues, Pull requests, Contents, Metadata; "
+    + "Account: Notifications for list_notifications — Read-only covers the "
+    + "wrapped getters; grant Read and write on Issues/Pull requests if you "
+    + "intend request() writes), then set GITHUB_TOKEN in the runtime "
+    + "environment once (serve seeds the device-local secret store on start) "
+    + "or write a localValue for connector.key.github on the config object."
 )
 
 
@@ -194,6 +195,7 @@ def _issue(item):
         "user": {"login": (item.get("user") or {}).get("login")},
         "labels": labels,
         "is_pr": bool(item.get("pull_request")),
+        "created_at": item.get("created_at"),
         "updated_at": item.get("updated_at"),
         "body": _trim(item.get("body"), 2000),
     }
@@ -219,6 +221,7 @@ def _pr(item):
         "user": {"login": (item.get("user") or {}).get("login")},
         "head": {"ref": (item.get("head") or {}).get("ref")},
         "base": {"ref": base.get("ref")},
+        "created_at": item.get("created_at"),
         "updated_at": item.get("updated_at"),
         "body": _trim(item.get("body"), 2000),
     }
@@ -278,32 +281,40 @@ def whoami():
 
 
 @span("github.list_my_issues", kind="getter")  # noqa: F821 - guest global
-def list_my_issues(filter=None, state=None, since=None, per_page=None):
+def list_my_issues(filter=None, state=None, since=None, sort=None,
+                   direction=None, per_page=None):
     """Issues + PRs assigned to / created by / mentioning the user.
+
+    `sort`: updated (default) | created | comments; `direction`:
+    desc (default) | asc.
 
     Returns `{ok, items}` — item shape: `{number, title, state,
     html_url, repository_url, repo, user: {login}, labels, is_pr,
-    updated_at, body}` (body trimmed to 2000 chars).
+    created_at, updated_at, body}` (body trimmed to 2000 chars).
     """
     per_page = _clamp(per_page, 30, 100)
     res = _paged("/issues", {
         "filter": filter or "assigned", "state": state or "open",
         "since": since, "per_page": per_page,
-        "sort": "updated", "direction": "desc"}, per_page)
+        "sort": sort or "updated", "direction": direction or "desc"}, per_page)
     if _is_err(res):
         return res
     return {"ok": True, "items": [_issue(it) for it in res["items"]]}
 
 
 @span("github.list_repo_issues", kind="getter")  # noqa: F821 - guest global
-def list_repo_issues(owner, repo, state=None, since=None, per_page=None):
-    """One repo's issues + PRs, most recently updated first."""
+def list_repo_issues(owner, repo, state=None, since=None, sort=None,
+                     direction=None, per_page=None):
+    """One repo's issues + PRs, most recently updated first.
+
+    `sort`: updated (default) | created | comments; `direction`:
+    desc (default) | asc. Item shape as list_my_issues."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     per_page = _clamp(per_page, 30, 100)
     res = _paged(f"/repos/{owner}/{repo}/issues", {
         "state": state or "open", "since": since, "per_page": per_page,
-        "sort": "updated", "direction": "desc"}, per_page)
+        "sort": sort or "updated", "direction": direction or "desc"}, per_page)
     if _is_err(res):
         return res
     return {"ok": True, "items": [_issue(it) for it in res["items"]]}
@@ -379,21 +390,24 @@ def list_notifications(all=False, since=None, per_page=None):
 
 
 @span("github.list_pull_requests", kind="getter")  # noqa: F821 - guest global
-def list_pull_requests(owner, repo, state=None, base=None, per_page=None):
+def list_pull_requests(owner, repo, state=None, base=None, sort=None,
+                       direction=None, per_page=None):
     """One repo's pull requests, most recently updated first.
 
-    PRs proper: branch refs, draft/merged state.
+    PRs proper: branch refs, draft/merged state. `sort`: updated
+    (default) | created | popularity | long-running; `direction`:
+    desc (default) | asc.
 
     Returns `{ok, items}` — item shape: `{number, title, state,
     merged_at, draft, html_url, repo, user: {login}, head: {ref}, base:
-    {ref}, updated_at, body}` (body trimmed to 2000 chars).
+    {ref}, created_at, updated_at, body}` (body trimmed to 2000 chars).
     """
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     per_page = _clamp(per_page, 30, 100)
     res = _paged(f"/repos/{owner}/{repo}/pulls", {
         "state": state or "open", "base": base, "per_page": per_page,
-        "sort": "updated", "direction": "desc"}, per_page)
+        "sort": sort or "updated", "direction": direction or "desc"}, per_page)
     if _is_err(res):
         return res
     return {"ok": True, "items": [_pr(it) for it in res["items"]]}
@@ -457,9 +471,10 @@ def list_commits(owner, repo, sha=None, path=None, since=None, per_page=None):
 
 
 @span("github.list_repos", kind="getter")  # noqa: F821 - guest global
-def list_repos(affiliation=None, sort=None, per_page=None):
+def list_repos(affiliation=None, sort=None, direction=None, per_page=None):
     """Repos the user owns / collaborates on. `sort`: pushed (default)
-    | created | updated | full_name; `affiliation`: comma-set of
+    | created | updated | full_name; `direction`: desc (default) |
+    asc; `affiliation`: comma-set of
     owner|collaborator|organization_member (default all three).
 
     Returns `{ok, items: [{full_name, private, fork, archived,
@@ -468,7 +483,7 @@ def list_repos(affiliation=None, sort=None, per_page=None):
     """
     per_page = _clamp(per_page, 30, 100)
     res = _paged("/user/repos", {
-        "sort": sort or "pushed", "direction": "desc",
+        "sort": sort or "pushed", "direction": direction or "desc",
         "affiliation": affiliation, "per_page": per_page}, per_page)
     if _is_err(res):
         return res
@@ -529,7 +544,8 @@ def request(method, path, params=None, body=None):
 
 @span("github.get_readme", kind="getter")  # noqa: F821 - guest global
 def get_readme(owner, repo):
-    """A repository's README, decoded to text (trimmed to 8000 chars)."""
+    """A repository's README → `{ok, path, text}` (text decoded,
+    trimmed to 8000 chars — NOT the raw API's base64 `content`)."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     resp = _fetch(f"/repos/{owner}/{repo}/readme")
@@ -544,7 +560,9 @@ def get_readme(owner, repo):
 
 @span("github.get_contents", kind="getter")  # noqa: F821 - guest global
 def get_contents(owner, repo, path):
-    """A file (decoded, trimmed to 8000 chars) or a directory listing."""
+    """A file → `{ok, kind: "file", path, text}` (text decoded, trimmed
+    to 8000 chars — NOT the raw API's base64 `content`) or a directory
+    → `{ok, kind: "dir", entries: [{name, path, type}]}`."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     if path is None:

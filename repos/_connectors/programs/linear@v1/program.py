@@ -1,11 +1,12 @@
-"""Linear issue-tracker connector (GraphQL) — read issues, two writes.
+"""Linear issue-tracker connector (GraphQL) — issues, search, writes.
 
 Your assigned issues, workspace issues (optionally incremental by
-updatedAt), teams, one issue with full description, issue comments;
-writes: update_issue and create_comment. Methods return {ok, ...} or
-{ok: False, error} with actionable messages — a missing/rejected API
+updatedAt), text search, teams, workflow states, users, one issue with
+full description, issue comments; writes: create_issue, update_issue,
+create_comment; gql() is the raw escape hatch. Methods return {ok, ...}
+or {ok: False, error} with actionable messages — a missing/rejected API
 key explains how to connect, never a traceback. Linear mutations need
-the issue UUID, not "ENG-123" — fetch the issue first."""
+UUIDs, not "ENG-123" — fetch the issue/state/user first."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -63,14 +64,28 @@ def _gql(query, variables):
                          f"The key is sent RAW, no Bearer prefix. Create a new key at "
                          f"{_KEY_URL} and re-seed connector.key.linear if needed."}
     if resp.status >= 300:
-        msg = json.dumps(body["errors"]) if body and body.get("errors") else f"HTTP {resp.status}"
+        msg = _errors_text(body["errors"]) if body and body.get("errors") else f"HTTP {resp.status}"
         return {"ok": False, "status": resp.status, "error": msg}
     if body and body.get("errors"):
         return {"ok": False, "status": resp.status,
-                "error": "Linear: " + json.dumps(body["errors"])}
+                "error": "Linear: " + _errors_text(body["errors"])}
     if not body or not body.get("data"):
         return {"ok": False, "status": resp.status, "error": "empty GraphQL response"}
     return {"ok": True, "data": body["data"]}
+
+
+def _errors_text(errors):
+    """GraphQL errors[] → one short human line per error. Linear puts
+    the readable sentence in extensions.userPresentableMessage; fall
+    back to `message`, then to the raw dump."""
+    parts = []
+    for e in errors if isinstance(errors, list) else []:
+        if not isinstance(e, dict):
+            continue
+        ext = e.get("extensions") or {}
+        parts.append(ext.get("userPresentableMessage") or e.get("message") or "")
+    parts = [p for p in parts if p]
+    return "; ".join(parts) if parts else json.dumps(errors)
 
 
 def _conn(connection):
@@ -123,7 +138,8 @@ def list_issues(first=None, after=None, updated_after=None):
     """Issues across the workspace, newest-first. `updated_after`
     (ISO-8601) makes it incremental: only updatedAt >= it.
 
-    .
+    Returns `{ok, issues, hasNextPage, endCursor}` — pass
+    `after=endCursor` to page. Issue shape as my_issues.
     """
     variables = {"first": _clamp_first(first), "after": after}
     if updated_after:
@@ -153,6 +169,67 @@ def list_teams():
         return r
     nodes, more, cursor = _conn(r["data"].get("teams"))
     return {"ok": True, "teams": nodes, "hasNextPage": more, "endCursor": cursor}
+
+
+@span("linear.search_issues", kind="getter")  # noqa: F821 - guest global
+def search_issues(term, first=None, after=None):
+    """Full-text issue search (Linear `searchIssues`).
+
+    Returns `{ok, issues, hasNextPage, endCursor}` — issue shape as
+    my_issues.
+    """
+    if not term or not isinstance(term, str):
+        return {"ok": False, "error": "term is required"}
+    q = ("query SearchIssues($term: String!, $first: Int!, $after: String) {"
+         " searchIssues(term: $term, first: $first, after: $after) {"
+         " nodes { " + _ISSUE_FIELDS + " } pageInfo { hasNextPage endCursor } } }")
+    r = _gql(q, {"term": term, "first": _clamp_first(first), "after": after})
+    if not r["ok"]:
+        return r
+    nodes, more, cursor = _conn(r["data"].get("searchIssues"))
+    return {"ok": True, "issues": nodes, "hasNextPage": more, "endCursor": cursor}
+
+
+@span("linear.list_states", kind="getter")  # noqa: F821 - guest global
+def list_states(team_id=None):
+    """Workflow states — the `state_id` source for create/update_issue.
+
+    `team_id` (team UUID, from list_teams) filters to one team; omit
+    for all teams. Returns `{ok, states: [{id, name, type, position,
+    team: {id, name, key}}]}` — `type` is Linear's category
+    (triage/backlog/unstarted/started/completed/canceled).
+    """
+    if team_id:
+        q = ("query ListStates($teamId: ID) { workflowStates(first: 100,"
+             " filter: { team: { id: { eq: $teamId } } }) {"
+             " nodes { id name type position team { id name key } }"
+             " pageInfo { hasNextPage endCursor } } }")
+        r = _gql(q, {"teamId": team_id})
+    else:
+        q = ("query ListStates { workflowStates(first: 100) {"
+             " nodes { id name type position team { id name key } }"
+             " pageInfo { hasNextPage endCursor } } }")
+        r = _gql(q, {})
+    if not r["ok"]:
+        return r
+    nodes, more, cursor = _conn(r["data"].get("workflowStates"))
+    return {"ok": True, "states": nodes, "hasNextPage": more, "endCursor": cursor}
+
+
+@span("linear.list_users", kind="getter")  # noqa: F821 - guest global
+def list_users():
+    """Workspace members — the `assignee_id` source for create/update_issue.
+
+    Returns `{ok, users: [{id, name, displayName, email, active}]}`.
+    """
+    q = ("query ListUsers { users(first: 100) {"
+         " nodes { id name displayName email active }"
+         " pageInfo { hasNextPage endCursor } } }")
+    r = _gql(q, {})
+    if not r["ok"]:
+        return r
+    nodes, more, cursor = _conn(r["data"].get("users"))
+    return {"ok": True, "users": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
 @span("linear.get_issue", kind="getter")  # noqa: F821 - guest global
@@ -196,6 +273,42 @@ def list_comments(issue_id, first=None, after=None):
     nodes, more, cursor = _conn(issue.get("comments"))
     return {"ok": True, "issueId": issue["id"], "identifier": issue.get("identifier"),
             "comments": nodes, "hasNextPage": more, "endCursor": cursor}
+
+
+@span("linear.create_issue", kind="mutator")  # noqa: F821 - guest global
+def create_issue(team_id, title, description=None, state_id=None,
+                 assignee_id=None, priority=None):
+    """Create an issue (Linear `issueCreate`). `team_id` is the team's
+    UUID (from list_teams); `description` is Markdown; `state_id` /
+    `assignee_id` are UUIDs (list_states / list_users); `priority` is
+    Linear's 0-4 scale (0 none, 1 urgent … 4 low).
+
+    Returns `{ok, issue}` (full detail incl. identifier + url).
+    """
+    if not team_id or not isinstance(team_id, str):
+        return {"ok": False, "error": "team_id is required (the team's UUID, "
+                                      "from list_teams)"}
+    if not title or not isinstance(title, str):
+        return {"ok": False, "error": "title is required"}
+    input = {"teamId": team_id, "title": title}
+    if isinstance(description, str):
+        input["description"] = description
+    if isinstance(state_id, str):
+        input["stateId"] = state_id
+    if isinstance(assignee_id, str):
+        input["assigneeId"] = assignee_id
+    if isinstance(priority, (int, float)):
+        input["priority"] = int(priority)
+    q = ("mutation IssueCreate($input: IssueCreateInput!) {"
+         " issueCreate(input: $input) {"
+         " success issue { " + _ISSUE_FIELDS_FULL + " } } }")
+    r = _gql(q, {"input": input})
+    if not r["ok"]:
+        return r
+    res = r["data"].get("issueCreate")
+    if not res or not res.get("success"):
+        return {"ok": False, "error": "Linear rejected the create"}
+    return {"ok": True, "issue": res.get("issue")}
 
 
 @span("linear.update_issue", kind="mutator")  # noqa: F821 - guest global
@@ -261,6 +374,22 @@ def create_comment(issue_id, body):
     if not res or not res.get("success"):
         return {"ok": False, "error": "Linear rejected the comment"}
     return {"ok": True, "comment": res.get("comment")}
+
+
+@span("linear.gql", kind="mutator")  # noqa: F821 - guest global
+def gql(query, variables=None):
+    """Raw authorized GraphQL request — the escape hatch.
+
+    For anything the other methods don't wrap (including mutations).
+    Pinned to api.linear.app — the credential never goes anywhere
+    else. Returns `{ok, data}` (the response's `data` object) or
+    `{ok: False, error}` (HTTP errors AND body `errors[]` both land
+    here). Mind Linear's complexity limit: keep `first:` small and
+    select only the fields you need.
+    """
+    if not query or not isinstance(query, str):
+        return {"ok": False, "error": "query is required"}
+    return _gql(query, variables or {})
 
 
 def main(args):
