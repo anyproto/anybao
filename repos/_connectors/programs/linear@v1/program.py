@@ -1,18 +1,20 @@
-"""linear@v1 — connector for the Linear issue tracker (GraphQL).
+"""Linear issue-tracker connector (GraphQL) — read issues, two writes.
 
-Token connector: the personal API key never enters the guest — every
-request names `credential: {ref: "connector.key.linear"}` and the host
-injects the Authorization header after recording (anybao ADR-008 §1).
-Linear personal keys go RAW in Authorization (NO "Bearer " prefix —
-that's OAuth-only; a Bearer prefix on a personal key yields a 401 that
-looks like a bad key).
+Your assigned issues, workspace issues (optionally incremental by
+updatedAt), teams, one issue with full description, issue comments;
+writes: update_issue and create_comment. Methods return {ok, ...} or
+{ok: False, error} with actionable messages — a missing/rejected API
+key explains how to connect, never a traceback. Linear mutations need
+the issue UUID, not "ENG-123" — fetch the issue first."""
 
-Surfaces the user's assigned issues, workspace issues (optionally
-incremental by updatedAt), teams, single issues, and issue comments,
-plus the two common writes — updating an issue and posting a comment.
-All methods return a consistent {ok, ...} / {ok: False, error} shape;
-they never raise for expected failures.
-"""
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
+# The personal API key never enters the guest: every request names
+# `credential: {ref: "connector.key.linear"}` and the host injects
+# the Authorization header after recording (anybao ADR-008 §1).
+# Linear personal keys go RAW in Authorization (NO "Bearer " prefix —
+# that's OAuth-only; a Bearer prefix on a personal key yields a 401
+# that looks like a bad key).
 
 import json
 
@@ -99,7 +101,13 @@ def whoami():
 
 @span("linear.my_issues", kind="getter")  # noqa: F821 - guest global
 def my_issues(first=None, after=None):
-    """Issues assigned to the current user, newest-first."""
+    """Issues assigned to the current user, newest-first.
+
+    Returns `{ok, issues, hasNextPage, endCursor}` — pass
+    `after=endCursor` to page. Issue shape: `{id, identifier, title,
+    priority, url, createdAt, updatedAt, state: {name, type}, assignee:
+    {id, name}, team: {id, name, key}}`.
+    """
     q = ("query MyIssues($first: Int!, $after: String) {"
          " viewer { id assignedIssues(first: $first, after: $after, orderBy: updatedAt) {"
          " nodes { " + _ISSUE_FIELDS + " } pageInfo { hasNextPage endCursor } } } }")
@@ -113,7 +121,10 @@ def my_issues(first=None, after=None):
 @span("linear.list_issues", kind="getter")  # noqa: F821 - guest global
 def list_issues(first=None, after=None, updated_after=None):
     """Issues across the workspace, newest-first. `updated_after`
-    (ISO-8601) makes it incremental: only updatedAt >= it."""
+    (ISO-8601) makes it incremental: only updatedAt >= it.
+
+    .
+    """
     variables = {"first": _clamp_first(first), "after": after}
     if updated_after:
         variables["since"] = updated_after
@@ -147,7 +158,10 @@ def list_teams():
 @span("linear.get_issue", kind="getter")  # noqa: F821 - guest global
 def get_issue(id):
     """One issue with full detail (includes description Markdown). `id`
-    accepts the issue UUID or its identifier (e.g. "ENG-123")."""
+    accepts the issue UUID or its identifier (e.g. "ENG-123").
+
+    Returns `{ok, issue}`.
+    """
     if not id or not isinstance(id, str):
         return {"ok": False, "error": "id is required"}
     q = "query GetIssue($id: String!) { issue(id: $id) { " + _ISSUE_FIELDS_FULL + " } }"
@@ -162,8 +176,11 @@ def get_issue(id):
 
 @span("linear.list_comments", kind="getter")  # noqa: F821 - guest global
 def list_comments(issue_id, first=None, after=None):
-    """Comments on an issue, oldest-first. `issue_id` accepts UUID or
-    identifier."""
+    """Comments on an issue, oldest-first (UUID or identifier).
+
+    Returns `{ok, issueId, identifier, comments: [{id, body, createdAt,
+    updatedAt, url, user: {id, name}}], hasNextPage, endCursor}`.
+    """
     if not issue_id:
         return {"ok": False, "error": "issue_id is required"}
     q = ("query ListComments($id: String!, $first: Int!, $after: String) {"
@@ -184,11 +201,15 @@ def list_comments(issue_id, first=None, after=None):
 @span("linear.update_issue", kind="mutator")  # noqa: F821 - guest global
 def update_issue(id, title=None, description=None, state_id=None,
                  assignee_id=None, priority=None):
-    """Update fields on one issue (Linear `issueUpdate`). `id` is the
-    issue's UUID (the `id` field on a fetched issue), NOT the human
-    identifier — the mutation does not resolve "ENG-123"; grab the UUID
+    """Update fields on one issue (Linear `issueUpdate`); id = UUID.
+
+    `id` is the issue's UUID (the `id` field on a fetched issue), NOT
+    the human identifier — the mutation does not resolve "ENG-123"; grab the UUID
     from get_issue / my_issues / list_issues first. Only the fields you
-    pass are touched; `priority` is Linear's 0-4 scale."""
+    pass are touched; `priority` is Linear's 0-4 scale.
+
+    Returns `{ok, issue}` (full detail, post-update).
+    """
     if not id or not isinstance(id, str):
         return {"ok": False, "error": "id is required (the issue's "
                 "UUID, e.g. from get_issue(...).issue.id)"}
@@ -221,7 +242,11 @@ def update_issue(id, title=None, description=None, state_id=None,
 @span("linear.create_comment", kind="mutator")  # noqa: F821 - guest global
 def create_comment(issue_id, body):
     """Post a comment on an issue (Linear `commentCreate`). `issue_id`
-    is the issue's UUID; `body` is Markdown."""
+    is the issue's UUID; `body` is Markdown.
+
+    Returns `{ok, comment: {id, body, createdAt, updatedAt, url,
+    user}}`.
+    """
     if not issue_id or not isinstance(issue_id, str):
         return {"ok": False, "error": "issue_id is required (the issue's UUID)"}
     if not body or not isinstance(body, str):

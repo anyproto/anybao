@@ -1,17 +1,18 @@
-"""attio@v1 — read-only Attio CRM connector.
+"""Read-only Attio CRM connector — records, lists, notes, members.
 
-Token connector against the Attio REST API (v2): the access token
-never enters the guest — every request names `credential:
-{ref: "connector.key.attio", prefix: "Bearer "}` and the host injects
-the Authorization header after recording (anybao ADR-008 §1).
-Surfaces people / companies / deals / lists / notes / workspace
-members. Ingestion only — never writes back to Attio.
+Discover the workspace's objects and attribute schemas, query records
+(people / companies / deals) with Attio's filter/sort DSL, page list
+(pipeline) entries, read free-text notes, resolve workspace members.
+Ingestion only — never writes back. Methods return {ok, ...} or
+{ok: False, error} with actionable messages. Fresh Attio tokens have
+NO scopes and 403 until read scopes are granted — errors list which."""
 
-GOTCHA: Attio access tokens default to NO scopes and silently 403
-until the user grants read scopes on the integration (Workspace
-settings -> Developers). The "not connected" / 403 errors enumerate
-the required read scopes.
-"""
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
+# Attio REST API v2. The access token never enters the guest: every
+# request names `credential: {ref: "connector.key.attio", prefix:
+# "Bearer "}` and the host injects the Authorization header after
+# recording (anybao ADR-008 §1).
 
 import json
 
@@ -102,8 +103,12 @@ def _data(res):
 
 @span("attio.whoami", kind="getter")  # noqa: F821 - guest global
 def whoami():
-    """Credential/scope sanity check — lists workspace members (there is
-    no dedicated token-self endpoint)."""
+    """Credential/scope sanity check via the workspace-members list.
+
+    (There is no dedicated token-self endpoint.)
+
+    Returns `{ok, connected, memberCount, members}`.
+    """
     res = _request("get", "/workspace_members")
     if not res["ok"]:
         return res
@@ -113,16 +118,22 @@ def whoami():
 
 @span("attio.list_objects", kind="getter")  # noqa: F821 - guest global
 def list_objects():
-    """Which standard/custom objects exist and their slugs (people /
-    companies / deals / ...)."""
+    """The workspace's standard/custom objects and their slugs.
+
+    (people / companies / deals / ...)
+
+    Returns `{ok, objects}`.
+    """
     res = _request("get", "/objects")
     return res if not res["ok"] else {"ok": True, "objects": _data(res)}
 
 
 @span("attio.list_attributes", kind="getter")  # noqa: F821 - guest global
 def list_attributes(object):
-    """The attribute schema for one object — needed to know which
-    attribute slugs to read/map."""
+    """One object's attribute schema — which slugs exist to read/map.
+
+    Returns `{ok, attributes}`.
+    """
     if not object:
         return {"ok": False, "error": "object (slug or UUID) is required"}
     res = _request("get", f"/objects/{object}/attributes")
@@ -131,8 +142,12 @@ def list_attributes(object):
 
 @span("attio.query_records", kind="getter")  # noqa: F821 - guest global
 def query_records(object, filter=None, sorts=None, limit=None, offset=None):
-    """The workhorse: page people / companies / deals with optional
-    Attio filter + sorts. limit default 100, max 500."""
+    """The workhorse: page one object's records (filter/sort DSL).
+
+    People / companies / deals; limit default 100, max 500.
+
+    Returns `{ok, records, count, offset, limit}`.
+    """
     if not object:
         return {"ok": False, "error": "object (slug or UUID) is required"}
     body = {"limit": _clamp_limit(limit, 100),
@@ -151,7 +166,10 @@ def query_records(object, filter=None, sorts=None, limit=None, offset=None):
 
 @span("attio.get_record", kind="getter")  # noqa: F821 - guest global
 def get_record(object, record_id):
-    """Single record by record_id UUID."""
+    """Single record by record_id UUID.
+
+    Returns `{ok, record}`.
+    """
     if not object:
         return {"ok": False, "error": "object (slug or UUID) is required"}
     if not record_id:
@@ -164,14 +182,20 @@ def get_record(object, record_id):
 
 @span("attio.list_lists", kind="getter")  # noqa: F821 - guest global
 def list_lists():
-    """The user's pipelines/segments."""
+    """The user's pipelines/segments.
+
+    Returns `{ok, lists}`.
+    """
     res = _request("get", "/lists")
     return res if not res["ok"] else {"ok": True, "lists": _data(res)}
 
 
 @span("attio.query_list_entries", kind="getter")  # noqa: F821 - guest global
 def query_list_entries(list, filter=None, sorts=None, limit=None, offset=None):
-    """Page a list's entries — same semantics as query_records."""
+    """Page a list's entries — same semantics as query_records.
+
+    Returns `{ok, entries, count, offset, limit}`.
+    """
     if not list:
         return {"ok": False, "error": "list (slug or UUID) is required"}
     body = {"limit": _clamp_limit(limit, 100),
@@ -190,7 +214,10 @@ def query_list_entries(list, filter=None, sorts=None, limit=None, offset=None):
 
 @span("attio.list_notes", kind="getter")  # noqa: F821 - guest global
 def list_notes(limit=None, offset=None):
-    """Free-text notes attached to records."""
+    """Free-text notes attached to records.
+
+    Returns `{ok, notes, count, offset, limit}`.
+    """
     limit = _clamp_limit(limit, 50)
     offset = offset if isinstance(offset, int) and offset >= 0 else 0
     res = _request("get", f"/notes?limit={limit}&offset={offset}")
@@ -203,7 +230,10 @@ def list_notes(limit=None, offset=None):
 
 @span("attio.list_workspace_members", kind="getter")  # noqa: F821 - guest global
 def list_workspace_members():
-    """Team roster for owner/assignee resolution."""
+    """Team roster for owner/assignee resolution.
+
+    Returns `{ok, members}`.
+    """
     res = _request("get", "/workspace_members")
     return res if not res["ok"] else {"ok": True, "members": _data(res)}
 

@@ -1,18 +1,22 @@
-"""figma@v1 — read-only connector for Figma (REST).
+"""Read-only Figma connector — file metadata, comments, text content.
 
-Token connector: the Personal Access Token never enters the guest —
-every request names `credential: {ref: "connector.key.figma",
-header: "X-Figma-Token"}` (Figma's own header, NOT
-Authorization/Bearer — that's OAuth-only) and the host injects it
-after recording (anybao ADR-008 §1).
+Account identity, lightweight file metadata (cheap change checks),
+threaded file comments (markdown), and a design file's extracted
+TEXT-layer content — deliberately never the multi-megabyte raw node
+tree. Figma has no "list all my files" API: pass a file key or a
+pasted figma.com URL (file/design/board/proto links all parse).
+Project/team listing needs the OAuth-only projects:read scope — a
+plain PAT 403s there, and the error says so. Methods return {ok, ...}
+or {ok: False, error}; 429 backoff built in."""
 
-Surfaces the SECOND-BRAIN-useful slices of a design file: account
-identity, lightweight file metadata, threaded comments, and the
-extracted TEXT-layer content — deliberately NOT the multi-megabyte
-raw node tree. Figma has no "list all my files" API, so callers
-supply a file URL/key. Rate limits are tight and per-minute; 429
-honors Retry-After with bounded backoff.
-"""
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
+# The Personal Access Token never enters the guest: every request
+# names `credential: {ref: "connector.key.figma", header:
+# "X-Figma-Token"}` (Figma's own header, NOT Authorization/Bearer —
+# that's OAuth-only); the host injects it after recording (anybao
+# ADR-008 §1). Rate limits are tight and per-minute; 429 honors
+# Retry-After with bounded backoff.
 
 import re
 
@@ -123,8 +127,9 @@ def me():
 
 @span("figma.get_file_meta", kind="getter")  # noqa: F821 - guest global
 def get_file_meta(file_key):
-    """Lightweight file metadata — cheap "exists / has it changed?"
-    check before pulling text. Accepts a key or figma.com URL."""
+    """Lightweight file metadata — a cheap has-it-changed check.
+
+    Run it before pulling text. Accepts a key or figma.com URL."""
     key = _parse_file_key(file_key)
     if not key:
         return {"ok": False, "error": "file_key (or a figma.com file URL) is required"}
@@ -140,8 +145,7 @@ def get_file_meta(file_key):
 
 @span("figma.list_comments", kind="getter")  # noqa: F821 - guest global
 def list_comments(file_key):
-    """All comments on a file, markdown-rendered, threaded via
-    parentId."""
+    """All comments on a file, markdown-rendered (threads via parentId)."""
     key = _parse_file_key(file_key)
     if not key:
         return {"ok": False, "error": "file_key (or a figma.com file URL) is required"}
@@ -160,8 +164,9 @@ def list_comments(file_key):
 
 @span("figma.get_file_text", kind="getter")  # noqa: F821 - guest global
 def get_file_text(file_key, depth=None):
-    """Every TEXT layer's content from the depth-limited node tree
-    (default depth 8). NEVER returns the raw tree."""
+    """Every TEXT layer's content; NEVER the raw node tree.
+
+    Walks the depth-limited tree (default depth 8)."""
     key = _parse_file_key(file_key)
     if not key:
         return {"ok": False, "error": "file_key (or a figma.com file URL) is required"}
@@ -179,8 +184,10 @@ def get_file_text(file_key, depth=None):
 
 @span("figma.list_project_files", kind="getter")  # noqa: F821 - guest global
 def list_project_files(project_id):
-    """Files in a Figma project. NOTE: needs the projects:read scope,
-    which is private-OAuth-app-only — a plain PAT usually 403s here."""
+    """Files in a Figma project (needs the projects:read scope).
+
+    That scope is private-OAuth-app-only — a plain PAT usually 403s
+    here."""
     if not project_id or not isinstance(project_id, str):
         return {"ok": False, "error": "project_id is required"}
     r = _get(f"/projects/{project_id}/files")

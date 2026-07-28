@@ -1,22 +1,27 @@
-"""github@v1 — the user's GitHub work context (issues, pull requests
-with files + reviews, commits, repos, notifications, README/contents).
-Read-first: the only write path is the raw request() escape hatch,
-which stays pinned to api.github.com.
+"""The user's GitHub work context — issues, PRs, commits, repos, files.
 
-Token connector: a fine-grained Personal Access Token, never in guest
-code — every request names `credential: {ref: "connector.key.github",
-prefix: "Bearer "}` and the host injects the Authorization header
-after recording (anybao ADR-008 §1). Wraps the REST API at
-https://api.github.com with a shared _fetch helper that sets the
-required headers, follows the Link header for pagination, and backs
-off on rate-limit 403/429 (honoring Retry-After via the sleep effect).
-Every method returns a consistent {ok, ...} / {ok: False, error} shape
-and trims GitHub's huge payloads down to small objects so the agent's
-context isn't flooded. Trim, don't rename: kept fields carry the API's
-own names (html_url, updated_at, user.login, …) so the model's
-knowledge of the GitHub API transfers; the only invented keys are
-derived values with no upstream scalar (repo, is_pr, text, kind).
-"""
+Assigned issues/PRs, repo issues, targeted search, one issue with
+comments, pull requests (branch refs, draft/merged; detail adds
+changed files + review verdicts), recent commits, your repos + repo
+metadata, the notification inbox, README / file contents (decoded,
+trimmed). Anything else: `request()` — a raw authorized call, the one
+write path, pinned to api.github.com. Fields keep the GitHub API's
+own names (html_url, user.login, …) — trimmed subsets, not renames.
+Methods return {ok, ...} or {ok: False, error}; search budget 30/min
+(use search_issues sparingly), other reads 5000/hr, 429 backoff
+built in."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
+# A fine-grained Personal Access Token, never in guest code: every
+# request names `credential: {ref: "connector.key.github", prefix:
+# "Bearer "}` and the host injects the Authorization header after
+# recording (anybao ADR-008 §1). A shared _fetch sets the required
+# headers, follows the Link header for pagination, and backs off on
+# rate-limit 403/429 (Retry-After via the sleep effect). Trim, don't
+# rename: kept fields carry the API's own names so the model's
+# knowledge of the GitHub API transfers; the only invented keys are
+# derived values with no upstream scalar (repo, is_pr, text, kind).
 
 import base64
 import json
@@ -274,7 +279,12 @@ def whoami():
 
 @span("github.list_my_issues", kind="getter")  # noqa: F821 - guest global
 def list_my_issues(filter=None, state=None, since=None, per_page=None):
-    """Issues + PRs assigned to / created by / mentioning the user."""
+    """Issues + PRs assigned to / created by / mentioning the user.
+
+    Returns `{ok, items}` — item shape: `{number, title, state,
+    html_url, repository_url, repo, user: {login}, labels, is_pr,
+    updated_at, body}` (body trimmed to 2000 chars).
+    """
     per_page = _clamp(per_page, 30, 100)
     res = _paged("/issues", {
         "filter": filter or "assigned", "state": state or "open",
@@ -301,8 +311,12 @@ def list_repo_issues(owner, repo, state=None, since=None, per_page=None):
 
 @span("github.search_issues", kind="getter")  # noqa: F821 - guest global
 def search_issues(q, per_page=None):
-    """Targeted issue/PR search (GitHub search syntax). Budget is
-    30 requests/min — use sparingly."""
+    """Targeted issue/PR search with GitHub search syntax.
+
+    Budget is 30 requests/min — use sparingly.
+
+    Returns `{ok, totalCount, incompleteResults, items}`.
+    """
     if not q:
         return {"ok": False, "error": "q (search query) is required"}
     resp = _fetch("/search/issues", {"q": q, "per_page": _clamp(per_page, 30, 100)})
@@ -339,8 +353,14 @@ def get_issue(owner, repo, number):
 
 @span("github.list_notifications", kind="getter")  # noqa: F821 - guest global
 def list_notifications(all=False, since=None, per_page=None):
-    """The authenticated user's notification inbox (unread by default;
-    all=True includes read)."""
+    """The authenticated user's notification inbox.
+
+    Unread by default; all=True includes read.
+
+    Returns `{ok, items: [{id, reason, subject: {title, type, url},
+    repository: {full_name}, updated_at, unread}]}`. Needs the PAT's
+    Notifications permission.
+    """
     per_page = _clamp(per_page, 30, 100)
     res = _paged("/notifications", {
         "all": "true" if all else "false", "since": since,
@@ -360,8 +380,14 @@ def list_notifications(all=False, since=None, per_page=None):
 
 @span("github.list_pull_requests", kind="getter")  # noqa: F821 - guest global
 def list_pull_requests(owner, repo, state=None, base=None, per_page=None):
-    """One repo's pull requests proper (branch refs, draft/merged),
-    most recently updated first."""
+    """One repo's pull requests, most recently updated first.
+
+    PRs proper: branch refs, draft/merged state.
+
+    Returns `{ok, items}` — item shape: `{number, title, state,
+    merged_at, draft, html_url, repo, user: {login}, head: {ref}, base:
+    {ref}, updated_at, body}` (body trimmed to 2000 chars).
+    """
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     per_page = _clamp(per_page, 30, 100)
@@ -375,9 +401,10 @@ def list_pull_requests(owner, repo, state=None, base=None, per_page=None):
 
 @span("github.get_pull_request", kind="getter")  # noqa: F821 - guest global
 def get_pull_request(owner, repo, number):
-    """One PR: detail (mergeable, diff stats) + changed files + review
-    verdicts. Conversation comments live on get_issue with the same
-    number."""
+    """One PR: detail + changed files + review verdicts.
+
+    Detail adds mergeable state and diff stats. Conversation comments
+    live on get_issue with the same number."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     if number is None:
@@ -410,8 +437,15 @@ def get_pull_request(owner, repo, number):
 
 @span("github.list_commits", kind="getter")  # noqa: F821 - guest global
 def list_commits(owner, repo, sha=None, path=None, since=None, per_page=None):
-    """Recent commits, newest first. `sha` = branch/tag/sha to start
-    from (default branch if omitted); `path` filters to one file/dir."""
+    """Recent commits, newest first.
+
+    `sha` = branch/tag/sha to start from (default branch if
+    omitted); `path` filters to one file/dir.
+
+    Returns `{ok, items: [{sha, commit: {message, author: {name, date}},
+    author: {login}, html_url}]}` (sha shortened to 12, message first
+    line).
+    """
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     per_page = _clamp(per_page, 30, 100)
@@ -426,7 +460,12 @@ def list_commits(owner, repo, sha=None, path=None, since=None, per_page=None):
 def list_repos(affiliation=None, sort=None, per_page=None):
     """Repos the user owns / collaborates on. `sort`: pushed (default)
     | created | updated | full_name; `affiliation`: comma-set of
-    owner|collaborator|organization_member (default all three)."""
+    owner|collaborator|organization_member (default all three).
+
+    Returns `{ok, items: [{full_name, private, fork, archived,
+    description, default_branch, language, stargazers_count,
+    open_issues_count, created_at, pushed_at, html_url}]}`.
+    """
     per_page = _clamp(per_page, 30, 100)
     res = _paged("/user/repos", {
         "sort": sort or "pushed", "direction": "desc",
@@ -438,8 +477,9 @@ def list_repos(affiliation=None, sort=None, per_page=None):
 
 @span("github.get_repo", kind="getter")  # noqa: F821 - guest global
 def get_repo(owner, repo):
-    """One repo's metadata (description, default branch, language,
-    topics, counts)."""
+    """One repo's metadata.
+
+    Description, default branch, language, topics, counts."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     resp = _fetch(f"/repos/{owner}/{repo}")
@@ -456,8 +496,9 @@ def get_repo(owner, repo):
 
 @span("github.request", kind="mutator")  # noqa: F821 - guest global
 def request(method, path, params=None, body=None):
-    """Raw authorized GitHub API request — the escape hatch for
-    endpoints the methods above don't wrap (including writes).
+    """Raw authorized GitHub API request — the escape hatch.
+
+    For endpoints the other methods don't wrap (including writes).
     `method`: get|post|put|patch|delete; `path` starts with "/" (pinned
     to api.github.com — the credential never goes anywhere else);
     `body` is sent as JSON. Returns {ok, status, data} (parsed JSON;

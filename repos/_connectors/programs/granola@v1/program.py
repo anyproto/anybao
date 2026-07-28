@@ -1,23 +1,25 @@
-"""granola@v1 — read-only connector for Granola (AI meeting notes).
+"""Read-only Granola connector — AI meeting notes, transcripts, folders.
 
-Token connector against Granola's official public REST API: the grn_
-key never enters the guest — every request names `credential:
-{ref: "connector.key.granola", prefix: "Bearer "}` and the host
-injects the Authorization header after recording (anybao ADR-008 §1).
-Surfaces meeting notes (list), a single note with summary + optional
-transcript, and the folder tree. Read-only — the public API has no
-writes. All methods return {ok, ...} / {ok: False, error}.
+List meeting notes (newest-first, filtered by created_after / folder,
+cursor-paginated), fetch one note with its AI summary and optionally
+the raw transcript, list the folder tree. The public API has no
+writes. Methods return {ok, ...} or {ok: False, error}. API keys are
+Business/Enterprise-plan only (Settings -> Connectors -> API keys);
+a meeting appears only after summary + transcript finish generating."""
 
-Plan gate: Granola API keys are minted only on Business/Enterprise
-plans (Settings -> Connectors -> API keys); free/Basic users cannot
-get a grn_ key.
+__any_tool__ = True  # agent-callable (ADR-010 §4)
 
-CAVEAT — endpoint shapes: the Granola public API is young (~Feb 2026)
-and these paths/field names (GET /v1/notes, GET /v1/notes/{id}
-?include=transcript, GET /v1/folders, cursor pagination) are from the
-bobrik plan's 2026-06 verification. Confirm against Granola's live API
-docs on first use; adjust _BASE / the response field reads if drifted.
-"""
+# The grn_ key never enters the guest: every request names
+# `credential: {ref: "connector.key.granola", prefix: "Bearer "}`;
+# the host injects the Authorization header after recording (anybao
+# ADR-008 §1).
+#
+# CAVEAT — endpoint shapes: the Granola public API is young (~Feb
+# 2026) and these paths/field names (GET /v1/notes, GET /v1/notes/
+# {id}?include=transcript, GET /v1/folders, cursor pagination) are
+# from the bobrik plan's 2026-06 verification. Confirm against
+# Granola's live API docs on first use; adjust _BASE / the response
+# field reads if drifted.
 
 _BASE = "https://public-api.granola.ai/v1"
 _KEY_PATH = "Granola desktop app -> Settings -> Connectors -> API keys"
@@ -128,7 +130,11 @@ def _page_all(path, base_params, row_keys, cursor, limit, max_items):
 @span("granola.verify", kind="getter")  # noqa: F821 - guest global
 def verify():
     """Connectivity check + key validator (pulls a 1-item note page).
-    Use right after seeding a key."""
+    Use right after seeding a key.
+
+    Returns `{ok, connected: true}` or `{ok: false, error}`. Use right
+    after a key is seeded.
+    """
     r = _get("/notes", {"limit": 1})
     if not r["ok"]:
         return r
@@ -138,10 +144,16 @@ def verify():
 @span("granola.list_notes", kind="getter")  # noqa: F821 - guest global
 def list_notes(created_after=None, folder_id=None, cursor=None, limit=None,
                max_items=None):
-    """Page the user's meeting notes (newest-first per the API). A note
-    only appears once its AI summary + transcript finished generating.
+    """Page the user's meeting notes, newest-first.
+
+    A note only appears once its AI summary + transcript finished
+    generating.
     With max_items set, follows the cursor across pages; otherwise one
-    page + nextCursor."""
+    page + nextCursor.
+
+    Returns `{ok, notes, nextCursor}`. A note only appears once its AI
+    summary + transcript have finished generating.
+    """
     max_items = int(max_items) if isinstance(max_items, (int, float)) and max_items > 0 else None
     r = _page_all("/notes", {"created_after": created_after, "folder_id": folder_id},
                   ["notes", "data"], cursor, _clamp_limit(limit), max_items)
@@ -152,9 +164,14 @@ def list_notes(created_after=None, folder_id=None, cursor=None, limit=None,
 
 @span("granola.get_note", kind="getter")  # noqa: F821 - guest global
 def get_note(id, include_transcript=False):
-    """One note with summary and (optionally) the raw transcript. A
-    freshly-ended meeting whose summary/transcript hasn't generated yet
-    may 404 — retry shortly."""
+    """One note with summary and (optionally) the raw transcript.
+
+    A freshly-ended meeting whose summary/transcript hasn't generated
+    yet may 404 — retry shortly.
+
+    Returns `{ok, note}`. A freshly-ended meeting may 404 until
+    generation finishes — retry shortly.
+    """
     if not id or not isinstance(id, str):
         return {"ok": False, "error": "id is required"}
     params = {"include": "transcript"} if include_transcript else None
@@ -174,8 +191,12 @@ def get_note(id, include_transcript=False):
 
 @span("granola.list_folders", kind="getter")  # noqa: F821 - guest global
 def list_folders(cursor=None, limit=None, max_items=None):
-    """Accessible folders (hierarchy via parent_folder_id), cursor-
-    paginated — same paging contract as list_notes."""
+    """Accessible folders, cursor-paginated like list_notes.
+
+    Hierarchy rides parent_folder_id.
+
+    Returns `{ok, folders, nextCursor}`.
+    """
     max_items = int(max_items) if isinstance(max_items, (int, float)) and max_items > 0 else None
     r = _page_all("/folders", {}, ["folders", "data"], cursor,
                   _clamp_limit(limit), max_items)

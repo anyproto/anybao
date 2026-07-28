@@ -1,17 +1,22 @@
-"""intercom@v1 — read a connected Intercom workspace. Read-first /
-ingestion-only: customer conversations (with full transcripts),
-contacts/leads, and help-center articles.
+"""Read-only Intercom connector — conversations, contacts, articles.
 
-Token connector: the Access Token never enters the guest — every
-request names `credential: {ref: "connector.key.intercom",
-prefix: "Bearer "}` and the host injects the Authorization header
-after recording (anybao ADR-008 §1). Every call also pins the
-REQUIRED `Intercom-Version: 2.15` header. Base URL
-https://api.intercom.io (US; EU/AU workspaces need an override —
-not yet configurable here). Cursor pagination rides
-`pages.next.starting_after`; 429 honors Retry-After with bounded
-backoff.
-"""
+Customer conversations (summaries via list, full transcripts via get,
+filtered search via Intercom's query DSL), contacts/leads (list +
+search), help-center articles. Ingestion only — no writes. Cursor
+pagination throughout: responses carry `pages`, pass
+`pages.next.starting_after` back as `starting_after`. Methods return
+{ok, ...} or {ok: False, error}. US-hosted API base; EU/AU workspaces
+are not yet supported."""
+
+__any_tool__ = True  # agent-callable (ADR-010 §4)
+
+# The Access Token never enters the guest: every request names
+# `credential: {ref: "connector.key.intercom", prefix: "Bearer "}`
+# and the host injects the Authorization header after recording
+# (anybao ADR-008 §1). Every call pins the REQUIRED
+# `Intercom-Version: 2.15` header. Base https://api.intercom.io (US;
+# EU/AU need an override — not yet configurable here). 429 honors
+# Retry-After with bounded backoff.
 
 import json
 
@@ -93,8 +98,10 @@ def _search_body(query, per_page, starting_after):
 
 @span("intercom.me", kind="getter")  # noqa: F821 - guest global
 def me():
-    """The authenticated app/admin context — cheapest connectivity
-    check."""
+    """The authenticated app/admin context — cheapest connectivity check.
+
+    Returns `{ok, me}`.
+    """
     r = _req("get", "/me")
     return r if not r["ok"] else {"ok": True, "me": r["body"]}
 
@@ -103,7 +110,11 @@ def me():
 def list_conversations(open=None, sort=None, order=None, per_page=None,
                        starting_after=None):
     """Page conversation SUMMARIES (no parts), newest updated first.
-    Cursor: pass nextCursor back as starting_after."""
+    Cursor: pass nextCursor back as starting_after.
+
+    Returns `{ok, conversations, pages}` — next page via
+    `pages.next.starting_after`.
+    """
     params = {"per_page": _clamp_per_page(per_page),
               "starting_after": starting_after, "sort": sort, "order": order}
     if open is not None:
@@ -118,8 +129,12 @@ def list_conversations(open=None, sort=None, order=None, per_page=None,
 
 @span("intercom.search_conversations", kind="getter")  # noqa: F821 - guest global
 def search_conversations(query, per_page=None, starting_after=None):
-    """Filtered conversation search via the Intercom query DSL
-    ({field, operator, value}, AND/OR groups)."""
+    """Filtered conversation search via the Intercom query DSL.
+
+    Queries are {field, operator, value} with AND/OR groups.
+
+    Returns `{ok, conversations, pages}`.
+    """
     if not query:
         return {"ok": False, "error": "query is required (Intercom search DSL: "
                                       "{field, operator, value})"}
@@ -134,9 +149,13 @@ def search_conversations(query, per_page=None, starting_after=None):
 
 @span("intercom.get_conversation", kind="getter")  # noqa: F821 - guest global
 def get_conversation(id, plaintext=True):
-    """One conversation WITH its message parts (the transcript;
-    Intercom caps at the 500 most recent parts). plaintext=True
-    renders bodies as plain text."""
+    """One conversation WITH its message parts — the transcript.
+
+    Intercom caps at the 500 most recent parts; plaintext=True
+    renders bodies as plain text.
+
+    Returns `{ok, conversation}`.
+    """
     if not id:
         return {"ok": False, "error": "conversation id is required"}
     params = {"display_as": "plaintext"} if plaintext else None
@@ -146,7 +165,10 @@ def get_conversation(id, plaintext=True):
 
 @span("intercom.list_contacts", kind="getter")  # noqa: F821 - guest global
 def list_contacts(per_page=None, starting_after=None):
-    """Page contacts and leads."""
+    """Page contacts and leads.
+
+    Returns `{ok, data, pages}`.
+    """
     r = _req("get", "/contacts", {"per_page": _clamp_per_page(per_page),
                                   "starting_after": starting_after})
     if not r["ok"]:
@@ -157,8 +179,12 @@ def list_contacts(per_page=None, starting_after=None):
 
 @span("intercom.search_contacts", kind="getter")  # noqa: F821 - guest global
 def search_contacts(query, per_page=None, starting_after=None):
-    """Filtered contact search (e.g. by email or custom attribute) via
-    the Intercom query DSL."""
+    """Filtered contact search via the Intercom query DSL.
+
+    E.g. by email or custom attribute.
+
+    Returns `{ok, data, pages}`.
+    """
     if not query:
         return {"ok": False, "error": "query is required (Intercom search DSL: "
                                       "{field, operator, value})"}
@@ -172,7 +198,10 @@ def search_contacts(query, per_page=None, starting_after=None):
 
 @span("intercom.list_articles", kind="getter")  # noqa: F821 - guest global
 def list_articles(per_page=None, starting_after=None):
-    """Page help-center articles."""
+    """Page help-center articles.
+
+    Returns `{ok, data, pages}`.
+    """
     r = _req("get", "/articles", {"per_page": _clamp_per_page(per_page),
                                   "starting_after": starting_after})
     if not r["ok"]:
