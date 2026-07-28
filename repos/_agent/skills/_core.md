@@ -36,6 +36,14 @@ the full doc (return shape, options). It works on any `use()`'d
 module — a repo connector included — and on bound handles. Docstrings
 are the single doc source; there is no separate schema to fetch.
 
+**Read the full description BEFORE first use.** The first time a
+conversation touches a module that isn't in `## Tools` (a repo
+connector, a space program), `help(mod)` it in the same cell that
+imports it — before calling anything. And `help(mod.method)` before
+any call whose argument or return shape you haven't seen this
+conversation. A guessed method name or kwarg costs a failed turn;
+`help()` costs one line.
+
 ## The module surface
 
 `use("name@vN")` imports a deployed module. The standing set:
