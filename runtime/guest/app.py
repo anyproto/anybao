@@ -23,6 +23,7 @@ import fractions  # noqa: F401
 import functools  # noqa: F401
 import hashlib  # noqa: F401
 import heapq  # noqa: F401
+import inspect  # noqa: F401
 import itertools  # noqa: F401
 import json
 import math  # noqa: F401
@@ -208,12 +209,12 @@ _PROXIES = {
     "os": _os_proxy,
 }
 
-# tier 1: pure stdlib, passes through (ADR-002 §4)
+# tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2)
 _ALLOWED = {
     "math", "json", "re", "itertools", "functools", "collections",
     "contextlib", "textwrap", "heapq", "bisect", "statistics",
     "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
-    "hashlib", "string", "copy", "unicodedata",
+    "hashlib", "string", "copy", "unicodedata", "inspect",
 }
 
 
@@ -230,8 +231,71 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         f"Available: {', '.join(sorted(_ALLOWED))}; "
         f"proxied: {', '.join(sorted(_PROXIES))}; "
         f"plus globals http, now(), rand(), env(), uuid4(), values, effects, "
-        f"effect(), span()."
+        f"effect(), span(), describe(), help()."
     )
+
+
+# ---- native introspection (ADR-010 §2) --------------------------------------
+
+def _sig_of(fn):
+    try:
+        return str(inspect.signature(fn))
+    except (ValueError, TypeError):
+        return "(…)"
+
+
+def _first_doc_line(obj):
+    for ln in (inspect.getdoc(obj) or "").splitlines():
+        if ln.strip():
+            return ln.strip()
+    return ""
+
+
+def _fn_heading(name, fn):
+    kind = getattr(fn, "__span_kind__", None)
+    return f"{name}{_sig_of(fn)}" + (f" [{kind}]" if kind else "")
+
+
+def describe(obj):
+    """Render an object's API from its code (ADR-010 §2): function →
+    `name(sig) [kind]` + full docstring; module/class/instance →
+    docstring, then one `name(sig) [kind] — summary` line per public
+    method (`_`-names and `main` hidden, ADR-010 §1). ONE renderer:
+    help() prints this and the toolcaller's `## Tools` embeds it."""
+    if inspect.isroutine(obj):
+        doc = inspect.getdoc(obj) or ""
+        return _fn_heading(obj.__name__, obj) + ("\n" + doc if doc else "")
+    if inspect.ismodule(obj):
+        # functions DEFINED here (kernel-injected globals are not)
+        items = [(n, f) for n, f in vars(obj).items()
+                 if isinstance(f, types.FunctionType)
+                 and f.__module__ == obj.__name__]
+    else:
+        cls = obj if isinstance(obj, type) else type(obj)
+        items = [(n, getattr(obj, n)) for n, f in vars(cls).items()
+                 if isinstance(f, types.FunctionType)]
+    lines = []
+    for n, f in items:
+        if n.startswith("_") or n == "main":
+            continue
+        summary = _first_doc_line(f)
+        lines.append("  " + _fn_heading(n, f)
+                     + (f" — {summary}" if summary else ""))
+    parts = [p for p in [inspect.getdoc(obj) or ""] if p]
+    if lines:
+        parts.append("Methods:\n" + "\n".join(lines))
+    return "\n\n".join(parts) if parts else f"<{type(obj).__name__}>"
+
+
+def _help(obj):
+    """Curated help: print(describe(obj)) through the cell's traced
+    print — the structured output channel, never pydoc's pager."""
+    text = describe(obj)
+    p = _ns.get("print")
+    if callable(p):
+        p(text)
+        return None
+    return text  # no cell printer (module top level): hand back the text
 
 
 # ---- curated builtins (ADR-002 §3) -----------------------------------------
@@ -248,7 +312,8 @@ _SAFE_NAMES = [
     "NotImplemented", "Ellipsis", "__build_class__", "__name__",
 ]
 # excluded on purpose: open, input, eval, exec, compile, breakpoint,
-# globals, locals, vars, help, raw __import__ (replaced by _guest_import)
+# globals, locals, vars, raw __import__ (replaced by _guest_import),
+# pydoc's help (replaced by the curated _help, ADR-010 §2)
 
 
 def _safe_builtins() -> dict:
@@ -261,6 +326,7 @@ def _safe_builtins() -> dict:
         if isinstance(obj, type) and issubclass(obj, BaseException):
             out[n] = obj
     out["__import__"] = _guest_import
+    out["help"] = _help
     return out
 
 
@@ -374,6 +440,9 @@ def span(name, kind=None):
                 raise
             _effect("span.end", {"ok": True, "output": _json_safe(out)})
             return out
+        # readable off the function (ADR-010 §1) — describe()/help()
+        # render it as the `[kind]` tag; signature/doc survive wraps()
+        wrapped.__span_kind__ = kind
         return wrapped
     return deco
 
@@ -454,6 +523,7 @@ def _fresh_ns() -> dict:
         "effects": effects,
         "span": span,
         "use": use,
+        "describe": describe,   # the doc renderer (ADR-010 §2)
         "subcell": _run_cell,   # cell-in-cell: the toolcaller's executor
     }
 
