@@ -551,23 +551,6 @@ impl Client {
         )
     }
 
-    /// Delete records from a dataset (`POST …/delete-records`).
-    pub fn delete_records(
-        &self,
-        space_id: &str,
-        object_id: &str,
-        dataset: &str,
-        record_ids: &[String],
-    ) -> Result<Value, AnyError> {
-        self.call(
-            "POST",
-            &format!("/v1/spaces/{space_id}/delete-records"),
-            Some(&json!({
-                "objectId": object_id, "dataset": dataset,
-                "recordIds": record_ids})),
-        )
-    }
-
     /// Set a single DEVICE-LOCAL field on an existing record — the
     /// `scope: "local"` write route (ADR-006 §3). The value never syncs;
     /// the dataset schema must declare `field` local-scope (else the

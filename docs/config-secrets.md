@@ -64,19 +64,19 @@ Guest code never needs the values: the host injects `credential:
 {ref}` headers after recording (ADR-008), and a missing key surfaces
 as each connector's actionable not-connected error.
 
-## Legacy layout and migration
+## Upgrading from the pre-split layout
 
-On an any server that predates the split, secrets live on the CONFIG
-object (`agent_config` rows, `localValue` field): serve warns, keeps
-working against that layout, and points the read-guard at the config
-object instead. Once the server is updated, the next boot **migrates
-automatically** — legacy secret rows are rewritten onto the secrets
-object and deleted from `agent_config`.
+There is **no migration**: secrets left on an old config object are
+ignored — re-import your keys once (Help → Import connector keys, or
+a `.connectors.env` and a restart). Serve warns loudly when it finds
+no secrets, and until the anthropic key is imported the llm effects
+fail, so the situation is obvious rather than silent.
 
 ## Server requirements
 
-The `any` server must provide `internal/agentsecrets` (the derived
+The `any` server must provide `internal/agentsecrets` — the derived
 secrets object + `agent_secrets` dataset with the local-scope `value`
-field, `SpaceInfo.agentSecretsObjectId`) — and, for the legacy layout,
-`internal/agentconfig`'s local-scope `localValue`. Deploy before the
-first serve as usual (ADR-009 §5): serve is space-only.
+field, reported as `SpaceInfo.agentSecretsObjectId` (anyproto/any#142).
+An older server means no stored secrets at all: serve warns and runs
+on whatever the seeds supplied this run. Deploy before the first serve
+as usual (ADR-009 §5): serve is space-only.

@@ -110,10 +110,6 @@ const CONFIG_DATASET: &str = "agent_config";
 const SECRETS_DATASET: &str = "agent_secrets";
 const SECRETS_FIELD: &str = "value";
 
-/// Legacy secret field on `agent_config` rows (pre-split installs and
-/// servers without `agentSecretsObjectId`).
-const LEGACY_SECRETS_FIELD: &str = "localValue";
-
 /// Space-scope config overrides read off the config object's
 /// `agent_config` dataset: one record per dotted key, `{key, value}`.
 /// These shadow the hardcoded `bootstrap` defaults (cascade:
@@ -243,59 +239,6 @@ fn bootstrap_secrets(
              keys; CLI: .connectors.env beside the config file); llm effects \
              will fail until one is set"
         );
-    }
-}
-
-/// One-time layout migration: secret rows found on the CONFIG object
-/// (legacy pre-split layout — `secret: true` + `localValue`) are
-/// rewritten onto the dedicated secrets object and deleted from
-/// `agent_config`. Idempotent (nothing to move → no-op) and
-/// best-effort: a failed move leaves the row in place for the next
-/// boot; the value is device-local either way.
-fn migrate_legacy_secrets(c: &Client, space: &str, config_obj: &str, secrets_obj: &str) {
-    let rows = c
-        .query(space, config_obj, CONFIG_DATASET, &json!({}))
-        .unwrap_or_default();
-    let mut moved: Vec<String> = Vec::new();
-    for row in &rows {
-        if row.get("secret").and_then(|v| v.as_bool()) != Some(true) {
-            continue;
-        }
-        let Some(secret_ref) = row.get("key").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let value = row
-            .get(LEGACY_SECRETS_FIELD)
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !value.is_empty() {
-            if let Err(e) = persist_local_secret(
-                c,
-                space,
-                secrets_obj,
-                SECRETS_DATASET,
-                SECRETS_FIELD,
-                secret_ref,
-                value,
-            ) {
-                warn!("config: could not migrate {secret_ref} to agent_secrets ({e}); kept");
-                continue;
-            }
-        }
-        moved.push(secret_ref.to_string());
-    }
-    if moved.is_empty() {
-        return;
-    }
-    match c.delete_records(space, config_obj, CONFIG_DATASET, &moved) {
-        Ok(_) => info!(
-            "config: migrated {} secret(s) from agent_config to agent_secrets",
-            moved.len()
-        ),
-        Err(e) => warn!(
-            "config: migrated {} secret(s) but could not delete the legacy rows ({e})",
-            moved.len()
-        ),
     }
 }
 
@@ -501,14 +444,12 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             cfg.config.insert(k, v);
         }
     }
-    // The guest read-guard target: the secrets object (split layout) or,
-    // on a pre-split any server, the config object the secrets still
-    // live on. Threaded into every run's Broker (sys_http).
-    let secrets_guard = match (&config_obj, &secrets_obj) {
-        (_, Some(sobj)) => {
-            if let Some(cobj) = &config_obj {
-                migrate_legacy_secrets(&client, &space, cobj, sobj);
-            }
+    // The guest read-guard target — the secrets object, threaded into
+    // every run's Broker (sys_http). No migration from the pre-split
+    // layout: secrets left on an old config object are ignored, and
+    // re-importing an .env is a two-click operation.
+    let secrets_guard = match &secrets_obj {
+        Some(sobj) => {
             let overrides = std::mem::take(&mut cfg.secret_overrides);
             bootstrap_secrets(
                 &client,
@@ -521,31 +462,14 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             );
             Some(sobj.clone())
         }
-        (Some(cobj), None) => {
+        None => {
             warn!(
-                "any server predates the agent_secrets split — secrets stay on the \
-                 config object (guest reads of it are blocked); update the server \
-                 to move them"
+                "space has no agentSecretsObjectId — any server too old for the \
+                 agent_secrets dataset; no stored secrets this run (update the \
+                 server, then import your keys)"
             );
-            let overrides = std::mem::take(&mut cfg.secret_overrides);
-            bootstrap_secrets(
-                &client,
-                &space,
-                cobj,
-                CONFIG_DATASET,
-                LEGACY_SECRETS_FIELD,
-                &mut cfg.secrets,
-                &overrides,
-            );
-            Some(cobj.clone())
-        }
-        (None, None) => {
-            warn!("space has no agentConfigObjectId — running on config defaults");
             if !cfg.secrets.contains_key(ANTHROPIC_SECRET_REF) {
-                warn!(
-                    "config: no anthropic key seeded and no config object to read a \
-                     device-local key from; llm effects will fail"
-                );
+                warn!("config: no anthropic key seeded; llm effects will fail");
             }
             None
         }
