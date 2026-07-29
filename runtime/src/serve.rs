@@ -465,9 +465,21 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         None => {
             warn!(
                 "space has no agentSecretsObjectId — any server too old for the \
-                 agent_secrets dataset; no stored secrets this run (update the \
-                 server, then import your keys)"
+                 agent_secrets dataset; nothing persists this run (update the \
+                 server so imported keys are stored)"
             );
+            // No store ≠ no secrets: hard seeds still power this run
+            // (the documented degraded mode — "runs on whatever the
+            // seeds supplied"); an empty value (a delete against the
+            // store) just masks any soft seed.
+            for (secret_ref, value) in std::mem::take(&mut cfg.secret_overrides) {
+                if value.is_empty() {
+                    cfg.secrets.remove(&secret_ref);
+                } else {
+                    info!("config: {secret_ref} seeded for this run only (no store)");
+                    cfg.secrets.insert(secret_ref, value);
+                }
+            }
             if !cfg.secrets.contains_key(ANTHROPIC_SECRET_REF) {
                 warn!("config: no anthropic key seeded; llm effects will fail");
             }
