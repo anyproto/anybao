@@ -35,8 +35,11 @@ enum Cmd {
         traces_dir: PathBuf,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// dotenv-style secrets, `ref=value` lines like .connectors.env
+        /// (which is also read, from the config file's dir / cwd; the
+        /// flag wins on duplicate refs)
         #[arg(long)]
-        secrets: Option<PathBuf>,
+        secrets_file: Option<PathBuf>,
         #[arg(long, default_value_t = 120.0)]
         timeout_s: f64,
         /// resolve use() from this space's deployed programs (name or
@@ -77,8 +80,12 @@ enum Cmd {
         config_file: Option<PathBuf>,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// dotenv-style HARD seeds, `ref=value` lines keyed by secret
+        /// ref — rewrites the device-local store like .connectors.env
+        /// and any-ui's .env import (empty value = delete); the flag
+        /// wins over .connectors.env on duplicate refs
         #[arg(long)]
-        secrets: Option<PathBuf>,
+        secrets_file: Option<PathBuf>,
     },
     /// publish a repo folder (programs/, skills/, README.md) to a
     /// space (hash-gated), so a running serve picks changes up on its
@@ -187,11 +194,17 @@ fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
     }
 }
 
-fn load_secrets(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>> {
-    Ok(load_map(path)?
-        .into_iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
-        .collect())
+/// `--secrets-file`: same dotenv `ref=value` format as
+/// [`config::SECRETS_ENV_FILE`]. An explicit path that can't be read
+/// is an error (unlike the optional sibling file).
+fn load_secrets_file(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>> {
+    match path {
+        None => Ok(BTreeMap::new()),
+        Some(p) => Ok(config::parse_secrets_env(
+            &std::fs::read_to_string(p)
+                .with_context(|| format!("secrets file at {}", p.display()))?,
+        )),
+    }
 }
 
 fn main() -> Result<()> {
@@ -211,7 +224,7 @@ fn main() -> Result<()> {
             programs,
             traces_dir,
             config,
-            secrets,
+            secrets_file,
             timeout_s,
             from_space,
             addr,
@@ -223,13 +236,19 @@ fn main() -> Result<()> {
             let host = config::Config::load(config_file.as_deref())?;
             let addr = addr.unwrap_or_else(|| host.addr.clone());
             let mut config = load_map(&config)?;
-            let secrets = load_secrets(&secrets)?;
+            // Secrets come from .connectors.env (picked up by
+            // Config::load) + --secrets-file only — env is not read.
+            // run has no device-local store, so every seed is just
+            // this run's in-memory map; empty values (a delete in the
+            // serve store) are dropped.
+            let mut secrets = host.secret_overrides.clone();
+            secrets.append(&mut load_secrets_file(&secrets_file)?);
+            secrets.retain(|_, v| !v.is_empty());
             // bootstrap parity with serve (closes dev D3): defaults
             // seed under any --config file (or_insert — the file
             // wins), so a scratch run needs no hand-built config;
             // any.base_url comes from --addr, never the space (you
             // can't read the space without already knowing the url).
-            // Secrets come from --secrets only — env is not read.
             config::bootstrap_maps(&mut config, &addr);
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
@@ -309,7 +328,7 @@ fn main() -> Result<()> {
             control_port,
             config_file,
             config,
-            secrets,
+            secrets_file,
         } => {
             let mut cfg = config::Config::load(config_file.as_deref())?;
             cfg.apply(config::CliOverrides {
@@ -325,7 +344,11 @@ fn main() -> Result<()> {
             for (k, v) in load_map(&config)? {
                 cfg.config.insert(k, v);
             }
-            cfg.secrets = load_secrets(&secrets)?;
+            // --secrets-file = HARD seeds, the CLI twin of any-ui's
+            // .env import: merged over .connectors.env (flag wins),
+            // rewriting the device-local store in bootstrap_secrets
+            cfg.secret_overrides
+                .append(&mut load_secrets_file(&secrets_file)?);
             config::bootstrap(&mut cfg);
             serve::serve(cfg)
         }

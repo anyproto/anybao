@@ -55,15 +55,17 @@ dev` lists your runs).
 
 - No `--config` needed for the default local server — `run` bootstraps
   like serve: `any.base_url` from `--addr` (default
-  `http://127.0.0.1:7001`), model-tier defaults, API keys from env.
+  `http://127.0.0.1:7001`), model-tier defaults.
   Pass `--config` only to override (the file wins over defaults).
-- LLM-free programs need no API key; `use("llm@v1")` picks up
-  `ANTHROPIC_API_KEY` from the environment (or `--secrets`).
+- LLM-free programs need no API key; `use("llm@v1")` needs
+  `llm.key.anthropic` from `.connectors.env` in cwd (env vars are NOT
+  read) or a `--secrets-file` (same dotenv `ref=value` format).
 - One program per step beats one giant program: cheap to re-run, and
   each leaves its own trace.
 - To test **deployed** programs (the space form, serve's resolver)
   instead of local copies: `anyrt run '<name>@vN' --from-space bao`
-  — no scratch dir, no `--config`, env API keys picked up like serve.
+  — no scratch dir, no `--config`; keys via `.connectors.env` /
+  `--secrets-file` like any run.
   See `docs/testing-from-space.md`.
 
 ## Known server quirks (verify before relying — fixed upstream eventually)

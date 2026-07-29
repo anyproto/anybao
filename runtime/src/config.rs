@@ -338,8 +338,10 @@ pub const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
 /// comments and blank lines ignored, optional single/double quotes
 /// stripped. Ref names are open — unknown refs are stored too, so a new
 /// connector needs no runtime change. An EMPTY value deletes the stored
-/// secret (explicit revoke). This is the pre-secret-system shortcut:
-/// values sit in plaintext — keep the file out of version control.
+/// secret (explicit revoke). `--secrets-file` feeds the same map from
+/// an explicit path (flag wins on duplicate refs). This is the
+/// pre-secret-system shortcut: values sit in plaintext — keep the file
+/// out of version control.
 pub const SECRETS_ENV_FILE: &str = ".connectors.env";
 
 /// Parse [`SECRETS_ENV_FILE`] content → hard-seed map. Malformed lines

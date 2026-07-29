@@ -31,10 +31,13 @@ secret (`llm.key.anthropic` from `ANTHROPIC_API_KEY`).
   `search.provider.deepresearch`, both `gemini` /
   `gemini-2.5-flash` / `https://generativelanguage.googleapis.com` /
   `api_key_ref: "google.key.gemini"`.
-- `bootstrap` seeds `secrets["google.key.gemini"]` from the
-  `GEMINI_API_KEY` env var, exactly parallel to the Anthropic key.
-  Secrets stay device-local (ADR-006 §3): env/`--secrets` only, never
-  config, never readable from cells (`config.get` refuses secret keys).
+- ~~`bootstrap` seeds `secrets["google.key.gemini"]` from the
+  `GEMINI_API_KEY` env var, exactly parallel to the Anthropic key.~~
+  (env sourcing removed 2026-07-28 — the ref seeds like any other
+  secret: `.connectors.env` / `--secrets-file` hard seeds into the
+  device-local store, see `docs/config-secrets.md`.) Secrets stay
+  device-local (ADR-006 §3): never config, never readable from cells
+  (`config.get` refuses secret keys).
 - Guest requests name `credential: {ref: "google.key.gemini",
   header: "x-goog-api-key"}`; the host injects the header value after
   the effect is recorded — the key never appears in the trace.

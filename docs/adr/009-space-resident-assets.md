@@ -40,7 +40,8 @@ confined to CLI bootstrap.
 
 One TOML file for everything host-side; CLI flags override file
 values; secrets NEVER appear in it (ADR-006 §3 / ADR-008 §1 unchanged:
-env vars, `--secrets`, device-local `localValue`).
+`.connectors.env` / `--secrets-file` hard seeds, device-local
+`localValue` — `docs/config-secrets.md`).
 
 ```toml
 # anybao.toml

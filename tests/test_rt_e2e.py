@@ -112,13 +112,13 @@ def run_rt(base, spec, args):
                               "base_url": f"{base}/llm",
                               "api_key_ref": "llm.key"},
     }))
-    (scratch / "secrets.json").write_text(json.dumps({"llm.key": "sk-test"}))
+    (scratch / "secrets.env").write_text("llm.key=sk-test\n")
     proc = subprocess.run(
         [rt_binary(), "run", spec, "--args", json.dumps(args),
          "--kernel", KERNEL, "--programs", ROOT / "repos" / "_agent" / "programs",
          "--traces-dir", scratch / "traces",
          "--config", scratch / "config.json",
-         "--secrets", scratch / "secrets.json"],
+         "--secrets-file", scratch / "secrets.env"],
         capture_output=True, text=True, timeout=300)
     out = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
     return proc, out, scratch

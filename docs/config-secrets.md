@@ -8,10 +8,11 @@ the per-space **secrets object** — the derived `agent_secrets` dataset
 config stays guest-readable while secrets are not. Env vars are **not
 read** (removed 2026-07-28); the only seeding paths are the ones below.
 
-## Seeding and rotation: `.connectors.env` (hard seeds)
+## Seeding and rotation: `.connectors.env` / `--secrets-file` (hard seeds)
 
 Put a dotenv-style `.connectors.env` **next to the config file**
-(fallback: cwd), keyed by the SECRET REF itself:
+(fallback: cwd) — or pass any such file explicitly with
+`anyrt serve --secrets-file <path>` — keyed by the SECRET REF itself:
 
 ```
 llm.key.anthropic=sk-ant-…
@@ -26,13 +27,19 @@ device-local store: missing → `bootstrapped`, different → `rotated
 untouched, so the file need not be complete. The ref set is **open** —
 any `connector.key.<x>` (or other ref) is stored, so a new connector
 needs no runtime change. Comments (`#`) and quotes are fine; malformed
-lines are skipped. This file holds plaintext keys — it is gitignored;
-keep it that way.
+lines are skipped. These files hold plaintext keys — `.connectors.env`
+is gitignored; keep it that way.
 
-In any-ui the same mechanism is fed **from memory** (no file
-persisted): Help → Import connector keys parses the picked .env into
-`Config::secret_overrides` and restarts the agent. Lib embedders use
-`ConfigBuilder::secret_override`.
+Both paths feed the same map (`Config::secret_overrides`); when a ref
+appears in both, `--secrets-file` wins. In any-ui the same mechanism
+is fed **from memory** (no file persisted): Help → Import connector
+keys parses the picked .env into `Config::secret_overrides` and
+restarts the agent. Lib embedders use `ConfigBuilder::secret_override`.
+
+`anyrt run` accepts the same `--secrets-file` (and reads
+`.connectors.env`), but a one-shot run has no store: seeds are this
+run's in-memory map only — nothing is persisted, and empty values are
+simply dropped.
 
 ## Soft seeds (embedder bootstrap)
 
