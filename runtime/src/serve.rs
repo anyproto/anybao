@@ -266,9 +266,49 @@ fn persist_local_secret(
     key: &str,
     secret: &str,
 ) -> Result<()> {
-    c.upsert_record(space, obj, dataset, key, &json!({"key": key, "secret": true}))?;
+    c.upsert_record(
+        space,
+        obj,
+        dataset,
+        key,
+        &json!({"key": key, "secret": true}),
+    )?;
     c.set_local_field(space, obj, dataset, key, field, &json!(secret))?;
     Ok(())
+}
+
+/// The serve-side secret write path for managed OAuth (ADR-011 §3) —
+/// the same two-step local-scope write the bootstrap uses, plus the
+/// synced non-secret metadata record.
+struct ServeSecretStore {
+    client: Arc<Client>,
+    space: String,
+    obj: String,
+}
+
+impl crate::oauth::SecretPersist for ServeSecretStore {
+    fn persist_secret(&self, key: &str, value: &str) -> Result<()> {
+        persist_local_secret(
+            &self.client,
+            &self.space,
+            &self.obj,
+            SECRETS_DATASET,
+            SECRETS_FIELD,
+            key,
+            value,
+        )
+    }
+
+    fn persist_meta(&self, key: &str, value: &Value) -> Result<()> {
+        self.client.upsert_record(
+            &self.space,
+            &self.obj,
+            SECRETS_DATASET,
+            key,
+            &json!({"key": key, "value": value}),
+        )?;
+        Ok(())
+    }
 }
 
 struct Shared {
@@ -486,6 +526,23 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             None
         }
     };
+    // Managed OAuth state (ADR-011): drains connector.oauth.* out of
+    // the static secret map — per-run broker snapshots never hold a
+    // refresh token (§4/§6). persist None = the documented degraded
+    // no-store mode: flows work, nothing survives the process.
+    let persist: Option<Box<dyn crate::oauth::SecretPersist>> = secrets_obj.as_ref().map(|obj| {
+        Box::new(ServeSecretStore {
+            client: client.clone(),
+            space: space.clone(),
+            obj: obj.clone(),
+        }) as Box<dyn crate::oauth::SecretPersist>
+    });
+    let oauth = Arc::new(crate::oauth::OauthState::new(
+        crate::oauth::builtin_providers(),
+        persist,
+    ));
+    oauth.seed(&mut cfg.secrets);
+
     let brain = client.get_brain(&space)?["objectId"]
         .as_str()
         .unwrap_or_default()
@@ -554,6 +611,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         aliases,
         code_space,
         secrets_guard,
+        oauth,
     });
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -617,6 +675,9 @@ pub struct RunCtx {
     /// object, or the config object on a pre-split server) — threaded
     /// into every Broker
     pub secrets_guard: Option<String>,
+    /// managed OAuth state (ADR-011) — one per serve, threaded into
+    /// every Broker
+    pub oauth: Arc<crate::oauth::OauthState>,
 }
 
 impl RunCtx {
@@ -670,6 +731,7 @@ impl RunCtx {
             Classifier::new(Some(&self.cfg.addr)),
         );
         b.secrets_guard = self.secrets_guard.clone();
+        b.oauth = Some(self.oauth.clone());
         b.resolver = Some(Box::new(AnyModuleResolver::new(
             self.client.clone(),
             &self.space,

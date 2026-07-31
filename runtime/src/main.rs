@@ -3,7 +3,7 @@
 //! live here; everything else is `anyrt::*`.
 
 use anyhow::{Context, Result};
-use anyrt::{anyapi, config, deploy, drift, resolver, runner, serve, stats, trace, view};
+use anyrt::{anyapi, config, deploy, drift, oauth, resolver, runner, serve, stats, trace, view};
 use anyrt::{broker, routes};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -244,6 +244,10 @@ fn main() -> Result<()> {
             let mut secrets = host.secret_overrides.clone();
             secrets.append(&mut load_secrets_file(&secrets_file)?);
             secrets.retain(|_, v| !v.is_empty());
+            // Managed OAuth (ADR-011): run has no device-local store —
+            // seeded oauth refs work this run only (degraded mode)
+            let oauth_state = Arc::new(oauth::OauthState::new(oauth::builtin_providers(), None));
+            oauth_state.seed(&mut secrets);
             // bootstrap parity with serve (closes dev D3): defaults
             // seed under any --config file (or_insert — the file
             // wins), so a scratch run needs no hand-built config;
@@ -297,6 +301,7 @@ fn main() -> Result<()> {
                 routes::Classifier::new(any_base.as_deref()),
             );
             broker.resolver = resolver;
+            broker.oauth = Some(oauth_state);
             let out = runner::run_program(
                 &cage,
                 broker,

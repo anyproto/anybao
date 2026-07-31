@@ -21,6 +21,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 // replay/serve wiring lifts them to top-level modules when it lands).
 
 use crate::caps::GrantSet;
+use crate::oauth::{OauthState, OAUTH_REF_PREFIX};
 use crate::replay::{resolve_blobs, DivergenceError, MockIndex, ReplayCursor};
 
 pub type SharedMailbox = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Value>>>;
@@ -104,6 +105,12 @@ pub struct Broker {
     /// refused before execution (ADR-008: secrets never enter guest
     /// code or traces; connectors authenticate via `credential: {ref}`).
     pub secrets_guard: Option<String>,
+    /// Managed OAuth state (ADR-011) — process-shared; None = no oauth
+    /// wiring (managed refs fail typed `not_configured`).
+    pub oauth: Option<Arc<OauthState>>,
+    /// Host-emit depth (ADR-011 §6): >0 while a syscall re-enters
+    /// `call` to record its own nested effect (`oauth.refresh`).
+    hosted: u32,
     span_stack: Vec<SpanFrame>,
     span_n: u64,
     resolve_cache: BTreeMap<String, Value>,
@@ -138,6 +145,8 @@ impl Broker {
             blobs: BTreeMap::new(),
             grants: None,
             secrets_guard: None,
+            oauth: None,
+            hosted: 0,
             span_stack: Vec::new(),
             span_n: 0,
             resolve_cache: BTreeMap::new(),
@@ -327,8 +336,12 @@ impl Broker {
 
         // Capability check precedes replay/mock consult AND execute
         // (ADR-002 §2): a denial is a recorded fact, never a silent gap.
+        // Host-emitted calls skip it (ADR-011 §6): the guest asked for
+        // the http cap; the nested refresh is the host's implementation
+        // detail, and a guest lacking `oauth.refresh` must not be able
+        // to break credentialed http.
         if let Some(grants) = &self.grants {
-            if !grants.allowed(&cap) {
+            if self.hosted == 0 && !grants.allowed(&cap) {
                 let message = format!("capability not granted: {cap} (effect {name})");
                 self.bump(class);
                 let cell = self.current_cell.clone();
@@ -350,6 +363,33 @@ impl Broker {
         }
 
         if self.mode == Mode::Replay {
+            // Host-emitted records (meta.hosted, ADR-011 §6) precede the
+            // guest record that triggered them; drain them through —
+            // write-through with the recorded outcome, error included
+            // (the guest record that follows already reflects its
+            // consequence) — instead of diverging on them.
+            loop {
+                let drained = self
+                    .cursor
+                    .as_mut()
+                    .expect("replay mode requires a cursor")
+                    .take_hosted_mismatch(name, &key);
+                let Some(rec) = drained else { break };
+                let rec_name = rec["effect"].as_str().unwrap_or("").to_string();
+                let rec_key = rec["key"].as_str().unwrap_or("").to_string();
+                let rec_input = rec.get("input").cloned().unwrap_or(Value::Null);
+                let rec_class = self.classify(&rec_name, &rec_input);
+                self.bump(rec_class);
+                let mut meta = rec
+                    .get("meta")
+                    .and_then(|m| m.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                meta.insert("mocked".into(), json!(true));
+                meta.insert("class".into(), json!(rec_class));
+                let _ =
+                    self.record_mocked(&rec_name, rec_input, &rec_key, span.as_deref(), &rec, meta);
+            }
             let rec = self
                 .cursor
                 .as_mut()
@@ -403,6 +443,17 @@ impl Broker {
         meta.insert("durMs".into(), json!(dur_ms));
         meta.insert("mocked".into(), json!(false));
         meta.insert("class".into(), json!(class));
+        if self.hosted > 0 {
+            // ADR-011 §6: mark host-emitted records — replay drains on
+            // this flag — and name the credential they serve
+            meta.insert("hosted".into(), json!(true));
+            if let Some(p) = payload.get("provider").and_then(|p| p.as_str()) {
+                meta.insert(
+                    "credential".into(),
+                    json!({"ref": format!("{OAUTH_REF_PREFIX}{p}")}),
+                );
+            }
+        }
         let cell = self.current_cell.clone();
         match result {
             Ok(output) => {
@@ -440,7 +491,11 @@ impl Broker {
             let url = payload.get("url").and_then(|u| u.as_str()).unwrap_or("");
             return self.classifier.kind(&verb.to_uppercase(), url);
         }
-        "read" // every other syscall is a read
+        match name {
+            // ADR-011 §5: the token lifecycle mutates device state
+            "oauth.connect" | "oauth.disconnect" | "oauth.refresh" => "mutate",
+            _ => "read",
+        }
     }
 
     // Boundary-owned capability truth: http routes classify to
@@ -491,6 +546,7 @@ impl Broker {
                 let present = self.env.contains_key(key);
                 Ok(json!({"present": present, "value": self.env.get(key)}))
             }
+            "oauth.refresh" => self.sys_oauth_refresh(payload),
             "module.resolve" => self.sys_module_resolve(payload),
             "batch" => self.sys_batch(payload),
             "trace.effects_of" => self.sys_effects_of(payload),
@@ -503,7 +559,84 @@ impl Broker {
         }
     }
 
-    fn sys_http(&self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
+    /// Host-emitted nested effect (ADR-011 §6, the batch re-entry
+    /// precedent): records inside the current crossing, at a lower seq
+    /// than the outer record; skips the grant gate.
+    fn call_hosted(&mut self, name: &str, payload: Value) -> Result<Value, EffectFailure> {
+        self.hosted += 1;
+        let out = self.call(name, payload);
+        self.hosted -= 1;
+        out
+    }
+
+    /// The refresh-token exchange as its own recorded effect (ADR-011
+    /// §6) — host-emitted only: the one nondeterministic step that
+    /// would otherwise hide inside an http call.
+    fn sys_oauth_refresh(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        if self.hosted == 0 {
+            return Err(EffectFailure {
+                type_: "host_only".into(),
+                message: "oauth.refresh is host-emitted at credential injection — \
+                          pass `credential: {ref}` on http calls instead"
+                    .into(),
+            });
+        }
+        let state = self.oauth.clone().ok_or_else(|| EffectFailure {
+            type_: "not_configured".into(),
+            message: "oauth is not wired into this runtime".into(),
+        })?;
+        let provider = payload
+            .get("provider")
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        state.refresh(provider)
+    }
+
+    /// ADR-011 §6: managed-ref resolution at injection time — cached
+    /// access token while it outlives the margin, else a single-flight
+    /// refresh through a host-emitted `oauth.refresh` record.
+    fn resolve_managed(&mut self, r: &str) -> Result<String, EffectFailure> {
+        let state = self.oauth.clone().ok_or_else(|| EffectFailure {
+            type_: "not_configured".into(),
+            message: format!("credential ref {r:?} is managed but oauth is not wired in"),
+        })?;
+        let provider = r.strip_prefix(OAUTH_REF_PREFIX).unwrap_or("");
+        if !state.providers.contains_key(provider) {
+            // sub-refs (`connector.oauth.google.refresh`) land here too:
+            // only provider HANDLES are injectable — the stored values
+            // never are (ADR-011 §4)
+            return Err(EffectFailure {
+                type_: "not_configured".into(),
+                message: format!(
+                    "no oauth provider for credential ref {r:?} — managed refs \
+                     name a provider handle (e.g. connector.oauth.google); \
+                     stored sub-refs are host-internal"
+                ),
+            });
+        }
+        if let Some(tok) = state.fresh_token(r) {
+            return Ok(tok);
+        }
+        let gate = state.flight_gate(r);
+        let _flight = gate.lock().expect("oauth flight gate poisoned");
+        if let Some(tok) = state.fresh_token(r) {
+            return Ok(tok); // refreshed while we waited on the gate
+        }
+        if state.secret(&format!("{r}.refresh")).is_none() {
+            // no grant, nothing happened — no refresh record either
+            return Err(EffectFailure {
+                type_: "not_connected".into(),
+                message: format!("{provider} is not connected — run the provider's connect first"),
+            });
+        }
+        self.call_hosted("oauth.refresh", json!({"provider": provider}))?;
+        state.fresh_token(r).ok_or_else(|| EffectFailure {
+            type_: "RuntimeError".into(),
+            message: "oauth refresh reported ok but produced no cached token".into(),
+        })
+    }
+
+    fn sys_http(&mut self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
         let verb = name.strip_prefix("http.").unwrap().to_uppercase();
         let mut url = payload
             .get("url")
@@ -549,16 +682,35 @@ impl Broker {
                 }
             }
         }
-        // named-credential injection: value resolved AFTER recording
+        // named-credential injection: value resolved AFTER recording.
+        // Static refs read the per-run map; managed oauth refs resolve
+        // through the token lifecycle (ADR-011 §6) — same guest shape,
+        // different custody.
         if let Some(cred) = payload.get("credential").and_then(|c| c.as_object()) {
-            let r = cred.get("ref").and_then(|v| v.as_str()).unwrap_or("");
-            let header = cred.get("header").and_then(|v| v.as_str()).unwrap_or("");
-            let prefix = cred.get("prefix").and_then(|v| v.as_str()).unwrap_or("");
-            let secret = self.secrets.get(r).ok_or(EffectFailure {
-                type_: "RuntimeError".into(),
-                message: format!("no secret for credential ref {r:?}"),
-            })?;
-            req = req.set(header, &format!("{prefix}{secret}"));
+            let r = cred
+                .get("ref")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let header = cred
+                .get("header")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let prefix = cred
+                .get("prefix")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let value = if r.starts_with(OAUTH_REF_PREFIX) {
+                self.resolve_managed(&r)?
+            } else {
+                self.secrets.get(&r).cloned().ok_or(EffectFailure {
+                    type_: "RuntimeError".into(),
+                    message: format!("no secret for credential ref {r:?}"),
+                })?
+            };
+            req = req.set(&header, &format!("{prefix}{value}"));
         }
         let resp = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
             req.set("Content-Type", "application/json")
@@ -614,9 +766,7 @@ impl Broker {
             ),
         };
         let body = payload.get("json");
-        let body_dataset = body
-            .and_then(|b| b.get("dataset"))
-            .and_then(|d| d.as_str());
+        let body_dataset = body.and_then(|b| b.get("dataset")).and_then(|d| d.as_str());
         if body_dataset == Some("agent_secrets") {
             return Err(forbidden("the agent_secrets dataset"));
         }
@@ -633,7 +783,10 @@ impl Broker {
 
     fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
         let key = payload.get("key").and_then(|k| k.as_str()).unwrap_or("");
-        if self.secrets.contains_key(key) {
+        // oauth refs are refused by NAMESPACE, not presence — their
+        // values live in the managed state, never in this map (ADR-011
+        // §9), so a presence check could not cover them
+        if self.secrets.contains_key(key) || key.starts_with(OAUTH_REF_PREFIX) {
             return Err(EffectFailure {
                 type_: "ConfigError".into(),
                 message: format!("{key:?} is a secret — not readable from cells"),
@@ -896,6 +1049,277 @@ mod tests {
             .call("module.resolve", json!({"spec": "toolcaller@v1"}))
             .unwrap_err();
         assert!(err.message.contains("serve resolves from the space only"));
+    }
+
+    // --- managed OAuth refs (ADR-011 §6) --------------------------------
+
+    use crate::oauth::ProviderDescriptor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Serve up to `n` requests off an ephemeral loopback port.
+    fn fake_server<F>(n: usize, handler: F) -> String
+    where
+        F: Fn(tiny_http::Request) + Send + 'static,
+    {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().expect("ip addr").port();
+        std::thread::spawn(move || {
+            for _ in 0..n {
+                let Ok(req) = server.recv() else { return };
+                handler(req);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn token_endpoint(hits: Arc<AtomicUsize>, delay_ms: u64) -> String {
+        let base = fake_server(2, move |req| {
+            hits.fetch_add(1, Ordering::SeqCst);
+            if delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+            let body = json!({"access_token": "tok-access", "expires_in": 3600,
+                              "scope": "s"});
+            let _ = req.respond(tiny_http::Response::from_string(body.to_string()));
+        });
+        format!("{base}/token")
+    }
+
+    /// An API endpoint capturing every Authorization header it sees.
+    fn api_endpoint(seen: Arc<Mutex<Vec<String>>>) -> String {
+        fake_server(4, move |req| {
+            let auth = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("authorization"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            seen.lock().unwrap().push(auth);
+            let _ = req.respond(tiny_http::Response::from_string("{}"));
+        })
+    }
+
+    fn oauth_state(token_url: &str, with_grant: bool) -> Arc<OauthState> {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "testprov".to_string(),
+            ProviderDescriptor {
+                authorize_url: "http://unused/auth".into(),
+                token_url: token_url.into(),
+                revoke_url: String::new(),
+                auth_params: BTreeMap::new(),
+                default_scopes: vec![],
+                rotates_refresh_token: false,
+                client_auth: "post_body".into(),
+            },
+        );
+        let state = OauthState::new(providers, None);
+        let mut seeds = BTreeMap::from([(
+            "connector.oauth.testprov.client_id".to_string(),
+            "cid".to_string(),
+        )]);
+        if with_grant {
+            seeds.insert(
+                "connector.oauth.testprov.refresh".to_string(),
+                "refresh-secret".to_string(),
+            );
+        }
+        state.seed(&mut seeds);
+        Arc::new(state)
+    }
+
+    fn oauth_payload(api_url: &str) -> Value {
+        json!({"url": format!("{api_url}/v1/x"), "credential":
+            {"ref": "connector.oauth.testprov", "header": "Authorization",
+             "prefix": "Bearer "}})
+    }
+
+    fn effect_names(b: &Broker) -> Vec<String> {
+        b.writer
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "effect")
+            .map(|r| r["effect"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn managed_ref_refreshes_at_injection() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api_url = api_endpoint(seen.clone());
+        let mut b = make_broker("run_oauth");
+        b.oauth = Some(oauth_state(&token_url, true));
+
+        let out = b.call("http.get", oauth_payload(&api_url)).unwrap();
+        assert_eq!(out["status"], json!(200));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["Bearer tok-access"]);
+        // the refresh is its own record, hosted + mutate, BEFORE the http one
+        assert_eq!(effect_names(&b), ["oauth.refresh", "http.get"]);
+        let refresh = b
+            .writer
+            .records
+            .iter()
+            .find(|r| r["effect"] == "oauth.refresh")
+            .unwrap();
+        assert_eq!(refresh["meta"]["hosted"], json!(true));
+        assert_eq!(refresh["meta"]["class"], json!("mutate"));
+        assert_eq!(
+            refresh["meta"]["credential"]["ref"],
+            json!("connector.oauth.testprov")
+        );
+        assert_eq!(refresh["output"]["ok"], json!(true));
+
+        // cache hit: the second call adds only an http record
+        b.call("http.get", oauth_payload(&api_url)).unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(effect_names(&b), ["oauth.refresh", "http.get", "http.get"]);
+
+        // no token material anywhere in the trace (structural redaction)
+        let dump = serde_json::to_string(&b.writer.records).unwrap();
+        assert!(!dump.contains("tok-access"));
+        assert!(!dump.contains("refresh-secret"));
+    }
+
+    #[test]
+    fn managed_refresh_is_single_flight_across_brokers() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 250);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api_url = api_endpoint(seen.clone());
+        let state = oauth_state(&token_url, true);
+
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let state = state.clone();
+                let api_url = api_url.clone();
+                std::thread::spawn(move || {
+                    let mut b = make_broker(&format!("run_sf{i}"));
+                    b.oauth = Some(state);
+                    b.call("http.get", oauth_payload(&api_url)).unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // one exchange serves both runs (Google's live-token budget, §6)
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn replay_drains_hosted_refresh_records() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api_url = api_endpoint(seen.clone());
+        let mut b = make_broker("run_oauth_rec");
+        b.oauth = Some(oauth_state(&token_url, true));
+        let payload = oauth_payload(&api_url);
+        b.call("http.get", payload.clone()).unwrap();
+
+        // replay from the recorded trace: no oauth state, no exchange,
+        // no store read — the hosted record drains, the http one matches
+        let mut rb = make_broker("run_oauth_rep");
+        rb.mode = Mode::Replay;
+        rb.cursor = Some(ReplayCursor::new(&b.writer.records));
+        let out = rb.call("http.get", payload).unwrap();
+        assert_eq!(out["status"], json!(200));
+        assert_eq!(effect_names(&rb), ["oauth.refresh", "http.get"]);
+        let refresh = rb
+            .writer
+            .records
+            .iter()
+            .find(|r| r["effect"] == "oauth.refresh")
+            .unwrap();
+        assert_eq!(refresh["meta"]["mocked"], json!(true));
+        assert_eq!(refresh["meta"]["hosted"], json!(true));
+        assert_eq!(hits.load(Ordering::SeqCst), 1); // record run only
+    }
+
+    #[test]
+    fn hosted_refresh_bypasses_grants_but_guest_calls_stay_gated() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api_url = api_endpoint(seen.clone());
+        let mut b = make_broker("run_oauth_caps");
+        b.oauth = Some(oauth_state(&token_url, true));
+        b.grants = Some(GrantSet::of(["net.http"]));
+
+        // http is granted; the nested refresh needs no oauth.* grant
+        b.call("http.get", oauth_payload(&api_url)).unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // a direct guest call is still capability-gated (recorded denial)
+        let err = b
+            .call("oauth.refresh", json!({"provider": "testprov"}))
+            .unwrap_err();
+        assert_eq!(err.type_, "capability_denied");
+    }
+
+    #[test]
+    fn managed_ref_errors_are_typed() {
+        // guest-called refresh on a permissive broker: host-emitted only
+        let mut b = make_broker("run_oauth_err");
+        b.oauth = Some(oauth_state("http://127.0.0.1:1/token", true));
+        let err = b
+            .call("oauth.refresh", json!({"provider": "testprov"}))
+            .unwrap_err();
+        assert_eq!(err.type_, "host_only");
+
+        // a stored sub-ref is not a provider handle — never injectable
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:1/x", "credential":
+                    {"ref": "connector.oauth.testprov.refresh",
+                     "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "not_configured");
+        assert!(!err.message.contains("refresh-secret"));
+
+        // no grant stored → not_connected, and NO refresh record
+        let mut b2 = make_broker("run_oauth_nogrant");
+        b2.oauth = Some(oauth_state("http://127.0.0.1:1/token", false));
+        let err = b2
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:1/x", "credential":
+                    {"ref": "connector.oauth.testprov", "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "not_connected");
+        assert_eq!(effect_names(&b2), ["http.get"]);
+
+        // config.get refuses the whole managed namespace (ADR-011 §9) —
+        // the values live outside the broker map, so presence can't cover them
+        let err = b
+            .call(
+                "config.get",
+                json!({"key": "connector.oauth.testprov.refresh"}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "ConfigError");
+        assert!(err.message.contains("is a secret"));
+
+        // the static-ref miss message stays byte-identical — six
+        // connectors substring-match it (ADR-011 §7)
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:1/x", "credential":
+                    {"ref": "connector.key.nope", "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "RuntimeError");
+        assert_eq!(
+            err.message,
+            "no secret for credential ref \"connector.key.nope\""
+        );
     }
 
     /// A recorded trace with one http.get — built by hand so replay and
