@@ -108,6 +108,11 @@ pub struct Config {
     /// embedder feeding parsed keys from memory (any-ui import dialog /
     /// bundled demo seeds).
     pub secret_overrides: BTreeMap<String, String>,
+    /// Lib-mode consent delivery (ADR-011 §5.1, an ADR-009 §6 surface):
+    /// the embedder receives each consent URL and owns opening the
+    /// browser — the serve may be a headless daemon. None = system
+    /// browser, then the host log.
+    pub consent_hook: Option<crate::oauth::ConsentHook>,
 }
 
 impl Default for Config {
@@ -123,6 +128,7 @@ impl Default for Config {
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
             secret_overrides: BTreeMap::new(),
+            consent_hook: None,
         }
     }
 }
@@ -161,6 +167,16 @@ impl ConfigBuilder {
 
     pub fn control_port(mut self, v: u16) -> Self {
         self.cfg.control_port = v;
+        self
+    }
+
+    /// Receive each OAuth consent URL instead of the host opening a
+    /// browser (ADR-011 §5.1 transport A).
+    pub fn consent_hook(
+        mut self,
+        f: impl Fn(crate::oauth::ConsentRequest) + Send + Sync + 'static,
+    ) -> Self {
+        self.cfg.consent_hook = Some(crate::oauth::ConsentHook(std::sync::Arc::new(f)));
         self
     }
 
