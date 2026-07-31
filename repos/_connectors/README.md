@@ -1,4 +1,4 @@
-# connectors — external-service connectors for the any agent: Linear (issues, read/write), GitHub (issues/PRs/commits/repos/notifications/files + raw API), Granola (meeting notes), Attio (CRM), Figma (design files), Intercom (support) — all read-only except Linear and GitHub's raw request()
+# connectors — external-service connectors for the any agent: Linear (issues, read/write), GitHub (issues/PRs/commits/repos/notifications/files + raw API), Granola (meeting notes), Attio (CRM), Figma (design files), Intercom (support), Google via googleAuth OAuth (Gmail, Calendar, Drive/Meet transcripts, Sheets) — all read-only except Linear and GitHub's raw request()
 
 An overlay repo (anybao ADR-009): guest programs that connect the
 agent to external services. The repo tree is published to an `any`
@@ -68,6 +68,7 @@ Every connector names an http-effect credential ref (anybao ADR-008):
 | `connector.key.attio` | Authorization, Bearer |
 | `connector.key.figma` | X-Figma-Token |
 | `connector.key.intercom` | Authorization, Bearer |
+| `connector.oauth.google` | Authorization, Bearer (managed — see below) |
 
 The host injects the header after recording — secrets never enter
 guest code or the trace. Keys are seeded by importing a dotenv-style
@@ -78,6 +79,15 @@ docs/config-secrets.md; env vars are no longer read). A missing key
 surfaces as an actionable `{ok: false, error}` from every method, not
 a traceback.
 
+`connector.oauth.google` is a **managed OAuth ref** (anybao ADR-011):
+no stored key — the host runs consent (`googleAuth.connect()`), holds
+the refresh token device-local, and refreshes/injects access tokens
+at request time. One consent covers gmail/googleCalendar/googleDrive/
+googleSheets. Seed the BYO Google Cloud *Desktop app* client through
+the same .env path (`connector.oauth.google.client_id` /
+`.client_secret`); a missing grant surfaces as a typed
+`not_connected` error pointing at `googleAuth.connect()`.
+
 ## Status
 
 All six pattern-1 token connectors ported from bobrik-watch (any PR
@@ -85,6 +95,7 @@ All six pattern-1 token connectors ported from bobrik-watch (any PR
 figma@v1, intercom@v1 (read-only). Live-verified: linear, github.
 Unverified against live APIs (no test keys yet): granola (young API,
 endpoint-shape caveat in its docstring), attio, figma, intercom.
-Later phase: the google/OAuth family (gmail, googleCalendar,
-googleDrive, googleSheets, googleAuth) — blocked on an `oauthFlow`
-host effect (needs an anybao ADR first).
+Google family landed with ADR-011 (host-held OAuth): googleAuth@v1 +
+gmail@v1, googleCalendar@v1, googleDrive@v1 (Meet transcripts),
+googleSheets@v1 — endpoint shapes ported from the bobrik branch, all
+awaiting live hardening (testing-flow.md) behind a BYO Google client.
