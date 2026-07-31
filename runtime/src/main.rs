@@ -208,13 +208,16 @@ fn load_secrets_file(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>>
 }
 
 fn main() -> Result<()> {
-    // bin-only: lib embedders install their own subscriber (or none)
+    // bin-only: lib embedders install their own subscriber (or none).
+    // Logs go to STDERR — `run`'s stdout is the one-JSON-line result
+    // contract, and fmt's default stdout writer polluted it.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
     match Cli::parse().cmd {
         Cmd::Run {
