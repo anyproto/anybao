@@ -430,11 +430,11 @@ client could ever ask for.
 - The `agent_secrets` read-guard already refuses guest http that
   targets the secrets dataset or object; the new refs live there, so
   they inherit it with no change.
-- `config.get` refuses secret keys; the OAuth refs are secret-marked,
-  so the same refusal applies. (Note the refusal is presence-keyed —
-  a ref is refused once seeded, and an unseeded one falls through to
-  "no config value". Acceptable: an unseeded ref has nothing to
-  leak.)
+- `config.get` refuses secret keys. Static refs are refused by
+  presence in the secret map (unseeded falls through to "no config
+  value" — nothing to leak); the `connector.oauth.*` namespace is
+  refused **wholesale**, because its values live in the managed state,
+  never in that map (§6's drain), so presence could not cover them.
 
 ### 10. Phasing
 

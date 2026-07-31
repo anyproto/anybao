@@ -153,6 +153,22 @@ impl ReplayCursor {
         rec
     }
 
+    /// A host-emitted record (`meta.hosted`, ADR-011 §6) at the cursor
+    /// head that is NOT the record the guest is asking for: consumed
+    /// here, written through by the broker's drain before the guest
+    /// record is matched. Anything else stays put for the strict match.
+    pub fn take_hosted_mismatch(&mut self, effect: &str, key: &str) -> Option<Value> {
+        let head = self.peek()?;
+        let hosted = head["kind"] == "effect"
+            && head
+                .get("meta")
+                .and_then(|m| m.get("hosted"))
+                .and_then(|h| h.as_bool())
+                == Some(true);
+        let matches = head["effect"] == effect && head["key"] == key;
+        (hosted && !matches).then(|| self.take())
+    }
+
     pub fn expect_effect(&mut self, effect: &str, key: &str) -> Result<Value, DivergenceError> {
         let matched = self
             .peek()

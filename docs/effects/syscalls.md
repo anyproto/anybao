@@ -12,6 +12,7 @@ recall, history, the toolcaller loop) is guest modules in `programs/`.
 | `time.now` / `random.random` / `uuid4` / `sleep` / `env.get` | read | — | determinism pins |
 | `module.resolve(spec, frm?)` | read | — | `use()` resolution (ADR-004) |
 | `batch(name, payloads)` | per-item | per-item | fan-out with input-order records |
+| `oauth.refresh(provider)` | mutate | oauth.refresh | **host-emitted only** (ADR-011 §6): the refresh-token exchange recorded before the http record it serves; a direct guest call fails typed `host_only` |
 | `trace.effects_of(cell?, span?)` / `trace.effect_get(seq)` | read | — | agent-side trace views |
 | `span.begin/end` | — | — | guest-declared grouping (broker machinery, not registry effects) |
 
@@ -22,5 +23,9 @@ URL): GET → read; any-API POST `/query`, `/objects/query`, `/search`,
 `/chat/completions`) → read `llm.chat`; everything else → `net.http`.
 
 Credential injection: `credential: {ref, header, prefix?}` — the host
-resolves `ref` via config (secret) and sets the header AFTER the
-payload is recorded; values never reach guest memory or the trace.
+resolves `ref` and sets the header AFTER the payload is recorded;
+values never reach guest memory or the trace. Static refs
+(`connector.key.*`, `llm.key.*`) read the stored secret as-is; managed
+refs (`connector.oauth.<provider>`) resolve through the host-held
+token lifecycle — cached access token, refresh-at-injection with a
+120s margin (ADR-011 §6).
