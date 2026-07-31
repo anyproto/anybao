@@ -24,6 +24,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 008 | Agent tools & credentials      | Accepted  |
 | 009 | Space-resident assets, host config, overlays, lib mode | Accepted |
 | 010 | Native introspection — docstrings as the single doc surface | Accepted |
+| 011 | OAuth credentials — host-held tokens, `oauth.*` effects | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
