@@ -30,6 +30,13 @@ needs no runtime change. Comments (`#`) and quotes are fine; malformed
 lines are skipped. These files hold plaintext keys — `.connectors.env`
 is gitignored; keep it that way.
 
+Managed OAuth refs (`connector.oauth.<provider>.refresh` /
+`.client_id` / `.client_secret`, ADR-011 §3) seed and revoke through
+the same file. One difference matters: an empty
+`connector.oauth.<provider>.refresh=` deletes the stored token
+**locally only** — the grant stays live on the provider account; run
+the provider's `disconnect()` to revoke provider-side (ADR-011 §8).
+
 Both paths feed the same map (`Config::secret_overrides`); when a ref
 appears in both, `--secrets-file` wins. In any-ui the same mechanism
 is fed **from memory** (no file persisted): Help → Import connector

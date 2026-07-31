@@ -12,6 +12,9 @@ recall, history, the toolcaller loop) is guest modules in `programs/`.
 | `time.now` / `random.random` / `uuid4` / `sleep` / `env.get` | read | — | determinism pins |
 | `module.resolve(spec, frm?)` | read | — | `use()` resolution (ADR-004) |
 | `batch(name, payloads)` | per-item | per-item | fan-out with input-order records |
+| `oauth.connect(provider, scopes?, timeout?)` | mutate | oauth.connect | consent via loopback + PKCE (ADR-011 §5); blocks ≤120s, listener runs a 5-min window → `{ok, provider, grantedScopes, account}` — never token material |
+| `oauth.status(provider)` | read | oauth.status | `{connected, pending, scopes, account, expiresAt}` — state only, no network |
+| `oauth.disconnect(provider)` | mutate | oauth.disconnect | provider-side revoke (best-effort) + device-local delete → `{ok, provider, revoked}` |
 | `oauth.refresh(provider)` | mutate | oauth.refresh | **host-emitted only** (ADR-011 §6): the refresh-token exchange recorded before the http record it serves; a direct guest call fails typed `host_only` |
 | `trace.effects_of(cell?, span?)` / `trace.effect_get(seq)` | read | — | agent-side trace views |
 | `span.begin/end` | — | — | guest-declared grouping (broker machinery, not registry effects) |

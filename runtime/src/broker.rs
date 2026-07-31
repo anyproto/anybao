@@ -546,6 +546,9 @@ impl Broker {
                 let present = self.env.contains_key(key);
                 Ok(json!({"present": present, "value": self.env.get(key)}))
             }
+            "oauth.connect" => self.sys_oauth_connect(payload),
+            "oauth.status" => self.sys_oauth_status(payload),
+            "oauth.disconnect" => self.sys_oauth_disconnect(payload),
             "oauth.refresh" => self.sys_oauth_refresh(payload),
             "module.resolve" => self.sys_module_resolve(payload),
             "batch" => self.sys_batch(payload),
@@ -567,6 +570,48 @@ impl Broker {
         let out = self.call(name, payload);
         self.hosted -= 1;
         out
+    }
+
+    fn oauth_state(&self) -> Result<Arc<OauthState>, EffectFailure> {
+        self.oauth.clone().ok_or_else(|| EffectFailure {
+            type_: "not_configured".into(),
+            message: "oauth is not wired into this runtime".into(),
+        })
+    }
+
+    /// `oauth.connect` (ADR-011 §5): consent as an effect that returns
+    /// no tokens — blocks while the human clicks (default 120s).
+    fn sys_oauth_connect(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let state = self.oauth_state()?;
+        let provider = payload
+            .get("provider")
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        let scopes = payload.get("scopes").and_then(|s| s.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        });
+        let timeout = payload.get("timeout").and_then(|t| t.as_f64());
+        state.connect(provider, scopes, timeout)
+    }
+
+    fn sys_oauth_status(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let state = self.oauth_state()?;
+        let provider = payload
+            .get("provider")
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        state.status(provider)
+    }
+
+    fn sys_oauth_disconnect(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let state = self.oauth_state()?;
+        let provider = payload
+            .get("provider")
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        state.disconnect(provider)
     }
 
     /// The refresh-token exchange as its own recorded effect (ADR-011
@@ -937,7 +982,7 @@ impl Broker {
     }
 }
 
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
@@ -950,7 +995,7 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-fn getrandom(buf: &mut [u8]) {
+pub(crate) fn getrandom(buf: &mut [u8]) {
     // uuid's rng is already OS-backed; reuse it for the random syscall
     for chunk in buf.chunks_mut(16) {
         let bytes = *uuid::Uuid::new_v4().as_bytes();

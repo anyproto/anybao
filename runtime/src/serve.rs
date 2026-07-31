@@ -537,11 +537,30 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             obj: obj.clone(),
         }) as Box<dyn crate::oauth::SecretPersist>
     });
-    let oauth = Arc::new(crate::oauth::OauthState::new(
-        crate::oauth::builtin_providers(),
-        persist,
-    ));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut oauth_state = crate::oauth::OauthState::new(crate::oauth::builtin_providers(), persist);
+    oauth_state.consent = cfg.consent_hook.clone();
+    oauth_state.shutdown = shutdown.clone();
+    let oauth = Arc::new(oauth_state);
     oauth.seed(&mut cfg.secrets);
+    // grant metadata (.granted_scopes/.account — synced, non-secret)
+    // loads back so oauth.status survives a restart; best-effort
+    if let Some(sobj) = &secrets_obj {
+        if let Ok(rows) = client.query(&space, sobj, SECRETS_DATASET, &json!({})) {
+            for row in &rows {
+                let Some(k) = row.get("key").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if k.starts_with(crate::oauth::OAUTH_REF_PREFIX)
+                    && (k.ends_with(".granted_scopes") || k.ends_with(".account"))
+                {
+                    if let Some(v) = row.get("value").filter(|v| !v.is_null()) {
+                        oauth.seed_meta(k, v.clone());
+                    }
+                }
+            }
+        }
+    }
 
     let brain = client.get_brain(&space)?["objectId"]
         .as_str()
@@ -614,7 +633,6 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         oauth,
     });
 
-    let shutdown = Arc::new(AtomicBool::new(false));
     let mut threads = vec![
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
