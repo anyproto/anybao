@@ -1,0 +1,23 @@
+{"id": "q01_list_spaces", "question": "what spaces do i have right now?", "expect": "calls any.list_spaces once and reports the account's active spaces faithfully"}
+{"id": "q02_list_programs", "question": "what programs are deployed in the connectors repo, and what do they do?", "expect": "calls any.list_programs on the connectors overlay space and summarizes the roster"}
+{"id": "q03_list_properties", "question": "what properties does the pages type have in this space?", "expect": "resolves the pages type and reads its property definitions (list_types/list_properties) without trusting a silent empty list"}
+{"id": "q04_aggregate", "question": "how many objects of each type are in this space?", "expect": "uses any.aggregate (or an equivalent grouped query) and reports counts with readable type names"}
+{"id": "q05_query_dataset", "question": "what were the last 5 messages in this chat before this one?", "expect": "queries the chat_messages dataset on the general chat; honest answer when history is empty"}
+{"id": "q06_ui_context", "question": "what am i looking at right now in the app?", "expect": "calls any.get_ui_context and treats a stale updatedAt honestly (hedges rather than asserting currency)"}
+{"id": "q07_create_space", "question": "create a space called library", "expect": "checks list_spaces for an existing 'library' first, then any.create_space; reports the new space id"}
+{"id": "q08_create_type", "question": "in the library space, make a book type with author and rating properties", "expect": "resolves the library SPACE by name (list_spaces), then create_type there with valid property kinds"}
+{"id": "q09_add_property", "question": "add a genre property to the book type in library", "expect": "adds one property to the existing book type in the library space (add_property or idempotent create_type)"}
+{"id": "q10_create_object", "question": "add the book Dune by Frank Herbert to library, rating 9, genre sci-fi", "expect": "creates a book object IN THE LIBRARY SPACE with xKey-grouped initialProperties"}
+{"id": "q11_update_object", "question": "set the rating of the book Dune to 10 and write a two-line synopsis into its page", "expect": "finds Dune, updates the rating property and writes the editor body (update_object / markdown helpers)"}
+{"id": "q12_get_markdown", "question": "what does the Dune page say?", "expect": "reads the editor body via get_markdown and quotes it faithfully"}
+{"id": "q13_append_markdown", "question": "append a line saying reread in august to the Dune page", "expect": "uses append_markdown (not a get+put rewrite) to add the line"}
+{"id": "q14_query_sort", "question": "list the books in library sorted by rating", "expect": "query_objects in the library space with a dotted-xKey sort on book.rating"}
+{"id": "q15_backlinks", "question": "create a note called: to read next, that links to the Dune book object. then tell me what links to Dune", "expect": "creates the note, checks any.backlinks, and explains property-link vs prose-link if backlinks are empty"}
+{"id": "q16_block_edit", "question": "add a two-item checklist to the note called: to read next (items: Children of Time, Hyperion), then tick the first item", "expect": "adds the checklist and ticks item 1, ideally via a surgical editor_blocks modify rather than whole-body rewrite"}
+{"id": "q17_search", "question": "search this space for herbert", "expect": "calls any.search and reports the hits with titles/types, honest about noise"}
+{"id": "q18_create_memory", "question": "remember that i prefer sci-fi over fantasy", "expect": "saves one memory item (create_memory via the memory tool), checking for duplicates"}
+{"id": "q19_memory_read", "question": "what do you remember about my reading preferences?", "expect": "reads memory (recall / brain query) and reports the stored item faithfully"}
+{"id": "q20_evolve_memory", "question": "actually, about my genre preference you remember: update it, i like sci-fi and fantasy equally now", "expect": "evolves the existing memory item in place (evolve_memory), no duplicate created"}
+{"id": "q21_delete_memory", "question": "forget my genre preference entirely, delete it from memory", "expect": "finds the item and deletes it (delete_memory), confirming deletion"}
+{"id": "q22_trigger", "question": "remind me in 2 hours to check the oven", "expect": "handles the missing one-shot trigger primitive honestly (no fake promise to ping later); reasonable fallback"}
+{"id": "q23_unknown_type", "question": "list all objects of type unicorn in this space", "expect": "does not trust a silent empty filter result; verifies the type doesn't exist and says so"}

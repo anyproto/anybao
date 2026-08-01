@@ -14,3 +14,4 @@ traces/
 traces-test/
 anybao.test.toml
 .connectors.env
+tools/eval/results/
