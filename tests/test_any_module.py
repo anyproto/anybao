@@ -119,7 +119,7 @@ def test_upsert_record_builds_whole_value_set_on_modify():
 
 
 def test_object_type_property_creation_paths():
-    fx = wire(replies={"/types": {"types": [], "typeId": "t2"}})
+    fx = wire(replies={"/types": {"types": [{"id": "t1"}], "typeId": "t2"}})
     c = client(fx)
     c.create_object("s1", {"typeId": "t"})
     c.create_type("s1", {"name": "T"})
@@ -128,6 +128,7 @@ def test_object_type_property_creation_paths():
         ("POST", "/v1/spaces/s1/objects"),
         ("GET", "/v1/spaces/s1/types"),          # idempotency probe
         ("POST", "/v1/spaces/s1/types"),
+        ("GET", "/v1/spaces/s1/types"),          # add_property xKey resolution
         ("POST", "/v1/spaces/s1/types/t1/properties")]
 
 
@@ -166,7 +167,8 @@ def test_create_type_idempotent_adds_only_missing():
 
 
 def test_add_property_defaults_xkey_and_kind():
-    fx = wire(replies={"/types/t1/properties": {"propId": "p1"}})
+    fx = wire(replies={"/types": {"types": [{"id": "t1"}]},
+                       "/types/t1/properties": {"propId": "p1"}})
     client(fx).add_property("s1", "t1", {"name": "Due Date"})
     assert fx.calls[-1][2] == {"name": "Due Date", "xKey": "due_date",
                                "kind": "string"}
@@ -190,8 +192,9 @@ def test_query_objects_normalizes_user_groups_keeps_builtins():
          "nav": {"parentId": "f1"},
          "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}]}})
     [rec] = client(fx).query_objects("s1", filter={"any.types": "task"})
-    # user group + its props rekeyed to xKeys; builtins (any/nav/id) verbatim
-    assert rec == {"id": "o1", "any": {"name": "Ship", "types": ["bafyTASK"]},
+    # user group + its props rekeyed to xKeys; any.types VALUES too;
+    # other builtins (nav/id) verbatim
+    assert rec == {"id": "o1", "any": {"name": "Ship", "types": ["task"]},
                    "nav": {"parentId": "f1"},
                    "task": {"status": "open", "priority": 3}}
 
@@ -302,7 +305,43 @@ def test_list_types_and_properties_unwrap():
     assert c.list_properties("s1", "t1") == [{"id": "p1"}]
     assert [(v, p) for v, p, _ in fx.calls] == [
         ("GET", "/v1/spaces/s1/types"),
+        ("GET", "/v1/spaces/s1/types"),   # list_properties type resolution
         ("GET", "/v1/spaces/s1/types/t1/properties")]
+
+
+def test_list_properties_takes_xkey_and_errors_on_unknown():
+    fx = wire(replies=_CAT)
+    c = client(fx)
+    # xKey resolves to the CID route — the agent never needs the id
+    assert c.list_properties("s1", "task")[0]["xKey"] == "status"
+    assert any(p.endswith("/types/bafyTASK/properties") for _, p, _ in fx.calls)
+    # unknown key errors with the catalog (server would answer 200 [])
+    with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
+        c.list_properties("s1", "ghost")
+
+
+def test_add_property_takes_xkey():
+    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"propId": "p9"}})
+    client(fx).add_property("s1", "task", {"name": "Due"})
+    verb, path, _ = fx.calls[-1]
+    assert (verb, path) == ("POST", "/v1/spaces/s1/types/bafyTASK/properties")
+
+
+def test_aggregate_speaks_xkeys_in_records():
+    fx = wire(replies={**_CAT, "/objects/aggregate": {"records": [
+        {"id": ["bafyTASK", "nav"], "count": 2},
+        {"id": ["chat"], "count": 1}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": "$any.types",
+                                                "count": {"$sum": 1}}}])
+    assert r["records"] == [{"id": ["task", "nav"], "count": 2},
+                            {"id": ["chat"], "count": 1}]
+
+
+def test_backlinks_speaks_xkeys():
+    fx = wire(replies={**_CAT, "/objects/o1/backlinks": {"backlinks": [
+        {"objectId": "src", "typeId": "bafyTASK", "propId": "bafySTATUS"}]}})
+    assert client(fx).backlinks("s1", "o1") == [
+        {"objectId": "src", "type": "task", "prop": "status"}]
 
 
 # --- markdown ---------------------------------------------------------------------

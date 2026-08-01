@@ -105,15 +105,21 @@ class Recall:
 
         Forward = links-format property values on the object's row
         (arrays of `any://<objectId>` URIs; edge label = property,
-        targetId a bare object id). Backlinks = objects that reference
-        it, from the server's reverse read (`…/backlinks`); each
-        `{sourceId, typeId, propId}`."""
+        targetId a bare object id); each `{type, prop, targetId}`.
+        Backlinks = objects that reference it, from the server's
+        reverse read (`…/backlinks`); each `{sourceId, type, prop}`.
+        type/prop are xKeys — content ids never surface here."""
         forward = []
-        # normalize=False: graph edges are identified by raw type/prop ids,
-        # so read the un-normalized (id-keyed) group shape (ADR-006 §6).
+        # normalize=False: graph edges are identified by raw type/prop ids
+        # on the wire (ADR-006 §6); resolved to xKeys before returning.
         rows = self._c.query_objects(self._space, filter={"id": object_id},
                                      limit=1, normalize=False)
         if rows:
+            try:
+                type_xkey = {t.get("id"): t.get("xKey") or t.get("id")
+                             for t in self._c.list_types(self._space)}
+            except _any.AnyError:   # catalog unavailable — raw ids degrade
+                type_xkey = {}
             for type_id, group in rows[0].items():
                 if not isinstance(group, dict) or type_id in RESERVED_GROUPS:
                     continue
@@ -122,8 +128,8 @@ class Recall:
                     if prop_id not in link_props:
                         continue
                     targets = value if isinstance(value, list) else [value]
-                    forward += [{"typeId": type_id, "propId": prop_id,
-                                 "propName": link_props[prop_id],
+                    forward += [{"type": type_xkey.get(type_id, type_id),
+                                 "prop": link_props[prop_id],
                                  "targetId": t.removeprefix("any://")}
                                 for t in targets if isinstance(t, str) and t]
         try:
@@ -132,20 +138,22 @@ class Recall:
             if e.code != "request.not_found":  # route absent = pre-backlinks server
                 raise
             raw = []
-        backlinks = [{"sourceId": b["objectId"], "typeId": b["typeId"],
-                      "propId": b["propId"]} for b in raw]
+        backlinks = [{"sourceId": b["objectId"], "type": b["type"],
+                      "prop": b["prop"]} for b in raw]
         return {"forward": forward, "backlinks": backlinks}
 
     def _link_props(self, type_id):
-        """{propId → name} for the type's links-format properties (the
-        object-reference convention, docs/03-api.md § Backlinks). A
-        group key that isn't a queryable type (e.g. a dataset artifact)
-        just yields no edges rather than failing the whole read."""
+        """{propId → prop xKey} for the type's links-format properties
+        (the object-reference convention, docs/03-api.md § Backlinks).
+        A group key that isn't a queryable type (e.g. a dataset
+        artifact) just yields no edges rather than failing the whole
+        read — list_properties raises ValueError on unknown keys."""
         try:
             props = self._c.list_properties(self._space, type_id)
-        except _any.AnyError:
+        except (_any.AnyError, ValueError):
             return {}
-        return {p["id"]: p.get("name", p["id"]) for p in props
+        return {p["id"]: p.get("xKey") or p.get("name") or p["id"]
+                for p in props
                 if (p.get("format") or {}).get("type") == "links"}
 
 

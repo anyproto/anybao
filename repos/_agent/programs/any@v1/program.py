@@ -121,7 +121,7 @@ class Client:
         key = (space, type_id)
         props = self._props_cache.get(key)
         if props is None:
-            props = self.list_properties(space, type_id)
+            props = self._fetch_props(space, type_id)
             self._props_cache[key] = props
         return props
 
@@ -275,7 +275,28 @@ class Client:
                      for p in self._type_props(space, k) if p.get("id")}
             out[row.get("xKey") or k] = {label.get(pk, pk): pv
                                          for pk, pv in v.items()}
+        # `any.types` VALUES are type ids on the wire — speak xKeys
+        # (builtins already are; unknown ids pass through)
+        any_group = out.get("any")
+        if isinstance(any_group, dict) and isinstance(any_group.get("types"), list):
+            out["any"] = {**any_group, "types": [
+                ((cat["by_id"].get(t) or {}).get("xKey") or t)
+                for t in any_group["types"]]}
         return out
+
+    def _dexify(self, space, v):
+        """Deep-map USER-type ids -> xKeys anywhere in a result payload
+        (strings, list items, dict keys/values). Builtins are already
+        their own xKey; unknown strings pass through untouched."""
+        if isinstance(v, str):
+            row = self._catalog(space)["by_id"].get(v)
+            return (row.get("xKey") or v) if self._is_user_type(row) else v
+        if isinstance(v, list):
+            return [self._dexify(space, x) for x in v]
+        if isinstance(v, dict):
+            return {self._dexify(space, k) if isinstance(k, str) else k:
+                    self._dexify(space, x) for k, x in v.items()}
+        return v
 
     # --- objects -------------------------------------------------------------
     @span("any.create_object", kind="mutator")  # noqa: F821 - guest global
@@ -391,9 +412,13 @@ class Client:
     def aggregate(self, space, pipeline):
         """Run an aggregation pipeline over the space's objects.
 
-        For counts / grouping when a plain query won't do."""
-        return self._call("post", f"/v1/spaces/{space}/objects/aggregate",
-                          {"pipeline": pipeline})
+        For counts / grouping when a plain query won't do. Type ids in
+        the result records come back as xKeys."""
+        r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
+                       {"pipeline": pipeline})
+        if isinstance(r, dict) and isinstance(r.get("records"), list):
+            r["records"] = self._dexify(space, r["records"])
+        return r
 
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
     @span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
@@ -475,11 +500,19 @@ class Client:
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])
 
     @span("any.list_properties", kind="getter")  # noqa: F821 - guest global
-    def list_properties(self, space, type_id):
+    def list_properties(self, space, type_key):
         """A type's property definitions: [{id, name, xKey, kind}].
 
-        The xKey↔propId catalog map; property writes on custom types
-        are keyed by these ids."""
+        `type_key` is the type's xKey (builtins: xKey == id); an
+        unknown key ERRORS with the available catalog — the server
+        would answer a nonexistent id with a silent []. Reference
+        properties by xKey everywhere; writes resolve through it."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._fetch_props(space, tid)
+
+    def _fetch_props(self, space, type_id):
+        # wire read by resolved id — internals (catalog, normalize) call
+        # this directly so resolution can't recurse into itself
         r = self._call("get", f"/v1/spaces/{space}/types/{type_id}/properties")
         return r.get("properties", r) if isinstance(r, dict) else r
 
@@ -511,7 +544,7 @@ class Client:
             created = True
         added = {}
         if props:
-            have = {p.get("xKey") for p in self.list_properties(space, tid)}
+            have = {p.get("xKey") for p in self._fetch_props(space, tid)}
             for p in props:
                 pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
                 if pxkey in have:
@@ -519,16 +552,21 @@ class Client:
                 extra = {k: p[k] for k in ("kind", "meta") if k in p}
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
-                added[pxkey] = self.add_property(space, tid, extra)["propId"]
+                added[pxkey] = self._post_property(space, tid, extra)["propId"]
         self._cat_invalidate(space)   # freshly (re)shaped type -> refresh xKey map
         return {"typeId": tid, "xKey": xkey, "created": created,
                 "addedProps": added}
 
     @span("any.add_property", kind="mutator")  # noqa: F821 - guest global
-    def add_property(self, space, type_id, body):
-        """POST one property onto a type. body: {"name", "xKey"?, "kind"?
+    def add_property(self, space, type_key, body):
+        """POST one property onto a type (named by xKey — unknown keys
+        error with the catalog). body: {"name", "xKey"?, "kind"?
         (default "string"), "meta"?}; xKey defaults to a slug of the
         name. Returns {"propId": str}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._post_property(space, tid, body)
+
+    def _post_property(self, space, type_id, body):
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
         body.setdefault("kind", "string")
@@ -614,10 +652,23 @@ class Client:
     def backlinks(self, space, object_id):
         """Objects that reference object_id through a links-format property.
 
-        Returns the `backlinks` list unwrapped from the
-        envelope — each `{objectId, typeId, propId}` (never null)."""
+        Returns the `backlinks` list unwrapped from the envelope —
+        each `{objectId, type, prop}` where type/prop are xKeys (a raw
+        id only when unresolvable), never content ids."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/backlinks")
-        return r.get("backlinks") or []
+        out = []
+        for b in r.get("backlinks") or []:
+            tid, prop = b.get("typeId"), b.get("propId")
+            row = self._catalog(space)["by_id"].get(tid)
+            if row:
+                for p in self._type_props(space, tid):
+                    if p.get("id") == prop:
+                        prop = p.get("xKey") or p.get("name") or prop
+                        break
+            out.append({"objectId": b.get("objectId"),
+                        "type": (row or {}).get("xKey") or tid,
+                        "prop": prop})
+        return out
 
     # --- agent memory (write path; reads go through /query on the brain) --------
     @span("any.get_brain", kind="getter")  # noqa: F821 - guest global

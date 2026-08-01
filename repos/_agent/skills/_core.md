@@ -61,7 +61,7 @@ Env vars are not read.
   `c.query_objects(space, ...)`, `c.search(space, query, scopes?, limit?)`
   (scopes: `agent` memory / `history` turns+chunks / `basic` content),
   `c.create_object(space, body)` (nested type-group properties, keyed by
-  typeId), `c.modify`, `c.upsert_record`, `c.get_markdown` /
+  type xKey), `c.modify`, `c.upsert_record`, `c.get_markdown` /
   `c.put_markdown` (surgical edit = get → single-match `str.replace` →
   put), `c.chat_send(space, chat_id, body)`, `c.create_memory` /
   `c.evolve_memory` / `c.delete_memory`, `c.list_types`,

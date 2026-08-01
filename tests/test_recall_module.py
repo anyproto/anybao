@@ -51,6 +51,9 @@ def fake_any(capture, *, memory=(), turns=(), chunks=()):
             return _reply(200, {"records": [OBJ_ROW]})
         if path.endswith("/types/t1/properties"):
             return _reply(200, {"properties": T1_PROPS})
+        if path.endswith("/types"):
+            return _reply(200, {"types": [
+                {"id": "t1", "name": "T One", "xKey": "t_one"}]})
         if path.endswith("/backlinks"):
             return _reply(200, {"backlinks": [
                 {"objectId": "src9", "typeId": "t1", "propId": "p_ref"}]})
@@ -147,15 +150,18 @@ def test_by_period_skips_sources_without_object_id():
 def test_neighbors_forward_refs_only_links_props():
     cap = []
     got = recall(cap).neighbors("obj1")
-    assert got["backlinks"] == [{"sourceId": "src9", "typeId": "t1", "propId": "p_ref"}]
-    # any:// prefixes stripped — forward and backlinks speak bare ids
+    # type/prop are xKeys (name fallback when the prop has no xKey) —
+    # content ids never surface in either direction
+    assert got["backlinks"] == [{"sourceId": "src9", "type": "t_one",
+                                 "prop": "Author"}]
+    # any:// prefixes stripped — targets speak bare object ids
     assert sorted(f["targetId"] for f in got["forward"]) == ["target1", "target2", "target3"]
     by_target = {f["targetId"]: f for f in got["forward"]}
-    assert by_target["target1"]["propName"] == "Author"
-    assert by_target["target2"]["propId"] == "p_refs"
+    assert by_target["target1"]["prop"] == "Author"
+    assert by_target["target2"]["prop"] == "Mentions"
     # p_str (no links format) contributed nothing; reserved any/nav skipped
-    assert all(f["propId"] != "p_str" for f in got["forward"])
-    assert all(f["typeId"] == "t1" for f in got["forward"])
+    assert all(f["prop"] != "Notes" for f in got["forward"])
+    assert all(f["type"] == "t_one" for f in got["forward"])
 
 
 def test_neighbors_queries_row_by_id():

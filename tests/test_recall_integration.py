@@ -87,7 +87,8 @@ def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
     rec = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space)
     got = rec.neighbors(source)
     assert [f["targetId"] for f in got["forward"]] == [target]  # any:// stripped
-    assert got["forward"][0]["propName"] == "Relates To"
+    assert got["forward"][0]["prop"] == "relates_to"
+    assert got["forward"][0]["type"] == "note"
 
     # the reverse read: target's backlinks include source through the prop
     try:
@@ -97,4 +98,5 @@ def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
             pytest.skip("server predates the /backlinks route")
         raise
     back = rec.neighbors(target)
-    assert {"sourceId": source, "typeId": tid, "propId": pid} in back["backlinks"]
+    assert {"sourceId": source, "type": "note",
+            "prop": "relates_to"} in back["backlinks"]

@@ -15,9 +15,11 @@ and fails in the standard overlay setup, ADR-004 §2):
   properties objects can have.
 - Discover existing types before creating new ones —
   `c.query_objects(space, ...)` over the catalog or
-  `c.list_properties(space, type_id)` for one type's property map
-  (`[{id, name, xKey, kind}]`). Find an existing fit first; avoid
-  inventing parallel types.
+  `c.list_properties(space, type_xkey)` for one type's property map
+  (`[{id, name, xKey, kind}]`). Types are ALWAYS named by xKey (an
+  unknown xKey errors with the catalog); never pass or repeat raw
+  type content-ids. Find an existing fit first; avoid inventing
+  parallel types.
 - Types and properties are referenced by **xKey** (the stable slug,
   e.g. `"pages"` / `"author"`), NOT the display name and NEVER the raw
   content id — the client resolves xKeys to ids under the hood.
