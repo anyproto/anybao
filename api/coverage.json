@@ -2,617 +2,617 @@
   "endpoints": {
     "DELETE /push/token": {
       "excluded": "client push plumbing (UI)",
-      "fingerprint": "sha256:78ed27efaa2ff484",
+      "fingerprint": "sha256:cabdfee4dffad07c",
       "helper": null
     },
     "DELETE /spaces/{spaceId}": {
       "excluded": null,
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/agent/memory/{itemId}": {
       "excluded": null,
-      "fingerprint": "sha256:f837ad4da4800cee",
+      "fingerprint": "sha256:5f0fd7ea57171001",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
-      "fingerprint": "sha256:2e4b34a3db738a7a",
+      "fingerprint": "sha256:45143e844d96b7e5",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/guest-key": {
       "excluded": null,
-      "fingerprint": "sha256:4b4b6544a506f556",
+      "fingerprint": "sha256:f92ae05dd68f4c25",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/invites": {
       "excluded": null,
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/invites/{recordId}": {
       "excluded": null,
-      "fingerprint": "sha256:4179678bff8f630f",
+      "fingerprint": "sha256:d7d30f99477e663c",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}": {
       "excluded": null,
-      "fingerprint": "sha256:1bde4b0422a86fa1",
+      "fingerprint": "sha256:01b22e734caf2358",
       "helper": "helper.delete_object"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
-      "fingerprint": "sha256:6b509bbe48f11939",
+      "fingerprint": "sha256:11921f17cb7faded",
       "helper": "helper.chat_delete"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/editor/blocks/{blockId}": {
       "excluded": null,
-      "fingerprint": "sha256:8a09f460aa870e63",
+      "fingerprint": "sha256:35beeb43122d5d3a",
       "helper": "helper.delete_block"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
-      "fingerprint": "sha256:db0c34099e4292e6",
+      "fingerprint": "sha256:c0ee25aaad16b5f2",
       "helper": null
     },
     "GET /account": {
       "excluded": "harness/account profile",
-      "fingerprint": "sha256:73e21939b71a4a58",
+      "fingerprint": "sha256:a43ca859b4dbd32d",
       "helper": null
     },
     "GET /auth": {
       "excluded": "harness auth/boot",
-      "fingerprint": "sha256:959ce9ec0364f6c9",
+      "fingerprint": "sha256:ab1a58001dbbf8a2",
       "helper": null
     },
     "GET /datasets": {
       "excluded": "schema discovery (harness)",
-      "fingerprint": "sha256:73e21939b71a4a58",
+      "fingerprint": "sha256:d3598adbf09c8b71",
       "helper": null
     },
     "GET /debug/p2p": {
       "excluded": "diagnostic (harness/human)",
-      "fingerprint": "sha256:959ce9ec0364f6c9",
+      "fingerprint": "sha256:541a07cce26c253a",
       "helper": null
     },
     "GET /files/cache": {
       "excluded": "file cache ops (harness/ops)",
-      "fingerprint": "sha256:73e21939b71a4a58",
+      "fingerprint": "sha256:8e26fe702c2970db",
       "helper": null
     },
     "GET /health": {
       "excluded": "harness lifecycle",
-      "fingerprint": "sha256:959ce9ec0364f6c9",
+      "fingerprint": "sha256:123cbf602a25c183",
       "helper": null
     },
     "GET /identities": {
       "excluded": null,
-      "fingerprint": "sha256:73e21939b71a4a58",
+      "fingerprint": "sha256:e7efab59897c08aa",
       "helper": null
     },
     "GET /identities/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:959ce9ec0364f6c9",
+      "fingerprint": "sha256:6fc1f751999e8fc4",
       "helper": null
     },
     "GET /identities/{identity}": {
       "excluded": null,
-      "fingerprint": "sha256:9c95d329801cec59",
+      "fingerprint": "sha256:2c2102c8c1b9cffb",
       "helper": null
     },
     "GET /push/subscriptions": {
       "excluded": "client push plumbing (UI)",
-      "fingerprint": "sha256:815676154d11be80",
+      "fingerprint": "sha256:65c0e1c3a74f2c8e",
       "helper": null
     },
     "GET /push/token": {
       "excluded": "client push plumbing (UI)",
-      "fingerprint": "sha256:d3258a1555eda458",
+      "fingerprint": "sha256:12b0b3685ae847f7",
       "helper": null
     },
     "GET /spaces": {
       "excluded": null,
-      "fingerprint": "sha256:8419310306f3cdf5",
+      "fingerprint": "sha256:babdf8dc74a43ba7",
       "helper": "helper.list_spaces"
     },
     "GET /spaces/{spaceId}": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:fe721333cf5e34e3",
       "helper": "anyclient.get_space"
     },
     "GET /spaces/{spaceId}/agent/brain": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:f5ab59c2c6bc76b9",
       "helper": null
     },
     "GET /spaces/{spaceId}/datasets": {
       "excluded": "schema discovery (harness)",
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:2c498176eebf044f",
       "helper": null
     },
     "GET /spaces/{spaceId}/debug": {
       "excluded": "diagnostic (harness/human)",
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:6ccc249bb749efdf",
       "helper": null
     },
     "GET /spaces/{spaceId}/debug/objects/{objectId}": {
       "excluded": "diagnostic (harness/human)",
-      "fingerprint": "sha256:9f42263101526eb5",
+      "fingerprint": "sha256:02e846986c721624",
       "helper": null
     },
     "GET /spaces/{spaceId}/files": {
       "excluded": null,
-      "fingerprint": "sha256:1eb118a09e0fd731",
+      "fingerprint": "sha256:d938f30b63c1026b",
       "helper": null
     },
     "GET /spaces/{spaceId}/files/stats": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:9dea5408ca055d34",
       "helper": null
     },
     "GET /spaces/{spaceId}/files/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:afb08cc3e3b5425c",
       "helper": null
     },
     "GET /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
-      "fingerprint": "sha256:132159a396957554",
+      "fingerprint": "sha256:f22c98fc6bed7b51",
       "helper": "file_info"
     },
     "GET /spaces/{spaceId}/files/{fileId}/content": {
       "excluded": null,
-      "fingerprint": "sha256:772d51ff49827fc9",
+      "fingerprint": "sha256:a58e1dc1c5d1c5ea",
       "helper": "download_file"
     },
     "GET /spaces/{spaceId}/files/{fileId}/status": {
       "excluded": null,
-      "fingerprint": "sha256:132159a396957554",
+      "fingerprint": "sha256:7c11b705ab900f7d",
       "helper": null
     },
     "GET /spaces/{spaceId}/invites": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:3169d22bf2a225d4",
       "helper": null
     },
     "GET /spaces/{spaceId}/invites/{recordId}": {
       "excluded": null,
-      "fingerprint": "sha256:dab7af8c5be5da03",
+      "fingerprint": "sha256:1593178c3a31a698",
       "helper": null
     },
     "GET /spaces/{spaceId}/members": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:2d39b1151f097798",
       "helper": "members"
     },
     "GET /spaces/{spaceId}/members/me": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:46a064e99b56c2f5",
       "helper": null
     },
     "GET /spaces/{spaceId}/members/requests": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:fb894e60e15326b8",
       "helper": "join_requests"
     },
     "GET /spaces/{spaceId}/members/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:afb08cc3e3b5425c",
       "helper": null
     },
     "GET /spaces/{spaceId}/members/{identity}": {
       "excluded": null,
-      "fingerprint": "sha256:026752932fc679b4",
+      "fingerprint": "sha256:0e544a308a5a7d18",
       "helper": null
     },
     "GET /spaces/{spaceId}/objects/{objectId}/backlinks": {
       "excluded": null,
-      "fingerprint": "sha256:4c0314e8eefc6d21",
+      "fingerprint": "sha256:e2486bac4744a2bc",
       "helper": "anyclient.backlinks / helper.backlinks"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/editor/markdown": {
       "excluded": null,
-      "fingerprint": "sha256:9f42263101526eb5",
+      "fingerprint": "sha256:749bf61c1791ec93",
       "helper": "anyclient.get_markdown"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history": {
       "excluded": null,
-      "fingerprint": "sha256:b81c24d361094ebe",
+      "fingerprint": "sha256:0511fa0fde9e98ab",
       "helper": null
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/diff": {
       "excluded": null,
-      "fingerprint": "sha256:8f9f213fbbc68655",
+      "fingerprint": "sha256:6a0a9c04d7dafbb5",
       "helper": null
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/{version}": {
       "excluded": null,
-      "fingerprint": "sha256:068f2c00f0c97708",
+      "fingerprint": "sha256:01c29241bf6cdffa",
       "helper": null
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/{version}/datasets/{dataset}/records/{recordId}": {
       "excluded": null,
-      "fingerprint": "sha256:e7d0bc921763438e",
+      "fingerprint": "sha256:ff231a9c66ba5ec1",
       "helper": null
     },
     "GET /spaces/{spaceId}/properties/{objectId}": {
       "excluded": null,
-      "fingerprint": "sha256:9f42263101526eb5",
+      "fingerprint": "sha256:53c1064083653eac",
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status": {
       "excluded": "diagnostic/sync (harness)",
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:d2e6b729fa474ea6",
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status/objects/{objectId}": {
       "excluded": "diagnostic/sync (harness)",
-      "fingerprint": "sha256:9f42263101526eb5",
+      "fingerprint": "sha256:9987f9fcb596585b",
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status/objects/{objectId}/subscribe": {
       "excluded": "diagnostic/sync (harness)",
-      "fingerprint": "sha256:9f42263101526eb5",
+      "fingerprint": "sha256:ab6f0a940edfb6fb",
       "helper": null
     },
     "GET /spaces/{spaceId}/types": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:f0422d1f85ace6ce",
       "helper": "helper catalog (list_types)"
     },
     "GET /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:d535a79b159cb3e4",
+      "fingerprint": "sha256:87dbb70ad78922d3",
       "helper": null
     },
     "GET /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:d535a79b159cb3e4",
+      "fingerprint": "sha256:c03508de9bc7230b",
       "helper": "helper catalog (list_properties)"
     },
     "GET /sync-status/subscribe": {
       "excluded": "diagnostic/sync (harness)",
-      "fingerprint": "sha256:959ce9ec0364f6c9",
+      "fingerprint": "sha256:6fc1f751999e8fc4",
       "helper": null
     },
     "GET /ui/commands/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:959ce9ec0364f6c9",
+      "fingerprint": "sha256:6fc1f751999e8fc4",
       "helper": null
     },
     "PATCH /spaces/{spaceId}": {
       "excluded": null,
-      "fingerprint": "sha256:03f896df521e2d1f",
+      "fingerprint": "sha256:a241c0826af330d5",
       "helper": null
     },
     "PATCH /spaces/{spaceId}/agent/memory/{itemId}": {
       "excluded": null,
-      "fingerprint": "sha256:3070d444c119c10c",
+      "fingerprint": "sha256:102e6a36a4133061",
       "helper": null
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
-      "fingerprint": "sha256:af4e1b62373fc5a4",
+      "fingerprint": "sha256:b1a96b9400d285c9",
       "helper": "helper.chat_edit"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/blocks/{blockId}": {
       "excluded": null,
-      "fingerprint": "sha256:fe75e1db31df27d4",
+      "fingerprint": "sha256:9c8e5edc1b51b545",
       "helper": "helper.patch_block"
     },
     "PATCH /spaces/{spaceId}/settings": {
       "excluded": null,
-      "fingerprint": "sha256:f41772aa6ac524d2",
+      "fingerprint": "sha256:f9f40fd20f995c35",
       "helper": null
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
-      "fingerprint": "sha256:628d0cbe102493b0",
+      "fingerprint": "sha256:aea44753d8bb3b8f",
       "helper": null
     },
     "POST /auth": {
       "excluded": "harness auth/boot",
-      "fingerprint": "sha256:50ea584dba15a4d0",
+      "fingerprint": "sha256:6367b1d2bf68d0ec",
       "helper": null
     },
     "POST /files/cache/free": {
       "excluded": "file cache ops (harness/ops)",
-      "fingerprint": "sha256:736be8690f9f5064",
+      "fingerprint": "sha256:c07f1cc8d8ca2879",
       "helper": null
     },
     "POST /files/cache/sweep": {
       "excluded": "file cache ops (harness/ops)",
-      "fingerprint": "sha256:918fc860ba813e78",
+      "fingerprint": "sha256:cd16fb2b0fdee5e3",
       "helper": null
     },
     "POST /push/token": {
       "excluded": "client push plumbing (UI)",
-      "fingerprint": "sha256:9172e135ca9cc149",
+      "fingerprint": "sha256:02469bdfa2fcdfda",
       "helper": null
     },
     "POST /shutdown": {
       "excluded": "harness lifecycle",
-      "fingerprint": "sha256:9a810fd328333506",
+      "fingerprint": "sha256:1f8590874480574e",
       "helper": null
     },
     "POST /spaces": {
       "excluded": null,
-      "fingerprint": "sha256:8734e5128d85247c",
+      "fingerprint": "sha256:a717d69c157b633b",
       "helper": null
     },
     "POST /spaces/join": {
       "excluded": null,
-      "fingerprint": "sha256:6d9d440115411225",
+      "fingerprint": "sha256:00a2e9f4436a8886",
       "helper": "join_space"
     },
     "POST /spaces/one-to-one": {
       "excluded": null,
-      "fingerprint": "sha256:a6f583c130554652",
+      "fingerprint": "sha256:b3517e9ab7d3cc24",
       "helper": null
     },
     "POST /spaces/one-to-one/register-incoming": {
       "excluded": null,
-      "fingerprint": "sha256:fcff0754f64fa9ff",
+      "fingerprint": "sha256:c6ecd53cffab3782",
       "helper": null
     },
     "POST /spaces/query": {
       "excluded": null,
-      "fingerprint": "sha256:087bb864d594fb04",
+      "fingerprint": "sha256:480aa3a0b757825c",
       "helper": null
     },
     "POST /spaces/query/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:087bb864d594fb04",
+      "fingerprint": "sha256:fe414b33fd5330d0",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/accept": {
       "excluded": null,
-      "fingerprint": "sha256:e5227629d08b5538",
+      "fingerprint": "sha256:138ddcb52d291f1a",
       "helper": "acl_accept"
     },
     "POST /spaces/{spaceId}/acl/add": {
       "excluded": null,
-      "fingerprint": "sha256:1da7f3020f087fbe",
+      "fingerprint": "sha256:c51b4a11a59c87be",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/cancel-join": {
       "excluded": null,
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/decline": {
       "excluded": null,
-      "fingerprint": "sha256:919681af566e2851",
+      "fingerprint": "sha256:169499dc51970a7f",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/ownership": {
       "excluded": null,
-      "fingerprint": "sha256:c3aaeea319b5e66e",
+      "fingerprint": "sha256:11892f82bb753e6e",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/permissions": {
       "excluded": null,
-      "fingerprint": "sha256:6dd2ceb760f6e675",
+      "fingerprint": "sha256:966ea36a84a95e3f",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/remove": {
       "excluded": null,
-      "fingerprint": "sha256:15e4a4d6d6afa982",
+      "fingerprint": "sha256:40edd4cf013faffc",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/self-remove": {
       "excluded": null,
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/stop-sharing": {
       "excluded": null,
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "POST /spaces/{spaceId}/agent/memory": {
       "excluded": null,
-      "fingerprint": "sha256:f7b2a4e534c6cc49",
+      "fingerprint": "sha256:f0f8d51859f63d88",
       "helper": null
     },
     "POST /spaces/{spaceId}/aggregate": {
       "excluded": null,
-      "fingerprint": "sha256:6329e8ce83bd7a20",
+      "fingerprint": "sha256:c4ef406ff97a68d8",
       "helper": null
     },
     "POST /spaces/{spaceId}/delete-records": {
       "excluded": "low-level (harness)",
-      "fingerprint": "sha256:932e8521d61b089d",
+      "fingerprint": "sha256:4082d12bd16f1903",
       "helper": null
     },
     "POST /spaces/{spaceId}/enrich/apply": {
       "excluded": null,
-      "fingerprint": "sha256:5f52fb9b49dc071d",
+      "fingerprint": "sha256:a8b6f8575be8c530",
       "helper": "enrich@v1 apply (guest http)"
     },
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
       "excluded": null,
-      "fingerprint": "sha256:3c5e12438a1e5382",
+      "fingerprint": "sha256:b4281a602d86084a",
       "helper": null
     },
     "POST /spaces/{spaceId}/files/{fileId}/pin": {
       "excluded": null,
-      "fingerprint": "sha256:2e4b34a3db738a7a",
+      "fingerprint": "sha256:45143e844d96b7e5",
       "helper": null
     },
     "POST /spaces/{spaceId}/files/{fileId}/retry": {
       "excluded": null,
-      "fingerprint": "sha256:2e4b34a3db738a7a",
+      "fingerprint": "sha256:45143e844d96b7e5",
       "helper": null
     },
     "POST /spaces/{spaceId}/guest-key": {
       "excluded": null,
-      "fingerprint": "sha256:20db8c316b64afe5",
+      "fingerprint": "sha256:43e27b323aec84f1",
       "helper": null
     },
     "POST /spaces/{spaceId}/invite/accept": {
       "excluded": null,
-      "fingerprint": "sha256:2593f02509bb2e0d",
+      "fingerprint": "sha256:fd04531dd71e3c60",
       "helper": null
     },
     "POST /spaces/{spaceId}/invite/decline": {
       "excluded": null,
-      "fingerprint": "sha256:9a8976ed51b650fc",
+      "fingerprint": "sha256:895b79350404f6d7",
       "helper": null
     },
     "POST /spaces/{spaceId}/invites": {
       "excluded": null,
-      "fingerprint": "sha256:49f30fb16b351f40",
+      "fingerprint": "sha256:95374d226d0da749",
       "helper": "create_invite"
     },
     "POST /spaces/{spaceId}/modify": {
-      "excluded": "raw modify \u2014 helper wraps internally",
-      "fingerprint": "sha256:28ffe2f6594b99e3",
+      "excluded": "raw modify — helper wraps internally",
+      "fingerprint": "sha256:cfd5190b57752dae",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects": {
       "excluded": null,
-      "fingerprint": "sha256:76a0e1bf0554a426",
+      "fingerprint": "sha256:fc9aa3f60f9bb3c2",
       "helper": "helper.create_object"
     },
     "POST /spaces/{spaceId}/objects/aggregate": {
       "excluded": null,
-      "fingerprint": "sha256:b3754be06cf6129e",
+      "fingerprint": "sha256:045247f5cc8051fb",
       "helper": "helper.aggregate"
     },
     "POST /spaces/{spaceId}/objects/query": {
       "excluded": null,
-      "fingerprint": "sha256:9882758e107a98d4",
+      "fingerprint": "sha256:1cfd37cdf9a5fa60",
       "helper": "helper.get_object / query_objects"
     },
     "POST /spaces/{spaceId}/objects/query/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:9882758e107a98d4",
+      "fingerprint": "sha256:9e4c74a1218cc212",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/agent/chunks": {
       "excluded": null,
-      "fingerprint": "sha256:9cdefcd0c2330075",
+      "fingerprint": "sha256:c91d6e1be0eb1eb2",
       "helper": "anyclient.create_chunk"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/agent/turns": {
       "excluded": null,
-      "fingerprint": "sha256:4e3d03e90b1b1ecc",
+      "fingerprint": "sha256:6924cbe970bc250b",
       "helper": "anyclient.append_turn"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages": {
       "excluded": null,
-      "fingerprint": "sha256:bdf75663c6cbcf6b",
+      "fingerprint": "sha256:3a2793af105d3980",
       "helper": "helper.chat_send"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions-read": {
       "excluded": null,
-      "fingerprint": "sha256:cc1410957b86fd21",
+      "fingerprint": "sha256:72477d9c22d477ff",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions/{emoji}": {
       "excluded": null,
-      "fingerprint": "sha256:4557c692c39203cd",
+      "fingerprint": "sha256:3b313ee02305a3c5",
       "helper": "helper.chat_react"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/read": {
       "excluded": null,
-      "fingerprint": "sha256:6fee1e1f876f8cd1",
+      "fingerprint": "sha256:4396b524abcf079a",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/read-all": {
       "excluded": null,
-      "fingerprint": "sha256:1bde4b0422a86fa1",
+      "fingerprint": "sha256:01b22e734caf2358",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/blocks": {
       "excluded": null,
-      "fingerprint": "sha256:ba3b9b2567cdbc77",
+      "fingerprint": "sha256:c000046263990f6e",
       "helper": "helper.create_block"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/markdown/append": {
       "excluded": null,
-      "fingerprint": "sha256:2948e60cc98a6f9e",
+      "fingerprint": "sha256:32d117a86c947879",
       "helper": "helper.append_markdown"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/enriched-data": {
       "excluded": null,
-      "fingerprint": "sha256:4fa18319aa3afad8",
+      "fingerprint": "sha256:620970319dbd520a",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files": {
       "excluded": null,
-      "fingerprint": "sha256:71550fd9b637e539",
+      "fingerprint": "sha256:d5e219e5d37a14c4",
       "helper": "attach_file"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query": {
       "excluded": null,
-      "fingerprint": "sha256:dd53e2c9c77b2eab",
+      "fingerprint": "sha256:cb4c70eaee78d876",
       "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:dd53e2c9c77b2eab",
+      "fingerprint": "sha256:4f73a1b6d0677c2a",
       "helper": null
     },
     "POST /spaces/{spaceId}/one-to-one/accept": {
       "excluded": null,
-      "fingerprint": "sha256:5c63cf769c659144",
+      "fingerprint": "sha256:fe721333cf5e34e3",
       "helper": null
     },
     "POST /spaces/{spaceId}/one-to-one/decline": {
       "excluded": null,
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "POST /spaces/{spaceId}/properties/{objectId}/set/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:bc654ebe397a5237",
+      "fingerprint": "sha256:0f2a6c542b78785f",
       "helper": "helper.update_object"
     },
     "POST /spaces/{spaceId}/query": {
       "excluded": null,
-      "fingerprint": "sha256:a23e1111021ce486",
+      "fingerprint": "sha256:1273767a0b758813",
       "helper": "anyclient.query"
     },
     "POST /spaces/{spaceId}/query/subscribe": {
       "excluded": null,
-      "fingerprint": "sha256:a23e1111021ce486",
+      "fingerprint": "sha256:1c33e0fbe68bd6ec",
       "helper": null
     },
     "POST /spaces/{spaceId}/search": {
       "excluded": null,
-      "fingerprint": "sha256:0775fbf42beab8a6",
+      "fingerprint": "sha256:357b04decd3acb94",
       "helper": "helper.search"
     },
     "POST /spaces/{spaceId}/sync": {
       "excluded": "diagnostic/sync (harness)",
-      "fingerprint": "sha256:86f9fa5498bd4e62",
+      "fingerprint": "sha256:0195fc1fa97b2ee4",
       "helper": null
     },
     "POST /spaces/{spaceId}/types": {
       "excluded": null,
-      "fingerprint": "sha256:522c88b8f4bed32b",
+      "fingerprint": "sha256:baa71f2322bea59d",
       "helper": "helper.create_type"
     },
     "POST /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:6abcb17c14cb40d7",
+      "fingerprint": "sha256:b8a94f6dcae2e02a",
       "helper": "helper.add_property"
     },
     "POST /ui/commands": {
       "excluded": null,
-      "fingerprint": "sha256:0377cf73a433846c",
+      "fingerprint": "sha256:e32e4a4ca3bfaef3",
       "helper": "helper.open_space / open_object"
     },
     "PUT /account/metadata": {
       "excluded": "harness/account profile",
-      "fingerprint": "sha256:652478553dffd22e",
+      "fingerprint": "sha256:83d4cfd06132bc50",
       "helper": null
     },
     "PUT /spaces/{spaceId}/objects/{objectId}/editor/markdown": {
       "excluded": null,
-      "fingerprint": "sha256:2948e60cc98a6f9e",
+      "fingerprint": "sha256:32d117a86c947879",
       "helper": "anyclient.put_markdown"
     }
   },

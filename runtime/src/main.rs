@@ -120,6 +120,10 @@ enum Cmd {
         spec: PathBuf,
         #[arg(long, default_value = "api/coverage.json")]
         manifest: PathBuf,
+        /// rewrite fingerprints of already-triaged endpoints in place
+        /// (new/removed stay human-triaged)
+        #[arg(long)]
+        refresh: bool,
     },
 }
 
@@ -454,8 +458,17 @@ fn main() -> Result<()> {
             print!("{}", stats::render(&dir)?);
             Ok(())
         }
-        Cmd::Drift { spec, manifest } => {
-            if drift::run(&spec, &manifest)? {
+        Cmd::Drift {
+            spec,
+            manifest,
+            refresh,
+        } => {
+            let clean = if refresh {
+                drift::refresh(&spec, &manifest)?
+            } else {
+                drift::run(&spec, &manifest)?
+            };
+            if clean {
                 Ok(())
             } else {
                 std::process::exit(1)
