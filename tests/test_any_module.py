@@ -238,6 +238,35 @@ def test_create_object_unknown_type_lists_available():
         client(fx).create_object("s1", {"types": ["ghost"]})
 
 
+def test_query_filters_error_on_unknown_keys_never_silent_empty():
+    # the store answers a typo'd key with a silent empty set — the
+    # resolution layer must refuse to forward what it can't resolve
+    # (ADR-006 §6, reads like writes)
+    fx = wire(replies=_CAT)
+    c = client(fx)
+    with pytest.raises(ValueError, match='type "unicorn" doesn.t exist'):
+        c.query_objects("s1", filter={"any.types": "unicorn"})
+    with pytest.raises(ValueError, match='type "unicorn" doesn.t exist'):
+        c.query_objects("s1", filter={"any.types": {"$in": ["task", "unicorn"]}})
+    with pytest.raises(ValueError, match='unknown property "nope" on type "task"'):
+        c.query_objects("s1", filter={"task.nope": 1})
+    with pytest.raises(ValueError, match='type "bookz" doesn.t exist'):
+        c.query_objects("s1", filter={"bookz.rating": {"$gte": 5}})
+    with pytest.raises(ValueError, match='unknown property "nope"'):
+        c.query_objects("s1", sort=["-task.nope"])
+    # nothing reached the wire beyond catalog reads
+    assert not any(p.endswith("/objects/query") for _, p, _ in fx.calls)
+    # data-dependent empties are untouched: resolvable key, no matches
+    assert c.query_objects("s1", filter={"task.status": "open"}) == []
+
+
+def test_get_ui_context_none_when_type_absent():
+    # fresh spaces have no ui_context type — the documented None path
+    # must survive strict filter resolution
+    fx = wire(replies={"/types": {"types": []}})
+    assert client(fx).get_ui_context("s1") is None
+
+
 def test_update_object_writes_name_markdown_and_prop_groups():
     fx = wire(replies=_CAT)
     r = client(fx).update_object("s1", "o1", {

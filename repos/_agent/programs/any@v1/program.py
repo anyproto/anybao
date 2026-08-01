@@ -199,27 +199,38 @@ class Client:
 
     def _resolve_path(self, space, path):
         """A readable dotted filter/sort key "typeXKey.propXKey" -> the
-        server's "typeId.propId". Keys whose head isn't a USER type (any.*,
-        nav.*, program.*, bare `id`, already-resolved id pairs) pass
-        through unchanged."""
+        server's "typeId.propId". Keys whose head is a builtin (any.*,
+        nav.*, program.*, bare `id`) pass through unchanged. An
+        unresolvable head or prop ERRORS — the store answers a typo'd
+        key with a silent empty set, never an error (ADR-006 §6 makes
+        both halves of that contract ours, reads like writes)."""
         if not isinstance(path, str) or "." not in path:
             return path
         head, _, tail = path.partition(".")
         if head in _RESERVED_GROUPS:   # any.*/nav.*/program.* keys are literal
             return path
         tid = self._resolve_type_seg(space, head)
-        row = self._catalog(space)["by_id"].get(tid or "")
+        if tid is None:
+            raise ValueError(
+                f'type "{head}" doesn\'t exist (filter/sort key "{path}"). '
+                f"Available types: {self._type_handles(space)}")
+        row = self._catalog(space)["by_id"].get(tid)
         if not self._is_user_type(row):
             return path
         pid = self._resolve_prop_seg(space, tid, tail)
-        return f"{tid}.{pid}" if pid else path
+        if pid is None:
+            raise ValueError(
+                f'unknown property "{tail}" on type "{head}" '
+                f'(filter/sort key "{path}")')
+        return f"{tid}.{pid}"
 
     def _resolve_type_value(self, space, v):
         """Resolve type xKeys appearing as an `any.types` filter VALUE
         (string, list, or operator dict like {$in:[...]}) so the agent can
-        filter by type xKey. Non-resolving entries pass through."""
+        filter by type xKey. An unknown handle ERRORS with the catalog —
+        forwarding it would only ever match the empty set."""
         if isinstance(v, str):
-            return self._resolve_type_seg(space, v) or v
+            return self._resolve_type_or_raise(space, v)
         if isinstance(v, list):
             return [self._resolve_type_value(space, x) for x in v]
         if isinstance(v, dict):
@@ -347,9 +358,11 @@ class Client:
         # for everything where a filtered query was intended.
         """Cross-object query over the per-space objects collection. `filter`
         / `sort` accept readable dotted xKey paths (`task.status`) and an
-        `any.types` xKey value, resolved to the server's id paths. Records
-        come back NORMALIZED (user-type groups keyed by type xKey, props by
-        prop xKey) unless normalize=False — pass that when you need the raw
+        `any.types` xKey value, resolved to the server's id paths; an
+        UNKNOWN type or property key errors with the catalog (a typo'd
+        key would otherwise silently match nothing). Records come back
+        NORMALIZED (user-type groups keyed by type xKey, props by prop
+        xKey) unless normalize=False — pass that when you need the raw
         content ids (e.g. graph edges) — ADR-006 §6."""
         if "filter" in opts:
             opts["filter"] = self._resolve_filter(space, opts["filter"])
@@ -478,8 +491,11 @@ class Client:
         {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
         check freshness before trusting — or None when the UI has never
         reported (type or pointer absent)."""
-        recs = self.query_objects(space, filter={"any.types": "ui_context"},
-                                  limit=8)   # xKey-normalized (ADR-006 §6)
+        try:
+            recs = self.query_objects(space, filter={"any.types": "ui_context"},
+                                      limit=8)   # xKey-normalized (ADR-006 §6)
+        except ValueError:
+            return None   # type absent = UI never reported in this space
         latest, latest_at = None, 0
         for r in recs:
             group = r.get("ui_context") or {}
