@@ -50,7 +50,28 @@ raw spaces/modify (helper wraps it internally).
   agent. **When:** with the chat facade if cheap, else M6.
 - **members / acl / invites / one-to-one / register-incoming** —
   collaboration/sharing; mostly human/UI ops. Thin agent exposure ever.
-  **When:** M6 or on-demand.
+  **When:** M6 or on-demand. Drift 2026-08-01 added to this group:
+  invite accept/decline, guest-key mint/revoke (owner-side overlay op —
+  today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
+
+## C2. Drift refresh 2026-08-01 (pin → any@main afa3ed4)
+
+21 new endpoints triaged; `POST /spaces/join` contract change (documented
+400 envelope + 409 guest-token-already-tracked) was already handled in
+`serve.rs probe_or_join_overlay` — fingerprint refreshed only.
+
+- **Mapped**: objects/:id/backlinks → `anyclient.backlinks` (any@v1
+  `any.backlinks` — shipped ahead of the pin); enrich/apply → enrich@v1
+  (guest http, the one direct-URL call).
+- **Excluded**: debug/p2p (diagnostic); push/token GET/POST/DELETE +
+  push/subscriptions (client push plumbing, UI-side).
+- **Unmapped, demand-driven** (C): object **history** ×4 (version
+  history/diff — future "what changed" capability); `PATCH
+  spaces/:id/settings` (space management); `PATCH`/`DELETE`
+  types/:id/properties/:propId (schema facade growth); chat
+  **reactions-read** (read-tracking group); `DELETE files/:fileId`
+  (files v2 group); `POST objects/:id/enriched-data` (enrich write
+  path — UI/importer side, agent writes proposals via datasets).
 
 ## D. M5-owned (not generic helper facades)
 

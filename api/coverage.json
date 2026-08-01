@@ -1,5 +1,10 @@
 {
   "endpoints": {
+    "DELETE /push/token": {
+      "excluded": "client push plumbing (UI)",
+      "fingerprint": "sha256:78ed27efaa2ff484",
+      "helper": null
+    },
     "DELETE /spaces/{spaceId}": {
       "excluded": null,
       "fingerprint": "sha256:86f9fa5498bd4e62",
@@ -8,6 +13,16 @@
     "DELETE /spaces/{spaceId}/agent/memory/{itemId}": {
       "excluded": null,
       "fingerprint": "sha256:f837ad4da4800cee",
+      "helper": null
+    },
+    "DELETE /spaces/{spaceId}/files/{fileId}": {
+      "excluded": null,
+      "fingerprint": "sha256:2e4b34a3db738a7a",
+      "helper": null
+    },
+    "DELETE /spaces/{spaceId}/guest-key": {
+      "excluded": null,
+      "fingerprint": "sha256:4b4b6544a506f556",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/invites": {
@@ -35,6 +50,11 @@
       "fingerprint": "sha256:8a09f460aa870e63",
       "helper": "helper.delete_block"
     },
+    "DELETE /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
+      "excluded": null,
+      "fingerprint": "sha256:db0c34099e4292e6",
+      "helper": null
+    },
     "GET /account": {
       "excluded": "harness/account profile",
       "fingerprint": "sha256:73e21939b71a4a58",
@@ -48,6 +68,11 @@
     "GET /datasets": {
       "excluded": "schema discovery (harness)",
       "fingerprint": "sha256:73e21939b71a4a58",
+      "helper": null
+    },
+    "GET /debug/p2p": {
+      "excluded": "diagnostic (harness/human)",
+      "fingerprint": "sha256:959ce9ec0364f6c9",
       "helper": null
     },
     "GET /files/cache": {
@@ -73,6 +98,16 @@
     "GET /identities/{identity}": {
       "excluded": null,
       "fingerprint": "sha256:9c95d329801cec59",
+      "helper": null
+    },
+    "GET /push/subscriptions": {
+      "excluded": "client push plumbing (UI)",
+      "fingerprint": "sha256:815676154d11be80",
+      "helper": null
+    },
+    "GET /push/token": {
+      "excluded": "client push plumbing (UI)",
+      "fingerprint": "sha256:d3258a1555eda458",
       "helper": null
     },
     "GET /spaces": {
@@ -170,10 +205,35 @@
       "fingerprint": "sha256:026752932fc679b4",
       "helper": null
     },
+    "GET /spaces/{spaceId}/objects/{objectId}/backlinks": {
+      "excluded": null,
+      "fingerprint": "sha256:4c0314e8eefc6d21",
+      "helper": "anyclient.backlinks / helper.backlinks"
+    },
     "GET /spaces/{spaceId}/objects/{objectId}/editor/markdown": {
       "excluded": null,
       "fingerprint": "sha256:9f42263101526eb5",
       "helper": "anyclient.get_markdown"
+    },
+    "GET /spaces/{spaceId}/objects/{objectId}/history": {
+      "excluded": null,
+      "fingerprint": "sha256:b81c24d361094ebe",
+      "helper": null
+    },
+    "GET /spaces/{spaceId}/objects/{objectId}/history/diff": {
+      "excluded": null,
+      "fingerprint": "sha256:8f9f213fbbc68655",
+      "helper": null
+    },
+    "GET /spaces/{spaceId}/objects/{objectId}/history/{version}": {
+      "excluded": null,
+      "fingerprint": "sha256:068f2c00f0c97708",
+      "helper": null
+    },
+    "GET /spaces/{spaceId}/objects/{objectId}/history/{version}/datasets/{dataset}/records/{recordId}": {
+      "excluded": null,
+      "fingerprint": "sha256:e7d0bc921763438e",
+      "helper": null
     },
     "GET /spaces/{spaceId}/properties/{objectId}": {
       "excluded": null,
@@ -240,6 +300,16 @@
       "fingerprint": "sha256:fe75e1db31df27d4",
       "helper": "helper.patch_block"
     },
+    "PATCH /spaces/{spaceId}/settings": {
+      "excluded": null,
+      "fingerprint": "sha256:f41772aa6ac524d2",
+      "helper": null
+    },
+    "PATCH /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
+      "excluded": null,
+      "fingerprint": "sha256:628d0cbe102493b0",
+      "helper": null
+    },
     "POST /auth": {
       "excluded": "harness auth/boot",
       "fingerprint": "sha256:50ea584dba15a4d0",
@@ -255,6 +325,11 @@
       "fingerprint": "sha256:918fc860ba813e78",
       "helper": null
     },
+    "POST /push/token": {
+      "excluded": "client push plumbing (UI)",
+      "fingerprint": "sha256:9172e135ca9cc149",
+      "helper": null
+    },
     "POST /shutdown": {
       "excluded": "harness lifecycle",
       "fingerprint": "sha256:9a810fd328333506",
@@ -267,7 +342,7 @@
     },
     "POST /spaces/join": {
       "excluded": null,
-      "fingerprint": "sha256:834e4297c5a3e7ab",
+      "fingerprint": "sha256:6d9d440115411225",
       "helper": "join_space"
     },
     "POST /spaces/one-to-one": {
@@ -350,6 +425,11 @@
       "fingerprint": "sha256:932e8521d61b089d",
       "helper": null
     },
+    "POST /spaces/{spaceId}/enrich/apply": {
+      "excluded": null,
+      "fingerprint": "sha256:5f52fb9b49dc071d",
+      "helper": "enrich@v1 apply (guest http)"
+    },
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
       "excluded": null,
       "fingerprint": "sha256:3c5e12438a1e5382",
@@ -363,6 +443,21 @@
     "POST /spaces/{spaceId}/files/{fileId}/retry": {
       "excluded": null,
       "fingerprint": "sha256:2e4b34a3db738a7a",
+      "helper": null
+    },
+    "POST /spaces/{spaceId}/guest-key": {
+      "excluded": null,
+      "fingerprint": "sha256:20db8c316b64afe5",
+      "helper": null
+    },
+    "POST /spaces/{spaceId}/invite/accept": {
+      "excluded": null,
+      "fingerprint": "sha256:2593f02509bb2e0d",
+      "helper": null
+    },
+    "POST /spaces/{spaceId}/invite/decline": {
+      "excluded": null,
+      "fingerprint": "sha256:9a8976ed51b650fc",
       "helper": null
     },
     "POST /spaces/{spaceId}/invites": {
@@ -410,6 +505,11 @@
       "fingerprint": "sha256:bdf75663c6cbcf6b",
       "helper": "helper.chat_send"
     },
+    "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions-read": {
+      "excluded": null,
+      "fingerprint": "sha256:cc1410957b86fd21",
+      "helper": null
+    },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions/{emoji}": {
       "excluded": null,
       "fingerprint": "sha256:4557c692c39203cd",
@@ -434,6 +534,11 @@
       "excluded": null,
       "fingerprint": "sha256:2948e60cc98a6f9e",
       "helper": "helper.append_markdown"
+    },
+    "POST /spaces/{spaceId}/objects/{objectId}/enriched-data": {
+      "excluded": null,
+      "fingerprint": "sha256:4fa18319aa3afad8",
+      "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files": {
       "excluded": null,
