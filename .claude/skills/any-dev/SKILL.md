@@ -32,8 +32,11 @@ The copy is a **snapshot** — stale copies bite (a method added to
 `any@v1` after the copy won't exist in `$D`). Re-run the `cp -r` after
 any edit to the repo's `programs/`, and prefer a fresh `$D` per session.
 
-Write `$D/dev@v1.py` — **import-free** (guest never imports the host;
-`use()`, `effect()`, `json` are the globals you get), one `main(args)`:
+Write `$D/dev@v1.py` — no host imports (guest never imports the host;
+`use()` and `effect()` are provided globals), one `main(args)`. Stdlib
+comes via EXPLICIT allowlist imports — `import json` at module top like
+every repo program; `json` is injected only into CELLS, not program
+modules (NameError taught this, 2026-08-01):
 
 ```python
 def main(args):
