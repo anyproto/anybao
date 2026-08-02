@@ -77,10 +77,13 @@ Chat:
 
 - Every space derives exactly **one** general chat; its id is
   `c.general_chat(space)`. Post with `c.chat_send(space,
-  c.general_chat(space), {"text": …})`. NEVER create a chat object or
-  pick one from a query — name-matched "general" chats are peer-made
-  impostors that split the conversation (the real derived chat carries
-  no name/nav, so the obvious-looking pick is the wrong one).
+  c.general_chat(space), {"text": …})`; read with `c.query(space,
+  chat_id, "chat_messages", sort=["-createdAt"], limit=n)` — NOT
+  `history.recent_turns` (that's the agentlog, not the conversation).
+  NEVER create a chat object or pick one from a query — name-matched
+  "general" chats are peer-made impostors that split the conversation
+  (the real derived chat carries no name/nav, so the obvious-looking
+  pick is the wrong one).
 - The local-scope filter trap (chat is the sharpest case): every
   property on the `chat` type (`unreadCount`, …) is `scope: "local"`,
   so `filter={"chat": {"$exists": true}}` asks "has THIS peer tracked

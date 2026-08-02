@@ -588,10 +588,12 @@ class Client:
         """The space's canonical chat id (its `generalChatObjectId`).
 
         Every space derives exactly ONE general chat from a fixed
-        seed. Post there via `chat_send` — never create a chat object
-        or pick one from a query: name-matched "general" chats are
-        peer-made impostors that split the conversation (the derived
-        chat carries no name/nav)."""
+        seed. Post there via `chat_send`; READ it via `query(space,
+        chat_id, "chat_messages", sort=["-createdAt"], limit=n)` —
+        never create a chat object or pick one from a query:
+        name-matched "general" chats are peer-made impostors that
+        split the conversation (the derived chat carries no
+        name/nav)."""
         return self.get_space(space)["generalChatObjectId"]
 
     @span("any.create_space", kind="mutator")  # noqa: F821 - guest global
@@ -742,7 +744,10 @@ class Client:
     def chat_send(self, space, chat_id, body):
         """Post a message to a chat object. `body`: `{"text": ...}`.
         The chat id for a space's conversation is
-        `general_chat(space)` — never a queried or created chat."""
+        `general_chat(space)` — never a queried or created chat. To
+        READ messages: `query(space, chat_id, "chat_messages",
+        sort=["-createdAt"], limit=n)` (agent_turns is the agentlog,
+        not the conversation)."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
 

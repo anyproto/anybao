@@ -138,7 +138,11 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
 
 @span("history.recent_turns", kind="getter")  # noqa: F821 - guest global
 def recent_turns(client, space, chat_id, limit):
-    """Newest turns first (descending seq)."""
+    """Newest AGENTLOG turns first (descending seq) — the agent's own
+    turn records, NOT the chat conversation. For what people said in a
+    chat, read its messages: `client.query(space, chat_id,
+    "chat_messages", sort=["-createdAt"], limit=n)`. An empty [] here
+    just means this agent never logged turns on that chat."""
     return client.query(space, chat_id, "agent_turns", sort=["-seq"], limit=limit)
 
 
