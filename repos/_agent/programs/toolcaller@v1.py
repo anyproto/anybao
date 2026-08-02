@@ -75,7 +75,9 @@ def _render_value(cell_id, meta, i):
     if approx_tokens(meta["repr"]) <= INLINE_TOKEN_BUDGET:
         return meta["repr"]
     sel = f'values.get("{cell_id}", {i!r})'
-    return f"[{meta['size']} bytes, {meta['schema']} — {sel} to walk]"
+    return (f"[{meta['size']} bytes, {meta['schema']} — {sel} returns the "
+            f"STORED value: walk it (fields, slices), don't re-run the "
+            f"producing call; printing it whole re-elides]")
 
 
 def _op_name(e):

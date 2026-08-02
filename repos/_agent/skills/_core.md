@@ -18,7 +18,11 @@ with text only (no tool call).
 **Reading what a cell returns.** The tool result shows your `print()`
 output, the cell's last expression, and a side-effects summary. Large
 values collapse to a stub naming the exact `values.get(...)` call that
-fetches them in a later cell.
+returns the STORED value in a later cell — never re-run the producing
+call just to see it again (a wasted, possibly nondeterministic
+round-trip). Walk it in pieces: `v = values.get("toolu_…", 1);
+print(v["text"][:2000])` — printing the whole walked value just
+re-elides it.
 
 ## Cell semantics
 
