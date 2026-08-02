@@ -420,6 +420,18 @@ def test_backlinks_speaks_xkeys():
 
 # --- markdown ---------------------------------------------------------------------
 
+def test_edit_markdown_wire_shape():
+    fx = wire(replies={"/editor/markdown": {"updated": 1, "unchanged": 4}})
+    r = client(fx).edit_markdown("s1", "o1", [
+        {"oldText": "- [ ] Buy milk", "newText": "- [x] Buy milk"}])
+    verb, path, body = fx.calls[-1]
+    assert (verb, path) == ("PATCH",
+                            "/v1/spaces/s1/objects/o1/editor/markdown")
+    assert body == {"edits": [{"oldText": "- [ ] Buy milk",
+                               "newText": "- [x] Buy milk"}]}
+    assert r == {"updated": 1, "unchanged": 4}
+
+
 def test_markdown_roundtrip_uses_content_key():
     fx = wire(replies={"/editor/markdown": {"content": "# hi"}})
     c = client(fx)

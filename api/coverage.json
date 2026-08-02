@@ -300,6 +300,11 @@
       "fingerprint": "sha256:9c8e5edc1b51b545",
       "helper": "helper.patch_block"
     },
+    "PATCH /spaces/{spaceId}/objects/{objectId}/editor/markdown": {
+      "excluded": null,
+      "fingerprint": "sha256:23edfcc90eaa96c9",
+      "helper": "helper.edit_markdown"
+    },
     "PATCH /spaces/{spaceId}/settings": {
       "excluded": null,
       "fingerprint": "sha256:f9f40fd20f995c35",
@@ -492,12 +497,12 @@
     },
     "POST /spaces/{spaceId}/objects/{objectId}/agent/chunks": {
       "excluded": null,
-      "fingerprint": "sha256:c91d6e1be0eb1eb2",
+      "fingerprint": "sha256:b2a7a1e05b35c688",
       "helper": "anyclient.create_chunk"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/agent/turns": {
       "excluded": null,
-      "fingerprint": "sha256:6924cbe970bc250b",
+      "fingerprint": "sha256:38cac3152280cd30",
       "helper": "anyclient.append_turn"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages": {

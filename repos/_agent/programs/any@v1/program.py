@@ -493,6 +493,24 @@ class Client:
                           f"/v1/spaces/{space}/objects/{object_id}/editor/markdown",
                           {"content": content})
 
+    @span("any.edit_markdown", kind="mutator")  # noqa: F821 - guest global
+    def edit_markdown(self, space, object_id, edits):
+        """Surgical text edits on the editor body — THE point-edit path
+        (never get→replace→put, which clobbers concurrent edits).
+
+        `edits`: [{"oldText", "newText", "replaceAll"?}] — matched
+        server-side against current state (exact, then whole-line
+        fuzzy). All-or-nothing; oldText must be unique unless
+        replaceAll. Tick a checkbox: [{"oldText": "- [ ] Buy milk",
+        "newText": "- [x] Buy milk"}]. Typed 400s say what to fix:
+        markdown.no_match / ambiguous_match (add surrounding lines to
+        disambiguate) / overlapping_edits. Returns PUT's {inserted,
+        updated, deleted, unchanged}; a no-op edit is a clean 200."""
+        return self._call(
+            "patch",
+            f"/v1/spaces/{space}/objects/{object_id}/editor/markdown",
+            {"edits": edits})
+
     @span("any.append_markdown", kind="mutator")  # noqa: F821 - guest global
     def append_markdown(self, space, object_id, content):
         """Append to the editor body (server-side append-only fast path).

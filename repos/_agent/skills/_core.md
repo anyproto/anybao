@@ -62,8 +62,11 @@ Env vars are not read.
   (scopes: `agent` memory / `history` turns+chunks / `basic` content),
   `c.create_object(space, body)` (nested type-group properties, keyed by
   type xKey), `c.modify`, `c.upsert_record`, `c.get_markdown` /
-  `c.put_markdown` (surgical edit = get → single-match `str.replace` →
-  put), `c.chat_send(space, chat_id, body)`, `c.create_memory` /
+  `c.put_markdown` (whole-body) / `c.append_markdown` (add at tail) /
+  `c.edit_markdown(space, obj, [{"oldText", "newText"}])` — THE way
+  to change existing body text (tick a checkbox, fix a line): matched
+  server-side, all-or-nothing, no read needed; never get→replace→put.
+  `c.chat_send(space, chat_id, body)`, `c.create_memory` /
   `c.evolve_memory` / `c.delete_memory`, `c.list_types`,
   `c.list_properties`, `c.backlinks`, `c.aggregate`,
   `c.list_spaces()`, `c.get_ui_context(space)`.
