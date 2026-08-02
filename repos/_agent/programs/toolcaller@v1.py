@@ -21,7 +21,24 @@ import datetime
 
 RUN_CELL_TOOL = {
     "name": "run_cell",
-    "description": "Execute a Python cell in the persistent kernel.",
+    "description": (
+        "Execute a Python cell in the persistent kernel. State (variables, "
+        "imports, use() modules) persists across cells for the whole "
+        "conversation. The result is a digest: print() output, the last "
+        "expression, a side-effects summary; large values collapse to a "
+        "values.get(...) stub that returns the stored value in a later "
+        "cell. Reply with text only (no tool call) to end the turn."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "Python source: top-level statements; the "
+                               "last expression is captured as the value.",
+            },
+        },
+        "required": ["code"],
+    },
 }
 MAX_TURNS = 108
 MAX_TOKENS_TOTAL = 1_000_000
