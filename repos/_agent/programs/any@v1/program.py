@@ -102,6 +102,12 @@ class Client:
     # reverse-map records -> xKey-nested on read. Builtins (id == xKey) pass
     # through untouched.
     def _catalog(self, space):
+        # a non-string space (a list_spaces() row or the whole list)
+        # otherwise surfaces frames deep as an unhashable-key TypeError
+        if not isinstance(space, str) or not space:
+            raise TypeError(
+                f"space must be a space id string, got {type(space).__name__}"
+                " — pick one id from list_spaces()")
         cat = self._types_cache.get(space)
         if cat is None:
             by_id, by_xkey, rows = {}, {}, []

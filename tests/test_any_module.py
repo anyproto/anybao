@@ -238,6 +238,14 @@ def test_create_object_unknown_type_lists_available():
         client(fx).create_object("s1", {"types": ["ghost"]})
 
 
+def test_space_argument_must_be_a_string():
+    # a list_spaces() row (or the list itself) passed as `space` must
+    # fail at the boundary, not frames deep as an unhashable dict key
+    fx = wire(replies=_CAT)
+    with pytest.raises(TypeError, match="space must be a space id string"):
+        client(fx).query_objects(["s1"], filter={"any.types": "task"})
+
+
 def test_get_space_and_general_chat():
     fx = wire(replies={"/spaces/s1": {"id": "s1",
                                       "generalChatObjectId": "chat9"}})
