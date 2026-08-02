@@ -255,12 +255,31 @@ providers stay silent until their effect needs them.
 
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
-- Trigger object properties: `name`, `kind` (`cron | event`), `spec`
-  (cron expression | `{dataset, objectId?, filter?}`), `program`
+- Trigger object properties: `name`, `kind` (`cron | event | once`),
+  `spec` (cron expression | `{dataset, objectId?, filter?}` |
+  `{at: <epoch seconds>}`), `program`
   (ADR-004 spec string), `args`, `owner` (instance UUID), `enabled`,
   `logRuns`, and the observability rollup `lastRunAt / lastDurationMs /
   lastStatus / runCount / lastRunRef` (plan §4b semantics: single-owner,
   at-most-once, boot-disarmed, arm-after-sync).
+- **`once` kind (amended 2026-08-02, E11)**: fires when `now >= at`
+  provided it has never run (`lastRunAt` empty), then auto-disables
+  (`enabled: false`) — the record stays as its own audit trail. A
+  PAST `at` that never fired fires late on the next tick (a late
+  reminder beats a lost one — deliberate inversion of cron's
+  missed-occurrence-does-not-exist rule). A failed run consumes the
+  shot (at-most-once bias): no retry, the error lives in the run
+  record.
+- **The dataset is the source of truth (amended 2026-08-02, E11)**:
+  the owner reconciles its registry from `agent_triggers` records
+  every tick — records it has never seen are parsed and, when
+  `owner` is empty or its own, ADOPTED (owner stamped + persisted);
+  foreign-owned records are left alone. `enabled` edits on adopted
+  records are honored on the next tick. Malformed records are
+  skipped loudly (log), never crash the ticker. This is what lets
+  the agent CREATE triggers (reminders above all) by writing a
+  record — previously the registry only ever held the standing
+  built-ins.
 - `trigger_runs` dataset ON the trigger object: `{ts, durationMs,
   status, error?, traceRef}` — the run's trace in ADR-001 format
   (inline small / file attachment large), keep-last-N retention.

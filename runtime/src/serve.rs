@@ -15,8 +15,8 @@ use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::triggers::{
-    rollup, standing_triggers, trigger_to_record, RunResult, Scheduler, Trigger, WatchAction,
-    Watcher,
+    record_to_trigger, rollup, standing_triggers, trigger_to_record, RunResult, Scheduler, Trigger,
+    WatchAction, Watcher,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -998,6 +998,56 @@ fn trigger_ticker(
             info!("deferred conversation: {:?}", preview(&text));
             start_or_inject(&shared, &ctx, text);
         }
+        // the dataset is the source of truth (ADR-006 §4): adopt records
+        // the registry has never seen (ownerless or ours), honor enabled
+        // edits on adopted ones; foreign owners and malformed records are
+        // left alone (the latter loudly)
+        if let Ok(recs) = ctx
+            .client
+            .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+        {
+            let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+            let mut reg = shared.triggers.lock().unwrap();
+            let standing: std::collections::BTreeSet<String> =
+                standing_triggers(&ctx.space, "", "", "")
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect();
+            for rec in recs {
+                let Some(id) = rec.get("id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if standing.contains(id) {
+                    continue; // built-ins are code-owned, not record-owned
+                }
+                match reg.get_mut(id) {
+                    Some(live) => {
+                        if let Some(en) = rec.get("enabled").and_then(|v| v.as_bool()) {
+                            live.enabled = en;
+                        }
+                    }
+                    None => {
+                        let Some(mut t) = record_to_trigger(id, &rec) else {
+                            warn!("agent_triggers {id:?}: malformed record — skipped");
+                            continue;
+                        };
+                        if !t.owner.is_empty() && t.owner != instance {
+                            continue; // foreign-owned
+                        }
+                        t.owner = instance.clone(); // adopt + stamp
+                        let _ = ctx.client.upsert_record(
+                            &ctx.space,
+                            &ctx.anchor,
+                            "agent_triggers",
+                            id,
+                            &trigger_to_record(&t),
+                        );
+                        info!("trigger adopted from dataset: {id:?} ({})", t.kind);
+                        reg.insert(id.to_string(), t);
+                    }
+                }
+            }
+        }
         let due: Vec<Trigger> = {
             let mut reg = shared.triggers.lock().unwrap();
             let sched = shared.scheduler.lock().unwrap();
@@ -1006,6 +1056,11 @@ fn trigger_ticker(
                 if t.kind == "cron" && sched.cron_due(t) {
                     out.push(t.clone());
                     sched.advance_cron(t);
+                } else if sched.once_due(t) {
+                    out.push(t.clone());
+                    // consume the shot before the run: at-most-once even
+                    // if the run path dies mid-way (ADR-006 §4)
+                    t.enabled = false;
                 }
             }
             out

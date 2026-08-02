@@ -95,6 +95,10 @@ impl Scheduler {
         self.armed = true;
     }
 
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
     fn runnable(&self, t: &Trigger) -> bool {
         self.armed && t.owner == self.instance_id && t.enabled
     }
@@ -140,6 +144,21 @@ impl Scheduler {
         t.next_due = self.compute_next_due(t);
     }
 
+    /// `once` fires when now >= spec.at, provided it never ran. A past
+    /// `at` fires late (a late reminder beats a lost one — deliberate
+    /// inversion of cron's missed-occurrence rule, ADR-006 §4); a
+    /// failed run consumes the shot (record_run sets last_run_at
+    /// regardless of status, and the caller disables after the fire).
+    pub fn once_due(&self, t: &Trigger) -> bool {
+        if t.kind != "once" || !self.runnable(t) || t.last_run_at.is_some() {
+            return false;
+        }
+        t.spec
+            .get("at")
+            .and_then(|v| v.as_f64())
+            .is_some_and(|at| (self.now)() >= at)
+    }
+
     /// Run bookkeeping + the circuit breaker.
     pub fn record_run(&self, t: &mut Trigger, r: &RunResult) -> Value {
         let ts = (self.now)();
@@ -162,6 +181,58 @@ impl Scheduler {
                "durationMs": r.duration_ms, "error": r.error,
                "traceRef": r.trace_ref, "fuel": r.fuel, "costUsd": Value::Null})
     }
+}
+
+/// Parse an `agent_triggers` dataset record into a Trigger (ADR-006 §4
+/// dataset-is-source-of-truth). Returns None for records missing the
+/// definition core — the caller logs and skips, never crashes.
+pub fn record_to_trigger(id: &str, rec: &Value) -> Option<Trigger> {
+    let kind = rec.get("kind")?.as_str()?.to_string();
+    if !matches!(kind.as_str(), "cron" | "event" | "once") {
+        return None;
+    }
+    let program = rec.get("program")?.as_str()?.to_string();
+    Some(Trigger {
+        id: id.into(),
+        name: rec
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(id)
+            .to_string(),
+        kind,
+        spec: rec.get("spec").cloned().unwrap_or_else(|| json!({})),
+        program,
+        args: rec.get("args").cloned().unwrap_or_else(|| json!({})),
+        owner: rec
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        enabled: rec.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+        limits: rec.get("limits").cloned().unwrap_or_else(|| json!({})),
+        max_consecutive_failures: rec
+            .get("maxConsecutiveFailures")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(DEFAULT_MAX_CONSECUTIVE_FAILURES),
+        last_run_at: rec.get("lastRunAt").and_then(|v| v.as_f64()),
+        last_status: rec
+            .get("lastStatus")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        last_duration_ms: rec.get("lastDurationMs").and_then(|v| v.as_i64()),
+        last_fuel: rec.get("lastFuel").and_then(|v| v.as_i64()),
+        last_cost_usd: rec.get("lastCostUsd").and_then(|v| v.as_f64()),
+        run_count: rec.get("runCount").and_then(|v| v.as_i64()).unwrap_or(0),
+        consecutive_failures: rec
+            .get("consecutiveFailures")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        last_run_ref: rec
+            .get("lastRunRef")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        next_due: None,
+    })
 }
 
 pub fn trigger_to_record(t: &Trigger) -> Value {
@@ -331,6 +402,57 @@ mod tests {
         sched.arm();
         let mut foreign = Trigger::cron("b", "b", 1.0, "p@v1", json!({}), "other", true);
         assert!(!sched.cron_due(&mut foreign));
+    }
+
+    #[test]
+    fn once_fires_at_time_late_and_only_once() {
+        let t = Arc::new(Mutex::new(1000.0));
+        let mut sched = Scheduler::new("i1", clock(t.clone()));
+        sched.arm();
+        let mut tr = Trigger::cron("r", "remind", 0.0, "agent:remind@v1", json!({}), "i1", true);
+        tr.kind = "once".into();
+        tr.spec = json!({"at": 1500.0});
+        assert!(!sched.once_due(&tr)); // not yet due
+        *t.lock().unwrap() = 1500.0;
+        assert!(sched.once_due(&tr)); // due at the boundary
+        *t.lock().unwrap() = 9999.0;
+        assert!(sched.once_due(&tr)); // a PAST at fires late (ADR-006 §4)
+                                      // any recorded run (even a failure) consumes the shot
+        tr.last_run_at = Some(9999.0);
+        assert!(!sched.once_due(&tr));
+        // cron never answers once_due, and vice versa
+        let mut cr = Trigger::cron("c", "c", 60.0, "p@v1", json!({}), "i1", true);
+        assert!(!sched.once_due(&cr));
+        assert!(!sched.cron_due(&mut Trigger {
+            kind: "once".into(),
+            ..cr.clone()
+        }));
+        let _ = &mut cr;
+    }
+
+    #[test]
+    fn record_round_trips_and_malformed_is_none() {
+        let rec = json!({"name": "oven", "kind": "once",
+                         "spec": {"at": 1234.5}, "program": "agent:remind@v1",
+                         "args": {"text": "check the oven"}, "enabled": true});
+        let t = record_to_trigger("r1", &rec).expect("parses");
+        assert_eq!(
+            (t.kind.as_str(), t.program.as_str()),
+            ("once", "agent:remind@v1")
+        );
+        assert_eq!(t.spec["at"], json!(1234.5));
+        assert_eq!(t.owner, ""); // ownerless — adoptable
+                                 // round-trip: to_record → back preserves the definition core
+        let back = record_to_trigger("r1", &trigger_to_record(&t)).expect("round-trips");
+        assert_eq!((back.kind, back.args), (t.kind, t.args));
+        // malformed: unknown kind / missing program
+        assert!(record_to_trigger(
+            "x",
+            &json!({"kind": "sometimes",
+                                               "program": "p@v1"})
+        )
+        .is_none());
+        assert!(record_to_trigger("x", &json!({"kind": "once"})).is_none());
     }
 
     #[test]

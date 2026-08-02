@@ -85,6 +85,17 @@ Env vars are not read.
   an item.
 - `use("llm@v1").chat(messages, system=, tier="classify", tools=[])` —
   sub-LLM work (summaries, judgments).
+- **Reminders / one-shot schedules** ("remind me at/in …"): write an
+  `agent_triggers` record on the trigger anchor (the single
+  `agent_trigger`-typed object in the space):
+  `c.upsert_record(space, anchor_id, "agent_triggers", "<slug>",
+  {"name": "...", "kind": "once", "spec": {"at": now() + delay_s},
+  "program": "agent:remind@v1", "args": {"space": space, "chatId":
+  chat_id, "text": "..."}, "enabled": True})`. The serve owner adopts
+  the record within a tick and fires it once at `at`; it then
+  self-disables and stays as its own audit trail. Recurring schedules:
+  same record with `"kind": "cron"` and `spec {"cron": "<expr>"}` or
+  `{"every_s": n}`. Tell the user what you scheduled and for when.
 
 Repeating one call ≥4 times in a cell earns a hint: fan out in one
 round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.
