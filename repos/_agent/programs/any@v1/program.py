@@ -423,10 +423,16 @@ class Client:
 
     @span("any.aggregate", kind="getter")  # noqa: F821 - guest global
     def aggregate(self, space, pipeline):
-        """Run an aggregation pipeline over the space's objects.
+        """Run a Mongo-style aggregation pipeline over the space's objects.
 
-        For counts / grouping when a plain query won't do. Type ids in
-        the result records come back as xKeys."""
+        Stages: $match, $group (_id + accumulators: {"$sum": 1},
+        {"$count": {}}), $sort, $count. Field refs are "$<wire path>":
+        "$any.types" is literal, but user-type fields need raw ids
+        ("$<typeId>.<propId>") — xKeys are NOT resolved inside
+        pipelines. Count per type: [{"$group": {"_id": "$any.types",
+        "count": {"$sum": 1}}}]. Returns {"records": [...]} with
+        user-type ids mapped back to xKeys; unknown stages are a 400
+        (aggregate.bad_pipeline)."""
         r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                        {"pipeline": pipeline})
         if isinstance(r, dict) and isinstance(r.get("records"), list):
