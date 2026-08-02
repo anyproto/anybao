@@ -342,6 +342,18 @@ def test_normalize_false_returns_raw_id_keyed_groups():
     assert rec == {"id": "o1", "bafyTASK": {"bafySTATUS": "open"}}
 
 
+def test_normalize_strips_ver_noise_raw_keeps_it():
+    # B5: _ver version vectors are tokens the model can't use
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": "o1", "_ver": {"id": "!!$5"},
+         "bafyTASK": {"bafySTATUS": "open"}}]}})
+    [rec] = client(fx).query_objects("s1")
+    assert "_ver" not in rec
+    assert rec["task"] == {"status": "open"}
+    [raw] = client(fx).query_objects("s1", normalize=False)
+    assert raw["_ver"] == {"id": "!!$5"}
+
+
 def test_catalog_refreshes_once_on_unknown_type_miss():
     # First /types reply lacks `task`; resolution refreshes the catalog and
     # the wire (stateful) then returns it. Proves refresh-on-miss.

@@ -269,8 +269,9 @@ class Client:
     def _normalize_record(self, space, rec):
         """Reverse-map a raw wire record to the readable xKey-nested shape:
         record[typeId][propId] -> out[typeXKey][propXKey]. Builtin namespaces
-        (any/nav/program) and scalars (id, _ver, …) pass through verbatim —
-        their keys are already literal handles."""
+        (any/nav/program) and scalars (id, …) pass through verbatim — their
+        keys are already literal handles. `_ver` (CRDT version noise) is
+        DROPPED — tokens the model can't use; normalize=False keeps it."""
         if not isinstance(rec, dict):
             return rec
         cat = self._catalog(space)
@@ -284,6 +285,8 @@ class Client:
                 break
         out = {}
         for k, v in rec.items():
+            if k == "_ver":
+                continue  # B5: version-vector noise, raw via normalize=False
             row = cat["by_id"].get(k)
             if not self._is_user_type(row) or not isinstance(v, dict):
                 out[k] = v
