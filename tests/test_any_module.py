@@ -238,6 +238,12 @@ def test_create_object_unknown_type_lists_available():
         client(fx).create_object("s1", {"types": ["ghost"]})
 
 
+def test_delete_object_wire_path():
+    fx = wire()
+    assert client(fx).delete_object("s1", "o1") == {}
+    assert fx.calls == [("DELETE", "/v1/spaces/s1/objects/o1", None)]
+
+
 def test_create_object_routes_top_level_name_and_description():
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
     client(fx).create_object("s1", {"types": ["task"], "name": "Dune",

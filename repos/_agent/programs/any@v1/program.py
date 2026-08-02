@@ -373,6 +373,15 @@ class Client:
                           {"patch": patch})
         return {"objectId": object_id}
 
+    @span("any.delete_object", kind="mutator")  # noqa: F821 - guest global
+    def delete_object(self, space, object_id):
+        """Delete an object permanently; returns {} (wire: 204).
+
+        Removes the whole object — for records inside another object's
+        dataset use modify/delete-records instead. No undo; confirm
+        the id (query/search) before deleting."""
+        return self._call("delete", f"/v1/spaces/{space}/objects/{object_id}")
+
     @span("any.query_objects", kind="getter")  # noqa: F821 - guest global
     def query_objects(self, space, *, normalize=True, **opts):
         # normalize is keyword-only: a positional dict here used to land
@@ -856,7 +865,7 @@ def client(base_url=None):
 
     Base url from config `any.base_url` unless given explicitly.
     Surface: typed objects (create_object / update_object /
-    query_objects), per-object datasets (query / upsert_record /
+    delete_object / query_objects), per-object datasets (query / upsert_record /
     modify), editor bodies (get_markdown / put_markdown /
     append_markdown), the type catalog (list_types / list_properties /
     create_type / add_property), search, backlinks, the memory brain
