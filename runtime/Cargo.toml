@@ -24,6 +24,7 @@ toml = "0.8"              # anybao.toml host config (ADR-009 §1)
 sha2 = "0.10"
 hex = "0.4"
 ureq = { version = "2", features = ["tls", "json"] }
+url = "2"                # redirect Location resolution (ADR-011 §4; already in-tree via ureq)
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }

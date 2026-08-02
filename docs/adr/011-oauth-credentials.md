@@ -148,7 +148,7 @@ Until it lands: **raw secrets, no host checks.** The six existing
 connectors are untouched, and a managed OAuth ref uses the *identical*
 guest shape — `{ref: "connector.oauth.google", header:
 "Authorization", prefix: "Bearer "}` — the only difference being how
-the broker resolves the value (§6). No redirect-policy change either.
+the broker resolves the value (§6).
 
 What custody still guarantees despite the open gap: the **refresh
 token — the durable secret — is never injectable.** Managed sub-refs
@@ -158,14 +158,30 @@ drained out of the broker's static secret map entirely (§6). What the
 gap exposes for OAuth is only the in-flight access token, bounded by
 its ~1h life.
 
-Recorded for the future binding design (ureq 2.12.1, verified
-2026-07-31): ureq's default is `RedirectAuthHeaders::Never`, so it
-strips `authorization`, `cookie` and `content-length` on **every**
-redirect — a legitimate same-host 302 silently drops a Bearer
-credential and returns 401 — while any *other* header a guest names
-(`X-Figma-Token`, `x-goog-api-key`) is replayed verbatim at the
-redirect target, attacker-chosen or not. Owning the follow decision
-host-side fixes both halves; it belongs with the binding work.
+**Amended 2026-08-02 (E8): the redirect half no longer waits for the
+binding design.** ureq 2.12.1 (verified 2026-07-31) made it two live
+bugs, not a future concern: the client's redirect strip list is by
+header NAME (`authorization`, `cookie`, `content-length`), so any
+*other* header a guest names (`X-Figma-Token`, `x-goog-api-key`) is
+replayed verbatim at whatever host answers 3xx — attacker-chosen or
+not — while `authorization` is stripped on **every** redirect
+including same-host, silently 401ing a legitimate Bearer follow. The
+broker now owns the follow decision for credentialed requests
+(`sys_http`):
+
+- No `redirects` in the payload → **manual** (`redirects=0`): the 3xx
+  and its `location` come back as data — the ADR-008 §2 shape, no new
+  surface.
+- An explicit `redirects` count follows **same-origin only** (scheme +
+  host + port), the credential re-attached host-side per hop;
+  301/302/303 downgrade a non-GET/HEAD hop to a bare GET, 307/308
+  re-send the body. A cross-origin 3xx is returned as data, never
+  followed, and every hop passes the secrets read-guard.
+- Uncredentialed requests keep the client's own policy (default
+  follow, limit 5) — unchanged.
+
+Host *binding* — which hosts a ref may be named for at hop zero —
+stays deferred to the secret-entry-flow design above (E7).
 
 ### 5. `oauth.connect` — consent as an effect that returns no tokens
 

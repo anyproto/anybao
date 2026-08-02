@@ -712,68 +712,109 @@ impl Broker {
             .unwrap_or(180.0);
         // redirects: max follows for THIS request; 0 = manual (the 3xx
         // and its location header come back as data — ADR-008 §2)
-        let mut req = match payload.get("redirects").and_then(|r| r.as_u64()) {
-            Some(max) => ureq::AgentBuilder::new()
-                .redirects(max as u32)
-                .build()
-                .request(&verb, &url),
-            None => ureq::request(&verb, &url),
-        }
-        .timeout(std::time::Duration::from_secs_f64(timeout));
-        if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
-            for (k, v) in headers {
-                if let Some(s) = v.as_str() {
-                    req = req.set(k, s);
-                }
-            }
-        }
+        let explicit_redirects = payload.get("redirects").and_then(|r| r.as_u64());
         // named-credential injection: value resolved AFTER recording.
         // Static refs read the per-run map; managed oauth refs resolve
         // through the token lifecycle (ADR-011 §6) — same guest shape,
         // different custody.
-        if let Some(cred) = payload.get("credential").and_then(|c| c.as_object()) {
-            let r = cred
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let header = cred
-                .get("header")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let prefix = cred
-                .get("prefix")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let value = if r.starts_with(OAUTH_REF_PREFIX) {
-                self.resolve_managed(&r)?
-            } else {
-                self.secrets.get(&r).cloned().ok_or(EffectFailure {
-                    type_: "RuntimeError".into(),
-                    message: format!("no secret for credential ref {r:?}"),
-                })?
-            };
-            req = req.set(&header, &format!("{prefix}{value}"));
-        }
-        let resp = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
-            req.set("Content-Type", "application/json")
-                .send_string(&crate::trace::canonical_json(body))
-        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
-            req.send_string(body)
-        } else {
-            req.call()
-        };
-        let resp = match resp {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r, // non-2xx is data, not error
-            Err(e) => {
-                return Err(EffectFailure {
-                    type_: "URLError".into(),
-                    message: e.to_string(),
-                })
+        let cred = match payload.get("credential").and_then(|c| c.as_object()) {
+            Some(cred) => {
+                let r = cred
+                    .get("ref")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let header = cred
+                    .get("header")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let prefix = cred
+                    .get("prefix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let value = if r.starts_with(OAUTH_REF_PREFIX) {
+                    self.resolve_managed(&r)?
+                } else {
+                    self.secrets.get(&r).cloned().ok_or(EffectFailure {
+                        type_: "RuntimeError".into(),
+                        message: format!("no secret for credential ref {r:?}"),
+                    })?
+                };
+                Some((header, format!("{prefix}{value}")))
             }
+            None => None,
+        };
+        // The client never follows a credentialed request: ureq strips by
+        // header NAME, so any custom credential header would replay at
+        // whatever host answers 3xx (and Authorization is dropped even
+        // same-host). The host owns the follow decision — default manual,
+        // an explicit count follows same-origin only with the header
+        // re-attached per hop — ADR-011 §4.
+        let (agent, mut hops_left) = if cred.is_some() {
+            let agent = ureq::AgentBuilder::new().redirects(0).build();
+            (agent, explicit_redirects.unwrap_or(0))
+        } else {
+            let agent = match explicit_redirects {
+                Some(max) => ureq::AgentBuilder::new().redirects(max as u32).build(),
+                None => ureq::agent(),
+            };
+            (agent, 0) // uncredentialed: the client follows internally
+        };
+        let mut cur_url = url;
+        let mut cur_verb = verb;
+        let mut with_body = true;
+        let resp = loop {
+            let mut req = agent
+                .request(&cur_verb, &cur_url)
+                .timeout(std::time::Duration::from_secs_f64(timeout));
+            if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
+                for (k, v) in headers {
+                    if let Some(s) = v.as_str() {
+                        req = req.set(k, s);
+                    }
+                }
+            }
+            if let Some((header, value)) = &cred {
+                req = req.set(header, value);
+            }
+            let sent = if !with_body {
+                req.call() // 301/302/303 hop downgraded to a bare GET
+            } else if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
+                req.set("Content-Type", "application/json")
+                    .send_string(&crate::trace::canonical_json(body))
+            } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
+                req.send_string(body)
+            } else {
+                req.call()
+            };
+            let resp = match sent {
+                Ok(r) => r,
+                Err(ureq::Error::Status(_, r)) => r, // non-2xx is data, not error
+                Err(e) => {
+                    return Err(EffectFailure {
+                        type_: "URLError".into(),
+                        message: e.to_string(),
+                    })
+                }
+            };
+            if hops_left == 0 || !matches!(resp.status(), 301 | 302 | 303 | 307 | 308) {
+                break resp;
+            }
+            let next = resp
+                .header("location")
+                .and_then(|loc| same_origin_target(&cur_url, loc));
+            let Some(next) = next else {
+                break resp; // cross-origin (or unparsable): the 3xx is data
+            };
+            self.secrets_read_guard(&next, payload)?; // guard every hop
+            hops_left -= 1;
+            if matches!(resp.status(), 301..=303) && cur_verb != "GET" && cur_verb != "HEAD" {
+                cur_verb = "GET".to_string();
+                with_body = false;
+            }
+            cur_url = next;
         };
         let status = resp.status();
         let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
@@ -980,6 +1021,19 @@ impl Broker {
             message: format!("no effect or span record with seq {seq}"),
         })
     }
+}
+
+/// Resolve a redirect `location` against the current url, keeping it only
+/// when the target stays on the SAME ORIGIN (scheme + host + port). A
+/// credentialed request must never carry its header to another origin —
+/// a cross-origin 3xx goes back to the guest as data (ADR-011 §4).
+fn same_origin_target(current: &str, location: &str) -> Option<String> {
+    let base = url::Url::parse(current).ok()?;
+    let next = base.join(location).ok()?;
+    (next.scheme() == base.scheme()
+        && next.host_str() == base.host_str()
+        && next.port_or_known_default() == base.port_or_known_default())
+    .then(|| next.to_string())
 }
 
 pub(crate) fn urlencode(s: &str) -> String {
@@ -1638,6 +1692,110 @@ mod tests {
         assert_eq!(end["error"]["type"], "unclosed_span");
         assert_eq!(b.writer.records[3]["kind"], "cell");
         assert!(b.span_stack.is_empty());
+    }
+
+    // --- credentialed redirects (ADR-011 §4, E8) -------------------------
+
+    /// A server whose every request bumps `hits`; used as the redirect
+    /// TARGET — the assertion is that it is never contacted.
+    fn counting_target(hits: Arc<AtomicUsize>) -> String {
+        fake_server(1, move |req| {
+            hits.fetch_add(1, Ordering::SeqCst);
+            let _ = req.respond(tiny_http::Response::from_string("leaked"));
+        })
+    }
+
+    /// A server answering every request with a 302 to `location`.
+    fn redirecting_origin(location: String) -> String {
+        fake_server(2, move |req| {
+            let resp = tiny_http::Response::from_string("")
+                .with_status_code(302)
+                .with_header(tiny_http::Header::from_bytes("Location", location.as_str()).unwrap());
+            let _ = req.respond(resp);
+        })
+    }
+
+    fn cred_payload(url: String) -> Value {
+        json!({"url": url, "credential":
+            {"ref": "connector.key.x", "header": "X-Api-Token"}})
+    }
+
+    #[test]
+    fn credentialed_redirect_defaults_to_manual() {
+        // the leak half: without an explicit count the 302 is DATA —
+        // nothing follows, the credential header travels nowhere
+        let hits = Arc::new(AtomicUsize::new(0));
+        let target = counting_target(hits.clone());
+        let origin = redirecting_origin(format!("{target}/steal"));
+        let mut b = make_broker("run_e8_manual");
+        b.secrets.insert("connector.key.x".into(), "sk-live".into());
+
+        let out = b
+            .call("http.get", cred_payload(format!("{origin}/a")))
+            .unwrap();
+        assert_eq!(out["status"], json!(302));
+        assert_eq!(out["headers"]["location"], json!(format!("{target}/steal")));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn credentialed_redirect_never_crosses_origin() {
+        // even an explicit count refuses a cross-origin hop: the 3xx
+        // comes back as data and the foreign host sees no request
+        let hits = Arc::new(AtomicUsize::new(0));
+        let target = counting_target(hits.clone());
+        let origin = redirecting_origin(format!("{target}/steal"));
+        let mut b = make_broker("run_e8_cross");
+        b.secrets.insert("connector.key.x".into(), "sk-live".into());
+
+        let mut payload = cred_payload(format!("{origin}/a"));
+        payload["redirects"] = json!(3);
+        let out = b.call("http.get", payload).unwrap();
+        assert_eq!(out["status"], json!(302));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn credentialed_redirect_follows_same_origin_reattaching_header() {
+        // the breakage half: an explicit count follows same-origin hops
+        // with the credential re-attached on every one (ureq's default
+        // would strip Authorization; a custom header must not leak past
+        // the origin — both replaced by the host-side loop)
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let base = fake_server(2, move |req| {
+            let tok = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("x-api-token"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            seen2.lock().unwrap().push(format!("{} {tok}", req.url()));
+            if req.url() == "/hop" {
+                let resp = tiny_http::Response::from_string("")
+                    .with_status_code(302)
+                    .with_header(tiny_http::Header::from_bytes("Location", "/real").unwrap());
+                let _ = req.respond(resp);
+            } else {
+                let _ = req.respond(tiny_http::Response::from_string("ok"));
+            }
+        });
+        let mut b = make_broker("run_e8_follow");
+        b.secrets.insert("connector.key.x".into(), "sk-live".into());
+
+        let mut payload = cred_payload(format!("{base}/hop"));
+        payload["redirects"] = json!(3);
+        let out = b.call("http.get", payload).unwrap();
+        assert_eq!(out["status"], json!(200));
+        assert_eq!(out["body"], json!("ok"));
+        assert!(out["url"].as_str().unwrap().ends_with("/real"));
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["/hop sk-live", "/real sk-live"]
+        );
+        // the secret still never reaches the trace
+        let dump = serde_json::to_string(&b.writer.records).unwrap();
+        assert!(!dump.contains("sk-live"));
     }
 
     #[test]

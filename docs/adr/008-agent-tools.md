@@ -50,6 +50,9 @@ Two additions, both recorded so replay stays pure:
   url after the client followed redirects.
 - Requests accept `redirects` — the max follow count for that request;
   `0` = manual, the 3xx and its `location` header come back as data.
+- Credentialed requests: the host owns the follow decision — default
+  manual, an explicit count follows same-origin only (ADR-011 §4,
+  amended 2026-08-02).
 
 Grounded search returns
 `vertexaisearch.cloud.google.com/grounding-api-redirect/…` source
