@@ -21,3 +21,4 @@
 {"id": "q21_delete_memory", "question": "forget my genre preference entirely, delete it from memory", "expect": "finds the item and deletes it (delete_memory), confirming deletion"}
 {"id": "q22_trigger", "question": "remind me in 2 hours to check the oven", "expect": "handles the missing one-shot trigger primitive honestly (no fake promise to ping later); reasonable fallback"}
 {"id": "q23_unknown_type", "question": "list all objects of type unicorn in this space", "expect": "does not trust a silent empty filter result; verifies the type doesn't exist and says so"}
+{"id": "q24_aggregate_userfield", "question": "whats the average book rating per genre in this space?", "expect": "aggregates over user-type fields (book.genre / book.rating) without raw content ids in CELL CODE (any:// object links in the answer are fine); correct numbers: sci-fi 9.0 (Dune 10, Hyperion 8), fantasy 7.0 (The Hobbit)"}

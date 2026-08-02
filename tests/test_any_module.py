@@ -366,6 +366,40 @@ def test_aggregate_speaks_xkeys_in_records():
                             {"id": ["chat"], "count": 1}]
 
 
+def test_aggregate_resolves_xkey_field_refs_in_pipeline():
+    fx = wire(replies={**_CAT, "/objects/aggregate": {"records": []}})
+    client(fx).aggregate("s1", [
+        {"$match": {"any.types": "task", "task.priority": {"$gte": 2}}},
+        {"$group": {"_id": "$task.status",
+                    "avg": {"$avg": "$task.priority"},
+                    "n": {"$sum": 1}}},
+        {"$sort": {"task.priority": -1, "n": 1}}])
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/aggregate"))
+    assert body["pipeline"] == [
+        {"$match": {"any.types": "bafyTASK",
+                    "bafyTASK.bafyPRIO": {"$gte": 2}}},
+        {"$group": {"_id": "$bafyTASK.bafySTATUS",
+                    "avg": {"$avg": "$bafyTASK.bafyPRIO"},
+                    "n": {"$sum": 1}}},   # int + non-ref strings untouched
+        {"$sort": {"bafyTASK.bafyPRIO": -1, "n": 1}}]
+
+
+def test_aggregate_pipeline_unknown_ref_errors_literals_pass():
+    fx = wire(replies=_CAT)
+    c = client(fx)
+    with pytest.raises(ValueError, match='unknown property "nope" on type "task"'):
+        c.aggregate("s1", [{"$group": {"_id": "$task.nope"}}])
+    with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
+        c.aggregate("s1", [{"$match": {"ghost.x": 1}}])
+    # value-position literals are never resolved ($literal ambiguity):
+    # a $match VALUE that merely looks dotted ships verbatim
+    fx2 = wire(replies={**_CAT, "/objects/aggregate": {"records": []}})
+    client(fx2).aggregate("s1", [{"$match": {"any.name": "v1.2 release"}}])
+    body = next(b for v, p, b in fx2.calls
+                if p.endswith("/objects/aggregate"))
+    assert body["pipeline"] == [{"$match": {"any.name": "v1.2 release"}}]
+
+
 def test_backlinks_speaks_xkeys():
     fx = wire(replies={**_CAT, "/objects/o1/backlinks": {"backlinks": [
         {"objectId": "src", "typeId": "bafyTASK", "propId": "bafySTATUS"}]}})

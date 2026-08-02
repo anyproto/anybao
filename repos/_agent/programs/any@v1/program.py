@@ -426,18 +426,57 @@ class Client:
         """Run a Mongo-style aggregation pipeline over the space's objects.
 
         Stages: $match, $group (_id + accumulators: {"$sum": 1},
-        {"$count": {}}), $sort, $count. Field refs are "$<wire path>":
-        "$any.types" is literal, but user-type fields need raw ids
-        ("$<typeId>.<propId>") — xKeys are NOT resolved inside
-        pipelines. Count per type: [{"$group": {"_id": "$any.types",
-        "count": {"$sum": 1}}}]. Returns {"records": [...]} with
-        user-type ids mapped back to xKeys; unknown stages are a 400
-        (aggregate.bad_pipeline)."""
+        {"$count": {}}), $sort, $count. Field refs take xKeys like
+        everywhere else — "$book.rating", "$any.types" — resolved in
+        $match/$sort keys and $group refs; unknown ones error with the
+        catalog. Avg rating per genre: [{"$group": {"_id":
+        "$book.genre", "avg": {"$avg": "$book.rating"}}}]. Returns
+        {"records": [...]} with ids mapped back to xKeys; unknown
+        stages are a 400 (aggregate.bad_pipeline)."""
         r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
-                       {"pipeline": pipeline})
+                       {"pipeline": self._resolve_pipeline(space, pipeline)})
         if isinstance(r, dict) and isinstance(r.get("records"), list):
             r["records"] = self._dexify(space, r["records"])
         return r
+
+    def _resolve_pipeline(self, space, pipeline):
+        """xKey field refs -> wire ids, only in the grammatically
+        unambiguous positions: $match bodies resolve like query filters
+        (keys + any.types values, unknown keys error — A4), $sort dict
+        keys via _resolve_path, "$type.prop" strings under $group.
+        Value-position literals are never touched ($literal ambiguity)."""
+        if not isinstance(pipeline, list):
+            return pipeline
+        out = []
+        for stage in pipeline:
+            if not isinstance(stage, dict):
+                out.append(stage)
+                continue
+            st = {}
+            for op, body in stage.items():
+                if op == "$match":
+                    st[op] = self._resolve_filter(space, body)
+                elif op == "$sort" and isinstance(body, dict):
+                    st[op] = {self._resolve_path(space, k): v
+                              for k, v in body.items()}
+                elif op == "$group":
+                    st[op] = self._resolve_field_refs(space, body)
+                else:
+                    st[op] = body
+            out.append(st)
+        return out
+
+    def _resolve_field_refs(self, space, v):
+        """'$typeXKey.propXKey' -> '$typeId.propId' inside $group values
+        (dicts/lists recursed); reserved heads ("$any.types") and
+        single-segment refs ("$creator") pass through literal."""
+        if isinstance(v, str) and v.startswith("$") and "." in v:
+            return "$" + self._resolve_path(space, v[1:])
+        if isinstance(v, dict):
+            return {k: self._resolve_field_refs(space, x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [self._resolve_field_refs(space, x) for x in v]
+        return v
 
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
     @span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
