@@ -238,6 +238,16 @@ def test_create_object_unknown_type_lists_available():
         client(fx).create_object("s1", {"types": ["ghost"]})
 
 
+def test_get_space_and_general_chat():
+    fx = wire(replies={"/spaces/s1": {"id": "s1",
+                                      "generalChatObjectId": "chat9"}})
+    c = client(fx)
+    assert c.get_space("s1")["generalChatObjectId"] == "chat9"
+    assert c.general_chat("s1") == "chat9"
+    assert [(v, p) for v, p, _ in fx.calls] == [
+        ("GET", "/v1/spaces/s1"), ("GET", "/v1/spaces/s1")]
+
+
 def test_delete_object_wire_path():
     fx = wire()
     assert client(fx).delete_object("s1", "o1") == {}
