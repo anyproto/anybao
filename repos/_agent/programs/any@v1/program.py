@@ -530,6 +530,26 @@ class Client:
         Operate on status == "active" unless asked otherwise."""
         return self._call("get", "/v1/spaces").get("spaces", [])
 
+    @span("any.get_space", kind="getter")  # noqa: F821 - guest global
+    def get_space(self, space):
+        """One space's full row → {id, name, generalChatObjectId, …}.
+
+        The single-space GET is the only read that carries
+        `generalChatObjectId` — `list_spaces()` rows omit it by
+        design. The wire returns the row bare (no envelope)."""
+        return self._call("get", f"/v1/spaces/{space}")
+
+    @span("any.general_chat", kind="getter")  # noqa: F821 - guest global
+    def general_chat(self, space):
+        """The space's canonical chat id (its `generalChatObjectId`).
+
+        Every space derives exactly ONE general chat from a fixed
+        seed. Post there via `chat_send` — never create a chat object
+        or pick one from a query: name-matched "general" chats are
+        peer-made impostors that split the conversation (the derived
+        chat carries no name/nav)."""
+        return self.get_space(space)["generalChatObjectId"]
+
     @span("any.create_space", kind="mutator")  # noqa: F821 - guest global
     def create_space(self, name, description=None):
         """Create a new top-level space; returns the full single-space row.
@@ -677,7 +697,8 @@ class Client:
     @span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
     def chat_send(self, space, chat_id, body):
         """Post a message to a chat object. `body`: `{"text": ...}`.
-        Use the space's general chat id."""
+        The chat id for a space's conversation is
+        `general_chat(space)` — never a queried or created chat."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
 
@@ -811,7 +832,8 @@ def client(base_url=None):
     append_markdown), the type catalog (list_types / list_properties /
     create_type / add_property), search, backlinks, the memory brain
     (get_brain / create_memory / evolve_memory), chat (chat_send /
-    append_turn), spaces (list_spaces / create_space), programs
+    append_turn / general_chat), spaces (list_spaces / get_space /
+    create_space), programs
     (list_programs), and the user's live view (get_ui_context)."""
     if base_url is None:
         base_url = effect("config.get", {"key": "any.base_url"})["value"]  # noqa: F821
