@@ -312,11 +312,33 @@ class Client:
     # --- objects -------------------------------------------------------------
     @span("any.create_object", kind="mutator")  # noqa: F821 - guest global
     def create_object(self, space, body):
-        """Create a typed object. `types` entries and `initialProperties`
-        group + property keys are given as xKeys (or ids) and resolved to the
-        content-ids the server writes by; reserved groups (any/nav) pass
-        through literal. Unknown type/property keys error — ADR-006 §6."""
+        """Create a typed object; returns {"objectId"}.
+
+        Top-level `name` / `description` route into the `any` group
+        (parity with update_object). Everything else: `types` entries
+        and `initialProperties` group + property keys are given as
+        xKeys (or ids) and resolved to the content-ids the server
+        writes by; reserved groups (any/nav) pass through literal.
+        Unknown type/property keys — and unknown TOP-LEVEL keys, which
+        the wire would silently drop — error — ADR-006 §6."""
         body = dict(body or {})
+        unknown = set(body) - {"types", "initialProperties", "nav",
+                               "name", "description"}
+        if unknown:
+            raise ValueError(
+                f"create_object: unknown top-level key(s) {sorted(unknown)} "
+                "would be dropped by the wire (it accepts types/"
+                "initialProperties/nav). Properties go in initialProperties "
+                'keyed by type xKey — {"any": {"name": ...}} — or pass '
+                "name/description at top level.")
+        name = body.pop("name", None)
+        description = body.pop("description", None)
+        if name is not None or description is not None:
+            grp = body.setdefault("initialProperties", {}).setdefault("any", {})
+            if name is not None:
+                grp.setdefault("name", name)
+            if description is not None:
+                grp.setdefault("description", description)
         if isinstance(body.get("types"), list):
             body["types"] = [self._resolve_type_or_raise(space, t)
                              for t in body["types"]]
@@ -364,6 +386,13 @@ class Client:
         NORMALIZED (user-type groups keyed by type xKey, props by prop
         xKey) unless normalize=False — pass that when you need the raw
         content ids (e.g. graph edges) — ADR-006 §6."""
+        unknown = set(opts) - {"filter", "sort", "limit", "offset"}
+        if unknown:
+            # an unvisited key (e.g. `filters=`) would make the server
+            # match EVERY object in the space as if it were intended
+            raise ValueError(
+                f"query_objects: unknown option(s) {sorted(unknown)}; "
+                "the wire accepts filter/sort/limit/offset")
         if "filter" in opts:
             opts["filter"] = self._resolve_filter(space, opts["filter"])
         if "sort" in opts:

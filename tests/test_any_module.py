@@ -121,7 +121,7 @@ def test_upsert_record_builds_whole_value_set_on_modify():
 def test_object_type_property_creation_paths():
     fx = wire(replies={"/types": {"types": [{"id": "t1"}], "typeId": "t2"}})
     c = client(fx)
-    c.create_object("s1", {"typeId": "t"})
+    c.create_object("s1", {})
     c.create_type("s1", {"name": "T"})
     c.add_property("s1", "t1", {"name": "P"})
     assert [(v, p) for v, p, _ in fx.calls] == [
@@ -236,6 +236,35 @@ def test_create_object_unknown_type_lists_available():
     fx = wire(replies=_CAT)
     with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
         client(fx).create_object("s1", {"types": ["ghost"]})
+
+
+def test_create_object_routes_top_level_name_and_description():
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
+    client(fx).create_object("s1", {"types": ["task"], "name": "Dune",
+                                    "description": "a note"})
+    body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
+    assert body["initialProperties"]["any"] == {"name": "Dune",
+                                                "description": "a note"}
+    assert "name" not in body and "description" not in body
+
+
+def test_create_object_unknown_top_level_key_raises_never_posts():
+    # the wire accepts only types/initialProperties/nav and silently
+    # drops the rest — the client refuses instead of losing intent
+    fx = wire(replies=_CAT)
+    with pytest.raises(ValueError, match="unknown top-level key"):
+        client(fx).create_object("s1", {"types": ["task"],
+                                        "any": {"name": "x"}})
+    assert not any(p == "/v1/spaces/s1/objects" for v, p, _ in fx.calls)
+
+
+def test_query_objects_unknown_opt_raises_never_queries():
+    # a typo'd opt (filters=) is an unvisited key server-side: the
+    # query would silently match EVERY object in the space
+    fx = wire(replies=_CAT)
+    with pytest.raises(ValueError, match="unknown option"):
+        client(fx).query_objects("s1", filters={"any.types": "task"})
+    assert not any(p.endswith("/objects/query") for v, p, _ in fx.calls)
 
 
 def test_query_filters_error_on_unknown_keys_never_silent_empty():
