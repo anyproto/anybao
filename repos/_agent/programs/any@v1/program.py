@@ -691,9 +691,10 @@ class Client:
         `{data (the matched text), dataset, objectId, recordId, scope,
         score}`. With enrich=True (default) every hit also gets `title`
         (the object's any.name) and `type` (its primary type's display
-        name), resolved in ONE batch query — so you can read what was
-        found without a follow-up lookup per hit. Pass enrich=False to
-        skip the extra query when you only need objectIds."""
+        name) — and prop-dataset hits gain `prop` ("book.author": which
+        property matched, as xKeys) — resolved in ONE batch query. Pass
+        enrich=False to skip the extra query when you only need
+        objectIds."""
         body = {"query": query}
         if scopes:
             body["scopes"] = scopes
@@ -731,6 +732,23 @@ class Client:
             primary = next((t for t in types if t not in ("nav", "editor")),
                            types[0] if types else None)
             h["type"] = type_name.get(primary, primary)
+            # prop-dataset hits carry a raw propId as recordId — name the
+            # matched property as "typeXKey.propXKey" (builtin name/
+            # description recordIds are already readable)
+            rid = h.get("recordId")
+            if h.get("dataset") == "prop" and rid not in ("name",
+                                                          "description"):
+                for tkey in types:   # normalized rows carry xKeys (A3)
+                    tid = self._resolve_type_seg(space, tkey)
+                    row = self._catalog(space)["by_id"].get(tid or "")
+                    if not self._is_user_type(row):
+                        continue
+                    p = next((p for p in self._type_props(space, tid)
+                              if p.get("id") == rid), None)
+                    if p:
+                        h["prop"] = (f'{row.get("xKey") or tid}.'
+                                     f'{p.get("xKey") or p.get("name") or rid}')
+                        break
 
     @span("any.backlinks", kind="getter")  # noqa: F821 - guest global
     def backlinks(self, space, object_id):

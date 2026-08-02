@@ -478,6 +478,22 @@ def test_search_enriches_hits_with_title_and_type():
     assert set(resolves[0]["filter"]["id"]["$in"]) == {"o1", "o2"}
 
 
+def test_search_prop_hits_gain_type_prop_xkey():
+    fx = wire(replies={
+        "/search": {"hits": [
+            {"objectId": "o1", "data": "open", "dataset": "prop",
+             "recordId": "bafySTATUS", "score": 0.3},
+            {"objectId": "o1", "data": "Ship", "dataset": "prop",
+             "recordId": "name", "score": 0.2}], "mode": "hybrid"},
+        "/objects/query": {"records": [
+            {"id": "o1", "any": {"name": "Ship",
+                                 "types": ["bafyTASK", "nav"]}}]},
+        **_CAT})
+    hits = client(fx).search("s1", "open")["hits"]
+    assert hits[0]["prop"] == "task.status"   # propId resolved via the catalog
+    assert "prop" not in hits[1]              # builtin name recordId untouched
+
+
 def test_search_enrich_false_skips_the_extra_query():
     fx = wire(replies={"/search": {"hits": [{"objectId": "o1"}]}})
     client(fx).search("s1", "q", enrich=False)
