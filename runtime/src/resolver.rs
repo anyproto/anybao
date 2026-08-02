@@ -181,14 +181,39 @@ impl ModuleResolver for AnyModuleResolver {
         // current space → private fallback
         let base = self.current.clone();
         match self.resolve_in(&base, &name, &version, spec) {
-            Err(ResolveError::NotFound(msg)) => {
-                match self.private.clone().filter(|p| *p != base) {
-                    Some(p) => self.resolve_in(&p, &name, &version, spec),
-                    None => Err(ResolveError::NotFound(msg)), // re-raise the original
-                }
-            }
+            Err(ResolveError::NotFound(msg)) => match self.private.clone().filter(|p| *p != base) {
+                Some(p) => self
+                    .resolve_in(&p, &name, &version, spec)
+                    .map_err(|e| self.alias_hint(e, &name, &version)),
+                None => Err(self.alias_hint(ResolveError::NotFound(msg), &name, &version)),
+            },
             other => other,
         }
+    }
+}
+
+impl AnyModuleResolver {
+    /// An unqualified miss usually means an overlay module named without
+    /// its alias (E10: `use("any@v1")` where `use("agent:any@v1")` was
+    /// meant) — teach the fix in the error instead of costing a turn.
+    fn alias_hint(&self, err: ResolveError, name: &str, version: &str) -> ResolveError {
+        let ResolveError::NotFound(msg) = err else {
+            return err;
+        };
+        let mut aliases: Vec<&str> = self.aliases.keys().map(String::as_str).collect();
+        if self.private.is_some() && !aliases.contains(&"private") {
+            aliases.push("private");
+        }
+        if aliases.is_empty() {
+            return ResolveError::NotFound(msg);
+        }
+        ResolveError::NotFound(format!(
+            "{msg} — unqualified specs resolve in the current space only; \
+             overlay modules need their alias, e.g. use(\"{first}:{name}@{version}\") \
+             (available aliases: {all})",
+            first = aliases[0],
+            all = aliases.join(", "),
+        ))
     }
 }
 
@@ -293,6 +318,28 @@ mod tests {
         );
         // same (objectId, marker) → probe-cache hit
         assert_eq!(r.resolve("tool@v1", None).unwrap()["cache"], json!("hit"));
+    }
+
+    #[test]
+    fn unqualified_miss_hints_alias_qualification() {
+        // E10: the miss error must teach the agent: prefix, naming the
+        // configured aliases — a bare "not found" costs a guess turn
+        let c = Client::with_transport(Box::new(FakeSpace::new()));
+        let aliases = BTreeMap::from([
+            ("agent".to_string(), "ovl".to_string()),
+            ("connectors".to_string(), "conn".to_string()),
+        ]);
+        let mut r = AnyModuleResolver::new(std::sync::Arc::new(c), "cur", None, aliases);
+        let err = r.resolve("any@v1", None).unwrap_err().to_string();
+        assert!(err.starts_with("program not found: any@v1"), "{err}");
+        assert!(err.contains("use(\"agent:any@v1\")"), "{err}");
+        assert!(
+            err.contains("available aliases: agent, connectors"),
+            "{err}"
+        );
+        // qualified misses stay strict and unhinted
+        let err = r.resolve("ovl:nope@v1", None).unwrap_err().to_string();
+        assert!(!err.contains("available aliases"), "{err}");
     }
 
     #[test]
