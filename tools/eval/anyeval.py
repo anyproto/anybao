@@ -142,11 +142,18 @@ def parse_trace(path):
 
 
 def wait_for_run(traces_dir, before, timeout_s):
-    """A new run file whose main cell has finished (kind:'cell' record)."""
+    """A new TOOLCALLER run whose main cell has finished (kind:'cell'
+    record). Cron programs (extraction/rollup/…) also drop run files —
+    match the header's program or a concurrent cron run gets scored."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         for p in sorted(traces_dir.glob("run_*.jsonl")):
             if p.name in before:
+                continue
+            with open(p) as f:
+                header = f.readline()
+            if "toolcaller" not in header:
+                before.add(p.name)   # cron run — never the conversation
                 continue
             tail = p.read_text()[-4000:]
             if '"kind":"cell"' in tail or '"kind": "cell"' in tail:
