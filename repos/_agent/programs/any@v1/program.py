@@ -581,16 +581,17 @@ class Client:
     def create_type(self, space, body):
         """Create a type, then add each property (composite ensure-type).
 
-        bobrik-watch anyHelper semantics: the wire's POST /types takes
-        NO inline properties (unknown fields are silently dropped), so
-        properties are added one add_property call each. body: {"name", "xKey"?, "description"?,
-        "properties"?: [{"name", "xKey"?, "kind"?, "meta"?}]}. xKeys
-        default to a slug of the name ("Comic Book" -> "comic_book").
-        Idempotent: an existing type (matched by xKey or builtin id) is
-        reused and only MISSING properties (by xKey) are added.
-        Returns {"typeId": str, "xKey": str, "created": bool,
-        "addedProps": {xKey: propId}} — the agent references the type and
-        its new properties by xKey afterwards, never the typeId."""
+        body: {"name", "xKey"?, "description"?, "properties"?:
+        [{"name", "xKey"?, "kind"?, "format"?}]}. kind ∈ string |
+        number | boolean | null | array | object — NOTHING else ("text"
+        and "date" are 400s). Dates/links/selects are FORMATS, not
+        kinds: {"format": {"type": "date"}} (types: date, datetime,
+        links, select, multiselect) with kind omitted — the
+        server derives it. xKeys default to a slug of the name.
+        Idempotent: an existing type (by xKey) is reused, only MISSING
+        properties are added. Returns {"typeId", "xKey", "created",
+        "addedProps": {xKey: propId}} — reference everything by xKey
+        afterwards."""
         body = dict(body or {})
         props = body.pop("properties", None) or []
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
@@ -621,16 +622,20 @@ class Client:
     @span("any.add_property", kind="mutator")  # noqa: F821 - guest global
     def add_property(self, space, type_key, body):
         """POST one property onto a type (named by xKey — unknown keys
-        error with the catalog). body: {"name", "xKey"?, "kind"?
-        (default "string"), "meta"?}; xKey defaults to a slug of the
-        name. Returns {"propId": str}."""
+        error with the catalog). body: {"name", "xKey"?, "kind"?,
+        "format"?}. kind ∈ string | number | boolean | null | array |
+        object (default "string"); dates/links/selects go via
+        {"format": {"type": "date" | "datetime" | "links" | "select" |
+        "multiselect"}} with kind omitted (server derives it;
+        "tags" is reserved). Returns {"propId": str}."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._post_property(space, tid, body)
 
     def _post_property(self, space, type_id, body):
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
-        body.setdefault("kind", "string")
+        if "format" not in body:      # with a format, the server derives
+            body.setdefault("kind", "string")   # kind (links⇒array, date⇒string)
         res = self._call("post",
                          f"/v1/spaces/{space}/types/{type_id}/properties", body)
         self._cat_invalidate(space)   # new prop -> refresh the propId map

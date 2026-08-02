@@ -356,6 +356,17 @@ def test_add_property_takes_xkey():
     assert (verb, path) == ("POST", "/v1/spaces/s1/types/bafyTASK/properties")
 
 
+def test_add_property_format_leaves_kind_to_server():
+    # with a format the server derives kind (links⇒array, date⇒string) —
+    # the helper must NOT inject its "string" default
+    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"propId": "p9"}})
+    client(fx).add_property("s1", "task", {"name": "Due Date",
+                                           "format": {"type": "date"}})
+    body = fx.calls[-1][2]
+    assert "kind" not in body
+    assert body["format"] == {"type": "date"}
+
+
 def test_aggregate_speaks_xkeys_in_records():
     fx = wire(replies={**_CAT, "/objects/aggregate": {"records": [
         {"id": ["bafyTASK", "nav"], "count": 2},
