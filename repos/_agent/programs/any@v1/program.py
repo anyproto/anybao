@@ -61,6 +61,14 @@ _HINTS = {
     "object.id_required": (
         "an id variable was unset — re-query the id in this same cell "
         "instead of retyping or interpolating a stale one"),
+    "filter.unknown_operator": (
+        "the filter GRAMMAR is wrong (operator token), not your keys — "
+        "readable xKey paths are fine, they resolve client-side; pick "
+        "an operator from the list in the message"),
+    "filter.invalid": (
+        "the filter GRAMMAR is wrong at the named path (operand type / "
+        "array shape), not your keys — readable xKey paths are fine, "
+        "they resolve client-side"),
 }
 
 
