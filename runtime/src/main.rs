@@ -114,9 +114,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TraceCmd,
     },
-    /// API-drift check: vendored swagger pin vs the coverage manifest
+    /// API-drift check: vendored OpenAPI 3.1 pin vs the coverage manifest
     Drift {
-        #[arg(long, default_value = "api/swagger.vendored.json")]
+        #[arg(long, default_value = "api/openapi.vendored.json")]
         spec: PathBuf,
         #[arg(long, default_value = "api/coverage.json")]
         manifest: PathBuf,

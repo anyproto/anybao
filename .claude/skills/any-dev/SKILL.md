@@ -18,7 +18,7 @@ The API contract is the **docstrings in
 `repos/_agent/programs/any@v1/program.py`** — read the method you're about to call
 before calling it. Semantics (xKey rules, property-write shapes, space
 discipline) live in `repos/_agent/skills/_any.md` — the same guidance the agent
-gets. Wire truth is `api/swagger.vendored.json` (`jq '.paths | keys'`).
+gets. Wire truth is `api/openapi.vendored.json` (`jq '.paths | keys'`).
 
 ## Recipe
 

@@ -14,7 +14,7 @@ bin/kernel.wasm: runtime/guest/app.py runtime/wit/kernel.wit
 runtime: kernel
 	cargo build --release --manifest-path runtime/Cargo.toml
 
-api-drift: runtime      ## vendored swagger vs coverage manifest (nonzero on drift)
+api-drift: runtime      ## vendored openapi vs coverage manifest (nonzero on drift)
 	./runtime/target/release/anyrt drift
 
 runtime-check: kernel     ## clippy + fmt gate for runtime/
