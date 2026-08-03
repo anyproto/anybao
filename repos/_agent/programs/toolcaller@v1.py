@@ -164,7 +164,14 @@ def _texts(parts):
     return [p["text"] for p in parts if p["type"] == "text"]
 
 
-def _wrapup(messages, llm, system, tier, reason):
+def _tally(stats, usage):
+    # llm@v1 usage keys -> api.LLMStats keys (the agent_turns contract)
+    for src, dst in (("in", "inTokens"), ("out", "outTokens"),
+                     ("cacheRead", "cacheRead"), ("cacheWrite", "cacheWrite")):
+        stats[dst] += usage.get(src, 0)
+
+
+def _wrapup(messages, llm, system, tier, reason, stats):
     # A length-truncated assistant reply can carry a tool_call that
     # never ran; the provider rejects a tool_use with no tool_result at
     # the head of the next message (ADR-005 §2), so answer each
@@ -180,6 +187,7 @@ def _wrapup(messages, llm, system, tier, reason):
         f"and what is still pending."})
     messages.append({"role": "user", "parts": parts})
     reply = llm.chat(messages, system=system, tier=tier, tools=[])
+    _tally(stats, reply.get("usage", {}))
     messages.append({"role": "assistant", "parts": reply["parts"]})
     return _texts(reply["parts"])
 
@@ -400,6 +408,8 @@ def main(args):
             c.chat_send(space, chat_id, {"text": text,
                                          "agent": {"name": agent_name, "done": done}})
 
+    stats = {"inTokens": 0, "outTokens": 0,
+             "cacheRead": 0, "cacheWrite": 0, "cells": 0}
     tokens = 0
     turn = 0
     stop = "done"
@@ -418,14 +428,15 @@ def main(args):
         if tokens >= max_tokens:
             wrapup_reason = wrapup_reason or f"token ceiling ({max_tokens})"
         if wrapup_reason:
-            replies = _wrapup(messages, llm, system, tier, wrapup_reason)
+            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break
 
         turn += 1
         reply = llm.chat(messages, system=system, tier=tier, tools=[RUN_CELL_TOOL])
-        tokens += reply.get("usage", {}).get("in", 0) + reply.get("usage", {}).get("out", 0)
+        _tally(stats, reply.get("usage", {}))
+        tokens = stats["inTokens"] + stats["outTokens"]
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":
@@ -433,7 +444,8 @@ def main(args):
             bubble("\n".join(replies), True)
             break
         if reply["stop"] == "length":
-            replies = _wrapup(messages, llm, system, tier, "response length limit")
+            replies = _wrapup(messages, llm, system, tier,
+                              "response length limit", stats)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break
@@ -444,13 +456,14 @@ def main(args):
             bubble(t, False)
         results = []
         _run_model_cells(reply["parts"], results)
+        stats["cells"] += len(results)
         messages.append({"role": "user", "parts": results})
 
     if not quiet:
         c.append_turn(space, chat_id, {
             "userText": user_text, "replies": replies, "interrupted": False,
             "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
-            "llm": {"stopReason": stop, "tokensIn": tokens}})
+            "llm": {"stopReason": stop, **stats}})
         if plan["injected"]:
             ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
     return {"stop": stop, "turns": turn, "tokens": tokens,

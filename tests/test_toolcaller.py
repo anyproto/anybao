@@ -142,7 +142,9 @@ def test_done_turn_posts_reply_and_persists_turn():
                                 "agent": {"name": "bao", "done": True}}
     turn = w.turns[0]
     assert turn["userText"] == "go" and turn["traceRef"] == "run_x"
-    assert turn["llm"]["stopReason"] == "done"
+    # api.LLMStats contract keys only (strict server bind rejects strays)
+    assert turn["llm"] == {"stopReason": "done", "inTokens": 5, "outTokens": 2,
+                           "cacheRead": 0, "cacheWrite": 0, "cells": 0}
 
 
 def test_cell_turn_spans_digest_and_tool_result():
@@ -160,6 +162,9 @@ def test_cell_turn_spans_digest_and_tool_result():
     assert "#0 42" in part["content"]
     assert 'values.get("cell_x", \'last\')' in part["content"]   # stub over budget
     assert "mutate http.post #9" in part["content"]              # side effects
+    assert w.turns[0]["llm"] == {"stopReason": "done", "cells": 1,
+                                 "inTokens": 15, "outTokens": 7,
+                                 "cacheRead": 0, "cacheWrite": 0}
 
 
 def test_cell_error_marks_tool_result_is_error():
@@ -198,6 +203,9 @@ def test_length_stop_with_dangling_tool_call_gets_synthetic_result():
                      "content": "not executed: response length limit",
                      "is_error": True}
     assert "response length limit" in last["text"]
+    # the wrap-up call's usage is tallied too, not dropped
+    assert w.turns[0]["llm"]["inTokens"] == 15
+    assert w.turns[0]["llm"]["outTokens"] == 4098
 
 
 def test_length_stop_text_only_wraps_up_without_results():
