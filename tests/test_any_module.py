@@ -60,6 +60,20 @@ def test_error_envelope_maps_to_anyerror():
         g["client"]("http://any").query("s", "o", "d")
     assert ei.value.status == 404 and ei.value.code == "space.not_found"
     assert ei.value.message == "no"
+    assert "hint" not in str(ei.value)          # no hint for unlisted codes
+
+
+def test_known_codes_carry_recovery_hint_verbatim_message():
+    server_msg = 'unknown field "tokensIn"; accepted fields: seq, llm'
+    fx = wire(status=400, replies={
+        "": {"error": {"code": "request.unknown_field",
+                       "message": server_msg}}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as ei:
+        g["client"]("http://any").query("s", "o", "d")
+    text = str(ei.value)
+    assert server_msg in text                   # server message verbatim
+    assert "(hint:" in text and "strict body" in text
 
 
 def test_nul_sanitized_on_write():

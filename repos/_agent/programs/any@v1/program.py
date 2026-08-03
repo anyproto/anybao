@@ -49,15 +49,34 @@ def _slugify_xkey(name):
     return slug.strip("_")
 
 
+# Recovery hints appended to known error codes. The server message
+# states the fault (and for these codes enumerates the fix material —
+# accepted fields / the unset variable); the hint adds the client-side
+# idiom that resolves it. Keep entries to codes where a local action
+# exists — never paraphrase the server message itself.
+_HINTS = {
+    "request.unknown_field": (
+        "strict body — resend with only the accepted fields named in "
+        "the message; stray keys are rejected, never silently dropped"),
+    "object.id_required": (
+        "an id variable was unset — re-query the id in this same cell "
+        "instead of retyping or interpolating a stale one"),
+}
+
+
 class AnyError(Exception):
     """A >=400 reply, decoded from the server's error envelope
-    `{"error": {"code", "message"}}`."""
+    `{"error": {"code", "message"}}` — message relayed verbatim, plus
+    a client-side recovery hint for known codes."""
 
     def __init__(self, status, code, message):
         self.status = status
         self.code = code
         self.message = message
-        super().__init__(f"{status} {code}: {message}")
+        text = f"{status} {code}: {message}"
+        if code in _HINTS:
+            text += f" (hint: {_HINTS[code]})"
+        super().__init__(text)
 
 
 # Builtin type namespaces whose group + property keys are already literal
@@ -732,21 +751,31 @@ class Client:
     @span("any.append_turn", kind="mutator")  # noqa: F821 - guest global
     def append_turn(self, space, chat_id, body):
         """Append an `agent_turns` record (server-assigned seq).
-        Harness-level; conversations write these for you."""
+        Harness-level; conversations write these for you. Strict body:
+        `{seq?, fromAgent?, userName?, userText?, think?, replies?,
+        effects?, messageIds?, traceRef?, interrupted?, llm?}` — llm
+        subkeys `{stopReason, inTokens, outTokens, cacheRead,
+        cacheWrite, model, costUsd, fuelUsed, cells}`; any other key
+        (nested too) is a 400 request.unknown_field."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/agent/turns", body)
 
     @span("any.create_chunk", kind="mutator")  # noqa: F821 - guest global
     def create_chunk(self, space, chat_id, body):
-        """Append a compressed history chunk record (harness-level; rollup)."""
+        """Append a compressed history chunk record (harness-level; rollup).
+        Strict body: `{seq?, level?, fromAgent?, summary, periodStart,
+        periodEnd, fromSeq, toSeq, unitsCovered?}` — stray keys 400."""
         return self._call("post",
                           f"/v1/spaces/{space}/objects/{chat_id}/agent/chunks", body)
 
     # --- chat messages ---------------------------------------------------------
     @span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
     def chat_send(self, space, chat_id, body):
-        """Post a message to a chat object. `body`: `{"text": ...}`.
-        The chat id for a space's conversation is
+        """Post a message to a chat object. `body`: `{"text": ...}` —
+        accepted fields exactly `{text, replyToMessageId?, agent?,
+        attachments?}`; the body passes through verbatim and the server
+        rejects any other key (400 request.unknown_field naming the
+        set). The chat id for a space's conversation is
         `general_chat(space)` — never a queried or created chat. To
         READ messages: `query(space, chat_id, "chat_messages",
         sort=["-createdAt"], limit=n)` (agent_turns is the agentlog,
@@ -858,14 +887,22 @@ class Client:
         """Create a memory item (category + context required).
 
         Server resolves the brain object. Returns ModifyResult —
-        recordIds[0] is the item id."""
+        recordIds[0] is the item id. Strict body: `{fromAgent?,
+        category, context, body?, tags?, entities?, keywords?,
+        confidence?, importance?, salience?, validFrom?, edges?,
+        chatId?, source?, provenance?}` — `source` is a lowercase slug
+        ("extraction", "user", …), `provenance` exactly `{fromSeq}`;
+        both create-only (not evolvable). Stray keys 400."""
         return self._call("post", f"/v1/spaces/{space}/agent/memory", fields)
 
     @span("any.evolve_memory", kind="mutator")  # noqa: F821 - guest global
     def evolve_memory(self, space, item_id, fields):
         """Evolve a memory item's mutable fields (author-only).
 
-        modifiedAt is bumped server-side; the route is PATCH-only."""
+        modifiedAt is bumped server-side; the route is PATCH-only.
+        Mutable allow-list exactly `{salience, accessCount, confidence,
+        importance, context, body, tags, edges}` — anything else
+        (including source/provenance) is a 400."""
         return self._call("patch", f"/v1/spaces/{space}/agent/memory/{item_id}", fields)
 
     @span("any.delete_memory", kind="mutator")  # noqa: F821 - guest global
