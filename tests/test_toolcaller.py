@@ -468,15 +468,28 @@ def test_repo_inventory_empty_overlays_is_absent():
     assert g["_repo_inventory"](TwoSpaces(), {}) == ""
 
 
+def test_repo_inventory_includes_agent_code_row_and_shadowing_rule():
+    g = _helpers()
+    inv = g["_repo_inventory"](TwoSpaces(), {"conn": "conn"}, "codeSp1")
+    assert "- `agent` (space `codeSp1`)" in inv    # no README: still listed
+    assert "- `conn` (space `conn`) — Connectors" in inv
+    assert "SHADOW" in inv and 'use("agent:<name>@vN")' in inv
+    # without a code space the rule stays out
+    assert "SHADOW" not in g["_repo_inventory"](TwoSpaces(), {"conn": "conn"})
+
+
 def test_runtime_context_names_the_code_space():
+    # the agent overlay is a ## Repos row now — not a Runtime-context id line
     w = World([done_reply("hi")])
     run(w, codeSpace="codeSp1", overlays={"conn": "connSp"})
     system = w.llm_calls[0]["system"]
-    assert "agent code space (the `agent:` overlay): `codeSp1`" in system
-    assert 'use("agent:<name>@vN")' in system
+    assert "- `agent` (space `codeSp1`)" in system
+    assert 'use("agent:<name>@vN")' in system and "SHADOW" in system
+    assert "agent code space" not in system
 
 
 def test_runtime_context_degenerate_omits_code_line():
     w = World([done_reply("hi")])
-    run(w)  # no codeSpace arg → code space == working space
+    run(w)  # no codeSpace arg → code space == working space, no overlays
     assert "agent code space" not in w.llm_calls[0]["system"]
+    assert "## Repos" not in w.llm_calls[0]["system"]
