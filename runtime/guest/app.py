@@ -231,7 +231,7 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         f"Available: {', '.join(sorted(_ALLOWED))}; "
         f"proxied: {', '.join(sorted(_PROXIES))}; "
         f"plus globals http, now(), rand(), env(), uuid4(), values, effects, "
-        f"effect(), span(), describe(), help()."
+        f"effect(), span(), describe(), inferSchema(), help()."
     )
 
 
@@ -480,8 +480,12 @@ use = _bound_use(None)
 # ---- value metadata for the digest (ADR-003 ValueRef / ADR-005 §4) ---------
 
 def _schema(v, depth=0):
-    """Compact structural descriptor — the host digest decides
-    inline-vs-stub and shows this in the stub (v1 inferSchema)."""
+    """Compact structural descriptor of a VALUE — the data-shape
+    counterpart of describe() (ADR-010 §2): dict keys with nested
+    shapes, list length × element shape, scalars by type. The host
+    digest shows it in value stubs; cells call it as `inferSchema(v)`
+    to ground filters/writes in an observed shape instead of a
+    guessed one."""
     if v is None or isinstance(v, (bool, int, float, str)):
         return type(v).__name__
     if isinstance(v, (list, tuple)):
@@ -524,6 +528,7 @@ def _fresh_ns() -> dict:
         "span": span,
         "use": use,
         "describe": describe,   # the doc renderer (ADR-010 §2)
+        "inferSchema": _schema,  # the data-shape renderer (ADR-010 §2)
         "subcell": _run_cell,   # cell-in-cell: the toolcaller's executor
     }
 

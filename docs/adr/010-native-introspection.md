@@ -78,6 +78,12 @@ Docstrings are the ONLY authored program documentation.
 - `help(obj)` joins the curated builtins (ADR-002 §3) as
   `print(describe(obj))` — the traced output channel, not pydoc's
   pager (stock `help` stays excluded).
+- `inferSchema(value) -> str` (added 2026-08-04, with §8): the
+  digest's stub descriptor exposed as a cell global — the DATA-shape
+  counterpart of `describe()` (`{id:str, any:{name:str, types:…}}`).
+  Filters and nested writes are grounded in an observed shape, never
+  a guessed one — the `any.id` induction (dev task A19,
+  run_56fa3f8b78794f70) is the failure it exists to prevent.
 
 One renderer, two callers: what `help()` shows the agent
 mid-conversation and what the prompt carries (§3) are the same bytes.
