@@ -493,3 +493,16 @@ def test_runtime_context_degenerate_omits_code_line():
     run(w)  # no codeSpace arg → code space == working space, no overlays
     assert "agent code space" not in w.llm_calls[0]["system"]
     assert "## Repos" not in w.llm_calls[0]["system"]
+
+
+def test_user_skills_lists_titles_and_ids_not_bodies():
+    g = _helpers()
+    two = TwoSpaces()
+    two.skills["user"].append(("u9", "review-pr", "# step one..."))
+    out = g["_user_skills"](two, "user")
+    assert "## User skills" in out
+    assert "- **review-pr** (`u9`)" in out
+    assert "step one" not in out           # body stays out of the prompt
+    assert "_core" not in out              # system skills excluded
+    # a space with only _-skills injects no section at all
+    assert g["_user_skills"](TwoSpaces(), "user") == ""
