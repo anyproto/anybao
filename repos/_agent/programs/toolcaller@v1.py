@@ -311,12 +311,17 @@ def _memory_categories(c, space):
     return ("Memory categories in use: " + ", ".join(cats)) if cats else ""
 
 
-def _repo_inventory(c, overlays):
+def _repo_inventory(c, overlays, code_space=None):
     """`## Repos` — the configured overlays as name + first README line
-    (ADR-009 §2). Repo CONTENTS stay out of context — the agent browses
-    on demand with `list_programs`."""
+    (ADR-009 §2), the agent code overlay included as the `agent` row.
+    Repo CONTENTS stay out of context — the agent browses on demand
+    with `list_programs`. The program-shadowing rule rides the intro
+    (it belongs to the repo concept, not to Runtime context)."""
+    rows = dict(overlays or {})
+    if code_space:
+        rows.setdefault("agent", code_space)
     lines = []
-    for name, sid in sorted((overlays or {}).items()):
+    for name, sid in sorted(rows.items()):
         desc = ""
         try:
             ro = c.query_objects(sid, filter={"any.name": "README"}, limit=1)
@@ -329,10 +334,14 @@ def _repo_inventory(c, overlays):
         lines.append(f"- `{name}` (space `{sid}`)" + (f" — {desc}" if desc else ""))
     if not lines:
         return ""
+    shadowing = (
+        " Shipped harness programs live in the `agent` repo (`use("
+        '"agent:<name>@vN")`); programs in your own working space import '
+        "unqualified and SHADOW shipped ones by name." if code_space else "")
     return ("## Repos\n\n"
             "Configured program overlays (package repositories). Import a "
             'repo\'s program with `use("<repo>:<name>@vN")`; list what a repo '
-            "offers with `list_programs(<spaceId>)` (any@v1).\n\n"
+            f"offers with `list_programs(<spaceId>)` (any@v1).{shadowing}\n\n"
             + "\n".join(lines))
 
 
@@ -342,7 +351,9 @@ def compose_system(c, space, code_space=None, overlays=None):
     wins) + repo inventory + memory categories. Guest-side — the host
     injects nothing."""
     parts = [_compose_skills(_load_system_skills(c, space, code_space)),
-             _tool_docs(c, space, code_space), _repo_inventory(c, overlays),
+             _tool_docs(c, space, code_space),
+             _repo_inventory(c, overlays,
+                             code_space if code_space != space else None),
              _memory_categories(c, space)]
     return "\n\n".join(p for p in parts if p)
 
@@ -367,17 +378,11 @@ def main(args):
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    code_line = (
-        f"- agent code space (the `agent:` overlay): `{code_space}` — "
-        'shipped programs import as `use("agent:<name>@vN")`; your own '
-        "programs in the working space import unqualified and SHADOW "
-        "shipped ones by name\n") if code_space != space else ""
     system = compose_system(c, space, code_space, overlays) + (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
-        + code_line +
         "- bound cell globals (valid spaceConfig args): `currentUserSpace` — "
         "the user's live view (`{spaceId, objectId?, view?, updatedAt}` or "
         "None; the same pointer rides the newest user message as a "
