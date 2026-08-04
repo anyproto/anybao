@@ -61,6 +61,11 @@ class FakeBackends(BaseHTTPRequestHandler):
         # compose_system reads the space at boot: type catalog + brain
         if self.path.endswith("/types"):
             return self._reply({"types": []})
+        if self.path.endswith("/properties"):
+            # builtin-group filter paths resolve against these (A19);
+            # program.any_tool rides the compose's tool query
+            return self._reply({"properties": [
+                {"id": "name"}, {"id": "types"}, {"id": "any_tool"}]})
         if self.path.endswith("/agent/brain"):
             return self._reply({"objectId": "brain1"})
         return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)

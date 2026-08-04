@@ -242,8 +242,25 @@ class _Client:
         if not isinstance(path, str) or "." not in path:
             return path
         head, _, tail = path.partition(".")
-        if head in _RESERVED_GROUPS:   # any.*/nav.*/program.* keys are literal
+        if head == "_ver":
             return path
+        if head in _RESERVED_GROUPS:
+            # Builtin groups carry real property catalogs too (A19): an
+            # unvalidated tail would ride the wire and silently match
+            # nothing. `any` props with scope "derived" live TOP-LEVEL
+            # on records — rewrite to the bare key (any.id -> id).
+            props = self._type_props(space, head)
+            p = next((q for q in props
+                      if tail in (q.get("id"), q.get("xKey"), q.get("name"))),
+                     None)
+            if p is None:
+                handles = ", ".join(f'"{q.get("id")}"' for q in props)
+                raise ValueError(
+                    f'unknown property "{tail}" on builtin group "{head}" '
+                    f'(filter/sort key "{path}"). Available: {handles or "?"}')
+            if head == "any" and p.get("scope") == "derived":
+                return p["id"]
+            return f"{head}.{p['id']}"
         tid = self._resolve_type_seg(space, head)
         if tid is None:
             raise ValueError(
@@ -425,7 +442,10 @@ class _Client:
         / `sort` accept readable dotted xKey paths (`task.status`) and an
         `any.types` xKey value, resolved to the server's id paths; an
         UNKNOWN type or property key errors with the catalog (a typo'd
-        key would otherwise silently match nothing). Records come back
+        key would otherwise silently match nothing) — builtin groups
+        (`any.*`, `nav.*`, `program.*`) included. Derived `any` props
+        resolve to the bare top-level record keys (`any.id` → `id`,
+        `any.createdAt` → `createdAt`). Records come back
         NORMALIZED (user-type groups keyed by type xKey, props by prop
         xKey) unless normalize=False — pass that when you need the raw
         content ids (e.g. graph edges) — ADR-006 §6."""

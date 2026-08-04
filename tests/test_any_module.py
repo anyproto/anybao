@@ -199,10 +199,21 @@ def test_add_property_defaults_xkey_and_kind():
 # --- xKey normalization (ADR-006 §6) -------------------------------------------
 
 # A catalog with one user type `task` (CID id) + builtin `nav` (id == xKey).
+# Builtin groups carry their own property catalogs (mirrors the server):
+# filter paths under any/nav/program resolve against them (A19).
+_ANY_PROPS = {"properties": [
+    {"id": "id", "kind": "string", "scope": "derived"},
+    {"id": "createdAt", "kind": "number", "scope": "derived"},
+    {"id": "name", "name": "Name", "kind": "string", "scope": "synced"},
+    {"id": "description", "kind": "string", "scope": "synced"},
+    {"id": "types", "kind": "array", "scope": "synced"}]}
 _CAT = {
     "/types": {"types": [
         {"id": "bafyTASK", "name": "Task", "xKey": "task"},
         {"id": "nav", "name": "Nav", "xKey": "nav"}]},
+    "/types/any/properties": _ANY_PROPS,
+    "/types/nav/properties": {"properties": [
+        {"id": "parentId"}, {"id": "pos"}, {"id": "type"}]},
     "/types/bafyTASK/properties": {"properties": [
         {"id": "bafySTATUS", "name": "Status", "xKey": "status"},
         {"id": "bafyPRIO", "name": "Priority", "xKey": "priority"}]}}
@@ -636,6 +647,7 @@ def test_create_space_wire_shape_and_full_row_reply():
 def test_get_ui_context_resolves_props_and_picks_newest():
     fx = wire(replies={
         "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
+        "/types/any/properties": _ANY_PROPS,
         "/types/T1/properties": {"properties": [
             {"id": "p_s", "xKey": "space_id"},
             {"id": "p_o", "xKey": "object_id"},
@@ -660,6 +672,7 @@ def test_get_ui_context_none_when_type_or_pointer_absent():
     assert client(fx).get_ui_context("s1") is None
     fx = wire(replies={
         "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
+        "/types/any/properties": _ANY_PROPS,
         "/types/T1/properties": {"properties": []},
         "/objects/query": {"records": []}})
     assert client(fx).get_ui_context("s1") is None
@@ -669,6 +682,10 @@ def test_get_ui_context_none_when_type_or_pointer_absent():
 
 _PROG_REPLIES = {
     "/types": {"types": [{"id": "bafyPROG", "name": "Program", "xKey": "program"}]},
+    "/types/any/properties": _ANY_PROPS,
+    "/types/program/properties": {"properties": [
+        {"id": "name"}, {"id": "version"}, {"id": "any_tool"},
+        {"id": "summary"}]},
     "/types/bafyPROG/properties": {"properties": [
         {"id": "bafyNAME", "name": "Name", "xKey": "name"},
         {"id": "bafyVER", "name": "Version", "xKey": "version"},
@@ -739,3 +756,42 @@ def test_account_level_calls_take_no_spaceconfig():
     fx = wire(replies={"/v1/spaces": {"spaces": []}},
               config={"any.base_url": "http://any"})
     assert load(fx)["list_spaces"]() == []
+
+
+# --- builtin-group path resolution (A19) ---------------------------------------
+
+def test_any_derived_props_rewrite_to_top_level_keys():
+    # the server advertises any.id/any.createdAt but stores them
+    # TOP-LEVEL on records — the mapping layer honors the group form
+    fx = wire(replies={**_CAT, "/objects/query": {"records": []}})
+    client(fx).query_objects("s1", filter={"any.id": "o1"},
+                             sort=["-any.createdAt"])
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    assert body["filter"] == {"id": "o1"}
+    assert body["sort"] == ["-createdAt"]
+
+
+def test_any_synced_props_stay_group_addressed():
+    fx = wire(replies={**_CAT, "/objects/query": {"records": []}})
+    client(fx).query_objects("s1", filter={"any.name": "README"})
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    assert body["filter"] == {"any.name": "README"}
+
+
+def test_unknown_builtin_prop_errors_with_the_catalog():
+    fx = wire(replies=_CAT)
+    with pytest.raises(ValueError,
+                       match='unknown property "bogus" on builtin group "any"'):
+        client(fx).query_objects("s1", filter={"any.bogus": 1})
+    with pytest.raises(ValueError, match='"parentid" on builtin group "nav"'):
+        client(fx).query_objects("s1", filter={"nav.parentid": "f1"})
+    assert not any(p.endswith("/objects/query") for _, p, _ in fx.calls)
+
+
+def test_program_group_paths_still_pass():
+    # toolcaller's compose filters {"program.any_tool": True} — the
+    # builtin-group check must resolve it, never reject it
+    fx = wire(replies={**_PROG_REPLIES, "/objects/query": {"records": []}})
+    client(fx).query_objects("s1", filter={"program.any_tool": True})
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    assert body["filter"] == {"program.any_tool": True}
