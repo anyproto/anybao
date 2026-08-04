@@ -38,7 +38,7 @@ it's inventory — don't write it.
 ### How to edit
 
 Main's id is in the `[Main](any://spaceId/objectId)` link at the top of
-its section. Surgical edit from a cell (`c = use("any@v1").client()`):
+its section. Surgical edit from a cell (`c = use("agent:any@v1")`):
 
 ```python
 c.edit_markdown(s, main_id, [{"oldText": old, "newText": new}])

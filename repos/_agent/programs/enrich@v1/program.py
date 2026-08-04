@@ -210,7 +210,7 @@ def analyze(space, opts=None):
     if not space:
         return {"ok": False, "error": "space required"}
     try:
-        c = anymod.client()
+        c = anymod
         transcript_id = opts.get("transcriptId")
         valid_ids = None
         if transcript_id:
@@ -279,7 +279,7 @@ def propose(space, transcript_id, opts=None):
         return report
 
     try:
-        c = anymod.client()
+        c = anymod
         name = "transcript"
         rows = c.query_objects(space, filter={"id": transcript_id}, limit=1)
         if rows and (rows[0].get("any") or {}).get("name"):

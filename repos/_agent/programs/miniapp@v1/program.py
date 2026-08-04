@@ -36,7 +36,7 @@ def _tag_rx(name):
 
 
 def _client():
-    return use("any@v1").client()  # noqa: F821 - guest global
+    return use("any@v1")  # noqa: F821 - guest global
 
 
 def _find(c, space, name):

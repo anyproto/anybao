@@ -62,7 +62,7 @@ def refresh(item, neighbors, tier):
 def main(args):
     space, brain = args["space"], args["brainId"]
     tier = args.get("tier", TIER)
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     last = _state(c, space, brain)
     items = c.query(space, brain, "agent_memory_items",
                     filter={"modifiedAt": {"$gt": last}}, sort=["modifiedAt"],

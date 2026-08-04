@@ -3,7 +3,7 @@
 Turns and chunks live on the chat object in the user space. Expand
 any chunk by querying `agent_chunks` for its `#seq` and reading the
 raw turns in its `fromSeq`–`toSeq` range. `recent_turns` /
-`chunks_at_level` take the any@v1 client as their first argument."""
+`chunks_at_level` take the any@v1 module as their first argument."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 

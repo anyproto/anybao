@@ -69,11 +69,12 @@ def build(fx, space="s1", **recall_kw):
     nospan = lambda name, kind=None: (lambda f: f)  # noqa: E731
     any_g = {"effect": fx, "span": nospan, "use": None}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
+    any_g["_instance"] = any_g["_Client"]("http://any")   # skip config.get
     any_mod = SimpleNamespace(**any_g)
     rec_g = {"effect": fx, "span": nospan,
              "use": lambda spec: {"any@v1": any_mod}[spec]}
     exec(compile(RECALL_SRC, "recall@v1.py", "exec"), rec_g)
-    return rec_g["recall"](any_g["client"]("http://any"), space, **recall_kw)
+    return rec_g["recall"](any_mod, space, **recall_kw)
 
 
 def recall(capture, **fake_kw):

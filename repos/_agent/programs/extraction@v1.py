@@ -86,7 +86,7 @@ def normalize(candidate, max_seq):
 
 def main(args):
     space, chat, brain = args["space"], args["chatId"], args["brainId"]
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     last = _state(c, space, brain)
     turns = c.query(space, chat, "agent_turns",
                     filter={"seq": {"$gt": last}}, sort=["seq"],

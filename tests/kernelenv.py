@@ -38,19 +38,14 @@ class AnyError(Exception):
         super().__init__(f"{status} {code}: {message}")
 
 
-class _Client:
-    def __getattr__(self, name):
-        def _call(*args, **kwargs):
-            out = effect("test.any", {"method": name, "args": list(args),
-                                      "kwargs": kwargs})
-            if isinstance(out, dict) and "__error__" in out:
-                raise AnyError(0, "test", out["__error__"])
-            return out
-        return _call
-
-
-def client(base_url=None):
-    return _Client()
+def __getattr__(name):   # flat module surface (ADR-010 §8)
+    def _call(*args, **kwargs):
+        out = effect("test.any", {"method": name, "args": list(args),
+                                  "kwargs": kwargs})
+        if isinstance(out, dict) and "__error__" in out:
+            raise AnyError(0, "test", out["__error__"])
+        return out
+    return _call
 '''
 
 # use("llm@v1") stand-in: chat crosses as test.llm.

@@ -3,8 +3,9 @@
 Semantic: `search` over the any index. Temporal: `by_period` merges
 memory items, turns, chunks in a time range. Graph: `neighbors` walks
 forward link properties plus server backlinks. Bind with
-`recall(c, space, brain_object_id=…, chat_object_id=…)` (c = any@v1
-client); `hydrate` turns search hits into full records in one read."""
+`recall(c, space, brain_object_id=…, chat_object_id=…)` (c = the
+any@v1 module); `hydrate` turns search hits into full records in one
+read."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 

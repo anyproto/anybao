@@ -182,7 +182,7 @@ def research(space, question, opts=None):
     opts = opts or {}
     if not isinstance(question, str) or not question.strip():
         return {"ok": False, "error": "question is required"}
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     llm = use("llm@v1")  # noqa: F821
     chat_id = opts.get("chatId")
 

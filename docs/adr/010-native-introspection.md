@@ -2,7 +2,11 @@
 
 Status: **Accepted** (2026-07-28), amended 2026-07-28 (§1 hard caps;
 §4 toolhood is declared, not derived — the shape heuristic misfired
-on loop plumbing; §5 summary not indexed)
+on loop plumbing; §5 summary not indexed), amended 2026-08-04 (§8
+flat tool surface — `any@v1` drops the `client()` binder for
+module-level functions with a `spaceConfig` first arg + bound space
+globals; handle methods were invisible to §3's inventory and the
+skill hand-copy drifted)
 Date: 2026-07-28
 Builds on: ADR-001 §4d (kind vocabulary), ADR-002 (kernel namespace —
 amends §3/§4), ADR-004 (module loading), ADR-005 §5 (prompt assembly —
@@ -167,6 +171,43 @@ through the same prompt that carries everything else:
   lands) validates the same convention at write time — the same
   checks deploy runs (§4/§6), so agent-created and deployed programs
   are indistinguishable to every consumer.
+
+### 8. Flat tool surface — spaceConfig (2026-08-04)
+
+Evidence: `run_87d61b0379144eed`. `any@v1`'s API lived on a `[setup]`
+handle, so §3's inventory showed one line — `client()` — and the real
+surface reached the model only through a hand-maintained skill copy,
+which drifted (the search envelope was omitted; the model iterated the
+envelope's keys). Exactly the duplication failure this ADR exists to
+prevent, caused by the one place the renderer couldn't see.
+
+- **Agent-facing tool modules expose a flat function surface.** The
+  primary API is public module-level functions — every one of them
+  renders into `## Tools` by §3 with no renderer change. The `setup`
+  kind stays legal for genuinely stateful handles (e.g. `memory@v1`),
+  but an API meant for the standing prompt must not hide behind one.
+- **`spaceConfig` is the explicit per-call context.** Every
+  space-scoped `any@v1` function takes it as the FIRST argument: a
+  space id string, or a mapping carrying `spaceId` (ui-context shape)
+  or `id` (a `list_spaces()` row) — both pass through unchanged, so
+  query results and bound globals are directly usable. Account-level
+  functions (`list_spaces`, `create_space`) take none.
+- **Omission errors transparently.** A first argument that cannot be a
+  space ref (empty or whitespace-bearing string — prose that landed in
+  the spaceConfig slot — or a non-string non-mapping) raises a
+  `TypeError` naming the accepted forms and the bound globals — no
+  implicit defaulting; "space always explicit" stands. Id SHAPE is
+  server policy: a wrong single token still errors, server-side.
+- **Bound space globals.** The toolcaller binds, per run, cell globals
+  `currentUserSpace` (the user's live ui-context
+  `{spaceId, objectId?, view?, updatedAt}`, or `None` when unknown)
+  and `baoSpaceConfig` (`{spaceId, chatId}` of the agent's home
+  space). "Here"/"this page" resolve against `currentUserSpace` in
+  code the same way the prompt's view line resolves them in prose.
+- **Internals**: connection (base url) and per-space catalog caches
+  move to a module-private singleton; `client()` is removed. Callers
+  that passed the client object now pass the module — same attribute
+  surface, duck-type compatible for `(c, space)` binder params.
 
 ## Amendments
 

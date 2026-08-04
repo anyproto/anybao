@@ -63,7 +63,17 @@ def _fmt_age(sec):
     return f"{int(sec // 3600)}h"
 
 
-def _context_suffix(c, space):
+def _ui_context(c, space):
+    """The user's live view pointer, or None — fetched once per run;
+    feeds both the view line (_context_suffix) and the bound
+    `currentUserSpace` cell global (ADR-010 §8)."""
+    try:
+        return c.get_ui_context(space)
+    except Exception:
+        return None
+
+
+def _context_suffix(ctx):
     """ADR-005 §5: the current user message closes the prompt with a
     timestamp + ui-context suffix ('here'/'this page' resolve against
     the view line). Best-effort — a missing or unreadable pointer
@@ -73,10 +83,6 @@ def _context_suffix(c, space):
     stamp = datetime.datetime.fromtimestamp(
         int(epoch), datetime.UTC).strftime("%a %Y-%m-%d %H:%M UTC")
     line = f"\n\n[now: {stamp}"
-    try:
-        ctx = c.get_ui_context(space)
-    except Exception:
-        ctx = None
     if ctx and ctx.get("spaceId"):
         age = _fmt_age(max(0, epoch - ctx["updatedAt"] / 1000.0))
         line += (f" | user's view — space: {ctx['spaceId']}"
@@ -326,7 +332,8 @@ def _repo_inventory(c, overlays):
     return ("## Repos\n\n"
             "Configured program overlays (package repositories). Import a "
             'repo\'s program with `use("<repo>:<name>@vN")`; list what a repo '
-            "offers with `c.list_programs(<spaceId>)`.\n\n" + "\n".join(lines))
+            "offers with `list_programs(<spaceId>)` (any@v1).\n\n"
+            + "\n".join(lines))
 
 
 def compose_system(c, space, code_space=None, overlays=None):
@@ -351,7 +358,7 @@ def main(args):
     code_space = args.get("codeSpace") or space
     overlays = args.get("overlays") or {}
 
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     llm = use("llm@v1")  # noqa: F821
     hist = use("history@v1")  # noqa: F821
     ar = use("autorecall@v1")  # noqa: F821
@@ -371,8 +378,12 @@ def main(args):
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
         + code_line +
-        "- other spaces: `c.list_spaces()`; the user's live view rides the "
-        "newest user message as a `[now: … | user's view — …]` line")
+        "- bound cell globals (valid spaceConfig args): `currentUserSpace` — "
+        "the user's live view (`{spaceId, objectId?, view?, updatedAt}` or "
+        "None; the same pointer rides the newest user message as a "
+        "`[now: … | user's view — …]` line) — and `baoSpaceConfig` "
+        "(`{spaceId, chatId}` of this agent space)\n"
+        "- other spaces: `list_spaces()` rows")
     if quiet:
         system += (
             "\n\n## Subagent\n\nYou are running as a subagent on a delegated "
@@ -397,10 +408,16 @@ def main(args):
         boot_min_seq = tail[0].get("seq") if tail else None
         plan = ar.plan(c, space, user_text, boot_min_seq)
 
+    ui_ctx = _ui_context(c, space)
+    # bound space globals (ADR-010 §8): cell code resolves "here" the
+    # same way the prompt's view line does
+    subcell(f"currentUserSpace = {ui_ctx!r}\n"  # noqa: F821 - guest global
+            f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}",
+            "_ctx")
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + _context_suffix(c, space)}]},
+                            "text": user_text + _context_suffix(ui_ctx)}]},
                 *plan["messages"]]
 
     def bubble(text, done):
