@@ -299,6 +299,34 @@ def _tool_docs(c, space, code_space=None):
     return _TOOLS_INTRO + "\n\n" + "\n\n".join(b for _, _, b in rows)
 
 
+def _user_skills(c, space):
+    """`## User skills` — the user-authored agent_skill objects of the
+    working space (names NOT `_`-prefixed): title + one-line
+    description + id, so a matching turn can fetch the body
+    (`get_markdown`) before planning. The `_meta_skill` skill teaches
+    the flow; bodies stay out of the standing prompt."""
+    type_id = next((t["id"] for t in c.list_types(space)
+                    if (t.get("xKey") or t.get("key")) == "agent_skill"), None)
+    if not type_id:
+        return ""
+    lines = []
+    for o in c.query_objects(space, filter={"any.types": type_id}):
+        meta = o.get("any") or {}
+        name = meta.get("name") or ""
+        if not name or name.startswith("_"):
+            continue
+        desc = (meta.get("description") or "").strip().splitlines()
+        lines.append(f"- **{name}** (`{o['id']}`)"
+                     + (f" — {desc[0]}" if desc else ""))
+    if not lines:
+        return ""
+    return ("## User skills\n\n"
+            "User-curated playbooks (`agent_skill` objects). When the "
+            "turn matches one, fetch its body FIRST — "
+            "`c.get_markdown(baoSpaceConfig, \"<id>\")` — and follow "
+            "it.\n\n" + "\n".join(sorted(lines)))
+
+
 def _memory_categories(c, space):
     """The category-name inventory in the brain — the write path's
     vocabulary anchor."""
@@ -351,6 +379,7 @@ def compose_system(c, space, code_space=None, overlays=None):
     wins) + repo inventory + memory categories. Guest-side — the host
     injects nothing."""
     parts = [_compose_skills(_load_system_skills(c, space, code_space)),
+             _user_skills(c, space),
              _tool_docs(c, space, code_space),
              _repo_inventory(c, overlays,
                              code_space if code_space != space else None),

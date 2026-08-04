@@ -3,9 +3,10 @@
 ## Available User Skills
 
 User skills are `agent_skill` objects the user curates as reusable
-playbooks. **Only each skill's title and one-line description are
-injected below** — the body is not. When the current turn matches one
-of these entries, fetch the body *before* you plan, and follow it:
+playbooks. **Only each skill's title, one-line description, and id are
+injected** (the `## User skills` section) — the body is not. When the
+current turn matches one of those entries, fetch the body *before* you
+plan, and follow it:
 
 ```python
 c = use("agent:any@v1")
