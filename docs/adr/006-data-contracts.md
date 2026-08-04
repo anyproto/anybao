@@ -350,6 +350,16 @@ mechanism, in the same layer — a guest helper, not the host):
   `program`, `chat`, …); only user types (CID id, slug xKey) are
   (reverse-)mapped. Reserved namespaces (`any`/`nav`/`program`/`_ver`)
   pass through with their literal keys on both read and write.
+  **Amended 2026-08-04 (dev task A19)**: filter/sort/aggregate PATHS
+  under `any`/`nav`/`program` no longer pass blind — the tail resolves
+  against the builtin's own property catalog (the server exposes it:
+  `/types/any/properties`), an unknown tail errors with the list, and
+  `any`-group props with `scope: "derived"` (`id`, `author`,
+  `createdAt`, …) rewrite to the bare top-level keys records actually
+  carry them under (`any.id` → `id`). The server advertises `any.id`
+  yet answers the group form with a silent `[]` — two independent runs
+  induced that spelling (run_56fa3f8b78794f70, run_84465da8dd7e436a),
+  so the mapping layer honors it. `_ver` stays literal.
 - **Writes** (`create_object`, `update_object`): `types` entries and
   `initialProperties` / patch groups are named by xKey (ids still
   accepted) and resolved to the ids the server writes by. An unknown
