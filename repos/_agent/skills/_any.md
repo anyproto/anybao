@@ -46,7 +46,8 @@ fails in the standard overlay setup, ADR-004 §2):
   value}}` (builtin `any`/`nav` groups verbatim). Filter/sort by xKey
   too — `filter={"any.types": "book", "book.year": 1965}`,
   `sort=["-book.year"]`. Pass `normalize=False` only when you need the
-  raw content ids.
+  raw content ids. Unsure of a record's keys? `inferSchema(row)` on
+  one fetched row — filter by what the shape shows, never by analogy.
 - **Search before create**: `c.search(space, query, ...)` is cheap
   (one indexed call, zero tokens). Check for an existing object (and
   memory `preference` items about the workflow) before spawning a new

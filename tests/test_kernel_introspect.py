@@ -160,3 +160,20 @@ def test_import_error_teaches_inspect_and_help():
     msg = out["prints"][0]["repr"]
     assert "inspect" in msg
     assert "help()" in msg
+
+
+def test_inferschema_is_a_cell_global():
+    # the data-shape counterpart of describe() (ADR-010 §2): filters
+    # ground in an observed shape, not a guessed one (dev task A19)
+    app = load_kernel()
+    out = app._run_cell(
+        'row = {"id": "o1", "any": {"name": "Ship", "types": ["task"]},'
+        ' "task": {"status": "open"}}\n'
+        "print(inferSchema(row))\n",
+        "c1",
+    )
+    assert out["ok"], out
+    shape = out["prints"][0]["repr"]
+    assert shape.startswith("{id:str")          # id is top-level in the shape
+    assert "any:{name:str" in shape
+    assert "task:{status:str}" in shape

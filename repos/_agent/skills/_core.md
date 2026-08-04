@@ -40,6 +40,14 @@ the full doc (return shape, options). It works on any `use()`'d
 module — a repo connector included — and on bound handles. Docstrings
 are the single doc source; there is no separate schema to fetch.
 
+**Discover DATA shapes the same way.** `inferSchema(value)` renders
+any value's shape (`{id:str, any:{name:str, types:list[3 × str]}}`) —
+the shape you see in large-value stubs, callable on anything. Before
+writing a filter or nested write against records you haven't seen this
+conversation, fetch ONE row and `print(inferSchema(row))` — every
+filter key must exist in the observed shape; a key the shape doesn't
+show silently matches nothing.
+
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo
 connector, a space program), `help(mod)` it in the same cell that
