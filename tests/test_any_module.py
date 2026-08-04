@@ -871,3 +871,10 @@ def test_get_space_trims_but_keeps_derived_object_ids():
     r = load(fx)["get_space"]("s1")
     assert r == {"id": "s1", "generalChatObjectId": "chat9",
                  "agentConfigObjectId": "cfg1"}
+
+
+def test_search_types_kwarg_redirects_to_query_objects():
+    # A18: the guessed types= kwarg gets the redirect, not a bare TypeError
+    g = load(wire())
+    with pytest.raises(TypeError, match="any.types"):
+        g["search"](SID, "q", types=["task"])
