@@ -58,37 +58,22 @@ Env vars are not read.
 
 ## The module surface
 
-`use("name@vN")` imports a deployed module. The standing set:
+`use("name@vN")` imports a deployed module. The inventory — every
+module's description plus one line per method — is generated into
+`## Tools` below from the code itself; repo programs (`## Repos`)
+import alias-qualified (`use("<repo>:<name>@vN")`). Depth is always
+`help()`, never a guess: a `[setup]` method is a binder — call it once
+and read the handle's API with `help(handle)` (e.g.
+`c = use("any@v1").client()`, then `help(c)`, `help(c.search)`).
 
-- `c = use("any@v1").client()` — space data, `space` always explicit:
-  `c.query(space, object_id, dataset, filter?, sort?, limit?)`,
-  `c.query_objects(space, ...)`, `c.search(space, query, scopes?, limit?)`
-  (scopes: `agent` memory / `history` turns+chunks / `basic` content),
-  `c.create_object(space, body)` (nested type-group properties, keyed by
-  type xKey), `c.modify`, `c.upsert_record`, `c.get_markdown` /
-  `c.put_markdown` (whole-body) / `c.append_markdown` (add at tail) /
-  `c.edit_markdown(space, obj, [{"oldText", "newText"}])` — THE way
-  to change existing body text (tick a checkbox, fix a line): matched
-  server-side, all-or-nothing, no read needed; never get→replace→put.
-  `c.chat_send(space, chat_id, body)`, `c.create_memory` /
-  `c.evolve_memory` / `c.delete_memory`, `c.list_types`,
-  `c.list_properties`, `c.backlinks`, `c.aggregate`,
-  `c.list_spaces()`, `c.get_ui_context(space)`.
 - **Where the ids come from — never guess them.** Your space and chat
   ids are in the **Runtime context** section of this prompt. The user's
   live view (space/object) rides the newest user message as a
   `[now: … | user's view — …]` line — "here" / "this page" / "this
   space" means THAT. Everything else: `c.list_spaces()` (use rows with
   `status == "active"`). There is no space-id env var or global.
-- `use("recall@v1").recall(c, space)` — `search` / `hydrate(hits)` /
-  `by_period(from, to)` / `neighbors(object_id)`.
-- `mem = use("memory@v1").memory(c, space)` — see the `_memory` skill
-  for POLICY; `mem.save_with_dedup(candidate, recall=...)` is THE save
-  path (`{"deduplicated": true}` is a success), `mem.evolve`,
-  `mem.bump_access(item_id, current_count)` when a deliberate dig used
-  an item.
-- `use("llm@v1").chat(messages, system=, tier="classify", tools=[])` —
-  sub-LLM work (summaries, judgments).
+- **Memory policy** lives in the `_memory` skill —
+  `mem.save_with_dedup` is THE save path, never raw `create_memory`.
 - **Reminders / one-shot schedules** ("remind me at/in …"): write an
   `agent_triggers` record on the trigger anchor (the single
   `agent_trigger`-typed object in the space):

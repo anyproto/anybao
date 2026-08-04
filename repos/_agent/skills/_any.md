@@ -48,7 +48,9 @@ and fails in the standard overlay setup, ADR-004 §2):
 - **Search before create**: `c.search(space, query, ...)` is cheap
   (one indexed call, zero tokens). Check for an existing object (and
   memory `preference` items about the workflow) before spawning a new
-  one. Each hit is `{title, type, data, objectId, dataset, score}`:
+  one. Returns the `{hits, mode, vectorStatus}` ENVELOPE — iterate
+  `r["hits"]`, not the return value (full doc: `help(c.search)`).
+  Each hit is `{title, type, data, objectId, dataset, score}`:
   `data` is the matched text snippet, `title`/`type` the resolved
   object name + type (enriched client-side), `objectId` what you query
   for the full object. Hits are matched RECORDS, so several can share
@@ -90,12 +92,3 @@ Chat:
   unread state" — silently dropping chats this peer never opened. Type
   membership is always `filter={"any.types": "chat"}`; the rule
   generalizes to any type group whose properties are all local-scope.
-
-Collections vs views:
-
-- **Collections** are static folders — membership is manual.
-- **Views/queries** are dynamic lenses over a type. The API cannot
-  create or configure custom views today; every type gets a default
-  view in the UI. If the user asks for "a filtered view of X", either
-  propose a static collection or say the view must be configured in the
-  UI — don't pretend the API covers it.

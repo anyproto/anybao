@@ -41,10 +41,13 @@ Main's id is in the `[Main](any://spaceId/objectId)` link at the top of
 its section. Surgical edit from a cell (`c = use("any@v1").client()`):
 
 ```python
-md = c.get_markdown(s, main_id)
-assert md.count(old) == 1
-c.put_markdown(s, main_id, md.replace(old, new))
+c.edit_markdown(s, main_id, [{"oldText": old, "newText": new}])
 ```
+
+Matched server-side, all-or-nothing — no read needed, never
+get→replace→put. Adding a rule at the tail is
+`c.append_markdown(s, main_id, text)`; whole-body `put_markdown` only
+when intentionally restructuring.
 
 After editing, don't re-output Main — the next turn's prompt reflects
 it. When a rule changes, keep both forms at a high level:

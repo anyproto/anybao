@@ -18,10 +18,11 @@ workflow:
 - **Create**: `c.create_object(s, {"types": ["agent_skill"],
   "initialProperties": {"any": {"name": "<title>"}}})`, then write the
   body with `c.put_markdown`.
-- **Update (surgical)**: get markdown → assert single match →
-  `str.replace` → put markdown.
-- **Update (rewrite)**: put the whole new body — only when
-  intentionally restructuring.
+- **Update (surgical)**: `c.edit_markdown(s, skill_id, [{"oldText":
+  old, "newText": new}])` — matched server-side, all-or-nothing; never
+  get→replace→put. Add a step at the tail with `c.append_markdown`.
+- **Update (rewrite)**: `c.put_markdown` with the whole new body — only
+  when intentionally restructuring.
 
 Titles should read like a task ("review-pr", "plan-weekly-sync"), not a
 noun, and must NOT start with an underscore. Keep the body tight; a
