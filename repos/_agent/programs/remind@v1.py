@@ -13,7 +13,7 @@ __any_tool__ = False  # trigger-run only; not an agent-callable tool
 
 
 def main(args):
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     text = (args or {}).get("text") or "(reminder with no text)"
     return c.chat_send(args["space"], args["chatId"],
                        {"text": f"⏰ Reminder: {text}",

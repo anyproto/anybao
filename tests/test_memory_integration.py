@@ -17,7 +17,7 @@ def _item(client, space: str, brain: str, item_id: str) -> dict:
 
 def test_memory_write_lifecycle(client, fresh_space, guest_use):
     brain = client.get_brain(fresh_space)["objectId"]
-    m = guest_use("memory@v1").memory(guest_use("any@v1").client(), fresh_space)
+    m = guest_use("memory@v1").memory(guest_use("any@v1"), fresh_space)
 
     # create — required fields + arrays/numbers persist as written
     item_id = m.add("lesson", "integration test fact",

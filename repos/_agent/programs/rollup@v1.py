@@ -90,7 +90,7 @@ def main(args):
     space, chat = args["space"], args["chatId"]
     batch = args.get("batch", BATCH)
     tier = args.get("tier", TIER)
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     created = rollup_l1(c, space, chat, batch, tier)
     for level in range(2, args.get("maxLevel", MAX_LEVEL) + 1):
         created += rollup_ln(c, space, chat, level, batch, tier)

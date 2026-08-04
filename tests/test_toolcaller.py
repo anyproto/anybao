@@ -34,6 +34,7 @@ class World:
         self.turns = []
         self.roi = []
         self.spans = []
+        self.preludes = []
         self.plan_hits = hits or {"messages": [], "injected": []}
         self.ui_ctx = ui_ctx
 
@@ -54,6 +55,9 @@ class World:
         raise AssertionError(f"unexpected effect {name}")
 
     def subcell(self, code, cell_id):
+        if cell_id == "_ctx":   # the bound-globals prelude (ADR-010 §8)
+            self.preludes.append(code)
+            return {"ok": True, "prints": [], "last": None, "error": None}
         return self.cells.pop(0) if self.cells else {
             "ok": True, "prints": [], "last": {"repr": "2", "size": 1, "schema": "int"},
             "error": None}
@@ -122,7 +126,9 @@ class World:
             def log_roi(c, s, injected, replies, ts):
                 w.roi.append((injected, replies))
 
-        return {"any@v1": type("M", (), {"client": staticmethod(lambda: Client())}),
+        # any@v1 is a flat module now (ADR-010 §8) — the fake is the
+        # client-shaped surface itself
+        return {"any@v1": Client(),
                 "llm@v1": Llm, "history@v1": Hist, "autorecall@v1": Ar}[spec]
 
 
@@ -315,6 +321,13 @@ def test_user_message_carries_timestamp_and_view_context():
     assert "`s1`" in call["system"] and "`c1`" in call["system"]
     # the persisted turn keeps the raw userText — suffix is llm-only
     assert w.turns[0]["userText"] == "go"
+    # the same pointer is bound as cell globals before the loop (ADR-010 §8)
+    [prelude] = w.preludes
+    assert "currentUserSpace = {'spaceId': 'sp9'" in prelude
+    assert "baoSpaceConfig = {'spaceId': 's1', 'chatId': 'c1'}" in prelude
+    # and the prompt names both
+    assert "currentUserSpace" in call["system"]
+    assert "baoSpaceConfig" in call["system"]
 
 
 def test_context_suffix_degrades_to_timestamp_without_pointer():

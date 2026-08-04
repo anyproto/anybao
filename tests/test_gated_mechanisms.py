@@ -79,7 +79,7 @@ class FakeGuest:
 
     def use(self, spec):
         if spec == "any@v1":
-            return SimpleNamespace(client=lambda base_url=None: self)
+            return self   # flat module surface (ADR-010 §8)
         if spec == "llm@v1":
             return SimpleNamespace(chat=self.chat)
         if spec == "memory@v1":

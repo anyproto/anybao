@@ -1,6 +1,6 @@
 """The memory WRITE facade over a space's brain (agent_memory_items).
 
-Bind `m = memory(c, space)` (c = any@v1 client), then save through
+Bind `m = memory(c, space)` (c = the any@v1 module), then save through
 `m.save_with_dedup(candidate, rec)` (rec = recall@v1) — recall
 supplies lookalikes, a fast-tier judge decides merge | supersede |
 create. Raw `add` skips dedup; use only when the fact is known new.

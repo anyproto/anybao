@@ -76,7 +76,7 @@ def valid_links(proposals, neighbor_ids, existing_edges, max_links):
 
 def main(args):
     space, brain = args["space"], args["brainId"]
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     last = _state(c, space, brain)
     items = c.query(space, brain, "agent_memory_items",
                     filter={"createdAt": {"$gt": last}}, sort=["createdAt"],

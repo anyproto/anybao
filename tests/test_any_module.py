@@ -39,17 +39,25 @@ def load(fx):
     return g
 
 
+# The behavior tests below drive the internal _Client with short fixture
+# space ids; the flat module functions (the public surface, ADR-010 §8)
+# validate spaceConfig shape and are covered by the flat-surface tests
+# with an id-shaped space.
 def client(fx, base="http://any"):
-    return load(fx)["client"](base)
+    return load(fx)["_Client"](base)
+
+
+# id-shaped (dotted, long, no spaces) — passes the module _sid guard
+SID = "bafytestspace0000000000000000.tsuffix"
 
 
 # --- construction / transport --------------------------------------------------
 
 def test_base_url_comes_from_config():
     fx = wire(config={"any.base_url": "http://any/"})
-    c = load(fx)["client"]()          # no explicit url
-    c.list_types("s1")
-    assert fx.calls == [("GET", "/v1/spaces/s1/types", None)]  # trailing / stripped
+    g = load(fx)
+    g["list_types"](SID)              # no explicit url — _c() reads config
+    assert fx.calls == [("GET", f"/v1/spaces/{SID}/types", None)]  # trailing / stripped
 
 
 def test_error_envelope_maps_to_anyerror():
@@ -57,7 +65,7 @@ def test_error_envelope_maps_to_anyerror():
         "": {"error": {"code": "space.not_found", "message": "no"}}})
     g = load(fx)
     with pytest.raises(g["AnyError"]) as ei:
-        g["client"]("http://any").query("s", "o", "d")
+        g["_Client"]("http://any").query("s", "o", "d")
     assert ei.value.status == 404 and ei.value.code == "space.not_found"
     assert ei.value.message == "no"
     assert "hint" not in str(ei.value)          # no hint for unlisted codes
@@ -70,7 +78,7 @@ def test_known_codes_carry_recovery_hint_verbatim_message():
                        "message": server_msg}}})
     g = load(fx)
     with pytest.raises(g["AnyError"]) as ei:
-        g["client"]("http://any").query("s", "o", "d")
+        g["_Client"]("http://any").query("s", "o", "d")
     text = str(ei.value)
     assert server_msg in text                   # server message verbatim
     assert "(hint:" in text and "strict body" in text
@@ -386,7 +394,7 @@ def test_catalog_refreshes_once_on_unknown_type_miss():
             return {"status": 200, "headers": {}, "body": json.dumps({"objectId": "o9"})}
         return {"status": 200, "headers": {}, "body": "{}"}
 
-    c = load(fx)["client"]("http://any")
+    c = load(fx)["_Client"]("http://any")
     c.create_object("s1", {"types": ["task"]})   # miss then hit
     assert seen["n"] == 2
 
@@ -699,3 +707,35 @@ def test_list_programs_tools_only_filters():
     fx = wire(replies=dict(_PROG_REPLIES))
     rows = client(fx).list_programs("repo1", tools_only=True)
     assert [r["name"] for r in rows] == ["webSearch"]
+
+
+# --- flat module surface (ADR-010 §8) ------------------------------------------
+
+def test_flat_functions_lift_method_docstrings():
+    g = load(wire())
+    assert "envelope" in g["search"].__doc__       # ONE authored copy, lifted
+    assert "objectId" in g["create_object"].__doc__
+
+
+def test_spaceconfig_accepts_id_row_and_ui_context_shapes():
+    fx = wire(replies={"/types": {"types": []}},
+              config={"any.base_url": "http://any"})
+    g = load(fx)
+    g["list_types"](SID)                    # bare id string
+    g["list_types"]({"id": SID})            # a list_spaces() row
+    g["list_types"]({"spaceId": SID})       # currentUserSpace shape
+    assert [p for _, p, _ in fx.calls] == [f"/v1/spaces/{SID}/types"] * 3
+
+
+def test_spaceconfig_misuse_errors_transparently():
+    g = load(wire(config={"any.base_url": "http://any"}))
+    with pytest.raises(TypeError, match="currentUserSpace"):
+        g["search"]("llm proxy", "q")       # query landed in the spaceConfig slot
+    with pytest.raises(TypeError, match="spaceConfig"):
+        g["list_types"](None)
+
+
+def test_account_level_calls_take_no_spaceconfig():
+    fx = wire(replies={"/v1/spaces": {"spaces": []}},
+              config={"any.base_url": "http://any"})
+    assert load(fx)["list_spaces"]() == []

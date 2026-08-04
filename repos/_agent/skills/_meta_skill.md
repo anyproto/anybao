@@ -8,7 +8,7 @@ injected below** — the body is not. When the current turn matches one
 of these entries, fetch the body *before* you plan, and follow it:
 
 ```python
-c = use("any@v1").client()
+c = use("agent:any@v1")
 c.get_markdown(s, skill_id)
 ```
 

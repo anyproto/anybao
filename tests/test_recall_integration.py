@@ -33,7 +33,7 @@ def test_search_finds_written_content(client, fresh_space, guest_use):
     token = f"zanzibar{uuid.uuid4().hex[:8]}"
     client.create_object(fresh_space, {"initialProperties": {"any": {"name": f"note {token}"}}})
 
-    r = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space)
+    r = guest_use("recall@v1").recall(guest_use("any@v1"), fresh_space)
     try:
         hits = _poll_search(r, token, scopes=("agent", "history", "basic"))
     except Exception as e:
@@ -59,7 +59,7 @@ def test_by_period_fans_out_across_real_datasets(client, fresh_space, guest_use)
     client.call("POST", f"/v1/spaces/{fresh_space}/agent/memory",
                  {"category": "lesson", "context": "test fact"})
 
-    r = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space,
+    r = guest_use("recall@v1").recall(guest_use("any@v1"), fresh_space,
                                       brain_object_id=brain, chat_object_id=chat)
     recs = r.by_period(now - 3600, now + 3600)
     assert {x["source"] for x in recs} == {"memory", "turn", "chunk"}
@@ -84,7 +84,7 @@ def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
         "initialProperties": {"any": {"name": "source"},
                               tid: {pid: [f"any://{target}"]}}})["objectId"]
 
-    rec = guest_use("recall@v1").recall(guest_use("any@v1").client(), fresh_space)
+    rec = guest_use("recall@v1").recall(guest_use("any@v1"), fresh_space)
     got = rec.neighbors(source)
     assert [f["targetId"] for f in got["forward"]] == [target]  # any:// stripped
     assert got["forward"][0]["prop"] == "relates_to"

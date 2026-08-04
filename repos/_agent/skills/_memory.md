@@ -7,9 +7,9 @@ memory items.
 
 ## Saving — budget ~1–2 per turn
 
-Get the facades once: `c = use("any@v1").client()`, `mem =
-use("memory@v1").memory(c, space)`, `r = use("recall@v1").recall(c,
-space)`. Every save goes through `mem.save_with_dedup(candidate,
+Get the facades once: `c = use("agent:any@v1")`, `mem =
+use("agent:memory@v1").memory(c, space)`, `r =
+use("agent:recall@v1").recall(c, space)`. Every save goes through `mem.save_with_dedup(candidate,
 recall=r)` with `candidate = {"category": ..., "context": ...}`.
 `category` (lowercase slug) and `context` (one-line fact) are REQUIRED;
 add `body` (detail), `confidence` (1–10, user-stated facts rank above

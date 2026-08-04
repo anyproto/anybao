@@ -62,16 +62,25 @@ Env vars are not read.
 module's description plus one line per method — is generated into
 `## Tools` below from the code itself; repo programs (`## Repos`)
 import alias-qualified (`use("<repo>:<name>@vN")`). Depth is always
-`help()`, never a guess: a `[setup]` method is a binder — call it once
-and read the handle's API with `help(handle)` (e.g.
-`c = use("any@v1").client()`, then `help(c)`, `help(c.search)`).
+`help()`, never a guess: `help(mod)`, `help(mod.method)`; the rare
+`[setup]` method is a binder — call it once and read the handle's API
+with `help(handle)`. Never name a module `any` — that shadows the
+builtin `any()`; the convention is `c = use("agent:any@v1")`.
 
+- **spaceConfig — the first argument of every space-scoped `any@v1`
+  call.** Pass a space id string, a `list_spaces()` row, or a bound
+  cell global: `currentUserSpace` (the user's live view — what "here" /
+  "this page" means; `{spaceId, objectId?, view?, updatedAt}`, or None
+  when the UI never reported) and `baoSpaceConfig` (`{spaceId, chatId}`
+  of your home space). A wrong or omitted spaceConfig raises a
+  TypeError naming these forms. Account-level calls (`list_spaces`,
+  `create_space`) take none.
 - **Where the ids come from — never guess them.** Your space and chat
-  ids are in the **Runtime context** section of this prompt. The user's
-  live view (space/object) rides the newest user message as a
-  `[now: … | user's view — …]` line — "here" / "this page" / "this
-  space" means THAT. Everything else: `c.list_spaces()` (use rows with
-  `status == "active"`). There is no space-id env var or global.
+  ids: `baoSpaceConfig` (also spelled out in **Runtime context**). The
+  user's live view: `currentUserSpace` (the same pointer rides the
+  newest user message as a `[now: … | user's view — …]` line — check
+  its age). Everything else: `c.list_spaces()` (use rows with
+  `status == "active"`). There is no space-id env var.
 - **Memory policy** lives in the `_memory` skill —
   `mem.save_with_dedup` is THE save path, never raw `create_memory`.
 - **Reminders / one-shot schedules** ("remind me at/in …"): write an

@@ -6,10 +6,12 @@ first. When the user says "create", "track", "save", "add", "organize"
 type) unless they explicitly say otherwise. Objects are the default
 unit of work.
 
-Core mechanics (get the client once: `c = use("agent:any@v1").client()`
-— in cell code always qualify harness modules with the `agent:` overlay
-alias; unqualified `use("any@v1")` resolves only in your working space
-and fails in the standard overlay setup, ADR-004 §2):
+Core mechanics (import once: `c = use("agent:any@v1")` — a flat module,
+every space-scoped call takes a spaceConfig first (`currentUserSpace`,
+`baoSpaceConfig`, a space id, a `list_spaces()` row). In cell code
+always qualify harness modules with the `agent:` overlay alias;
+unqualified `use("any@v1")` resolves only in your working space and
+fails in the standard overlay setup, ADR-004 §2):
 
 - Everything in a space is a **typed object**. Types define which
   properties objects can have.
@@ -63,15 +65,15 @@ Spaces:
   mean space(s): list, name, or act on spaces, never hunt for a "room"
   type. Prefer the user's word ("room") back to them in replies.
 - You live in the user's space (chat, history, brain) with your code in
-  the agent overlay, but you can reach **every space**: `space` is an
-  explicit argument on every `any@v1` client call. Cross-space is normal.
-- Your home space id is in the **Runtime context** section; the user's
-  current view arrives on the newest user message
-  (`[now: … | user's view — space: …, object: …]`) — "here" / "this
-  page" / "this space" means the view context: pass its space id (and
-  object id) to the calls that act on it, checking the line's age for
-  staleness. `c.get_ui_context(space)` re-reads it live;
-  `c.list_spaces()` enumerates everything else.
+  the agent overlay, but you can reach **every space**: the spaceConfig
+  is an explicit argument on every `any@v1` call. Cross-space is normal.
+- Your home space: the bound `baoSpaceConfig` global. The user's
+  current view: the bound `currentUserSpace` global (mirrored on the
+  newest user message as `[now: … | user's view — space: …, object:
+  …]`) — "here" / "this page" / "this space" means THAT: pass
+  `currentUserSpace` (and its `objectId`) to the calls that act on it,
+  checking its age for staleness. `c.get_ui_context(baoSpaceConfig)`
+  re-reads it live; `c.list_spaces()` enumerates everything else.
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
 

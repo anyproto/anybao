@@ -26,7 +26,7 @@ def main(args):
     half_life = args.get("halfLifeDays", HALF_LIFE_DAYS)
     floor = args.get("floor", FLOOR)
     ts = now()  # noqa: F821 - guest global (time effect, recorded)
-    c = use("any@v1").client()  # noqa: F821 - guest global
+    c = use("any@v1")  # noqa: F821 - guest global
     mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
     items = c.query(space, brain, "agent_memory_items",
                     limit=args.get("batch", BATCH))

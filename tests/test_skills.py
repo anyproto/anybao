@@ -23,9 +23,9 @@ def test_skill_sources_cover_the_system_set():
 
 def test_core_skill_documents_the_real_surface():
     core = load_skills_dir(SKILLS_DIR)["_core"]
-    for needle in ("run_cell", "values.get", "use(", 'use("any@v1")',
-                   "save_with_dedup", 'use("llm@v1")', "chat_send", "any://",
-                   "batch"):
+    for needle in ("run_cell", "values.get", "use(", 'use("agent:any@v1")',
+                   "save_with_dedup", "spaceConfig", "currentUserSpace",
+                   "baoSpaceConfig", "any://", "batch"):
         assert needle in core, f"_core.md lost {needle!r}"
     # no residue of retired surfaces (no-backcompat: fresh shapes)
     for stale in ("console.log", "anyHelper.", "convmemory", "var result",
