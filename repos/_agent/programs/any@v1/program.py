@@ -1134,7 +1134,13 @@ def chat_send(spaceConfig, chat_id, body):
 
 @span("any.search", kind="getter")  # noqa: F821 - guest global
 def search(spaceConfig, query, scopes=None, limit=None, mode=None,
-           enrich=True):
+           enrich=True, **kw):
+    if kw:   # A18: the guessed types= kwarg gets a redirect, not a bare TypeError
+        raise TypeError(
+            f"search() got unexpected keyword(s) {sorted(kw)} — search has "
+            "no type filter. List objects of a type with "
+            "query_objects(spaceConfig, filter={'any.types': '<xKey>'}), "
+            "or post-filter hits on h['type'].")
     return _c().search(_space(spaceConfig), query, scopes, limit, mode, enrich)
 
 
