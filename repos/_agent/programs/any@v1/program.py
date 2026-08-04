@@ -2,13 +2,14 @@
 
 Everything is a typed object. Flat surface: every space-scoped
 function takes `spaceConfig` FIRST (cross-space is normal) — a space
-id string, or a mapping with `spaceId`/`id` (a `list_spaces()` row,
-the bound `currentUserSpace` / `baoSpaceConfig` cell globals).
-Account-level calls (`list_spaces`, `create_space`) take none. Types
-and properties are named by xKey — resolved to server content ids
-both ways; query rows come back xKey-nested (never raw ids). Errors
-raise `AnyError` ({code, message} from the wire); a wrong or omitted
-spaceConfig is a TypeError naming the accepted forms."""
+NAME or id string (names resolve against the live space list; an
+unknown or ambiguous name errors listing every space), or a mapping
+with `spaceId`/`id` (a `list_spaces()` row, the bound
+`currentUserSpace` / `baoSpaceConfig` cell globals). Account-level
+calls (`list_spaces`, `create_space`) take none. Types and properties
+are named by xKey — resolved to content ids both ways; rows come back
+xKey-nested. Errors raise `AnyError` ({code, message} from the
+wire); a bad spaceConfig is a TypeError naming the accepted forms."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -89,6 +90,20 @@ class AnyError(Exception):
         super().__init__(text)
 
 
+# Space-row fields the model can use; the rest (push key material,
+# settings, index pointers, icon, author hash) is sync plumbing — it
+# never belongs in model context (ADR-010 §8). Single-space extras
+# (generalChat/agentConfig/agentSecrets ids) survive the trim.
+_SPACE_ROW_FIELDS = ("id", "name", "description", "status", "ownRole",
+                     "spaceType", "createdAt", "generalChatObjectId",
+                     "agentConfigObjectId", "agentSecretsObjectId")
+
+
+def _trim_space_row(r):
+    return {k: r[k] for k in _SPACE_ROW_FIELDS
+            if r.get(k) not in (None, "", {})}
+
+
 # Builtin type namespaces whose group + property keys are already literal
 # handles (`any.name`, `any.types`, `nav.parentId`, `program.name`). They are
 # never reverse-mapped on read nor xKey-resolved on write — see the xKey
@@ -105,6 +120,7 @@ class _Client:
         # ids — ADR-006 §6. Invalidated after create_type / add_property.
         self._types_cache = {}   # space -> {"by_id", "by_xkey", "rows"}
         self._props_cache = {}   # (space, type_id) -> [prop rows]
+        self._spaces_cache = None   # space rows for name resolution (§8)
 
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
@@ -121,6 +137,38 @@ class _Client:
             raise AnyError(reply["status"], err.get("code", "unknown"),
                            err.get("message", ""))
         return json.loads(raw) if raw else {}
+
+    # --- space-name resolution (ADR-010 §8) ----------------------------------
+    # Spaces resolve by NAME the way types/props resolve by xKey: a
+    # memoized list_spaces catalog, refresh-once-on-miss, loud errors
+    # carrying the space list. Id-shaped strings skip the catalog.
+    def _spaces(self):
+        if self._spaces_cache is None:
+            self._spaces_cache = self._call("get", "/v1/spaces").get("spaces", [])
+        return self._spaces_cache
+
+    def _resolve_space(self, sid, _retried=False):
+        if "." in sid and " " not in sid and len(sid) >= 20:
+            return sid                        # id-shaped: pass through
+        active = [r for r in self._spaces() if r.get("status") == "active"]
+        hits = [r for r in active if r.get("name") == sid]
+        if not hits:
+            hits = [r for r in active
+                    if (r.get("name") or "").casefold() == sid.casefold()]
+        if len(hits) == 1:
+            return hits[0]["id"]
+        if len(hits) > 1:
+            raise ValueError(
+                f'space name "{sid}" is ambiguous: '
+                + ", ".join(f'"{h.get("name")}" ({h["id"]})' for h in hits)
+                + " — pass the id")
+        if not _retried:
+            self._spaces_cache = None         # fresh space? refresh once
+            return self._resolve_space(sid, True)
+        if not active:
+            return sid    # degenerate env (no listable spaces): server decides
+        names = ", ".join(f'"{r.get("name") or r["id"]}"' for r in active)
+        raise ValueError(f'no space named "{sid}" — spaces: {names}')
 
     # --- xKey catalog + resolution (ADR-006 §6) ------------------------------
     # The server stores and validates by content-id: a value lives at
@@ -606,19 +654,27 @@ class _Client:
             {"content": content})
 
     # --- spaces & ui context ---------------------------------------------------
-    def list_spaces(self):
-        """Every space on the account as raw rows ({id, name, status, …}).
+    def list_spaces(self, raw=False):
+        """Every space on the account: `{id, name, description?, status,
+        ownRole, spaceType, createdAt}` rows.
 
-        Operate on status == "active" unless asked otherwise."""
-        return self._call("get", "/v1/spaces").get("spaces", [])
+        Sync internals (push key material, settings, index pointers) are
+        TRIMMED — `raw=True` returns the wire rows. Operate on
+        `status == "active"` unless asked otherwise."""
+        rows = self._call("get", "/v1/spaces").get("spaces", [])
+        self._spaces_cache = rows       # doubles as the name catalog (§8)
+        return rows if raw else [_trim_space_row(r) for r in rows]
 
-    def get_space(self, space):
-        """One space's full row → {id, name, generalChatObjectId, …}.
+    def get_space(self, space, raw=False):
+        """One space's row → {id, name, generalChatObjectId, …}; also THE
+        explicit name resolver — `get_space("dev")` works.
 
         The single-space GET is the only read that carries
-        `generalChatObjectId` — `list_spaces()` rows omit it by
-        design. The wire returns the row bare (no envelope)."""
-        return self._call("get", f"/v1/spaces/{space}")
+        `generalChatObjectId` (+ agentConfig/agentSecrets ids) —
+        `list_spaces()` rows omit them by design. Sync internals are
+        trimmed like list_spaces (`raw=True` for the wire row)."""
+        r = self._call("get", f"/v1/spaces/{space}")
+        return r if raw else _trim_space_row(r)
 
     def general_chat(self, space):
         """The space's canonical chat id (its `generalChatObjectId`).
@@ -633,7 +689,7 @@ class _Client:
         return self.get_space(space)["generalChatObjectId"]
 
     def create_space(self, name, description=None):
-        """Create a new top-level space; returns the full single-space row.
+        """Create a new top-level space; returns its (trimmed) row.
 
         `id` is the new space id, and `generalChatObjectId` its
         derived general chat (every space has exactly one; write chat
@@ -644,7 +700,9 @@ class _Client:
         body = {"name": name, "spaceType": "anytype.space"}
         if description:
             body["description"] = description
-        return self._call("post", "/v1/spaces", body)
+        r = self._call("post", "/v1/spaces", body)
+        self._spaces_cache = None    # new space -> refresh the name catalog
+        return _trim_space_row(r)
 
     def get_ui_context(self, space):
         """The user's current view — the `ui_context` pointer any-ui keeps.
@@ -929,100 +987,104 @@ def _c():
 
 
 def _sid(sc):
-    # id shape is server policy — the client only rejects what cannot
-    # be a space ref (empty / whitespace-bearing strings are queries or
-    # prose that landed in the spaceConfig slot)
-    if isinstance(sc, str) and sc and all(not ch.isspace() for ch in sc):
+    # Shape guard only — string content (id vs name) is judged by
+    # _resolve_space against the live space list, so names may carry
+    # whitespace. Rejected here: what cannot be a space ref at all.
+    if isinstance(sc, str) and sc.strip():
         return sc
     if isinstance(sc, dict):
         sid = sc.get("spaceId") or sc.get("id")
         if isinstance(sid, str) and sid:
             return sid
     raise TypeError(
-        "spaceConfig (the FIRST argument) must name a space: a space id "
-        "string, a list_spaces() row, or a bound cell global "
+        "spaceConfig (the FIRST argument) must name a space: a space "
+        "NAME or id string, a list_spaces() row, or a bound cell global "
         f"(currentUserSpace, baoSpaceConfig) — got {sc!r}"[:300])
+
+
+def _space(sc):
+    return _c()._resolve_space(_sid(sc))
 
 
 @span("any.create_object", kind="mutator")  # noqa: F821 - guest global
 def create_object(spaceConfig, body):
-    return _c().create_object(_sid(spaceConfig), body)
+    return _c().create_object(_space(spaceConfig), body)
 
 
 @span("any.update_object", kind="mutator")  # noqa: F821 - guest global
 def update_object(spaceConfig, object_id, body):
-    return _c().update_object(_sid(spaceConfig), object_id, body)
+    return _c().update_object(_space(spaceConfig), object_id, body)
 
 
 @span("any.delete_object", kind="mutator")  # noqa: F821 - guest global
 def delete_object(spaceConfig, object_id):
-    return _c().delete_object(_sid(spaceConfig), object_id)
+    return _c().delete_object(_space(spaceConfig), object_id)
 
 
 @span("any.query_objects", kind="getter")  # noqa: F821 - guest global
 def query_objects(spaceConfig, *, normalize=True, **opts):
-    return _c().query_objects(_sid(spaceConfig), normalize=normalize, **opts)
+    return _c().query_objects(_space(spaceConfig), normalize=normalize, **opts)
 
 
 @span("any.list_programs", kind="getter")  # noqa: F821 - guest global
 def list_programs(spaceConfig, tools_only=False):
-    return _c().list_programs(_sid(spaceConfig), tools_only)
+    return _c().list_programs(_space(spaceConfig), tools_only)
 
 
 @span("any.query", kind="getter")  # noqa: F821 - guest global
 def query(spaceConfig, object_id, dataset, **opts):
-    return _c().query(_sid(spaceConfig), object_id, dataset, **opts)
+    return _c().query(_space(spaceConfig), object_id, dataset, **opts)
 
 
 @span("any.modify", kind="mutator")  # noqa: F821 - guest global
 def modify(spaceConfig, body):
-    return _c().modify(_sid(spaceConfig), body)
+    return _c().modify(_space(spaceConfig), body)
 
 
 @span("any.upsert_record", kind="mutator")  # noqa: F821 - guest global
 def upsert_record(spaceConfig, object_id, dataset, record_id, value):
-    return _c().upsert_record(_sid(spaceConfig), object_id, dataset,
+    return _c().upsert_record(_space(spaceConfig), object_id, dataset,
                               record_id, value)
 
 
 @span("any.aggregate", kind="getter")  # noqa: F821 - guest global
 def aggregate(spaceConfig, pipeline):
-    return _c().aggregate(_sid(spaceConfig), pipeline)
+    return _c().aggregate(_space(spaceConfig), pipeline)
 
 
 @span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
 def get_markdown(spaceConfig, object_id):
-    return _c().get_markdown(_sid(spaceConfig), object_id)
+    return _c().get_markdown(_space(spaceConfig), object_id)
 
 
 @span("any.put_markdown", kind="mutator")  # noqa: F821 - guest global
 def put_markdown(spaceConfig, object_id, content):
-    return _c().put_markdown(_sid(spaceConfig), object_id, content)
+    return _c().put_markdown(_space(spaceConfig), object_id, content)
 
 
 @span("any.edit_markdown", kind="mutator")  # noqa: F821 - guest global
 def edit_markdown(spaceConfig, object_id, edits):
-    return _c().edit_markdown(_sid(spaceConfig), object_id, edits)
+    return _c().edit_markdown(_space(spaceConfig), object_id, edits)
 
 
 @span("any.append_markdown", kind="mutator")  # noqa: F821 - guest global
 def append_markdown(spaceConfig, object_id, content):
-    return _c().append_markdown(_sid(spaceConfig), object_id, content)
+    return _c().append_markdown(_space(spaceConfig), object_id, content)
 
 
 @span("any.list_spaces", kind="getter")  # noqa: F821 - guest global
-def list_spaces():
-    return _c().list_spaces()
+def list_spaces(raw=False):
+    return _c().list_spaces(raw)
 
 
 @span("any.get_space", kind="getter")  # noqa: F821 - guest global
-def get_space(spaceConfig):
-    return _c().get_space(_sid(spaceConfig))
+def get_space(spaceConfig, raw=False):
+    return _c().get_space(_space(spaceConfig), raw)
 
 
 @span("any.general_chat", kind="getter")  # noqa: F821 - guest global
 def general_chat(spaceConfig):
-    return _c().general_chat(_sid(spaceConfig))
+    return _c().general_chat(_space(spaceConfig))
 
 
 @span("any.create_space", kind="mutator")  # noqa: F821 - guest global
@@ -1032,73 +1094,73 @@ def create_space(name, description=None):
 
 @span("any.get_ui_context", kind="getter")  # noqa: F821 - guest global
 def get_ui_context(spaceConfig):
-    return _c().get_ui_context(_sid(spaceConfig))
+    return _c().get_ui_context(_space(spaceConfig))
 
 
 @span("any.list_types", kind="getter")  # noqa: F821 - guest global
 def list_types(spaceConfig):
-    return _c().list_types(_sid(spaceConfig))
+    return _c().list_types(_space(spaceConfig))
 
 
 @span("any.list_properties", kind="getter")  # noqa: F821 - guest global
 def list_properties(spaceConfig, type_key):
-    return _c().list_properties(_sid(spaceConfig), type_key)
+    return _c().list_properties(_space(spaceConfig), type_key)
 
 
 @span("any.create_type", kind="mutator")  # noqa: F821 - guest global
 def create_type(spaceConfig, body):
-    return _c().create_type(_sid(spaceConfig), body)
+    return _c().create_type(_space(spaceConfig), body)
 
 
 @span("any.add_property", kind="mutator")  # noqa: F821 - guest global
 def add_property(spaceConfig, type_key, body):
-    return _c().add_property(_sid(spaceConfig), type_key, body)
+    return _c().add_property(_space(spaceConfig), type_key, body)
 
 
 @span("any.append_turn", kind="mutator")  # noqa: F821 - guest global
 def append_turn(spaceConfig, chat_id, body):
-    return _c().append_turn(_sid(spaceConfig), chat_id, body)
+    return _c().append_turn(_space(spaceConfig), chat_id, body)
 
 
 @span("any.create_chunk", kind="mutator")  # noqa: F821 - guest global
 def create_chunk(spaceConfig, chat_id, body):
-    return _c().create_chunk(_sid(spaceConfig), chat_id, body)
+    return _c().create_chunk(_space(spaceConfig), chat_id, body)
 
 
 @span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
 def chat_send(spaceConfig, chat_id, body):
-    return _c().chat_send(_sid(spaceConfig), chat_id, body)
+    return _c().chat_send(_space(spaceConfig), chat_id, body)
 
 
 @span("any.search", kind="getter")  # noqa: F821 - guest global
 def search(spaceConfig, query, scopes=None, limit=None, mode=None,
            enrich=True):
-    return _c().search(_sid(spaceConfig), query, scopes, limit, mode, enrich)
+    return _c().search(_space(spaceConfig), query, scopes, limit, mode, enrich)
 
 
 @span("any.backlinks", kind="getter")  # noqa: F821 - guest global
 def backlinks(spaceConfig, object_id):
-    return _c().backlinks(_sid(spaceConfig), object_id)
+    return _c().backlinks(_space(spaceConfig), object_id)
 
 
 @span("any.get_brain", kind="getter")  # noqa: F821 - guest global
 def get_brain(spaceConfig):
-    return _c().get_brain(_sid(spaceConfig))
+    return _c().get_brain(_space(spaceConfig))
 
 
 @span("any.create_memory", kind="mutator")  # noqa: F821 - guest global
 def create_memory(spaceConfig, fields):
-    return _c().create_memory(_sid(spaceConfig), fields)
+    return _c().create_memory(_space(spaceConfig), fields)
 
 
 @span("any.evolve_memory", kind="mutator")  # noqa: F821 - guest global
 def evolve_memory(spaceConfig, item_id, fields):
-    return _c().evolve_memory(_sid(spaceConfig), item_id, fields)
+    return _c().evolve_memory(_space(spaceConfig), item_id, fields)
 
 
 @span("any.delete_memory", kind="mutator")  # noqa: F821 - guest global
 def delete_memory(spaceConfig, item_id):
-    return _c().delete_memory(_sid(spaceConfig), item_id)
+    return _c().delete_memory(_space(spaceConfig), item_id)
 
 
 # lift the method docstrings onto the public functions — ONE authored

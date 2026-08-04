@@ -44,6 +44,8 @@ def fake_any(capture, *, memory=(), turns=(), chunks=()):
         assert name.startswith("http."), name
         path = payload["url"].removeprefix("http://any")
         body = payload.get("json")
+        if path.endswith("/v1/spaces"):   # name-resolution plumbing (§8):
+            return _reply(200, {"spaces": []})   # uncaptured, indices stable
         capture.append((name.removeprefix("http.").upper(), path, body))
         if path.endswith("/search"):
             return _reply(200, {"hits": [HIT], "mode": "hybrid", "vectorStatus": "used"})
@@ -185,6 +187,8 @@ def test_neighbors_unknown_object_is_empty():
 def test_neighbors_tolerates_unqueryable_type_group():
     def fx(name, payload):
         path = payload["url"]
+        if path.endswith("/v1/spaces"):
+            return _reply(200, {"spaces": []})   # name-resolution plumbing (§8)
         if path.endswith("/objects/query"):
             return _reply(200, {"records": [{"id": "o", "ghost": {"p": "x"}}]})
         if path.endswith("/backlinks"):
@@ -197,6 +201,8 @@ def test_neighbors_backlinks_route_missing_degrades_empty():
     # pre-backlinks server: the route 404s with request.not_found —
     # neighbors still answers with forward refs and empty backlinks
     def fx(name, payload):
+        if payload["url"].endswith("/v1/spaces"):
+            return _reply(200, {"spaces": []})   # name-resolution plumbing (§8)
         if payload["url"].endswith("/objects/query"):
             return _reply(200, {"records": []})
         return _reply(404, {"error": {"code": "request.not_found", "message": "Not Found"}})
