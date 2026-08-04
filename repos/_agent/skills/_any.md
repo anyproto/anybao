@@ -7,8 +7,9 @@ type) unless they explicitly say otherwise. Objects are the default
 unit of work.
 
 Core mechanics (import once: `c = use("agent:any@v1")` — a flat module,
-every space-scoped call takes a spaceConfig first (`currentUserSpace`,
-`baoSpaceConfig`, a space id, a `list_spaces()` row). In cell code
+every space-scoped call takes a spaceConfig first: a space NAME
+("dev"), `currentUserSpace`, `baoSpaceConfig`, a space id, or a
+`list_spaces()` row. In cell code
 always qualify harness modules with the `agent:` overlay alias;
 unqualified `use("any@v1")` resolves only in your working space and
 fails in the standard overlay setup, ADR-004 §2):

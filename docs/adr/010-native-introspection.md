@@ -198,6 +198,17 @@ prevent, caused by the one place the renderer couldn't see.
   or `id` (a `list_spaces()` row) — both pass through unchanged, so
   query results and bound globals are directly usable. Account-level
   functions (`list_spaces`, `create_space`) take none.
+  **Amended 2026-08-04 (dev task A20)**: the string form is a space
+  id or NAME — spaces resolve by name the way types resolve by xKey:
+  a memoized per-run `list_spaces` catalog, exact then casefold-unique
+  match over active spaces, refresh-once-on-miss; an unknown name
+  errors listing every space, an ambiguous one lists the collisions.
+  Id-shaped strings skip the catalog; an empty catalog (degenerate
+  envs) passes the string through. `get_space("dev")` doubles as the
+  explicit resolver. Space rows are TRIMMED to model-usable fields —
+  push-notification key material, `settings`, index pointers, icon,
+  author hash never enter model context (`raw=True` returns wire
+  rows).
 - **Omission errors transparently.** A first argument that cannot be a
   space ref (empty or whitespace-bearing string — prose that landed in
   the spaceConfig slot — or a non-string non-mapping) raises a

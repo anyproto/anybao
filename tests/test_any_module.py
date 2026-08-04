@@ -745,9 +745,14 @@ def test_spaceconfig_accepts_id_row_and_ui_context_shapes():
 
 
 def test_spaceconfig_misuse_errors_transparently():
-    g = load(wire(config={"any.base_url": "http://any"}))
-    with pytest.raises(TypeError, match="currentUserSpace"):
-        g["search"]("llm proxy", "q")       # query landed in the spaceConfig slot
+    g = load(wire(config={"any.base_url": "http://any"},
+                  replies={"/v1/spaces": {"spaces": [
+                      {"id": "sp1", "name": "bao", "status": "active"}]}}))
+    # query landed in the spaceConfig slot -> resolved as a NAME, fails
+    # loud with the space list
+    with pytest.raises(ValueError,
+                       match='no space named "llm proxy" — spaces: "bao"'):
+        g["search"]("llm proxy", "q")
     with pytest.raises(TypeError, match="spaceConfig"):
         g["list_types"](None)
 
@@ -795,3 +800,74 @@ def test_program_group_paths_still_pass():
     client(fx).query_objects("s1", filter={"program.any_tool": True})
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
     assert body["filter"] == {"program.any_tool": True}
+
+
+# --- space-name resolution + row trim (ADR-010 §8 / A20) -----------------------
+
+_SPACES = {"/v1/spaces": {"spaces": [
+    {"id": "bafySPdev0000000000000.sfx", "name": "dev", "status": "active",
+     "ownRole": "owner", "push": {"encKey": "SECRET"}},
+    {"id": "bafySPlib0000000000000.sfx", "name": "library", "status": "active",
+     "spaceIndexObjectId": "idx1", "settings": {"k": 1}},
+    {"id": "bafySPold0000000000000.sfx", "name": "old", "status": "deleted"}]}}
+
+
+def test_space_name_resolves_to_id_on_the_wire():
+    fx = wire(replies={**_SPACES, "/types": {"types": []}},
+              config={"any.base_url": "http://any"})
+    g = load(fx)
+    g["list_types"]("dev")
+    g["list_types"]("LIBRARY")            # casefold-unique match
+    paths = [p for _, p, _ in fx.calls]
+    assert "/v1/spaces/bafySPdev0000000000000.sfx/types" in paths
+    assert "/v1/spaces/bafySPlib0000000000000.sfx/types" in paths
+    assert paths.count("/v1/spaces") == 1          # catalog memoized
+
+
+def test_space_name_unknown_and_inactive_fail_loud():
+    fx = wire(replies=_SPACES, config={"any.base_url": "http://any"})
+    g = load(fx)
+    with pytest.raises(ValueError,
+                       match='no space named "devz" — spaces: "dev", "library"'):
+        g["list_types"]("devz")
+    with pytest.raises(ValueError, match='no space named "old"'):
+        g["list_types"]("old")            # deleted spaces don't resolve
+
+
+def test_space_name_ambiguity_fails_loud():
+    fx = wire(replies={"/v1/spaces": {"spaces": [
+        {"id": "a.aaaaaaaaaaaaaaaaaaaaaa", "name": "dev", "status": "active"},
+        {"id": "b.bbbbbbbbbbbbbbbbbbbbbb", "name": "dev", "status": "active"}]}},
+        config={"any.base_url": "http://any"})
+    with pytest.raises(ValueError, match="ambiguous"):
+        load(fx)["list_types"]("dev")
+
+
+def test_id_shaped_spaceconfig_skips_the_catalog():
+    fx = wire(replies={"/types": {"types": []}},
+              config={"any.base_url": "http://any"})
+    load(fx)["list_types"](SID)
+    assert [p for _, p, _ in fx.calls] == [f"/v1/spaces/{SID}/types"]
+
+
+def test_space_rows_are_trimmed_push_never_leaks():
+    fx = wire(replies=_SPACES, config={"any.base_url": "http://any"})
+    g = load(fx)
+    rows = g["list_spaces"]()
+    assert all("push" not in r and "settings" not in r
+               and "spaceIndexObjectId" not in r for r in rows)
+    assert rows[0] == {"id": "bafySPdev0000000000000.sfx", "name": "dev",
+                       "status": "active", "ownRole": "owner"}
+    raw = g["list_spaces"](raw=True)
+    assert raw[0]["push"] == {"encKey": "SECRET"}   # escape hatch
+
+
+def test_get_space_trims_but_keeps_derived_object_ids():
+    fx = wire(replies={"/v1/spaces": {"spaces": []},
+                       "/spaces/s1": {"id": "s1", "generalChatObjectId": "chat9",
+                                      "push": {"encKey": "SECRET"},
+                                      "agentConfigObjectId": "cfg1"}},
+              config={"any.base_url": "http://any"})
+    r = load(fx)["get_space"]("s1")
+    assert r == {"id": "s1", "generalChatObjectId": "chat9",
+                 "agentConfigObjectId": "cfg1"}

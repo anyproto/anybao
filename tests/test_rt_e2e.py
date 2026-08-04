@@ -59,6 +59,10 @@ class FakeBackends(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # compose_system reads the space at boot: type catalog + brain
+        if self.path.endswith("/v1/spaces"):
+            # empty catalog -> space-name resolution passes strings
+            # through (degenerate-env rule, ADR-010 §8)
+            return self._reply({"spaces": []})
         if self.path.endswith("/types"):
             return self._reply({"types": []})
         if self.path.endswith("/properties"):

@@ -76,8 +76,10 @@ with `help(handle)`. Never name a module `any` — that shadows the
 builtin `any()`; the convention is `c = use("agent:any@v1")`.
 
 - **spaceConfig — the first argument of every space-scoped `any@v1`
-  call.** Pass a space id string, a `list_spaces()` row, or a bound
-  cell global: `currentUserSpace` (the user's live view — what "here" /
+  call.** Pass a space NAME (`c.search("dev", …)` — resolved against
+  the live space list; an unknown or ambiguous name errors listing
+  every space), a space id, a `list_spaces()` row, or a bound cell
+  global: `currentUserSpace` (the user's live view — what "here" /
   "this page" means; `{spaceId, objectId?, view?, updatedAt}`, or None
   when the UI never reported) and `baoSpaceConfig` (`{spaceId, chatId}`
   of your home space). A wrong or omitted spaceConfig raises a
