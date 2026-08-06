@@ -23,12 +23,14 @@ runtime/target/release/anyrt deploy --addr http://127.0.0.1:7001 --space bao
 Look for the changed unit in the output (`"any@v1": "updated"`,
 `"_any": "updated"`).
 
-**Caveat — system prompt vs programs.** `deploy` refreshes program code
-live, but the serve's **system prompt** (composed from the deployed skills at
-startup) is NOT reloaded. If the change is to skill/system-prompt TEXT
-that must reach the model's context, restart the serve in the `rt` pane
-(`tmux send-keys -t <pane> C-c` then re-run its `anyrt serve …` command).
-Program-behavior changes (e.g. an `any@v1` method) need no restart.
+**No restart needed for programs OR prompt text.** The system prompt is
+composed guest-side by `toolcaller` at the start of EVERY conversation
+(skills, tool docs, user skills — all queried live from the space), so
+deployed skill/prompt-text changes reach the model on the next message,
+same as program changes (verified 2026-08-06: a skill edit showed up in
+the very next run's `--system` with no restart). Restart the serve (the
+`rt` tmux pane) only when the frozen-at-startup things change: the
+`anyrt` binary itself, config/secrets, or overlay membership.
 
 ## 2. Text bao a message that exercises the change
 
