@@ -547,9 +547,11 @@ struct LsRow {
 }
 
 /// Status/duration/turns mirror `render`; the title is turn 1's user
-/// text (the "title from chat"), mined exactly the way `render` mines
-/// the first turn's user delta.
-fn ls_row(records: &[Value]) -> LsRow {
+/// text (the "title from chat"), mined from the llm request INPUT like
+/// `render` (a failed turn still recorded its input). Inputs over the
+/// spill threshold live in the `.jsonl.blobs` sidecar — resolved
+/// lazily via `path`, so only spilled traces pay the sidecar read.
+fn ls_row(records: &[Value], path: Option<&Path>) -> LsRow {
     let (status, dur) = match records.iter().rev().find(|r| r["kind"] == "cell") {
         Some(r) => (
             if r["interrupted"] == true {
@@ -574,7 +576,17 @@ fn ls_row(records: &[Value]) -> LsRow {
         .first()
         .and_then(|(begin, end)| {
             let (b, e) = seq_range(begin, *end);
-            let (req, _) = llm_exchange(&between(records, b, e))?;
+            let inner = between(records, b, e);
+            let post = inner
+                .iter()
+                .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
+            let input = if post["input"]["__blob"].is_string() {
+                let blobs = load_blobs(path?).ok()?;
+                resolve_blobs(post["input"].clone(), &blobs)
+            } else {
+                post["input"].clone()
+            };
+            let req = &input["json"];
             user_delta(req, last_text_user_index(req))
                 .into_iter()
                 .next()
@@ -609,7 +621,7 @@ pub fn list(dir: &Path, program: Option<&str>, limit: usize) -> anyhow::Result<S
     let mut rows = Vec::new();
     for (mtime, path) in &paths {
         let row = match load_trace(path) {
-            Ok(records) if !records.is_empty() => ls_row(&records),
+            Ok(records) if !records.is_empty() => ls_row(&records, Some(path)),
             _ => LsRow {
                 id: path
                     .file_stem()
@@ -1375,7 +1387,7 @@ mod tests {
 
     #[test]
     fn ls_row_titles_by_turn_1_user_text() {
-        let row = ls_row(&one_turn_trace(true));
+        let row = ls_row(&one_turn_trace(true), None);
         assert_eq!(row.id, "run_abc");
         assert_eq!(row.program, "toolcaller@v1");
         assert_eq!(row.status, "ok");
@@ -1386,16 +1398,41 @@ mod tests {
 
     #[test]
     fn ls_row_failed_run() {
-        assert_eq!(ls_row(&one_turn_trace(false)).status, "FAILED");
+        assert_eq!(ls_row(&one_turn_trace(false), None).status, "FAILED");
     }
 
     #[test]
     fn ls_row_incomplete_without_terminal_cell() {
         let mut records = one_turn_trace(true);
         records.pop();
-        let row = ls_row(&records);
+        let row = ls_row(&records, None);
         assert_eq!(row.status, "incomplete");
         assert_eq!(row.dur, "?");
+    }
+
+    #[test]
+    fn ls_row_titles_spilled_input_via_sidecar() {
+        // A >64KB llm request is spilled to the .jsonl.blobs sidecar and
+        // replaced with a {__blob, bytes} ref — the title must survive
+        // by lazily resolving the sidecar (the 82-message boot windows
+        // of 2026-08-06 hit exactly this).
+        let mut records = one_turn_trace(true);
+        let input = records[2]["input"].take();
+        let text = input.to_string();
+        records[2]["input"] = json!({"__blob": "sha256:t1", "bytes": text.len()});
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run_abc.jsonl");
+        let lines: Vec<String> = records.iter().map(|r| r.to_string()).collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        std::fs::write(
+            path.with_extension("jsonl.blobs"),
+            json!({"hash": "sha256:t1", "data": text}).to_string() + "\n",
+        )
+        .unwrap();
+        let row = ls_row(&records, Some(&path));
+        assert_eq!(row.title, "what's the weather in Berlin?");
+        // and without a sidecar the row still renders, just untitled
+        assert_eq!(ls_row(&records, None).title, "");
     }
 
     #[test]
@@ -1407,7 +1444,7 @@ mod tests {
                    "error": null, "interrupted": false,
                    "metrics": {"duration_ms": 100, "fuel_used": 1}}),
         ];
-        let row = ls_row(&records);
+        let row = ls_row(&records, None);
         assert_eq!(row.turns, 0);
         assert_eq!(row.title, "");
     }
