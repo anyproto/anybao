@@ -1,13 +1,16 @@
 ---
 name: any-dev
-description: Interact with the local any server (spaces, types, objects, memory, search) the way the agent does — a scratch guest program run through anyrt with use("any@v1").client(). Use whenever the user asks to create, inspect, or modify things in any/Anytype spaces from this repo, or to reproduce agent behavior against the server.
+description: Interact with the local any server (spaces, types, objects, memory, search) the way the agent does — a scratch guest program run through anyrt calling the flat use("any@v1") surface. Use whenever the user asks to create, inspect, or modify things in any/Anytype spaces from this repo, or to reproduce agent behavior against the server.
 ---
 
 # any-dev — work with `any` through anyrt, like the agent does
 
 All interactions go through the **effect boundary**: a scratch guest
-program executed by `anyrt run`, calling `use("any@v1").client()` —
-the exact client the agent uses. Never mutate the server with raw
+program executed by `anyrt run`, calling the flat `use("any@v1")`
+module surface (ADR-010 §8; there is NO `.client()` — that shape died
+with the §8 amendment) — the exact functions the agent calls. Every
+function takes `spaceConfig` first: a space NAME or id string, or a
+`list_spaces()` row. Never mutate the server with raw
 `curl` (reserve it for verifying what the UI would see). Every run
 leaves a trace in `traces/`, so your own interactions are debuggable
 with the same tools as the agent's.
@@ -40,8 +43,8 @@ modules (NameError taught this, 2026-08-01):
 
 ```python
 def main(args):
-    c = use("any@v1").client()
-    return {"spaces": c.list_spaces()}   # return data; don't print
+    a = use("any@v1")                    # flat module — no .client()
+    return {"spaces": a.list_spaces()}   # return data; don't print
 ```
 
 Run it (pass inputs via `--args`, never bake secrets into the file):
@@ -85,8 +88,8 @@ upstream `~/any/any` candidate, not something to paper over silently:
   the **type id**, not its xKey. Reads come back id-keyed too.
 - Object-kind property values take `{"id": <objectId>}` — not a bare
   string, not a list.
-- No `create_space` in the client — `c._call("post", "/v1/spaces",
-  {"name": ...})` (schema: `api.SpaceCreateRequest`).
+- ~~No `create_space` in the client~~ — obsolete: the flat surface has
+  `create_space(name, description=None)` (since ADR-010 §8).
 
 ## Hard-won rules
 
