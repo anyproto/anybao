@@ -452,19 +452,24 @@ class _Client:
     def update_object(self, space, object_id, body):
         """Update an object's name / editor body / properties by xKey.
 
-        `body`: {"name"?, "markdown"?/"body"?, "<typeXKey>": {prop:
-        value}, …} — same nested type-group shape as create_object. Property
-        keys resolve to ids; groups are resolved BEFORE any write so a bad
-        key can't land a partial update. Returns {"objectId"}."""
+        `body`: {"name"?, "description"?, "markdown"?/"body"?,
+        "<typeXKey>": {prop: value}, …} — same nested type-group shape as
+        create_object (top-level name/description route into the `any`
+        group, parity with create_object). Property keys resolve to ids;
+        groups are resolved BEFORE any write so a bad key can't land a
+        partial update. Returns {"objectId"}."""
         body = dict(body or {})
         markdown = body.pop("markdown", None)
         body_md = body.pop("body", None)
         if markdown is None:
             markdown = body_md
         name = body.pop("name", None)
+        description = body.pop("description", None)
         groups = self._resolve_prop_groups(space, body)   # raises before write
         if name is not None:
             groups.setdefault("any", {}).setdefault("name", name)
+        if description is not None:
+            groups.setdefault("any", {}).setdefault("description", description)
         if markdown is not None:
             self.put_markdown(space, object_id, markdown)
         for tid, patch in groups.items():

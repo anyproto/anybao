@@ -356,14 +356,15 @@ def test_get_ui_context_none_when_type_absent():
 def test_update_object_writes_name_markdown_and_prop_groups():
     fx = wire(replies=_CAT)
     r = client(fx).update_object("s1", "o1", {
-        "name": "Renamed", "markdown": "# body",
-        "task": {"status": "done"}})
+        "name": "Renamed", "description": "now with mangoes",
+        "markdown": "# body", "task": {"status": "done"}})
     assert r == {"objectId": "o1"}
     posts = [(p, b) for v, p, b in fx.calls if v in ("POST", "PUT")]
     assert ("/v1/spaces/s1/objects/o1/editor/markdown", {"content": "# body"}) in posts
-    # name -> set/any patch; property group -> set/<typeId> patch
+    # name/description -> set/any patch (parity with create_object);
+    # property group -> set/<typeId> patch
     assert ("/v1/spaces/s1/properties/o1/set/any",
-            {"patch": {"name": "Renamed"}}) in posts
+            {"patch": {"name": "Renamed", "description": "now with mangoes"}}) in posts
     assert ("/v1/spaces/s1/properties/o1/set/bafyTASK",
             {"patch": {"bafySTATUS": "done"}}) in posts
 
