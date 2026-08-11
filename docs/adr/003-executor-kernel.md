@@ -280,6 +280,19 @@ loop" problem disappears: there is no C on the guest side).
   **deterministic and replayable cutoffs** (same cell + inputs = same
   fuel), and leftover fuel is a free compute-cost metric for `meta`.
   ~few % overhead.
+
+  *Amended 2026-08-11 (gmail-sync sizing, ADR-012):* the per-run
+  budget is **50B** (was 5B ≈ 2s of pure compute — starved legitimate
+  data jobs; 50B ≈ tens of seconds, still a hard runaway ceiling).
+  Exhaustion surfaces as a typed **`FuelExhausted`** error whose
+  message says what works (split into smaller chunks) — the trap is
+  deterministic, so a verbatim retry can never succeed, and serve
+  forwards the typed text into the chat so the next turn's model acts
+  on it. Long jobs avoid the cliff cooperatively: the
+  **`fuel.state`** syscall returns `{remaining, budget}` (refreshed by
+  the epoch callback, ≤ EPOCH_TICK_MS stale — a checkpoint signal,
+  not an exact meter; recorded like any effect, so replay-stable) —
+  batch loops check it and checkpoint + exit before exhaustion.
 - **Epoch interruption** — one global engine counter; compiled code
   does a load+compare against the store's deadline at function entries
   and **loop back-edges** (nearly free). A ticker thread bumps the

@@ -18,7 +18,11 @@ use wasmtime_wasi::p2::add_to_linker_sync;
 use wasmtime_wasi::{ResourceTable, WasiCtxBuilder};
 
 pub const EPOCH_TICK_MS: u64 = 10;
-pub const FUEL_PER_CELL: u64 = 5_000_000_000;
+/// Per-run compute budget (ADR-003 §2 fuel; bumped 5B→50B 2026-08-11:
+/// ≈20s of pure compute — data jobs like mail sync parse megabytes of
+/// JSON per tick and 5B starved a ~300-message batch run while still
+/// being hours away from the runaway-loop ceiling fuel exists for).
+pub const FUEL_PER_CELL: u64 = 50_000_000_000;
 
 pub struct Host {
     pub wasi: wasmtime_wasi::WasiCtx,
@@ -185,10 +189,19 @@ pub fn run_program(
         },
     );
     store.set_fuel(FUEL_PER_CELL)?;
+    // Live fuel gauge for the `fuel.state` syscall: host fns can't
+    // reach the store, but the epoch callback can — it refreshes the
+    // shared gauge every tick (≤EPOCH_TICK_MS staleness, fine for
+    // checkpoint-before-exhaustion decisions).
+    let gauge = store.data().broker.fuel_gauge.clone();
+    gauge.store(FUEL_PER_CELL, Ordering::Relaxed);
     store.set_epoch_deadline(1);
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
     let flag = interrupt.clone();
-    store.epoch_deadline_callback(move |_ctx| {
+    store.epoch_deadline_callback(move |ctx| {
+        if let Ok(fuel) = ctx.get_fuel() {
+            gauge.store(fuel, Ordering::Relaxed);
+        }
         if flag.load(Ordering::Relaxed) {
             return Err(wasmtime::Error::msg("interrupted"));
         }
@@ -235,9 +248,25 @@ pub fn run_program(
         .filter(|e| !e.is_null())
         .cloned()
         .or_else(|| {
-            raw.as_ref()
-                .err()
-                .map(|e| json!({"type": "Trap", "message": e.to_string()}))
+            raw.as_ref().err().map(|e| {
+                // Out-of-fuel is deterministic (same cell + inputs =
+                // same trap): retrying unchanged can never succeed, so
+                // the message teaches the one recovery that works.
+                if matches!(
+                    e.downcast_ref::<wasmtime::Trap>(),
+                    Some(wasmtime::Trap::OutOfFuel)
+                ) {
+                    json!({"type": "FuelExhausted",
+                           "message": format!(
+                               "run exceeded its compute budget ({FUEL_PER_CELL} fuel). \
+                                Retrying the same work will hit the same wall — split it \
+                                into smaller chunks (fewer items per call/batch) and, in \
+                                long loops, check effect(\"fuel.state\") to checkpoint \
+                                and stop before the budget runs out.")})
+                } else {
+                    json!({"type": "Trap", "message": e.to_string()})
+                }
+            })
         });
     let mut host = store.into_data();
     host.broker.cell_done(

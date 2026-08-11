@@ -836,11 +836,32 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
         );
         if let Ok((trace_ref, rr)) = &result {
             if rr.status != "ok" {
+                // The typed error goes INTO the chat: the next turn
+                // boots with this message in its window, so the model
+                // can act on it (FuelExhausted's text says to redo the
+                // work in smaller chunks — a bare "something broke"
+                // teaches nothing).
+                let detail = rr.error.as_deref().map(|raw| {
+                    serde_json::from_str::<Value>(raw)
+                        .ok()
+                        .and_then(|v| {
+                            Some(format!(
+                                "{}: {}",
+                                v["type"].as_str()?,
+                                v["message"].as_str()?
+                            ))
+                        })
+                        .unwrap_or_else(|| raw.to_string())
+                });
+                let text = match detail {
+                    Some(d) => format!("Something broke mid-run (trace {trace_ref}): {d}"),
+                    None => format!("Something broke mid-run (trace {trace_ref})."),
+                };
                 let _ = ctx.client.chat_send(
                     &ctx.space,
                     &ctx.chat,
                     &json!({
-                    "text": format!("Something broke mid-run (trace {trace_ref})."),
+                    "text": text,
                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                 );
             }

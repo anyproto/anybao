@@ -86,6 +86,10 @@ pub struct Broker {
     /// Shared: the serve watcher pushes cross-thread; drained by the
     /// mailbox.drain syscall.
     pub mailbox: Arc<Mutex<VecDeque<Value>>>,
+    /// Remaining fuel, refreshed by the runner's epoch callback every
+    /// tick (host fns can't reach the store). Read by `fuel.state`;
+    /// ≤EPOCH_TICK_MS stale — a checkpoint signal, not an exact meter.
+    pub fuel_gauge: Arc<std::sync::atomic::AtomicU64>,
     /// Shared interrupt flag for the serve loop (exposed for wiring;
     /// not yet consulted by the pipeline).
     #[allow(dead_code)] // consulted by the serve wiring in main.rs (next round)
@@ -136,6 +140,7 @@ impl Broker {
             env: BTreeMap::new(),
             programs_dir,
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
+            fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
             classifier,
             mode: Mode::Record,
@@ -525,6 +530,13 @@ impl Broker {
             }
             "time.now" => Ok(json!({"epoch": SystemTime::now()
                 .duration_since(UNIX_EPOCH).unwrap().as_secs_f64()})),
+            // Cooperative budgeting (ADR-003 §2 fuel): long jobs check
+            // remaining fuel and checkpoint + exit before exhausting —
+            // an out-of-fuel trap kills the whole run unrecoverably.
+            "fuel.state" => Ok(json!({
+                "remaining": self.fuel_gauge.load(std::sync::atomic::Ordering::Relaxed),
+                "budget": crate::runner::FUEL_PER_CELL,
+            })),
             "random.random" => {
                 // secrets-grade uniform in [0,1), mirroring the reference host
                 let mut buf = [0u8; 8];
