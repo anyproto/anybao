@@ -59,6 +59,13 @@ _QUOTE_MARKERS = ["gmail_quote", "yahoo_quoted", "moz-cite-prefix",
 _TRACKER_HOSTS = re.compile(
     r"(click|track|link|email|mailtrack|list-manage|sendgrid|mailchi|braze|"
     r"customeriomail|exacttarget|mandrillapp|awstrack|mailings?)\.", re.I)
+# per-link tracking params (LinkedIn/Google/Mailchimp vocab) — stripped
+# from EVERY href; a link that stays huge after stripping collapses to
+# its text (nobody follows a 500-char url from a note)
+_TRACKING_PARAMS = re.compile(
+    r"[?&](utm_[a-z]+|lipi|midToken|midSig|trk|trkEmail|eid|otpToken|"
+    r"gclid|fbclid|mc_[ce]id|refId|trackingId|origin|si)=[^&#]*", re.I)
+_MAX_HREF = 300
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none|max-height\s*:\s*0", re.I)
 _HEX2 = re.compile(r"[0-9a-fA-F]{2}")
 
@@ -132,11 +139,24 @@ def clean_html(html):
         if _TRACKER_HOSTS.search(_netloc(href)):
             real = _unwrap_tracking(href)
             if real != href and not _TRACKER_HOSTS.search(_netloc(real)):
-                a["href"] = real.split("?utm_")[0]
+                href = real
             else:
                 a.replace_with(a.get_text(" ", strip=True))  # untraceable → text
-        elif "utm_" in href:
-            a["href"] = re.sub(r"[?&]utm_[^&]+", "", href)
+                continue
+        href = _TRACKING_PARAMS.sub("", href).rstrip("?&")
+        base, hash_, frag = href.partition("#")
+        if "?" not in base and "&" in base:
+            base = base.replace("&", "?", 1)   # first surviving param re-anchors
+            href = base + hash_ + frag
+        if len(href) > _MAX_HREF:
+            a.replace_with(a.get_text(" ", strip=True))   # still huge → text
+            continue
+        a["href"] = href
+    # an anchor whose whole content was a (stripped) image renders as an
+    # empty [](…) / [[ artifact — unwrap it before conversion
+    for a in soup.find_all("a"):
+        if not a.get_text(strip=True):
+            a.unwrap()
     # email tables are layout, not data — cells become blocks (§4 pass 1)
     for cell in soup.find_all(["td", "th"]):
         cell.name = "div"
@@ -342,6 +362,25 @@ def _full_slice(space, state_id, state, q, cap):
     return out
 
 
+def _scope_ids(q, cap=500):
+    """Newest-first ids matching q — the membership oracle for
+    incremental adds. history.list is scope-blind (it reports EVERY
+    mailbox change, exclusions or not — seen live: a -from:linkedin.com
+    scope synced a LinkedIn mail), and q is Gmail search syntax only
+    Gmail can evaluate. New arrivals sit at the top of a scoped list,
+    so one or two pages resolve them. None = oracle unavailable."""
+    ids, token = set(), None
+    while len(ids) < cap:
+        page = _gm.list_messages(q=q, max_results=100, page_token=token)
+        if not page.get("ok"):
+            return None
+        ids |= {m["id"] for m in page.get("messages") or []}
+        token = page.get("nextPageToken")
+        if not token:
+            break
+    return ids
+
+
 def _coalesce(history):
     """History records → (added, labelChanged, deleted) id sets — always
     per message id across ALL records, never record-by-record (§2)."""
@@ -390,6 +429,15 @@ def _incremental(space, state_id, state, q):
         if rows:
             _any.delete_object(space, rows[0]["id"])
             out["deleted"] += 1
+    if added:
+        scope = _scope_ids(q)
+        if scope is None:
+            # cursor NOT advanced — better to replay this window next
+            # tick than to advance past adds we couldn't scope-check
+            return {**out, "error": "scope check failed (list_messages)",
+                    "done": False}
+        out["outOfScope"] = len(added - scope)
+        added &= scope
     if added:
         have = _existing_ids(space, added)
         fresh = [m for m in added if m not in have]

@@ -196,6 +196,32 @@ def test_clean_html_five_passes():
     assert "Jane Doe" in sig and "Jane Doe" not in md   # signature split
 
 
+def test_clean_html_strips_tracking_params_and_collapses_monsters():
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    long_tail = "&otpToken=" + "Z" * 400
+    html = ('<p><a href="https://www.linkedin.com/feed/update/urn:li:activity:74917'
+            '?origin=NET&lipi=urn%3Ali%3Apage&midToken=AQH&midSig=161&trk=eml-card'
+            '&trkEmail=eml-null&eid=ub3wz">post</a>'
+            '<a href="https://ex.com/doc?utm_source=x&gclid=1&keep=1">doc</a>'
+            f'<a href="https://ex.com/monster?body={"Q" * 400}{long_tail}">huge</a></p>')
+    md = mod.clean_html(html)["markdown"]
+    assert "midToken" not in md and "otpToken" not in md and "lipi" not in md
+    assert "(https://www.linkedin.com/feed/update/urn:li:activity:74917)" in md
+    assert "(https://ex.com/doc?keep=1)" in md      # non-tracking param kept
+    assert "monster" not in md and "huge" in md     # collapsed to its text
+
+
+def test_clean_html_unwraps_image_only_anchors():
+    # an anchor whose whole content is a (stripped) image used to render
+    # as [[ / [](…) artifacts
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    md = mod.clean_html('<a href="https://x.com/p"><img src="a.png" alt="pic"></a>'
+                        '<p>body</p>')["markdown"]
+    assert "[" not in md and "body" in md
+
+
 def test_clean_html_footer_trim_cuts_notification_tail():
     fake = FakeAny()
     mod = load(gmail_fx({}), fake)
@@ -268,7 +294,9 @@ def test_incremental_coalesces_and_applies():
         {"messagesAdded": [{"message": {"id": "mX"}}]},   # add+delete = noop
         {"messagesDeleted": [{"message": {"id": "mX"}}]},
     ]}
-    out = load(gmail_fx(raws, history=history), fake).sync_now("sp")
+    # the scope oracle: m9 is in the q's scope
+    out = load(gmail_fx(raws, pages=[{"messages": ["m9", "m1"]}],
+                        history=history), fake).sync_now("sp")
     assert out["mode"] == "incremental" and out["done"] is True
     assert out["made"] == 1 and out["deleted"] == 1 and out["labels"] == 1
     assert "o2" in fake.deleted             # hard delete applied
@@ -278,6 +306,23 @@ def test_incremental_coalesces_and_applies():
     assert label_update["email"]["label_ids"] == ["INBOX", "STARRED"]
     st = fake.state()
     assert st["cursor"] == "H200" and st["synced_count"] == 2  # +1 -1
+
+
+def test_incremental_add_outside_scope_is_skipped():
+    # history.list is scope-blind: an excluded sender's arrival shows up
+    # as messagesAdded — the scoped-list oracle keeps it out (the live
+    # LinkedIn leak, 2026-08-13)
+    raws = {"mLI": raw_msg("mLI")}
+    fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
+                            "sync_state": {"cursor": "H100", "page_token": "",
+                                           "synced_count": 3}}])
+    history = {"historyId": "H200", "history": [
+        {"messagesAdded": [{"message": {"id": "mLI"}}]}]}
+    out = load(gmail_fx(raws, pages=[{"messages": ["other1", "other2"]}],
+                        history=history), fake).sync_now("sp")
+    assert out["made"] == 0 and out["outOfScope"] == 1
+    assert "mLI" not in fake.emails
+    assert fake.state()["cursor"] == "H200"   # cursor still advances
 
 
 def test_incremental_cursor_404_resets_to_full_relist():
