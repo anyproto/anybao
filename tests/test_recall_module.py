@@ -37,9 +37,11 @@ def _reply(status, data):
     return {"status": status, "headers": {}, "body": json.dumps(data)}
 
 
-def fake_any(capture, *, memory=(), turns=(), chunks=()):
+def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
     """The server's routes over the http syscall, captured as
-    (VERB, path, json-body) like the wire."""
+    (VERB, path, json-body) like the wire. `brain` answers the
+    GET /agent/brain lazy-resolve route (None → 404, like a space
+    with no agent data)."""
     def fx(name, payload):
         assert name.startswith("http."), name
         path = payload["url"].removeprefix("http://any")
@@ -47,6 +49,11 @@ def fake_any(capture, *, memory=(), turns=(), chunks=()):
         if path.endswith("/v1/spaces"):   # name-resolution plumbing (§8):
             return _reply(200, {"spaces": []})   # uncaptured, indices stable
         capture.append((name.removeprefix("http.").upper(), path, body))
+        if path.endswith("/agent/brain"):
+            if brain is None:
+                return _reply(404, {"error": {"code": "request.not_found",
+                                              "message": "no brain"}})
+            return _reply(200, {"objectId": brain})
         if path.endswith("/search"):
             return _reply(200, {"hits": [HIT], "mode": "hybrid", "vectorStatus": "used"})
         if path.endswith("/objects/query"):
@@ -146,6 +153,37 @@ def test_by_period_skips_sources_without_object_id():
     r = build(fake_any(cap), brain_object_id="brain1")
     assert r.by_period(0, 1) == []
     assert [b["dataset"] for _, _, b in cap] == ["agent_memory_items"]  # no chat queries
+
+
+def test_binder_derives_chat_id_from_space_config_mapping():
+    cap = []
+    r = build(fake_any(cap, brain="brainX"),
+              space={"spaceId": "s1", "chatId": "chat9"})
+    r.by_period(0, 1)
+    by_dataset = {b["dataset"]: b for _, _, b in cap if b}
+    assert by_dataset["agent_turns"]["objectId"] == "chat9"
+
+
+def test_by_period_resolves_brain_lazily_once():
+    cap = []
+    r = build(fake_any(cap, brain="brainX",
+                       memory=[{"id": "m1", "validFrom": 0}]),
+              chat_object_id="chat1")
+    assert [x["id"] for x in r.by_period(0, 1)] == ["m1"]
+    r.by_period(0, 1)
+    brain_gets = [p for _, p, _ in cap if p.endswith("/agent/brain")]
+    assert len(brain_gets) == 1  # cached after the first resolve
+    by_dataset = {b["dataset"]: b for _, _, b in cap if b}
+    assert by_dataset["agent_memory_items"]["objectId"] == "brainX"
+
+
+def test_by_period_raises_when_no_source_binds():
+    import pytest
+    r = build(fake_any([]))  # bare string space, no brain in the space
+    with pytest.raises(ValueError, match="no sources"):
+        r.by_period(0, 1)
+    # search/hydrate stay usable on the same bind
+    assert r.search("q") == [HIT]
 
 
 # --- neighbors ---------------------------------------------------------------

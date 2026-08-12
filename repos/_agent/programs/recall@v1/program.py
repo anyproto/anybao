@@ -79,7 +79,21 @@ class Recall:
 
         Memory items by validFrom, turns by createdAt, chunks by
         period overlap. Merged, time-sorted, each record tagged with
-        `source` ∈ memory/turn/chunk."""
+        `source` ∈ memory/turn/chunk. The memory source self-resolves
+        via get_brain when the binder got no brain_object_id; raises
+        when NO source is bound (a silent [] read as "nothing
+        happened that week" — seen live, run_7318bebb61af44b0)."""
+        if self._brain is None:
+            try:
+                self._brain = (self._c.get_brain(self._space) or {}).get("objectId")
+            except Exception:  # no agent data in this space — source stays off
+                self._brain = ""
+        if not self._brain and not self._chat:
+            raise ValueError(
+                "by_period has no sources: no brain object in this space and "
+                "no chat_object_id bound — bind with recall(c, space, "
+                "chat_object_id=...) (a spaceConfig mapping with chatId "
+                "binds it automatically)")
         out = []
         if self._brain:
             items = self._c.query(
@@ -164,8 +178,11 @@ class Recall:
 def recall(client, space, brain_object_id=None, chat_object_id=None):
     """Bind recall to one space over an any@v1 client — then `help(r)`.
 
-    `brain_object_id` feeds the memory source of `by_period` (get it
-    from `c.get_brain(space)`), `chat_object_id` the turns/chunks
-    sources; a None id skips that source."""
+    A bare bind is fully functional: `chat_object_id` defaults from a
+    spaceConfig mapping's `chatId` (e.g. `baoSpaceConfig`), and
+    `by_period` resolves the brain object itself on first use.
+    Explicit ids override; a source that stays unresolved is skipped."""
+    if chat_object_id is None and isinstance(space, dict):
+        chat_object_id = space.get("chatId")
     return Recall(client, space, brain_object_id=brain_object_id,
                   chat_object_id=chat_object_id)
