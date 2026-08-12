@@ -104,6 +104,21 @@ def _trim_space_row(r):
             if r.get(k) not in (None, "", {})}
 
 
+def _ui_context_rank(rec):
+    group = rec.get("ui_context") or {}
+    return (group.get("updated_at") or 0, rec.get("modifiedAt") or 0)
+
+
+def _ui_context_pointer(rec):
+    if rec is None:
+        return None
+    group = rec.get("ui_context") or {}
+    return {"spaceId": group.get("space_id", ""),
+            "objectId": group.get("object_id", ""),
+            "view": group.get("view", ""),
+            "updatedAt": group.get("updated_at") or 0}
+
+
 # Builtin type namespaces whose group + property keys are already literal
 # handles (`any.name`, `any.types`, `nav.parentId`, `program.name`). They are
 # never reverse-mapped on read nor xKey-resolved on write — see the xKey
@@ -717,23 +732,44 @@ class _Client:
         {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
         check freshness before trusting — or None when the UI has never
         reported (type or pointer absent)."""
+        recs = self._ui_context_recs(space)
+        return _ui_context_pointer(recs[0] if recs else None)
+
+    # TODO: ui-context protocol rework pending — this last-modified-wins +
+    # delete-stale is a stopgap (user, 2026-08-12)
+    def _ui_context_recs(self, space):
+        """Every ui_context pointer object, freshest first.
+
+        any-ui's ensurePointerObject queries the pointer by name and
+        creates one when the query comes back empty, so racing clients
+        (and index lag right after a create) leave the space with
+        several pointers, each client then writing only to its own.
+        Rank: the protocol's own `updated_at` (client ms), server
+        `modifiedAt` breaking ties for pointers written before the
+        prop existed."""
         try:
             recs = self.query_objects(space, filter={"any.types": "ui_context"},
-                                      limit=8)   # xKey-normalized (ADR-006 §6)
+                                      limit=50)   # xKey-normalized (ADR-006 §6)
         except ValueError:
-            return None   # type absent = UI never reported in this space
-        latest, latest_at = None, 0
-        for r in recs:
-            group = r.get("ui_context") or {}
-            at = group.get("updated_at", 0) or 0
-            if latest is None or at > latest_at:
-                latest, latest_at = group, at
-        if latest is None:
-            return None
-        return {"spaceId": latest.get("space_id", ""),
-                "objectId": latest.get("object_id", ""),
-                "view": latest.get("view", ""),
-                "updatedAt": latest_at}
+            return []   # type absent = UI never reported in this space
+        return sorted(recs, key=_ui_context_rank, reverse=True)
+
+    def _prune_ui_contexts(self, space):
+        """Delete every ui_context pointer but the freshest; returns its
+        pointer (get_ui_context shape) or None.
+
+        The duplicate stopgap above, as a mutation — kept out of
+        get_ui_context so that stays a pure getter (ADR-001 §7: a
+        declared getter whose span mutates is an inconsistency). A
+        delete that fails is not worth failing a run over: the survivor
+        is returned either way."""
+        recs = self._ui_context_recs(space)
+        for r in recs[1:]:
+            try:  # noqa: SIM105 - contextlib is one more guest import for a stopgap
+                self.delete_object(space, r.get("id"))
+            except AnyError:
+                pass
+        return _ui_context_pointer(recs[0] if recs else None)
 
     # --- types & properties (catalog source) ----------------------------------
     def list_types(self, space):
@@ -1100,6 +1136,14 @@ def create_space(name, description=None):
 @span("any.get_ui_context", kind="getter")  # noqa: F821 - guest global
 def get_ui_context(spaceConfig):
     return _c().get_ui_context(_space(spaceConfig))
+
+
+# `_`-private: describe() hides it from the `## Tools` inventory — the
+# duplicate-pointer stopgap is the loop's business (toolcaller calls it
+# once per run), not a tool the model should reach for.
+@span("any.prune_ui_contexts", kind="mutator")  # noqa: F821 - guest global
+def _prune_ui_contexts(spaceConfig):
+    return _c()._prune_ui_contexts(_space(spaceConfig))
 
 
 @span("any.list_types", kind="getter")  # noqa: F821 - guest global

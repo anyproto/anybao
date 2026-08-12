@@ -645,27 +645,40 @@ def test_create_space_wire_shape_and_full_row_reply():
                                "description": "d"}
 
 
+_UI_CTX_TYPES = {
+    "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
+    "/types/any/properties": _ANY_PROPS,
+    "/types/T1/properties": {"properties": [
+        {"id": "p_s", "xKey": "space_id"},
+        {"id": "p_o", "xKey": "object_id"},
+        {"id": "p_v", "xKey": "view"},
+        {"id": "p_u", "xKey": "updated_at"}]}}
+
+
+def _ui_ctx_wire(records):
+    return wire(replies={**_UI_CTX_TYPES, "/objects/query": {"records": records}})
+
+
+_TWO_POINTERS = [
+    {"id": "o1", "T1": {"p_s": "sp1", "p_o": "ob1", "p_v": "object", "p_u": 111}},
+    {"id": "o2", "T1": {"p_s": "sp2", "p_o": "", "p_v": "grid", "p_u": 222}}]
+
+
+def _deleted(fx):
+    return [p.rsplit("/", 1)[-1] for v, p, _ in fx.calls if v == "DELETE"]
+
+
 def test_get_ui_context_resolves_props_and_picks_newest():
-    fx = wire(replies={
-        "/types": {"types": [{"id": "T1", "xKey": "ui_context"}]},
-        "/types/any/properties": _ANY_PROPS,
-        "/types/T1/properties": {"properties": [
-            {"id": "p_s", "xKey": "space_id"},
-            {"id": "p_o", "xKey": "object_id"},
-            {"id": "p_v", "xKey": "view"},
-            {"id": "p_u", "xKey": "updated_at"}]},
-        "/objects/query": {"records": [
-            {"id": "o1", "T1": {"p_s": "sp1", "p_o": "ob1",
-                                "p_v": "object", "p_u": 111}},
-            {"id": "o2", "T1": {"p_s": "sp2", "p_o": "",
-                                "p_v": "grid", "p_u": 222}}]}})
+    fx = _ui_ctx_wire(_TWO_POINTERS)
     ctx = client(fx).get_ui_context("s1")
     assert ctx == {"spaceId": "sp2", "objectId": "", "view": "grid",
                    "updatedAt": 222}
     # filters by the any.types xKey (resolved to the type id); records come
     # back xKey-normalized so the pointer props read by their slug
     q = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
-    assert q == {"filter": {"any.types": "T1"}, "limit": 8}
+    assert q == {"filter": {"any.types": "T1"}, "limit": 50}
+    # the getter stays a getter: duplicates are picked from, never pruned
+    assert _deleted(fx) == []
 
 
 def test_get_ui_context_none_when_type_or_pointer_absent():
@@ -677,6 +690,60 @@ def test_get_ui_context_none_when_type_or_pointer_absent():
         "/types/T1/properties": {"properties": []},
         "/objects/query": {"records": []}})
     assert client(fx).get_ui_context("s1") is None
+
+
+# --- the duplicate-pointer stopgap (last-modified wins, rest deleted) ---------
+# TODO with the code: the ui-context protocol rework replaces all of this.
+
+def test_prune_ui_contexts_keeps_newest_and_deletes_the_rest():
+    fx = _ui_ctx_wire(_TWO_POINTERS)
+    ctx = client(fx)._prune_ui_contexts("s1")
+    assert ctx == {"spaceId": "sp2", "objectId": "", "view": "grid",
+                   "updatedAt": 222}
+    assert _deleted(fx) == ["o1"]      # the stale pointer, and only it
+
+
+def test_prune_ui_contexts_ranks_by_server_mtime_when_updated_at_ties():
+    # pointers written before any-ui carried updated_at (or by a client
+    # that never set it): server modifiedAt breaks the tie
+    fx = _ui_ctx_wire([
+        {"id": "o1", "modifiedAt": 20, "T1": {"p_s": "sp1", "p_v": "grid"}},
+        {"id": "o2", "modifiedAt": 10, "T1": {"p_s": "sp2", "p_v": "object"}}])
+    ctx = client(fx)._prune_ui_contexts("s1")
+    assert ctx["spaceId"] == "sp1" and ctx["updatedAt"] == 0
+    assert _deleted(fx) == ["o2"]
+
+
+def test_prune_ui_contexts_leaves_a_lone_pointer_alone():
+    fx = _ui_ctx_wire([_TWO_POINTERS[1]])
+    assert client(fx)._prune_ui_contexts("s1")["spaceId"] == "sp2"
+    assert _deleted(fx) == []
+
+
+def test_prune_ui_contexts_none_when_type_or_pointer_absent():
+    fx = wire(replies={"/types": {"types": []}})
+    assert client(fx)._prune_ui_contexts("s1") is None
+    fx = _ui_ctx_wire([])
+    assert client(fx)._prune_ui_contexts("s1") is None
+    assert _deleted(fx) == []
+
+
+def test_prune_ui_contexts_survives_a_failed_delete():
+    # a 500 on one stale pointer must not cost the run its view line
+    ok = _ui_ctx_wire(_TWO_POINTERS)
+
+    def flaky(name, payload):
+        reply = ok(name, payload)
+        if name == "http.delete":
+            return {"status": 500, "headers": {},
+                    "body": json.dumps({"error": {"code": "internal",
+                                                  "message": "nope"}})}
+        return reply
+
+    flaky.calls = ok.calls
+    c = load(flaky)["_Client"]("http://any")
+    assert c._prune_ui_contexts("s1")["spaceId"] == "sp2"
+    assert _deleted(flaky) == ["o1"]   # attempted, failed, run continues
 
 
 # --- list_programs (ADR-009 §2: repo browsing) --------------------------------

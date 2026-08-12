@@ -37,6 +37,7 @@ class World:
         self.preludes = []
         self.plan_hits = hits or {"messages": [], "injected": []}
         self.ui_ctx = ui_ctx
+        self.pruned = []
 
     # --- guest globals -----------------------------------------------------
     def effect(self, name, payload=None):
@@ -75,6 +76,10 @@ class World:
                 return {"seq": len(w.turns) - 1}
 
             def get_ui_context(self, space):
+                raise AssertionError("the loop takes the pruning fetch")
+
+            def _prune_ui_contexts(self, space):
+                w.pruned.append(space)
                 return w.ui_ctx
 
             # compose_system reads the space (skills/tools/brain);
@@ -335,6 +340,16 @@ def test_context_suffix_degrades_to_timestamp_without_pointer():
     run(w)
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
     assert "[now: " in user and "user's view" not in user
+
+
+def test_view_pointer_is_fetched_once_per_run_and_prunes_duplicates():
+    # TODO with the code: the ui-context protocol rework replaces the
+    # duplicate stopgap — the loop then goes back to a plain getter
+    w = World([done_reply()],
+              ui_ctx={"spaceId": "sp9", "objectId": "", "view": "grid",
+                      "updatedAt": 1_200_000})
+    run(w)
+    assert w.pruned == ["s1"]
 
 
 # --- two-tier composition (ADR-009 §2/§3) -------------------------------------

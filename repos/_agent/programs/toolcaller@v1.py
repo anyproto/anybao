@@ -66,9 +66,16 @@ def _fmt_age(sec):
 def _ui_context(c, space):
     """The user's live view pointer, or None — fetched once per run;
     feeds both the view line (_context_suffix) and the bound
-    `currentUserSpace` cell global (ADR-010 §8)."""
+    `currentUserSpace` cell global (ADR-010 §8).
+
+    Racing any-ui clients leave several pointer objects behind, so the
+    fetch is the pruning one (freshest wins, the rest are deleted) —
+    a mutation, hence here in the loop and not inside the
+    `get_ui_context` getter.
+    TODO: ui-context protocol rework pending — this last-modified-wins
+    + delete-stale is a stopgap (user, 2026-08-12)"""
     try:
-        return c.get_ui_context(space)
+        return c._prune_ui_contexts(space)
     except Exception:
         return None
 
