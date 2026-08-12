@@ -110,7 +110,17 @@ Cells execute in a constructed namespace containing **only**:
      code toward `contextlib.suppress`), `textwrap`, `heapq`, `bisect`,
      `statistics`, `dataclasses`, `enum`, `typing`, `decimal`,
      `fractions`, `base64`, `hashlib`, `uuid`(v5 only — v1/v4 are
-     nondeterministic; see open Q2), `unicodedata`.
+     nondeterministic; see open Q2), `unicodedata`, `html`, `email`
+     (both added 2026-08-13, ADR-012 §6: pure parsing/formatting, no
+     ambient authority).
+  1b. *Vendored pure-Python third-party* (added 2026-08-13, ADR-012
+     §6): `bs4` + `soupsieve`, `markdownify` — bundled verbatim into
+     the kernel image from `runtime/guest/` (versions + licenses in
+     `runtime/guest/VENDORED.md`), importable through the same
+     allowlist; bs4 runs on the stdlib `html.parser` backend (no
+     lxml). Their internal deps (`six`, `typing_extensions`) are
+     bundled but NOT guest-importable — the allowlist names only the
+     supported surface.
   2. *Proxied stdlib* — modules whose API is wanted but which carry
      ambient authority return a **proxy module**: `datetime`
      (construction/arithmetic pass through; `datetime.now()`,

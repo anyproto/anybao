@@ -115,6 +115,10 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None):
     ww = types.ModuleType("wit_world")
     ww.host_effect = host_effect
     sys.modules["wit_world"] = ww
+    # the vendored guest libs (bs4/markdownify…, ADR-012 §6) live beside
+    # app.py — host-side import needs the dir on the path like wasm does
+    if str(APP_PY.parent) not in sys.path:
+        sys.path.insert(0, str(APP_PY.parent))
     spec = importlib.util.spec_from_file_location(f"_guest_app_{_n}", APP_PY)
     app = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(app)

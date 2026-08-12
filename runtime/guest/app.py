@@ -11,6 +11,7 @@ import ast
 # module plus datetime (proxied). Do not convert to importlib loops.
 import base64  # noqa: F401
 import bisect  # noqa: F401
+import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
 import builtins as _b
 import collections  # noqa: F401
 import contextlib  # noqa: F401
@@ -18,14 +19,19 @@ import copy  # noqa: F401
 import dataclasses  # noqa: F401
 import datetime  # noqa: F401  (guest sees only the proxy)
 import decimal  # noqa: F401
+import email.header  # noqa: F401  (tier-1, ADR-012 §6; email is lazy —
+import email.utils  # noqa: F401   literal submodule imports bundle them)
 import enum  # noqa: F401
 import fractions  # noqa: F401
 import functools  # noqa: F401
 import hashlib  # noqa: F401
 import heapq  # noqa: F401
+import html.entities  # noqa: F401  (tier-1, ADR-012 §6; also bs4's backend)
+import html.parser  # noqa: F401
 import inspect  # noqa: F401
 import itertools  # noqa: F401
 import json
+import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
 import math  # noqa: F401
 import re  # noqa: F401
 import statistics  # noqa: F401
@@ -209,12 +215,16 @@ _PROXIES = {
     "os": _os_proxy,
 }
 
-# tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2)
+# tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2;
+# html/email + the vendored trio: ADR-012 §6). six/typing_extensions are
+# bundled as internals of the vendored packages but stay un-importable.
 _ALLOWED = {
     "math", "json", "re", "itertools", "functools", "collections",
     "contextlib", "textwrap", "heapq", "bisect", "statistics",
     "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
     "hashlib", "string", "copy", "unicodedata", "inspect",
+    "html", "email",
+    "bs4", "soupsieve", "markdownify",   # vendored pure-Python (runtime/guest/)
 }
 
 

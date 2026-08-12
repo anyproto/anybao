@@ -21,6 +21,14 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# vendored guest libraries (ADR-012 §6) are upstream code — never linted
+extend-exclude = [
+    "runtime/guest/bs4",
+    "runtime/guest/soupsieve",
+    "runtime/guest/markdownify",
+    "runtime/guest/six.py",
+    "runtime/guest/typing_extensions.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
