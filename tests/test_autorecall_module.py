@@ -77,10 +77,17 @@ def test_injects_tool_framed_pair_with_both_sections():
     msgs = out["messages"]
     assert [m["role"] for m in msgs] == ["assistant", "user"]
     call, result = msgs[0]["parts"][0], msgs[1]["parts"][0]
-    assert call["type"] == "tool_call" and call["name"] == "recall"
+    # framed as run_cell — the loop's only declared tool; the code is
+    # the real recall idiom (an invented tool name reads as a failed
+    # call the model apologizes for)
+    assert call["type"] == "tool_call" and call["name"] == "run_cell"
     assert call["id"] == "autorecall_0"
-    assert call["args"]["query"] == "trip?"
+    code = call["args"]["code"]
+    assert 'use("agent:recall@v1").recall(use("agent:any@v1"), baoSpaceConfig)' in code
+    assert "rec.hydrate(rec.search('trip?', scopes=['agent', 'history']))" in code
     assert result["type"] == "tool_result" and result["call_id"] == call["id"]
+    assert result["content"].startswith("Last value: [")
+    assert "values.get" not in result["content"]  # nothing stored under this id
     assert "Memories:" in result["content"] and "Related history:" in result["content"]
     assert "[preference] prefers dark roast (saved 2025-07-01, confidence 8)" \
         in result["content"]

@@ -5,9 +5,10 @@ STRUCTURAL mechanism (memory behavior must not depend on model
 initiative).
 
 `plan` runs recall@v1 search over the user message — index-backed, no
-LLM call — and frames the top hits as a synthetic recall tool call +
-tool result: evidence the model weighs and can discount as stale, never
-prompt truth. Memory hits render as distilled facts (provenance date +
+LLM call — and frames the top hits as a synthetic `run_cell` tool call
+(the loop's ONLY declared tool) whose code is the literal recall idiom,
+plus its digest-shaped result: evidence the model weighs and can
+discount as stale, never prompt truth. Memory hits render as distilled facts (provenance date +
 confidence); history hits as *related past discussion* pointers (chunk
 drill-down handles, bodies on demand). Guards: deep-history only (hits
 inside the boot window's raw tail are skipped — auto-recall is the
@@ -91,8 +92,14 @@ def covered_by_boot(rec, dataset, boot_min_seq):
 
 
 def frame_messages(query, memory_lines, history_lines):
-    """Tool-result framing (§5): a synthetic recall call + its result,
-    exactly the shape an explicit recall would produce."""
+    """Tool-result framing (§5): a synthetic `run_cell` — the loop's
+    only declared tool — whose code is the real recall idiom, so the
+    example teaches the exact surface an explicit recall uses. An
+    invented tool name here reads as a failed/hallucinated call and
+    the model apologizes for it (seen live, 2026-08-11). The result
+    inlines the digest; no values.get stub — nothing is stored under
+    this cell id, and a fabricated handle would be its own faulty
+    signal."""
     sections = []
     if memory_lines:
         sections.append("Memories:\n" + "\n".join(memory_lines))
@@ -101,13 +108,21 @@ def frame_messages(query, memory_lines, history_lines):
     if not sections:
         return []
     call_id = "autorecall_0"
+    code = (
+        "# auto-recall: passive memory pass over the new user message\n"
+        'rec = use("agent:recall@v1").recall(use("agent:any@v1"), baoSpaceConfig)\n'
+        f"rec.hydrate(rec.search({query!r}, scopes={list(INJECT_SCOPES)!r}))"
+    )
+    n = len(memory_lines) + len(history_lines)
+    content = (f"Last value: [{n} (hit, record) pairs — digest:\n\n"
+               + "\n\n".join(sections) + "]")
     return [
         {"role": "assistant",
-         "parts": [{"type": "tool_call", "id": call_id, "name": "recall",
-                    "args": {"query": query, "scopes": list(INJECT_SCOPES)}}]},
+         "parts": [{"type": "tool_call", "id": call_id, "name": "run_cell",
+                    "args": {"code": code}}]},
         {"role": "user",
          "parts": [{"type": "tool_result", "call_id": call_id,
-                    "content": "\n\n".join(sections), "is_error": False}]},
+                    "content": content, "is_error": False}]},
     ]
 
 

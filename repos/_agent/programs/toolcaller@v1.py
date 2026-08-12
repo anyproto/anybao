@@ -445,9 +445,15 @@ def main(args):
     ui_ctx = _ui_context(c, space)
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
-    subcell(f"currentUserSpace = {ui_ctx!r}\n"  # noqa: F821 - guest global
-            f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}",
-            "_ctx")
+    ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"
+                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}")
+    if plan["messages"]:
+        # the auto-recall injection is framed as a run_cell that bound
+        # `rec` (kernel state persists across cells) — make that true,
+        # or reusing the example's variable NameErrors
+        ctx_code += ('\nrec = use("agent:recall@v1")'
+                     '.recall(use("agent:any@v1"), baoSpaceConfig)')
+    subcell(ctx_code, "_ctx")  # noqa: F821 - guest global
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",

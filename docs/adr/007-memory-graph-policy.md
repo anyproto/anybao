@@ -146,9 +146,15 @@ hits, budget-capped — A-MEM §3.4's per-interaction retrieval, which v1
 never wired. Two constraints from prior experience (user: injected
 memory near the system prompt gets treated as ground truth) and §1a:
 - **Framed as a tool result, not prompt truth**: rendered as a
-  synthetic recall call + result (like any tool output), each item
-  carrying provenance date + confidence — evidence the model weighs
-  and can discount as stale, not doctrine it obeys.
+  synthetic `run_cell` call + result — the loop's ONLY declared tool,
+  its code the literal recall idiom (`recall(...)` bind + `search` +
+  `hydrate`), the binding made real in the context subcell so the
+  example is re-runnable, each item carrying provenance date +
+  confidence — evidence the model weighs and can discount as stale,
+  not doctrine it obeys. (Amended 2026-08-12: originally an invented
+  `recall` tool name; with `run_cell` the only declared tool, the
+  model read the unknown-tool example as its own failed call and
+  apologized for it — seen live 2026-08-11.)
 - **Both scopes, rendered distinctly** (revised 2026-07-07 — the
   agent-only version was an overcorrection: the corpus audit condemned
   chunks-in-the-memory-STORE, a write-side fact; and "relevance depends
