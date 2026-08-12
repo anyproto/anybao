@@ -737,44 +737,88 @@ class _Client:
         {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
         check freshness before trusting — or None when the UI has never
         reported (type or pointer absent)."""
-        recs = self._ui_context_recs(space)
-        return _ui_context_pointer(recs[0] if recs else None)
+        pairs = self._ui_context_pairs(space)
+        return _ui_context_pointer(pairs[0][1] if pairs else None)
 
     # TODO: ui-context protocol rework pending — this last-modified-wins +
     # delete-stale is a stopgap (user, 2026-08-12)
-    def _ui_context_recs(self, space):
-        """Every ui_context pointer object, freshest first.
+    def _ui_context_type_ids(self, space):
+        """All `ui_context` type-definition ids, winner first.
 
-        any-ui's ensurePointerObject queries the pointer by name and
-        creates one when the query comes back empty, so racing clients
-        (and index lag right after a create) leave the space with
-        several pointers, each client then writing only to its own.
-        Rank: the protocol's own `updated_at` (client ms), server
-        `modifiedAt` breaking ties for pointers written before the
-        prop existed."""
-        try:
-            recs = self.query_objects(space, filter={"any.types": "ui_context"},
-                                      limit=50)   # xKey-normalized (ADR-006 §6)
-        except ValueError:
-            return []   # type absent = UI never reported in this space
-        return sorted(recs, key=_ui_context_rank, reverse=True)
+        The server's xKey-uniqueness guard is per-peer, so racing
+        clients on different peers mint duplicate `ui_context` TYPES
+        that sync into one space; every xKey→id resolution then picks
+        an arbitrary one and the other side's pointer turns invisible
+        (seen live on prod, 2026-08-12: reads missed the pointer, the
+        UI wrote into the void for two weeks). Winner rank:
+        (modifiedAt, id) over the type's own object row — type
+        definitions are ordinary object rows, which is also what makes
+        losers deletable via delete_object (Types.Delete is
+        unimplemented). any-ui applies the identical rank so both
+        ends converge on the same type."""
+        ids = [t["id"] for t in self.list_types(space)
+               if t.get("xKey") == "ui_context" and not t.get("builtIn")]
+        if len(ids) < 2:
+            return ids
+        rows = {r.get("id"): r for r in self.query_objects(
+            space, filter={"id": {"$in": ids}}, limit=len(ids))}
+        return sorted(ids, key=lambda i: (
+            (rows.get(i) or {}).get("modifiedAt") or 0, i), reverse=True)
+
+    def _ui_context_pairs(self, space, tids=None):
+        """(typeId, pointer-record) pairs, freshest pointer first.
+
+        Queried per type id — never through the xKey (ambiguous under
+        duplicates). Pointer rank: the protocol's own `updated_at`
+        (client ms), server `modifiedAt` breaking ties for pointers
+        written before the prop existed. An object carrying several of
+        the dup types pairs with the winner-most one."""
+        tids = self._ui_context_type_ids(space) if tids is None else tids
+        seen, pairs = set(), []
+        for tid in tids:
+            for r in self.query_objects(space, filter={"any.types": tid},
+                                        limit=50):
+                if r.get("id") not in seen:
+                    seen.add(r.get("id"))
+                    pairs.append((tid, r))
+        pairs.sort(key=lambda tr: _ui_context_rank(tr[1]), reverse=True)
+        return pairs
 
     def _prune_ui_contexts(self, space):
-        """Delete every ui_context pointer but the freshest; returns its
-        pointer (get_ui_context shape) or None.
+        """Converge on ONE ui_context type and ONE pointer; returns the
+        surviving pointer (get_ui_context shape) or None.
 
         The duplicate stopgap above, as a mutation — kept out of
         get_ui_context so that stays a pure getter (ADR-001 §7: a
-        declared getter whose span mutates is an inconsistency). A
-        delete that fails is not worth failing a run over: the survivor
-        is returned either way."""
-        recs = self._ui_context_recs(space)
-        for r in recs[1:]:
+        declared getter whose span mutates is an inconsistency).
+        Keeps the freshest pointer that carries the WINNER type;
+        deletes every other pointer, then the loser type definitions
+        (pointers first, so no window with an object implementing a
+        deleted type). A pointer on a loser type only is stale by
+        definition — the UI re-creates one on the winner within
+        seconds. A delete that fails is not worth failing a run over."""
+        tids = self._ui_context_type_ids(space)
+        if not tids:
+            return None
+        winner = tids[0]
+        pairs = self._ui_context_pairs(space, tids=tids)
+        keep = next((r for t, r in pairs if t == winner), None)
+        keep_id = keep.get("id") if keep is not None else None
+        for _, r in pairs:
+            if r.get("id") == keep_id:
+                continue
             try:  # noqa: SIM105 - contextlib is one more guest import for a stopgap
                 self.delete_object(space, r.get("id"))
             except AnyError:
                 pass
-        return _ui_context_pointer(recs[0] if recs else None)
+        for tid in tids[1:]:
+            try:  # noqa: SIM105
+                self.delete_object(space, tid)
+            except AnyError:
+                pass
+        if len(tids) > 1:
+            self._cat_invalidate(space)   # the loser just left the catalog
+        return _ui_context_pointer(keep)
 
     # --- types & properties (catalog source) ----------------------------------
     def list_types(self, space):

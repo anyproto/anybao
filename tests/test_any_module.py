@@ -946,3 +946,76 @@ def test_search_types_kwarg_redirects_to_query_objects():
     g = load(wire())
     with pytest.raises(TypeError, match="any.types"):
         g["search"](SID, "q", types=["task"])
+
+
+# --- the duplicate-TYPE stopgap (same freshest-wins logic, one level up) ------
+# Racing clients on different peers mint duplicate ui_context TYPE defs (the
+# xKey 409 guard is per-peer); every xKey→id resolution then picks an arbitrary
+# one and the other side's pointer turns invisible. Winner = max (modifiedAt,
+# id) over the type's own object row; losers (and pointers not carrying the
+# winner) are deleted — type defs are ordinary object rows, so delete_object
+# works where Types.Delete is unimplemented. Mirrored in any-ui PR #445.
+
+def _dup_type_fx(type_rows, pointers_by_tid):
+    """Two ui_context types; /objects/query answers by FILTER shape."""
+    base = wire(replies={
+        "/types": {"types": [{"id": "T1", "xKey": "ui_context"},
+                             {"id": "T2", "xKey": "ui_context"}]},
+        "/types/any/properties": _ANY_PROPS,
+        "/types/T1/properties": {"properties": [
+            {"id": "p_s", "xKey": "space_id"}, {"id": "p_u", "xKey": "updated_at"}]},
+        "/types/T2/properties": {"properties": [
+            {"id": "q_s", "xKey": "space_id"}, {"id": "q_u", "xKey": "updated_at"}]}})
+
+    def fx(name, payload):
+        path = payload.get("url", "").removeprefix("http://any")
+        if name == "http.post" and path.endswith("/objects/query"):
+            base.calls.append(("POST", path, payload.get("json")))
+            filt = (payload.get("json") or {}).get("filter") or {}
+            recs = (type_rows if "id" in filt
+                    else pointers_by_tid.get(filt.get("any.types"), []))
+            return {"status": 200, "headers": {},
+                    "body": json.dumps({"records": recs})}
+        return base(name, payload)
+
+    fx.calls = base.calls
+    return fx
+
+
+def test_prune_converges_duplicate_types_on_freshest():
+    fx = _dup_type_fx(
+        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 9}],
+        {"T1": [{"id": "o1", "T1": {"p_s": "sp1", "p_u": 999}}],
+         "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 100}}]})
+    ctx = client(fx)._prune_ui_contexts("s1")
+    # o1 is the freshest pointer overall, but it rides the LOSER type —
+    # the winner-typed o2 survives, o1 and the loser type def go
+    assert ctx["spaceId"] == "sp2"
+    assert _deleted(fx) == ["o1", "T1"]   # pointers before type defs
+
+
+def test_prune_deletes_everything_when_no_pointer_carries_the_winner():
+    fx = _dup_type_fx(
+        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 9}],
+        {"T1": [{"id": "o1", "T1": {"p_s": "sp1", "p_u": 999}}], "T2": []})
+    assert client(fx)._prune_ui_contexts("s1") is None
+    assert _deleted(fx) == ["o1", "T1"]   # UI re-creates on the winner
+
+
+def test_prune_duplicate_type_tie_breaks_on_id():
+    fx = _dup_type_fx(
+        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 5}],
+        {"T1": [], "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 1}}]})
+    assert client(fx)._prune_ui_contexts("s1")["spaceId"] == "sp2"
+    assert _deleted(fx) == ["T1"]         # T2 wins the (mtime, id) tie
+
+
+def test_get_ui_context_reads_across_duplicate_types_without_deleting():
+    # the read path is availability-first: freshest pointer wins even on a
+    # loser type, and a pure getter never prunes
+    fx = _dup_type_fx(
+        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 9}],
+        {"T1": [{"id": "o1", "T1": {"p_s": "sp1", "p_u": 999}}],
+         "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 100}}]})
+    assert client(fx).get_ui_context("s1")["spaceId"] == "sp1"
+    assert _deleted(fx) == []
