@@ -570,8 +570,13 @@ class _Client:
     def upsert_record(self, space, object_id, dataset, record_id, value):
         """Write one dataset record (whole-value $set, upsert).
 
-        The generic path for plain (unregistered) datasets like
-        agent_triggers."""
+        Only REGISTERED datasets are writable (agent_triggers,
+        agent_memory_items, agent_roi_injections, …— server-side Go
+        handlers), and the host object must carry the dataset's type
+        in `any.types`. There is no generic path: an unregistered
+        dataset name 500s on write and reads as [] — store ad-hoc
+        state as object properties instead (seen live 2026-08-12,
+        progressbar probe)."""
         return self.modify(space, {
             "objectId": object_id, "dataset": dataset,
             "records": [{"id": record_id, "upsert": True,
