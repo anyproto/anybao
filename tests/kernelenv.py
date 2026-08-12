@@ -82,9 +82,12 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None):
         try:
             if name == "module.resolve":
                 spec = payload["spec"]
-                if spec == "any@v1" and any_client is not None:
+                # alias-qualified cross-repo specs ("agent:any@v1",
+                # ADR-009) shim identically — the alias names a space,
+                # the module is the same
+                if spec.split(":")[-1] == "any@v1" and any_client is not None:
                     src = ANY_SHIM
-                elif spec == "llm@v1" and llm_chat is not None:
+                elif spec.split(":")[-1] == "llm@v1" and llm_chat is not None:
                     src = LLM_SHIM
                 else:
                     src = local_source(spec, programs_dir)
