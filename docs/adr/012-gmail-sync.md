@@ -17,17 +17,7 @@ html→text filter between ingestion and storage, raw kept upstream).
 Gmail is the first source; gmail@v1 stays a thin read-only API wrapper
 and gains no sync logic.
 
-A server-side **email dataset** (`~/any/any` branch
-`zarkone/email-dataset`, `docs/21-email.md`: per-address mailbox
-object, `email_messages` records keyed by provider id, idempotent
-batch ingest, a dedicated `email` search scope) was built and
-rig-validated 2026-08-11 as an alternative storage surface, and
-**rejected 2026-08-12** (user decision): mail stays the userspace
-`email` type this ADR describes — ordinary objects on stock server
-main. The dataset branch remains unmerged; nothing here depends on
-it.
-
-Everything below is probe-verified against a real 41.8k-message
+Everything below is probe-verified against a real
 mailbox (2026-08-10/11, scratch programs + traces referenced inline;
 sources preserved in gitignored `scratch/gmail-sync-probes/`). The
 load-bearing numbers:
@@ -72,7 +62,14 @@ via the `agent_triggers` dataset; also user/agent-invocable
 
 **State**: one `sync_state` object in the target space —
 `{cursor (historyId), page_token, synced_count}` — written only after
-a batch commits.
+a batch commits. Find-or-create converges the same way the ui-context
+stopgap does (2026-08-12: query-then-create races left duplicate
+ui-context pointers/types and agent-triggers anchors): query ALL
+`sync_state` objects, the last-modified one wins, the rest are
+best-effort deleted — a sync must never follow a stale cursor because
+a racing tick minted a second state object. The dance retires when
+`sync_state` becomes a server-derived object (dev-space task "derive
+ui-context + agent-triggers objects", which names sync_state too).
 
 **Full sync** is chunked across cron ticks: each tick lists one
 bounded slice (≤200 messages) of the configured scope, hydrates via
