@@ -22,7 +22,13 @@ _any = use("agent:any@v1")  # noqa: F821 - cross-repo dep, alias-qualified (ADR-
 _DEFAULT_Q = "newer_than:1y"  # §2: whole-history is opt-in
 _SLICE = 200                  # §2: soft cap per tick (trace containment)
 _HYDRATE_CHUNK = 25           # §2: >~25 concurrent parts → inner 429s
-_FUEL_FLOOR = 8_000_000_000   # checkpoint when remaining drops below
+_FUEL_FLOOR = 4_000_000_000   # checkpoint when remaining drops below;
+# checked at tick entry, between list pages, and per MESSAGE in the
+# write loops — one message (fetch+clean+write) stays well under this,
+# so a check failure can never strand a half-converted chunk. The
+# budget is per RUN: a conversation calling sync_now shares its 50B
+# across every turn (seen live: two runs died at the wall before the
+# entry/per-message checks existed).
 _HTML_CAP = 300_000           # pathological bodies; clean_html input cap
 _BOUNDARY = "anybao_gmail_sync"
 
@@ -294,7 +300,7 @@ def _full_slice(space, state_id, state, q, cap):
     token = state.get("page_token") or None
     synced = int(state.get("synced_count") or 0)
     ids = []
-    while len(ids) < cap:
+    while len(ids) < cap and not _fuel_low():
         page = _gm.list_messages(q=q, max_results=min(100, cap - len(ids)),
                                  page_token=token)
         if not page.get("ok"):
@@ -304,6 +310,12 @@ def _full_slice(space, state_id, state, q, cap):
         if not token:
             break
     for i in range(0, len(ids), _HYDRATE_CHUNK):
+        if _fuel_low():
+            # cooperative governor (§2): sync as much as fits, then
+            # checkpoint — unprocessed ids re-list next tick and the
+            # gmail_id check absorbs the overlap.
+            out["fuelStop"] = True
+            break
         chunk = ids[i:i + _HYDRATE_CHUNK]
         have = _existing_ids(space, chunk)
         fresh = [m for m in chunk if m not in have]
@@ -314,12 +326,12 @@ def _full_slice(space, state_id, state, q, cap):
                 if mid not in raws:
                     out["failed"] += 1
                     continue
+                if _fuel_low():
+                    out["fuelStop"] = True
+                    break
                 _write_email(space, _trim_full(raws[mid]))
                 out["made"] += 1
-        if _fuel_low() and i + _HYDRATE_CHUNK < len(ids):
-            # cooperative governor: sync as much as fits in this tick.
-            # Unlisted ids re-list next tick from the same page token.
-            out["fuelStop"] = True
+        if out.get("fuelStop"):
             break
     out["done"] = token is None and not out.get("fuelStop")
     synced += out["made"]
@@ -387,6 +399,15 @@ def _incremental(space, state_id, state, q):
             if mid not in raws:
                 out["failed"] += 1
                 continue
+            if _fuel_low():
+                # cursor NOT advanced: this tick checkpoints nothing
+                # new, the next one replays the history window and the
+                # gmail_id check skips what already landed
+                out["fuelStop"] = True
+                _checkpoint(space, state_id, cursor, "",
+                            int(state.get("synced_count") or 0) + out["made"])
+                out["done"] = False
+                return out
             _write_email(space, _trim_full(raws[mid]))
             out["made"] += 1
     if labels:
@@ -408,6 +429,13 @@ def _incremental(space, state_id, state, q):
 
 
 def _tick(space, q=None, cap=None):
+    if _fuel_low():
+        # a conversation run may arrive with its budget nearly spent —
+        # refuse cleanly instead of trapping mid-write
+        return {"mode": "none", "fuelStop": True, "made": 0, "done": False,
+                "note": "not enough fuel left in this run for a sync tick — "
+                        "run it as a cron tick / its own run, or pass a "
+                        "small max_messages"}
     _any.create_type(space, EMAIL_TYPE)     # §5 provisioning contract:
     _any.create_type(space, STATE_TYPE)     # idempotent ensure-resolve
     state_id, state = _ensure_state(space)
@@ -428,8 +456,12 @@ def sync_now(space, q=None, max_messages=None):
     again — or let the cron — until done: True); after that each call
     is a coalesced history increment. q narrows the scope with Gmail
     search syntax (default newer_than:1y; exclusions are negative
-    terms like -from:x). The tick self-checkpoints on low fuel
-    (fuelStop: True) — nothing is lost, the next call resumes."""
+    terms like -from:x). FUEL: each synced message costs ~0.3-0.6B of
+    the RUN's 50B budget, shared with every other turn of a
+    conversation — from chat, pass max_messages (≤50) and call
+    repeatedly, or better register the cron and let ticks run alone.
+    The tick self-checkpoints on low fuel (fuelStop: True) — nothing
+    is lost, the next call resumes."""
     return _tick(space, q=q, cap=max_messages)
 
 

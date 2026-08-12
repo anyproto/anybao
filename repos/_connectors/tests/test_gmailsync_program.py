@@ -225,16 +225,30 @@ def test_full_slice_creates_skips_and_checkpoints():
     assert fake.types_created == ["email", "sync_state"]
 
 
-def test_full_slice_fuel_governor_checkpoints_early():
+def test_tick_refuses_cleanly_when_run_budget_already_spent():
+    # a conversation run can arrive nearly dry (seen live: two runs
+    # died at the 50B wall) — entry check refuses before any write
+    fake = FakeAny()
+    out = load(gmail_fx({}, fuel=[1_000_000_000] * 3), fake).sync_now("sp")
+    assert out == {"mode": "none", "fuelStop": True, "made": 0,
+                   "done": False, "note": out["note"]}
+    assert "cron" in out["note"]
+    assert fake.states == []                # nothing touched
+
+
+def test_full_slice_fuel_governor_checkpoints_mid_chunk():
     ids = [f"m{i}" for i in range(30)]
     raws = {m: raw_msg(m) for m in ids}
     fake = FakeAny()
-    # low fuel from the first check: chunk 1 lands, chunk 2 never starts
-    fx = gmail_fx(raws, pages=[{"messages": ids}], fuel=[1_000_000_000] * 5)
+    # checks: entry, list page, pre-chunk, then one per message — fuel
+    # dries up after 10 messages, the chunk breaks mid-way
+    big, low = 50_000_000_000, 1_000_000_000
+    fx = gmail_fx(raws, pages=[{"messages": ids}],
+                  fuel=[big] * 13 + [low] * 10)
     out = load(fx, fake).sync_now("sp")
     assert out.get("fuelStop") is True and out["done"] is False
-    assert out["made"] == 25                # exactly one hydration chunk
-    assert fake.state()["synced_count"] == 25   # checkpointed before exit
+    assert out["made"] == 10                # stopped between messages
+    assert fake.state()["synced_count"] == 10   # checkpointed before exit
 
 
 # --- incremental tick --------------------------------------------------------
