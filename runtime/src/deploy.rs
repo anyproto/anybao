@@ -553,13 +553,31 @@ impl<'a> Deployer<'a> {
 /// Find-or-create a `type_id`-typed object by `any.name` — the trigger
 /// anchor / kernel object / README pattern (unregistered custom type
 /// keys work; the server materializes them).
+///
+/// Racing starts (query-then-create, plus index lag right after a
+/// create) can leave SEVERAL anchors; with `limit: 1` + first-row pick
+/// every restart re-rolled which one a serve followed, silently
+/// splitting dataset state across them (seen live 2026-08-12: two
+/// `agent-triggers` anchors on prod, the running serve blind to the
+/// one carrying all trigger history). These are identity anchors, so
+/// the OLDEST wins — (createdAt, id), rows without a createdAt stamp
+/// rank oldest — and every caller converges on the same object.
+/// Stale duplicates are not deleted here: their datasets may hold
+/// records to merge, which is a per-caller decision.
 pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyhow::Result<String> {
     let rows = c.query_objects(
         space,
         &json!({
-        "filter": {"any.name": name, "any.types": type_id}, "limit": 1}),
+        "filter": {"any.name": name, "any.types": type_id}, "limit": 50}),
     )?;
-    if let Some(r) = rows.first() {
+    let winner = rows.iter().min_by_key(|r| {
+        let created = r["createdAt"]
+            .as_f64()
+            .map(|s| (s * 1000.0) as i64)
+            .unwrap_or(i64::MIN);
+        (created, r["id"].as_str().unwrap_or_default().to_string())
+    });
+    if let Some(r) = winner {
         return Ok(r["id"].as_str().unwrap_or_default().to_string());
     }
     let created = c.create_object(
