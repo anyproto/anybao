@@ -48,6 +48,7 @@ TRIMMED = {
     "internalDate": "1785400000000",
     "from": "Boss <boss@example.com>", "to": "me@example.com", "cc": "",
     "subject": "quick question", "date": "Thu, 30 Jul 2026 09:00:00 +0200",
+    "list_unsubscribe": "", "precedence": "",
     "snippet": "hey — quick question", "body": "plain wins\nover html",
 }
 

@@ -118,8 +118,12 @@ def _b64url(data):
 
 
 def _headers_of(payload):
-    """{from,to,cc,subject,date} pulled from payload.headers (case-insensitive)."""
-    out = {"from": "", "to": "", "cc": "", "subject": "", "date": ""}
+    """{from,to,cc,subject,date,list_unsubscribe,precedence} from
+    payload.headers (case-insensitive). The last two are the bulk-mail
+    signals (ADR-012 §5 noise gate) — dropping them left sender
+    classification to address heuristics alone."""
+    out = {"from": "", "to": "", "cc": "", "subject": "", "date": "",
+           "list-unsubscribe": "", "precedence": ""}
     for h in (payload or {}).get("headers") or []:
         name = (h.get("name") or "").lower()
         if name in out:
@@ -174,6 +178,8 @@ def _trim_message(raw):
             "internalDate": raw.get("internalDate"),
             "from": h["from"], "to": h["to"], "cc": h["cc"],
             "subject": h["subject"], "date": h["date"],
+            "list_unsubscribe": h["list-unsubscribe"],
+            "precedence": h["precedence"],
             "snippet": raw.get("snippet") or "", "body": body}
 
 
@@ -213,10 +219,12 @@ def get_message(id):
     """One message decoded → {ok, message} — headers + snippet + text body.
 
     message = {id, threadId, labelIds, internalDate, from, to, cc,
-    subject, date, snippet, body} — the derived keys are the decoded
-    header scalars and body; the raw MIME payload tree never returns.
-    body is the first text/plain part (html-stripped fallback),
-    capped at 20k chars; the raw MIME payload tree never returns."""
+    subject, date, list_unsubscribe, precedence, snippet, body} — the
+    derived keys are the decoded header scalars and body;
+    list_unsubscribe/precedence are the bulk-mail signals (empty for
+    most human mail). body is the first text/plain part
+    (html-stripped fallback), capped at 20k chars; the raw MIME
+    payload tree never returns."""
     if not id or not isinstance(id, str):
         return {"ok": False, "error": "id is required"}
     r = _get(f"/messages/{_quote(id)}" + _qs({"format": "full"}))
