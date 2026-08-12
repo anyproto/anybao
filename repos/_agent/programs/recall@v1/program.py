@@ -45,11 +45,13 @@ class Recall:
     # --- semantic ----------------------------------------------------------
     @span("recall.search", kind="getter")  # noqa: F821 - guest global
     def search(self, query, scopes=DEFAULT_SCOPES, limit=10):
-        """Index search across scopes; returns the raw server hits.
+        """Index search across scopes → a bare LIST of hits, no envelope.
 
-        Each `{scope, objectId, dataset, recordId, score, …}`,
-        unwrapped from the `{hits, mode, vectorStatus}` envelope.
-        Default scopes ("agent", "history", "basic"), limit 10."""
+        Each `{scope, objectId, dataset, recordId, score, …}` —
+        already unwrapped from the `{hits, mode, vectorStatus}`
+        envelope that any@v1 `search` returns, so `hits[0]` works and
+        `hits["hits"]` does not. Default scopes ("agent", "history",
+        "basic"), limit 10."""
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 

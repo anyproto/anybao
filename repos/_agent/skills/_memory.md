@@ -32,17 +32,18 @@ categories before inventing one (vocabulary drift kills recall).
 ## Recall — one surface, three axes
 
 - **Semantic**: `r.search(query, scopes=["agent", "history", "basic"],
-  limit=...)` — memories, turns/chunks, and content in one call. Hits
-  are pointers; hydrate via `r.hydrate(hits)`.
+  limit=...)` — memories, turns/chunks, and content in one call.
+  Returns a bare LIST of hit pointers (unlike `c.search`, which wraps
+  them in `{hits, mode, vectorStatus}`); hydrate via `r.hydrate(hits)`.
 - **Temporal**: `r.by_period(from, to)` — fans across memory items
   (`validFrom`), turns (`createdAt`), and chunks (period overlap).
 - **Graph**: `r.neighbors(object_id)` — follow a hit's `edges`
   (`[{to, type}]`) and links-format properties on objects; expansion
   AFTER retrieval.
 
-Top hits for the user's message are auto-injected at turn start as a
-`recall` tool result — dig explicitly when you need more than they
-show. When a deliberate dig actually USES a memory item, bump it:
+Top hits for the user's message are auto-injected at turn start as an
+already-run `run_cell` (the recall idiom; `rec` stays bound for reuse)
+— dig explicitly when you need more than its digest shows. When a deliberate dig actually USES a memory item, bump it:
 `mem.bump_access(item_id, current_count=<its accessCount>)` —
 accessCount is the signal that keeps useful memories alive (auto-injected
 items are bumped for you).
