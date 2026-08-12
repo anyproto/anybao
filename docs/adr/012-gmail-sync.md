@@ -1,6 +1,6 @@
 # ADR-012: Gmail mailbox sync — space objects, email cleanup, contact graph
 
-Status: **Proposed**
+Status: **Accepted** (2026-08-13)
 Date: 2026-08-11
 Builds on: ADR-002 (effect boundary; §4 tier-1 allowlist — amended
 here), ADR-003 (kernel — vendored guest modules), ADR-008 §2 (http
@@ -62,14 +62,7 @@ via the `agent_triggers` dataset; also user/agent-invocable
 
 **State**: one `sync_state` object in the target space —
 `{cursor (historyId), page_token, synced_count}` — written only after
-a batch commits. Find-or-create converges the same way the ui-context
-stopgap does (2026-08-12: query-then-create races left duplicate
-ui-context pointers/types and agent-triggers anchors): query ALL
-`sync_state` objects, the last-modified one wins, the rest are
-best-effort deleted — a sync must never follow a stale cursor because
-a racing tick minted a second state object. The dance retires when
-`sync_state` becomes a server-derived object (dev-space task "derive
-ui-context + agent-triggers objects", which names sync_state too).
+a batch commits.
 
 **Full sync** is chunked across cron ticks: each tick lists one
 bounded slice (≤200 messages) of the configured scope, hydrates via
@@ -202,10 +195,7 @@ allowlist mechanism. ADR-002 §4 is amended in the implementing change.
 - any@v1 `create_type`: forward `format` on inline properties (today
   it forwards only kind/meta — links props silently land as strings).
 - Upstream (`~/any/any`): create-path `property.format_violation`
-  omits the expected shape that the patch path names; reverse index
-  for backlinks at scale. Operational: a plain `go build` of the
-  server silently compiles search out (startup WARN only) — dev/rig
-  builds must carry `-tags 'fts vector'` (`make build` does).
+  omits the expected shape that the patch path names
 
 ## Consequences
 
