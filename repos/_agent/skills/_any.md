@@ -63,9 +63,6 @@ fails in the standard overlay setup, ADR-004 §2):
 
 Spaces:
 
-- The UI calls spaces **"rooms"** — when the user says "room(s)" they
-  mean space(s): list, name, or act on spaces, never hunt for a "room"
-  type. Prefer the user's word ("room") back to them in replies.
 - You live in the user's space (chat, history, brain) with your code in
   the agent overlay, but you can reach **every space**: the spaceConfig
   is an explicit argument on every `any@v1` call. Cross-space is normal.
