@@ -17,6 +17,16 @@ html→text filter between ingestion and storage, raw kept upstream).
 Gmail is the first source; gmail@v1 stays a thin read-only API wrapper
 and gains no sync logic.
 
+A server-side **email dataset** (`~/any/any` branch
+`zarkone/email-dataset`, `docs/21-email.md`: per-address mailbox
+object, `email_messages` records keyed by provider id, idempotent
+batch ingest, a dedicated `email` search scope) was built and
+rig-validated 2026-08-11 as an alternative storage surface, and
+**rejected 2026-08-12** (user decision): mail stays the userspace
+`email` type this ADR describes — ordinary objects on stock server
+main. The dataset branch remains unmerged; nothing here depends on
+it.
+
 Everything below is probe-verified against a real 41.8k-message
 mailbox (2026-08-10/11, scratch programs + traces referenced inline;
 sources preserved in gitignored `scratch/gmail-sync-probes/`). The
@@ -69,7 +79,18 @@ bounded slice (≤200 messages) of the configured scope, hydrates via
 25-part batches with per-part 429 retry, writes objects, checkpoints
 `page_token`; the run ends. Scope defaults to `newer_than:1y`
 (configurable q/labels); whole-history is opt-in. Rationale: trace
-size and crash-loss containment, not API quota.
+size and crash-loss containment, not API quota — and **fuel**
+(ADR-003 §2 as amended): parsing and cleaning mail in interpreted
+wasm CPython is fuel-hungry (a 500-message fetch-and-parse exhausted
+the old 5B budget mid-run), so the slice constant is a soft cap and
+the tick's real governor is cooperative — **the loop checks
+`fuel.state` between hydration batches and, when the remaining
+budget drops below a floor, checkpoints and exits cleanly**: sync as
+much as fits in this tick. An out-of-fuel trap kills the run
+unrecoverably; the typed `FuelExhausted` error is the diagnostic
+backstop, never the control flow. Per-message `clean_html` fuel is
+measured at implementation; if it dominates, the first lever is a
+leaner purpose-built converter, not a host syscall.
 
 **Incremental tick** (steady state): `history.list` from the cursor,
 **coalesced per message id across all records** (never applied
@@ -185,7 +206,9 @@ allowlist mechanism. ADR-002 §4 is amended in the implementing change.
   it forwards only kind/meta — links props silently land as strings).
 - Upstream (`~/any/any`): create-path `property.format_violation`
   omits the expected shape that the patch path names; reverse index
-  for backlinks at scale.
+  for backlinks at scale. Operational: a plain `go build` of the
+  server silently compiles search out (startup WARN only) — dev/rig
+  builds must carry `-tags 'fts vector'` (`make build` does).
 
 ## Consequences
 

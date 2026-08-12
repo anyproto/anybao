@@ -96,3 +96,28 @@ Chat:
   unread state" — silently dropping chats this peer never opened. Type
   membership is always `filter={"any.types": "chat"}`; the rule
   generalizes to any type group whose properties are all local-scope.
+
+Synced mail (the `email` type):
+
+- A space may hold **one `email` object per synced message**: name =
+  subject, body = cleaned markdown, properties under `email.*` —
+  `gmail_id`, `thread_id`, `from`/`to`/`subject` (plain strings),
+  `label_ids` (Gmail's labels, e.g. `TRASH`, `STARRED`,
+  `CATEGORY_PROMOTIONS`), `internal_date` (ms epoch — the sort key),
+  `snippet`, `date`. **For "what did X and I email about", use the
+  synced corpus first — never the live gmail connector** (that is the
+  raw provider API: slower, quota-bound, needs OAuth, and blind to
+  the cleaned corpus; reach for it only for something not yet
+  synced).
+- Query mail: `query_objects(space, filter={"any.types": "email"},
+  ...)`; narrow with `email.*` filters — string props are equality,
+  so a person is `{"email.from": {"$regex": "ruud@ruuda.nl"}}`;
+  `label_ids` is an array, so the scalar
+  `{"email.label_ids": "TRASH"}` means contains. Semantic search
+  already covers mail — subjects and bodies index under the default
+  scopes, so `search`/`recall.search` hits land on email objects
+  directly; read the winner with `get_markdown`.
+- Threads are data, not structure: same `email.thread_id` = one
+  conversation, sort by `email.internal_date`.
+- A `sync_state` object holds the sync cursor — bookkeeping, not
+  content; leave it alone.
