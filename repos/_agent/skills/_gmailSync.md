@@ -22,7 +22,9 @@ gmail.readonly; user-facing turns ONLY, never cron); on
   where the mail lands; `agent_space` is YOUR serving space
   (`baoSpaceConfig` — the trigger lives on its anchor). Idempotent:
   re-arming resumes, never restarts. Tell the user it runs unattended
-  and how to watch it.
+  and how to watch it. When the chain ends — drained or breaker — a
+  system-nudge turn arrives in this chat: process it and post the
+  update it asks for.
 - **Steady state → a cron trigger**: an `agent_triggers` record with
   kind `"cron"`, program `"connectors:gmailSync@v1"`, args
   `{"space", "q"?}` — each tick is one coalesced history increment.
@@ -38,6 +40,9 @@ Watch progress with `status(space)` → `{cursor, pageToken,
 syncedCount, emailCount}` (empty pageToken = backlog drained, now
 ticking incrementally) or the `agent-progress` object (job
 `"gmail-backfill"`) in the target space — the UI renders it live.
+Diagnosing a stalled chain: a trigger record's `lastStatus: "ok"`
+means the hop RAN, not that it synced — sync truth is `status(space)`
+and the progress object's `error` field.
 
 Reading the synced corpus (the `email` type, thread queries, label
 filters) is the `_any` skill's job.
