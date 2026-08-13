@@ -61,6 +61,21 @@ Gotcha: `tests/fixtures/*.jsonl` are JSONL — one record per line is the
 parse contract. View pretty with `jq . <file>`; never reformat the
 buffer (a saved pretty-print breaks the parse).
 
+## Deploying to the PROD repo spaces
+
+The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
+dedicated **repo account** whose server runs locally at
+`http://127.0.0.1:7003` (data dir `~/.any-repo`). The default
+`anybao.toml` account only *joins* them as guest — `anyrt deploy
+--target agent` through it 403s (`space.read_only`). Deploy via the
+repo server, addressing the space by raw id (the ids live in
+`anybao.toml [overlays]`):
+
+```
+anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
+  --target <agent space id>          # same for repos/_connectors
+```
+
 ## Skill: analyze a toolcaller run
 
 "Why did bao do that?" — the whole user-message→final-reply exchange
