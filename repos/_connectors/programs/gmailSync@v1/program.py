@@ -48,8 +48,21 @@ STATE_TYPE = {
     "properties": [
         {"name": "cursor"}, {"name": "page_token"},
         {"name": "synced_count", "kind": "number"},
+        {"name": "chain_hop", "kind": "number"},
+        {"name": "chain_failures", "kind": "number"},
     ],
 }
+PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
+    "name": "Agent progress", "xKey": "agent-progress",
+    "properties": [
+        {"name": "job"}, {"name": "label"}, {"name": "status"},
+        {"name": "current", "kind": "number"}, {"name": "total", "kind": "number"},
+        {"name": "detail"}, {"name": "startedAt", "kind": "number"},
+        {"name": "updatedAt", "kind": "number"}, {"name": "error"},
+        {"name": "program"},
+    ],
+}
+_MAX_CHAIN_FAILURES = 5
 
 
 # --- clean_html (§4) — five passes over bs4 + markdownify ------------------
@@ -494,6 +507,83 @@ def _tick(space, q=None, cap=None):
     return _full_slice(space, state_id, state, q, cap)
 
 
+# --- backfill chain (self-scheduling once-triggers) ------------------------
+# Each hop is its OWN run with a fresh fuel budget; the next hop is
+# armed BEFORE the work, so any death — even an uncatchable fuel trap —
+# leaves the chain alive to resume from the last checkpoint. Fresh
+# record id per hop (the scheduler consumes a once-shot before the run
+# and rolls last_run_at into the record afterwards — re-arming the same
+# id would race that); fired hops stay behind as the audit trail.
+
+def _trigger_anchor(agent_space):
+    """The agent-triggers anchor object — OLDEST wins, the identical
+    rank the runtime's ensure_typed applies, so both sides converge."""
+    rows = _any.query_objects(agent_space, filter={
+        "any.name": "agent-triggers", "any.types": "agent_trigger"}, limit=10)
+    if not rows:
+        raise RuntimeError("no agent-triggers anchor in the agent space")
+    rows.sort(key=lambda r: (r.get("createdAt") or 0, r.get("id") or ""))
+    return rows[0]["id"]
+
+
+def _arm_hop(agent_space, space, q, hop):
+    # slice past the constant multibase prefix ("bafyrei…") so two
+    # spaces' chains can't collide on trigger ids
+    tid = f"gmailSyncBackfill-{space[8:16]}-{hop}"
+    _any.upsert_record(agent_space, _trigger_anchor(agent_space),
+                       "agent_triggers", tid, {
+        "kind": "once", "spec": {"at": now()},  # noqa: F821 - past `at` fires late
+        "program": "connectors:gmailSync@v1",
+        "args": {"space": space, "q": q, "chain": True,
+                 "triggerSpace": agent_space, "hop": hop},
+        "enabled": True, "name": f"gmail backfill hop {hop}"})
+    return tid
+
+
+def _progress(space, job, fields):
+    """One agent_progress object per job, properties rewritten per hop
+    (per-tick updates ARE the throttle — never per message)."""
+    rows = _any.query_objects(space, filter={"agent-progress.job": job}, limit=1)
+    if rows:
+        _any.update_object(space, rows[0]["id"], {"agent-progress": fields})
+        return rows[0]["id"]
+    made = _any.create_object(space, {
+        "types": ["agent-progress"], "name": fields.get("label") or job,
+        "initialProperties": {"agent-progress": {"job": job, **fields}}})
+    return made["objectId"]
+
+
+def _chain_hop(space, q, agent_space, hop):
+    state_id, state = _ensure_state(space)
+    fails = int(state.get("chain_failures") or 0)
+    if fails >= _MAX_CHAIN_FAILURES:
+        _progress(space, "gmail-backfill", {
+            "status": "failed", "detail": f"stalled after {fails} failed hops",
+            "error": "chain circuit-breaker open — fix the cause, then "
+                     "start_backfill again", "updatedAt": now()})  # noqa: F821
+        return {"mode": "chain", "error": f"circuit breaker open ({fails} "
+                "consecutive failed hops)", "done": False}
+    backlog = not state.get("cursor") or bool(state.get("page_token"))
+    if backlog:
+        _arm_hop(agent_space, space, q, hop + 1)
+    # bump-early: a hop that dies pre-checkpoint still counts against
+    # the breaker; a completed hop resets it below
+    _any.update_object(space, state_id, {"sync_state": {
+        "chain_hop": hop, "chain_failures": fails + 1}})
+    out = _tick(space, q=q)
+    ok = not out.get("error")
+    _any.update_object(space, state_id, {"sync_state": {
+        "chain_failures": 0 if ok else fails + 1}})
+    done = ok and not backlog   # a hop entered in steady state ends the chain
+    _progress(space, "gmail-backfill", {
+        "status": "done" if done else ("running" if ok else "failed"),
+        "current": int(out.get("syncedCount") or state.get("synced_count") or 0),
+        "detail": f"hop {hop}: {out.get('mode')} made={out.get('made')}",
+        "error": str(out.get("error") or ""), "updatedAt": now(),  # noqa: F821
+        "program": "connectors:gmailSync@v1"})
+    return {**out, "hop": hop, "chainArmed": backlog, "chainDone": done}
+
+
 # --- agent/user surface ----------------------------------------------------
 
 @span("gmailSync.sync_now", kind="mutator")  # noqa: F821 - guest global
@@ -511,6 +601,47 @@ def sync_now(space, q=None, max_messages=None):
     The tick self-checkpoints on low fuel (fuelStop: True) — nothing
     is lost, the next call resumes."""
     return _tick(space, q=q, cap=max_messages)
+
+
+@span("gmailSync.start_backfill", kind="mutator")  # noqa: F821 - guest global
+def start_backfill(space, agent_space, q=None):
+    """Drive the WHOLE initial sync unattended → {armed, estimatedTotal}.
+
+    The reliable path for big backlogs: arms a self-chaining
+    once-trigger — every hop is its own run with a fresh fuel budget,
+    the next hop is armed before work starts (a crashed hop resumes
+    from the checkpoint), and a circuit breaker stops the chain after
+    5 consecutive failed hops. `agent_space` is the serving agent's
+    space (baoSpaceConfig — triggers live on its anchor). Progress is
+    an `agent-progress` object in the target space (job
+    "gmail-backfill"); watch it or `status(space)`. Idempotent:
+    re-arming resumes where the checkpoint left off."""
+    q = q or _DEFAULT_Q
+    _any.create_type(space, EMAIL_TYPE)
+    _any.create_type(space, STATE_TYPE)
+    _any.create_type(space, PROGRESS_TYPE)
+    state_id, state = _ensure_state(space)
+    _any.update_object(space, state_id, {"sync_state": {"chain_failures": 0}})
+    total, token = 0, None
+    while total < 5000:            # bounded estimate; 0 stays honest
+        page = _gm.list_messages(q=q, max_results=100, page_token=token)
+        if not page.get("ok"):
+            break
+        total += len(page.get("messages") or [])
+        token = page.get("nextPageToken")
+        if not token:
+            break
+    hop = int(state.get("chain_hop") or 0) + 1
+    _progress(space, "gmail-backfill", {
+        "label": "Gmail backfill", "status": "running", "current":
+        int(state.get("synced_count") or 0),
+        "total": total if token is None else 0,   # token left ⇒ indeterminate
+        "detail": "armed", "startedAt": now(), "updatedAt": now(),  # noqa: F821
+        "error": "", "program": "connectors:gmailSync@v1"})
+    trigger = _arm_hop(agent_space, space, q, hop)
+    return {"armed": True, "trigger": trigger,
+            "estimatedTotal": total if token is None else None,
+            "resumingFrom": int(state.get("synced_count") or 0)}
 
 
 @span("gmailSync.status", kind="getter")  # noqa: F821 - guest global
@@ -535,5 +666,9 @@ def status(space):
 
 
 def main(args):
-    # cron entry (§1): agent_triggers args {"space", "q"?, "maxMessages"?}
+    # trigger entry (§1): cron args {"space", "q"?, "maxMessages"?};
+    # backfill-chain hops add {"chain": True, "triggerSpace", "hop"}
+    if args.get("chain"):
+        return _chain_hop(args["space"], args.get("q") or _DEFAULT_Q,
+                          args["triggerSpace"], int(args.get("hop") or 1))
     return _tick(args["space"], q=args.get("q"), cap=args.get("maxMessages"))

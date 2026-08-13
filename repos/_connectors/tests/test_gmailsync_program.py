@@ -25,6 +25,8 @@ class FakeAny:
         self.deleted = []
         self.markdowns = {}
         self.updates = []
+        self.records = []
+        self.progress_rows = []
         self._n = 0
 
     # -- catalog
@@ -44,6 +46,12 @@ class FakeAny:
             return list(self.states)
         if f.get("any.types") == "email":
             return list(self.emails.values())
+        if f.get("any.name") == "agent-triggers":
+            return [{"id": "anchor1", "createdAt": 10},
+                    {"id": "anchor2", "createdAt": 99}]   # oldest must win
+        if "agent-progress.job" in f:
+            return [r for r in self.progress_rows
+                    if r["agent-progress"]["job"] == f["agent-progress.job"]]
         gid = f.get("email.gmail_id")
         if isinstance(gid, dict):
             wanted = set(gid.get("$in") or [])
@@ -51,6 +59,10 @@ class FakeAny:
         if gid is not None:
             return [self.emails[gid]] if gid in self.emails else []
         return []
+
+    def upsert_record(self, space, object_id, dataset, record_id, value):
+        self.records.append((space, object_id, dataset, record_id, value))
+        return {}
 
     def create_object(self, space, body):
         self._n += 1
@@ -63,6 +75,9 @@ class FakeAny:
             self.states.append({"id": oid,
                                 "sync_state": dict(props["sync_state"]),
                                 "modifiedAt": 100})
+        if "agent-progress" in props:
+            self.progress_rows.append({"id": oid,
+                                       "agent-progress": dict(props["agent-progress"])})
         return {"objectId": oid}
 
     def update_object(self, space, oid, body):
@@ -70,6 +85,9 @@ class FakeAny:
         for row in self.states:
             if row["id"] == oid and "sync_state" in body:
                 row["sync_state"].update(body["sync_state"])
+        for row in self.progress_rows:
+            if row["id"] == oid and "agent-progress" in body:
+                row["agent-progress"].update(body["agent-progress"])
         return {"objectId": oid}
 
     def delete_object(self, space, oid):
@@ -126,6 +144,8 @@ def gmail_fx(raws, pages=None, history=None, history_status=200, fuel=None):
         if name == "fuel.state":
             return {"remaining": (fuel.pop(0) if fuel else 50_000_000_000),
                     "budget": 50_000_000_000}
+        if name == "time.now":
+            return {"epoch": 1786600000.0}
         if name == "sleep":
             return {}
         url = payload.get("url", "")
@@ -363,3 +383,64 @@ def test_status_reports_state_and_counts():
     out = mod.status("sp")
     assert out == {"configured": True, "cursor": "H9", "pageToken": "PT",
                    "syncedCount": 1, "emailCount": 1}
+
+
+# --- backfill chain ----------------------------------------------------------
+
+def chain_args(hop=1):
+    return {"space": "sp", "q": "newer_than:1y", "chain": True,
+            "triggerSpace": "agentsp", "hop": hop}
+
+
+def test_start_backfill_arms_hop_and_creates_progress():
+    fake = FakeAny()
+    mod = load(gmail_fx({}, pages=[{"messages": ["a", "b", "c"]}]), fake)
+    out = mod.start_backfill("sp", "agentsp", q="newer_than:1y")
+    assert out["armed"] is True and out["estimatedTotal"] == 3
+    (space, obj, ds, rid, val) = fake.records[-1]
+    assert (space, obj, ds) == ("agentsp", "anchor1", "agent_triggers")
+    assert rid.startswith("gmailSyncBackfill-") and rid.endswith("-1")
+    assert val["kind"] == "once" and val["args"]["chain"] is True
+    assert val["args"]["triggerSpace"] == "agentsp"
+    prog = fake.progress_rows[0]["agent-progress"]
+    assert prog["job"] == "gmail-backfill" and prog["status"] == "running"
+
+
+def test_chain_hop_arms_next_before_work_and_updates_progress():
+    ids = ["m1", "m2"]
+    raws = {m: raw_msg(m) for m in ids}
+    fake = FakeAny()   # fresh space: no cursor -> backlog -> arm next
+    mod = load(gmail_fx(raws, pages=[{"messages": ids}]), fake)
+    out = mod.main(chain_args(hop=1))
+    assert out["chainArmed"] is True and out["made"] == 2
+    armed = [r for r in fake.records
+             if r[3].startswith("gmailSyncBackfill-") and r[3].endswith("-2")]
+    assert len(armed) == 1                     # next hop armed exactly once
+    prog = fake.progress_rows[0]["agent-progress"]
+    assert prog["status"] == "running" and prog["current"] == 2
+    assert fake.state()["chain_failures"] == 0  # completed hop resets breaker
+
+
+def test_chain_ends_in_steady_state_without_arming():
+    fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
+                            "sync_state": {"cursor": "H100", "page_token": "",
+                                           "synced_count": 2,
+                                           "chain_failures": 0}}])
+    history = {"historyId": "H101", "history": []}
+    mod = load(gmail_fx({}, history=history), fake)
+    out = mod.main(chain_args(hop=7))
+    assert out["chainDone"] is True and out["chainArmed"] is False
+    assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
+    assert fake.progress_rows[0]["agent-progress"]["status"] == "done"
+
+
+def test_chain_circuit_breaker_stops_after_failed_hops():
+    fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
+                            "sync_state": {"cursor": "", "page_token": "",
+                                           "synced_count": 0,
+                                           "chain_failures": 5}}])
+    mod = load(gmail_fx({}), fake)
+    out = mod.main(chain_args(hop=9))
+    assert "circuit breaker" in out["error"]
+    assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
+    assert fake.progress_rows[0]["agent-progress"]["status"] == "failed"
