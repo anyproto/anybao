@@ -44,7 +44,10 @@ once, expensive to redo.
   backlog; hand off to `start_backfill` instead.
 
 `q` is Gmail search syntax; default `newer_than:1y`, whole history is
-opt-in, exclusions are negative terms (`-from:x -label:y`).
+opt-in, exclusions are negative terms (`-from:x -label:y`). Widening
+a drained sync's window = `start_backfill` with the new q — it
+re-lists the new scope (synced mail skips); `sync_now` and the cron
+NEVER re-list, their q only filters what a tick sees.
 
 Watch progress with `status(space)` → `{cursor, pageToken,
 syncedCount, emailCount}` (empty pageToken = backlog drained, now

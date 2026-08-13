@@ -118,6 +118,18 @@ outcome and posts the chat update itself, so an unattended sync never
 ends silently. The nudge is best-effort — a notification failure
 never fails the sync result.
 
+**Scope changes** (amended 2026-08-13): `sync_state` records the
+scope that minted its checkpoint (`last_q`). `start_backfill` with
+the same q resumes the checkpoint; with a *different* q it clears
+`cursor` + `page_token` first, forcing a full re-list of the new
+scope — the only correct move, since a cursor makes every hop an
+incremental tick that never lists the widened window (prod 08-13:
+a 7d→14d re-arm reported FINISHED at the old count) and a Gmail page
+token is bound to the q that minted it. Idempotency makes the
+re-list cheap (existing `gmail_id`s skip); the drain re-captures a
+fresh cursor. `sync_now`/cron q never re-lists — widening a drained
+sync's window is exclusively `start_backfill`'s job.
+
 ### 3. Email objects
 
 Type `email`, one object **per message** (thread granularity decided

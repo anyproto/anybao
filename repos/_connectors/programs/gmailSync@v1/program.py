@@ -51,6 +51,7 @@ STATE_TYPE = {
         {"name": "chain_hop", "kind": "number"},
         {"name": "chain_failures", "kind": "number"},
         {"name": "chain_gen", "kind": "number"},
+        {"name": "last_q"},
     ],
 }
 PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
@@ -686,8 +687,11 @@ def start_backfill(space, agent_space, q=None):
     "gmail-backfill"); watch it or `status(space)`. When the chain
     ends — backlog drained OR breaker — it arms a toolcaller nudge so
     the agent reports the outcome into its chat. Idempotent: re-arming
-    resumes where the checkpoint left off (each arm is a fresh chain
-    generation with its own trigger ids)."""
+    with the SAME q resumes where the checkpoint left off; a DIFFERENT
+    q re-lists the new scope from scratch (already-synced messages are
+    skipped) — this is the only way to widen a drained sync's window
+    (sync_now/cron never re-list). Each arm is a fresh chain
+    generation with its own trigger ids."""
     # accept any spaceConfig shape (id, name, row, baoSpaceConfig) but
     # chain on plain strings — trigger args and ids are built from them
     space, agent_space = _space_id(space), _space_id(agent_space)
@@ -697,8 +701,17 @@ def start_backfill(space, agent_space, q=None):
     _any.create_type(space, PROGRESS_TYPE)
     state_id, state = _ensure_state(space)
     gen = int(state.get("chain_gen") or 0) + 1
-    _any.update_object(space, state_id, {"sync_state": {
-        "chain_failures": 0, "chain_gen": gen}})
+    updates = {"chain_failures": 0, "chain_gen": gen, "last_q": q}
+    if q != (state.get("last_q") or ""):
+        # a cursor/page_token minted under another q must not survive a
+        # scope change: the cursor turns the whole chain into one no-op
+        # incremental tick that never lists the widened window (live
+        # 08-13: 7d→14d re-arm reported FINISHED at the old count), and
+        # a page token is bound to the q that minted it. Clearing both
+        # forces a full re-list of the new scope — idempotency skips
+        # what's already synced, the drain re-captures a fresh cursor.
+        updates.update({"cursor": "", "page_token": ""})
+    _any.update_object(space, state_id, {"sync_state": updates})
     total, token = 0, None
     while total < 5000:            # bounded estimate; 0 stays honest
         page = _gm.list_messages(q=q, max_results=100, page_token=token)

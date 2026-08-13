@@ -438,8 +438,8 @@ def test_rearm_after_fired_chain_mints_fresh_trigger_ids():
     fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
                             "sync_state": {"cursor": "", "page_token": "p1",
                                            "synced_count": 0, "chain_gen": 1,
-                                           "chain_hop": 5,
-                                           "chain_failures": 5}}])
+                                           "chain_hop": 5, "chain_failures": 5,
+                                           "last_q": "newer_than:1y"}}])
     mod = load(gmail_fx({}, pages=[{"messages": ["a"]}]), fake)
     out = mod.start_backfill("sp", "agentsp", q="newer_than:1y")
     assert out["armed"] is True
@@ -447,6 +447,31 @@ def test_rearm_after_fired_chain_mints_fresh_trigger_ids():
     assert rid.endswith("-g2-h6")              # new gen, no id reuse
     st = fake.state()
     assert st["chain_gen"] == 2 and st["chain_failures"] == 0
+    assert st["page_token"] == "p1"            # same q: checkpoint resumes
+
+
+def test_start_backfill_with_new_q_forces_full_relist():
+    # THE 08-13 third prod bug: widening 7d→14d on a drained sync
+    # no-oped — the cursor turned the chain into one incremental tick
+    # that never listed the wider window, and the nudge said FINISHED
+    # at the old count. A q change must drop cursor+page_token so the
+    # chain re-lists the new scope (idempotency skips synced mail).
+    fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
+                            "sync_state": {"cursor": "H100", "page_token": "",
+                                           "synced_count": 113, "chain_gen": 4,
+                                           "chain_hop": 7, "chain_failures": 0,
+                                           "last_q": "newer_than:7d"}}])
+    mod = load(gmail_fx({}, pages=[{"messages": ["a", "b"]}]), fake)
+    out = mod.start_backfill("sp", "agentsp", q="newer_than:14d")
+    assert out["armed"] is True and out["estimatedTotal"] == 2
+    st = fake.state()
+    assert st["cursor"] == "" and st["page_token"] == ""   # scope reset
+    assert st["last_q"] == "newer_than:14d"
+    # and an unchanged-q re-arm right after does NOT reset again
+    fake.state()["cursor"] = "H200"
+    mod2 = load(gmail_fx({}, pages=[{"messages": ["a", "b"]}]), fake)
+    mod2.start_backfill("sp", "agentsp", q="newer_than:14d")
+    assert fake.state()["cursor"] == "H200"
 
 
 def test_chain_hop_arms_next_before_work_and_updates_progress():
