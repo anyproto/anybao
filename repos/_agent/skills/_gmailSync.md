@@ -14,6 +14,15 @@ gmail.readonly; user-facing turns ONLY, never cron); on
 `consent_timeout` tell the user to finish in the browser and poll
 `googleAuth.status()` until connected. Re-probe, then arm.
 
+**Scope is a conversation, not a default.** Before arming an initial
+backfill, settle the flow with the user in ONE question: time window
+(default `newer_than:1y`, whole history opt-in), exclusions (offer
+the usual noise — newsletter/notification senders — as `-from:x`
+negative terms; never `-category:` filters, categories overlap real
+mail), and whether to register the steady-state cron once the backlog
+drains. A wrong scope means re-fetching everything — cheap to ask
+once, expensive to redo.
+
 - **Initial sync / big backlog →
   `start_backfill(space, agent_space, q=None)`.** The reliable path:
   arms a self-chaining once-trigger — every hop is its own run with a
