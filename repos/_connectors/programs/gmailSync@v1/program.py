@@ -614,8 +614,10 @@ def _chain_hop(space, q, agent_space, hop, gen):
             f"backfill chain for space '{space}' STOPPED: circuit breaker "
             f"open after {fails} consecutive failed hops. Check the "
             "gmail-backfill progress object and gmailSync.status for the "
-            "cause, then post ONE short chat message telling the user what "
-            "broke and what you propose to do."))
+            "cause, then reply with ONE short message telling the user what "
+            "broke and what you propose to do. Your reply reaches the chat "
+            "by itself — do NOT chat_send it, or it posts twice (once as "
+            "the user)."))
         return {"mode": "chain", "error": f"circuit breaker open ({fails} "
                 "consecutive failed hops)", "done": False, "notified": notified}
     backlog = not state.get("cursor") or bool(state.get("page_token"))
@@ -643,9 +645,10 @@ def _chain_hop(space, q, agent_space, hop, gen):
             f"backfill for space '{space}' FINISHED: backlog drained, "
             f"{int(out.get('syncedCount') or state.get('synced_count') or 0)} "
             "messages synced in total. Verify with gmailSync.status, then "
-            "post ONE short "
-            "completion update to the user in this chat (mention the email "
-            "count and that incremental ticks take over from here)."))
+            "reply with ONE short completion update (mention the email "
+            "count and that incremental ticks take over from here). Your "
+            "reply reaches the chat by itself — do NOT chat_send it, or it "
+            "posts twice (once as the user)."))
     return {**out, "hop": hop, "gen": gen, "chainArmed": backlog,
             "chainDone": done, "notified": notified}
 

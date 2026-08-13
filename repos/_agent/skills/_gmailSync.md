@@ -32,8 +32,9 @@ once, expensive to redo.
   (`baoSpaceConfig` — the trigger lives on its anchor). Idempotent:
   re-arming resumes, never restarts. Tell the user it runs unattended
   and how to watch it. When the chain ends — drained or breaker — a
-  system-nudge turn arrives in this chat: process it and post the
-  update it asks for.
+  system-nudge turn arrives in this chat: process it and REPLY with
+  the one-message update it asks for (never chat_send it yourself —
+  your reply is delivered automatically).
 - **Steady state → a cron trigger**: an `agent_triggers` record with
   kind `"cron"`, program `"connectors:gmailSync@v1"`, args
   `{"space", "q"?}` — each tick is one coalesced history increment.

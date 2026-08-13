@@ -80,7 +80,12 @@ Chat:
 
 - Every space derives exactly **one** general chat; its id is
   `c.general_chat(space)`. Post with `c.chat_send(space,
-  c.general_chat(space), {"text": …})`; read with `c.query(space,
+  c.general_chat(space), {"text": …, "agent": {"name": "bao", "done":
+  true}})` — the `agent` marker is what renders the message as YOU; a
+  bare `{"text"}` posts it as the USER (live confusion 08-13). Never
+  chat_send into your OWN serving chat: your replies and narration are
+  delivered there automatically — a manual send duplicates them. Read
+  with `c.query(space,
   chat_id, "chat_messages", sort=["-createdAt"], limit=n)` — NOT
   `history.recent_turns` (that's the agentlog, not the conversation).
   NEVER create a chat object or pick one from a query — name-matched
