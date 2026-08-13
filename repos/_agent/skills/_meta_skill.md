@@ -30,6 +30,6 @@ noun, and must NOT start with an underscore. Keep the body tight; a
 skill is a prompt read every relevant turn, not a wiki page.
 
 **System skills** (deploy-pipeline-managed — `_core`, `_soul`, `_any`,
-`_memory`, `_space_context`, `_meta_skill`) carry the leading
+`_memory`, `_space_context`, `_meta_skill`, `_gmailSync`) carry the leading
 underscore, are excluded from the list above, and get overwritten on
 every deploy. Don't `_`-prefix your own skills.
