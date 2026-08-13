@@ -4,6 +4,16 @@ Gmail → space sync (`connectors:gmailSync@v1`, ADR-012). Route by job
 size — never drain a mailbox from chat, and never rebuild the corpus
 through the raw `gmail@v1` connector:
 
+**First, smoke-check the credential** — an unattended chain armed on
+a dead grant just burns its 5 hops with nobody watching:
+`use("connectors:gmail@v1").list_messages(max_results=1)`. `{ok:
+True}` → proceed. A not-connected error → run
+`use("connectors:googleAuth@v1").connect()` (opens Google consent in
+the user's browser, blocks ≤120s, default scopes include
+gmail.readonly; user-facing turns ONLY, never cron); on
+`consent_timeout` tell the user to finish in the browser and poll
+`googleAuth.status()` until connected. Re-probe, then arm.
+
 - **Initial sync / big backlog →
   `start_backfill(space, agent_space, q=None)`.** The reliable path:
   arms a self-chaining once-trigger — every hop is its own run with a
