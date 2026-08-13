@@ -410,6 +410,25 @@ def test_start_backfill_arms_hop_and_creates_progress():
     assert prog["job"] == "gmail-backfill" and prog["status"] == "running"
 
 
+def test_start_backfill_accepts_spaceconfig_dicts():
+    # THE 08-13 second prod bug: the docstring tells the agent to pass
+    # baoSpaceConfig (and rows are valid spaceConfigs everywhere else),
+    # but the chain sliced space[8:16] on the dict — KeyError
+    # slice(8, 16, None). Rows and baoSpaceConfig must normalize to
+    # plain id strings for trigger args and ids.
+    fake = FakeAny()
+    mod = load(gmail_fx({}, pages=[{"messages": ["a"]}]), fake)
+    row = {"id": "bafyreidra6kbuntXYZ", "name": "Emails", "status": "active"}
+    bao_cfg = {"spaceId": "agentsp", "chatId": "chat1"}
+    out = mod.start_backfill(row, bao_cfg, q="newer_than:7d")
+    assert out["armed"] is True
+    (space, obj, ds, rid, val) = fake.records[-1]
+    assert space == "agentsp"                    # normalized, not the dict
+    assert rid == "gmailSyncBackfill-ra6kbunt-g1-h1"
+    assert val["args"]["space"] == "bafyreidra6kbuntXYZ"
+    assert val["args"]["triggerSpace"] == "agentsp"
+
+
 def test_rearm_after_fired_chain_mints_fresh_trigger_ids():
     # THE 08-13 prod bug: a re-arm reused a hop id whose once-trigger
     # had already fired — the runner's lastRunAt survives upserts, so

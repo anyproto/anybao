@@ -516,6 +516,26 @@ def _tick(space, q=None, cap=None):
 # and rolls last_run_at into the record afterwards — re-arming the same
 # id would race that); fired hops stay behind as the audit trail.
 
+def _space_id(s):
+    # spaceConfig → a plain id/name STRING. The agent legitimately
+    # passes a list_spaces() row or baoSpaceConfig (start_backfill's
+    # docstring says to) — but the chain stores this in trigger args
+    # and slices it into trigger ids, so normalize once at the entry
+    # (live 08-13: KeyError slice(8,16) building a hop id from a dict).
+    if isinstance(s, dict):
+        s = s.get("id") or s.get("spaceId") or ""
+    if not s:
+        raise ValueError("pass a space id/name string, a list_spaces() "
+                         "row, or baoSpaceConfig")
+    return s
+
+
+def _tid_frag(space_id):
+    # the multibase id minus its constant "bafyrei…" prefix keeps two
+    # spaces' chains from colliding; short names pass through whole
+    return space_id[8:16] or space_id
+
+
 def _trigger_anchor(agent_space):
     """The agent-triggers anchor object — OLDEST wins, the identical
     rank the runtime's ensure_typed applies, so both sides converge."""
@@ -528,14 +548,13 @@ def _trigger_anchor(agent_space):
 
 
 def _arm_hop(agent_space, space, q, gen, hop):
-    # slice past the constant multibase prefix ("bafyrei…") so two
-    # spaces' chains can't collide on trigger ids. gen (bumped on every
-    # start_backfill) keeps ids fresh across re-arms: a fired once-
-    # trigger is consumed forever — the runner's lastRunAt survives
-    # upserts (triggers.rs once_due) — so reusing an id from an earlier
-    # chain arms a dead trigger while reporting armed (live: 08-13,
-    # hop-6 id reuse left the re-armed chain silently inert).
-    tid = f"gmailSyncBackfill-{space[8:16]}-g{gen}-h{hop}"
+    # gen (bumped on every start_backfill) keeps ids fresh across
+    # re-arms: a fired once-trigger is consumed forever — the runner's
+    # lastRunAt survives upserts (triggers.rs once_due) — so reusing an
+    # id from an earlier chain arms a dead trigger while reporting
+    # armed (live: 08-13, hop-6 id reuse left the re-armed chain
+    # silently inert).
+    tid = f"gmailSyncBackfill-{_tid_frag(space)}-g{gen}-h{hop}"
     _any.upsert_record(agent_space, _trigger_anchor(agent_space),
                        "agent_triggers", tid, {
         "kind": "once", "spec": {"at": now()},  # noqa: F821 - past `at` fires late
@@ -554,7 +573,7 @@ def _notify_agent(agent_space, space, gen, text):
     # the sync result must not fail on a notification hiccup.
     try:
         chat = _any.general_chat(agent_space)
-        tid = f"gmailSyncNotify-{space[8:16]}-g{gen}"
+        tid = f"gmailSyncNotify-{_tid_frag(space)}-g{gen}"
         _any.upsert_record(agent_space, _trigger_anchor(agent_space),
                            "agent_triggers", tid, {
             "kind": "once", "spec": {"at": now()},  # noqa: F821 - guest global
@@ -666,6 +685,9 @@ def start_backfill(space, agent_space, q=None):
     the agent reports the outcome into its chat. Idempotent: re-arming
     resumes where the checkpoint left off (each arm is a fresh chain
     generation with its own trigger ids)."""
+    # accept any spaceConfig shape (id, name, row, baoSpaceConfig) but
+    # chain on plain strings — trigger args and ids are built from them
+    space, agent_space = _space_id(space), _space_id(agent_space)
     q = q or _DEFAULT_Q
     _any.create_type(space, EMAIL_TYPE)
     _any.create_type(space, STATE_TYPE)
