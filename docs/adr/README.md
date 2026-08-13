@@ -26,6 +26,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 010 | Native introspection — docstrings as the single doc surface | Accepted |
 | 011 | OAuth credentials — host-held tokens, `oauth.*` effects | Accepted |
 | 012 | Gmail mailbox sync — space objects, email cleanup, contact graph | Accepted |
+| 013 | Agent-authored programs — `create_program` in the working space | Draft |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
