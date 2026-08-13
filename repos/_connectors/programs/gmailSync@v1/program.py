@@ -50,6 +50,7 @@ STATE_TYPE = {
         {"name": "synced_count", "kind": "number"},
         {"name": "chain_hop", "kind": "number"},
         {"name": "chain_failures", "kind": "number"},
+        {"name": "chain_gen", "kind": "number"},
     ],
 }
 PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
@@ -526,18 +527,43 @@ def _trigger_anchor(agent_space):
     return rows[0]["id"]
 
 
-def _arm_hop(agent_space, space, q, hop):
+def _arm_hop(agent_space, space, q, gen, hop):
     # slice past the constant multibase prefix ("bafyrei…") so two
-    # spaces' chains can't collide on trigger ids
-    tid = f"gmailSyncBackfill-{space[8:16]}-{hop}"
+    # spaces' chains can't collide on trigger ids. gen (bumped on every
+    # start_backfill) keeps ids fresh across re-arms: a fired once-
+    # trigger is consumed forever — the runner's lastRunAt survives
+    # upserts (triggers.rs once_due) — so reusing an id from an earlier
+    # chain arms a dead trigger while reporting armed (live: 08-13,
+    # hop-6 id reuse left the re-armed chain silently inert).
+    tid = f"gmailSyncBackfill-{space[8:16]}-g{gen}-h{hop}"
     _any.upsert_record(agent_space, _trigger_anchor(agent_space),
                        "agent_triggers", tid, {
         "kind": "once", "spec": {"at": now()},  # noqa: F821 - past `at` fires late
         "program": "connectors:gmailSync@v1",
         "args": {"space": space, "q": q, "chain": True,
-                 "triggerSpace": agent_space, "hop": hop},
+                 "triggerSpace": agent_space, "gen": gen, "hop": hop},
         "enabled": True, "name": f"gmail backfill hop {hop}"})
     return tid
+
+
+def _notify_agent(agent_space, space, gen, text):
+    # Chain end (drained or breaker) pokes the agent, not the chat: a
+    # once-trigger on toolcaller whose userText is a system nudge — the
+    # agent reads the outcome and writes the chat update itself (a raw
+    # chat_send here couldn't contextualize or advise). Best-effort:
+    # the sync result must not fail on a notification hiccup.
+    try:
+        chat = _any.general_chat(agent_space)
+        tid = f"gmailSyncNotify-{space[8:16]}-g{gen}"
+        _any.upsert_record(agent_space, _trigger_anchor(agent_space),
+                           "agent_triggers", tid, {
+            "kind": "once", "spec": {"at": now()},  # noqa: F821 - guest global
+            "program": "agent:toolcaller@v1",
+            "args": {"space": agent_space, "chatId": chat, "userText": text},
+            "enabled": True, "name": "gmail backfill report"})
+        return tid
+    except Exception:
+        return None
 
 
 def _progress(space, job, fields):
@@ -553,19 +579,29 @@ def _progress(space, job, fields):
     return made["objectId"]
 
 
-def _chain_hop(space, q, agent_space, hop):
+def _chain_hop(space, q, agent_space, hop, gen):
     state_id, state = _ensure_state(space)
     fails = int(state.get("chain_failures") or 0)
     if fails >= _MAX_CHAIN_FAILURES:
+        # keep chain_hop truthful even on the breaker hop — a stale
+        # chain_hop fed the 08-13 id-reuse bug
+        _any.update_object(space, state_id, {"sync_state": {"chain_hop": hop}})
         _progress(space, "gmail-backfill", {
             "status": "failed", "detail": f"stalled after {fails} failed hops",
             "error": "chain circuit-breaker open — fix the cause, then "
                      "start_backfill again", "updatedAt": now()})  # noqa: F821
+        notified = _notify_agent(agent_space, space, gen, (
+            "[system nudge — automated, no user on this turn] The gmail "
+            f"backfill chain for space '{space}' STOPPED: circuit breaker "
+            f"open after {fails} consecutive failed hops. Check the "
+            "gmail-backfill progress object and gmailSync.status for the "
+            "cause, then post ONE short chat message telling the user what "
+            "broke and what you propose to do."))
         return {"mode": "chain", "error": f"circuit breaker open ({fails} "
-                "consecutive failed hops)", "done": False}
+                "consecutive failed hops)", "done": False, "notified": notified}
     backlog = not state.get("cursor") or bool(state.get("page_token"))
     if backlog:
-        _arm_hop(agent_space, space, q, hop + 1)
+        _arm_hop(agent_space, space, q, gen, hop + 1)
     # bump-early: a hop that dies pre-checkpoint still counts against
     # the breaker; a completed hop resets it below
     _any.update_object(space, state_id, {"sync_state": {
@@ -581,7 +617,18 @@ def _chain_hop(space, q, agent_space, hop):
         "detail": f"hop {hop}: {out.get('mode')} made={out.get('made')}",
         "error": str(out.get("error") or ""), "updatedAt": now(),  # noqa: F821
         "program": "connectors:gmailSync@v1"})
-    return {**out, "hop": hop, "chainArmed": backlog, "chainDone": done}
+    notified = None
+    if done:
+        notified = _notify_agent(agent_space, space, gen, (
+            "[system nudge — automated, no user on this turn] The gmail "
+            f"backfill for space '{space}' FINISHED: backlog drained, "
+            f"{int(out.get('syncedCount') or state.get('synced_count') or 0)} "
+            "messages synced in total. Verify with gmailSync.status, then "
+            "post ONE short "
+            "completion update to the user in this chat (mention the email "
+            "count and that incremental ticks take over from here)."))
+    return {**out, "hop": hop, "gen": gen, "chainArmed": backlog,
+            "chainDone": done, "notified": notified}
 
 
 # --- agent/user surface ----------------------------------------------------
@@ -614,14 +661,19 @@ def start_backfill(space, agent_space, q=None):
     5 consecutive failed hops. `agent_space` is the serving agent's
     space (baoSpaceConfig — triggers live on its anchor). Progress is
     an `agent-progress` object in the target space (job
-    "gmail-backfill"); watch it or `status(space)`. Idempotent:
-    re-arming resumes where the checkpoint left off."""
+    "gmail-backfill"); watch it or `status(space)`. When the chain
+    ends — backlog drained OR breaker — it arms a toolcaller nudge so
+    the agent reports the outcome into its chat. Idempotent: re-arming
+    resumes where the checkpoint left off (each arm is a fresh chain
+    generation with its own trigger ids)."""
     q = q or _DEFAULT_Q
     _any.create_type(space, EMAIL_TYPE)
     _any.create_type(space, STATE_TYPE)
     _any.create_type(space, PROGRESS_TYPE)
     state_id, state = _ensure_state(space)
-    _any.update_object(space, state_id, {"sync_state": {"chain_failures": 0}})
+    gen = int(state.get("chain_gen") or 0) + 1
+    _any.update_object(space, state_id, {"sync_state": {
+        "chain_failures": 0, "chain_gen": gen}})
     total, token = 0, None
     while total < 5000:            # bounded estimate; 0 stays honest
         page = _gm.list_messages(q=q, max_results=100, page_token=token)
@@ -638,7 +690,7 @@ def start_backfill(space, agent_space, q=None):
         "total": total if token is None else 0,   # token left ⇒ indeterminate
         "detail": "armed", "startedAt": now(), "updatedAt": now(),  # noqa: F821
         "error": "", "program": "connectors:gmailSync@v1"})
-    trigger = _arm_hop(agent_space, space, q, hop)
+    trigger = _arm_hop(agent_space, space, q, gen, hop)
     return {"armed": True, "trigger": trigger,
             "estimatedTotal": total if token is None else None,
             "resumingFrom": int(state.get("synced_count") or 0)}
@@ -667,8 +719,9 @@ def status(space):
 
 def main(args):
     # trigger entry (§1): cron args {"space", "q"?, "maxMessages"?};
-    # backfill-chain hops add {"chain": True, "triggerSpace", "hop"}
+    # backfill-chain hops add {"chain": True, "triggerSpace", "gen", "hop"}
     if args.get("chain"):
         return _chain_hop(args["space"], args.get("q") or _DEFAULT_Q,
-                          args["triggerSpace"], int(args.get("hop") or 1))
+                          args["triggerSpace"], int(args.get("hop") or 1),
+                          int(args.get("gen") or 0))
     return _tick(args["space"], q=args.get("q"), cap=args.get("maxMessages"))

@@ -100,6 +100,9 @@ class FakeAny:
         self.markdowns[oid] = content
         return {}
 
+    def general_chat(self, space):
+        return "chat1"
+
     # convenience for asserts
     def state(self):
         return self.states[0]["sync_state"] if self.states else None
@@ -387,9 +390,9 @@ def test_status_reports_state_and_counts():
 
 # --- backfill chain ----------------------------------------------------------
 
-def chain_args(hop=1):
+def chain_args(hop=1, gen=1):
     return {"space": "sp", "q": "newer_than:1y", "chain": True,
-            "triggerSpace": "agentsp", "hop": hop}
+            "triggerSpace": "agentsp", "gen": gen, "hop": hop}
 
 
 def test_start_backfill_arms_hop_and_creates_progress():
@@ -399,11 +402,32 @@ def test_start_backfill_arms_hop_and_creates_progress():
     assert out["armed"] is True and out["estimatedTotal"] == 3
     (space, obj, ds, rid, val) = fake.records[-1]
     assert (space, obj, ds) == ("agentsp", "anchor1", "agent_triggers")
-    assert rid.startswith("gmailSyncBackfill-") and rid.endswith("-1")
+    assert rid.startswith("gmailSyncBackfill-") and rid.endswith("-g1-h1")
     assert val["kind"] == "once" and val["args"]["chain"] is True
     assert val["args"]["triggerSpace"] == "agentsp"
+    assert val["args"]["gen"] == 1
     prog = fake.progress_rows[0]["agent-progress"]
     assert prog["job"] == "gmail-backfill" and prog["status"] == "running"
+
+
+def test_rearm_after_fired_chain_mints_fresh_trigger_ids():
+    # THE 08-13 prod bug: a re-arm reused a hop id whose once-trigger
+    # had already fired — the runner's lastRunAt survives upserts, so
+    # the "armed" chain was dead. A new generation must never repeat
+    # an old generation's ids, even with chain_hop stalled at the
+    # breaker value.
+    fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
+                            "sync_state": {"cursor": "", "page_token": "p1",
+                                           "synced_count": 0, "chain_gen": 1,
+                                           "chain_hop": 5,
+                                           "chain_failures": 5}}])
+    mod = load(gmail_fx({}, pages=[{"messages": ["a"]}]), fake)
+    out = mod.start_backfill("sp", "agentsp", q="newer_than:1y")
+    assert out["armed"] is True
+    rid = fake.records[-1][3]
+    assert rid.endswith("-g2-h6")              # new gen, no id reuse
+    st = fake.state()
+    assert st["chain_gen"] == 2 and st["chain_failures"] == 0
 
 
 def test_chain_hop_arms_next_before_work_and_updates_progress():
@@ -414,17 +438,18 @@ def test_chain_hop_arms_next_before_work_and_updates_progress():
     out = mod.main(chain_args(hop=1))
     assert out["chainArmed"] is True and out["made"] == 2
     armed = [r for r in fake.records
-             if r[3].startswith("gmailSyncBackfill-") and r[3].endswith("-2")]
+             if r[3].startswith("gmailSyncBackfill-") and r[3].endswith("-g1-h2")]
     assert len(armed) == 1                     # next hop armed exactly once
+    assert out["notified"] is None             # mid-chain: no agent nudge
     prog = fake.progress_rows[0]["agent-progress"]
     assert prog["status"] == "running" and prog["current"] == 2
     assert fake.state()["chain_failures"] == 0  # completed hop resets breaker
 
 
-def test_chain_ends_in_steady_state_without_arming():
+def test_chain_ends_in_steady_state_arming_agent_nudge_only():
     fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
                             "sync_state": {"cursor": "H100", "page_token": "",
-                                           "synced_count": 2,
+                                           "synced_count": 2, "chain_gen": 1,
                                            "chain_failures": 0}}])
     history = {"historyId": "H101", "history": []}
     mod = load(gmail_fx({}, history=history), fake)
@@ -432,15 +457,26 @@ def test_chain_ends_in_steady_state_without_arming():
     assert out["chainDone"] is True and out["chainArmed"] is False
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
     assert fake.progress_rows[0]["agent-progress"]["status"] == "done"
+    # the finished chain pokes the agent to report into its chat
+    (space, obj, ds, rid, val) = fake.records[-1]
+    assert rid == out["notified"] and rid.startswith("gmailSyncNotify-")
+    assert (space, val["program"]) == ("agentsp", "agent:toolcaller@v1")
+    assert val["args"]["chatId"] == "chat1"
+    assert "FINISHED" in val["args"]["userText"]
 
 
-def test_chain_circuit_breaker_stops_after_failed_hops():
+def test_chain_circuit_breaker_stops_after_failed_hops_and_notifies():
     fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
                             "sync_state": {"cursor": "", "page_token": "",
-                                           "synced_count": 0,
+                                           "synced_count": 0, "chain_gen": 1,
                                            "chain_failures": 5}}])
     mod = load(gmail_fx({}), fake)
     out = mod.main(chain_args(hop=9))
     assert "circuit breaker" in out["error"]
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
     assert fake.progress_rows[0]["agent-progress"]["status"] == "failed"
+    assert fake.state()["chain_hop"] == 9      # bookkeeping stays truthful
+    (space, obj, ds, rid, val) = fake.records[-1]
+    assert rid == out["notified"] and rid.startswith("gmailSyncNotify-")
+    assert val["program"] == "agent:toolcaller@v1"
+    assert "STOPPED" in val["args"]["userText"]

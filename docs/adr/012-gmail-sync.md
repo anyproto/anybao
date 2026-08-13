@@ -56,7 +56,8 @@ hydration. Helpers are public `@span` methods on it — notably
 `clean_html` — not separate programs (user rule 2026-08-11: features
 are programs, helpers are methods). Runs as a cron trigger registered
 via the `agent_triggers` dataset; also user/agent-invocable
-(`sync_now`, `status`).
+(`sync_now`, `status`, `start_backfill` — the self-chaining initial
+drain, §2).
 
 ### 2. Sync algorithm
 
@@ -94,6 +95,28 @@ re-list from the newest synced `internalDate`.
 load-bearing because create+body-write is non-atomic and because the
 fallback path re-lists already-synced messages. Verified: stale-cursor
 replay creates zero duplicates (run_48b36ef7536647d2).
+
+**Backfill chain** (`start_backfill(space, agent_space, q?)`, amended
+2026-08-13): the unattended path for the initial drain. Each hop is a
+self-chaining `once` trigger on the agent space's anchor — the next
+hop is armed *before* the tick runs (a crashed hop resumes from the
+checkpoint), every hop gets a fresh fuel budget, and a circuit
+breaker stops the chain after 5 consecutive failed hops (bump-early:
+failures count even when the hop dies pre-checkpoint; a completed hop
+resets the count). Trigger ids are **generation-scoped**
+(`gmailSyncBackfill-<mid>-g<gen>-h<hop>`, `chain_gen` bumped in
+`sync_state` on every `start_backfill`): a fired `once` trigger is
+consumed forever — the runner's `lastRunAt` survives record upserts
+(ADR-006 §4 at-most-once) — so an id from an earlier chain must never
+be re-armed. (Prod incident 2026-08-13: a re-arm reused the stalled
+`chain_hop`'s id and the chain was dead while reporting `armed`;
+the breaker hop now also keeps `chain_hop` truthful.) When the chain
+ends — backlog drained or breaker open — the final hop arms a
+`once` trigger on `agent:toolcaller@v1` with a system-nudge
+`userText` (`gmailSyncNotify-<mid>-g<gen>`): the agent processes the
+outcome and posts the chat update itself, so an unattended sync never
+ends silently. The nudge is best-effort — a notification failure
+never fails the sync result.
 
 ### 3. Email objects
 
