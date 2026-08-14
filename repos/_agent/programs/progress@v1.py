@@ -9,6 +9,12 @@ throttle: tick per work chunk / percentage step, never per item — every
 tick is a p2p-synced CRDT change.
 """
 
+# TEMPORARY TRANSPORT (ADR-014 §2): the any server team is designing a
+# native, generic progress facility. When it ships, ONLY this module's
+# internals (and any-ui's ProgressSource) get rewritten against it —
+# the start/tick/done/fail surface is the contract programs keep.
+# Don't add transport-shaped features here in the meantime.
+
 _any = use("any@v1")  # noqa: F821 - `use` is the guest global
 
 PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
