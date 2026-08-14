@@ -135,35 +135,3 @@ A working-space program that proves out is **promoted by a human**:
 ported into `repos/`, reviewed, deployed — deploy remains the only
 publishing pipeline, and the agent never writes into overlay repo
 spaces (non-goal).
-
-## Non-goals
-
-- No agent writes into overlay/repo spaces; no agent-driven deploy.
-- No new host effects, no host-side validation service (O2 records
-  the escape hatch).
-- No JS, no bobrik markdown doc side-channel.
-- No watch/notify contract — that's a program bao writes, not an ADR.
-
-## Open questions
-
-- **O1**: should the very first save of a new *tool* (not its edits)
-  require a one-line user confirmation in chat? Lean no (persistence
-  ≠ power), but the noise/abuse surface of self-multiplying tools is
-  worth one review after a month of live use.
-- **O2**: validation drift between deploy.rs and the guest
-  reimplementation — shared fixtures now; if drift bites anyway, the
-  consolidation is a host `program.validate` effect, accepted then as
-  a deliberate thin-host exception.
-- **O3**: retention/cleanup — authored programs that stop being used
-  (decay sweep? manual only? `list_programs` staleness marker).
-
-## Consequences
-
-Closes the last bobrik parity gap and passes it (self-scheduled
-watches were impossible there). The 5-minute toolcaller cron gets
-replaced by a bao-authored `mailWatch@v1` calling
-`connectors:gmailSync@v1.sync_now` + a cheap-tier `agent:llm@v1`
-judge + a marker-carrying `chat_send` — same behavior, ~100× cheaper
-per tick. `_meta_skill` grows the authoring paragraph; the fixture
-corpus lands beside `repos/_agent` tests. Validation code exists
-twice by explicit decision (O2), with tests holding the two in sync.
