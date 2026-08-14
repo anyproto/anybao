@@ -27,6 +27,7 @@ class FakeAny:
         self.updates = []
         self.records = []
         self.progress_rows = []
+        self.progress_log = []   # every agent-progress frame, survives delete
         self._n = 0
 
     # -- catalog
@@ -78,6 +79,7 @@ class FakeAny:
         if "agent-progress" in props:
             self.progress_rows.append({"id": oid,
                                        "agent-progress": dict(props["agent-progress"])})
+            self.progress_log.append(dict(props["agent-progress"]))
         return {"objectId": oid}
 
     def update_object(self, space, oid, body):
@@ -88,12 +90,14 @@ class FakeAny:
         for row in self.progress_rows:
             if row["id"] == oid and "agent-progress" in body:
                 row["agent-progress"].update(body["agent-progress"])
+                self.progress_log.append(dict(row["agent-progress"]))
         return {"objectId": oid}
 
     def delete_object(self, space, oid):
         self.deleted.append(oid)
         self.emails = {g: r for g, r in self.emails.items() if r["id"] != oid}
         self.states = [r for r in self.states if r["id"] != oid]
+        self.progress_rows = [r for r in self.progress_rows if r["id"] != oid]
         return None
 
     def put_markdown(self, space, oid, content):
@@ -500,7 +504,11 @@ def test_chain_ends_in_steady_state_arming_agent_nudge_only():
     out = mod.main(chain_args(hop=7))
     assert out["chainDone"] is True and out["chainArmed"] is False
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
-    assert fake.progress_rows[0]["agent-progress"]["status"] == "done"
+    # ADR-014 §4: the drained chain ticked its final count, then
+    # done() self-cleaned — no progress object survives success
+    assert fake.progress_rows == []
+    assert fake.progress_log[-1]["current"] == 2
+    assert fake.progress_log[-1]["status"] == "running"
     # the finished chain pokes the agent to report into its chat
     (space, obj, ds, rid, val) = fake.records[-1]
     assert rid == out["notified"] and rid.startswith("gmailSyncNotify-")

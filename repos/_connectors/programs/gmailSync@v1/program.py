@@ -18,6 +18,7 @@ import re
 
 _gm = use("gmail@v1")  # noqa: F821 - `use` is the guest global; same repo
 _any = use("agent:any@v1")  # noqa: F821 - cross-repo dep, alias-qualified (ADR-009)
+_prog = use("agent:progress@v1")  # noqa: F821 - progress interface (ADR-014)
 
 _DEFAULT_Q = "newer_than:1y"  # §2: whole-history is opt-in
 _SLICE = 200                  # §2: soft cap per tick (trace containment)
@@ -54,17 +55,8 @@ STATE_TYPE = {
         {"name": "last_q"},
     ],
 }
-PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
-    "name": "Agent progress", "xKey": "agent-progress",
-    "properties": [
-        {"name": "job"}, {"name": "label"}, {"name": "status"},
-        {"name": "current", "kind": "number"}, {"name": "total", "kind": "number"},
-        {"name": "detail"}, {"name": "startedAt", "kind": "number"},
-        {"name": "updatedAt", "kind": "number"}, {"name": "error"},
-        {"name": "program"},
-    ],
-}
 _MAX_CHAIN_FAILURES = 5
+_JOB = "gmail-backfill"   # progress@v1 job key (ADR-014)
 
 
 # --- clean_html (§4) — five passes over bs4 + markdownify ------------------
@@ -586,19 +578,6 @@ def _notify_agent(agent_space, space, gen, text):
         return None
 
 
-def _progress(space, job, fields):
-    """One agent_progress object per job, properties rewritten per hop
-    (per-tick updates ARE the throttle — never per message)."""
-    rows = _any.query_objects(space, filter={"agent-progress.job": job}, limit=1)
-    if rows:
-        _any.update_object(space, rows[0]["id"], {"agent-progress": fields})
-        return rows[0]["id"]
-    made = _any.create_object(space, {
-        "types": ["agent-progress"], "name": fields.get("label") or job,
-        "initialProperties": {"agent-progress": {"job": job, **fields}}})
-    return made["objectId"]
-
-
 def _chain_hop(space, q, agent_space, hop, gen):
     state_id, state = _ensure_state(space)
     fails = int(state.get("chain_failures") or 0)
@@ -606,10 +585,10 @@ def _chain_hop(space, q, agent_space, hop, gen):
         # keep chain_hop truthful even on the breaker hop — a stale
         # chain_hop fed the 08-13 id-reuse bug
         _any.update_object(space, state_id, {"sync_state": {"chain_hop": hop}})
-        _progress(space, "gmail-backfill", {
-            "status": "failed", "detail": f"stalled after {fails} failed hops",
-            "error": "chain circuit-breaker open — fix the cause, then "
-                     "start_backfill again", "updatedAt": now()})  # noqa: F821
+        _prog.fail(space, _JOB,
+                   error="chain circuit-breaker open — fix the cause, then "
+                         "start_backfill again",
+                   detail=f"stalled after {fails} failed hops")
         notified = _notify_agent(agent_space, space, gen, (
             "[system nudge — automated, no user on this turn] The gmail "
             f"backfill chain for space '{space}' STOPPED: circuit breaker "
@@ -633,12 +612,18 @@ def _chain_hop(space, q, agent_space, hop, gen):
     _any.update_object(space, state_id, {"sync_state": {
         "chain_failures": 0 if ok else fails + 1}})
     done = ok and not backlog   # a hop entered in steady state ends the chain
-    _progress(space, "gmail-backfill", {
-        "status": "done" if done else ("running" if ok else "failed"),
-        "current": int(out.get("syncedCount") or state.get("synced_count") or 0),
-        "detail": f"hop {hop}: {out.get('mode')} made={out.get('made')}",
-        "error": str(out.get("error") or ""), "updatedAt": now(),  # noqa: F821
-        "program": "connectors:gmailSync@v1"})
+    cur = int(out.get("syncedCount") or state.get("synced_count") or 0)
+    hop_detail = f"hop {hop}: {out.get('mode')} made={out.get('made')}"
+    if not ok:
+        # transient hop failure — the next hop's tick reopens in place
+        _prog.fail(space, _JOB, error=str(out.get("error") or ""),
+                   detail=hop_detail)
+    else:
+        # final counts land in the last frame, THEN done() self-cleans
+        # (ADR-014 §4: disappearance is the success signal)
+        _prog.tick(space, _JOB, current=cur, detail=hop_detail)
+        if done:
+            _prog.done(space, _JOB)
     notified = None
     if done:
         notified = _notify_agent(agent_space, space, gen, (
@@ -682,9 +667,10 @@ def start_backfill(space, agent_space, q=None):
     the next hop is armed before work starts (a crashed hop resumes
     from the checkpoint), and a circuit breaker stops the chain after
     5 consecutive failed hops. `agent_space` is the serving agent's
-    space (baoSpaceConfig — triggers live on its anchor). Progress is
-    an `agent-progress` object in the target space (job
-    "gmail-backfill"); watch it or `status(space)`. When the chain
+    space (baoSpaceConfig — triggers live on its anchor). Progress
+    goes through agent:progress@v1 (job "gmail-backfill", ADR-014):
+    live in the target space while running or failed, self-cleaned on
+    completion — for history use `status(space)`. When the chain
     ends — backlog drained OR breaker — it arms a toolcaller nudge so
     the agent reports the outcome into its chat. Idempotent: re-arming
     with the SAME q resumes where the checkpoint left off; a DIFFERENT
@@ -698,7 +684,6 @@ def start_backfill(space, agent_space, q=None):
     q = q or _DEFAULT_Q
     _any.create_type(space, EMAIL_TYPE)
     _any.create_type(space, STATE_TYPE)
-    _any.create_type(space, PROGRESS_TYPE)
     state_id, state = _ensure_state(space)
     gen = int(state.get("chain_gen") or 0) + 1
     updates = {"chain_failures": 0, "chain_gen": gen, "last_q": q}
@@ -722,12 +707,10 @@ def start_backfill(space, agent_space, q=None):
         if not token:
             break
     hop = int(state.get("chain_hop") or 0) + 1
-    _progress(space, "gmail-backfill", {
-        "label": "Gmail backfill", "status": "running", "current":
-        int(state.get("synced_count") or 0),
-        "total": total if token is None else 0,   # token left ⇒ indeterminate
-        "detail": "armed", "startedAt": now(), "updatedAt": now(),  # noqa: F821
-        "error": "", "program": "connectors:gmailSync@v1"})
+    _prog.start(space, _JOB, label="Gmail backfill",
+                total=total if token is None else 0,  # token left ⇒ indeterminate
+                current=int(state.get("synced_count") or 0),
+                detail="armed", program="connectors:gmailSync@v1")
     trigger = _arm_hop(agent_space, space, q, gen, hop)
     return {"armed": True, "trigger": trigger,
             "estimatedTotal": total if token is None else None,
