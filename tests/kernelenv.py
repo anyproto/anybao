@@ -71,17 +71,23 @@ def local_source(spec, programs_dir=None):
     return p.read_text()
 
 
-def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None):
+def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
+                module_source=None):
     """A fresh kernel app module wired to test fakes. `effect(name,
     payload) -> output` serves pass-through effects; `any_client` /
     `llm_chat`, when given, shadow the real any@v1 / llm@v1 modules.
     `programs_dir` overrides the source root (another repo's tests —
-    e.g. repos/_connectors — resolve their own programs/)."""
+    e.g. repos/_connectors — resolve their own programs/).
+    `module_source(spec)`, when given, is consulted first for other
+    specs: return source text, `{"source", "marker"?}` (marker drives
+    the guest probe cache — bump it to model an edited program,
+    ADR-004 §4), or None to fall through to programs_dir."""
     def host_effect(name, payload_json):
         payload = json.loads(payload_json)
         try:
             if name == "module.resolve":
                 spec = payload["spec"]
+                marker = "m0"
                 # alias-qualified cross-repo specs ("agent:any@v1",
                 # ADR-009) shim identically — the alias names a space,
                 # the module is the same
@@ -90,8 +96,21 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None):
                 elif spec.split(":")[-1] == "llm@v1" and llm_chat is not None:
                     src = LLM_SHIM
                 else:
-                    src = local_source(spec, programs_dir)
-                out = {"objectId": spec, "marker": "m0", "source": src}
+                    src = None
+                    if module_source is not None:
+                        hit = module_source(spec)
+                        if isinstance(hit, dict):
+                            src = hit.get("source")
+                            marker = hit.get("marker", marker)
+                        elif hit is not None:
+                            src = hit
+                    if src is None:
+                        # the local dir serves EVERY space here — a
+                        # space-qualified spec ("<sid>:name@vN", e.g. the
+                        # ADR-013 probe / the compose render) resolves to
+                        # the same bare-name source
+                        src = local_source(spec.split(":")[-1], programs_dir)
+                out = {"objectId": spec, "marker": marker, "source": src}
             elif name in ("span.begin", "span.end"):
                 out = {}
             elif name == "test.any":

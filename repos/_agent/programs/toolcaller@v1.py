@@ -291,9 +291,16 @@ def _tool_docs(c, space, code_space=None):
         for p in c.query_objects(sp, filter={"program.any_tool": True}):
             prog = p.get("program") or {}
             name = prog.get("name") or "?"
-            spec = f"{prefix}{name}@{prog.get('version') or 'v1'}"
+            ver = prog.get("version") or "v1"
+            spec = f"{prefix}{name}@{ver}"
             try:
-                body = describe(use(spec))  # noqa: F821 - guest globals
+                # module code resolves unqualified specs in ITS defining
+                # space (ADR-004 §2.4), so working-space tools (agent-
+                # authored, ADR-013) are rendered via a space-qualified
+                # load; the displayed Import: line stays `spec` — the
+                # form cell code should use, where it resolves locally
+                load = spec if prefix else f"{sp}:{name}@{ver}"
+                body = describe(use(load))  # noqa: F821 - guest globals
             except Exception as e:
                 body = f"(unavailable: {type(e).__name__}: {e})"
             block = [f"### {name}", f'Import: `use("{spec}")`', body]

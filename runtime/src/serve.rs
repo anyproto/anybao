@@ -586,6 +586,10 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     }
     let aliases = alias_map(&cfg.overlays, &space);
     let code_space = aliases["agent"].clone();
+    // guest-visible alias map — the programs@v1 shadow guard reads it
+    // to refuse overlay-exported specs (ADR-013 §1)
+    cfg.config
+        .insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
 
     // kernel is embedded (ADR-009 §4) — the cage always boots eagerly;
     // pending overlays only gate program resolution

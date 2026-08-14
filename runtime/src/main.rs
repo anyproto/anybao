@@ -272,6 +272,12 @@ fn main() -> Result<()> {
                 }
                 None => None,
             };
+            // --from-space parity with serve: seed the guest-visible
+            // alias map for the programs@v1 shadow guard (ADR-013 §1)
+            if let Some((_, space_id)) = &from {
+                let aliases = serve::alias_map(&host.overlays, space_id);
+                config.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
+            }
             let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> =
                 from.as_ref().map(|(client, space_id)| {
                     Box::new(resolver::AnyModuleResolver::new(
