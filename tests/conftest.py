@@ -195,7 +195,7 @@ def guest_use(any_server):
 
     def use(spec):
         if spec not in cache:
-            g = {"effect": eff, "span": lambda n, kind=None: (lambda f: f), "use": use,
+            g = {"effect": eff, "span": lambda n=None, kind=None: (lambda f: f), "use": use,
                  "now": lambda: int(_time.time())}
             # flat <spec>.py or the tool-authoring folder <spec>/program.py
             # — same order as the runtime's local_source_path

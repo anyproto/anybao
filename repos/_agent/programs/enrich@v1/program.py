@@ -196,7 +196,7 @@ def _source(space, transcript_id, blocks):
     return base + "#" + ",".join(blocks) if blocks else base
 
 
-@span("enrich.analyze", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def analyze(space, opts=None):
     """The stage-1 analysis core WITHOUT persistence — previews, tests.
 
@@ -254,7 +254,7 @@ def analyze(space, opts=None):
             "tally": tally}
 
 
-@span("enrich.propose", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def propose(space, transcript_id, opts=None):
     """Stage 1: analyze the transcript and persist a DRAFT proposal.
 
@@ -341,7 +341,7 @@ def propose(space, transcript_id, opts=None):
             "errors": errors, "tally": tally}
 
 
-@span("enrich.apply", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def apply(space, proposal_id):
     """Stage 3: apply a REVIEWED proposal server-side; deletes it after.
 

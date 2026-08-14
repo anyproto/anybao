@@ -75,7 +75,7 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
 
 
 def build(fx, space="s1", **recall_kw):
-    nospan = lambda name, kind=None: (lambda f: f)  # noqa: E731
+    nospan = lambda name=None, kind=None: (lambda f: f)  # noqa: E731
     any_g = {"effect": fx, "span": nospan, "use": None}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
     any_g["_instance"] = any_g["_Client"]("http://any")   # skip config.get

@@ -41,8 +41,9 @@ your whole reasoning loop. `p = use("agent:programs@v1")`:
   src})` (version defaults v1). Source rules are the deployed ones:
   short module docstring (first line ≤ 80 chars = the listed
   summary); a tool adds `__any_tool__ = True` plus
-  `@span("<name>.<method>", kind=...)` and a docstring on every
-  public def. A passing save is immediately importable —
+  `@span(kind=...)` and a docstring on every public def (the span
+  name is derived as `<module>.<def>` — only pass a name to override
+  the display). A passing save is immediately importable —
   `use("mailWatch@v1")` — and a tool joins your inventory next turn.
 - **Edit**: `p.edit_program(s, "mailWatch@v1", [{"oldText": old,
   "newText": new}])` — all-or-nothing str_replace, like

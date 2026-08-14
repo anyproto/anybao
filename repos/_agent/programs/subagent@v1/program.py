@@ -20,7 +20,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 _MAX_TURNS = 30  # a delegated subtask, not a whole conversation
 
 
-@span("subagent.delegate", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def delegate(space, task, opts=None):
     """Run `task` in a quiet child loop → {report, stop, turns, tokens}.
 

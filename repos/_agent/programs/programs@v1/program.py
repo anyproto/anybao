@@ -300,7 +300,7 @@ def _apply_edits(spec, code, edits):
 
 # --- the tool surface (ADR-013 §2) -------------------------------------------
 
-@span("programs.create_program", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_program(spaceConfig, body):
     """Create a program in the space → {ok, objectId, spec, anyTool, probe, hint?}.
 
@@ -308,8 +308,8 @@ def create_program(spaceConfig, body):
     accepted keys exactly these). Source rules are the deployed ones
     (ADR-010 §1): short module docstring (first line ≤ 80 chars = the
     listed summary); a tool adds `__any_tool__ = True` +
-    `@span("<name>.<method>", kind=...)` and a docstring on every
-    public def. Refused loudly (nothing written): syntax errors,
+    `@span(kind=...)` and a docstring on every public def (the span
+    name derives as `<module>.<def>`). Refused loudly (nothing written): syntax errors,
     kernel-forbidden imports, an existing spec, a spec an overlay
     exports. After writing, the source is use()-probed: on success the
     program is live (a tool joins the inventory next turn); on failure
@@ -341,7 +341,7 @@ def create_program(spaceConfig, body):
     return _write_and_probe(sid, oid, spec, body["source"], summary)
 
 
-@span("programs.update_program", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def update_program(spaceConfig, spec, source):
     """Replace a program's whole source → {ok, objectId, spec, anyTool, probe, hint?}.
 
@@ -359,7 +359,7 @@ def update_program(spaceConfig, spec, source):
     return _write_and_probe(sid, oid, spec, source, summary)
 
 
-@span("programs.edit_program", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def edit_program(spaceConfig, spec, edits):
     """Surgical text edits on a program's source → {ok, objectId, spec, anyTool, probe, hint?}.
 
@@ -387,7 +387,7 @@ def edit_program(spaceConfig, spec, edits):
     return _write_and_probe(sid, oid, spec, code, summary)
 
 
-@span("programs.delete_program", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def delete_program(spaceConfig, spec):
     """Delete a working-space program object → {ok, objectId, spec}.
 

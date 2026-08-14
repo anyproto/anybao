@@ -34,7 +34,7 @@ def wire(replies=None, status=200, config=None):
 
 
 def load(fx):
-    g = {"effect": fx, "span": lambda name, kind=None: (lambda f: f), "use": None}
+    g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f), "use": None}
     exec(compile(SRC, "any@v1.py", "exec"), g)
     return g
 

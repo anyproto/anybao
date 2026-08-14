@@ -173,4 +173,5 @@ spaces (non-goal).
 | ADR | Change |
 |-----|--------|
 | 002 §4 | `ast` joins the tier-1 import allowlist — pure, deterministic, already interpreter-resident (the kernel itself parses cells with it); it is the write path's syntax gate and source scanner. `compile`/`exec` stay out of the curated builtins |
+| 003 §4b | `span(name=None, kind=None)` — name defaults to the decorated def's `<module>.<function>`; explicit name = deliberate display override. Motivated by this ADR: the first agent-authored write path immediately produced drifted span names |
 | 010 §7 | the `create_program` pre-commitment is DELIVERED: `programs@v1` validates the deploy convention at write time |

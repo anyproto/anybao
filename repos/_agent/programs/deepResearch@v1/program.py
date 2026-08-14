@@ -169,7 +169,7 @@ def _sources_md(sources):
                      for s in sources)
 
 
-@span("deepResearch.research", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def research(space, question, opts=None):
     """Research `question`; write the result pages into `space`.
 

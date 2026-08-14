@@ -126,7 +126,7 @@ def frame_messages(query, memory_lines, history_lines):
     ]
 
 
-@span("autorecall.plan")  # noqa: F821 - guest global
+@span()  # noqa: F821 - guest global
 def plan(client, space, user_text, boot_min_seq=None, policy=None):
     """The injection plan for one turn: `{"messages": [...], "injected":
     [(hit, record), ...]}` — messages ready to splice before the user

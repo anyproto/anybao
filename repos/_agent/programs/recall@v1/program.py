@@ -43,7 +43,7 @@ class Recall:
         self._chat = chat_object_id
 
     # --- semantic ----------------------------------------------------------
-    @span("recall.search", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def search(self, query, scopes=DEFAULT_SCOPES, limit=10):
         """Index search across scopes → a bare LIST of hits, no envelope.
 
@@ -55,7 +55,7 @@ class Recall:
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 
-    @span("recall.hydrate", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def hydrate(self, hits):
         """Hit pointers → (hit, record) pairs, in one batched read.
 
@@ -73,7 +73,7 @@ class Recall:
         return [(h, r) for h, r in pairs if r is not None]
 
     # --- temporal ----------------------------------------------------------
-    @span("recall.by_period", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def by_period(self, from_ts, to_ts):
         """Everything in [from_ts, to_ts] (unix seconds, inclusive).
 
@@ -116,7 +116,7 @@ class Recall:
         return out
 
     # --- graph -------------------------------------------------------------
-    @span("recall.neighbors", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def neighbors(self, object_id):
         """1-hop neighborhood: {"forward": [...], "backlinks": [...]}.
 
@@ -174,7 +174,7 @@ class Recall:
                 if (p.get("format") or {}).get("type") == "links"}
 
 
-@span("recall.recall", kind="setup")  # noqa: F821 - guest global
+@span(kind="setup")  # noqa: F821 - guest global
 def recall(client, space, brain_object_id=None, chat_object_id=None):
     """Bind recall to one space over an any@v1 client — then `help(r)`.
 

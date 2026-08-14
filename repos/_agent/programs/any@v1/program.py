@@ -1096,93 +1096,93 @@ def _space(sc):
     return _c()._resolve_space(_sid(sc))
 
 
-@span("any.create_object", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_object(spaceConfig, body):
     return _c().create_object(_space(spaceConfig), body)
 
 
-@span("any.update_object", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def update_object(spaceConfig, object_id, body):
     return _c().update_object(_space(spaceConfig), object_id, body)
 
 
-@span("any.delete_object", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def delete_object(spaceConfig, object_id):
     return _c().delete_object(_space(spaceConfig), object_id)
 
 
-@span("any.query_objects", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def query_objects(spaceConfig, *, normalize=True, **opts):
     return _c().query_objects(_space(spaceConfig), normalize=normalize, **opts)
 
 
-@span("any.list_programs", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_programs(spaceConfig, tools_only=False):
     return _c().list_programs(_space(spaceConfig), tools_only)
 
 
-@span("any.query", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def query(spaceConfig, object_id, dataset, **opts):
     return _c().query(_space(spaceConfig), object_id, dataset, **opts)
 
 
-@span("any.modify", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def modify(spaceConfig, body):
     return _c().modify(_space(spaceConfig), body)
 
 
-@span("any.upsert_record", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def upsert_record(spaceConfig, object_id, dataset, record_id, value):
     return _c().upsert_record(_space(spaceConfig), object_id, dataset,
                               record_id, value)
 
 
-@span("any.aggregate", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def aggregate(spaceConfig, pipeline):
     return _c().aggregate(_space(spaceConfig), pipeline)
 
 
-@span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_markdown(spaceConfig, object_id):
     return _c().get_markdown(_space(spaceConfig), object_id)
 
 
-@span("any.put_markdown", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def put_markdown(spaceConfig, object_id, content):
     return _c().put_markdown(_space(spaceConfig), object_id, content)
 
 
-@span("any.edit_markdown", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def edit_markdown(spaceConfig, object_id, edits):
     return _c().edit_markdown(_space(spaceConfig), object_id, edits)
 
 
-@span("any.append_markdown", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def append_markdown(spaceConfig, object_id, content):
     return _c().append_markdown(_space(spaceConfig), object_id, content)
 
 
-@span("any.list_spaces", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_spaces(raw=False):
     return _c().list_spaces(raw)
 
 
-@span("any.get_space", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_space(spaceConfig, raw=False):
     return _c().get_space(_space(spaceConfig), raw)
 
 
-@span("any.general_chat", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def general_chat(spaceConfig):
     return _c().general_chat(_space(spaceConfig))
 
 
-@span("any.create_space", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_space(name, description=None):
     return _c().create_space(name, description)
 
 
-@span("any.get_ui_context", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_ui_context(spaceConfig):
     return _c().get_ui_context(_space(spaceConfig))
 
@@ -1191,46 +1191,47 @@ def get_ui_context(spaceConfig):
 # duplicate-pointer stopgap is the loop's business (toolcaller calls it
 # once per run), not a tool the model should reach for.
 @span("any.prune_ui_contexts", kind="mutator")  # noqa: F821 - guest global
+# explicit span name = display override (ADR-003 §4b): hidden def, public trace
 def _prune_ui_contexts(spaceConfig):
     return _c()._prune_ui_contexts(_space(spaceConfig))
 
 
-@span("any.list_types", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_types(spaceConfig):
     return _c().list_types(_space(spaceConfig))
 
 
-@span("any.list_properties", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_properties(spaceConfig, type_key):
     return _c().list_properties(_space(spaceConfig), type_key)
 
 
-@span("any.create_type", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_type(spaceConfig, body):
     return _c().create_type(_space(spaceConfig), body)
 
 
-@span("any.add_property", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def add_property(spaceConfig, type_key, body):
     return _c().add_property(_space(spaceConfig), type_key, body)
 
 
-@span("any.append_turn", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def append_turn(spaceConfig, chat_id, body):
     return _c().append_turn(_space(spaceConfig), chat_id, body)
 
 
-@span("any.create_chunk", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_chunk(spaceConfig, chat_id, body):
     return _c().create_chunk(_space(spaceConfig), chat_id, body)
 
 
-@span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def chat_send(spaceConfig, chat_id, body):
     return _c().chat_send(_space(spaceConfig), chat_id, body)
 
 
-@span("any.search", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def search(spaceConfig, query, scopes=None, limit=None, mode=None,
            enrich=True, **kw):
     if kw:   # A18: the guessed types= kwarg gets a redirect, not a bare TypeError
@@ -1242,27 +1243,27 @@ def search(spaceConfig, query, scopes=None, limit=None, mode=None,
     return _c().search(_space(spaceConfig), query, scopes, limit, mode, enrich)
 
 
-@span("any.backlinks", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def backlinks(spaceConfig, object_id):
     return _c().backlinks(_space(spaceConfig), object_id)
 
 
-@span("any.get_brain", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_brain(spaceConfig):
     return _c().get_brain(_space(spaceConfig))
 
 
-@span("any.create_memory", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_memory(spaceConfig, fields):
     return _c().create_memory(_space(spaceConfig), fields)
 
 
-@span("any.evolve_memory", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def evolve_memory(spaceConfig, item_id, fields):
     return _c().evolve_memory(_space(spaceConfig), item_id, fields)
 
 
-@span("any.delete_memory", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def delete_memory(spaceConfig, item_id):
     return _c().delete_memory(_space(spaceConfig), item_id)
 

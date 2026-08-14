@@ -84,7 +84,7 @@ class Memory:
         self._space = space
         self._chat = llm_chat
 
-    @span("memory.add", kind="mutator")  # noqa: F821 - guest global
+    @span(kind="mutator")  # noqa: F821 - guest global
     def add(self, category, context, **fields):
         """Create an item unconditionally; prefer `save_with_dedup`.
 
@@ -96,7 +96,7 @@ class Memory:
         reply = self._c.create_memory(self._space, body)
         return {"itemId": reply["recordIds"][0]}
 
-    @span("memory.evolve", kind="mutator")  # noqa: F821 - guest global
+    @span(kind="mutator")  # noqa: F821 - guest global
     def evolve(self, item_id, **fields):
         """Evolve mutable fields (author-only; server bumps modifiedAt).
         Fields outside the allow-list raise here — never silently sent."""
@@ -109,13 +109,13 @@ class Memory:
         self._c.evolve_memory(self._space, item_id, fields)
         return {"itemId": item_id}
 
-    @span("memory.delete", kind="mutator")  # noqa: F821 - guest global
+    @span(kind="mutator")  # noqa: F821 - guest global
     def delete(self, item_id):
         """Delete a memory item (author-only)."""
         self._c.delete_memory(self._space, item_id)
         return {"itemId": item_id}
 
-    @span("memory.bump_access", kind="mutator")  # noqa: F821 - guest global
+    @span(kind="mutator")  # noqa: F821 - guest global
     def bump_access(self, item_id, current_count):
         """accessCount = current + 1 on recall — the memory ROI signal.
 
@@ -148,7 +148,7 @@ class Memory:
             raise ValueError(f"judge returned unknown action: {verdict!r}")
         return verdict
 
-    @span("memory.save_with_dedup", kind="mutator")  # noqa: F821 - guest global
+    @span(kind="mutator")  # noqa: F821 - guest global
     def save_with_dedup(self, candidate, recall):
         """The default save path — dedup via recall + judge.
 
@@ -193,7 +193,7 @@ class Memory:
         return {**self.add(**fields), "action": "supersede"}
 
 
-@span("memory.memory", kind="setup")  # noqa: F821 - guest global
+@span(kind="setup")  # noqa: F821 - guest global
 def memory(client, space, llm_chat=None):
     """Bind the memory facade to one space's brain — then `help(m)`.
 

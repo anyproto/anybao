@@ -9,7 +9,7 @@ PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "progr
 
 def _load():
     # recent_turns / chunks_at_level are @span-wrapped now (the rest is pure)
-    g: dict = {"span": lambda name, kind=None: (lambda f: f)}
+    g: dict = {"span": lambda name=None, kind=None: (lambda f: f)}
     exec(compile((PROGRAMS_DIR / "history@v1" / "program.py").read_text(),
                  "history@v1.py", "exec"), g)
     return g
