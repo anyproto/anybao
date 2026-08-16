@@ -24,11 +24,16 @@ PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
     "properties": [
         {"name": "job"}, {"name": "label"}, {"name": "status"},
         {"name": "current", "kind": "number"}, {"name": "total", "kind": "number"},
-        {"name": "detail"}, {"name": "startedAt", "kind": "number"},
-        {"name": "updatedAt", "kind": "number"}, {"name": "error"},
+        {"name": "detail"}, {"name": "started_at", "kind": "number"},
+        {"name": "updated_at", "kind": "number"}, {"name": "error"},
         {"name": "program"},
     ],
 }
+# Property names are snake_case ON PURPOSE (ADR-014 §2 amendment): the
+# client derives xKeys by snake-casing names, and normalized READS key
+# by xKey — camelCase names made the read shape differ from the write
+# shape (and silently broke the started_at carry in _resolve, which
+# read the camel key against snake-keyed rows). name == xKey, always.
 
 
 def _resolve(space, job):
@@ -36,7 +41,7 @@ def _resolve(space, job):
 
     Query-then-create races and p2p partitions mint duplicates
     (ADR-014 §3, the sync_state dance): freshest `modifiedAt` wins,
-    stale rows are best-effort deleted, and the EARLIEST startedAt
+    stale rows are best-effort deleted, and the EARLIEST started_at
     across all rows is returned as a carry to fold into the caller's
     next write — the true start survives the race; counters never
     merge (summing racers would double-count)."""
@@ -46,12 +51,12 @@ def _resolve(space, job):
         return None, {}
     rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
     keep = rows[0]
-    starts = [(r.get("agent-progress") or {}).get("startedAt") for r in rows]
+    starts = [(r.get("agent-progress") or {}).get("started_at") for r in rows]
     starts = [s for s in starts if s]
     carry = {}
-    kept_start = (keep.get("agent-progress") or {}).get("startedAt")
+    kept_start = (keep.get("agent-progress") or {}).get("started_at")
     if starts and (not kept_start or min(starts) < kept_start):
-        carry["startedAt"] = min(starts)
+        carry["started_at"] = min(starts)
     for r in rows[1:]:
         try:  # noqa: SIM105 - best-effort, no contextlib in guest
             _any.delete_object(space, r["id"])
@@ -67,13 +72,13 @@ def start(space, job, label, total=0, current=0, detail="", program=""):
     Publishes the starting state BEFORE work begins (a bar that only
     appears at the first tick reads as a hang). Idempotent: an existing
     job object is converged (freshest wins, stale duplicates deleted,
-    earliest startedAt kept) and rewritten in place, so resume/retry
+    earliest started_at kept) and rewritten in place, so resume/retry
     reuse the same bar. total <= 0 renders indeterminate."""
     _any.create_type(space, PROGRESS_TYPE)
     fields = {"job": job, "label": label, "status": "running",
               "current": int(current), "total": int(total),
-              "detail": detail or "", "startedAt": now(),  # noqa: F821
-              "updatedAt": now(), "error": "", "program": program or ""}  # noqa: F821
+              "detail": detail or "", "started_at": now(),  # noqa: F821
+              "updated_at": now(), "error": "", "program": program or ""}  # noqa: F821
     oid, carry = _resolve(space, job)
     if oid:
         _any.update_object(space, oid, {"agent-progress": {**fields, **carry}})
@@ -93,7 +98,7 @@ def tick(space, job, current, total=None, detail=None, label=None):
     (deleted, or never started) is recreated so a resumed chain never
     loses its bar. THROTTLE: per work chunk, never per item."""
     fields = {"current": int(current), "status": "running",
-              "updatedAt": now()}  # noqa: F821
+              "updated_at": now()}  # noqa: F821
     if total is not None:
         fields["total"] = int(total)
     if detail is not None:
@@ -108,16 +113,13 @@ def tick(space, job, current, total=None, detail=None, label=None):
                  current=int(current), detail=detail or "")
 
 
-def _slug_frag(s):
-    s = "".join(ch for ch in str(s) if ch.isalnum())
-    return s[-8:] or "x"
-
-
 def _arm_notify(notify, space, job, summary):
-    """Best-effort toolcaller nudge (the gmailSync chain-end pattern):
-    a once-trigger at now() whose userText is a system nudge — the
-    agent reads the outcome and writes the chat update itself, with
-    the chat's history in context. Never raises."""
+    """Best-effort visible nudge (ADR-014 §6): post the outcome into
+    the agent chat as a `trigger:<job>` agent message. The watcher's
+    name-scoped self-skip (ADR-009 §8 amendment) treats a foreign
+    agent name as user-side input, so the message triggers the loop
+    naturally — visible in chat, not from the user, answered with the
+    chat's history in context. Never raises."""
     try:
         if isinstance(notify, dict):
             agent_space = notify.get("spaceId") or notify.get("space")
@@ -128,29 +130,16 @@ def _arm_notify(notify, space, job, summary):
             return None
         if not chat:
             chat = _any.general_chat(agent_space)
-        anchors = _any.query_objects(agent_space, filter={
-            "any.name": "agent-triggers", "any.types": "agent_trigger"})
-        anchors.sort(key=lambda r: r.get("createdAt") or 0)
-        if not anchors:
-            return None
-        tid = f"progressNotify-{_slug_frag(space)}-{job}"
-        _any.upsert_record(agent_space, anchors[0]["id"], "agent_triggers",
-                           tid, {
-                               "kind": "once", "spec": {"at": now()},  # noqa: F821
-                               "program": "agent:toolcaller@v1",
-                               "args": {"space": agent_space, "chatId": chat,
-                                        "userText": summary},
-                               "enabled": True,
-                               "name": f"progress report: {job}"})
-        return tid
+        _any.chat_send(agent_space, chat, {
+            "text": summary, "agent": {"name": f"trigger:{job}", "done": True}})
+        return chat
     except Exception:
         return None
 
 
-_NUDGE = ("[system nudge — automated, no user on this turn] Progress job "
-          "'{job}'{label} in space '{space}' {outcome}. Reply with ONE short "
-          "update for the user in this chat; your reply reaches the chat by "
-          "itself — do NOT chat_send it, or it posts twice.")
+_NUDGE = ("[trigger: progress] Job '{job}'{label} in space '{space}' "
+          "{outcome}. Report this briefly to the user in this chat — reply "
+          "normally, do not chat_send.")
 
 
 @span("progress.done", kind="mutator")  # noqa: F821 - guest global
@@ -163,9 +152,10 @@ def done(space, job, notify=None):
     counts in that last frame? tick() them just before done().
     Idempotent when nothing exists. `notify` (TENTATIVE, §6): pass
     `baoSpaceConfig` (or a `{spaceId, chatId}` dict / agent space) to
-    arm a toolcaller nudge so the agent reports completion into that
-    chat with history in context — for detached (trigger-driven) jobs;
-    pointless for work you run inline in your own turn."""
+    post a visible `trigger:<job>` chat message that triggers the loop
+    naturally — the agent reports completion in that chat with history
+    in context. For detached (trigger-driven) jobs; pointless for work
+    you run inline in your own turn."""
     rows = _any.query_objects(space, filter={"agent-progress.job": job},
                               limit=10)
     rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
@@ -215,11 +205,11 @@ def fail(space, job, error, detail=None, notify=None):
     `status: failed` + error is the durable, visible record of what
     stopped — it stays until the user acts on it or a start()/tick()
     of the same job reopens it in place (the retry path). `notify`
-    (TENTATIVE, §6): same as done() — arm a toolcaller nudge so the
-    agent tells the user what broke, with the chat's history in
-    context."""
+    (TENTATIVE, §6): same as done() — a visible `trigger:<job>` chat
+    message triggers the loop so the agent tells the user what broke,
+    with the chat's history in context."""
     fields = {"status": "failed", "error": str(error or ""),
-              "updatedAt": now()}  # noqa: F821
+              "updated_at": now()}  # noqa: F821
     if detail is not None:
         fields["detail"] = detail
     oid, carry = _resolve(space, job)

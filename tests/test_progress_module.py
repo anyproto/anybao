@@ -17,7 +17,8 @@ class FakeAny:
         self.rows = list(rows or [])   # [{id, modifiedAt, agent-progress}]
         self.types_created = []
         self.deleted = []
-        self.records = []              # upsert_record calls (notify triggers)
+        self.records = []              # upsert_record calls
+        self.chats = []                # chat_send calls (notify nudges)
         self._n = 0
 
     def create_type(self, space, body):
@@ -37,6 +38,10 @@ class FakeAny:
 
     def general_chat(self, space):
         return "chat1"
+
+    def chat_send(self, space, chat_id, body):
+        self.chats.append((space, chat_id, body))
+        return {"id": f"msg{len(self.chats)}"}
 
     def upsert_record(self, space, object_id, dataset, record_id, value):
         self.records.append((space, object_id, dataset, record_id, value))
@@ -90,10 +95,10 @@ def dup_rows():
     return [
         {"id": "fresh", "modifiedAt": 50,
          "agent-progress": {"job": "j1", "label": "L", "status": "running",
-                            "current": 7, "startedAt": 900}},
+                            "current": 7, "started_at": 900}},
         {"id": "stale", "modifiedAt": 10,
          "agent-progress": {"job": "j1", "label": "L", "status": "running",
-                            "current": 3, "startedAt": 500}},
+                            "current": 3, "started_at": 500}},
     ]
 
 
@@ -104,7 +109,7 @@ def test_start_publishes_full_baseline_before_work():
     assert oid == "obj1" and fake.types_created == ["agent-progress"]
     p = fake.job()
     assert p["status"] == "running" and p["current"] == 0 and p["total"] == 10
-    assert p["startedAt"] and p["updatedAt"] and p["error"] == ""
+    assert p["started_at"] and p["updated_at"] and p["error"] == ""
     assert p["program"] == "p@v1"
 
 
@@ -115,7 +120,7 @@ def test_start_converges_duplicates_freshest_wins_earliest_started_at():
     assert oid == "fresh" and fake.deleted == ["stale"]
     p = fake.job()
     # rewritten in place, but the TRUE start (the stale racer's) is kept
-    assert p["startedAt"] == 500 and p["current"] == 7
+    assert p["started_at"] == 500 and p["current"] == 7
 
 
 def test_tick_is_a_property_write_and_reopens_after_fail():
@@ -170,30 +175,30 @@ def test_jobs_lists_one_freshest_row_per_job():
     assert fake.deleted == []                    # jobs() is a pure getter, no pruning
 
 
-def test_done_with_notify_arms_a_toolcaller_nudge_with_final_counts():
+def test_done_with_notify_posts_a_visible_trigger_message_with_counts():
     fake = FakeAny()
     mod = load(fake)
     mod.start(SP, "j1", "Import", total=10)
     mod.tick(SP, "j1", current=10)
     mod.done(SP, "j1", notify={"spaceId": "agentsp", "chatId": "chatX"})
     assert fake.rows == []                       # still self-cleans
-    (aspace, anchor, ds, rid, val) = fake.records[-1]
-    assert (aspace, anchor, ds) == ("agentsp", "anchor-old", "agent_triggers")
-    assert rid.startswith("progressNotify-") and rid.endswith("-j1")
-    assert val["kind"] == "once" and val["program"] == "agent:toolcaller@v1"
-    assert val["args"]["chatId"] == "chatX"
-    assert "DONE" in val["args"]["userText"]
-    assert "10/10" in val["args"]["userText"]    # captured before the delete
-    assert "chat_send" in val["args"]["userText"]  # double-post guard rides along
+    (aspace, chat, body) = fake.chats[-1]
+    assert (aspace, chat) == ("agentsp", "chatX")
+    # the foreign agent name is what makes the watcher treat it as input
+    assert body["agent"]["name"] == "trigger:j1"
+    assert "DONE" in body["text"]
+    assert "10/10" in body["text"]               # captured before the delete
+    assert body["text"].startswith("[trigger: progress]")
 
 
-def test_fail_with_notify_nudges_with_the_error_and_bare_space_form():
+def test_fail_with_notify_posts_the_error_and_bare_space_form():
     fake = FakeAny()
     mod = load(fake)
-    mod.fail(SP, "j1", error="quota", notify="agentsp")  # chat ← general_chat
-    (aspace, anchor, ds, rid, val) = fake.records[-1]
-    assert aspace == "agentsp" and val["args"]["chatId"] == "chat1"
-    assert "FAILED: quota" in val["args"]["userText"]
+    mod.fail(SP, "j1", error="quota", notify="agentsp")  # chat = general_chat
+    (aspace, chat, body) = fake.chats[-1]
+    assert (aspace, chat) == ("agentsp", "chat1")
+    assert "FAILED: quota" in body["text"]
+    assert body["agent"]["name"] == "trigger:j1"
     assert len(fake.rows) == 1                   # failed object still kept
 
 
@@ -202,7 +207,7 @@ def test_notify_is_best_effort_and_omitted_by_default():
     mod = load(fake)
     mod.start(SP, "j1", "Import")
     mod.done(SP, "j1")
-    assert fake.records == []                    # no notify → no trigger writes
+    assert fake.chats == []                      # no notify → no chat writes
 
 
 def test_fail_without_prior_start_creates_the_record():

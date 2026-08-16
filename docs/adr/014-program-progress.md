@@ -67,7 +67,11 @@ Callers own the THROTTLE: tick per work chunk / percentage step /
 
 Today: one `agent-progress`-typed object per (space, job) — props
 `{job, label, status running|done|failed, current, total (<=0 ⇒
-indeterminate), detail, startedAt, updatedAt, error, program}` —
+indeterminate), detail, started_at, updated_at, error, program}`
+(snake_case on purpose, amended 2026-08-16: the client snake-cases
+names into xKeys and normalized reads key by xKey, so camelCase names
+split the read shape from the write shape — and silently broke the
+started_at carry in the §3 dance) —
 found by `agent-progress.job`, updated by property writes; the UI
 watches the objects firehose. When the any-native facility lands,
 `progress@v1` is reimplemented against it and **no program changes**.
@@ -108,17 +112,24 @@ object removed while running → succeeded + linger (§4). The
 `status_task` ui-commands dispatcher from the same branch stays
 dormant — no `api.UICommand` extension upstream.
 
-### 6. Notify-on-done (TENTATIVE interface — 2026-08-16)
+### 6. Notify-on-done (TENTATIVE interface — 2026-08-16, reworked same day)
 
 `done(...)`/`fail(...)` accept `notify` — `baoSpaceConfig`, a
 `{spaceId, chatId}` dict, or an agent-space config (chat defaults to
-its general chat). When set, the terminal call arms a once-trigger on
-`agent:toolcaller@v1` whose `userText` is a system nudge ("job X is
-DONE — 10/10 / FAILED: …"), so the agent writes the chat update itself
-with the conversation's history in context (the gmailSync chain-end
-pattern, generalized). Best-effort: a notification hiccup never fails
-the job. For detached trigger-driven jobs only — inline work reports
-in its own turn. The parameter shape is explicitly provisional; revisit
+its general chat). When set, the terminal call posts a VISIBLE chat
+message under the agent identity `trigger:<job>` ("[trigger: progress]
+Job X … is DONE — 10/10 / FAILED: …"). The watcher's name-scoped
+self-skip (ADR-009 §8 amendment: only the serving agent's own
+`agent.name` never self-triggers) makes that message trigger the loop
+like a user message — so the agent answers it in the chat with the
+conversation's history in context, and the nudge itself is visible,
+attributed, and not impersonating the user. (First cut armed an
+invisible toolcaller once-trigger instead; replaced because the
+visible message keeps chat history coherent and needs no trigger
+plumbing. A future `source` field on chat messages can carry the
+trigger identity for distinct UI rendering.) Best-effort: a
+notification hiccup never fails the job. For detached trigger-driven
+jobs only — inline work reports in its own turn. Provisional; revisit
 alongside the any-native facility's terminal events.
 
 ## Consequences
