@@ -52,6 +52,7 @@ STATE_TYPE = {
         {"name": "chain_hop", "kind": "number"},
         {"name": "chain_failures", "kind": "number"},
         {"name": "chain_gen", "kind": "number"},
+        {"name": "chain_processed", "kind": "number"},
         {"name": "last_q"},
     ],
 }
@@ -609,10 +610,16 @@ def _chain_hop(space, q, agent_space, hop, gen):
         "chain_hop": hop, "chain_failures": fails + 1}})
     out = _tick(space, q=q)
     ok = not out.get("error")
+    # per-chain progress for the bar: what THIS chain has listed
+    # (made + skipped) — the same measure as the arm-time estimate.
+    # Cumulative synced_count spans generations and scopes, so it
+    # overflowed the bar on re-arm (1,161/980 live, 08-16).
+    processed = (int(state.get("chain_processed") or 0)
+                 + int(out.get("made") or 0) + int(out.get("skipped") or 0))
     _any.update_object(space, state_id, {"sync_state": {
-        "chain_failures": 0 if ok else fails + 1}})
+        "chain_failures": 0 if ok else fails + 1,
+        "chain_processed": processed}})
     done = ok and not backlog   # a hop entered in steady state ends the chain
-    cur = int(out.get("syncedCount") or state.get("synced_count") or 0)
     hop_detail = f"hop {hop}: {out.get('mode')} made={out.get('made')}"
     if not ok:
         # transient hop failure — the next hop's tick reopens in place
@@ -621,7 +628,7 @@ def _chain_hop(space, q, agent_space, hop, gen):
     else:
         # final counts land in the last frame, THEN done() self-cleans
         # (ADR-014 §4: disappearance is the success signal)
-        _prog.tick(space, _JOB, current=cur, detail=hop_detail)
+        _prog.tick(space, _JOB, current=processed, detail=hop_detail)
         if done:
             _prog.done(space, _JOB)
     notified = None
@@ -686,7 +693,8 @@ def start_backfill(space, agent_space, q=None):
     _any.create_type(space, STATE_TYPE)
     state_id, state = _ensure_state(space)
     gen = int(state.get("chain_gen") or 0) + 1
-    updates = {"chain_failures": 0, "chain_gen": gen, "last_q": q}
+    updates = {"chain_failures": 0, "chain_gen": gen, "last_q": q,
+               "chain_processed": 0}   # per-chain bar counter, resets per arm
     if q != (state.get("last_q") or ""):
         # a cursor/page_token minted under another q must not survive a
         # scope change: the cursor turns the whole chain into one no-op
@@ -709,7 +717,7 @@ def start_backfill(space, agent_space, q=None):
     hop = int(state.get("chain_hop") or 0) + 1
     _prog.start(space, _JOB, label="Gmail backfill",
                 total=total if token is None else 0,  # token left ⇒ indeterminate
-                current=int(state.get("synced_count") or 0),
+                current=0,   # per-chain (chain_processed), not synced_count
                 detail="armed", program="connectors:gmailSync@v1")
     trigger = _arm_hop(agent_space, space, q, gen, hop)
     return {"armed": True, "trigger": trigger,

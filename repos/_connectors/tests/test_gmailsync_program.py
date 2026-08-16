@@ -505,10 +505,14 @@ def test_chain_ends_in_steady_state_arming_agent_nudge_only():
     assert out["chainDone"] is True and out["chainArmed"] is False
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
     # ADR-014 §4: the drained chain ticked its final count, then
-    # done() self-cleaned — no progress object survives success
+    # done() self-cleaned — no progress object survives success.
+    # current is PER-CHAIN (chain_processed): this steady-state hop
+    # listed nothing new, so 0 — NOT the cumulative synced_count (2),
+    # whose cross-generation drift overflowed the bar (1,161/980 live)
     assert fake.progress_rows == []
-    assert fake.progress_log[-1]["current"] == 2
+    assert fake.progress_log[-1]["current"] == 0
     assert fake.progress_log[-1]["status"] == "running"
+    assert fake.state()["chain_processed"] == 0
     # the finished chain pokes the agent to report into its chat
     (space, obj, ds, rid, val) = fake.records[-1]
     assert rid == out["notified"] and rid.startswith("gmailSyncNotify-")
