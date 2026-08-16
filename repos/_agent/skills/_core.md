@@ -131,7 +131,12 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   the job writes to — publish where the user is looking. "What's
   running?" / "did anything fail?" → `p.jobs(space)`. Long chained
   jobs (backfills): keep ONE job slug across all hops so it stays one
-  bar.
+  bar. Detached jobs (trigger-driven programs) can end with
+  `p.done(space, job, notify=<baoSpaceConfig-shaped dict>)` /
+  `p.fail(..., notify=...)` — that arms a nudge that wakes YOU in that
+  chat to report the outcome with history in context; when authoring
+  such a program, plumb the notify dict in through its trigger args.
+  Pointless for work you run inline in your own turn.
 
 Repeating one call ≥4 times in a cell earns a hint: fan out in one
 round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.

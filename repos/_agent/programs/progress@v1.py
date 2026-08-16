@@ -108,17 +108,68 @@ def tick(space, job, current, total=None, detail=None, label=None):
                  current=int(current), detail=detail or "")
 
 
+def _slug_frag(s):
+    s = "".join(ch for ch in str(s) if ch.isalnum())
+    return s[-8:] or "x"
+
+
+def _arm_notify(notify, space, job, summary):
+    """Best-effort toolcaller nudge (the gmailSync chain-end pattern):
+    a once-trigger at now() whose userText is a system nudge — the
+    agent reads the outcome and writes the chat update itself, with
+    the chat's history in context. Never raises."""
+    try:
+        if isinstance(notify, dict):
+            agent_space = notify.get("spaceId") or notify.get("space")
+            chat = notify.get("chatId")
+        else:
+            agent_space, chat = notify, None
+        if not agent_space:
+            return None
+        if not chat:
+            chat = _any.general_chat(agent_space)
+        anchors = _any.query_objects(agent_space, filter={
+            "any.name": "agent-triggers", "any.types": "agent_trigger"})
+        anchors.sort(key=lambda r: r.get("createdAt") or 0)
+        if not anchors:
+            return None
+        tid = f"progressNotify-{_slug_frag(space)}-{job}"
+        _any.upsert_record(agent_space, anchors[0]["id"], "agent_triggers",
+                           tid, {
+                               "kind": "once", "spec": {"at": now()},  # noqa: F821
+                               "program": "agent:toolcaller@v1",
+                               "args": {"space": agent_space, "chatId": chat,
+                                        "userText": summary},
+                               "enabled": True,
+                               "name": f"progress report: {job}"})
+        return tid
+    except Exception:
+        return None
+
+
+_NUDGE = ("[system nudge — automated, no user on this turn] Progress job "
+          "'{job}'{label} in space '{space}' {outcome}. Reply with ONE short "
+          "update for the user in this chat; your reply reaches the chat by "
+          "itself — do NOT chat_send it, or it posts twice.")
+
+
 @span("progress.done", kind="mutator")  # noqa: F821 - guest global
-def done(space, job):
+def done(space, job, notify=None):
     """Finish + self-clean: DELETE the job's object(s) → count deleted.
 
     A finished bar leaves nothing in the space tree (ADR-014 §4);
     disappearance IS the success signal — fail() keeps its object, so a
     watcher that sees a running job vanish renders success. Want final
     counts in that last frame? tick() them just before done().
-    Idempotent when nothing exists."""
+    Idempotent when nothing exists. `notify` (TENTATIVE, §6): pass
+    `baoSpaceConfig` (or a `{spaceId, chatId}` dict / agent space) to
+    arm a toolcaller nudge so the agent reports completion into that
+    chat with history in context — for detached (trigger-driven) jobs;
+    pointless for work you run inline in your own turn."""
     rows = _any.query_objects(space, filter={"agent-progress.job": job},
                               limit=10)
+    rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
+    last = dict(rows[0].get("agent-progress") or {}) if rows else {}
     n = 0
     for r in rows:
         try:  # noqa: SIM105 - best-effort, no contextlib in guest
@@ -126,6 +177,14 @@ def done(space, job):
             n += 1
         except _any.AnyError:
             pass
+    if notify is not None:
+        cur, tot = last.get("current"), last.get("total")
+        counts = f" — {cur}/{tot}" if cur is not None else ""
+        detail = f" ({last['detail']})" if last.get("detail") else ""
+        label = f" ({last['label']})" if last.get("label") else ""
+        _arm_notify(notify, space, job, _NUDGE.format(
+            job=job, label=label, space=space,
+            outcome=f"is DONE{counts}{detail}"))
     return n
 
 
@@ -150,12 +209,15 @@ def jobs(space):
 
 
 @span("progress.fail", kind="mutator")  # noqa: F821 - guest global
-def fail(space, job, error, detail=None):
+def fail(space, job, error, detail=None, notify=None):
     """Mark the job failed → objectId. The object is KEPT.
 
     `status: failed` + error is the durable, visible record of what
     stopped — it stays until the user acts on it or a start()/tick()
-    of the same job reopens it in place (the retry path)."""
+    of the same job reopens it in place (the retry path). `notify`
+    (TENTATIVE, §6): same as done() — arm a toolcaller nudge so the
+    agent tells the user what broke, with the chat's history in
+    context."""
     fields = {"status": "failed", "error": str(error or ""),
               "updatedAt": now()}  # noqa: F821
     if detail is not None:
@@ -163,10 +225,16 @@ def fail(space, job, error, detail=None):
     oid, carry = _resolve(space, job)
     if oid:
         _any.update_object(space, oid, {"agent-progress": {**fields, **carry}})
-        return oid
-    _any.create_type(space, PROGRESS_TYPE)
-    made = _any.create_object(space, {
-        "types": ["agent-progress"], "name": job,
-        "initialProperties": {"agent-progress": {
-            "job": job, "label": job, **fields}}})
-    return made["objectId"]
+    else:
+        _any.create_type(space, PROGRESS_TYPE)
+        made = _any.create_object(space, {
+            "types": ["agent-progress"], "name": job,
+            "initialProperties": {"agent-progress": {
+                "job": job, "label": job, **fields}}})
+        oid = made["objectId"]
+    if notify is not None:
+        d = f" ({detail})" if detail else ""
+        _arm_notify(notify, space, job, _NUDGE.format(
+            job=job, label="", space=space,
+            outcome=f"FAILED: {fields['error']}{d}"))
+    return oid

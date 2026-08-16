@@ -108,6 +108,19 @@ object removed while running → succeeded + linger (§4). The
 `status_task` ui-commands dispatcher from the same branch stays
 dormant — no `api.UICommand` extension upstream.
 
+### 6. Notify-on-done (TENTATIVE interface — 2026-08-16)
+
+`done(...)`/`fail(...)` accept `notify` — `baoSpaceConfig`, a
+`{spaceId, chatId}` dict, or an agent-space config (chat defaults to
+its general chat). When set, the terminal call arms a once-trigger on
+`agent:toolcaller@v1` whose `userText` is a system nudge ("job X is
+DONE — 10/10 / FAILED: …"), so the agent writes the chat update itself
+with the conversation's history in context (the gmailSync chain-end
+pattern, generalized). Best-effort: a notification hiccup never fails
+the job. For detached trigger-driven jobs only — inline work reports
+in its own turn. The parameter shape is explicitly provisional; revisit
+alongside the any-native facility's terminal events.
+
 ## Consequences
 
 - gmailSync drops `PROGRESS_TYPE` + `_progress()` and calls

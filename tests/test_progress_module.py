@@ -17,6 +17,7 @@ class FakeAny:
         self.rows = list(rows or [])   # [{id, modifiedAt, agent-progress}]
         self.types_created = []
         self.deleted = []
+        self.records = []              # upsert_record calls (notify triggers)
         self._n = 0
 
     def create_type(self, space, body):
@@ -25,11 +26,21 @@ class FakeAny:
 
     def query_objects(self, space, filter=None, limit=None, **kw):
         f = filter or {}
+        if f.get("any.name") == "agent-triggers":
+            return [{"id": "anchor-old", "createdAt": 10},
+                    {"id": "anchor-new", "createdAt": 99}]  # oldest wins
         if f.get("any.types") == "agent-progress":
             return [dict(r) for r in self.rows]
         job = f.get("agent-progress.job")
         return [dict(r) for r in self.rows
                 if r["agent-progress"]["job"] == job]
+
+    def general_chat(self, space):
+        return "chat1"
+
+    def upsert_record(self, space, object_id, dataset, record_id, value):
+        self.records.append((space, object_id, dataset, record_id, value))
+        return {}
 
     def create_object(self, space, body):
         self._n += 1
@@ -157,6 +168,41 @@ def test_jobs_lists_one_freshest_row_per_job():
     assert by_job["j1"]["current"] == 7          # freshest modifiedAt wins
     assert by_job["j2"]["status"] == "failed"
     assert fake.deleted == []                    # jobs() is a pure getter, no pruning
+
+
+def test_done_with_notify_arms_a_toolcaller_nudge_with_final_counts():
+    fake = FakeAny()
+    mod = load(fake)
+    mod.start(SP, "j1", "Import", total=10)
+    mod.tick(SP, "j1", current=10)
+    mod.done(SP, "j1", notify={"spaceId": "agentsp", "chatId": "chatX"})
+    assert fake.rows == []                       # still self-cleans
+    (aspace, anchor, ds, rid, val) = fake.records[-1]
+    assert (aspace, anchor, ds) == ("agentsp", "anchor-old", "agent_triggers")
+    assert rid.startswith("progressNotify-") and rid.endswith("-j1")
+    assert val["kind"] == "once" and val["program"] == "agent:toolcaller@v1"
+    assert val["args"]["chatId"] == "chatX"
+    assert "DONE" in val["args"]["userText"]
+    assert "10/10" in val["args"]["userText"]    # captured before the delete
+    assert "chat_send" in val["args"]["userText"]  # double-post guard rides along
+
+
+def test_fail_with_notify_nudges_with_the_error_and_bare_space_form():
+    fake = FakeAny()
+    mod = load(fake)
+    mod.fail(SP, "j1", error="quota", notify="agentsp")  # chat ← general_chat
+    (aspace, anchor, ds, rid, val) = fake.records[-1]
+    assert aspace == "agentsp" and val["args"]["chatId"] == "chat1"
+    assert "FAILED: quota" in val["args"]["userText"]
+    assert len(fake.rows) == 1                   # failed object still kept
+
+
+def test_notify_is_best_effort_and_omitted_by_default():
+    fake = FakeAny()
+    mod = load(fake)
+    mod.start(SP, "j1", "Import")
+    mod.done(SP, "j1")
+    assert fake.records == []                    # no notify → no trigger writes
 
 
 def test_fail_without_prior_start_creates_the_record():
