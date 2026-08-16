@@ -1,7 +1,7 @@
-"""One live progress bar per running job — the program-facing progress
-interface (ADR-014).
+"""Progress bars for long jobs — start/tick/done/fail, one bar per (space, job).
 
-Programs report progress ONLY through this module; the transport (one
+Programs and cells report progress ONLY through this module (ADR-014);
+never hand-roll agent-progress objects. The transport (one
 `agent-progress` object per (space, job), property ticks riding the
 objects firehose into any-ui) is an implementation detail to be swapped
 here when the any-native progress facility lands. Callers own the
@@ -14,6 +14,8 @@ tick is a p2p-synced CRDT change.
 # internals (and any-ui's ProgressSource) get rewritten against it —
 # the start/tick/done/fail surface is the contract programs keep.
 # Don't add transport-shaped features here in the meantime.
+
+__any_tool__ = True  # agent-callable (ADR-010 §4; ADR-014 §1 amendment)
 
 _any = use("any@v1")  # noqa: F821 - `use` is the guest global
 
@@ -125,6 +127,26 @@ def done(space, job):
         except _any.AnyError:
             pass
     return n
+
+
+@span("progress.jobs", kind="getter")  # noqa: F821 - guest global
+def jobs(space):
+    """Live bars in a space → [{job, label, status, current, total, …}].
+
+    One row per job, freshest write wins (read-side §3, no pruning —
+    this is a getter). Only running/failed rows exist by nature —
+    done() deletes its object — so this IS the answer to "what's
+    running?" / "did anything fail?"."""
+    rows = _any.query_objects(space, filter={"any.types": "agent-progress"},
+                              limit=100)
+    best = {}
+    for r in rows:
+        p = dict(r.get("agent-progress") or {})
+        job = p.get("job") or r["id"]
+        at = r.get("modifiedAt") or 0
+        if job not in best or at > best[job][0]:
+            best[job] = (at, p)
+    return [p for _, p in best.values()]
 
 
 @span("progress.fail", kind="mutator")  # noqa: F821 - guest global

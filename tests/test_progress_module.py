@@ -24,7 +24,10 @@ class FakeAny:
         return {"typeId": "T_" + body["xKey"]}
 
     def query_objects(self, space, filter=None, limit=None, **kw):
-        job = (filter or {}).get("agent-progress.job")
+        f = filter or {}
+        if f.get("any.types") == "agent-progress":
+            return [dict(r) for r in self.rows]
+        job = f.get("agent-progress.job")
         return [dict(r) for r in self.rows
                 if r["agent-progress"]["job"] == job]
 
@@ -142,6 +145,18 @@ def test_fail_keeps_the_object_as_the_record():
     p = fake.job()
     assert p["status"] == "failed" and p["error"] == "quota"
     assert p["detail"] == "hop 3" and fake.deleted == []
+
+
+def test_jobs_lists_one_freshest_row_per_job():
+    fake = FakeAny(rows=dup_rows())
+    mod = load(fake)
+    mod.fail(SP, "j2", error="boom")
+    out = mod.jobs(SP)
+    by_job = {p["job"]: p for p in out}
+    assert set(by_job) == {"j1", "j2"}          # dup j1 rows collapse to one
+    assert by_job["j1"]["current"] == 7          # freshest modifiedAt wins
+    assert by_job["j2"]["status"] == "failed"
+    assert fake.deleted == []                    # jobs() is a pure getter, no pruning
 
 
 def test_fail_without_prior_start_creates_the_record():

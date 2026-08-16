@@ -109,6 +109,29 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   self-disables and stays as its own audit trail. Recurring schedules:
   same record with `"kind": "cron"` and `spec {"cron": "<expr>"}` or
   `{"every_s": n}`. Tell the user what you scheduled and for when.
+  The recipe above IS the record shape — never dump existing
+  `agent_triggers` records to learn it (they drag huge `_ver` noise
+  into context). `program` can be ANY program — `agent:remind@v1` for
+  reminders, a connector, or one you authored via
+  `programs@v1.create_program` (watchers, periodic checks: a 40-line
+  program on a cron beats scheduling yourself a reasoning turn).
+  "Did it run?" reads the record's own audit fields:
+  `lastStatus` / `lastRunAt` / `lastRunRef` (a trace ref),
+  `consecutiveFailures`.
+- **Progress bars** (any job long enough that the user would wonder):
+  `p = use("agent:progress@v1")` — never hand-roll `agent-progress`
+  objects, the module owns that transport. `p.start(space, job_slug,
+  label, total=n)` BEFORE the work (total<=0 → indeterminate spinner);
+  `p.tick(space, job_slug, current=i)` every ~25 items or percentage
+  step (each tick is a synced write — NEVER per item); then
+  `p.done(...)` — the bar lingers and the object deletes itself — or
+  `p.fail(space, job_slug, error=...)`, which sticks in the UI and
+  stays as the record (a later `start`/`tick` with the same job_slug
+  reuses the bar: that's the retry path). The bar renders in the SPACE
+  the job writes to — publish where the user is looking. "What's
+  running?" / "did anything fail?" → `p.jobs(space)`. Long chained
+  jobs (backfills): keep ONE job slug across all hops so it stays one
+  bar.
 
 Repeating one call ≥4 times in a cell earns a hint: fan out in one
 round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.

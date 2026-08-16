@@ -51,8 +51,8 @@ NEVER re-list, their q only filters what a tick sees.
 
 Watch progress with `status(space)` → `{cursor, pageToken,
 syncedCount, emailCount}` (empty pageToken = backlog drained, now
-ticking incrementally) or the `agent-progress` object (job
-`"gmail-backfill"`) in the target space — the UI renders it live.
+ticking incrementally) or `use("agent:progress@v1").jobs(space)` (job
+`"gmail-backfill"`) — the UI renders the bar live in the target space.
 Diagnosing a stalled chain: a trigger record's `lastStatus: "ok"`
 means the hop RAN, not that it synced — sync truth is `status(space)`
 and the progress object's `error` field.

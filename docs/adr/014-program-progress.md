@@ -1,6 +1,10 @@
 # ADR-014: Program progress — `progress@v1` over agent-progress objects
 
-Status: **Accepted** (2026-08-14)
+Status: **Accepted** (2026-08-14), amended 2026-08-16 (§1: the module
+is an agent tool — `__any_tool__` — so ad-hoc chat-driven batch jobs
+discover it instead of hand-rolling the transport, which live testing
+showed the agent otherwise does; plus a `jobs(space)` getter, the
+read-side answer to "what's running?")
 Date: 2026-08-14
 Builds on: ADR-002 (all writes cross the effect boundary), ADR-006
 (space objects as data contracts), ADR-009 §2 (cross-repo deps,
@@ -34,9 +38,11 @@ none — this ADR adds it.
 
 ### 1. `progress@v1` — the program-facing interface
 
-A repo program (`repos/_agent/programs/progress@v1.py`, not an agent
-tool) is the ONLY way programs report progress. Connectors reach it
-alias-qualified (`use("agent:progress@v1")`, ADR-009 §2). Surface:
+A repo program (`repos/_agent/programs/progress@v1.py`; an agent tool
+since the 2026-08-16 amendment, so the toolcaller's inventory carries
+it) is the ONLY way programs — and agent cells running ad-hoc batch
+jobs — report progress. Connectors reach it alias-qualified
+(`use("agent:progress@v1")`, ADR-009 §2). Surface:
 
 - `start(space, job, label, total=0, current=0, detail="", program="")`
   → objectId. Publishes the 0% state **before work begins** (a bar
@@ -50,6 +56,9 @@ alias-qualified (`use("agent:progress@v1")`, ADR-009 §2). Surface:
 - `done(space, job)` — finish + self-clean (§4).
 - `fail(space, job, error, detail=None)` — `status: failed` + error;
   the object is KEPT as the visible record.
+- `jobs(space)` — read-side: one row per live job, freshest wins (§3
+  without pruning). Since `done` deletes, only running/failed rows
+  exist — the answer to "what's running?".
 
 Callers own the THROTTLE: tick per work chunk / percentage step /
 ~1 per second at most — every tick is a p2p-synced CRDT change.
