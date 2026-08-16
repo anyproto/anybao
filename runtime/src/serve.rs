@@ -906,7 +906,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
-                        let text = record["text"].as_str().unwrap_or("").to_string();
+                        let text = Watcher::attributed_text(&record);
                         if ready {
                             info!("backlog conversation: {:?}", preview(&text));
                             start_or_inject(shared, ctx, text);
@@ -927,7 +927,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
-                        let text = record["text"].as_str().unwrap_or("").to_string();
+                        let text = Watcher::attributed_text(&record);
                         // deferred boot (ADR-009 §8): a message while
                         // overlays are pending gets a status bubble —
                         // the one host-authored operational reply —

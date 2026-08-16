@@ -373,6 +373,30 @@ impl Watcher {
         }
     }
 
+    /// The record's text, attributed: a foreign-agent message (a
+    /// `trigger:*` nudge, a peer) gets a harness-authored `[from
+    /// agent …]` line derived from the record's `agent.name` METADATA
+    /// — the model's knowledge of the sender no longer rests on a
+    /// spoofable convention inside the message text. Human messages
+    /// pass through untouched. Prepended (not an arg) so the
+    /// attribution survives into the persisted turn and every future
+    /// boot window unchanged.
+    pub fn attributed_text(record: &Value) -> String {
+        let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        match record
+            .get("agent")
+            .filter(|a| !a.is_null())
+            .and_then(|a| a.get("name"))
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.is_empty())
+        {
+            Some(name) => {
+                format!("[from agent \"{name}\" — automated message, not the user]\n{text}")
+            }
+            None => text.to_string(),
+        }
+    }
+
     pub fn on_message(&mut self, chat_id: &str, record: &Value) -> WatchAction {
         let msg_id = record.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if !msg_id.is_empty() && !self.seen.insert(msg_id.to_string()) {
@@ -381,12 +405,9 @@ impl Watcher {
         if Self::is_self_message(record, &self.self_name) {
             return WatchAction::Skip; // own bubble — never self-trigger
         }
-        let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
         if let Some(mailbox) = self.live.get(chat_id) {
-            mailbox
-                .lock()
-                .unwrap()
-                .push_back(json!({"kind": "inject", "text": text}));
+            mailbox.lock().unwrap().push_back(json!({
+                "kind": "inject", "text": Self::attributed_text(record)}));
             return WatchAction::Inject;
         }
         WatchAction::Start
@@ -525,5 +546,28 @@ mod tests {
         w.conversation_done("c1");
         let m4 = json!({"id": "m4", "text": "fresh"});
         assert!(matches!(w.on_message("c1", &m4), WatchAction::Start));
+    }
+
+    #[test]
+    fn attribution_is_metadata_derived_and_rides_the_inject() {
+        // harness-authored [from agent …] line from agent.name — the
+        // model's sender knowledge must not rest on the message text
+        let nudge = json!({"text": "job done",
+                           "agent": {"name": "trigger:backfill"}});
+        assert_eq!(
+            Watcher::attributed_text(&nudge),
+            "[from agent \"trigger:backfill\" — automated message, not the user]\njob done"
+        );
+        let human = json!({"id": "h1", "text": "hi"});
+        assert_eq!(Watcher::attributed_text(&human), "hi");
+
+        let mut w = Watcher::new("bao");
+        let mb: crate::broker::SharedMailbox = Default::default();
+        w.live.insert("c1".into(), mb.clone());
+        let m = json!({"id": "m9", "text": "done",
+                       "agent": {"name": "trigger:x"}});
+        assert!(matches!(w.on_message("c1", &m), WatchAction::Inject));
+        let queued = mb.lock().unwrap().pop_front().unwrap();
+        assert!(queued["text"].as_str().unwrap().starts_with("[from agent \"trigger:x\""));
     }
 }
