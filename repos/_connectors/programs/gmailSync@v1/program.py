@@ -559,22 +559,20 @@ def _arm_hop(agent_space, space, q, gen, hop):
     return tid
 
 
-def _notify_agent(agent_space, space, gen, text):
-    # Chain end (drained or breaker) pokes the agent, not the chat: a
-    # once-trigger on toolcaller whose userText is a system nudge — the
-    # agent reads the outcome and writes the chat update itself (a raw
-    # chat_send here couldn't contextualize or advise). Best-effort:
-    # the sync result must not fail on a notification hiccup.
+def _notify_agent(agent_space, text):
+    # Chain end (drained or breaker) posts a VISIBLE `trigger:*` chat
+    # message (the progress@v1 §6 mechanism): the name-scoped watcher
+    # treats a foreign agent name as user-side input, so the loop
+    # answers it with the chat's history in context — attributed in
+    # chat, not impersonating the user, no trigger plumbing. (Was an
+    # invisible toolcaller once-trigger before 2026-08-16.)
+    # Best-effort: the sync result must not fail on a notify hiccup.
     try:
         chat = _any.general_chat(agent_space)
-        tid = f"gmailSyncNotify-{_tid_frag(space)}-g{gen}"
-        _any.upsert_record(agent_space, _trigger_anchor(agent_space),
-                           "agent_triggers", tid, {
-            "kind": "once", "spec": {"at": now()},  # noqa: F821 - guest global
-            "program": "agent:toolcaller@v1",
-            "args": {"space": agent_space, "chatId": chat, "userText": text},
-            "enabled": True, "name": "gmail backfill report"})
-        return tid
+        sent = _any.chat_send(agent_space, chat, {
+            "text": text,
+            "agent": {"name": "trigger:gmail-backfill", "done": True}})
+        return (sent or {}).get("id") or chat
     except Exception:
         return None
 
@@ -590,8 +588,8 @@ def _chain_hop(space, q, agent_space, hop, gen):
                    error="chain circuit-breaker open — fix the cause, then "
                          "start_backfill again",
                    detail=f"stalled after {fails} failed hops")
-        notified = _notify_agent(agent_space, space, gen, (
-            "[system nudge — automated, no user on this turn] The gmail "
+        notified = _notify_agent(agent_space, (
+            "[trigger: gmail backfill] The gmail "
             f"backfill chain for space '{space}' STOPPED: circuit breaker "
             f"open after {fails} consecutive failed hops. Check the "
             "gmail-backfill progress object and gmailSync.status for the "
@@ -633,8 +631,8 @@ def _chain_hop(space, q, agent_space, hop, gen):
             _prog.done(space, _JOB)
     notified = None
     if done:
-        notified = _notify_agent(agent_space, space, gen, (
-            "[system nudge — automated, no user on this turn] The gmail "
+        notified = _notify_agent(agent_space, (
+            "[trigger: gmail backfill] The gmail "
             f"backfill for space '{space}' FINISHED: backlog drained, "
             f"{int(out.get('syncedCount') or state.get('synced_count') or 0)} "
             "messages synced in total. Verify with gmailSync.status, then "

@@ -28,6 +28,7 @@ class FakeAny:
         self.records = []
         self.progress_rows = []
         self.progress_log = []   # every agent-progress frame, survives delete
+        self.chats = []          # chat_send calls (visible trigger nudges)
         self._n = 0
 
     # -- catalog
@@ -106,6 +107,10 @@ class FakeAny:
 
     def general_chat(self, space):
         return "chat1"
+
+    def chat_send(self, space, chat_id, body):
+        self.chats.append((space, chat_id, body))
+        return {"id": f"msg{len(self.chats)}"}
 
     # convenience for asserts
     def state(self):
@@ -513,12 +518,13 @@ def test_chain_ends_in_steady_state_arming_agent_nudge_only():
     assert fake.progress_log[-1]["current"] == 0
     assert fake.progress_log[-1]["status"] == "running"
     assert fake.state()["chain_processed"] == 0
-    # the finished chain pokes the agent to report into its chat
-    (space, obj, ds, rid, val) = fake.records[-1]
-    assert rid == out["notified"] and rid.startswith("gmailSyncNotify-")
-    assert (space, val["program"]) == ("agentsp", "agent:toolcaller@v1")
-    assert val["args"]["chatId"] == "chat1"
-    assert "FINISHED" in val["args"]["userText"]
+    # the finished chain posts a VISIBLE trigger:* message the watcher
+    # answers (name-scoped skip, ADR-009 §8) — no trigger record
+    (space, chat, body) = fake.chats[-1]
+    assert (space, chat) == ("agentsp", "chat1")
+    assert body["agent"]["name"] == "trigger:gmail-backfill"
+    assert "FINISHED" in body["text"] and out["notified"] == "msg1"
+    assert not any(r[3].startswith("gmailSyncNotify") for r in fake.records)
 
 
 def test_chain_circuit_breaker_stops_after_failed_hops_and_notifies():
@@ -532,7 +538,7 @@ def test_chain_circuit_breaker_stops_after_failed_hops_and_notifies():
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
     assert fake.progress_rows[0]["agent-progress"]["status"] == "failed"
     assert fake.state()["chain_hop"] == 9      # bookkeeping stays truthful
-    (space, obj, ds, rid, val) = fake.records[-1]
-    assert rid == out["notified"] and rid.startswith("gmailSyncNotify-")
-    assert val["program"] == "agent:toolcaller@v1"
-    assert "STOPPED" in val["args"]["userText"]
+    (space, chat, body) = fake.chats[-1]
+    assert (space, chat) == ("agentsp", "chat1")
+    assert body["agent"]["name"] == "trigger:gmail-backfill"
+    assert "STOPPED" in body["text"] and out["notified"] == "msg1"
