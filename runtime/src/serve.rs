@@ -619,7 +619,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let shared = Arc::new(Shared {
         triggers: Mutex::new(registry),
         scheduler: Mutex::new(sched),
-        watcher: Mutex::new(Watcher::default()),
+        watcher: Mutex::new(Watcher::new(&cfg.agent_name)),
         backlog: Mutex::new(Vec::new()),
     });
 
@@ -894,7 +894,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             // down or booting — are answered instead of dropped. The
             // watcher's seen-set dedups across reconnect snapshots.
             "snapshot" => {
-                let backlog = snapshot_backlog(&frame.data);
+                let backlog = snapshot_backlog(&frame.data, &ctx.cfg.agent_name);
                 if backlog.is_empty() {
                     continue;
                 }
@@ -958,15 +958,18 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
     Ok(())
 }
 
-/// User messages newer than the agent's last reply, oldest first. The
+/// Messages newer than this agent's last own reply, oldest first. The
 /// snapshot window is sorted `-createdAt`: walk from the newest record
-/// and stop at the first agent-authored one — everything before it is
-/// unanswered. Snapshot records are bare docs (each carries its own
-/// `id`), unlike the `{id, doc}` entries of `changes` frames.
-fn snapshot_backlog(data: &Value) -> Vec<Value> {
+/// and stop at the first SELF-authored one (own `agent.name`, or a
+/// nameless agent record — same rule as the watcher, ADR-009 §8
+/// amendment) — everything before it is unanswered. Foreign
+/// agent-named messages (`trigger:*` nudges, peers) count as
+/// unanswered input. Snapshot records are bare docs (each carries its
+/// own `id`), unlike the `{id, doc}` entries of `changes` frames.
+fn snapshot_backlog(data: &Value, self_name: &str) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for rec in data["records"].as_array().unwrap_or(&Vec::new()) {
-        if rec.get("agent").map(|a| !a.is_null()).unwrap_or(false) {
+        if Watcher::is_self_message(rec, self_name) {
             break;
         }
         if rec["text"].as_str().is_some_and(|t| !t.is_empty()) {
@@ -1381,7 +1384,7 @@ mod tests {
             msg("a1", "reply", true),
             msg("u1", "answered", false),
         ]});
-        let backlog = snapshot_backlog(&data);
+        let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["u2", "u3"]);
     }
@@ -1392,7 +1395,7 @@ mod tests {
             msg("a1", "reply", true),
             msg("u1", "answered", false),
         ]});
-        assert!(snapshot_backlog(&data).is_empty());
+        assert!(snapshot_backlog(&data, "bao").is_empty());
     }
 
     #[test]
@@ -1400,7 +1403,7 @@ mod tests {
         // fresh chat / reply scrolled out of the window: everything
         // visible is unanswered
         let data = json!({"records": [msg("u2", "b", false), msg("u1", "a", false)]});
-        let backlog = snapshot_backlog(&data);
+        let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["u1", "u2"]);
     }
@@ -1413,7 +1416,7 @@ mod tests {
             null,
             msg("u1", "", false),
         ]});
-        let backlog = snapshot_backlog(&data);
+        let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["u2"]);
     }

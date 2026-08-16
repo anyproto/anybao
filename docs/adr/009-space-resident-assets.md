@@ -247,6 +247,17 @@ mechanics are:
   (walking newest→oldest). The watcher's seen-set dedups across
   reconnect snapshots; the window is the subscribe limit (64) — an
   unanswered message older than that stays dropped, by construction.
+  **Name-scoped self-skip (amended 2026-08-16)**: "agent-authored"
+  means THIS agent's own `agent.name` (or a nameless agent record —
+  the conservative read of legacy rows), for both the watcher skip and
+  the backlog cut. A chat message under a FOREIGN agent name
+  (`trigger:gmail-backfill`, a peer agent) is user-side input: it
+  starts/injects a conversation like a human message, and counts as
+  unanswered in the backlog. This is the visible-nudge mechanism —
+  detached jobs post their outcome into the chat under a `trigger:*`
+  identity and the loop answers it with history in context. A future
+  `source` field on chat messages can carry this distinction for UI
+  rendering.
 - **Deferred messages (amended 2026-07-23)**: a message that would
   start a conversation while overlays are still pending is queued in
   memory and answered once ready (previously it was consumed and

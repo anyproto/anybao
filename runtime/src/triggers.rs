@@ -329,13 +329,24 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
 
 // --- the watcher (trigger #1) -------------------------------------------------
 
-/// Pure decision logic: dedup by message id, agent-message skip, and
+/// Pure decision logic: dedup by message id, SELF-message skip, and
 /// mid-run routing (a message during a live conversation INJECTS into
 /// its mailbox instead of starting a new run).
+///
+/// The skip is name-scoped (ADR-009 §8 amendment, 2026-08-16): only a
+/// message from THIS agent's own name — or an agent message with no
+/// name, the conservative read of legacy records — never self-triggers.
+/// A foreign agent name (`trigger:gmail-backfill`, a peer agent) is
+/// user-side input: it starts or injects like a human message. That is
+/// the visible-nudge mechanism — a program posts its completion into
+/// the chat under a `trigger:*` identity and the loop picks it up with
+/// the chat's history in context.
 #[derive(Default)]
 pub struct Watcher {
     seen: std::collections::BTreeSet<String>,
     pub live: BTreeMap<String, crate::broker::SharedMailbox>,
+    /// This agent's chat identity (`agent.name` on its own bubbles).
+    pub self_name: String,
 }
 
 pub enum WatchAction {
@@ -346,13 +357,29 @@ pub enum WatchAction {
 }
 
 impl Watcher {
+    pub fn new(self_name: impl Into<String>) -> Self {
+        Watcher { self_name: self_name.into(), ..Default::default() }
+    }
+
+    /// Self-authored (own name, or agent-tagged with no name) — the only
+    /// messages that never trigger. Shared with `snapshot_backlog`.
+    pub fn is_self_message(record: &Value, self_name: &str) -> bool {
+        match record.get("agent").filter(|a| !a.is_null()) {
+            None => false,
+            Some(agent) => {
+                let name = agent.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                name.is_empty() || name == self_name
+            }
+        }
+    }
+
     pub fn on_message(&mut self, chat_id: &str, record: &Value) -> WatchAction {
         let msg_id = record.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if !msg_id.is_empty() && !self.seen.insert(msg_id.to_string()) {
             return WatchAction::Dup;
         }
-        if record.get("agent").map(|a| !a.is_null()).unwrap_or(false) {
-            return WatchAction::Skip; // agent-authored — never self-trigger
+        if Self::is_self_message(record, &self.self_name) {
+            return WatchAction::Skip; // own bubble — never self-trigger
         }
         let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
         if let Some(mailbox) = self.live.get(chat_id) {
@@ -476,12 +503,20 @@ mod tests {
 
     #[test]
     fn watcher_dedup_skip_inject_start() {
-        let mut w = Watcher::default();
+        let mut w = Watcher::new("bao");
         let human = json!({"id": "m1", "text": "hi"});
         assert!(matches!(w.on_message("c1", &human), WatchAction::Start));
         assert!(matches!(w.on_message("c1", &human), WatchAction::Dup));
         let agent = json!({"id": "m2", "text": "x", "agent": {"name": "bao"}});
         assert!(matches!(w.on_message("c1", &agent), WatchAction::Skip));
+        // legacy agent message without a name: conservative skip
+        let unnamed = json!({"id": "m2b", "text": "x", "agent": {}});
+        assert!(matches!(w.on_message("c1", &unnamed), WatchAction::Skip));
+        // a FOREIGN agent name is user-side input — the visible nudge
+        let nudge = json!({"id": "m2c", "text": "job done",
+                           "agent": {"name": "trigger:gmail-backfill"}});
+        assert!(matches!(w.on_message("c1", &nudge), WatchAction::Start));
+        w.conversation_done("c1");
         let mb: crate::broker::SharedMailbox = Default::default();
         w.live.insert("c1".into(), mb.clone());
         let m3 = json!({"id": "m3", "text": "also"});
