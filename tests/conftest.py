@@ -167,7 +167,7 @@ def client(any_server) -> AnyHttp:
 def fresh_space(client) -> str:
     """A throwaway space per test (offline-first create — no coordinator)."""
     sp = client.call("POST", "/v1/spaces",
-                     {"name": f"it-{uuid.uuid4().hex[:8]}", "spaceType": "anytype.space"})
+                     {"name": f"it-{uuid.uuid4().hex[:8]}"})
     return sp["id"]
 
 

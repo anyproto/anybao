@@ -380,13 +380,16 @@ impl Client {
     /// Reply carries the new space `id`. `agent_space: true` provisions
     /// the per-space config object (ADR-006 §3) so the harness can
     /// resolve `agentConfigObjectId` off the very first GET.
+    /// `spaceType` is deliberately OMITTED: empty means the server's
+    /// canonical default on every vintage, while the literal
+    /// "anytype.space" is REJECTED since SDK v0.0.10 (renamed to
+    /// "any.space" — sending either string ties us to one side).
     pub fn create_space(&self, name: &str) -> Result<Value, AnyError> {
         self.call(
             "POST",
             "/v1/spaces",
             Some(&json!({
                 "name": name,
-                "spaceType": "anytype.space",
                 "agent_space": true
             })),
         )
@@ -1231,7 +1234,9 @@ mod tests {
         );
         assert_eq!(
             calls[5].2,
-            Some(json!({"name": "bao", "spaceType": "anytype.space", "agent_space": true}))
+            // no spaceType: empty = server default on every vintage
+            // ("anytype.space" is rejected since SDK v0.0.10)
+            Some(json!({"name": "bao", "agent_space": true}))
         );
         assert_eq!(calls[7].2, Some(json!({"query": "q", "limit": 3})));
     }
