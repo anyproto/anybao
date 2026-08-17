@@ -492,6 +492,26 @@ impl Client {
             .read_raw(&format!("/v1/spaces/{space_id}/files/{file_id}/content"))
     }
 
+    // --- devices (tech-space registry, ADR-015 / SYN-165) ---
+    /// GET /v1/devices — the account's device rows + the server-computed
+    /// `active: {<slug>: <peerId>}` winner map (the ONE implementation
+    /// of the election rule — never recompute it client-side).
+    pub fn list_devices(&self) -> Result<Value, AnyError> {
+        self.call("GET", "/v1/devices", None)
+    }
+
+    /// PUT /v1/devices/me — upsert the caller's own row (server stamps
+    /// peerId/os/hostname; body carries only what the app owns).
+    pub fn upsert_self_device(&self, body: &Value) -> Result<Value, AnyError> {
+        self.call("PUT", "/v1/devices/me", Some(body))
+    }
+
+    /// POST /v1/devices/activate — claim the active slot for `app` on
+    /// THIS device (no remote activation, SYN-165 v1).
+    pub fn activate_device(&self, app: &str) -> Result<Value, AnyError> {
+        self.call("POST", "/v1/devices/activate", Some(&json!({"app": app})))
+    }
+
     // --- objects ---
     pub fn create_object(&self, space_id: &str, body: &Value) -> Result<Value, AnyError> {
         self.call(

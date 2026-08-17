@@ -602,18 +602,26 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     }
     std::fs::create_dir_all(&cfg.traces_dir)?;
 
+    // Single-active election (ADR-015): register this device in the
+    // tech-space registry and take the gate's boot verdict. Standby ⇒
+    // chat watch and ticker stay idle (and the standing-trigger records
+    // below aren't stamped) until the election thread flips the gate.
+    let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
+
     let instance = format!("anyrt-{}", std::process::id());
     let mut sched = Scheduler::new(&instance, Box::new(now_s));
     sched.arm();
     let mut registry = BTreeMap::new();
     for t in standing_triggers(&space, &chat, &brain, &instance) {
-        client.upsert_record(
-            &space,
-            &anchor,
-            "agent_triggers",
-            &t.id,
-            &trigger_to_record(&t),
-        )?;
+        if election.active.load(Ordering::Relaxed) {
+            client.upsert_record(
+                &space,
+                &anchor,
+                "agent_triggers",
+                &t.id,
+                &trigger_to_record(&t),
+            )?;
+        }
         registry.insert(t.id.clone(), t);
     }
     let shared = Arc::new(Shared {
@@ -635,12 +643,21 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         code_space,
         secrets_guard,
         oauth,
+        active: election.active.clone(),
+        self_peer: election.self_peer.clone(),
     });
 
     let mut threads = vec![
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
     ];
+    if election.enabled {
+        threads.push(election_thread(
+            shared.clone(),
+            ctx.clone(),
+            shutdown.clone(),
+        ));
+    }
     info!(
         "anyrt serving space={space} chat={chat} control=127.0.0.1:{}",
         ctx.cfg.control_port
@@ -650,6 +667,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), shutdown.clone());
         threads.push(std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
+                // standby (ADR-015 §3): stay DISCONNECTED, not muted —
+                // nothing lands in the seen-set, so takeover's snapshot
+                // yields the whole missed backlog
+                if !ctx.active.load(Ordering::Relaxed) {
+                    sliced_sleep(Duration::from_millis(500), &stop);
+                    continue;
+                }
                 // reconnect loop: each feed's snapshot re-seeds the
                 // backlog scan; the watcher's seen-set dedups replays
                 match watch_chat(&shared, &ctx, &stop) {
@@ -700,6 +724,14 @@ pub struct RunCtx {
     /// managed OAuth state (ADR-011) — one per serve, threaded into
     /// every Broker
     pub oauth: Arc<crate::oauth::OauthState>,
+    /// single-active gate (ADR-015 §3): false = standby (chat watch
+    /// disconnected, ticker idle). Written ONLY by the election thread
+    /// after boot. `ctx.run()` itself is not gated — embedder/CLI runs
+    /// are explicit.
+    pub active: Arc<AtomicBool>,
+    /// this device's peer id in the devices registry; None = server
+    /// predates /v1/devices (election disabled, gate permanently true)
+    pub self_peer: Option<String>,
 }
 
 impl RunCtx {
@@ -881,9 +913,10 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
         "chat_messages",
         &json!({"sort": ["-createdAt"], "limit": 64}),
     )? {
-        // shutdown is observed per frame — the read itself blocks until
-        // the server's next event/heartbeat (ADR-009 open Q3)
-        if stop.load(Ordering::Relaxed) {
+        // shutdown and stand-down (ADR-015 §3) are observed per frame —
+        // the read itself blocks until the server's next event/heartbeat
+        // (ADR-009 open Q3); returning drops the stream
+        if stop.load(Ordering::Relaxed) || !ctx.active.load(Ordering::Relaxed) {
             return Ok(());
         }
         match frame.event.as_str() {
@@ -1012,6 +1045,11 @@ fn trigger_ticker(
         if stop.load(Ordering::Relaxed) {
             return;
         }
+        // standby (ADR-015 §3): no runs, no adoption, no ownership
+        // stamping — the election thread owns the transitions
+        if !ctx.active.load(Ordering::Relaxed) {
+            continue;
+        }
         // deferred boot (ADR-009 §8): don't burn trigger runs (and the
         // circuit breaker) while overlays are still syncing. This is a
         // PROBE, not the cheap check — readiness must clear without
@@ -1129,6 +1167,67 @@ fn trigger_ticker(
     })
 }
 
+/// The election reconcile loop (ADR-015 §3/§4): poll the registry,
+/// flip the gate on verdict transitions. The ONLY writer of
+/// `ctx.active` after boot, so load-then-store is race-free.
+fn election_thread(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let Some(peer) = ctx.self_peer.clone() else {
+            return; // enabled implies a peer id; belt and braces
+        };
+        loop {
+            sliced_sleep(crate::election::POLL, &stop);
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            let verdict = crate::election::reconcile(&ctx.client, &peer, crate::election::APP_SLUG);
+            match verdict {
+                None => {} // transient read failure — keep the last state
+                Some(true) if !ctx.active.load(Ordering::Relaxed) => {
+                    takeover(&shared, &ctx);
+                    ctx.active.store(true, Ordering::Relaxed); // AFTER re-arm
+                    info!("election: TAKEOVER — this device is now the active bao");
+                }
+                Some(false) if ctx.active.load(Ordering::Relaxed) => {
+                    ctx.active.store(false, Ordering::Relaxed);
+                    // the new active device answers these; in-flight
+                    // runs finish on their own (never interrupt a turn)
+                    shared.backlog.lock().unwrap().clear();
+                    info!("election: stand-down — another device is the active bao");
+                }
+                Some(_) => {} // verdict matches the current state
+            }
+        }
+    })
+}
+
+/// Takeover prep (ADR-015 §3), run BEFORE the gate flips: re-arm every
+/// cron strictly forward (a missed occurrence while standby does not
+/// exist — the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
+/// burst), then stamp + publish the registry's trigger records that the
+/// standby boot skipped.
+fn takeover(shared: &Shared, ctx: &RunCtx) {
+    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+    let mut reg = shared.triggers.lock().unwrap();
+    for t in reg.values_mut() {
+        if t.kind == "cron" {
+            t.next_due = None; // next tick arms forward, no fire
+        }
+        t.owner = instance.clone();
+        let _ = ctx.client.upsert_record(
+            &ctx.space,
+            &ctx.anchor,
+            "agent_triggers",
+            &t.id,
+            &trigger_to_record(t),
+        );
+    }
+}
+
 // --- the localhost control API -------------------------------------------------
 
 fn control_api(
@@ -1188,6 +1287,26 @@ fn handle_control(
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let mut reg = shared.triggers.lock().unwrap();
     match (method, parts.as_slice()) {
+        // election observability (ADR-015 §5); winner via a live
+        // registry read, null when unavailable
+        ("GET", ["election"]) => {
+            let winner = ctx
+                .self_peer
+                .as_ref()
+                .and_then(|_| ctx.client.list_devices().ok())
+                .and_then(|r| {
+                    r["active"][crate::election::APP_SLUG]
+                        .as_str()
+                        .map(str::to_string)
+                });
+            Ok(json!({
+                "app": crate::election::APP_SLUG,
+                "enabled": ctx.self_peer.is_some(),
+                "active": ctx.active.load(Ordering::Relaxed),
+                "peerId": ctx.self_peer,
+                "winner": winner,
+            }))
+        }
         ("GET", ["triggers"]) => Ok(Value::Array(reg.values().map(rollup).collect())),
         ("GET", ["triggers", id]) => {
             let t = reg.get(*id).context("trigger not found")?;
