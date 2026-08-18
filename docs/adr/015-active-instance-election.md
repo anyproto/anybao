@@ -1,6 +1,10 @@
 # ADR-015: Active-instance election — devices registry consumer
 
-Status: **Accepted** (2026-08-17)
+Status: **Accepted** (2026-08-17), amended 2026-08-18 (§4: the SDK
+review pass hardened tombstone semantics — 409 `device.pruned` on
+self-row writes is now PERMANENT STANDBY, never the disabled-active
+degrade; plus a brief boot retry now that registry unavailability is
+an error rather than an empty read)
 Date: 2026-08-17
 Builds on: ADR-006 §4 (triggers: single-owner, missed-occurrence
 rule), ADR-009 §6 (serve/lib surface), ADR-009 §8 (snapshot backlog —
@@ -104,9 +108,21 @@ read; manual-switch latency ≤ one poll). A subscribe upgrade
 contract change — the reconcile is idempotent. Errors keep the last
 verdict (a transient read failure must not flap the gate).
 
-Degrade: a 404 on `PUT /v1/devices/me` (server predates SYN-165)
-disables the election for the run — gate permanently true, no
-thread, one log line. Today's single-device behavior, unchanged.
+Degrade, three distinct verdicts at boot:
+
+- **404** on `PUT /v1/devices/me` (server predates SYN-165): election
+  disabled for the run — gate permanently true, no thread, one log
+  line. Today's single-device behavior, unchanged.
+- **409 `device.pruned`** (this device's row was tombstoned — sticky,
+  only a fresh `any init` re-registers): **permanent standby**, gate
+  false, no thread, loud warn. An excommunicated device answering as
+  the active bao is exactly the split-brain the registry prevents, so
+  pruned must never fall into the availability degrade. A claim
+  hitting `device.pruned` mid-run stands down the same way.
+- **Other errors**: brief bounded retry (serve's boot order guarantees
+  the techspace is open — `list_spaces` already ran — so this is a
+  freak), then disabled-active for the run: availability over
+  strictness, logged.
 
 ### 5. Observability
 

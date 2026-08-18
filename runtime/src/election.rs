@@ -42,6 +42,16 @@ impl Election {
             self_peer: None,
         }
     }
+
+    /// This device's row is tombstoned (§4): the verdict can never
+    /// change for this peer id, so no thread — gate permanently false.
+    fn pruned() -> Self {
+        Election {
+            enabled: false,
+            active: Arc::new(AtomicBool::new(false)),
+            self_peer: None,
+        }
+    }
 }
 
 /// A device row's peer id — row id IS the peer id (SYN-165), but the
@@ -94,6 +104,11 @@ pub fn self_peer_of(get_reply: &Value, put_reply: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The SDK's pruned-write sentinel (409): this device's row was
+/// tombstoned — every self-row write is absorbed, forever, until a
+/// fresh `any init` derives new peer keys.
+const PRUNED: &str = "device.pruned";
+
 /// One reconcile: fetch → decide → claim-and-verify. `None` on read
 /// failure — the caller keeps the last verdict (a transient error must
 /// not flap the gate, ADR-015 §4).
@@ -104,6 +119,15 @@ pub fn reconcile(client: &Client, self_peer: &str, app: &str) -> Option<bool> {
         Decision::Standby => Some(false),
         Decision::Claim => {
             if let Err(e) = client.activate_device(app) {
+                // pruned mid-run: the claim can never land — stand
+                // down rather than keep an unclaimable "last state"
+                if e.code == PRUNED {
+                    warn!(
+                        "election: this device was pruned from the registry — \
+                         standing by (a fresh `any init` re-registers)"
+                    );
+                    return Some(false);
+                }
                 warn!("election: claim failed ({e}); keeping last state");
                 return None;
             }
@@ -116,38 +140,69 @@ pub fn reconcile(client: &Client, self_peer: &str, app: &str) -> Option<bool> {
     }
 }
 
-/// Boot registration + initial verdict (ADR-015 §1). 404 = server
-/// predates the devices API → election disabled, gate true (§4);
-/// other errors degrade the same way for THIS RUN (never boot a
-/// standby off a hiccup — availability over strictness, logged).
+/// Boot registration + initial verdict (ADR-015 §1/§4).
+///
+/// - 404 = server predates the devices API → election disabled, gate
+///   true — today's behavior, unchanged.
+/// - 409 `device.pruned` = this device was pruned from the registry
+///   (sticky tombstone) → PERMANENT standby, gate false: an
+///   excommunicated device answering as the active bao is exactly the
+///   split-brain the registry exists to prevent. Only a fresh
+///   `any init` (new peer keys) re-registers.
+/// - Other errors: brief retry (serve's boot order means the techspace
+///   is already open — `list_spaces` ran — so a failure here is a
+///   freak), then disabled-active for the run (availability over
+///   strictness, logged).
 pub fn boot(client: &Client, version: &str) -> Election {
+    boot_with(client, version, std::time::Duration::from_secs(2))
+}
+
+const BOOT_ATTEMPTS: u32 = 3;
+
+fn boot_with(client: &Client, version: &str, retry_delay: std::time::Duration) -> Election {
     let body = json!({"apps": {APP_SLUG: {"version": version}}});
-    let put_reply = match client.upsert_self_device(&body) {
-        Ok(r) => r,
-        Err(e) if e.status == 404 => {
-            info!("devices API unavailable (server predates SYN-165) — election disabled, this instance stays active");
-            return Election::disabled();
+    let mut last_err = String::new();
+    for attempt in 0..BOOT_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(retry_delay);
         }
-        Err(e) => {
-            warn!("election: device registration failed ({e}) — election disabled this run");
-            return Election::disabled();
-        }
-    };
-    let get_reply = client.list_devices().unwrap_or_else(|_| json!({}));
-    let Some(peer) = self_peer_of(&get_reply, &put_reply) else {
-        warn!("election: no self peer id in /v1/devices replies — election disabled this run");
-        return Election::disabled();
-    };
-    let active = reconcile(client, &peer, APP_SLUG).unwrap_or(true);
-    info!(
-        "election: peer {peer} — {}",
-        if active { "ACTIVE" } else { "standby" }
-    );
-    Election {
-        enabled: true,
-        active: Arc::new(AtomicBool::new(active)),
-        self_peer: Some(peer),
+        let put_reply = match client.upsert_self_device(&body) {
+            Ok(r) => r,
+            Err(e) if e.status == 404 => {
+                info!("devices API unavailable (server predates SYN-165) — election disabled, this instance stays active");
+                return Election::disabled();
+            }
+            Err(e) if e.code == PRUNED => {
+                warn!(
+                    "election: this device was PRUNED from the devices registry — \
+                     permanent standby (the agent will not answer here); \
+                     a fresh `any init` (new peer keys) re-registers it"
+                );
+                return Election::pruned();
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                continue;
+            }
+        };
+        let get_reply = client.list_devices().unwrap_or_else(|_| json!({}));
+        let Some(peer) = self_peer_of(&get_reply, &put_reply) else {
+            last_err = "no self peer id in /v1/devices replies".into();
+            continue;
+        };
+        let active = reconcile(client, &peer, APP_SLUG).unwrap_or(true);
+        info!(
+            "election: peer {peer} — {}",
+            if active { "ACTIVE" } else { "standby" }
+        );
+        return Election {
+            enabled: true,
+            active: Arc::new(AtomicBool::new(active)),
+            self_peer: Some(peer),
+        };
     }
+    warn!("election: device registration failed ({last_err}) — election disabled this run");
+    Election::disabled()
 }
 
 #[cfg(test)]
@@ -354,5 +409,58 @@ mod tests {
     fn reconcile_read_failure_keeps_last_state() {
         let (c, _) = scripted(&[(500, json!({}))]);
         assert_eq!(reconcile(&c, "me", "bao"), None);
+    }
+
+    fn pruned_reply() -> (u16, Value) {
+        (
+            409,
+            json!({"error": {"code": "device.pruned",
+                             "message": "row tombstoned"}}),
+        )
+    }
+
+    #[test]
+    fn boot_pruned_is_permanent_standby() {
+        // an excommunicated device must NOT degrade to always-active
+        let (c, log) = scripted(&[pruned_reply()]);
+        let e = boot(&c, "0.1.0");
+        assert!(!e.enabled);
+        assert!(!e.active.load(Ordering::Relaxed)); // gate FALSE, unlike 404
+        assert_eq!(e.self_peer, None);
+        assert_eq!(log.lock().unwrap().len(), 1); // no retries on pruned
+    }
+
+    #[test]
+    fn boot_transient_error_retries_then_succeeds() {
+        let won = reply(json!([dev("me", json!({"bao": {}}))]), json!({"bao": "me"}));
+        let (c, log) = scripted(&[
+            (500, json!({})),           // PUT attempt 1 — transient
+            (200, json!({"id": "me"})), // PUT attempt 2
+            (200, won.clone()),         // GET (self peer)
+            (200, won),                 // GET (reconcile → Active)
+        ]);
+        let e = boot_with(&c, "0.1.0", std::time::Duration::ZERO);
+        assert!(e.enabled && e.active.load(Ordering::Relaxed));
+        assert_eq!(e.self_peer.as_deref(), Some("me"));
+        assert_eq!(log.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn boot_persistent_error_disables_active() {
+        // availability over strictness once the retries are spent
+        let (c, log) = scripted(&[(500, json!({})), (500, json!({})), (500, json!({}))]);
+        let e = boot_with(&c, "0.1.0", std::time::Duration::ZERO);
+        assert!(!e.enabled);
+        assert!(e.active.load(Ordering::Relaxed));
+        assert_eq!(log.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn reconcile_pruned_claim_stands_down() {
+        // pruned mid-run: the claim can never land — Some(false), not
+        // the keep-last-state None
+        let no_winner = reply(json!([dev("me", json!({"bao": {}}))]), json!({}));
+        let (c, _) = scripted(&[(200, no_winner), pruned_reply()]);
+        assert_eq!(reconcile(&c, "me", "bao"), Some(false));
     }
 }
