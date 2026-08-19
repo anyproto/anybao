@@ -3,18 +3,22 @@
 One tick per invocation (ADR-012 §2): a bounded full-sync slice while
 the backlog drains, then coalesced `history.list` increments. The
 tick's real governor is fuel — it checkpoints and exits when the
-budget runs low. Bodies land as clean_html markdown (§4); the raw
+budget runs low. Mail lands as `email_messages` runtime-dataset
+records on a per-address `mailbox` object (ADR-016), record id =
+Gmail message id, body = clean_html markdown (ADR-012 §4); the raw
 MIME stays in Gmail. Cron recipe: an agent_triggers record with kind
 "cron", program "connectors:gmailSync@v1", args {"space", "q"?}.
 """
 
-# ADR-012 is the contract; §-refs inline. gmail@v1 stays the thin API
-# wrapper (listing/labels + credential); hydration is our own 25-part
+# ADR-012 (algorithm, clean_html, chain) + ADR-016 (dataset storage)
+# are the contract; §-refs inline. gmail@v1 stays the thin API wrapper
+# (listing/labels + credential); hydration is our own 25-part
 # multipart batch (>~25 concurrent parts trips Gmail's per-user limit).
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 import re
+from email.utils import getaddresses  # tier-1 stdlib (ADR-012 §6)
 
 _gm = use("gmail@v1")  # noqa: F821 - `use` is the guest global; same repo
 _any = use("agent:any@v1")  # noqa: F821 - cross-repo dep, alias-qualified (ADR-009)
@@ -33,15 +37,35 @@ _FUEL_FLOOR = 4_000_000_000   # checkpoint when remaining drops below;
 _HTML_CAP = 300_000           # pathological bodies; clean_html input cap
 _BOUNDARY = "anybao_gmail_sync"
 
-EMAIL_TYPE = {
-    "name": "Email", "xKey": "email",
-    "properties": [
-        {"name": "gmail_id"}, {"name": "thread_id"},
-        {"name": "from"}, {"name": "to"}, {"name": "subject"},
-        {"name": "date"},
-        {"name": "internal_date", "kind": "number"},
-        {"name": "label_ids", "kind": "array"},
-        {"name": "snippet"},
+# ADR-016 §1: the mailbox type owns the email_messages runtime dataset;
+# one mailbox object per synced address hosts the records.
+MAILBOX_TYPE = {
+    "name": "Mailbox", "xKey": "mailbox",
+    "properties": [{"name": "address"}],
+}
+_DATASET = "email_messages"
+EMAIL_DATASET = {
+    "name": _DATASET, "displayName": "Email messages",
+    "idRule": "user",          # record id = Gmail message id (ADR-016 §1)
+    "deleteBy": "author", "skipHistory": True,
+    "search": {"title": "subject", "text": "body"},
+    "fields": [
+        # C1: Gmail's own names; write-once unless declared otherwise
+        {"key": "threadId", "kind": "string"},
+        {"key": "from", "kind": "string"},
+        {"key": "to", "kind": "string"},
+        {"key": "cc", "kind": "string"},
+        {"key": "subject", "kind": "string"},
+        {"key": "date", "kind": "string"},
+        {"key": "internalDate", "kind": "number"},
+        {"key": "snippet", "kind": "string"},
+        {"key": "labelIds", "kind": "array", "mutableBy": "author"},
+        {"key": "body", "kind": "string"},
+        {"key": "signature", "kind": "string"},
+        {"key": "participants", "kind": "array"},
+        {"key": "creator", "stamp": "creator"},
+        {"key": "createdAt", "stamp": "createTime"},
+        {"key": "modifiedAt", "stamp": "modifyTime"},
     ],
 }
 STATE_TYPE = {
@@ -54,6 +78,8 @@ STATE_TYPE = {
         {"name": "chain_gen", "kind": "number"},
         {"name": "chain_processed", "kind": "number"},
         {"name": "last_q"},
+        {"name": "mailbox_id"},   # resolved mailbox object (ADR-016 §1)
+        {"name": "store"},        # migration marker (ADR-016 §5)
     ],
 }
 _MAX_CHAIN_FAILURES = 5
@@ -247,7 +273,8 @@ def _trim_full(raw):
     return {"id": raw.get("id"), "threadId": raw.get("threadId") or "",
             "labelIds": raw.get("labelIds") or [],
             "internalDate": int(raw.get("internalDate") or 0),
-            "from": h["from"], "to": h["to"], "subject": h["subject"],
+            "from": h["from"], "to": h["to"], "cc": h["cc"],
+            "subject": h["subject"],
             "date": h["date"], "snippet": raw.get("snippet") or "",
             "html": html or "", "text": text or ""}
 
@@ -268,12 +295,51 @@ def _ensure_state(space):
             except _any.AnyError:
                 pass
         keep = rows[0]
-        return keep["id"], dict(keep.get("sync_state") or {})
+        state = dict(keep.get("sync_state") or {})
+        if state.get("store") != _DATASET:
+            # ADR-016 §5: object-era checkpoint — its cursor would make
+            # every tick an incremental no-op that never backfills the
+            # dataset (the §2 scope-change hazard). Clear once; the
+            # marker makes it a one-shot.
+            state.update({"cursor": "", "page_token": "", "store": _DATASET})
+            _any.update_object(space, keep["id"], {"sync_state": {
+                "cursor": "", "page_token": "", "store": _DATASET}})
+        return keep["id"], state
+    fresh = {"cursor": "", "page_token": "", "synced_count": 0,
+             "store": _DATASET}
     made = _any.create_object(space, {
         "types": ["sync_state"], "name": "gmail sync state",
-        "initialProperties": {"sync_state": {
-            "cursor": "", "page_token": "", "synced_count": 0}}})
-    return made["objectId"], {"cursor": "", "page_token": "", "synced_count": 0}
+        "initialProperties": {"sync_state": dict(fresh)}})
+    return made["objectId"], fresh
+
+
+def _ensure_mailbox(space, state_id, state):
+    """The per-address mailbox object hosting the records (ADR-016 §1).
+
+    Resolution: sync_state.mailbox_id → query by address (oldest wins;
+    duplicates are NEVER auto-deleted — deleting a mailbox deletes its
+    records) → create with the type attached. Returns the object id,
+    or None when the profile call fails (dead credential)."""
+    mid = state.get("mailbox_id")
+    if mid:
+        return mid
+    prof = _gm._get("/profile")
+    if not prof.get("ok"):
+        return None
+    addr = (prof["body"].get("emailAddress") or "").lower()
+    rows = _any.query_objects(space, filter={"mailbox.address": addr},
+                              limit=10)
+    rows.sort(key=lambda r: (r.get("createdAt") or 0, r.get("id") or ""))
+    if rows:
+        mid = rows[0]["id"]
+    else:
+        made = _any.create_object(space, {
+            "types": ["mailbox"], "name": addr,
+            "initialProperties": {"mailbox": {"address": addr}}})
+        mid = made["objectId"]
+    state["mailbox_id"] = mid
+    _any.update_object(space, state_id, {"sync_state": {"mailbox_id": mid}})
+    return mid
 
 
 def _checkpoint(space, state_id, cursor, page_token, synced_count):
@@ -287,36 +353,59 @@ def _fuel_low():
     return effect("fuel.state", {})["remaining"] < _FUEL_FLOOR  # noqa: F821
 
 
-def _existing_ids(space, gmail_ids):
-    """§2 idempotency: which of these gmail_ids already have objects."""
+def _existing_ids(space, mailbox_id, gmail_ids):
+    """Which gmail ids already have records — gates hydration and
+    clean_html COST only (ADR-016 §3); upsert is the correctness
+    layer either way."""
     if not gmail_ids:
         return set()
-    rows = _any.query_objects(space, filter={
-        "email.gmail_id": {"$in": list(gmail_ids)}}, limit=len(gmail_ids))
-    return {(r.get("email") or {}).get("gmail_id") for r in rows}
+    rows = _any.query(space, mailbox_id, _DATASET,
+                      filter={"id": {"$in": list(gmail_ids)}},
+                      limit=len(gmail_ids))
+    return {r.get("id") for r in rows}
 
 
-def _write_email(space, msg):
-    """create + put_markdown (§3); non-atomic — caller idempotency-gates."""
+def _participants(msg):
+    """Normalized from+to+cc addresses (ADR-016 §2) — the people-join
+    key. Lowercased, deduped, order-preserving; bcc never appears in
+    delivered headers."""
+    out = []
+    for _, addr in getaddresses([msg.get("from") or "",
+                                 msg.get("to") or "", msg.get("cc") or ""]):
+        a = addr.strip().lower()
+        if a and "@" in a and a not in out:
+            out.append(a)
+    return out
+
+
+def _record_of(msg):
+    """Trimmed message → one upsert record (ADR-016 §1); body/signature
+    from clean_html (ADR-012 §4)."""
     cleaned = clean_html(msg["html"]) if msg["html"] else {
         "markdown": (msg["text"] or "").strip(), "signature": ""}
-    obj = _any.create_object(space, {
-        "types": ["email"],
-        "name": (msg["subject"] or "(no subject)")[:120],
-        "initialProperties": {"email": {
-            "gmail_id": msg["id"], "thread_id": msg["threadId"],
-            "from": msg["from"], "to": msg["to"],
-            "subject": msg["subject"] or "(no subject)",
-            "date": msg["date"], "internal_date": msg["internalDate"],
-            "label_ids": msg["labelIds"], "snippet": msg["snippet"]}}})
-    if cleaned["markdown"]:
-        _any.put_markdown(space, obj["objectId"], cleaned["markdown"])
-    return obj["objectId"]
+    return {"id": msg["id"], "fields": {
+        "threadId": msg["threadId"], "from": msg["from"], "to": msg["to"],
+        "cc": msg["cc"], "subject": msg["subject"], "date": msg["date"],
+        "internalDate": msg["internalDate"], "snippet": msg["snippet"],
+        "labelIds": msg["labelIds"], "body": cleaned["markdown"],
+        "signature": cleaned["signature"],
+        "participants": _participants(msg)}}
+
+
+def _upsert(out, space, mailbox_id, records):
+    """One /upsert page per hydrated chunk; counters read the server's
+    reply — created+updated → made, skipped → skipped, rejections →
+    failed (ADR-016 §3)."""
+    rep = _any.upsert_records(space, mailbox_id, _DATASET, records)
+    out["made"] += int(rep.get("created") or 0) + int(rep.get("updated") or 0)
+    out["skipped"] += int(rep.get("skipped") or 0)
+    out["failed"] += len(rep.get("rejections") or [])
+    return rep
 
 
 # --- the tick (§2) ---------------------------------------------------------
 
-def _full_slice(space, state_id, state, q, cap):
+def _full_slice(space, state_id, state, mailbox_id, q, cap):
     """One bounded slice of the full sync; checkpoints page_token."""
     out = {"mode": "full", "made": 0, "skipped": 0, "failed": 0, "done": False}
     cursor = state.get("cursor") or ""
@@ -341,15 +430,16 @@ def _full_slice(space, state_id, state, q, cap):
         if _fuel_low():
             # cooperative governor (§2): sync as much as fits, then
             # checkpoint — unprocessed ids re-list next tick and the
-            # gmail_id check absorbs the overlap.
+            # record-id check absorbs the overlap.
             out["fuelStop"] = True
             break
         chunk = ids[i:i + _HYDRATE_CHUNK]
-        have = _existing_ids(space, chunk)
+        have = _existing_ids(space, mailbox_id, chunk)
         fresh = [m for m in chunk if m not in have]
         out["skipped"] += len(chunk) - len(fresh)
         if fresh:
             raws = _batch_get(fresh, "full")
+            records = []
             for mid in fresh:
                 if mid not in raws:
                     out["failed"] += 1
@@ -357,8 +447,11 @@ def _full_slice(space, state_id, state, q, cap):
                 if _fuel_low():
                     out["fuelStop"] = True
                     break
-                _write_email(space, _trim_full(raws[mid]))
-                out["made"] += 1
+                records.append(_record_of(_trim_full(raws[mid])))
+            if records:
+                # a fuel-stopped chunk still lands what it built — the
+                # checkpoint stays honest (upsert precedes it)
+                _upsert(out, space, mailbox_id, records)
         if out.get("fuelStop"):
             break
     out["done"] = token is None and not out.get("fuelStop")
@@ -405,7 +498,7 @@ def _coalesce(history):
     return added, labels, deleted
 
 
-def _incremental(space, state_id, state, q):
+def _incremental(space, state_id, state, mailbox_id, q):
     """history.list from the cursor; coalesced apply; cursor advances."""
     out = {"mode": "incremental", "made": 0, "labels": 0, "deleted": 0,
            "skipped": 0, "failed": 0}
@@ -432,11 +525,11 @@ def _incremental(space, state_id, state, q):
             break
     added, labels, deleted = _coalesce(history)
 
-    for mid in deleted:
-        rows = _any.query_objects(space, filter={"email.gmail_id": mid}, limit=1)
-        if rows:
-            _any.delete_object(space, rows[0]["id"])
-            out["deleted"] += 1
+    if deleted:
+        have = _existing_ids(space, mailbox_id, deleted)
+        if have:
+            _any.delete_records(space, mailbox_id, _DATASET, sorted(have))
+            out["deleted"] += len(have)
     if added:
         scope = _scope_ids(q)
         if scope is None:
@@ -447,34 +540,41 @@ def _incremental(space, state_id, state, q):
         out["outOfScope"] = len(added - scope)
         added &= scope
     if added:
-        have = _existing_ids(space, added)
+        have = _existing_ids(space, mailbox_id, added)
         fresh = [m for m in added if m not in have]
         out["skipped"] += len(added) - len(fresh)
         raws = _batch_get(fresh, "full")
+        records = []
         for mid in fresh:
             if mid not in raws:
                 out["failed"] += 1
                 continue
             if _fuel_low():
-                # cursor NOT advanced: this tick checkpoints nothing
-                # new, the next one replays the history window and the
-                # gmail_id check skips what already landed
                 out["fuelStop"] = True
-                _checkpoint(space, state_id, cursor, "",
-                            int(state.get("synced_count") or 0) + out["made"])
-                out["done"] = False
-                return out
-            _write_email(space, _trim_full(raws[mid]))
-            out["made"] += 1
+                break
+            records.append(_record_of(_trim_full(raws[mid])))
+        if records:
+            _upsert(out, space, mailbox_id, records)
+        if out.get("fuelStop"):
+            # cursor NOT advanced: this tick checkpoints nothing new,
+            # the next one replays the history window and the
+            # record-id check skips what already landed
+            _checkpoint(space, state_id, cursor, "",
+                        int(state.get("synced_count") or 0) + out["made"])
+            out["done"] = False
+            return out
     if labels:
-        raws = _batch_get(list(labels), "minimal")
-        for mid, raw in raws.items():
-            rows = _any.query_objects(space, filter={"email.gmail_id": mid},
-                                      limit=1)
-            if rows:
-                _any.update_object(space, rows[0]["id"], {"email": {
-                    "label_ids": raw.get("labelIds") or []}})
-                out["labels"] += 1
+        # existing records only: upserting an absent id would CREATE a
+        # labels-only stub for a message outside the synced scope
+        # (ADR-016 §3)
+        have = _existing_ids(space, mailbox_id, labels)
+        if have:
+            raws = _batch_get(sorted(have), "minimal")
+            recs = [{"id": mid, "fields": {"labelIds": raw.get("labelIds") or []}}
+                    for mid, raw in raws.items()]
+            if recs:
+                rep = _any.upsert_records(space, mailbox_id, _DATASET, recs)
+                out["labels"] += int(rep.get("updated") or 0)
 
     synced = int(state.get("synced_count") or 0) + out["made"] - out["deleted"]
     _checkpoint(space, state_id, new_cursor, "", synced)
@@ -492,14 +592,20 @@ def _tick(space, q=None, cap=None):
                 "note": "not enough fuel left in this run for a sync tick — "
                         "run it as a cron tick / its own run, or pass a "
                         "small max_messages"}
-    _any.create_type(space, EMAIL_TYPE)     # §5 provisioning contract:
+    _any.create_type(space, MAILBOX_TYPE)   # ADR-016 §1 provisioning:
     _any.create_type(space, STATE_TYPE)     # idempotent ensure-resolve
+    _any.create_dataset(space, "mailbox", EMAIL_DATASET)
     state_id, state = _ensure_state(space)
+    mailbox_id = _ensure_mailbox(space, state_id, state)
+    if not mailbox_id:
+        return {"mode": "none", "made": 0, "done": False,
+                "error": "gmail profile unavailable — dead credential? "
+                         "(googleAuth.status / connect)"}
     q = q or _DEFAULT_Q
     cap = int(cap or _SLICE)
     if state.get("cursor") and not state.get("page_token"):
-        return _incremental(space, state_id, state, q)
-    return _full_slice(space, state_id, state, q, cap)
+        return _incremental(space, state_id, state, mailbox_id, q)
+    return _full_slice(space, state_id, state, mailbox_id, q, cap)
 
 
 # --- backfill chain (self-scheduling once-triggers) ------------------------
@@ -687,8 +793,9 @@ def start_backfill(space, agent_space, q=None):
     # chain on plain strings — trigger args and ids are built from them
     space, agent_space = _space_id(space), _space_id(agent_space)
     q = q or _DEFAULT_Q
-    _any.create_type(space, EMAIL_TYPE)
+    _any.create_type(space, MAILBOX_TYPE)
     _any.create_type(space, STATE_TYPE)
+    _any.create_dataset(space, "mailbox", EMAIL_DATASET)
     state_id, state = _ensure_state(space)
     gen = int(state.get("chain_gen") or 0) + 1
     updates = {"chain_failures": 0, "chain_gen": gen, "last_q": q,
@@ -725,23 +832,28 @@ def start_backfill(space, agent_space, q=None):
 
 @span("gmailSync.status", kind="getter")  # noqa: F821 - guest global
 def status(space):
-    """Sync bookkeeping → {cursor, pageToken, syncedCount, emailCount}.
+    """Sync bookkeeping → {cursor, pageToken, syncedCount, mailboxId,
+    emailCount}.
 
-    emailCount is the live object count (exact up to 10k); a cursor
-    with an empty pageToken means backlog drained, ticking
-    incrementally."""
+    emailCount is the live email_messages record count on the mailbox
+    (server-side $count); a cursor with an empty pageToken means
+    backlog drained, ticking incrementally."""
     types = {t.get("xKey") for t in _any.list_types(space)}
     if "sync_state" not in types:
         return {"configured": False, "emailCount": 0}
     rows = _any.query_objects(space, filter={"any.types": "sync_state"}, limit=10)
     rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
     st = dict(rows[0].get("sync_state") or {}) if rows else {}
-    emails = _any.query_objects(space, filter={"any.types": "email"},
-                                limit=10000) if "email" in types else []
+    count, mid = 0, st.get("mailbox_id") or ""
+    if mid:
+        agg = _any.aggregate(space, [{"$count": "n"}],
+                             object_id=mid, dataset=_DATASET)
+        recs = (agg or {}).get("records") or []
+        count = int((recs[0] or {}).get("n") or 0) if recs else 0
     return {"configured": bool(rows), "cursor": st.get("cursor") or "",
             "pageToken": st.get("page_token") or "",
             "syncedCount": int(st.get("synced_count") or 0),
-            "emailCount": len(emails)}
+            "mailboxId": mid, "emailCount": count}
 
 
 def main(args):

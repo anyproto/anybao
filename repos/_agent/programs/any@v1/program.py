@@ -570,19 +570,51 @@ class _Client:
     def upsert_record(self, space, object_id, dataset, record_id, value):
         """Write one dataset record (whole-value $set, upsert).
 
-        Only REGISTERED datasets are writable (agent_triggers,
-        agent_memory_items, agent_roi_injections, …— server-side Go
-        handlers), and the host object must carry the dataset's type
-        in `any.types`. There is no generic path: an unregistered
+        Writable datasets: server-registered ones (agent_triggers,
+        agent_memory_items, …) and runtime datasets declared via
+        create_dataset (ADR-016) — in both cases the host object must
+        carry the dataset's owning type in `any.types`. An UNDECLARED
         dataset name 500s on write and reads as [] — store ad-hoc
         state as object properties instead (seen live 2026-08-12,
-        progressbar probe)."""
+        progressbar probe). For bulk ingest into an idRule: user
+        runtime dataset prefer upsert_records (idempotent, diffs
+        mutable fields server-side)."""
         return self.modify(space, {
             "objectId": object_id, "dataset": dataset,
             "records": [{"id": record_id, "upsert": True,
                          "ops": [{"type": "$set", "path": "", "value": value}]}]})
 
-    def aggregate(self, space, pipeline):
+    def upsert_records(self, space, object_id, dataset, records,
+                       page_size=None):
+        """Batch-ingest into an `idRule: user` runtime dataset (ADR-016).
+
+        records: [{"id": "<caller id>", "fields": {…}}] — the id is
+        the idempotency key: absent ids are created, existing ids get
+        only their declared-MUTABLE fields diffed (identical records
+        skip), a changed write-once field rejects that record. Field
+        keys are the dataset's plain declared keys (never xKeys).
+        Returns {created, updated, skipped, rejections: [{index, id,
+        code, reason}], pages} — 200 even with rejections, so CHECK
+        rejections. One CRDT change per page (page_size default 500).
+        Declare the dataset first (create_dataset) and put the owning
+        type on the host object at create ({"types": [...]})."""
+        body = {"objectId": object_id, "dataset": dataset,
+                "records": records}
+        if page_size:
+            body["pageSize"] = int(page_size)
+        return self._call("post", f"/v1/spaces/{space}/upsert", body)
+
+    def delete_records(self, space, object_id, dataset, record_ids):
+        """Delete dataset records by id → {versionId, changeId, recordIds}.
+
+        Tombstones: a deleted id is consumed forever (re-upserting it
+        rejects with upsert.record_deleted). On deleteBy: author
+        datasets non-author deletes are dropped at apply."""
+        return self._call("post", f"/v1/spaces/{space}/delete-records",
+                          {"objectId": object_id, "dataset": dataset,
+                           "recordIds": list(record_ids)})
+
+    def aggregate(self, space, pipeline, object_id=None, dataset=None):
         """Run a Mongo-style aggregation pipeline over the space's objects.
 
         Stages: $match, $group (_id + accumulators: {"$sum": 1},
@@ -592,7 +624,14 @@ class _Client:
         catalog. Avg rating per genre: [{"$group": {"_id":
         "$book.genre", "avg": {"$avg": "$book.rating"}}}]. Returns
         {"records": [...]} with ids mapped back to xKeys; unknown
-        stages are a 400 (aggregate.bad_pipeline)."""
+        stages are a 400 (aggregate.bad_pipeline). With object_id +
+        dataset the pipeline runs over that object's dataset records
+        instead — field refs are then the dataset's PLAIN keys
+        ("$internalDate"), no xKey resolution either way."""
+        if object_id or dataset:
+            return self._call("post", f"/v1/spaces/{space}/aggregate",
+                              {"objectId": object_id, "dataset": dataset,
+                               "pipeline": pipeline})
         r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                        {"pipeline": self._resolve_pipeline(space, pipeline)})
         if isinstance(r, dict) and isinstance(r.get("records"), list):
@@ -884,6 +923,57 @@ class _Client:
         return {"typeId": tid, "xKey": xkey, "created": created,
                 "addedProps": added}
 
+    def list_datasets(self, space, type_key):
+        """Runtime dataset definitions on a user type (by xKey) → [defs].
+
+        Each def: {id, name, displayName?, idRule, idPattern?,
+        deleteBy, skipHistory?, search?, fields: [{id, key, kind,
+        scope, required?, mutableBy, stamp?}], invalid?,
+        invalidReason?}. `invalid` marks a declaration that never
+        registers or accepts data — remove it (remove_dataset) and
+        re-declare."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call("get", f"/v1/spaces/{space}/types/{tid}/datasets")
+        return r.get("datasets") or []
+
+    def create_dataset(self, space, type_key, draft):
+        """Ensure a runtime dataset schema on a USER type (ADR-016).
+
+        draft: {"name": "<collection>", "displayName"?, "idRule":
+        "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
+        "search"?: {"title": "<field key>", "text": "<field key>"},
+        "fields": [{"key", "kind"?: string|number|boolean|array|
+        object, "required"?, "mutableBy"?: "author"|"any", "stamp"?:
+        "creator"|"createTime"|"modifyTime"}]}. Fields default
+        write-once; author gates (mutableBy/deleteBy "author") need a
+        {"stamp": "creator"} field; idRule "user" = caller-supplied
+        record ids (the upsert idempotency key). Behavioral parts pin
+        first-write — to change them remove and re-declare.
+        Idempotent by collection name: an existing def is reused as-is
+        (NOT reconciled against the draft) → {"datasetDefId",
+        "created"}. Records live per host object: write with
+        upsert_records, read with query(space, object_id, "<name>") —
+        plain field keys in filter/sort. Registered built-in types
+        refuse (400 type.registered)."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        name = (draft or {}).get("name") or ""
+        for d in self.list_datasets(space, type_key):
+            if d.get("name") == name:
+                return {"datasetDefId": d.get("id"), "created": False}
+        r = self._call("post", f"/v1/spaces/{space}/types/{tid}/datasets",
+                       draft)
+        return {"datasetDefId": r.get("datasetDefId"), "created": True}
+
+    def remove_dataset(self, space, type_key, dataset_def_id):
+        """Tombstone a runtime dataset definition; returns {} (wire: 204).
+
+        dataset_def_id from list_datasets. Existing record data is NOT
+        cleaned up; subsequent writes drop once peers apply; the
+        search index evicts lazily."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._call(
+            "delete", f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}")
+
     def add_property(self, space, type_key, body):
         """POST one property onto a type (named by xKey — unknown keys
         error with the catalog). body: {"name", "xKey"?, "kind"?,
@@ -1139,9 +1229,36 @@ def upsert_record(spaceConfig, object_id, dataset, record_id, value):
                               record_id, value)
 
 
+@span(kind="mutator")  # noqa: F821 - guest global
+def upsert_records(spaceConfig, object_id, dataset, records, page_size=None):
+    return _c().upsert_records(_space(spaceConfig), object_id, dataset,
+                               records, page_size)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def delete_records(spaceConfig, object_id, dataset, record_ids):
+    return _c().delete_records(_space(spaceConfig), object_id, dataset,
+                               record_ids)
+
+
 @span(kind="getter")  # noqa: F821 - guest global
-def aggregate(spaceConfig, pipeline):
-    return _c().aggregate(_space(spaceConfig), pipeline)
+def list_datasets(spaceConfig, type_key):
+    return _c().list_datasets(_space(spaceConfig), type_key)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def create_dataset(spaceConfig, type_key, draft):
+    return _c().create_dataset(_space(spaceConfig), type_key, draft)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def remove_dataset(spaceConfig, type_key, dataset_def_id):
+    return _c().remove_dataset(_space(spaceConfig), type_key, dataset_def_id)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def aggregate(spaceConfig, pipeline, object_id=None, dataset=None):
+    return _c().aggregate(_space(spaceConfig), pipeline, object_id, dataset)
 
 
 @span(kind="getter")  # noqa: F821 - guest global
@@ -1273,12 +1390,13 @@ def delete_memory(spaceConfig, item_id):
 # lift the method docstrings onto the public functions — ONE authored
 # copy (on _Client), rendered by describe()/help() from here
 for _f in (create_object, update_object, delete_object, query_objects,
-           list_programs, query, modify, upsert_record, aggregate,
-           get_markdown, put_markdown, edit_markdown, append_markdown,
-           list_spaces, get_space, general_chat, create_space,
-           get_ui_context, list_types, list_properties, create_type,
-           add_property, append_turn, create_chunk, chat_send, search,
-           backlinks, get_brain, create_memory, evolve_memory,
-           delete_memory):
+           list_programs, query, modify, upsert_record, upsert_records,
+           delete_records, list_datasets, create_dataset, remove_dataset,
+           aggregate, get_markdown, put_markdown, edit_markdown,
+           append_markdown, list_spaces, get_space, general_chat,
+           create_space, get_ui_context, list_types, list_properties,
+           create_type, add_property, append_turn, create_chunk,
+           chat_send, search, backlinks, get_brain, create_memory,
+           evolve_memory, delete_memory):
     _f.__doc__ = getattr(_Client, _f.__name__).__doc__
 del _f
