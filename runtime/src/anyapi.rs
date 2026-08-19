@@ -395,6 +395,27 @@ impl Client {
         )
     }
 
+    /// GET /v1/spaces/derived — the server's compiled-in derived-space
+    /// registry (SYN-164), boot-resolved: one row per well-known name,
+    /// `{name, spaceId, created, status?}`. Resolving never creates.
+    /// 404 on pre-registry servers — callers treat that as "no
+    /// registry", not a failure.
+    pub fn list_derived_spaces(&self) -> Result<Vec<Value>, AnyError> {
+        Ok(records_of(
+            self.call("GET", "/v1/spaces/derived", None)?,
+            "spaces",
+        ))
+    }
+
+    /// POST /v1/spaces/derived/{name} — materialize a registry space
+    /// (lazy + idempotent, 201 SpaceInfo). Only registry names exist
+    /// (404 `space.derived_unknown` otherwise); derived spaces are
+    /// permanent — DELETE refuses them. No `agent_space` flag needed:
+    /// the config object derives idempotently on every single-space GET.
+    pub fn create_derived_space(&self, name: &str) -> Result<Value, AnyError> {
+        self.call("POST", &format!("/v1/spaces/derived/{name}"), None)
+    }
+
     // --- sharing (ADR-009 §8) ---
     /// POST /v1/spaces/{s}/invites — mint the space's RequestToJoin
     /// invite. Reply `{inviteToken, spaceId}`. The token carries NO
@@ -1210,6 +1231,8 @@ mod tests {
         c.append_turn("sp", "o", &json!({"role": "user"})).unwrap();
         c.create_chunk("sp", "o", &json!({"text": "t"})).unwrap();
         c.create_space("bao").unwrap();
+        c.list_derived_spaces().unwrap();
+        c.create_derived_space("bao").unwrap();
         c.list_spaces(Some("active")).unwrap();
         c.search("sp", "q", &json!({"limit": 3})).unwrap();
         c.backlinks("sp", "o").unwrap();
@@ -1227,6 +1250,8 @@ mod tests {
                 ("POST", "/v1/spaces/sp/objects/o/agent/turns"),
                 ("POST", "/v1/spaces/sp/objects/o/agent/chunks"),
                 ("POST", "/v1/spaces"),
+                ("GET", "/v1/spaces/derived"),
+                ("POST", "/v1/spaces/derived/bao"),
                 ("GET", "/v1/spaces?status=active"),
                 ("POST", "/v1/spaces/sp/search"),
                 ("GET", "/v1/spaces/sp/objects/o/backlinks"),
@@ -1238,7 +1263,7 @@ mod tests {
             // ("anytype.space" is rejected since SDK v0.0.10)
             Some(json!({"name": "bao", "agent_space": true}))
         );
-        assert_eq!(calls[7].2, Some(json!({"query": "q", "limit": 3})));
+        assert_eq!(calls[9].2, Some(json!({"query": "q", "limit": 3})));
     }
 
     #[test]

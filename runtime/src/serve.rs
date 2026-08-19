@@ -33,7 +33,29 @@ fn now_s() -> f64 {
         .as_secs_f64()
 }
 
+/// Resolve the agent space (ADR-006 §0, amended 2026-08-19). Registry
+/// names resolve through the server's derived-space registry (SYN-164)
+/// and NEVER name-scan: a well-known space (`bao`) is a pure function
+/// of the account keys, so every device converges on the same id —
+/// materialized rows resolve, unmaterialized ones derive on the spot
+/// (lazy + idempotent). No migration path: a legacy same-named space
+/// is simply not the agent space anymore (clean cut, no-backcompat).
+/// Pre-registry servers (404) and non-registry names keep the v1 rule:
+/// name scan, create on miss.
 pub fn ensure_space(c: &Client, name: &str) -> Result<String> {
+    match c.list_derived_spaces() {
+        Ok(rows) => {
+            if let Some(row) = rows.iter().find(|r| r["name"] == name) {
+                if row["created"] == Value::Bool(true) {
+                    return Ok(row["spaceId"].as_str().unwrap_or_default().to_string());
+                }
+                let created = c.create_derived_space(name)?;
+                return Ok(created["id"].as_str().unwrap_or_default().to_string());
+            }
+        }
+        Err(e) if e.status == 404 => {} // pre-registry server
+        Err(e) => return Err(e).context("derived-space registry"),
+    }
     for sp in c.list_spaces(None)? {
         if sp["name"] == name && sp.get("status").map(|s| s == "active").unwrap_or(true) {
             return Ok(sp["id"].as_str().unwrap_or_default().to_string());
@@ -1390,6 +1412,61 @@ mod tests {
 
     fn spaces_reply(rows: Value) -> (u16, Value) {
         (200, json!({"spaces": rows}))
+    }
+
+    #[test]
+    fn ensure_space_prefers_materialized_derived_row() {
+        // registry row created:true wins outright — no space-list scan,
+        // no ambiguity with a same-named legacy space
+        let (c, log) = scripted(&[spaces_reply(
+            json!([{"name": "bao", "spaceId": "derived-id", "created": true}]),
+        )]);
+        assert_eq!(ensure_space(&c, "bao").unwrap(), "derived-id");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "/v1/spaces/derived");
+    }
+
+    #[test]
+    fn ensure_space_derives_unmaterialized_registry_name() {
+        // registry name, unmaterialized → derive on the spot; a legacy
+        // same-named space is never scanned for (clean cut) and
+        // POST /v1/spaces never happens
+        let (c, log) = scripted(&[
+            spaces_reply(json!([{"name": "bao", "spaceId": "derived-id", "created": false}])),
+            (201, json!({"id": "derived-id", "derived": true})),
+        ]);
+        assert_eq!(ensure_space(&c, "bao").unwrap(), "derived-id");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].0, "POST");
+        assert_eq!(calls[1].1, "/v1/spaces/derived/bao");
+    }
+
+    #[test]
+    fn ensure_space_falls_back_pre_registry() {
+        // old server: /v1/spaces/derived 404s → v1 rule (scan, create)
+        let (c, log) = scripted(&[
+            (
+                404,
+                json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
+            ),
+            spaces_reply(json!([])),
+            (201, json!({"id": "new-id"})),
+        ]);
+        assert_eq!(ensure_space(&c, "bao").unwrap(), "new-id");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[2].1, "/v1/spaces");
+    }
+
+    #[test]
+    fn ensure_space_non_registry_name_scans_by_name() {
+        // registry exists but doesn't know this name → v1 rule
+        let (c, _) = scripted(&[
+            spaces_reply(json!([{"name": "bao", "spaceId": "derived-id", "created": true}])),
+            spaces_reply(json!([{"id": "mine", "name": "myspace", "status": "active"}])),
+        ]);
+        assert_eq!(ensure_space(&c, "myspace").unwrap(), "mine");
     }
 
     #[test]

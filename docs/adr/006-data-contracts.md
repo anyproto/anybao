@@ -40,6 +40,27 @@ flag is gone (no configured chat name to pick). Requires an any server
 new enough to derive the field; anybao errors loudly if it's absent
 rather than silently minting a private chat.
 
+**Amended 2026-08-19 — resolve the bao space through the derived-space
+registry.** The any server (SYN-164) compiles in a registry of
+well-known per-account spaces; `bao` derives deterministically from
+the account keys and the fixed seed `any/space/bao/v1`, so every
+client and device converges on the same space id with no
+check-then-create race. `ensure_space` resolution order:
+
+1. `GET /v1/spaces/derived` — if the configured name is a registry
+   entry with `created: true`, that spaceId IS the agent space
+   (deterministic; kills the name-scan ambiguity once a derived and a
+   legacy space share the name `bao`).
+2. Registry entry, unmaterialized: `POST /v1/spaces/derived/bao`
+   (lazy + idempotent; no `agent_space` flag needed — the config
+   object derives on every single-space GET anyway). Registry names
+   NEVER name-scan: there is no migration path — a legacy same-named
+   space simply stops being the agent space (clean cut,
+   no-backcompat; §0's 2026-07-07 adoption rule is superseded for
+   registry names).
+3. Pre-registry server (404) or non-registry name: the v1 rule —
+   name scan, create on miss.
+
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
 - **Server-assigned `seq`**: append returns the allocated seq (single
