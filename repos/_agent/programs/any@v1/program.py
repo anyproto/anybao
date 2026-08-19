@@ -808,6 +808,27 @@ class _Client:
         self._spaces_cache = None    # new space -> refresh the name catalog
         return _trim_space_row(r)
 
+    def open_in_ui(self, space, object_id=None):
+        """Open a space — or one object in it — in the user's any-ui
+        window on THIS device → {subscribers}.
+
+        Publishes a `ui.open_space` / `ui.open_object` event on the
+        device-scope event bus (the transient "show the user what I
+        mean" navigation directive — at-most-once, nothing stored).
+        Device scope on purpose (user decision 2026-08-19): the view
+        changes only on the device this server runs on, never on the
+        account's other machines. `subscribers: 0` simply means no UI
+        window is connected right now — not an error, nothing is
+        queued. Use for "open it / show me" asks; get_ui_context is
+        the READ side (where the user already is)."""
+        data = {"spaceId": space, "source": "bao"}
+        etype = "ui.open_space"
+        if object_id:
+            data["objectId"] = object_id
+            etype = "ui.open_object"
+        return self._call("post", "/v1/events",
+                          {"type": etype, "scope": "device", "data": data})
+
     def get_ui_context(self, space):
         """The user's current view — the `ui_context` pointer any-ui keeps.
 
@@ -1367,6 +1388,11 @@ def get_ui_context(spaceConfig):
     return _c().get_ui_context(_space(spaceConfig))
 
 
+@span(kind="mutator")  # noqa: F821 - guest global
+def open_in_ui(spaceConfig, object_id=None):
+    return _c().open_in_ui(_space(spaceConfig), object_id)
+
+
 # `_`-private: describe() hides it from the `## Tools` inventory — the
 # duplicate-pointer stopgap is the loop's business (toolcaller calls it
 # once per run), not a tool the model should reach for.
@@ -1456,7 +1482,8 @@ for _f in (create_object, update_object, delete_object, query_objects,
            aggregate, list_processes, cancel_process,
            get_markdown, put_markdown, edit_markdown,
            append_markdown, list_spaces, get_space, general_chat,
-           create_space, get_ui_context, list_types, list_properties,
+           create_space, get_ui_context, open_in_ui, list_types,
+           list_properties,
            create_type, add_property, append_turn, create_chunk,
            chat_send, search, backlinks, get_brain, create_memory,
            evolve_memory, delete_memory):

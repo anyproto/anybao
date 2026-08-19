@@ -1019,3 +1019,19 @@ def test_get_ui_context_reads_across_duplicate_types_without_deleting():
          "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 100}}]})
     assert client(fx).get_ui_context("s1")["spaceId"] == "sp1"
     assert _deleted(fx) == []
+
+
+def test_open_in_ui_publishes_device_scope_ui_events():
+    # the agent→UI navigation directive: ui.* events on the DEVICE bus
+    # (user decision 2026-08-19 — never the account's other machines)
+    fx = wire(replies={"/v1/events": {"subscribers": 1}})
+    c = client(fx)
+    assert c.open_in_ui(SID) == {"subscribers": 1}
+    c.open_in_ui(SID, "obj1")
+    (v1, p1, b1), (v2, p2, b2) = fx.calls
+    assert (v1, p1) == ("POST", "/v1/events")
+    assert b1 == {"type": "ui.open_space", "scope": "device",
+                  "data": {"spaceId": SID, "source": "bao"}}
+    assert b2["type"] == "ui.open_object"
+    assert b2["data"] == {"spaceId": SID, "objectId": "obj1",
+                          "source": "bao"}

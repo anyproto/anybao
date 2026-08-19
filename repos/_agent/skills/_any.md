@@ -73,6 +73,11 @@ Spaces:
   `currentUserSpace` (and its `objectId`) to the calls that act on it,
   checking its age for staleness. `c.get_ui_context(baoSpaceConfig)`
   re-reads it live; `c.list_spaces()` enumerates everything else.
+- The WRITE side of the view: `c.open_in_ui(space, object_id?)`
+  navigates the user's any-ui window on this device to that space or
+  object — use it when the user asks to "open"/"show" something, or
+  right after creating what they'll want to look at. Fire-and-forget:
+  `subscribers: 0` just means no window is connected, nothing queues.
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
 
