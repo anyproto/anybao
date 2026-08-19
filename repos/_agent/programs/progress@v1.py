@@ -1,116 +1,97 @@
 """Progress bars for long jobs — start/tick/done/fail, one bar per (space, job).
 
 Programs and cells report progress ONLY through this module (ADR-014);
-never hand-roll agent-progress objects. The transport (one
-`agent-progress` object per (space, job), property ticks riding the
-objects firehose into any-ui) is an implementation detail to be swapped
-here when the any-native progress facility lands. Callers own the
-throttle: tick per work chunk / percentage step, never per item — every
-tick is a p2p-synced CRDT change.
+never hand-roll process events. The transport — the server's process
+registry (`/v1/processes`, any PR #163): `process.*` events over the
+event bus, rendered GLOBALLY by any-ui regardless of the open space —
+is an implementation detail owned here. Callers own the throttle: tick
+per work chunk / percentage step, never per item. Nothing is
+persisted: a finished bar lingers ~60s in the view, a failed one too —
+the durable record of an outcome is your notify message / job state.
 """
 
-# TEMPORARY TRANSPORT (ADR-014 §2): the any server team is designing a
-# native, generic progress facility. When it ships, ONLY this module's
-# internals (and any-ui's ProgressSource) get rewritten against it —
-# the start/tick/done/fail surface is the contract programs keep.
-# Don't add transport-shaped features here in the meantime.
+# TRANSPORT (ADR-014 §2, swapped 2026-08-19): register/progress/finish
+# on /v1/processes — id "<job>.<spaceId>", kind "agent", scope
+# "account" (the account's devices see every bar — the global-bar
+# property), target = the subject space id, detail rides `message`.
+# The pre-swap agent-progress OBJECT transport is retired with NO
+# fallback (the no-backward-compat rule): a server without the
+# facility fails these calls loudly — upgrade the server, don't mask.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4; ADR-014 §1 amendment)
 
 _any = use("any@v1")  # noqa: F821 - `use` is the guest global
 
-PROGRESS_TYPE = {   # the agent_progress protocol — any-ui renders these
-    "name": "Agent progress", "xKey": "agent-progress",
-    "properties": [
-        {"name": "job"}, {"name": "label"}, {"name": "status"},
-        {"name": "current", "kind": "number"}, {"name": "total", "kind": "number"},
-        {"name": "detail"}, {"name": "started_at", "kind": "number"},
-        {"name": "updated_at", "kind": "number"}, {"name": "error"},
-        {"name": "program"},
-    ],
-}
-# Property names are snake_case ON PURPOSE (ADR-014 §2 amendment): the
-# client derives xKeys by snake-casing names, and normalized READS key
-# by xKey — camelCase names made the read shape differ from the write
-# shape (and silently broke the started_at carry in _resolve, which
-# read the camel key against snake-keyed rows). name == xKey, always.
+_KIND = "agent"
+_sids = {}   # space ref -> space id, memoized for the run (one cell)
 
 
-def _resolve(space, job):
-    """Converge a job's objects to ONE → (objectId | None, carry-dict).
+def _sid(space):
+    key = str(space)
+    if key not in _sids:
+        sc = space
+        if isinstance(sc, dict):
+            sc = sc.get("spaceId") or sc.get("id") or ""
+        _sids[key] = _any.get_space(sc)["id"]
+    return _sids[key]
 
-    Query-then-create races and p2p partitions mint duplicates
-    (ADR-014 §3, the sync_state dance): freshest `modifiedAt` wins,
-    stale rows are best-effort deleted, and the EARLIEST started_at
-    across all rows is returned as a carry to fold into the caller's
-    next write — the true start survives the race; counters never
-    merge (summing racers would double-count)."""
-    rows = _any.query_objects(space, filter={"agent-progress.job": job},
-                              limit=10)
-    if not rows:
-        return None, {}
-    rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
-    keep = rows[0]
-    starts = [(r.get("agent-progress") or {}).get("started_at") for r in rows]
-    starts = [s for s in starts if s]
-    carry = {}
-    kept_start = (keep.get("agent-progress") or {}).get("started_at")
-    if starts and (not kept_start or min(starts) < kept_start):
-        carry["started_at"] = min(starts)
-    for r in rows[1:]:
-        try:  # noqa: SIM105 - best-effort, no contextlib in guest
-            _any.delete_object(space, r["id"])
-        except _any.AnyError:
-            pass
-    return keep["id"], carry
+
+def _pid(space, job):
+    # (identity, id) is the registry key and identity is the whole
+    # account — the space id suffix keeps two spaces' same-named jobs
+    # apart. job must fit the event-target grammar [A-Za-z0-9._-].
+    return f"{job}.{_sid(space)}"
+
+
+def _register(space, job, title):
+    _any._process_register({"id": _pid(space, job), "kind": _KIND,
+                            "title": title or job, "scope": "account",
+                            "target": _sid(space)})
 
 
 @span("progress.start", kind="mutator")  # noqa: F821 - guest global
 def start(space, job, label, total=0, current=0, detail="", program=""):
-    """Begin (or resume) a job's bar → objectId.
+    """Begin (or resume) a job's bar → process id.
 
     Publishes the starting state BEFORE work begins (a bar that only
-    appears at the first tick reads as a hang). Idempotent: an existing
-    job object is converged (freshest wins, stale duplicates deleted,
-    earliest started_at kept) and rewritten in place, so resume/retry
-    reuse the same bar. total <= 0 renders indeterminate."""
-    _any.create_type(space, PROGRESS_TYPE)
-    fields = {"job": job, "label": label, "status": "running",
-              "current": int(current), "total": int(total),
-              "detail": detail or "", "started_at": now(),  # noqa: F821
-              "updated_at": now(), "error": "", "program": program or ""}  # noqa: F821
-    oid, carry = _resolve(space, job)
-    if oid:
-        _any.update_object(space, oid, {"agent-progress": {**fields, **carry}})
-        return oid
-    made = _any.create_object(space, {
-        "types": ["agent-progress"], "name": label or job,
-        "initialProperties": {"agent-progress": fields}})
-    return made["objectId"]
+    appears at the first tick reads as a hang). Idempotent:
+    re-registering the same job restarts its row in place, so
+    resume/retry reuse the same bar. total <= 0 renders indeterminate.
+    `program` is accepted for compatibility and unused — the process
+    row identifies the publisher by account identity."""
+    pid = _pid(space, job)
+    _register(space, job, label)
+    _any._process_progress(pid, {"done": int(current),
+                                 "total": int(total),
+                                 "message": detail or ""})
+    return pid
 
 
 @span("progress.tick", kind="mutator")  # noqa: F821 - guest global
 def tick(space, job, current, total=None, detail=None, label=None):
-    """Advance the bar → objectId. Property writes only.
+    """Advance the bar → process id. Doubles as the liveness heartbeat.
 
-    Writes `status: running` every time — after a transient fail() the
-    next tick reopens the job in place. Self-heals: a missing object
-    (deleted, or never started) is recreated so a resumed chain never
-    loses its bar. THROTTLE: per work chunk, never per item."""
-    fields = {"current": int(current), "status": "running",
-              "updated_at": now()}  # noqa: F821
+    Absent fields keep their current values. A tick after fail()
+    reopens the row as running (the retry path). Self-heals: an
+    expired or never-started process (404 process.not_found — running
+    rows expire 45s after the last tick) is re-registered, so a
+    resumed chain never loses its bar. THROTTLE: per work chunk, never
+    per item — and at least one tick per 45s keeps a slow job's bar
+    alive."""
+    pid = _pid(space, job)
+    body = {"done": int(current)}
     if total is not None:
-        fields["total"] = int(total)
+        body["total"] = int(total)
     if detail is not None:
-        fields["detail"] = detail
-    if label is not None:
-        fields["label"] = label
-    oid, carry = _resolve(space, job)
-    if oid:
-        _any.update_object(space, oid, {"agent-progress": {**fields, **carry}})
-        return oid
-    return start(space, job, label or job, total=int(total or 0),
-                 current=int(current), detail=detail or "")
+        body["message"] = detail
+    try:
+        _any._process_progress(pid, body)
+    except _any.AnyError as e:
+        if e.code != "process.not_found":
+            raise
+        return start(space, job, label or job, total=int(total or 0),
+                     current=int(current), detail=detail or "")
+    return pid
 
 
 def _arm_notify(notify, space, job, summary):
@@ -142,89 +123,102 @@ _NUDGE = ("[trigger: progress] Job '{job}'{label} in space '{space}' "
           "normally, do not chat_send.")
 
 
+def _own_row(pid):
+    try:
+        return next((r for r in _any.list_processes()
+                     if r.get("id") == pid and r.get("self")), {})
+    except _any.AnyError:
+        return {}
+
+
 @span("progress.done", kind="mutator")  # noqa: F821 - guest global
 def done(space, job, notify=None):
-    """Finish + self-clean: DELETE the job's object(s) → count deleted.
+    """Finish the bar → 1 if a live row was finished, else 0.
 
-    A finished bar leaves nothing in the space tree (ADR-014 §4);
-    disappearance IS the success signal — fail() keeps its object, so a
-    watcher that sees a running job vanish renders success. Want final
-    counts in that last frame? tick() them just before done().
-    Idempotent when nothing exists. `notify` (TENTATIVE, §6): pass
-    `baoSpaceConfig` (or a `{spaceId, chatId}` dict / agent space) to
-    post a visible `trigger:<job>` chat message that triggers the loop
-    naturally — the agent reports completion in that chat with history
-    in context. For detached (trigger-driven) jobs; pointless for work
-    you run inline in your own turn."""
-    rows = _any.query_objects(space, filter={"agent-progress.job": job},
-                              limit=10)
-    rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
-    last = dict(rows[0].get("agent-progress") or {}) if rows else {}
-    n = 0
-    for r in rows:
-        try:  # noqa: SIM105 - best-effort, no contextlib in guest
-            _any.delete_object(space, r["id"])
-            n += 1
-        except _any.AnyError:
-            pass
+    Emits the terminal `process.done` frame; the row lingers ~60s in
+    the view as the success signal, then expires — nothing is left
+    behind (ADR-014 §4). Want final counts in that linger? tick() them
+    just before done(). Idempotent when nothing is live. `notify`
+    (§6): pass `baoSpaceConfig` (or a `{spaceId, chatId}` dict / agent
+    space) to post a visible `trigger:<job>` chat message that
+    triggers the loop — the agent reports completion in that chat with
+    history in context. For detached (trigger-driven) jobs; pointless
+    for work you run inline in your own turn."""
+    pid = _pid(space, job)
+    last, finished = {}, 0
+    try:
+        if notify is not None:
+            last = _own_row(pid)
+        _any._process_finish(pid, {"status": "done"})
+        finished = 1
+    except _any.AnyError as e:
+        if e.code != "process.not_found":
+            raise
     if notify is not None:
-        cur, tot = last.get("current"), last.get("total")
-        counts = f" — {cur}/{tot}" if cur is not None else ""
-        detail = f" ({last['detail']})" if last.get("detail") else ""
-        label = f" ({last['label']})" if last.get("label") else ""
+        cur, tot = last.get("done"), last.get("total")
+        counts = f" — {cur}/{tot}" if cur is not None and tot else ""
+        detail = f" ({last['message']})" if last.get("message") else ""
+        label = f" ({last['title']})" if last.get("title") else ""
         _arm_notify(notify, space, job, _NUDGE.format(
             job=job, label=label, space=space,
             outcome=f"is DONE{counts}{detail}"))
-    return n
+    return finished
 
 
 @span("progress.jobs", kind="getter")  # noqa: F821 - guest global
 def jobs(space):
-    """Live bars in a space → [{job, label, status, current, total, …}].
+    """Bars for a space → [{job, label, status, current, total, …}].
 
-    One row per job, freshest write wins (read-side §3, no pruning —
-    this is a getter). Only running/failed rows exist by nature —
-    done() deletes its object — so this IS the answer to "what's
-    running?" / "did anything fail?"."""
-    rows = _any.query_objects(space, filter={"any.types": "agent-progress"},
-                              limit=100)
-    best = {}
+    Reads the server process view filtered to bao jobs (kind "agent")
+    whose subject is this space. status ∈ running | done | failed |
+    cancelled — terminal rows appear during their ~60s linger, then
+    expire; "what's running?" is the running rows."""
+    sid = _sid(space)
+    rows = _any.list_processes()
+    suffix = "." + sid
+    out = []
     for r in rows:
-        p = dict(r.get("agent-progress") or {})
-        job = p.get("job") or r["id"]
-        at = r.get("modifiedAt") or 0
-        if job not in best or at > best[job][0]:
-            best[job] = (at, p)
-    return [p for _, p in best.values()]
+        if r.get("kind") != _KIND or r.get("target") != sid:
+            continue
+        rid = r.get("id") or ""
+        out.append({
+            "job": rid[:-len(suffix)] if rid.endswith(suffix) else rid,
+            "label": r.get("title") or "", "status": r.get("state") or "",
+            "current": int(r.get("done") or 0),
+            "total": int(r.get("total") or 0),
+            "detail": r.get("message") or "",
+            "error": (r.get("error") or {}).get("message") or ""})
+    return out
 
 
 @span("progress.fail", kind="mutator")  # noqa: F821 - guest global
 def fail(space, job, error, detail=None, notify=None):
-    """Mark the job failed → objectId. The object is KEPT.
+    """Mark the job failed → process id.
 
-    `status: failed` + error is the durable, visible record of what
-    stopped — it stays until the user acts on it or a start()/tick()
-    of the same job reopens it in place (the retry path). `notify`
-    (TENTATIVE, §6): same as done() — a visible `trigger:<job>` chat
-    message triggers the loop so the agent tells the user what broke,
-    with the chat's history in context."""
-    fields = {"status": "failed", "error": str(error or ""),
-              "updated_at": now()}  # noqa: F821
-    if detail is not None:
-        fields["detail"] = detail
-    oid, carry = _resolve(space, job)
-    if oid:
-        _any.update_object(space, oid, {"agent-progress": {**fields, **carry}})
-    else:
-        _any.create_type(space, PROGRESS_TYPE)
-        made = _any.create_object(space, {
-            "types": ["agent-progress"], "name": job,
-            "initialProperties": {"agent-progress": {
-                "job": job, "label": job, **fields}}})
-        oid = made["objectId"]
+    Emits the terminal `process.failed` frame with the error; the row
+    lingers ~60s as the visible outcome, then expires — the DURABLE
+    record of a failure is the notify chat message and the job's own
+    state, not the bar (ADR-014 §4 as amended). A start()/tick() of
+    the same job reopens it (the retry path). `notify` (§6): same as
+    done() — a visible `trigger:<job>` chat message triggers the loop
+    so the agent tells the user what broke."""
+    pid = _pid(space, job)
+    err = {"message": str(error or "")}
+    try:
+        if detail is not None:
+            _any._process_progress(pid, {"message": detail})
+        _any._process_finish(pid, {"status": "failed", "error": err})
+    except _any.AnyError as e:
+        if e.code != "process.not_found":
+            raise
+        # expired or never started: materialize, then fail it
+        _register(space, job, job)
+        if detail is not None:
+            _any._process_progress(pid, {"message": detail})
+        _any._process_finish(pid, {"status": "failed", "error": err})
     if notify is not None:
         d = f" ({detail})" if detail else ""
         _arm_notify(notify, space, job, _NUDGE.format(
             job=job, label="", space=space,
-            outcome=f"FAILED: {fields['error']}{d}"))
-    return oid
+            outcome=f"FAILED: {err['message']}{d}"))
+    return pid

@@ -4,7 +4,10 @@ Status: **Accepted** (2026-08-14), amended 2026-08-16 (§1: the module
 is an agent tool — `__any_tool__` — so ad-hoc chat-driven batch jobs
 discover it instead of hand-rolling the transport, which live testing
 showed the agent otherwise does; plus a `jobs(space)` getter, the
-read-side answer to "what's running?")
+read-side answer to "what's running?"), amended 2026-08-19 (§2/§4/§5:
+the anticipated transport swap executed — the any-native facility
+landed as the server process registry, any PR #163 over the #162
+event bus; see the 2026-08-19 amendment section at the bottom)
 Date: 2026-08-14
 Builds on: ADR-002 (all writes cross the effect boundary), ADR-006
 (space objects as data contracts), ADR-009 §2 (cross-repo deps,
@@ -142,3 +145,47 @@ alongside the any-native facility's terminal events.
   facility exists (blocked on A15 regardless).
 - The swap-out is two files: `progress@v1.py` internals and the UI
   source — no program, no server, nothing to remove upstream.
+
+## Amendment 2026-08-19 — the swap happened: server process registry
+
+The any-native facility this ADR anticipated landed: any PR #162 gave
+the account-wide `/v1/events` bus, PR #163 the **process registry** on
+top of it — `POST /v1/processes` (register) / `…/:id/progress` /
+`…/:id/finish` / `…/:id/cancel`, `GET /v1/processes` as a
+last-event-wins live view with staleness expiry, nothing persisted
+(`~/any/any docs/22-processes.md` is the contract). `progress@v1` was
+reimplemented against it exactly as §2 promised — the
+start/tick/done/fail/jobs surface and callers are unchanged. What
+changed underneath:
+
+- **§2 transport**: process id `<job>.<spaceId>` (the registry keys
+  `(identity, id)` and identity is the whole account — the suffix
+  keeps same-named jobs in two spaces apart), `kind: "agent"`,
+  `scope: "account"`, `target` = the subject space id, `detail` →
+  `message`. The `agent-progress` object type, the §3 duplicate dance
+  (registry rows can't race — last event wins server-side) and the
+  `program` field are retired; `start(program=…)` is accepted and
+  ignored. any@v1 carries the plumbing as `_`-private passthroughs
+  plus public `list_processes` / `cancel_process` (the read side also
+  surfaces the server's own `index.*` producers — "why is search
+  incomplete"). There is NO fallback for a server without the
+  facility — its 404 propagates and fails the caller loudly (the
+  no-backward-compat rule; a silent no-op would hide a
+  mis-deployment): the server must carry #163 before this
+  `progress@v1` deploys.
+- **§4 semantics**: `done`/`fail` now emit explicit terminal frames;
+  the row lingers ~60s in the view, then expires. Disappearance-as-
+  success inference is gone (the terminal state is explicit), and a
+  FAILED bar is no longer a durable record — the durable outcome is
+  the §6 notify message plus the job's own state (gmailSync:
+  `sync_state` + `status()`). `tick` doubles as the liveness
+  heartbeat: a running row unseen for 45s expires and the next tick
+  self-heals by re-registering — slow jobs should tick at least
+  every 45s.
+- **§5 UI**: the ProgressSource moves from per-space `agent-progress`
+  objects to `GET /v1/processes` + `type=process.*` bus frames — the
+  bar is **global** (account scope reaches every device with no space
+  subscription), which was the user ask that triggered the swap. Task
+  doc: any-ui `docs/tasks/events-processes-port.md` (also covers the
+  #162 ui-commands port).
+- **§6 notify** is unchanged — it rides chat, not the facility.

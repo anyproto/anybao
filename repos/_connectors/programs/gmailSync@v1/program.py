@@ -698,7 +698,7 @@ def _chain_hop(space, q, agent_space, hop, gen):
             "[trigger: gmail backfill] The gmail "
             f"backfill chain for space '{space}' STOPPED: circuit breaker "
             f"open after {fails} consecutive failed hops. Check the "
-            "gmail-backfill progress object and gmailSync.status for the "
+            "gmail-backfill process (progress.jobs) and gmailSync.status for the "
             "cause, then reply with ONE short message telling the user what "
             "broke and what you propose to do. Your reply reaches the chat "
             "by itself — do NOT chat_send it, or it posts twice (once as "
@@ -730,8 +730,8 @@ def _chain_hop(space, q, agent_space, hop, gen):
         _prog.fail(space, _JOB, error=str(out.get("error") or ""),
                    detail=hop_detail)
     else:
-        # final counts land in the last frame, THEN done() self-cleans
-        # (ADR-014 §4: disappearance is the success signal)
+        # final counts land in the last frame, THEN done() emits the
+        # terminal state (ADR-014 §4 as amended: the row lingers ~60s)
         _prog.tick(space, _JOB, current=processed, detail=hop_detail)
         if done:
             _prog.done(space, _JOB)
@@ -780,8 +780,8 @@ def start_backfill(space, agent_space, q=None):
     5 consecutive failed hops. `agent_space` is the serving agent's
     space (baoSpaceConfig — triggers live on its anchor). Progress
     goes through agent:progress@v1 (job "gmail-backfill", ADR-014):
-    live in the target space while running or failed, self-cleaned on
-    completion — for history use `status(space)`. When the chain
+    a GLOBAL bar (the server process registry) while running; terminal
+    states linger ~60s — for history use `status(space)`. When the chain
     ends — backlog drained OR breaker — it arms a toolcaller nudge so
     the agent reports the outcome into its chat. Idempotent: re-arming
     with the SAME q resumes where the checkpoint left off; a DIFFERENT

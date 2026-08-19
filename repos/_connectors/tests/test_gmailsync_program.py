@@ -17,12 +17,24 @@ from connectorenv import connector_kernel
 
 # --- fakes -------------------------------------------------------------------
 
+class WireError(Exception):
+    """Raise-able with wire attrs; kernelenv relays status/code so the
+    guest's AnyError branches (progress@v1's 404 self-heal) see them."""
+
+    def __init__(self, status, code, message=""):
+        self.status = status
+        self.code = code
+        super().__init__(message or code)
+
+
 class FakeAny:
     """The agent:any@v1 surface gmailSync touches, dict-backed.
 
     Mail lives as email_messages dataset records on a mailbox object
     (ADR-016): `mail` maps record id -> fields; upsert_records mimics
-    the server's create/diff/skip (labelIds is the one mutable field)."""
+    the server's create/diff/skip (labelIds is the one mutable field).
+    Progress rides the process registry (ADR-014 §2 swap): `processes`
+    maps process id -> row, `process_frames` keeps every frame."""
 
     def __init__(self, mail=None, states=None, mailboxes=None):
         self.mail = dict(mail or {})           # record id -> fields
@@ -35,10 +47,49 @@ class FakeAny:
         self.upserts = []                      # every upsert_records call
         self.updates = []
         self.records = []
-        self.progress_rows = []
-        self.progress_log = []   # every agent-progress frame, survives delete
+        self.processes = {}      # process id -> registry row
+        self.process_frames = []  # every register/progress/finish, in order
         self.chats = []          # chat_send calls (visible trigger nudges)
         self._n = 0
+
+    # -- process registry (progress@v1 transport)
+    def get_space(self, space):
+        return {"id": space}     # identity: pids read "gmail-backfill.sp"
+
+    def _process_register(self, body):
+        self.process_frames.append(("register", dict(body)))
+        self.processes[body["id"]] = {
+            "identity": "acct1", "self": True, "id": body["id"],
+            "kind": body["kind"], "title": body["title"],
+            "scope": body["scope"], "target": body.get("target"),
+            "state": "running", "done": 0, "total": None, "message": "",
+            "error": None}
+        return {"subscribers": 1}
+
+    def _process_progress(self, pid, body):
+        if pid not in self.processes:
+            raise WireError(404, "process.not_found", "register first")
+        self.process_frames.append(("progress", pid, dict(body)))
+        row = self.processes[pid]
+        if "done" in body:
+            row["done"] = body["done"]
+        if "total" in body:
+            row["total"] = body["total"] or None
+        if "message" in body:
+            row["message"] = body["message"]
+        row["state"], row["error"] = "running", None
+        return {"subscribers": 1}
+
+    def _process_finish(self, pid, body):
+        if pid not in self.processes:
+            raise WireError(404, "process.not_found", "register first")
+        self.process_frames.append(("finish", pid, dict(body)))
+        self.processes[pid]["state"] = body["status"]
+        self.processes[pid]["error"] = body.get("error")
+        return {"subscribers": 1}
+
+    def list_processes(self):
+        return [dict(r) for r in self.processes.values()]
 
     # -- catalog
     def list_types(self, space):
@@ -65,9 +116,6 @@ class FakeAny:
         if f.get("any.name") == "agent-triggers":
             return [{"id": "anchor1", "createdAt": 10},
                     {"id": "anchor2", "createdAt": 99}]   # oldest must win
-        if "agent-progress.job" in f:
-            return [r for r in self.progress_rows
-                    if r["agent-progress"]["job"] == f["agent-progress.job"]]
         return []
 
     def upsert_record(self, space, object_id, dataset, record_id, value):
@@ -124,10 +172,6 @@ class FakeAny:
             self.states.append({"id": oid,
                                 "sync_state": dict(props["sync_state"]),
                                 "modifiedAt": 100})
-        if "agent-progress" in props:
-            self.progress_rows.append({"id": oid,
-                                       "agent-progress": dict(props["agent-progress"])})
-            self.progress_log.append(dict(props["agent-progress"]))
         return {"objectId": oid}
 
     def update_object(self, space, oid, body):
@@ -135,17 +179,12 @@ class FakeAny:
         for row in self.states:
             if row["id"] == oid and "sync_state" in body:
                 row["sync_state"].update(body["sync_state"])
-        for row in self.progress_rows:
-            if row["id"] == oid and "agent-progress" in body:
-                row["agent-progress"].update(body["agent-progress"])
-                self.progress_log.append(dict(row["agent-progress"]))
         return {"objectId": oid}
 
     def delete_object(self, space, oid):
         self.deleted.append(oid)
         self.states = [r for r in self.states if r["id"] != oid]
         self.mailboxes = [r for r in self.mailboxes if r["id"] != oid]
-        self.progress_rows = [r for r in self.progress_rows if r["id"] != oid]
         return None
 
     def general_chat(self, space):
@@ -495,8 +534,8 @@ def test_start_backfill_arms_hop_and_creates_progress():
     assert val["kind"] == "once" and val["args"]["chain"] is True
     assert val["args"]["triggerSpace"] == "agentsp"
     assert val["args"]["gen"] == 1
-    prog = fake.progress_rows[0]["agent-progress"]
-    assert prog["job"] == "gmail-backfill" and prog["status"] == "running"
+    prog = fake.processes["gmail-backfill.sp"]
+    assert prog["state"] == "running" and prog["kind"] == "agent"
 
 
 def test_start_backfill_accepts_spaceconfig_dicts():
@@ -571,8 +610,8 @@ def test_chain_hop_arms_next_before_work_and_updates_progress():
              if r[3].startswith("gmailSyncBackfill-") and r[3].endswith("-g1-h2")]
     assert len(armed) == 1                     # next hop armed exactly once
     assert out["notified"] is None             # mid-chain: no agent nudge
-    prog = fake.progress_rows[0]["agent-progress"]
-    assert prog["status"] == "running" and prog["current"] == 2
+    prog = fake.processes["gmail-backfill.sp"]
+    assert prog["state"] == "running" and prog["done"] == 2
     assert fake.state()["chain_failures"] == 0  # completed hop resets breaker
 
 
@@ -584,14 +623,14 @@ def test_chain_ends_in_steady_state_arming_agent_nudge_only():
     out = mod.main(chain_args(hop=7))
     assert out["chainDone"] is True and out["chainArmed"] is False
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
-    # ADR-014 §4: the drained chain ticked its final count, then
-    # done() self-cleaned — no progress object survives success.
-    # current is PER-CHAIN (chain_processed): this steady-state hop
+    # ADR-014 §4 (as amended): the drained chain ticked its final count,
+    # then done() emitted the terminal frame — the row lingers as
+    # state "done" and expires server-side, nothing to clean up.
+    # done is PER-CHAIN (chain_processed): this steady-state hop
     # listed nothing new, so 0 — NOT the cumulative synced_count (2),
     # whose cross-generation drift overflowed the bar (1,161/980 live)
-    assert fake.progress_rows == []
-    assert fake.progress_log[-1]["current"] == 0
-    assert fake.progress_log[-1]["status"] == "running"
+    prog = fake.processes["gmail-backfill.sp"]
+    assert prog["state"] == "done" and prog["done"] == 0
     assert fake.state()["chain_processed"] == 0
     # the finished chain posts a VISIBLE trigger:* message the watcher
     # answers (name-scoped skip, ADR-009 §8) — no trigger record
@@ -608,7 +647,9 @@ def test_chain_circuit_breaker_stops_after_failed_hops_and_notifies():
     out = mod.main(chain_args(hop=9))
     assert "circuit breaker" in out["error"]
     assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
-    assert fake.progress_rows[0]["agent-progress"]["status"] == "failed"
+    prog = fake.processes["gmail-backfill.sp"]
+    assert prog["state"] == "failed"
+    assert "circuit-breaker" in prog["error"]["message"]
     assert fake.state()["chain_hop"] == 9      # bookkeeping stays truthful
     (space, chat, body) = fake.chats[-1]
     assert (space, chat) == ("agentsp", "chat1")

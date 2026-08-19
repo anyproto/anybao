@@ -614,6 +614,44 @@ class _Client:
                           {"objectId": object_id, "dataset": dataset,
                            "recordIds": list(record_ids)})
 
+    # --- processes (server registry over the event bus; ADR-014 §2) ----------
+    def list_processes(self):
+        """Live process view → [{identity, self, id, kind, title, scope,
+        spaceId?, target?, state, done, total?, message?, error?,
+        startedAt, updatedAt}].
+
+        Account-level (no space): the server's last-event-wins registry
+        of long-running work — bao jobs (kind "agent", published via
+        agent:progress@v1) AND the server's own index.* producers
+        (embed drain, fts pass, model download — the answer to "why is
+        search incomplete right now"). Nothing is persisted: running
+        rows expire 45s after their last heartbeat, terminal rows
+        (done/failed/cancelled) linger 60s then vanish. A server
+        without the facility 404s (request.not_found)."""
+        return self._call("get", "/v1/processes").get("processes") or []
+
+    def cancel_process(self, process_id, identity=None):
+        """Ask a process's owner to stop → {subscribers}.
+
+        Emits process.cancel at the owner, who reacts and finishes —
+        never a state change by itself (the row stays until the owner's
+        terminal event or expiry). 409 process.ambiguous means several
+        identities share the id — pass `identity` to pick one. The
+        index.* producers ignore cancels by design."""
+        body = {"identity": identity} if identity else {}
+        return self._call("post", f"/v1/processes/{process_id}/cancel", body)
+
+    def _process_register(self, body):
+        # progress@v1 plumbing (ADR-014 §1: programs report progress
+        # ONLY through agent:progress@v1, never these three directly)
+        return self._call("post", "/v1/processes", body)
+
+    def _process_progress(self, process_id, body):
+        return self._call("post", f"/v1/processes/{process_id}/progress", body)
+
+    def _process_finish(self, process_id, body):
+        return self._call("post", f"/v1/processes/{process_id}/finish", body)
+
     def aggregate(self, space, pipeline, object_id=None, dataset=None):
         """Run a Mongo-style aggregation pipeline over the space's objects.
 
@@ -1262,6 +1300,29 @@ def aggregate(spaceConfig, pipeline, object_id=None, dataset=None):
 
 
 @span(kind="getter")  # noqa: F821 - guest global
+def list_processes():
+    return _c().list_processes()
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def cancel_process(process_id, identity=None):
+    return _c().cancel_process(process_id, identity)
+
+
+# `_`-private (hidden from the tool inventory): progress@v1's transport
+def _process_register(body):
+    return _c()._process_register(body)
+
+
+def _process_progress(process_id, body):
+    return _c()._process_progress(process_id, body)
+
+
+def _process_finish(process_id, body):
+    return _c()._process_finish(process_id, body)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
 def get_markdown(spaceConfig, object_id):
     return _c().get_markdown(_space(spaceConfig), object_id)
 
@@ -1392,7 +1453,8 @@ def delete_memory(spaceConfig, item_id):
 for _f in (create_object, update_object, delete_object, query_objects,
            list_programs, query, modify, upsert_record, upsert_records,
            delete_records, list_datasets, create_dataset, remove_dataset,
-           aggregate, get_markdown, put_markdown, edit_markdown,
+           aggregate, list_processes, cancel_process,
+           get_markdown, put_markdown, edit_markdown,
            append_markdown, list_spaces, get_space, general_chat,
            create_space, get_ui_context, list_types, list_properties,
            create_type, add_property, append_turn, create_chunk,

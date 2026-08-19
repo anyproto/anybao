@@ -43,7 +43,8 @@ def __getattr__(name):   # flat module surface (ADR-010 §8)
         out = effect("test.any", {"method": name, "args": list(args),
                                   "kwargs": kwargs})
         if isinstance(out, dict) and "__error__" in out:
-            raise AnyError(0, "test", out["__error__"])
+            raise AnyError(out.get("__status__", 0),
+                           out.get("__code__", "test"), out["__error__"])
         return out
     return _call
 '''
@@ -119,6 +120,11 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                     out = fn(*payload["args"], **payload["kwargs"])
                 except Exception as e:  # -> shim AnyError, guest-catchable
                     out = {"__error__": f"{type(e).__name__}: {e}"}
+                    # a fake raising with wire attrs keeps them visible to
+                    # guest code that branches on status/code
+                    if hasattr(e, "status") and hasattr(e, "code"):
+                        out["__status__"] = e.status
+                        out["__code__"] = e.code
             elif name == "test.llm":
                 out = llm_chat(**payload)
             elif effect is not None:

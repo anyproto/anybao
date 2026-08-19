@@ -53,10 +53,12 @@ Watch progress with `status(space)` → `{cursor, pageToken,
 syncedCount, mailboxId, emailCount}` (empty pageToken = backlog
 drained, now ticking incrementally) or
 `use("agent:progress@v1").jobs(space)` (job `"gmail-backfill"`) — the
-UI renders the bar live in the target space.
+UI renders the bar GLOBALLY (server process registry), whatever space
+is open.
 Diagnosing a stalled chain: a trigger record's `lastStatus: "ok"`
 means the hop RAN, not that it synced — sync truth is `status(space)`
-and the progress object's `error` field.
+and the failed process row (`use("agent:progress@v1").jobs(space)`,
+visible ~60s) — durable truth lives in `status(space)`.
 
 Reading the synced corpus (`email_messages` records on the `mailbox`
 object, thread queries, label filters — ADR-016) is the `_any`
