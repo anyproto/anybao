@@ -20,8 +20,12 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 #   { text, source, outcome: "enrich|new",
 #     targetObjectId, targetKind: "collection|property",
 #     targetProperty: "<typeXKey>.<propXKey>", value, newType, newName }
-# `source` is `any://<space>/<transcript>#<blockId>,…` — provenance
+# `source` is comma-joined dataset-record URIs, one per cited block
+# (`any://o/<space>/<transcript>/editor_blocks/<blockId>,…`; block-less
+# = the bare object URI `any://o/<space>/<transcript>`) — provenance
 # that survives into enriched_data after the proposal is deleted.
+# Canonical grammar: any docs/19-links.md §Fragments (WEB-42); the old
+# `#<blockId>,…` fragment form is legacy, read-only, never written.
 
 import contextlib
 import json
@@ -192,8 +196,10 @@ def _type_catalog(c, space):
 def _source(space, transcript_id, blocks):
     if not transcript_id:
         return ""
-    base = f"any://{space}/{transcript_id}"
-    return base + "#" + ",".join(blocks) if blocks else base
+    if not blocks:
+        return f"any://o/{space}/{transcript_id}"
+    return ",".join(f"any://o/{space}/{transcript_id}/editor_blocks/{b}"
+                    for b in blocks)
 
 
 @span(kind="getter")  # noqa: F821 - guest global
