@@ -430,11 +430,6 @@
       "fingerprint": "sha256:0b6cfe04c04ff13d",
       "helper": null
     },
-    "POST /spaces/{spaceId}/enrich/apply": {
-      "excluded": null,
-      "fingerprint": "sha256:8b9c4a6634a29955",
-      "helper": "enrich@v1 apply (guest http)"
-    },
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
       "excluded": null,
       "fingerprint": "sha256:fdc6fb8a4e06ea76",
@@ -539,11 +534,6 @@
       "excluded": null,
       "fingerprint": "sha256:e6b477a5123ca152",
       "helper": "helper.append_markdown"
-    },
-    "POST /spaces/{spaceId}/objects/{objectId}/enriched-data": {
-      "excluded": null,
-      "fingerprint": "sha256:75fc55845b688c03",
-      "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files": {
       "excluded": null,

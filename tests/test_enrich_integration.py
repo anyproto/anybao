@@ -3,10 +3,11 @@ through the REAL guest kernel (tests/kernelenv.py): any@v1 loads its
 actual source and talks live http; only llm@v1 is scripted — canned
 JSON citing REAL block/object ids — because cognition is pinned offline
 in test_enrich_program.py. This file pins the wire contract:
-editor_blocks reads, scope-basic grounding, enrich_proposal draft
-writes, and the server's deterministic POST /enrich/apply (grouped
-target creation, real property set, enriched_data provenance, proposal
-deletion, 404 idempotence). Run with a server up
+editor_blocks reads, scope-basic grounding, the userspace store ensure
+(enrichments hub type + runtime datasets by xKey), enrich_proposal
+draft writes, and the client-side deterministic apply (grouped target
+creation, real property set, hub-joined enriched_data provenance,
+proposal deletion, empty-proposal idempotence). Run with a server up
 (`any run --addr 127.0.0.1:7009`)."""
 
 import json
@@ -116,7 +117,8 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
     by_outcome = {}
     for it in items:
         by_outcome.setdefault(it["outcome"], []).append(it)
-    assert by_outcome["enrich"][0]["source"] == f"any://{sp}/{tr}#{b1}"
+    assert by_outcome["enrich"][0]["source"] == \
+        f"any://o/{sp}/{tr}/editor_blocks/{b1}"
     assert by_outcome["enrich"][0]["targetProperty"] == "project.status"
     assert {it["newName"] for it in by_outcome["new"]} == {"Billing revamp"}
 
@@ -126,27 +128,36 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
                  "propertiesSet": 1, "enrichedDataWritten": 3,
                  "proposalDeleted": True, "failures": []}
 
-    # the grouped new object exists once, with BOTH facts as
-    # enriched_data records keeping their own sources
+    # propose ensured ONE Enrichments hub; every fact rides it, joined
+    # to its target by targetObjectId
+    hubs = client.query_objects(sp, filter={"any.name": "Enrichments"})
+    assert len(hubs) == 1
+    facts = client.query(sp, hubs[0]["id"], "enriched_data")
+    assert len(facts) == 3
+    assert all(f.get("createdAt") and f.get("createdBy")
+               for f in facts)  # schema-stamped
+
+    # the grouped new object exists once, with BOTH facts joined to it,
+    # each keeping its own source
     news = client.query_objects(sp, filter={"any.name": "Billing revamp"})
     assert len(news) == 1
-    facts = client.query(sp, news[0]["id"], "enriched_data")
-    assert {f["source"] for f in facts} == \
-        {f"any://{sp}/{tr}#{b2}", f"any://{sp}/{tr}#{b3}"}
-    assert all(f.get("createdAt") for f in facts)  # server-stamped
+    new_facts = [f for f in facts if f["targetObjectId"] == news[0]["id"]]
+    assert {f["source"] for f in new_facts} == \
+        {f"any://o/{sp}/{tr}/editor_blocks/{b2}",
+         f"any://o/{sp}/{tr}/editor_blocks/{b3}"}
 
     # the property landed on the target AND its provenance is recorded
     obj = client.query_objects(sp, filter={"id": target})[0]
     assert obj[tid][pid] == "beta"
-    prov = client.query(sp, target, "enriched_data")
+    prov = [f for f in facts if f["targetObjectId"] == target]
     assert len(prov) == 1
     assert prov[0]["target"] == "project.status"
     assert prov[0]["value"] == "beta"
-    assert prov[0]["source"] == f"any://{sp}/{tr}#{b1}"
+    assert prov[0]["source"] == f"any://o/{sp}/{tr}/editor_blocks/{b1}"
 
-    # idempotence: the proposal is gone; re-apply reads as 404
+    # idempotence: the proposal object is gone; re-apply reports empty
     r2 = enrich_mod.apply(sp, p["proposalId"])
-    assert r2["ok"] is False and "empty_proposal" in r2["error"]
+    assert r2["ok"] is False and "empty proposal" in r2["error"]
 
 
 def test_propose_grounds_against_live_search(client, fresh_space,
@@ -175,7 +186,7 @@ def test_propose_grounds_against_live_search(client, fresh_space,
     assert all(c["objectId"] != tr for c in out["grounded"]["u1"])
 
 
-def test_apply_unknown_proposal_is_a_clean_404(fresh_space, enrich_mod):
+def test_apply_unknown_proposal_is_a_clean_error(fresh_space, enrich_mod):
     out = enrich_mod.apply(fresh_space, "bafynonexistent")
     assert out["ok"] is False
-    assert "404" in out["error"] or "empty_proposal" in out["error"]
+    assert "empty proposal" in out["error"] or "apply failed" in out["error"]

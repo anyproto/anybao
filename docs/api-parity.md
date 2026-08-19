@@ -70,8 +70,7 @@ raw spaces/modify (helper wraps it internally).
   spaces/:id/settings` (space management); `PATCH`/`DELETE`
   types/:id/properties/:propId (schema facade growth); chat
   **reactions-read** (read-tracking group); `DELETE files/:fileId`
-  (files v2 group); `POST objects/:id/enriched-data` (enrich write
-  path — UI/importer side, agent writes proposals via datasets).
+  (files v2 group).
 
 ## D. M5-owned (not generic helper facades)
 
