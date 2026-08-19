@@ -165,7 +165,8 @@ Keep final replies ≤300 words unless more is really required.
 
 ## Final reply formatting
 
-Link objects the user might open: `[Object Name](any://spaceId/objectId)`
-— the chat renders them clickable with attachment previews. Avoid
-markdown tables in chat; put real tabular data in a page object and link
-it.
+Link objects the user might open: `[Object Name](any://o/spaceId/objectId)`
+(the typed `o/` form — see the `_any` skill's Links section for the full
+`any://` grammar) — the chat renders them clickable with attachment
+previews. Avoid markdown tables in chat; put real tabular data in a page
+object and link it.

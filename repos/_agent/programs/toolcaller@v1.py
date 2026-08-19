@@ -18,6 +18,32 @@ caller (the subagent@v1 wrapper).
 """
 
 import datetime
+import re
+
+# markdown-link destinations in a reply: [Name](any://…) — the source
+# of auto-attachments (chips in the UI without hand-built maps)
+_ANY_LINK = re.compile(r"\(\s*(any://[^\s)]+)\s*\)")
+
+
+def _auto_attachments(text):
+    """any:// markdown-link destinations in a reply → chat attachments.
+
+    Every object/file link bao writes gets a preview chip for free
+    (first-occurrence order, deduped, wire cap 32). Mentions (m/) and
+    space links (s/) stay text-only — a chip per mention is noise.
+    Kind = first path segment; a segment longer than 4 chars is a
+    legacy bare id, which always means an object (doc 19 back-compat)."""
+    out, seen = {}, set()
+    for uri in _ANY_LINK.findall(text or ""):
+        kind = uri.removeprefix("any://").split("/", 1)[0]
+        if kind in ("m", "s") or uri in seen:
+            continue
+        seen.add(uri)
+        out[f"a{len(out)}"] = {"type": "link", "link": uri}
+        if len(out) >= 32:
+            break
+    return out
+
 
 RUN_CELL_TOOL = {
     "name": "run_cell",
@@ -476,8 +502,12 @@ def main(args):
 
     def bubble(text, done):
         if text and not quiet:
-            c.chat_send(space, chat_id, {"text": text,
-                                         "agent": {"name": agent_name, "done": done}})
+            body = {"text": text,
+                    "agent": {"name": agent_name, "done": done}}
+            atts = _auto_attachments(text)
+            if atts:
+                body["attachments"] = atts
+            c.chat_send(space, chat_id, body)
 
     stats = {"inTokens": 0, "outTokens": 0,
              "cacheRead": 0, "cacheWrite": 0, "cells": 0}

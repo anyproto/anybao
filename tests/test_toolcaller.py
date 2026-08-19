@@ -526,3 +526,28 @@ def test_user_skills_lists_titles_and_ids_not_bodies():
     assert "_core" not in out              # system skills excluded
     # a space with only _-skills injects no section at all
     assert g["_user_skills"](TwoSpaces(), "user") == ""
+
+
+def test_reply_links_auto_attach_and_mentions_stay_text_only():
+    # [Name](any://…) destinations in the reply become attachment
+    # chips (typed o/, f/, and legacy bare forms; deduped), while
+    # mentions and space links stay text-only
+    text = ("See [Report](any://o/sp1/obj1) and "
+            "[the same](any://o/sp1/obj1) again, "
+            "[old style](any://sp1/obj2), "
+            "[a file](any://f/sp1/file3), "
+            "hey [Zarko](any://m/sp1/idX) — also [Space](any://s/sp1)")
+    w = World([done_reply(text)])
+    run(w)
+    body = w.chat_posts[-1]
+    assert body["attachments"] == {
+        "a0": {"type": "link", "link": "any://o/sp1/obj1"},
+        "a1": {"type": "link", "link": "any://sp1/obj2"},
+        "a2": {"type": "link", "link": "any://f/sp1/file3"},
+    }
+
+
+def test_reply_without_links_posts_no_attachments_key():
+    w = World([done_reply("plain words only")])
+    run(w)
+    assert "attachments" not in w.chat_posts[-1]

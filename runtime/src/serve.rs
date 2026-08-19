@@ -1005,7 +1005,11 @@ fn snapshot_backlog(data: &Value, self_name: &str) -> Vec<Value> {
         if Watcher::is_self_message(rec, self_name) {
             break;
         }
-        if rec["text"].as_str().is_some_and(|t| !t.is_empty()) {
+        // content = text OR attachments (the server enforces at least
+        // one); an attachment-only message is real input, not noise
+        let has_text = rec["text"].as_str().is_some_and(|t| !t.is_empty());
+        let has_atts = rec["attachments"].as_object().is_some_and(|a| !a.is_empty());
+        if has_text || has_atts {
             out.push(rec.clone());
         }
     }
@@ -1528,16 +1532,21 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_backlog_skips_textless_records() {
-        // null docs and attachment-only messages can't start a run
+    fn snapshot_backlog_skips_contentless_but_keeps_attachment_only() {
+        // null docs and empty messages can't start a run; a message
+        // that is ONLY an attachment (no caption) is real input
+        let mut with_atts = msg("u3", "", false);
+        with_atts["attachments"] =
+            json!({"a0": {"type": "link", "link": "any://o/sp1/obj1"}});
         let data = json!({"records": [
             msg("u2", "real", false),
+            with_atts,
             null,
             msg("u1", "", false),
         ]});
         let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["u2"]);
+        assert_eq!(ids, ["u3", "u2"]);
     }
 
     #[test]

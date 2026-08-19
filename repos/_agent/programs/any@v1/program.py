@@ -926,12 +926,20 @@ class _Client:
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])
 
     def list_properties(self, space, type_key):
-        """A type's property definitions: [{id, name, xKey, kind}].
+        """A type's property definitions: [{id, name, xKey, kind,
+        format?, meta?, scope?}].
 
-        `type_key` is the type's xKey (builtins: xKey == id); an
-        unknown key ERRORS with the available catalog — the server
-        would answer a nonexistent id with a silent []. Reference
-        properties by xKey everywhere; writes resolve through it."""
+        `format` is the value convention when declared —
+        {"type": "date"|"datetime"|"links"|"select"|"multiselect",
+        "ui"?, "options"?} — CHECK IT before writing someone else's
+        type: a links prop takes ["any://<objectId>"] arrays, selects
+        take option keys, dates ISO strings; a prop without format is
+        a plain kind. `scope` is the write/sync class (local-scope
+        props exist only per-peer — the chat filter trap). `type_key`
+        is the type's xKey (builtins: xKey == id); an unknown key
+        ERRORS with the available catalog — the server would answer a
+        nonexistent id with a silent []. Reference properties by xKey
+        everywhere; writes resolve through it."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._fetch_props(space, tid)
 

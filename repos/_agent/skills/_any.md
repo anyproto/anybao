@@ -81,6 +81,37 @@ Spaces:
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
 
+Links (`any://` URIs — the one reference format):
+
+- Canonical TYPED grammar: `any://<kind>/<spaceId>/…` — the first
+  segment says what it points at: `any://o/<sid>/<objectId>` an
+  object, `any://o/<sid>/<oid>/<dataset>/<recordId>` a record inside
+  it (editor block, chat message, email_messages row — same rule
+  everywhere), `any://m/<sid>/<identity>` a member mention,
+  `any://s/<sid>` a space, `any://f/<sid>/<fileId>` a file. WRITE new
+  links in text in this form: `[Name](any://o/<sid>/<oid>)`.
+- Legacy bare forms still parse as objects and exist in stored data:
+  `any://<objectId>` and `any://<spaceId>/<objectId>` — when reading,
+  the LAST path segment of an `o`/bare link is the object id.
+- The one STRICT exception: **links-FORMAT property values** store
+  exactly `any://<objectId>` (one segment, no space, no fragment) —
+  the server validates writes against that shape; write
+  `["any://" + objectId]`, filters match with the prefix. Never put a
+  typed `o/` URI in a links property value.
+- **Incoming attachments**: when the user attaches objects/files to a
+  chat message, the harness folds them into your message text as
+  `[attachment link: any://o/<sid>/<oid>]` /
+  `[attachment image: any://f/<sid>/<fileId>]` lines — a message may
+  be ONLY attachments. Resolve `o/` targets with the ids from the URI
+  (`get_markdown` / `query_objects` / `query`); `f/` files have no
+  read surface here yet — refer to them by link, don't try to fetch
+  bytes.
+- **Outgoing attachments**: `chat_send` takes `attachments`:
+  `{"a0": {"type": "link", "link": "any://o/<sid>/<oid>"}, …}` (≤32,
+  keys `[A-Za-z0-9_-]+`, type `link` or `image`) — attach the objects
+  you cite so the UI shows preview chips; plain `any://o/…` markdown
+  links in text render clickable too.
+
 Chat:
 
 - Every space derives exactly **one** general chat; its id is

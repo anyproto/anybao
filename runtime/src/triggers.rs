@@ -373,17 +373,22 @@ impl Watcher {
         }
     }
 
-    /// The record's text, attributed: a foreign-agent message (a
-    /// `trigger:*` nudge, a peer) gets a harness-authored `[from
-    /// agent …]` line derived from the record's `agent.name` METADATA
-    /// — the model's knowledge of the sender no longer rests on a
-    /// spoofable convention inside the message text. Human messages
-    /// pass through untouched. Prepended (not an arg) so the
-    /// attribution survives into the persisted turn and every future
-    /// boot window unchanged.
+    /// The record's text, attributed and attachment-aware: a
+    /// foreign-agent message (a `trigger:*` nudge, a peer) gets a
+    /// harness-authored `[from agent …]` line derived from the
+    /// record's `agent.name` METADATA — the model's knowledge of the
+    /// sender no longer rests on a spoofable convention inside the
+    /// message text. Human messages pass through untouched. The
+    /// record's `attachments` map ({id: {type, link}}, create-only)
+    /// folds in as `[attachment <type>: <link>]` lines — links are the
+    /// doc-19 typed URIs any-ui sends (objects `any://o/<sid>/<oid>`,
+    /// files `any://f/<sid>/<fileId>`), which the model resolves via
+    /// any@v1. Folded into the TEXT (not an arg) so both attribution
+    /// and attachments survive into the persisted turn and every
+    /// future boot window unchanged.
     pub fn attributed_text(record: &Value) -> String {
         let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
-        match record
+        let mut out = match record
             .get("agent")
             .filter(|a| !a.is_null())
             .and_then(|a| a.get("name"))
@@ -394,7 +399,23 @@ impl Watcher {
                 format!("[from agent \"{name}\" — automated message, not the user]\n{text}")
             }
             None => text.to_string(),
+        };
+        if let Some(atts) = record.get("attachments").and_then(|a| a.as_object()) {
+            let mut keys: Vec<&String> = atts.keys().collect();
+            keys.sort(); // map order is arbitrary; stable lines for the turn log
+            for k in keys {
+                let link = atts[k].get("link").and_then(|l| l.as_str()).unwrap_or("");
+                if link.is_empty() {
+                    continue;
+                }
+                let kind = atts[k].get("type").and_then(|t| t.as_str()).unwrap_or("link");
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("[attachment {kind}: {link}]"));
+            }
         }
+        out
     }
 
     pub fn on_message(&mut self, chat_id: &str, record: &Value) -> WatchAction {
@@ -560,6 +581,24 @@ mod tests {
         );
         let human = json!({"id": "h1", "text": "hi"});
         assert_eq!(Watcher::attributed_text(&human), "hi");
+
+        // attachments fold in as harness-derived lines, key-sorted;
+        // an attachment-only message still yields non-empty input
+        let attached = json!({"id": "h2", "text": "see these",
+            "attachments": {
+                "f0": {"type": "image", "link": "any://f/sp1/file9"},
+                "a0": {"type": "link", "link": "any://o/sp1/obj1"}}});
+        assert_eq!(
+            Watcher::attributed_text(&attached),
+            "see these\n[attachment link: any://o/sp1/obj1]\n\
+             [attachment image: any://f/sp1/file9]"
+        );
+        let only_att = json!({"id": "h3", "text": "",
+            "attachments": {"a0": {"type": "link", "link": "any://o/sp1/obj2"}}});
+        assert_eq!(
+            Watcher::attributed_text(&only_att),
+            "[attachment link: any://o/sp1/obj2]"
+        );
 
         let mut w = Watcher::new("bao");
         let mb: crate::broker::SharedMailbox = Default::default();
