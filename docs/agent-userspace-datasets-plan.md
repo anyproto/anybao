@@ -122,25 +122,42 @@ takes single fields.
   `/agent/memory` endpoints to generic dataset ops, validation moves to
   the harness.
 
-## Sequencing (updated 2026-08-20, user-confirmed)
+## Sequencing (updated 2026-08-20 evening — UNBLOCKED)
 
-Status: SYN-163 bundles landed the mechanics (SDK #100 + any #172 —
-registry, tsar root `bao/v1`, `bundles.Child`) but the root is
-deliberately childless and there is NO HTTP surface for deriving
-children yet. `search.scope` landed (#173/SDK #101) and bao adopted
-it (email scope) — that gap is closed.
+The generic bundles HTTP surface LANDED (any `395740d` on #172 + SDK
+convergence hardening on #100, merged into both `local-test-all`
+branches and live-verified on :7131):
 
-1. **WAIT**: the bundles HTTP surface is in progress upstream
-   (sdk/any). When it lands, merge those PRs into the local-test
-   branches (`local-test-all` in both repos, go.mod replace as now).
-2. Then in one push:
-   - anybao ADR in the ADR-016 mold (types, datasets, field decls,
-     record shapes, cutover);
-   - implement agent derived objects + custom agent datasets in bao —
-     config + secrets + triggers first (pure storage), turns/chunks
-     as per-chat derived children, memory last (widest program
-     surface);
-   - **a new any PR** removing the hardcoded agent datasets:
-     `internal/agent*` + `/agent/*` endpoints + `SpaceInfo` id fields
-     + agent chunkers (PR #171 precedent); any-ui trails as with
-     enrichment. Clean cut, no data migration.
+```
+POST /v1/spaces/:s/bundles                     adopt-or-install {id, name?, rootTypes?, rootProperties?}
+GET  /v1/spaces/:s/bundles[/:id]               list / read (id percent-encoded in paths, verbatim in bodies)
+POST /v1/spaces/:s/bundles/:id/resolve         cascade-delete a settled loser {loserRootId}
+POST /v1/spaces/:s/bundles/:id/children        derive setup child {seed, types?} — deterministic per (space, root, seed)
+```
+
+The server keeps no catalog: every install is client-registered.
+anybao ensures `general-chat/v1` at serve boot and watches its
+winning `rootId` (150e14e). Retryable states: 409 `bundle.not_ready`
+(winner's tree not local), 409 `bundle.loser_not_ready` (resolve
+before the loser settled). Verified on :7131: userspace registration
+(`probe/v1`, installed:true), idempotent child derivation, chat
+adoption (same root, history intact). `search.scope` is adopted
+(email scope). **Nothing blocks the migration.**
+
+Next session, in one push:
+1. anybao ADR in the ADR-016 mold (types, datasets, field decls,
+   record shapes, cutover) — includes the any@v1 guest wrappers
+   (`ensure_bundle` / `bundle_child` / `resolve_loser`).
+2. Implement agent derived objects + custom agent datasets in bao —
+   config + secrets + triggers first (pure storage, children of
+   `bao/v1`), turns/chunks as per-chat derived children, memory last
+   (widest program surface). enrich/v1 + email/v1 bundles ride the
+   same wrappers (§ Bundles above).
+3. **A new any PR** removing the hardcoded agent datasets:
+   `internal/agent*` + `/agent/*` endpoints + `SpaceInfo` id fields
+   + agent chunkers (PR #171 precedent); any-ui trails as with
+   enrichment. Clean cut, no data migration.
+
+Still to check during (1): id-namespacing convention between server-
+and userspace-owned bundles (server owns none now — likely moot) and
+type-ensure idempotency under concurrent creates.
