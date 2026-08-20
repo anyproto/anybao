@@ -376,23 +376,16 @@ impl Client {
         self.call("GET", &format!("/v1/spaces/{space_id}"), None)
     }
 
-    /// POST /v1/spaces — the `ensure_space` create half (ADR-006 §0).
-    /// Reply carries the new space `id`. `agent_space: true` provisions
-    /// the per-space config object (ADR-006 §3) so the harness can
-    /// resolve `agentConfigObjectId` off the very first GET.
-    /// `spaceType` is deliberately OMITTED: empty means the server's
-    /// canonical default on every vintage, while the literal
-    /// "anytype.space" is REJECTED since SDK v0.0.10 (renamed to
-    /// "any.space" — sending either string ties us to one side).
+    /// POST /v1/spaces — the `ensure_space` create half (ADR-006 §0),
+    /// non-registry names only. Reply carries the new space `id`.
+    /// Store provisioning is ADR-017's job (bundle children at serve
+    /// boot) — there is no server-side flag. `spaceType` is
+    /// deliberately OMITTED: empty means the server's canonical
+    /// default on every vintage, while the literal "anytype.space" is
+    /// REJECTED since SDK v0.0.10 (renamed to "any.space" — sending
+    /// either string ties us to one side).
     pub fn create_space(&self, name: &str) -> Result<Value, AnyError> {
-        self.call(
-            "POST",
-            "/v1/spaces",
-            Some(&json!({
-                "name": name,
-                "agent_space": true
-            })),
-        )
+        self.call("POST", "/v1/spaces", Some(&json!({"name": name})))
     }
 
     /// GET /v1/spaces/derived — the server's compiled-in derived-space
@@ -1267,8 +1260,9 @@ mod tests {
         assert_eq!(
             calls[0].2,
             // no spaceType: empty = server default on every vintage
-            // ("anytype.space" is rejected since SDK v0.0.10)
-            Some(json!({"name": "bao", "agent_space": true}))
+            // ("anytype.space" is rejected since SDK v0.0.10); no
+            // agent flag — provisioning is ADR-017's bundle children
+            Some(json!({"name": "bao"}))
         );
         assert_eq!(calls[4].2, Some(json!({"query": "q", "limit": 3})));
         assert_eq!(
