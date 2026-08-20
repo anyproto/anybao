@@ -15,7 +15,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 _any = use("any@v1")  # noqa: F821 - guest global
 
-DEFAULT_SCOPES = ("agent", "history", "basic")
+DEFAULT_SCOPES = ("agent", "history", "basic", "email")
 
 # Reserved property groups (`any`, `nav`) are structural, not user
 # graph edges — neighbors skips them.
@@ -51,7 +51,7 @@ class Recall:
         already unwrapped from the `{hits, mode, vectorStatus}`
         envelope that any@v1 `search` returns, so `hits[0]` works and
         `hits["hits"]` does not. Default scopes ("agent", "history",
-        "basic"), limit 10."""
+        "basic", "email"), limit 10."""
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 

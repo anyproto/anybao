@@ -1008,25 +1008,53 @@ class _Client:
 
         draft: {"name": "<collection>", "displayName"?, "idRule":
         "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
-        "search"?: {"title": "<field key>", "text": "<field key>"},
+        "search"?: {"title": "<field key>", "text": "<field key>",
+        "scope"?: "<index scope slug>"},
         "fields": [{"key", "kind"?: string|number|boolean|array|
         object, "required"?, "mutableBy"?: "author"|"any", "stamp"?:
         "creator"|"createTime"|"modifyTime"}]}. Fields default
         write-once; author gates (mutableBy/deleteBy "author") need a
         {"stamp": "creator"} field; idRule "user" = caller-supplied
-        record ids (the upsert idempotency key). Behavioral parts pin
+        record ids (the upsert idempotency key). search.scope picks
+        the index scope the records land under (absent = "basic");
+        recall must query that scope to see them. Behavioral parts pin
         first-write — to change them remove and re-declare.
-        Idempotent by collection name: an existing def is reused as-is
-        (NOT reconciled against the draft) → {"datasetDefId",
-        "created"}. Records live per host object: write with
-        upsert_records, read with query(space, object_id, "<name>") —
-        plain field keys in filter/sort. Registered built-in types
-        refuse (400 type.registered)."""
+        Idempotent by collection name: an existing def is reused, but
+        the draft stays authoritative for the mutable search.* leaves
+        — a drifted title/text/scope is PATCHed back (already-indexed
+        records keep their stored scope until they re-index) →
+        {"datasetDefId", "created", "patched"?: [paths]}. Records live
+        per host object: write with upsert_records, read with
+        query(space, object_id, "<name>") — plain field keys in
+        filter/sort. Registered built-in types refuse (400
+        type.registered)."""
         tid = self._resolve_type_or_raise(space, type_key)
         name = (draft or {}).get("name") or ""
         for d in self.list_datasets(space, type_key):
             if d.get("name") == name:
-                return {"datasetDefId": d.get("id"), "created": False}
+                out = {"datasetDefId": d.get("id"), "created": False}
+                want = (draft or {}).get("search") or {}
+                have = d.get("search") or {}
+                set_ops, unset = {}, []
+                for leaf in ("title", "text", "scope"):
+                    w = want.get(leaf) or ""
+                    if w != (have.get(leaf) or ""):
+                        if w:
+                            set_ops[f"search.{leaf}"] = w
+                        else:
+                            unset.append(f"search.{leaf}")
+                if set_ops or unset:
+                    body = {}
+                    if set_ops:
+                        body["set"] = set_ops
+                    if unset:
+                        body["unset"] = unset
+                    self._call(
+                        "patch",
+                        f"/v1/spaces/{space}/types/{tid}/datasets/{d.get('id')}",
+                        body)
+                    out["patched"] = sorted(list(set_ops) + unset)
+                return out
         r = self._call("post", f"/v1/spaces/{space}/types/{tid}/datasets",
                        draft)
         return {"datasetDefId": r.get("datasetDefId"), "created": True}

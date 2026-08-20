@@ -52,9 +52,15 @@ runtime dataset **`email_messages`** declared via
   account is the single writer, per the SDK's IdRule:user contract).
 - `skipHistory: true` — the provider is the source of truth; label
   churn must not accrete history rows (#156's stance, kept).
-- `search: {title: subject, text: body}` — the x-search mapping; the
-  server's SchemaChunker indexes records under scope `basic`, so mail
-  participates in `/search` without `editor_blocks`.
+- `search: {title: subject, text: body, scope: email}` — the x-search
+  mapping; the server's SchemaChunker indexes records under the
+  declared scope, so mail participates in `/search` without
+  `editor_blocks`. **Amended 2026-08-20**: the server grew
+  `search.scope` on runtime dataset declarations (any PR #173 / SDK
+  #101); mail moves from the generic `basic` scope to its own `email`
+  scope — raw mail stops polluting basic content search, and recall@v1
+  adds `email` to its default scopes so bao still finds it. Already-
+  indexed records keep their stored scope until they re-index.
 - Fields (C1: Gmail's own names, camelCase, verbatim): `threadId`,
   `from`, `to`, `cc`, `subject`, `date`, `internalDate` (number, the
   sort key), `snippet` — write-once; `labelIds` (array,
@@ -78,7 +84,7 @@ mailbox object) and `store` (§5 migration marker).
 | record id = provider message id | identical (`idRule: user`) |
 | write-once + mutable allow-list `labelIds`, `historyId` | `labelIds` only. Per-record `historyId` dropped — our cursor is space-level in `sync_state`, an unused field is noise. |
 | server-derived `participants` + sparse multikey index | client-derived in gmailSync (SDK v1 has **no computed fields** — deliberate, replica determinism). stdlib `email.utils.getaddresses` over From/To/Cc (kernel allowlists `email`, ADR-012 §6), lowercased, deduped, bcc absent by construction. Write-once: label churn never touches it, and a re-hydrate produces the same value. No index declaration exists on runtime datasets; filter cost is the server's concern. |
-| bespoke `email` search scope, subject BM25F | x-search under the generic `basic` scope — good enough, and the whole point of #161 is no mail-specific chunker. |
+| bespoke `email` search scope, subject BM25F | x-search under a declared `email` scope (2026-08-20, `search.scope` on the declaration — still no mail-specific chunker; was `basic` until any PR #173). BM25F stays out. |
 | bespoke batch endpoint (`created`/`updated`/`unchanged` + label diff) | the generic `/upsert` gives exactly this: absent→create, present→diff of declared-mutable fields, identical→skip, per-record rejections, one CRDT change per page. |
 | attachments manifest via files v2 | out of scope, as it already was in ADR-012 (bodies only; raw stays in Gmail). |
 | `email_sync_state` sibling dataset | not adopted — ADR-012's `sync_state` object already works and the backfill chain depends on its semantics. |
@@ -112,7 +118,10 @@ change).
 The dataset machinery is generic agent surface, not gmail plumbing —
 emails are merely the first corpus. New flat methods, 1:1 over the
 server endpoints: `create_dataset` (ensure-by-name composite, the
-`create_type` pattern), `list_datasets`, `remove_dataset`,
+`create_type` pattern; since 2026-08-20 the draft stays authoritative
+for the mutable `search.*` leaves — a drifted title/text/scope on an
+existing def is PATCHed back, so scope changes roll out by deploy),
+`list_datasets`, `remove_dataset`,
 `upsert_records`, `delete_records`; `aggregate` gains
 `object_id`/`dataset` params for the per-object variant (dataset field
 refs are raw keys — no xKey resolution, no dexify). Dataset field

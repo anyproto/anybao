@@ -48,7 +48,9 @@ EMAIL_DATASET = {
     "name": _DATASET, "displayName": "Email messages",
     "idRule": "user",          # record id = Gmail message id (ADR-016 §1)
     "deleteBy": "author", "skipHistory": True,
-    "search": {"title": "subject", "text": "body"},
+    # scope "email": recall queries it explicitly (recall@v1 default
+    # scopes include it); keeps raw mail out of basic content search
+    "search": {"title": "subject", "text": "body", "scope": "email"},
     "fields": [
         # C1: Gmail's own names; write-once unless declared otherwise
         {"key": "threadId", "kind": "string"},

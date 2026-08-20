@@ -102,10 +102,10 @@ def test_search_unwraps_hits_and_passes_scopes_limit():
     assert body == {"query": "qwery", "scopes": ["agent", "history"], "limit": 5}
 
 
-def test_search_defaults_all_three_scopes():
+def test_search_defaults_all_four_scopes():
     cap = []
     recall(cap).search("q")
-    assert cap[0][2]["scopes"] == ["agent", "history", "basic"]
+    assert cap[0][2]["scopes"] == ["agent", "history", "basic", "email"]
 
 
 # --- hydrate -----------------------------------------------------------------
