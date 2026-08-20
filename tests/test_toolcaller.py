@@ -445,9 +445,13 @@ def test_tool_docs_two_tier_prefixes_and_shadows():
     # describe(use(spec)) — rendered from code, not from datasets
     assert 'Import: `use("agent:shippedOnly@v1")`' in docs
     assert "described:agent:shippedOnly@v1" in docs
-    # the user-space webSearch shadows the shipped one: unqualified import
+    # the user-space webSearch shadows the shipped one: the DISPLAYED
+    # import stays unqualified (cell code resolves it locally), while
+    # the render loads space-qualified — compose is overlay module
+    # code, whose unqualified use() would miss the working space
+    # (ADR-004 §2.4 / ADR-013 §1)
     assert 'Import: `use("webSearch@v1")`' in docs
-    assert "described:webSearch@v1" in docs
+    assert "described:user:webSearch@v1" in docs
     assert "agent:webSearch" not in docs
 
 
@@ -456,6 +460,7 @@ def test_tool_docs_degenerate_has_no_prefix():
     docs = g["_tool_docs"](TwoSpaces(), "code", "code")
     assert 'Import: `use("webSearch@v1")`' in docs
     assert "agent:" not in docs
+    assert "described:code:webSearch@v1" in docs  # render loads qualified
 
 
 def test_tool_docs_broken_tool_lists_with_error():
@@ -521,3 +526,28 @@ def test_user_skills_lists_titles_and_ids_not_bodies():
     assert "_core" not in out              # system skills excluded
     # a space with only _-skills injects no section at all
     assert g["_user_skills"](TwoSpaces(), "user") == ""
+
+
+def test_reply_links_auto_attach_and_mentions_stay_text_only():
+    # [Name](any://…) destinations in the reply become attachment
+    # chips (typed o/, f/, and legacy bare forms; deduped), while
+    # mentions and space links stay text-only
+    text = ("See [Report](any://o/sp1/obj1) and "
+            "[the same](any://o/sp1/obj1) again, "
+            "[old style](any://sp1/obj2), "
+            "[a file](any://f/sp1/file3), "
+            "hey [Zarko](any://m/sp1/idX) — also [Space](any://s/sp1)")
+    w = World([done_reply(text)])
+    run(w)
+    body = w.chat_posts[-1]
+    assert body["attachments"] == {
+        "a0": {"type": "link", "link": "any://o/sp1/obj1"},
+        "a1": {"type": "link", "link": "any://sp1/obj2"},
+        "a2": {"type": "link", "link": "any://f/sp1/file3"},
+    }
+
+
+def test_reply_without_links_posts_no_attachments_key():
+    w = World([done_reply("plain words only")])
+    run(w)
+    assert "attachments" not in w.chat_posts[-1]

@@ -376,25 +376,86 @@ impl Client {
         self.call("GET", &format!("/v1/spaces/{space_id}"), None)
     }
 
-    /// POST /v1/spaces — the `ensure_space` create half (ADR-006 §0).
-    /// Reply carries the new space `id`. `agent_space: true` provisions
-    /// the per-space config object (ADR-006 §3) so the harness can
-    /// resolve `agentConfigObjectId` off the very first GET.
-    ///
-    /// No `spaceType`: the server allow-lists exactly one creatable
-    /// value and treats an absent field as that value (SDK
-    /// `spaceimpl::normalize_space_type`), so naming it buys nothing and
-    /// pins a literal that already went stale once — the pre-rename
-    /// `"anytype.space"` started 400ing here and left the agent unable
-    /// to create its own working space.
+    /// POST /v1/spaces — the `ensure_space` create half (ADR-006 §0),
+    /// non-registry names only. Reply carries the new space `id`.
+    /// Store provisioning is ADR-017's job (bundle children at serve
+    /// boot) — there is no server-side flag. `spaceType` is
+    /// deliberately OMITTED: empty means the server's canonical
+    /// default on every vintage, while the literal "anytype.space" is
+    /// REJECTED since SDK v0.0.10 (renamed to "any.space" — sending
+    /// either string ties us to one side).
     pub fn create_space(&self, name: &str) -> Result<Value, AnyError> {
+        self.call("POST", "/v1/spaces", Some(&json!({"name": name})))
+    }
+
+    /// GET /v1/spaces/derived — the server's compiled-in derived-space
+    /// registry (SYN-164), boot-resolved: one row per well-known name,
+    /// `{name, spaceId, created, status?}`. Resolving never creates.
+    /// 404 on pre-registry servers — callers treat that as "no
+    /// registry", not a failure.
+    pub fn list_derived_spaces(&self) -> Result<Vec<Value>, AnyError> {
+        Ok(records_of(
+            self.call("GET", "/v1/spaces/derived", None)?,
+            "spaces",
+        ))
+    }
+
+    /// POST /v1/spaces/derived/{name} — materialize a registry space
+    /// (lazy + idempotent, 201 SpaceInfo). Only registry names exist
+    /// (404 `space.derived_unknown` otherwise); derived spaces are
+    /// permanent — DELETE refuses them. No `agent_space` flag needed:
+    /// the config object derives idempotently on every single-space GET.
+    pub fn create_derived_space(&self, name: &str) -> Result<Value, AnyError> {
+        self.call("POST", &format!("/v1/spaces/derived/{name}"), None)
+    }
+
+    // --- bundles (SYN-163) ---
+    /// POST /v1/spaces/{s}/bundles — adopt-or-install a bundle: a
+    /// non-derived root object registered under a permanent id in the
+    /// space's bundles registry ("general-chat/v1" — the slash is part
+    /// of the id, sent verbatim in bodies). With a winner already
+    /// registered this is a local read (`installed: false`); otherwise
+    /// the server creates the root with `root_types` attached and
+    /// registers it in one change. Reply `{bundle: {id, rootId, roots,
+    /// losers}, installed}` — `rootId` is provisional until the space
+    /// syncs; 409 `bundle.not_ready` means the winner's tree hasn't
+    /// landed on this device yet (retryable).
+    pub fn ensure_bundle(
+        &self,
+        space_id: &str,
+        id: &str,
+        name: &str,
+        root_types: &[&str],
+    ) -> Result<Value, AnyError> {
         self.call(
             "POST",
-            "/v1/spaces",
-            Some(&json!({
-                "name": name,
-                "agent_space": true
-            })),
+            &format!("/v1/spaces/{space_id}/bundles"),
+            Some(&json!({"id": id, "name": name, "rootTypes": root_types})),
+        )
+    }
+
+    /// POST /v1/spaces/{s}/bundles/{id}/children — derive a setup
+    /// object under the bundle's winner: deterministic per (space,
+    /// root, seed), same id on every device, cascade-deleted with the
+    /// root. `types` are type ids attached on first materialization
+    /// (ignored after). Seeds are permanent. 409 `bundle.not_ready`
+    /// until the winner's tree is local (retryable).
+    pub fn bundle_child(
+        &self,
+        space_id: &str,
+        bundle_id: &str,
+        seed: &str,
+        types: &[&str],
+    ) -> Result<Value, AnyError> {
+        let enc = bundle_id.replace('/', "%2F");
+        let mut body = json!({"seed": seed});
+        if !types.is_empty() {
+            body["types"] = json!(types);
+        }
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/bundles/{enc}/children"),
+            Some(&body),
         )
     }
 
@@ -496,6 +557,26 @@ impl Client {
     pub fn download_file(&self, space_id: &str, file_id: &str) -> Result<Vec<u8>, AnyError> {
         self.transport
             .read_raw(&format!("/v1/spaces/{space_id}/files/{file_id}/content"))
+    }
+
+    // --- devices (tech-space registry, ADR-015 / SYN-165) ---
+    /// GET /v1/devices — the account's device rows + the server-computed
+    /// `active: {<slug>: <peerId>}` winner map (the ONE implementation
+    /// of the election rule — never recompute it client-side).
+    pub fn list_devices(&self) -> Result<Value, AnyError> {
+        self.call("GET", "/v1/devices", None)
+    }
+
+    /// PUT /v1/devices/me — upsert the caller's own row (server stamps
+    /// peerId/os/hostname; body carries only what the app owns).
+    pub fn upsert_self_device(&self, body: &Value) -> Result<Value, AnyError> {
+        self.call("PUT", "/v1/devices/me", Some(body))
+    }
+
+    /// POST /v1/devices/activate — claim the active slot for `app` on
+    /// THIS device (no remote activation, SYN-165 v1).
+    pub fn activate_device(&self, app: &str) -> Result<Value, AnyError> {
+        self.call("POST", "/v1/devices/activate", Some(&json!({"app": app})))
     }
 
     // --- objects ---
@@ -633,6 +714,36 @@ impl Client {
         self.call("POST", &format!("/v1/spaces/{space_id}/types"), Some(body))
     }
 
+    /// GET /v1/spaces/{s}/types/{t}/datasets — the type's runtime
+    /// dataset definitions (ADR-016).
+    pub fn list_datasets(&self, space_id: &str, type_id: &str) -> Result<Vec<Value>, AnyError> {
+        Ok(records_of(
+            self.call(
+                "GET",
+                &format!("/v1/spaces/{space_id}/types/{type_id}/datasets"),
+                None,
+            )?,
+            "datasets",
+        ))
+    }
+
+    /// POST /v1/spaces/{s}/types/{t}/datasets — declare a runtime
+    /// dataset schema (ADR-016/017). Behavioral parts (idRule,
+    /// deleteBy, fields) pin on first write; only the search.* leaves
+    /// stay mutable (PATCH).
+    pub fn create_dataset(
+        &self,
+        space_id: &str,
+        type_id: &str,
+        draft: &Value,
+    ) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/types/{type_id}/datasets"),
+            Some(draft),
+        )
+    }
+
     pub fn add_property(
         &self,
         space_id: &str,
@@ -657,33 +768,6 @@ impl Client {
             "POST",
             &format!("/v1/spaces/{space_id}/properties/{object_id}/set/{type_id}"),
             Some(&json!({"patch": patch})),
-        )
-    }
-
-    // --- agent turns / chunks (v2, server-assigned seq) ---
-    pub fn append_turn(
-        &self,
-        space_id: &str,
-        object_id: &str,
-        body: &Value,
-    ) -> Result<Value, AnyError> {
-        self.call(
-            "POST",
-            &format!("/v1/spaces/{space_id}/objects/{object_id}/agent/turns"),
-            Some(body),
-        )
-    }
-
-    pub fn create_chunk(
-        &self,
-        space_id: &str,
-        object_id: &str,
-        body: &Value,
-    ) -> Result<Value, AnyError> {
-        self.call(
-            "POST",
-            &format!("/v1/spaces/{space_id}/objects/{object_id}/agent/chunks"),
-            Some(body),
         )
     }
 
@@ -722,47 +806,6 @@ impl Client {
             None,
         )?;
         Ok(records_of(reply, "backlinks"))
-    }
-
-    // --- agent memory (M5 write path; reads go through /query on the brain) ---
-    /// The derived per-space brain object id hosting agent_memory_items.
-    /// `{objectId}` — deterministic, no create race.
-    pub fn get_brain(&self, space_id: &str) -> Result<Value, AnyError> {
-        self.call("GET", &format!("/v1/spaces/{space_id}/agent/brain"), None)
-    }
-
-    /// Create a memory item (category + context required). Server
-    /// resolves the brain object. Returns ModifyResult — recordIds[0]
-    /// is the item id.
-    pub fn create_memory(&self, space_id: &str, fields: &Value) -> Result<Value, AnyError> {
-        self.call(
-            "POST",
-            &format!("/v1/spaces/{space_id}/agent/memory"),
-            Some(fields),
-        )
-    }
-
-    /// Evolve a memory item's mutable fields (author only; modifiedAt
-    /// bumped server-side). accessCount bump on recall rides this path.
-    pub fn evolve_memory(
-        &self,
-        space_id: &str,
-        item_id: &str,
-        fields: &Value,
-    ) -> Result<Value, AnyError> {
-        self.call(
-            "PATCH",
-            &format!("/v1/spaces/{space_id}/agent/memory/{item_id}"),
-            Some(fields),
-        )
-    }
-
-    pub fn delete_memory(&self, space_id: &str, item_id: &str) -> Result<Value, AnyError> {
-        self.call(
-            "DELETE",
-            &format!("/v1/spaces/{space_id}/agent/memory/{item_id}"),
-            None,
-        )
     }
 
     // --- SSE subscribe (windowed query/subscribe primitive) ---
@@ -958,7 +1001,7 @@ mod tests {
             404,
             json!({"error": {"code": "not_found", "message": "no such space"}}),
         )]);
-        let err = c.get_brain("sp").unwrap_err();
+        let err = c.get_space("sp").unwrap_err();
         assert_eq!(
             err,
             AnyError {
@@ -1185,17 +1228,16 @@ mod tests {
     #[test]
     fn memory_and_misc_paths() {
         let (c, log) = stub_client();
-        c.create_memory("sp", &json!({"category": "c", "context": "x"}))
-            .unwrap();
-        c.evolve_memory("sp", "m1", &json!({"context": "y"}))
-            .unwrap();
-        c.delete_memory("sp", "m1").unwrap();
-        c.append_turn("sp", "o", &json!({"role": "user"})).unwrap();
-        c.create_chunk("sp", "o", &json!({"text": "t"})).unwrap();
         c.create_space("bao").unwrap();
+        c.list_derived_spaces().unwrap();
+        c.create_derived_space("bao").unwrap();
         c.list_spaces(Some("active")).unwrap();
         c.search("sp", "q", &json!({"limit": 3})).unwrap();
         c.backlinks("sp", "o").unwrap();
+        c.bundle_child("sp", "bao/v1", "bao/config/v1", &["t1"])
+            .unwrap();
+        c.create_dataset("sp", "t1", &json!({"name": "d"})).unwrap();
+        c.list_datasets("sp", "t1").unwrap();
         let calls = log.lock().unwrap();
         let paths: Vec<(&str, &str)> = calls
             .iter()
@@ -1204,22 +1246,46 @@ mod tests {
         assert_eq!(
             paths,
             [
-                ("POST", "/v1/spaces/sp/agent/memory"),
-                ("PATCH", "/v1/spaces/sp/agent/memory/m1"),
-                ("DELETE", "/v1/spaces/sp/agent/memory/m1"),
-                ("POST", "/v1/spaces/sp/objects/o/agent/turns"),
-                ("POST", "/v1/spaces/sp/objects/o/agent/chunks"),
                 ("POST", "/v1/spaces"),
+                ("GET", "/v1/spaces/derived"),
+                ("POST", "/v1/spaces/derived/bao"),
                 ("GET", "/v1/spaces?status=active"),
                 ("POST", "/v1/spaces/sp/search"),
                 ("GET", "/v1/spaces/sp/objects/o/backlinks"),
+                ("POST", "/v1/spaces/sp/bundles/bao%2Fv1/children"),
+                ("POST", "/v1/spaces/sp/types/t1/datasets"),
+                ("GET", "/v1/spaces/sp/types/t1/datasets"),
             ]
         );
         assert_eq!(
-            calls[5].2,
-            Some(json!({"name": "bao", "agent_space": true}))
+            calls[0].2,
+            // no spaceType: empty = server default on every vintage
+            // ("anytype.space" is rejected since SDK v0.0.10); no
+            // agent flag — provisioning is ADR-017's bundle children
+            Some(json!({"name": "bao"}))
         );
-        assert_eq!(calls[7].2, Some(json!({"query": "q", "limit": 3})));
+        assert_eq!(calls[4].2, Some(json!({"query": "q", "limit": 3})));
+        assert_eq!(
+            calls[6].2,
+            Some(json!({"seed": "bao/config/v1", "types": ["t1"]}))
+        );
+    }
+
+    #[test]
+    fn ensure_bundle_posts_id_verbatim_in_body() {
+        let (c, log) = stub_client();
+        c.ensure_bundle("sp", "general-chat/v1", "General", &["chat"])
+            .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[0].0, "POST");
+        assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+        // the slash is part of the id — encoded only in PATH segments,
+        // verbatim in bodies
+        assert_eq!(
+            calls[0].2,
+            Some(json!({"id": "general-chat/v1", "name": "General",
+                        "rootTypes": ["chat"]}))
+        );
     }
 
     #[test]

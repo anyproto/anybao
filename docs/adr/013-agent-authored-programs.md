@@ -1,6 +1,10 @@
 # ADR-013: Agent-authored programs — `create_program` in the working space
 
-Status: **Draft** (2026-08-13)
+Status: **Accepted** (2026-08-14), amended 2026-08-14 at implementation
+(§1 shadow-guard mechanism = the `overlays.aliases` guest config key;
+§3 syntax gate = `ast.parse`, adding `ast` to the tier-1 allowlist;
+§3 "every public method" = module-level public defs — the §3/ADR-010
+inventory surface)
 Date: 2026-08-13
 Builds on: ADR-002/003 (effect boundary, fuel — inherited unchanged),
 ADR-004 §2/§4 (resolution order, the probe cache that makes edits
@@ -66,7 +70,21 @@ record's `_addSeq` (ADR-004 §4) — so **an edit is live on the next
 **Shadow guard**: `create_program`/`update_program` REFUSE a
 `name@vN` that any joined overlay exports. Working-space copies
 shadow the overlay (ADR-004 §2) — the one real footgun here — and
-pipeline-owned assets stay pipeline-owned.
+pipeline-owned assets stay pipeline-owned. *Mechanism (2026-08-14)*:
+the host run surfaces (serve, `run --from-space`) seed the guest
+config key `overlays.aliases` = the resolver's alias map
+(`{alias: spaceId}`); the guard queries each overlay space for the
+spec. An absent key (plain local runs) means no overlays joined;
+an alias bound to the working space itself (the degenerate
+single-space shape, ADR-009 §2) is skipped — it would match the
+program being written.
+
+*Render parity (2026-08-14)*: the toolcaller's `## Tools` compose is
+overlay-resident module code, so its unqualified `use()` resolves in
+the *overlay* (ADR-004 §2.4) and would miss working-space tools; the
+compose imports working-space tools space-qualified while the
+displayed `Import:` line stays unqualified (that's the spec cell code
+should use, where it resolves in the working space).
 
 ### 2. Surface — `programs@v1`, a new agent-repo tool
 
@@ -94,12 +112,26 @@ return.
 The same static scan deploy runs (ADR-010 §4/§6), enforced before
 anything is written: module docstring present, first line ≤ 80 chars
 and self-contained, body within the 12-line/800-char cap; `name` a
-valid identifier + `@vN`; `compile()` gate (a SyntaxError is never
-saved); import allowlist scan (guest never imports the host); tool
-programs additionally `__any_tool__ = True` + `@span` on every public
-method + method docstrings. The deploy.rs scan stays **normative**;
+valid identifier + `@vN`; syntax gate (a SyntaxError is never
+saved — `ast.parse`, since `compile` stays outside the curated
+builtins; `ast` joins the tier-1 import allowlist for it, amending
+ADR-002 §4 the way ADR-010 §2 added `inspect`); import allowlist
+scan (guest never imports the host — judged by attempting the
+kernel's own `__import__`, so the check cannot drift from the
+allowlist); tool programs additionally `__any_tool__ = True` +
+`@span` on every public module-level def + method docstrings
+("public method" = the ADR-010 §3 inventory surface; class internals
+stay free, the `any@v1` shape). The write path is deliberately
+STRICTER than deploy where deploy only polices tools (docstring
+presence/caps, syntax, imports apply to every authored program) —
+agent-authored source has no human reviewer in the loop. The
+deploy.rs scan stays **normative** for the shared rules;
 `programs@v1` reimplements it in guest Python, and both suites run a
-shared fixture corpus so drift breaks tests, not agents (O2).
+shared fixture corpus (`tests/fixtures/program_validation.jsonl`,
+per-suite expected verdicts) so drift breaks tests, not agents (O2).
+Validation refusals RAISE (the loud pre-write error); the
+`{ok: false, saved: true}` shape below is reserved for the
+post-save probe.
 
 **Post-save probe** (bobrik's best trick, kept): after writing,
 `use()` the saved spec. On success, derived props are written and the
@@ -135,3 +167,11 @@ A working-space program that proves out is **promoted by a human**:
 ported into `repos/`, reviewed, deployed — deploy remains the only
 publishing pipeline, and the agent never writes into overlay repo
 spaces (non-goal).
+
+## Amendments
+
+| ADR | Change |
+|-----|--------|
+| 002 §4 | `ast` joins the tier-1 import allowlist — pure, deterministic, already interpreter-resident (the kernel itself parses cells with it); it is the write path's syntax gate and source scanner. `compile`/`exec` stay out of the curated builtins |
+| 003 §4b | `span(name=None, kind=None)` — name defaults to the decorated def's `<module>.<function>`; explicit name = deliberate display override. Motivated by this ADR: the first agent-authored write path immediately produced drifted span names |
+| 010 §7 | the `create_program` pre-commitment is DELIVERED: `programs@v1` validates the deploy convention at write time |

@@ -9,7 +9,6 @@
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
 use crate::config::Config;
-use crate::deploy::ensure_typed;
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
@@ -33,7 +32,28 @@ fn now_s() -> f64 {
         .as_secs_f64()
 }
 
+/// Resolve the agent space (ADR-006 §0, amended 2026-08-19). Registry
+/// names resolve through the server's derived-space registry (SYN-164)
+/// and NEVER name-scan: a well-known space (`bao`) is a pure function
+/// of the account keys, so every device converges on the same id —
+/// materialized rows resolve, unmaterialized ones derive on the spot
+/// (lazy + idempotent). No migration path: a legacy same-named space
+/// is simply not the agent space anymore (clean cut, no-backcompat —
+/// the registry route is required, servers without it are
+/// unsupported). Non-registry names keep the v1 rule: name scan,
+/// create on miss.
 pub fn ensure_space(c: &Client, name: &str) -> Result<String> {
+    let rows = c
+        .list_derived_spaces()
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("derived-space registry")?;
+    if let Some(row) = rows.iter().find(|r| r["name"] == name) {
+        if row["created"] == Value::Bool(true) {
+            return Ok(row["spaceId"].as_str().unwrap_or_default().to_string());
+        }
+        let created = c.create_derived_space(name)?;
+        return Ok(created["id"].as_str().unwrap_or_default().to_string());
+    }
     for sp in c.list_spaces(None)? {
         if sp["name"] == name && sp.get("status").map(|s| s == "active").unwrap_or(true) {
             return Ok(sp["id"].as_str().unwrap_or_default().to_string());
@@ -56,42 +76,180 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
     anyhow::bail!("space not found: {name_or_id:?} (run --from-space never creates one)")
 }
 
-/// The space's single derived general chat object — every space has
-/// exactly one, materialized by the server and reported on the
-/// single-space GET (ADR-006 §0). anybao watches this instead of a
-/// self-created chat object, so it shares the space's canonical chat
-/// with any other client (desktop UI, etc.).
+/// The space's general chat — the `general-chat/v1` bundle's winning
+/// root (ADR-006 §0, amended 2026-08-20). The server keeps no catalog
+/// and installs nothing on its own (SYN-163: chats are not
+/// server-owned), so anybao ensures the bundle itself: adopt-or-install
+/// is idempotent and every client that runs it lands on the same chat.
+/// 409 `bundle.not_ready` (the winner's tree hasn't landed on this
+/// device yet) is retried briefly. The bundles route is REQUIRED — a
+/// server without it is unsupported (no-backcompat).
 fn general_chat(c: &Client, space: &str) -> Result<String> {
-    let info = c.get_space(space)?;
-    info["generalChatObjectId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .context("space has no generalChatObjectId — any server too old to derive it")
+    let mut last_err = None;
+    for _ in 0..5 {
+        match c.ensure_bundle(space, "general-chat/v1", "General", &["chat"]) {
+            Ok(reply) => {
+                return reply["bundle"]["rootId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .context("general-chat bundle ensure returned no rootId");
+            }
+            Err(e) if e.status == 409 => {
+                // bundle.not_ready — winner's tree still syncing in
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context("general-chat bundle ensure"),
+        }
+    }
+    Err(last_err.unwrap()).context("general-chat bundle never became ready")
 }
 
-/// The space's single derived config object (ADR-006 §3), reported as
-/// `agentConfigObjectId` on the single-space GET (same delivery path as
-/// generalChatObjectId). Holds the space-scope override layer of the
-/// config cascade. Returns None (not an error) when the server is too
-/// old to derive it — the harness then runs on hardcoded defaults only.
-fn agent_config_object(c: &Client, space: &str) -> Option<String> {
-    c.get_space(space).ok()?["agentConfigObjectId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+/// The host-written agent stores (ADR-017 §0/§1): anyrt registers the
+/// `bao/v1` bundle and derives + declares ONLY what it writes before
+/// guest code can run — config, secrets, triggers. Brain and chat
+/// logs are guest-owned (any@v1 ensures them lazily).
+pub struct AgentStores {
+    pub config: String,
+    pub secrets: String,
+    pub triggers: String,
 }
 
-/// The space's derived secrets object (`agent_secrets` dataset),
-/// reported as `agentSecretsObjectId` on the single-space GET. None =
-/// the any server predates the config/secrets split — secrets then stay
-/// on the config object (legacy layout) and the guest read-guard covers
-/// that object instead.
-fn agent_secrets_object(c: &Client, space: &str) -> Option<String> {
-    c.get_space(space).ok()?["agentSecretsObjectId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
+    for t in c.list_types(space)? {
+        if t["xKey"] == xkey {
+            return Ok(t["id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    let created = c.create_type(space, &json!({"name": name, "xKey": xkey}))?;
+    Ok(created["typeId"].as_str().unwrap_or_default().to_string())
+}
+
+fn ensure_dataset(c: &Client, space: &str, type_id: &str, draft: &Value) -> Result<()> {
+    let name = draft["name"].as_str().unwrap_or_default();
+    // no reconcile needed: the host stores declare no mutable
+    // search.* leaves
+    if c.list_datasets(space, type_id)?.iter().any(|d| d["name"] == name) {
+        return Ok(());
+    }
+    c.create_dataset(space, type_id, draft)?;
+    Ok(())
+}
+
+/// bundle_child with the same brief `bundle.not_ready` retry policy as
+/// the chat ensure (winner's tree still syncing to this device).
+fn bundle_child_retry(
+    c: &Client,
+    space: &str,
+    bundle: &str,
+    seed: &str,
+    types: &[&str],
+) -> Result<String> {
+    let mut last_err = None;
+    for _ in 0..5 {
+        match c.bundle_child(space, bundle, seed, types) {
+            Ok(reply) => {
+                return reply["objectId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .context("bundle child returned no objectId");
+            }
+            Err(e) if e.status == 409 => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context(format!("bundle child {seed}")),
+        }
+    }
+    Err(last_err.unwrap()).context(format!("bundle child {seed} never became ready"))
+}
+
+pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
+    // The bundle: adopt-or-install, brief not_ready retry (same class
+    // as the chat ensure).
+    let mut last_err = None;
+    let mut registered = false;
+    for _ in 0..5 {
+        match c.ensure_bundle(space, "bao/v1", "bao", &["page"]) {
+            Ok(_) => {
+                registered = true;
+                break;
+            }
+            Err(e) if e.status == 409 => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context("bao/v1 bundle ensure"),
+        }
+    }
+    if !registered {
+        return Err(last_err.unwrap()).context("bao/v1 bundle never became ready");
+    }
+
+    let cfg_t = ensure_type(c, space, "Agent Config", "agent_config")?;
+    let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
+    let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    // Declared fields carry behavior (scope local needs a declaration,
+    // and a declared field needs a kind); everything free-form rides
+    // the `dynamic` keyspace — undeclared fields are any-typed and
+    // freely mutable, the old DefaultHandler semantics. Config `value`
+    // and the whole trigger record shape stay undeclared for exactly
+    // that reason; device-local values are strings in practice
+    // (API keys, addresses) — a non-string local write rejects loudly.
+    ensure_dataset(
+        c,
+        space,
+        &cfg_t,
+        &json!({
+            "name": CONFIG_DATASET, "displayName": "Agent Config",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "dynamic": true,
+            "fields": [
+                {"key": "key", "kind": "string", "mutableBy": "any"},
+                {"key": "secret", "kind": "boolean", "mutableBy": "any"},
+                {"key": "localValue", "kind": "string", "scope": "local",
+                 "mutableBy": "any"},
+            ]}),
+    )?;
+    ensure_dataset(
+        c,
+        space,
+        &sec_t,
+        &json!({
+            "name": SECRETS_DATASET, "displayName": "Agent Secrets",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "fields": [
+                {"key": "key", "kind": "string", "mutableBy": "any"},
+                {"key": "secret", "kind": "boolean", "mutableBy": "any"},
+                {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
+                 "mutableBy": "any"},
+            ]}),
+    )?;
+    ensure_dataset(
+        c,
+        space,
+        &trg_t,
+        &json!({
+            "name": "agent_triggers", "displayName": "Agent Triggers",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "dynamic": true, "fields": []}),
+    )?;
+    ensure_dataset(
+        c,
+        space,
+        &trg_t,
+        &json!({
+            "name": "agent_trigger_runs", "displayName": "Agent Trigger Runs",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "dynamic": true, "fields": []}),
+    )?;
+    Ok(AgentStores {
+        config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
+        secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
+        triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
+    })
 }
 
 /// The Anthropic API key's config key — the record id/`key` on the config
@@ -469,14 +627,16 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let client = Arc::new(Client::new(&cfg.addr));
     let space = ensure_space(&client, &cfg.agent_space)?;
     let chat = general_chat(&client, &space)?;
-    let anchor = ensure_typed(&client, &space, "agent-triggers", "agent_trigger")?;
+    // ADR-017 §0: the bao/v1 bundle + the host-written store children
+    // (config, secrets, triggers). The trigger anchor IS the triggers
+    // child — deterministic, no name-scan.
+    let stores = provision_agent_stores(&client, &space)?;
+    let anchor = stores.triggers.clone();
 
     // Config cascade (ADR-006 §3): hardcoded defaults (from `bootstrap`)
-    // under the space-scope override layer read off the config object;
-    // secrets (the provider API keys) persist device-locally on the same
-    // object.
-    let config_obj = agent_config_object(&client, &space);
-    let secrets_obj = agent_secrets_object(&client, &space);
+    // under the space-scope override layer read off the config child.
+    let config_obj = Some(stores.config.clone());
+    let secrets_obj = Some(stores.secrets.clone());
     if let Some(obj) = &config_obj {
         let overrides = config_overrides(&client, &space, obj);
         info!("config obj={obj} overrides={}", overrides.len());
@@ -562,11 +722,6 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         }
     }
 
-    let brain = client.get_brain(&space)?["objectId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-
     // serve is space-only (ADR-009 §5): programs, skills, and the kernel
     // are already IN the space(s) — `anyrt deploy` is the publish step.
     // The system prompt is composed guest-side (toolcaller@v1) from the
@@ -586,6 +741,10 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     }
     let aliases = alias_map(&cfg.overlays, &space);
     let code_space = aliases["agent"].clone();
+    // guest-visible alias map — the programs@v1 shadow guard reads it
+    // to refuse overlay-exported specs (ADR-013 §1)
+    cfg.config
+        .insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
 
     // kernel is embedded (ADR-009 §4) — the cage always boots eagerly;
     // pending overlays only gate program resolution
@@ -598,24 +757,32 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     }
     std::fs::create_dir_all(&cfg.traces_dir)?;
 
+    // Single-active election (ADR-015): register this device in the
+    // tech-space registry and take the gate's boot verdict. Standby ⇒
+    // chat watch and ticker stay idle (and the standing-trigger records
+    // below aren't stamped) until the election thread flips the gate.
+    let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
+
     let instance = format!("anyrt-{}", std::process::id());
     let mut sched = Scheduler::new(&instance, Box::new(now_s));
     sched.arm();
     let mut registry = BTreeMap::new();
-    for t in standing_triggers(&space, &chat, &brain, &instance) {
-        client.upsert_record(
-            &space,
-            &anchor,
-            "agent_triggers",
-            &t.id,
-            &trigger_to_record(&t),
-        )?;
+    for t in standing_triggers(&space, &chat, &instance) {
+        if election.active.load(Ordering::Relaxed) {
+            client.upsert_record(
+                &space,
+                &anchor,
+                "agent_triggers",
+                &t.id,
+                &trigger_to_record(&t),
+            )?;
+        }
         registry.insert(t.id.clone(), t);
     }
     let shared = Arc::new(Shared {
         triggers: Mutex::new(registry),
         scheduler: Mutex::new(sched),
-        watcher: Mutex::new(Watcher::default()),
+        watcher: Mutex::new(Watcher::new(&cfg.agent_name)),
         backlog: Mutex::new(Vec::new()),
     });
 
@@ -631,12 +798,21 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         code_space,
         secrets_guard,
         oauth,
+        active: election.active.clone(),
+        self_peer: election.self_peer.clone(),
     });
 
     let mut threads = vec![
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
     ];
+    if election.enabled {
+        threads.push(election_thread(
+            shared.clone(),
+            ctx.clone(),
+            shutdown.clone(),
+        ));
+    }
     info!(
         "anyrt serving space={space} chat={chat} control=127.0.0.1:{}",
         ctx.cfg.control_port
@@ -646,6 +822,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), shutdown.clone());
         threads.push(std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
+                // standby (ADR-015 §3): stay DISCONNECTED, not muted —
+                // nothing lands in the seen-set, so takeover's snapshot
+                // yields the whole missed backlog
+                if !ctx.active.load(Ordering::Relaxed) {
+                    sliced_sleep(Duration::from_millis(500), &stop);
+                    continue;
+                }
                 // reconnect loop: each feed's snapshot re-seeds the
                 // backlog scan; the watcher's seen-set dedups replays
                 match watch_chat(&shared, &ctx, &stop) {
@@ -696,6 +879,14 @@ pub struct RunCtx {
     /// managed OAuth state (ADR-011) — one per serve, threaded into
     /// every Broker
     pub oauth: Arc<crate::oauth::OauthState>,
+    /// single-active gate (ADR-015 §3): false = standby (chat watch
+    /// disconnected, ticker idle). Written ONLY by the election thread
+    /// after boot. `ctx.run()` itself is not gated — embedder/CLI runs
+    /// are explicit.
+    pub active: Arc<AtomicBool>,
+    /// this device's peer id in the devices registry; None = server
+    /// predates /v1/devices (election disabled, gate permanently true)
+    pub self_peer: Option<String>,
 }
 
 impl RunCtx {
@@ -877,9 +1068,10 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
         "chat_messages",
         &json!({"sort": ["-createdAt"], "limit": 64}),
     )? {
-        // shutdown is observed per frame — the read itself blocks until
-        // the server's next event/heartbeat (ADR-009 open Q3)
-        if stop.load(Ordering::Relaxed) {
+        // shutdown and stand-down (ADR-015 §3) are observed per frame —
+        // the read itself blocks until the server's next event/heartbeat
+        // (ADR-009 open Q3); returning drops the stream
+        if stop.load(Ordering::Relaxed) || !ctx.active.load(Ordering::Relaxed) {
             return Ok(());
         }
         match frame.event.as_str() {
@@ -890,7 +1082,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             // down or booting — are answered instead of dropped. The
             // watcher's seen-set dedups across reconnect snapshots.
             "snapshot" => {
-                let backlog = snapshot_backlog(&frame.data);
+                let backlog = snapshot_backlog(&frame.data, &ctx.cfg.agent_name);
                 if backlog.is_empty() {
                     continue;
                 }
@@ -902,7 +1094,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
-                        let text = record["text"].as_str().unwrap_or("").to_string();
+                        let text = Watcher::attributed_text(&record);
                         if ready {
                             info!("backlog conversation: {:?}", preview(&text));
                             start_or_inject(shared, ctx, text);
@@ -923,7 +1115,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
-                        let text = record["text"].as_str().unwrap_or("").to_string();
+                        let text = Watcher::attributed_text(&record);
                         // deferred boot (ADR-009 §8): a message while
                         // overlays are pending gets a status bubble —
                         // the one host-authored operational reply —
@@ -954,18 +1146,25 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
     Ok(())
 }
 
-/// User messages newer than the agent's last reply, oldest first. The
+/// Messages newer than this agent's last own reply, oldest first. The
 /// snapshot window is sorted `-createdAt`: walk from the newest record
-/// and stop at the first agent-authored one — everything before it is
-/// unanswered. Snapshot records are bare docs (each carries its own
-/// `id`), unlike the `{id, doc}` entries of `changes` frames.
-fn snapshot_backlog(data: &Value) -> Vec<Value> {
+/// and stop at the first SELF-authored one (own `agent.name`, or a
+/// nameless agent record — same rule as the watcher, ADR-009 §8
+/// amendment) — everything before it is unanswered. Foreign
+/// agent-named messages (`trigger:*` nudges, peers) count as
+/// unanswered input. Snapshot records are bare docs (each carries its
+/// own `id`), unlike the `{id, doc}` entries of `changes` frames.
+fn snapshot_backlog(data: &Value, self_name: &str) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for rec in data["records"].as_array().unwrap_or(&Vec::new()) {
-        if rec.get("agent").map(|a| !a.is_null()).unwrap_or(false) {
+        if Watcher::is_self_message(rec, self_name) {
             break;
         }
-        if rec["text"].as_str().is_some_and(|t| !t.is_empty()) {
+        // content = text OR attachments (the server enforces at least
+        // one); an attachment-only message is real input, not noise
+        let has_text = rec["text"].as_str().is_some_and(|t| !t.is_empty());
+        let has_atts = rec["attachments"].as_object().is_some_and(|a| !a.is_empty());
+        if has_text || has_atts {
             out.push(rec.clone());
         }
     }
@@ -1005,6 +1204,11 @@ fn trigger_ticker(
         if stop.load(Ordering::Relaxed) {
             return;
         }
+        // standby (ADR-015 §3): no runs, no adoption, no ownership
+        // stamping — the election thread owns the transitions
+        if !ctx.active.load(Ordering::Relaxed) {
+            continue;
+        }
         // deferred boot (ADR-009 §8): don't burn trigger runs (and the
         // circuit breaker) while overlays are still syncing. This is a
         // PROBE, not the cheap check — readiness must clear without
@@ -1030,7 +1234,7 @@ fn trigger_ticker(
             let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
             let mut reg = shared.triggers.lock().unwrap();
             let standing: std::collections::BTreeSet<String> =
-                standing_triggers(&ctx.space, "", "", "")
+                standing_triggers(&ctx.space, "", "")
                     .into_iter()
                     .map(|t| t.id)
                     .collect();
@@ -1122,6 +1326,67 @@ fn trigger_ticker(
     })
 }
 
+/// The election reconcile loop (ADR-015 §3/§4): poll the registry,
+/// flip the gate on verdict transitions. The ONLY writer of
+/// `ctx.active` after boot, so load-then-store is race-free.
+fn election_thread(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let Some(peer) = ctx.self_peer.clone() else {
+            return; // enabled implies a peer id; belt and braces
+        };
+        loop {
+            sliced_sleep(crate::election::POLL, &stop);
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            let verdict = crate::election::reconcile(&ctx.client, &peer, crate::election::APP_SLUG);
+            match verdict {
+                None => {} // transient read failure — keep the last state
+                Some(true) if !ctx.active.load(Ordering::Relaxed) => {
+                    takeover(&shared, &ctx);
+                    ctx.active.store(true, Ordering::Relaxed); // AFTER re-arm
+                    info!("election: TAKEOVER — this device is now the active bao");
+                }
+                Some(false) if ctx.active.load(Ordering::Relaxed) => {
+                    ctx.active.store(false, Ordering::Relaxed);
+                    // the new active device answers these; in-flight
+                    // runs finish on their own (never interrupt a turn)
+                    shared.backlog.lock().unwrap().clear();
+                    info!("election: stand-down — another device is the active bao");
+                }
+                Some(_) => {} // verdict matches the current state
+            }
+        }
+    })
+}
+
+/// Takeover prep (ADR-015 §3), run BEFORE the gate flips: re-arm every
+/// cron strictly forward (a missed occurrence while standby does not
+/// exist — the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
+/// burst), then stamp + publish the registry's trigger records that the
+/// standby boot skipped.
+fn takeover(shared: &Shared, ctx: &RunCtx) {
+    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+    let mut reg = shared.triggers.lock().unwrap();
+    for t in reg.values_mut() {
+        if t.kind == "cron" {
+            t.next_due = None; // next tick arms forward, no fire
+        }
+        t.owner = instance.clone();
+        let _ = ctx.client.upsert_record(
+            &ctx.space,
+            &ctx.anchor,
+            "agent_triggers",
+            &t.id,
+            &trigger_to_record(t),
+        );
+    }
+}
+
 // --- the localhost control API -------------------------------------------------
 
 fn control_api(
@@ -1181,6 +1446,26 @@ fn handle_control(
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let mut reg = shared.triggers.lock().unwrap();
     match (method, parts.as_slice()) {
+        // election observability (ADR-015 §5); winner via a live
+        // registry read, null when unavailable
+        ("GET", ["election"]) => {
+            let winner = ctx
+                .self_peer
+                .as_ref()
+                .and_then(|_| ctx.client.list_devices().ok())
+                .and_then(|r| {
+                    r["active"][crate::election::APP_SLUG]
+                        .as_str()
+                        .map(str::to_string)
+                });
+            Ok(json!({
+                "app": crate::election::APP_SLUG,
+                "enabled": ctx.self_peer.is_some(),
+                "active": ctx.active.load(Ordering::Relaxed),
+                "peerId": ctx.self_peer,
+                "winner": winner,
+            }))
+        }
         ("GET", ["triggers"]) => Ok(Value::Array(reg.values().map(rollup).collect())),
         ("GET", ["triggers", id]) => {
             let t = reg.get(*id).context("trigger not found")?;
@@ -1260,6 +1545,81 @@ mod tests {
 
     fn spaces_reply(rows: Value) -> (u16, Value) {
         (200, json!({"spaces": rows}))
+    }
+
+    #[test]
+    fn ensure_space_prefers_materialized_derived_row() {
+        // registry row created:true wins outright — no space-list scan,
+        // no ambiguity with a same-named legacy space
+        let (c, log) = scripted(&[spaces_reply(
+            json!([{"name": "bao", "spaceId": "derived-id", "created": true}]),
+        )]);
+        assert_eq!(ensure_space(&c, "bao").unwrap(), "derived-id");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "/v1/spaces/derived");
+    }
+
+    #[test]
+    fn ensure_space_derives_unmaterialized_registry_name() {
+        // registry name, unmaterialized → derive on the spot; a legacy
+        // same-named space is never scanned for (clean cut) and
+        // POST /v1/spaces never happens
+        let (c, log) = scripted(&[
+            spaces_reply(json!([{"name": "bao", "spaceId": "derived-id", "created": false}])),
+            (201, json!({"id": "derived-id", "derived": true})),
+        ]);
+        assert_eq!(ensure_space(&c, "bao").unwrap(), "derived-id");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].0, "POST");
+        assert_eq!(calls[1].1, "/v1/spaces/derived/bao");
+    }
+
+    #[test]
+    fn ensure_space_requires_the_registry_route() {
+        // no-backcompat: a server without the derived registry is
+        // unsupported — error, never a name-scan fallback
+        let (c, _) = scripted(&[(
+            404,
+            json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
+        )]);
+        assert!(ensure_space(&c, "bao").is_err());
+    }
+
+    #[test]
+    fn ensure_space_non_registry_name_scans_by_name() {
+        // registry exists but doesn't know this name → v1 rule
+        let (c, _) = scripted(&[
+            spaces_reply(json!([{"name": "bao", "spaceId": "derived-id", "created": true}])),
+            spaces_reply(json!([{"id": "mine", "name": "myspace", "status": "active"}])),
+        ]);
+        assert_eq!(ensure_space(&c, "myspace").unwrap(), "mine");
+    }
+
+    #[test]
+    fn general_chat_ensures_the_bundle() {
+        let (c, log) = scripted(&[(
+            200,
+            json!({"bundle": {"id": "general-chat/v1", "rootId": "chat-root"},
+                   "installed": false}),
+        )]);
+        assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+    }
+
+    #[test]
+    fn general_chat_requires_the_bundles_route() {
+        // no-backcompat: a server without bundles is unsupported —
+        // error, never a SpaceInfo-field fallback
+        let (c, log) = scripted(&[(
+            404,
+            json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
+        )]);
+        assert!(general_chat(&c, "sp").is_err());
+        assert_eq!(log.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -1377,7 +1737,7 @@ mod tests {
             msg("a1", "reply", true),
             msg("u1", "answered", false),
         ]});
-        let backlog = snapshot_backlog(&data);
+        let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["u2", "u3"]);
     }
@@ -1388,7 +1748,7 @@ mod tests {
             msg("a1", "reply", true),
             msg("u1", "answered", false),
         ]});
-        assert!(snapshot_backlog(&data).is_empty());
+        assert!(snapshot_backlog(&data, "bao").is_empty());
     }
 
     #[test]
@@ -1396,22 +1756,27 @@ mod tests {
         // fresh chat / reply scrolled out of the window: everything
         // visible is unanswered
         let data = json!({"records": [msg("u2", "b", false), msg("u1", "a", false)]});
-        let backlog = snapshot_backlog(&data);
+        let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["u1", "u2"]);
     }
 
     #[test]
-    fn snapshot_backlog_skips_textless_records() {
-        // null docs and attachment-only messages can't start a run
+    fn snapshot_backlog_skips_contentless_but_keeps_attachment_only() {
+        // null docs and empty messages can't start a run; a message
+        // that is ONLY an attachment (no caption) is real input
+        let mut with_atts = msg("u3", "", false);
+        with_atts["attachments"] =
+            json!({"a0": {"type": "link", "link": "any://o/sp1/obj1"}});
         let data = json!({"records": [
             msg("u2", "real", false),
+            with_atts,
             null,
             msg("u1", "", false),
         ]});
-        let backlog = snapshot_backlog(&data);
+        let backlog = snapshot_backlog(&data, "bao");
         let ids: Vec<&str> = backlog.iter().map(|r| r["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["u2"]);
+        assert_eq!(ids, ["u3", "u2"]);
     }
 
     #[test]

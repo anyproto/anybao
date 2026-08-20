@@ -169,7 +169,7 @@ def _sources_md(sources):
                      for s in sources)
 
 
-@span("deepResearch.research", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def research(space, question, opts=None):
     """Research `question`; write the result pages into `space`.
 
@@ -250,7 +250,7 @@ def research(space, question, opts=None):
     overview = initial["answer"]
     if sub_pages:
         overview += "\n\n---\n\n## Follow-up Topics\n\n" + "\n".join(
-            f"- [{p['name']}](any://{space}/{p['id']})" for p in sub_pages)
+            f"- [{p['name']}](any://o/{space}/{p['id']})" for p in sub_pages)
     if deduped:
         overview += "\n\n## Sources\n\n" + _sources_md(deduped)
     overview += (f"\n\n---\n\n*Gemini grounded search ({prov['model']}) | "

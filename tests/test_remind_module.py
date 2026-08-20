@@ -20,7 +20,7 @@ def run_main(args):
         return {"status": 201, "headers": {},
                 "body": json.dumps({"recordIds": ["m1"]})}
 
-    nospan = lambda name, kind=None: (lambda f: f)  # noqa: E731
+    nospan = lambda name=None, kind=None: (lambda f: f)  # noqa: E731
     any_g = {"effect": fx, "span": nospan, "use": None}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
     g = {"effect": fx, "span": nospan,

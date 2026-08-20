@@ -33,7 +33,7 @@ anyrt deploy --source repos/_connectors --target connectors [--config-file anyba
   (hard cap 12 / 800 chars). Dev-facing context goes in `#` comments
   below, not in the docstring.
 - **A tool** additionally declares `__any_tool__ = True` at module
-  top level and carries `@span("<name>.<method>", kind=...)` on every
+  top level and carries `@span(kind=...)` on every
   public method — deploy validates both and rejects violations.
   Method docstrings: first line = self-contained summary (inventories
   show only it), body = return shape, options, budgets. `help()` in

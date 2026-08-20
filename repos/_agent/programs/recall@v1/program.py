@@ -15,7 +15,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 _any = use("any@v1")  # noqa: F821 - guest global
 
-DEFAULT_SCOPES = ("agent", "history", "basic")
+DEFAULT_SCOPES = ("agent", "history", "basic", "email")
 
 # Reserved property groups (`any`, `nav`) are structural, not user
 # graph edges — neighbors skips them.
@@ -41,21 +41,31 @@ class Recall:
         self._space = space
         self._brain = brain_object_id
         self._chat = chat_object_id
+        self._log = None   # the chat's log child, resolved lazily
 
     # --- semantic ----------------------------------------------------------
-    @span("recall.search", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def search(self, query, scopes=DEFAULT_SCOPES, limit=10):
         """Index search across scopes → a bare LIST of hits, no envelope.
 
-        Each `{scope, objectId, dataset, recordId, score, …}` —
-        already unwrapped from the `{hits, mode, vectorStatus}`
-        envelope that any@v1 `search` returns, so `hits[0]` works and
-        `hits["hits"]` does not. Default scopes ("agent", "history",
-        "basic"), limit 10."""
+        query must be non-empty — the index has no browse-all mode; to
+        ENUMERATE memory, query the brain dataset instead (see the
+        error text below). Each hit `{scope, objectId, dataset,
+        recordId, score, …}` — already unwrapped from the `{hits,
+        mode, vectorStatus}` envelope that any@v1 `search` returns, so
+        `hits[0]` works and `hits["hits"]` does not. Default scopes
+        ("agent", "history", "basic", "email"), limit 10."""
+        if not (query or "").strip():
+            raise ValueError(
+                "search needs a non-empty query — the index has no "
+                "browse-all mode. To enumerate memory items: "
+                'a.query(space, a.get_brain(space)["objectId"], '
+                '"agent_memory_items"); for history use '
+                "history@v1 or by_period().")
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 
-    @span("recall.hydrate", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def hydrate(self, hits):
         """Hit pointers → (hit, record) pairs, in one batched read.
 
@@ -73,7 +83,7 @@ class Recall:
         return [(h, r) for h, r in pairs if r is not None]
 
     # --- temporal ----------------------------------------------------------
-    @span("recall.by_period", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def by_period(self, from_ts, to_ts):
         """Everything in [from_ts, to_ts] (unix seconds, inclusive).
 
@@ -102,13 +112,17 @@ class Recall:
                 sort=["validFrom"])
             out += [{**r, "source": "memory"} for r in items]
         if self._chat:
+            if self._log is None:
+                # turns/chunks live on the chat's log child (ADR-017)
+                self._log = (self._c.chat_log(self._space, self._chat)
+                             or {}).get("objectId")
             turns = self._c.query(
-                self._space, self._chat, "agent_turns",
+                self._space, self._log, "agent_turns",
                 filter={"createdAt": {"$gte": from_ts, "$lte": to_ts}},
                 sort=["createdAt"])
             out += [{**r, "source": "turn"} for r in turns]
             chunks = self._c.query(
-                self._space, self._chat, "agent_chunks",
+                self._space, self._log, "agent_chunks",
                 filter={"periodStart": {"$lte": to_ts}, "periodEnd": {"$gte": from_ts}},
                 sort=["periodStart"])
             out += [{**r, "source": "chunk"} for r in chunks]
@@ -116,7 +130,7 @@ class Recall:
         return out
 
     # --- graph -------------------------------------------------------------
-    @span("recall.neighbors", kind="getter")  # noqa: F821 - guest global
+    @span(kind="getter")  # noqa: F821 - guest global
     def neighbors(self, object_id):
         """1-hop neighborhood: {"forward": [...], "backlinks": [...]}.
 
@@ -174,7 +188,7 @@ class Recall:
                 if (p.get("format") or {}).get("type") == "links"}
 
 
-@span("recall.recall", kind="setup")  # noqa: F821 - guest global
+@span(kind="setup")  # noqa: F821 - guest global
 def recall(client, space, brain_object_id=None, chat_object_id=None):
     """Bind recall to one space over an any@v1 client — then `help(r)`.
 

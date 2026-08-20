@@ -126,7 +126,7 @@ def frame_messages(query, memory_lines, history_lines):
     ]
 
 
-@span("autorecall.plan")  # noqa: F821 - guest global
+@span()  # noqa: F821 - guest global
 def plan(client, space, user_text, boot_min_seq=None, policy=None):
     """The injection plan for one turn: `{"messages": [...], "injected":
     [(hit, record), ...]}` — messages ready to splice before the user
@@ -202,13 +202,19 @@ def referenced(context, replies):
 def log_roi(client, space, injected, replies, ts):
     """One agent_roi_injections record per injected (hit, item) pair;
     the brain object comes from the hit pointer. Returns the number of
-    records written."""
+    records written. Best-effort per record: ROI is metrics
+    bookkeeping — a hit whose object refuses the write (e.g. a stale
+    index doc pointing at a retired store) is skipped, never fails
+    the conversation."""
     n = 0
     for hit, item in injected:
-        client.upsert_record(space, hit["objectId"], ROI_DATASET,
-                             f"{item['id']}:{ts}",
-                             {"itemId": item["id"], "ts": ts,
-                              "referenced": referenced(item.get("context", ""),
-                                                       replies)})
-        n += 1
+        try:
+            client.upsert_record(space, hit["objectId"], ROI_DATASET,
+                                 f"{item['id']}:{ts}",
+                                 {"itemId": item["id"], "ts": ts,
+                                  "referenced": referenced(item.get("context", ""),
+                                                           replies)})
+            n += 1
+        except client.AnyError:
+            continue
     return n

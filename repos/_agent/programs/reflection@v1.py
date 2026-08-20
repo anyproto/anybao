@@ -10,7 +10,8 @@ items) into ONE insight item — saved through the §2 dedup judge with
 every source item; (b) detect contradictions → lower BOTH items'
 confidence and write a `contradicts` edge. Everything the LLM proposes
 is validated in code against the actual cluster ids. args: {space,
-brainId, minAgeDays?, minCluster?, tier?}.
+minAgeDays?, minCluster?, tier?} — the brain resolves itself
+(ADR-017).
 """
 
 import json
@@ -48,11 +49,12 @@ def reflect_cluster(category, items, tier):
 
 
 def main(args):
-    space, brain = args["space"], args["brainId"]
+    space = args["space"]
     tier = args.get("tier", TIER)
     min_cluster = args.get("minCluster", MIN_CLUSTER)
     cutoff = now() - args.get("minAgeDays", MIN_AGE_DAYS) * DAY_S  # noqa: F821
     c = use("any@v1")  # noqa: F821 - guest global
+    brain = c.get_brain(space)["objectId"]
     mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
     rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
     items = c.query(space, brain, "agent_memory_items",

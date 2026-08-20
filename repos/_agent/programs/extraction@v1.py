@@ -11,7 +11,8 @@ survivors carry provenance (fromSeq) and capped confidence ≤ 6
 (machine-derived never outranks user-stated). Cursor = an
 agent_job_state record on the BRAIN object (where the server registers
 harness bookkeeping); re-derivable (turns are append-only). args:
-{space, chatId, brainId, batch?, tier?}.
+{space, chatId, batch?, tier?} — the brain resolves itself
+(ADR-017); turns are read off the chat's log child.
 """
 
 import json
@@ -85,10 +86,12 @@ def normalize(candidate, max_seq):
 
 
 def main(args):
-    space, chat, brain = args["space"], args["chatId"], args["brainId"]
+    space, chat = args["space"], args["chatId"]
     c = use("any@v1")  # noqa: F821 - guest global
+    brain = c.get_brain(space)["objectId"]
+    log = c.chat_log(space, chat)["objectId"]
     last = _state(c, space, brain)
-    turns = c.query(space, chat, "agent_turns",
+    turns = c.query(space, log, "agent_turns",
                     filter={"seq": {"$gt": last}}, sort=["seq"],
                     limit=args.get("batch", BATCH))
     if not turns:

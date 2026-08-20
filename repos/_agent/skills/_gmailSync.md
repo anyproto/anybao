@@ -49,13 +49,26 @@ a drained sync's window = `start_backfill` with the new q — it
 re-lists the new scope (synced mail skips); `sync_now` and the cron
 NEVER re-list, their q only filters what a tick sees.
 
-Watch progress with `status(space)` → `{cursor, pageToken,
-syncedCount, emailCount}` (empty pageToken = backlog drained, now
-ticking incrementally) or the `agent-progress` object (job
-`"gmail-backfill"`) in the target space — the UI renders it live.
+**Coverage = `status(space).q`, nothing else.** Never infer it from
+the `newer_than:1y` default (the arm may have used any q) or from the
+dates of synced messages (a 7-day corpus also "falls within" two
+weeks — absence of older mail proves nothing). Asked for a window
+wider than `status().q` ⇒ re-arm `start_backfill` with the wider q.
+
+Watch progress with `status(space)` → `{q, cursor, pageToken,
+syncedCount, mailboxId, emailCount}` (empty pageToken = backlog
+drained, now ticking incrementally) or
+`use("agent:progress@v1").jobs(space)` (job `"gmail-backfill"`) — the
+UI renders the bar GLOBALLY (server process registry), whatever space
+is open.
 Diagnosing a stalled chain: a trigger record's `lastStatus: "ok"`
 means the hop RAN, not that it synced — sync truth is `status(space)`
-and the progress object's `error` field.
+and the failed process row (`use("agent:progress@v1").jobs(space)`,
+visible ~60s) — durable truth lives in `status(space)`.
 
-Reading the synced corpus (the `email` type, thread queries, label
-filters) is the `_any` skill's job.
+Reading the synced corpus (`email_messages` records on the `mailbox`
+object, thread queries, label filters — ADR-016) is the `_any`
+skill's job. Re-arming `start_backfill` on a space synced before the
+dataset move re-ingests everything into the dataset automatically
+(one-shot state migration); the legacy per-message `email` objects
+stay behind until the user asks to delete them.

@@ -73,8 +73,44 @@ Spaces:
   `currentUserSpace` (and its `objectId`) to the calls that act on it,
   checking its age for staleness. `c.get_ui_context(baoSpaceConfig)`
   re-reads it live; `c.list_spaces()` enumerates everything else.
+- The WRITE side of the view: `c.open_in_ui(space, object_id?)`
+  navigates the user's any-ui window on this device to that space or
+  object — use it when the user asks to "open"/"show" something, or
+  right after creating what they'll want to look at. Fire-and-forget:
+  `subscribers: 0` just means no window is connected, nothing queues.
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
+
+Links (`any://` URIs — the one reference format):
+
+- Canonical TYPED grammar: `any://<kind>/<spaceId>/…` — the first
+  segment says what it points at: `any://o/<sid>/<objectId>` an
+  object, `any://o/<sid>/<oid>/<dataset>/<recordId>` a record inside
+  it (editor block, chat message, email_messages row — same rule
+  everywhere), `any://m/<sid>/<identity>` a member mention,
+  `any://s/<sid>` a space, `any://f/<sid>/<fileId>` a file. WRITE new
+  links in text in this form: `[Name](any://o/<sid>/<oid>)`.
+- Legacy bare forms still parse as objects and exist in stored data:
+  `any://<objectId>` and `any://<spaceId>/<objectId>` — when reading,
+  the LAST path segment of an `o`/bare link is the object id.
+- The one STRICT exception: **links-FORMAT property values** store
+  exactly `any://<objectId>` (one segment, no space, no fragment) —
+  the server validates writes against that shape; write
+  `["any://" + objectId]`, filters match with the prefix. Never put a
+  typed `o/` URI in a links property value.
+- **Incoming attachments**: when the user attaches objects/files to a
+  chat message, the harness folds them into your message text as
+  `[attachment link: any://o/<sid>/<oid>]` /
+  `[attachment image: any://f/<sid>/<fileId>]` lines — a message may
+  be ONLY attachments. Resolve `o/` targets with the ids from the URI
+  (`get_markdown` / `query_objects` / `query`); `f/` files have no
+  read surface here yet — refer to them by link, don't try to fetch
+  bytes.
+- **Outgoing attachments**: `chat_send` takes `attachments`:
+  `{"a0": {"type": "link", "link": "any://o/<sid>/<oid>"}, …}` (≤32,
+  keys `[A-Za-z0-9_-]+`, type `link` or `image`) — attach the objects
+  you cite so the UI shows preview chips; plain `any://o/…` markdown
+  links in text render clickable too.
 
 Chat:
 
@@ -99,27 +135,35 @@ Chat:
   membership is always `filter={"any.types": "chat"}`; the rule
   generalizes to any type group whose properties are all local-scope.
 
-Synced mail (the `email` type):
+Synced mail (`email_messages` records on a `mailbox` object, ADR-016):
 
-- A space may hold **one `email` object per synced message**: name =
-  subject, body = cleaned markdown, properties under `email.*` —
-  `gmail_id`, `thread_id`, `from`/`to`/`subject` (plain strings),
-  `label_ids` (Gmail's labels, e.g. `TRASH`, `STARRED`,
-  `CATEGORY_PROMOTIONS`), `internal_date` (ms epoch — the sort key),
-  `snippet`, `date`. **For "what did X and I email about", use the
-  synced corpus first — never the live gmail connector** (that is the
-  raw provider API: slower, quota-bound, needs OAuth, and blind to
-  the cleaned corpus; reach for it only for something not yet
-  synced).
-- Query mail: `query_objects(space, filter={"any.types": "email"},
-  ...)`; narrow with `email.*` filters — string props are equality,
-  so a person is `{"email.from": {"$regex": "ruud@ruuda.nl"}}`;
-  `label_ids` is an array, so the scalar
-  `{"email.label_ids": "TRASH"}` means contains. Semantic search
-  already covers mail — subjects and bodies index under the default
-  scopes, so `search`/`recall.search` hits land on email objects
-  directly; read the winner with `get_markdown`.
-- Threads are data, not structure: same `email.thread_id` = one
-  conversation, sort by `email.internal_date`.
+- A synced space holds **one `mailbox` object per gmail address**
+  (find it: `query_objects(space, filter={"any.types": "mailbox"})`)
+  carrying one `email_messages` DATASET RECORD per message — record
+  id = the Gmail message id. Record fields are plain keys (never
+  xKey-nested): `threadId`, `from`/`to`/`cc`/`subject`/`date` (plain
+  strings), `labelIds` (Gmail's labels, e.g. `TRASH`, `STARRED`,
+  `CATEGORY_PROMOTIONS`), `internalDate` (ms epoch — the sort key),
+  `snippet`, `body` (cleaned markdown), `signature`, `participants`
+  (normalized lowercase addresses from From/To/Cc — the person-join
+  key), plus derived `creator`/`createdAt`/`modifiedAt`. **For "what
+  did X and I email about", use the synced corpus first — never the
+  live gmail connector** (that is the raw provider API: slower,
+  quota-bound, needs OAuth, and blind to the cleaned corpus; reach
+  for it only for something not yet synced).
+- Query mail: `query(space, <mailboxId>, "email_messages",
+  filter=..., sort=["-internalDate"], limit=...)` — NOT
+  query_objects (records are not objects). A person is
+  `{"participants": "ruud@ruuda.nl"}` (array contains); labels
+  likewise `{"labelIds": "TRASH"}`. Bodies ride in the rows — no
+  get_markdown step. Counts: `aggregate(space, [{"$count": "n"}],
+  object_id=<mailboxId>, dataset="email_messages")`. Semantic search
+  covers mail — subject+body index under scope `basic`; hits carry
+  `dataset: "email_messages"` + `recordId` (the gmail id) — fetch the
+  full record with `query(..., filter={"id": {"$in": [...]}})`.
+- Threads are data, not structure: same `threadId` = one
+  conversation, sort by `internalDate`.
 - A `sync_state` object holds the sync cursor — bookkeeping, not
-  content; leave it alone.
+  content; leave it alone. Pre-2026-08 spaces may still hold legacy
+  per-message `email` OBJECTS — a stale corpus; prefer the dataset
+  and offer to delete the leftovers, never mix the two.

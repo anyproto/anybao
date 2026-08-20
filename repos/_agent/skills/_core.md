@@ -109,6 +109,34 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   self-disables and stays as its own audit trail. Recurring schedules:
   same record with `"kind": "cron"` and `spec {"cron": "<expr>"}` or
   `{"every_s": n}`. Tell the user what you scheduled and for when.
+  The recipe above IS the record shape — never dump existing
+  `agent_triggers` records to learn it (they drag huge `_ver` noise
+  into context). `program` can be ANY program — `agent:remind@v1` for
+  reminders, a connector, or one you authored via
+  `programs@v1.create_program` (watchers, periodic checks: a 40-line
+  program on a cron beats scheduling yourself a reasoning turn).
+  "Did it run?" reads the record's own audit fields:
+  `lastStatus` / `lastRunAt` / `lastRunRef` (a trace ref),
+  `consecutiveFailures`.
+- **Progress bars** (any job long enough that the user would wonder):
+  `p = use("agent:progress@v1")` — never hand-roll `agent-progress`
+  objects, the module owns that transport. `p.start(space, job_slug,
+  label, total=n)` BEFORE the work (total<=0 → indeterminate spinner);
+  `p.tick(space, job_slug, current=i)` every ~25 items or percentage
+  step (each tick is a synced write — NEVER per item); then
+  `p.done(...)` — the bar lingers and the object deletes itself — or
+  `p.fail(space, job_slug, error=...)`, which sticks in the UI and
+  stays as the record (a later `start`/`tick` with the same job_slug
+  reuses the bar: that's the retry path). The bar renders in the SPACE
+  the job writes to — publish where the user is looking. "What's
+  running?" / "did anything fail?" → `p.jobs(space)`. Long chained
+  jobs (backfills): keep ONE job slug across all hops so it stays one
+  bar. Detached jobs (trigger-driven programs) can end with
+  `p.done(space, job, notify=<baoSpaceConfig-shaped dict>)` /
+  `p.fail(..., notify=...)` — that arms a nudge that wakes YOU in that
+  chat to report the outcome with history in context; when authoring
+  such a program, plumb the notify dict in through its trigger args.
+  Pointless for work you run inline in your own turn.
 
 Repeating one call ≥4 times in a cell earns a hint: fan out in one
 round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.
@@ -137,7 +165,8 @@ Keep final replies ≤300 words unless more is really required.
 
 ## Final reply formatting
 
-Link objects the user might open: `[Object Name](any://spaceId/objectId)`
-— the chat renders them clickable with attachment previews. Avoid
-markdown tables in chat; put real tabular data in a page object and link
-it.
+Link objects the user might open: `[Object Name](any://o/spaceId/objectId)`
+(the typed `o/` form — see the `_any` skill's Links section for the full
+`any://` grammar) — the chat renders them clickable with attachment
+previews. Avoid markdown tables in chat; put real tabular data in a page
+object and link it.

@@ -24,6 +24,11 @@ class FakeSpace:
         return {"parts": [{"type": "text", "text": f"S{len(self.llm_calls)}"}],
                 "stop": "done", "usage": {"in": 1, "out": 1}}
 
+    def chat_log(self, space, chat_id):
+        # ADR-017: turns/chunks host = the chat's log child; the fake
+        # serves both hosts from the same lists, so identity is enough
+        return {"objectId": f"{chat_id}-log"}
+
     def create_chunk(self, space, object_id, body):
         body = dict(body)
         body["seq"] = max((c["seq"] for c in self.chunks), default=0) + 1

@@ -216,13 +216,14 @@ _PROXIES = {
 }
 
 # tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2;
+# ast: ADR-013 §3 — the program write path's syntax gate/source scanner;
 # html/email + the vendored trio: ADR-012 §6). six/typing_extensions are
 # bundled as internals of the vendored packages but stay un-importable.
 _ALLOWED = {
     "math", "json", "re", "itertools", "functools", "collections",
     "contextlib", "textwrap", "heapq", "bisect", "statistics",
     "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
-    "hashlib", "string", "copy", "unicodedata", "inspect",
+    "hashlib", "string", "copy", "unicodedata", "inspect", "ast",
     "html", "email",
     "bs4", "soupsieve", "markdownify",   # vendored pure-Python (runtime/guest/)
 }
@@ -419,25 +420,33 @@ def _span_input(argnames, drop_self, args, kwargs):
     return inp
 
 
-def span(name, kind=None):
+def span(name=None, kind=None):
     """Decorator: group one facade call's effects under a single trace
     input/output pair, so views show `name(args) -> out` like a host
     effect (ADR-001 §4c); the inner effect records stay underneath
     (expand to see). This is the guest-side effect wrapper for tool
     methods (ADR-003 §4b).
 
-    `kind` (getter|mutator|setup|program) is the guest-DECLARED narrative
+    `name` defaults to `<module>.<function>` read off the decorated def
+    (ADR-003 §4b, 2026-08-14) — the anchor cannot drift from the code.
+    Pass it only as a deliberate display override (e.g. a hidden `_def`
+    spanning under a public trace name). `kind`
+    (getter|mutator|setup|program) is the guest-DECLARED narrative
     classification recorded on the span (ADR-001 §4d) — it is NOT the
     mutation oracle: `meta.mutations` (count of inner mutate effects,
     boundary-owned) is. A raised exception ends the span ok:false with a
     clean {type, message} (no traceback) and re-raises."""
     def deco(fn):
+        span_name = name
+        if span_name is None:
+            mod = fn.__globals__.get("__name__") or ""
+            span_name = f"{mod}.{fn.__name__}" if mod else fn.__name__
         argnames = fn.__code__.co_varnames[:fn.__code__.co_argcount]
         drop_self = bool(argnames) and argnames[0] == "self"
 
         @functools.wraps(fn)
         def wrapped(*args, **kwargs):
-            payload = {"name": name,
+            payload = {"name": span_name,
                        "input": _span_input(argnames, drop_self, args, kwargs)}
             if kind is not None:
                 payload["kind"] = kind

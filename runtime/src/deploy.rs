@@ -889,6 +889,40 @@ mod tests {
         assert!(ProgramSource::new("t", "v1", TOOL).validate().is_ok());
     }
 
+    #[test]
+    fn validation_parity_corpus() {
+        // Shared fixture corpus (ADR-013 §3 O2): the guest write path
+        // (programs@v1) runs the SAME file in pytest — a scan change
+        // here that isn't mirrored there (or vice versa) breaks one of
+        // the two suites instead of drifting silently. `deploy` states
+        // this suite's expected verdict; `guest` is pytest's.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/program_validation.jsonl");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("corpus at {}: {e}", path.display()));
+        let mut n = 0;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let f: Value = serde_json::from_str(line).expect("corpus line is JSON");
+            let name = f["name"].as_str().unwrap();
+            let p = ProgramSource::new("t", "v1", f["code"].as_str().unwrap());
+            let want_ok = f["deploy"]["ok"].as_bool().unwrap();
+            match p.validate() {
+                Ok(()) => assert!(want_ok, "{name}: deploy validate unexpectedly passed"),
+                Err(e) => {
+                    assert!(!want_ok, "{name}: deploy validate failed: {e}");
+                    if let Some(sub) = f["deploy"]["err"].as_str() {
+                        assert!(
+                            e.to_string().contains(sub),
+                            "{name}: error {e:?} lacks {sub:?}"
+                        );
+                    }
+                }
+            }
+            n += 1;
+        }
+        assert!(n >= 10, "corpus suspiciously small ({n} fixtures)");
+    }
+
     // --- fingerprint ---
 
     #[test]

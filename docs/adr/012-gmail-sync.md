@@ -1,6 +1,9 @@
 # ADR-012: Gmail mailbox sync — space objects, email cleanup, contact graph
 
-Status: **Accepted** (2026-08-13)
+Status: **Accepted** (2026-08-13). §3 (email objects) superseded and
+§5 (contacts links) re-keyed by ADR-016 (2026-08-19): mail now lands
+as `email_messages` runtime-dataset records on a per-address `mailbox`
+object; §2's algorithm, §4's clean_html, and the backfill chain stand.
 Date: 2026-08-11
 Builds on: ADR-002 (effect boundary; §4 tier-1 allowlist — amended
 here), ADR-003 (kernel — vendored guest modules), ADR-008 §2 (http

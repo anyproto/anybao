@@ -6,7 +6,8 @@ Cognition is scripted through fake any@v1 / llm@v1 shims at the effect
 boundary; what is pinned here is the mechanical contract: block
 citation + hallucination filtering, grounding exclusions, action→item
 mapping (conflict demoted, redundant dropped, empty fields skipped),
-provenance urls, and the apply wrapper's envelope."""
+provenance urls, the userspace-store ensure, and the deterministic
+client-side apply (grouped mints, property sets, hub-joined facts)."""
 
 import json
 
@@ -18,24 +19,31 @@ class FakeGuest:
     surface the enrich program uses."""
 
     def __init__(self, *, blocks=(), hits=(), types=(), objects=(),
-                 llm_texts=(), apply_reply=None):
+                 hubs=(), proposal_items=(), llm_texts=()):
         self.blocks = list(blocks)
         self.hits = list(hits)
         self.types = list(types)
         self.objects = list(objects)
+        self.hubs = list(hubs)
+        self.proposal_items = list(proposal_items)
         self.llm_texts = list(llm_texts)
-        self.apply_reply = apply_reply or {"status": 200, "body": "{}"}
         self.llm_calls = []
         self.searches = []
         self.created = []
+        self.created_types = []
+        self.datasets = []
+        self.updates = []
+        self.deleted = []
         self.modifies = []
         self.markdowns = []
-        self.posts = []
 
     # --- any@v1 client ---
     def query(self, space, object_id, dataset, **opts):
-        assert dataset == "editor_blocks"
-        return list(self.blocks)
+        if dataset == "editor_blocks":
+            return list(self.blocks)
+        if dataset == "enrich_proposal_items":
+            return list(self.proposal_items)
+        raise AssertionError(f"unexpected dataset {dataset}")
 
     def search(self, space, query, scopes=None, limit=None, mode=None):
         self.searches.append({"query": query, "scopes": scopes,
@@ -45,12 +53,34 @@ class FakeGuest:
     def list_types(self, space):
         return list(self.types)
 
+    def create_type(self, space, body):
+        self.created_types.append(body)
+        return {"typeId": f"t-{body['xKey']}", "xKey": body["xKey"],
+                "created": True, "addedProps": {}}
+
+    def create_dataset(self, space, type_key, draft):
+        self.datasets.append({"type": type_key, "name": draft["name"]})
+        return {"datasetDefId": f"d-{draft['name']}", "created": True}
+
     def query_objects(self, space, **opts):
+        flt = opts.get("filter") or {}
+        if "any.types" in flt:
+            return list(self.hubs)
+        if "id" in flt:
+            return [o for o in self.objects if o.get("id") == flt["id"]]
         return list(self.objects)
 
     def create_object(self, space, body):
         self.created.append(body)
-        return {"objectId": "prop1"}
+        return {"objectId": f"obj{len(self.created)}"}
+
+    def update_object(self, space, object_id, body):
+        self.updates.append({"objectId": object_id, "body": body})
+        return {"objectId": object_id}
+
+    def delete_object(self, space, object_id):
+        self.deleted.append(object_id)
+        return {}
 
     def modify(self, space, body):
         self.modifies.append(body)
@@ -69,13 +99,10 @@ class FakeGuest:
         return {"parts": [{"type": "text", "text": self.llm_texts.pop(0)}],
                 "stop": "done", "usage": {"in": 1, "out": 1}}
 
-    # --- pass-through effects (config + the direct /enrich/apply POST) ---
+    # --- pass-through effects (nothing left but config lookups) ---
     def effect(self, name, payload):
         if name == "config.get":
             return {"value": "http://any.test"}
-        if name == "http.post":
-            self.posts.append(payload)
-            return dict(self.apply_reply)
         raise AssertionError(f"unexpected effect {name}")
 
 
@@ -135,6 +162,7 @@ def happy_fake():
                {"id": "chat", "xKey": "chat", "name": "Chat",
                 "builtIn": True}],                      # filtered out
         objects=[{"id": "tr1", "any": {"name": "Weekly sync"}}],
+        hubs=[{"id": "hub1"}],  # the store exists; ensure finds it
         llm_texts=[json.dumps(EXTRACT), json.dumps(RECONCILE)])
 
 
@@ -166,18 +194,19 @@ def test_propose_maps_actions_to_sourced_items():
     fake = happy_fake()
     out = load(fake).propose("s1", "tr1")
 
-    assert out["ok"] and out["proposalId"] == "prop1"
+    assert out["ok"] and out["proposalId"] == "obj1"
     assert out["items"] == 3 and out["errors"] == 0
     assert out["tally"] == {"enrich": 2, "new": 1, "redundant": 1}
-    assert out["proposalLink"] == "any://s1/prop1"
+    assert out["proposalLink"] == "any://o/s1/obj1"
 
     items = [item_of(m) for m in fake.modifies]
     assert [m["dataset"] for m in fake.modifies] == \
         ["enrich_proposal_items"] * 3
 
-    # u1: property enrichment; hallucinated "bogus" block dropped
+    # u1: property enrichment; hallucinated "bogus" block dropped;
+    # source = the canonical dataset-record URI (WEB-42)
     assert items[0]["outcome"] == "enrich"
-    assert items[0]["source"] == "any://s1/tr1#b1"
+    assert items[0]["source"] == "any://o/s1/tr1/editor_blocks/b1"
     assert items[0]["targetKind"] == "property"
     assert items[0]["targetProperty"] == "project.status"
     assert items[0]["value"] == "sqlite chosen"
@@ -188,16 +217,26 @@ def test_propose_maps_actions_to_sourced_items():
     assert items[1]["newName"] == "Migration plan"
     assert items[1]["targetKind"] == "collection"
     assert "targetProperty" not in items[1] and "value" not in items[1]
-    # u3: conflict demoted to enrich for review; multi-block source
+    # u3: conflict demoted to enrich for review; multi-block source =
+    # one record URI per cited block, comma-joined
     assert items[2]["outcome"] == "enrich"
-    assert items[2]["source"] == "any://s1/tr1#b1,b2"
+    assert items[2]["source"] == ("any://o/s1/tr1/editor_blocks/b1,"
+                                  "any://o/s1/tr1/editor_blocks/b2")
     assert items[2]["text"] == "Deadline moved to June"
+
+    # the userspace store was ensured: both types + both datasets, and
+    # the existing hub was found (never re-created)
+    assert [t["xKey"] for t in fake.created_types] == \
+        ["enrichments", "enrich_proposal"]
+    assert fake.datasets == [
+        {"type": "enrichments", "name": "enriched_data"},
+        {"type": "enrich_proposal", "name": "enrich_proposal_items"}]
 
     # proposal object: typed + named after the transcript, body written
     assert fake.created[0]["types"] == ["enrich_proposal"]
     name = fake.created[0]["initialProperties"]["any"]["name"]
     assert name == "Enrichment proposal — Weekly sync"
-    assert fake.markdowns[0]["objectId"] == "prop1"
+    assert fake.markdowns[0]["objectId"] == "obj1"
     assert "3 proposed enrichment items" in fake.markdowns[0]["content"]
 
 
@@ -278,26 +317,57 @@ def test_missing_inputs_error_without_side_effects():
     assert not fake.created and not fake.modifies
 
 
-def test_apply_wraps_the_server_endpoint():
+def test_apply_is_deterministic_and_hub_joined():
     fake = happy_fake()
-    fake.apply_reply = {"status": 200, "body": json.dumps(
-        {"created": 1, "propertiesSet": 2, "enrichedDataWritten": 3,
-         "proposalDeleted": True, "failures": ["one bad item"]})}
-    out = load(fake).apply("s1", "prop1")
-    assert out == {"ok": True, "proposalId": "prop1", "created": 1,
-                   "propertiesSet": 2, "enrichedDataWritten": 3,
-                   "proposalDeleted": True, "failures": ["one bad item"]}
-    assert fake.posts[0]["url"] == \
-        "http://any.test/v1/spaces/s1/enrich/apply"
-    assert fake.posts[0]["json"] == {"proposalId": "prop1"}
+    fake.proposal_items = [
+        {"id": "i1", "text": "SQLite was chosen",
+         "source": "any://o/s1/tr1/editor_blocks/b1", "outcome": "enrich",
+         "targetObjectId": "obj9", "targetKind": "property",
+         "targetProperty": "project.status", "value": "sqlite chosen"},
+        # two facets sharing newType+newName → apply mints ONE object
+        {"id": "i2", "text": "Billing revamp exists",
+         "source": "any://o/s1/tr1/editor_blocks/b2", "outcome": "new",
+         "targetKind": "collection", "newType": "pages",
+         "newName": "Billing revamp"},
+        {"id": "i3", "text": "Dana owns billing revamp",
+         "source": "any://o/s1/tr1/editor_blocks/b3", "outcome": "new",
+         "targetKind": "collection", "newType": "pages",
+         "newName": "Billing revamp"},
+        {"id": "i4", "text": "orphan", "outcome": "new"},  # no target/name
+    ]
+    out = load(fake).apply("s1", "prop9")
+
+    assert out["ok"] and out["proposalId"] == "prop9"
+    assert out["created"] == 1 and out["propertiesSet"] == 1
+    assert out["enrichedDataWritten"] == 3
+    assert out["proposalDeleted"] is True
+    assert out["failures"] == ["item i4: no target and no newType/newName"]
+
+    # the real property landed on the existing target, xKey-addressed
+    assert fake.updates == [{"objectId": "obj9",
+                             "body": {"project": {"status": "sqlite chosen"}}}]
+    # ONE minted object for the grouped facets
+    minted = [b for b in fake.created if b.get("types") == ["pages"]]
+    assert len(minted) == 1 and minted[0]["name"] == "Billing revamp"
+    # every fact rides the hub, joined to its target by targetObjectId
+    assert all(m["objectId"] == "hub1" and m["dataset"] == "enriched_data"
+               for m in fake.modifies)
+    facts = [item_of(m) for m in fake.modifies]
+    assert facts[0]["targetObjectId"] == "obj9"
+    assert facts[0]["target"] == "project.status"
+    assert facts[0]["value"] == "sqlite chosen"
+    assert facts[0]["source"] == "any://o/s1/tr1/editor_blocks/b1"
+    assert facts[1]["targetObjectId"] == facts[2]["targetObjectId"] == "obj1"
+    assert "target" not in facts[1] and "value" not in facts[1]
+    # the proposal object is deleted last
+    assert fake.deleted == ["prop9"]
 
 
-def test_apply_maps_the_404_envelope():
+def test_apply_empty_or_unknown_proposal_is_clean():
     fake = happy_fake()
-    fake.apply_reply = {"status": 404, "body": json.dumps(
-        {"error": {"code": "enrich.empty_proposal",
-                   "message": "no items in proposal"}})}
     out = load(fake).apply("s1", "gone")
     assert out["ok"] is False
-    assert "enrich.empty_proposal" in out["error"]
-    assert "404" in out["error"]
+    assert "empty proposal" in out["error"]
+    # nothing was minted, set, written, or deleted
+    assert not fake.created and not fake.updates
+    assert not fake.modifies and not fake.deleted

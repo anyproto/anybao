@@ -1,6 +1,7 @@
 # ADR-003: Executor & kernel API
 
-Status: **Accepted** (2026-07-07)
+Status: **Accepted** (2026-07-07), amended 2026-08-14 (§4b: span name
+defaults to the decorated def's `<module>.<function>`)
 Date: 2026-07-07
 Builds on: ADR-001 (trace v2), ADR-002 (effect boundary) — both accepted
 
@@ -213,6 +214,22 @@ a decorator factory. `kind` mirrors the authored `### name(sig) [kind]`
 doc; author keeps the two in sync, the same accepted
 description-in-two-places drift as tool docs (schema vs code) — no
 runtime path reads one from the other.
+
+**Name defaults to the anchor (amendment 2026-08-14, with ADR-013).**
+`span(name=None, kind=None)`: when `name` is omitted, the recorded
+name is `<module>.<function>` read off the decorated def at decoration
+time (the module object's `__name__`, which `use()` sets from the
+spec). Survey at amendment time: ~90 span sites across both repos, and
+every one but one restated exactly that pair as a string — a second
+copy of a fact the code already carries, and it drifted the first time
+an agent-authored tool landed (ADR-010's duplication argument, applied
+to ourselves). An explicit `name` stays legal and is now *signal*: a
+deliberate display override (`any.prune_ui_contexts` on the hidden
+`_prune_ui_contexts`). The positional form cannot be dropped — frozen
+published overlay versions call `span("name", kind=...)` forever
+(ADR-009 freeze) — and the call form stays required (`@span(kind=...)`,
+never bare `@span`): deploy's static scan and the ADR-013 write gate
+key on the `@span(` line.
 
 **Input is recorded by parameter name, and a leading `self` is
 dropped.** The decorator reads `fn.__code__.co_varnames` (pure, no

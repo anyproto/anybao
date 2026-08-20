@@ -15,6 +15,7 @@ pub mod caps;
 pub mod config;
 pub mod deploy;
 pub mod drift;
+pub mod election;
 pub mod oauth;
 pub mod replay;
 pub mod resolver;

@@ -8,7 +8,8 @@ Pure math, no LLM: salience halves every `halfLifeDays` of idleness
 (idle = since modifiedAt, falling back to createdAt — access bumps
 touch modifiedAt, so recalled items stay warm). Items at/below `floor`
 are left alone (decay compresses the range, it never deletes). args:
-{space, brainId, halfLifeDays?, floor?, batch?}.
+{space, halfLifeDays?, floor?, batch?} — the brain resolves
+itself (ADR-017: deterministic ids are not passed around).
 """
 
 HALF_LIFE_DAYS = 30
@@ -22,11 +23,12 @@ def decayed(salience, idle_s, half_life_days):
 
 
 def main(args):
-    space, brain = args["space"], args["brainId"]
+    space = args["space"]
     half_life = args.get("halfLifeDays", HALF_LIFE_DAYS)
     floor = args.get("floor", FLOOR)
     ts = now()  # noqa: F821 - guest global (time effect, recorded)
     c = use("any@v1")  # noqa: F821 - guest global
+    brain = c.get_brain(space)["objectId"]
     mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
     items = c.query(space, brain, "agent_memory_items",
                     limit=args.get("batch", BATCH))

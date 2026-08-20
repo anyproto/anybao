@@ -114,7 +114,7 @@ def _format(idx, query, p):
     return "\n".join(lines)
 
 
-@span("webSearch.search", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def search(*queries):
     """Run one or more web searches; one formatted string per query.
 

@@ -177,3 +177,43 @@ def test_inferschema_is_a_cell_global():
     assert shape.startswith("{id:str")          # id is top-level in the shape
     assert "any:{name:str" in shape
     assert "task:{status:str}" in shape
+
+
+def test_span_name_derives_from_module_and_def():
+    """ADR-003 §4b (2026-08-14): span(name=None) records the anchor
+    `<module>.<def>` read off the decorated function; an explicit name
+    stays a deliberate display override; no module context (cell code)
+    falls back to the bare def name."""
+    app = load_kernel()
+    recorded = []
+    app._effect = lambda name, payload=None: recorded.append((name, payload)) or {}
+
+    mod = types.ModuleType("mytool")
+    mod.span = app.span
+    exec(compile(
+        '@span(kind="getter")\n'
+        "def go(x):\n"
+        "    return x\n"
+        "\n"
+        "\n"
+        '@span("mytool.public", kind="mutator")\n'
+        "def _hidden(x):\n"
+        "    return x\n",
+        "<m>", "exec"), mod.__dict__)
+
+    mod.go(1)
+    assert recorded[0] == ("span.begin", {"name": "mytool.go",
+                                          "input": {"x": 1}, "kind": "getter"})
+    assert recorded[1][0] == "span.end"
+    assert mod.go.__span_kind__ == "getter"
+
+    recorded.clear()
+    mod._hidden(2)
+    assert recorded[0][1]["name"] == "mytool.public"   # override wins
+
+    recorded.clear()
+    g = dict(app._fresh_ns())          # cell-shaped namespace: no __name__
+    exec(compile('@span(kind="getter")\ndef solo():\n    return 1\n',
+                 "<c>", "exec"), g)
+    g["solo"]()
+    assert recorded[0][1]["name"] == "solo"

@@ -75,6 +75,97 @@ _HINTS = {
 }
 
 
+# --- ADR-017: guest-owned agent stores (brain + chat logs) -------------------
+# The writer ensures its store: these declarations live HERE because only
+# guest code writes memory/turns/chunks. Host-written stores
+# (config/secrets/triggers) are declared in anyrt.
+_MEM_MUTABLE = ("salience", "accessCount", "confidence", "importance",
+                "context", "body", "tags", "edges")
+_MEM_CREATE_ONLY = ("fromAgent", "category", "entities", "keywords",
+                    "validFrom", "chatId", "source", "provenance")
+_MEM_DATASET = {
+    "name": "agent_memory_items", "displayName": "Agent Memory",
+    "idRule": "auto", "deleteBy": "author",
+    "search": {"title": "context", "text": "body", "scope": "agent"},
+    "fields": [
+        {"key": "category", "kind": "string", "required": True},
+        {"key": "context", "kind": "string", "required": True,
+         "mutableBy": "author"},
+        {"key": "body", "kind": "string", "mutableBy": "author"},
+        {"key": "tags", "kind": "array", "mutableBy": "author"},
+        {"key": "edges", "kind": "array", "mutableBy": "author"},
+        {"key": "confidence", "kind": "number", "mutableBy": "author"},
+        {"key": "importance", "kind": "number", "mutableBy": "author"},
+        {"key": "salience", "kind": "number", "mutableBy": "author"},
+        {"key": "accessCount", "kind": "number", "mutableBy": "author"},
+        {"key": "entities", "kind": "array"},
+        {"key": "keywords", "kind": "array"},
+        {"key": "validFrom", "kind": "number"},
+        {"key": "chatId", "kind": "string"},
+        {"key": "fromAgent", "kind": "string"},
+        {"key": "source", "kind": "string"},
+        {"key": "provenance", "kind": "object"},
+        {"key": "creator", "stamp": "creator"},
+        {"key": "createdAt", "stamp": "createTime"},
+        {"key": "modifiedAt", "stamp": "modifyTime"},
+    ],
+}
+_JOB_STATE_DATASET = {
+    # free-form cursor records (lastSeq / lastModifiedAt / …), one per
+    # job id — the dynamic keyspace is the contract, like triggers
+    "name": "agent_job_state", "displayName": "Agent Job State",
+    "idRule": "user", "deleteBy": "anyone", "skipHistory": True,
+    "dynamic": True, "fields": [],
+}
+_ROI_DATASET = {
+    # auto-recall injection log (autorecall@v1 §1b/§5 ROI metrics) —
+    # free-form records keyed "<itemId>:<ts>", harness-owned shapes
+    "name": "agent_roi_injections", "displayName": "Agent ROI Injections",
+    "idRule": "user", "deleteBy": "anyone", "skipHistory": True,
+    "dynamic": True, "fields": [],
+}
+_TURNS_DATASET = {
+    "name": "agent_turns", "displayName": "Agent Turns",
+    "idRule": "user", "deleteBy": "author", "skipHistory": True,
+    "search": {"title": "userText", "text": "searchText",
+               "scope": "history"},
+    "fields": [
+        {"key": "seq", "kind": "number"},
+        {"key": "fromAgent", "kind": "string"},
+        {"key": "userName", "kind": "string"},
+        {"key": "userText", "kind": "string"},
+        {"key": "think", "kind": "string"},
+        {"key": "replies", "kind": "array"},
+        {"key": "effects", "kind": "array"},
+        {"key": "messageIds", "kind": "array"},
+        {"key": "traceRef", "kind": "string"},
+        {"key": "interrupted", "kind": "boolean"},
+        {"key": "llm", "kind": "object"},
+        {"key": "searchText", "kind": "string"},
+        {"key": "creator", "stamp": "creator"},
+        {"key": "createdAt", "stamp": "createTime"},
+    ],
+}
+_CHUNKS_DATASET = {
+    "name": "agent_chunks", "displayName": "Agent Chunks",
+    "idRule": "user", "deleteBy": "author", "skipHistory": True,
+    "search": {"text": "summary", "scope": "history"},
+    "fields": [
+        {"key": "seq", "kind": "number"},
+        {"key": "level", "kind": "number"},
+        {"key": "fromAgent", "kind": "string"},
+        {"key": "summary", "kind": "string"},
+        {"key": "periodStart", "kind": "number"},
+        {"key": "periodEnd", "kind": "number"},
+        {"key": "fromSeq", "kind": "number"},
+        {"key": "toSeq", "kind": "number"},
+        {"key": "unitsCovered", "kind": "number"},
+        {"key": "creator", "stamp": "creator"},
+        {"key": "createdAt", "stamp": "createTime"},
+    ],
+}
+
+
 class AnyError(Exception):
     """A >=400 reply, decoded from the server's error envelope
     `{"error": {"code", "message"}}` — message relayed verbatim, plus
@@ -136,6 +227,8 @@ class _Client:
         self._types_cache = {}   # space -> {"by_id", "by_xkey", "rows"}
         self._props_cache = {}   # (space, type_id) -> [prop rows]
         self._spaces_cache = None   # space rows for name resolution (§8)
+        self._bundle_children = {}  # (space, bundleId, seed) -> objectId
+        self._ensured_stores = set()  # (space, xKey) lazily provisioned
 
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
@@ -570,19 +663,89 @@ class _Client:
     def upsert_record(self, space, object_id, dataset, record_id, value):
         """Write one dataset record (whole-value $set, upsert).
 
-        Only REGISTERED datasets are writable (agent_triggers,
-        agent_memory_items, agent_roi_injections, …— server-side Go
-        handlers), and the host object must carry the dataset's type
-        in `any.types`. There is no generic path: an unregistered
+        Writable datasets: server-registered ones (agent_triggers,
+        agent_memory_items, …) and runtime datasets declared via
+        create_dataset (ADR-016) — in both cases the host object must
+        carry the dataset's owning type in `any.types`. An UNDECLARED
         dataset name 500s on write and reads as [] — store ad-hoc
         state as object properties instead (seen live 2026-08-12,
-        progressbar probe)."""
+        progressbar probe). For bulk ingest into an idRule: user
+        runtime dataset prefer upsert_records (idempotent, diffs
+        mutable fields server-side)."""
         return self.modify(space, {
             "objectId": object_id, "dataset": dataset,
             "records": [{"id": record_id, "upsert": True,
                          "ops": [{"type": "$set", "path": "", "value": value}]}]})
 
-    def aggregate(self, space, pipeline):
+    def upsert_records(self, space, object_id, dataset, records,
+                       page_size=None):
+        """Batch-ingest into an `idRule: user` runtime dataset (ADR-016).
+
+        records: [{"id": "<caller id>", "fields": {…}}] — the id is
+        the idempotency key: absent ids are created, existing ids get
+        only their declared-MUTABLE fields diffed (identical records
+        skip), a changed write-once field rejects that record. Field
+        keys are the dataset's plain declared keys (never xKeys).
+        Returns {created, updated, skipped, rejections: [{index, id,
+        code, reason}], pages} — 200 even with rejections, so CHECK
+        rejections. One CRDT change per page (page_size default 500).
+        Declare the dataset first (create_dataset) and put the owning
+        type on the host object at create ({"types": [...]})."""
+        body = {"objectId": object_id, "dataset": dataset,
+                "records": records}
+        if page_size:
+            body["pageSize"] = int(page_size)
+        return self._call("post", f"/v1/spaces/{space}/upsert", body)
+
+    def delete_records(self, space, object_id, dataset, record_ids):
+        """Delete dataset records by id → {versionId, changeId, recordIds}.
+
+        Tombstones: a deleted id is consumed forever (re-upserting it
+        rejects with upsert.record_deleted). On deleteBy: author
+        datasets non-author deletes are dropped at apply."""
+        return self._call("post", f"/v1/spaces/{space}/delete-records",
+                          {"objectId": object_id, "dataset": dataset,
+                           "recordIds": list(record_ids)})
+
+    # --- processes (server registry over the event bus; ADR-014 §2) ----------
+    def list_processes(self):
+        """Live process view → [{identity, self, id, kind, title, scope,
+        spaceId?, target?, state, done, total?, message?, error?,
+        startedAt, updatedAt}].
+
+        Account-level (no space): the server's last-event-wins registry
+        of long-running work — bao jobs (kind "agent", published via
+        agent:progress@v1) AND the server's own index.* producers
+        (embed drain, fts pass, model download — the answer to "why is
+        search incomplete right now"). Nothing is persisted: running
+        rows expire 45s after their last heartbeat, terminal rows
+        (done/failed/cancelled) linger 60s then vanish. A server
+        without the facility 404s (request.not_found)."""
+        return self._call("get", "/v1/processes").get("processes") or []
+
+    def cancel_process(self, process_id, identity=None):
+        """Ask a process's owner to stop → {subscribers}.
+
+        Emits process.cancel at the owner, who reacts and finishes —
+        never a state change by itself (the row stays until the owner's
+        terminal event or expiry). 409 process.ambiguous means several
+        identities share the id — pass `identity` to pick one. The
+        index.* producers ignore cancels by design."""
+        body = {"identity": identity} if identity else {}
+        return self._call("post", f"/v1/processes/{process_id}/cancel", body)
+
+    def _process_register(self, body):
+        # progress@v1 plumbing (ADR-014 §1: programs report progress
+        # ONLY through agent:progress@v1, never these three directly)
+        return self._call("post", "/v1/processes", body)
+
+    def _process_progress(self, process_id, body):
+        return self._call("post", f"/v1/processes/{process_id}/progress", body)
+
+    def _process_finish(self, process_id, body):
+        return self._call("post", f"/v1/processes/{process_id}/finish", body)
+
+    def aggregate(self, space, pipeline, object_id=None, dataset=None):
         """Run a Mongo-style aggregation pipeline over the space's objects.
 
         Stages: $match, $group (_id + accumulators: {"$sum": 1},
@@ -592,7 +755,14 @@ class _Client:
         catalog. Avg rating per genre: [{"$group": {"_id":
         "$book.genre", "avg": {"$avg": "$book.rating"}}}]. Returns
         {"records": [...]} with ids mapped back to xKeys; unknown
-        stages are a 400 (aggregate.bad_pipeline)."""
+        stages are a 400 (aggregate.bad_pipeline). With object_id +
+        dataset the pipeline runs over that object's dataset records
+        instead — field refs are then the dataset's PLAIN keys
+        ("$internalDate"), no xKey resolution either way."""
+        if object_id or dataset:
+            return self._call("post", f"/v1/spaces/{space}/aggregate",
+                              {"objectId": object_id, "dataset": dataset,
+                               "pipeline": pipeline})
         r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                        {"pipeline": self._resolve_pipeline(space, pipeline)})
         if isinstance(r, dict) and isinstance(r.get("records"), list):
@@ -702,16 +872,17 @@ class _Client:
         return r if raw else _trim_space_row(r)
 
     def general_chat(self, space):
-        """The space's canonical chat id (its `generalChatObjectId`).
+        """The space's canonical chat id — the `general-chat/v1`
+        bundle's winning root.
 
-        Every space derives exactly ONE general chat from a fixed
-        seed. Post there via `chat_send`; READ it via `query(space,
-        chat_id, "chat_messages", sort=["-createdAt"], limit=n)` —
-        never create a chat object or pick one from a query:
-        name-matched "general" chats are peer-made impostors that
-        split the conversation (the derived chat carries no
-        name/nav)."""
-        return self.get_space(space)["generalChatObjectId"]
+        Every space has exactly ONE general chat, registered in the
+        bundles registry (the harness ensures it at serve boot). Post
+        there via `chat_send`; READ it via `query(space, chat_id,
+        "chat_messages", sort=["-createdAt"], limit=n)` — never create
+        a chat object or pick one from a query: name-matched "general"
+        chats are peer-made impostors that split the conversation.
+        404 bundle.not_found = nobody ensured the chat yet."""
+        return self.get_bundle(space, "general-chat/v1")["rootId"]
 
     def create_space(self, name, description=None):
         """Create a new top-level space; returns its (trimmed) row.
@@ -722,12 +893,35 @@ class _Client:
         resolve/create types against it before typed writes (types and
         xKeys are per-space). Check `list_spaces()` first — don't mint
         a duplicate of an existing active space."""
+        # no spaceType: empty = server default on every vintage (the
+        # literal "anytype.space" is rejected since SDK v0.0.10)
         body = {"name": name}
         if description:
             body["description"] = description
         r = self._call("post", "/v1/spaces", body)
         self._spaces_cache = None    # new space -> refresh the name catalog
         return _trim_space_row(r)
+
+    def open_in_ui(self, space, object_id=None):
+        """Open a space — or one object in it — in the user's any-ui
+        window on THIS device → {subscribers}.
+
+        Publishes a `ui.open_space` / `ui.open_object` event on the
+        device-scope event bus (the transient "show the user what I
+        mean" navigation directive — at-most-once, nothing stored).
+        Device scope on purpose (user decision 2026-08-19): the view
+        changes only on the device this server runs on, never on the
+        account's other machines. `subscribers: 0` simply means no UI
+        window is connected right now — not an error, nothing is
+        queued. Use for "open it / show me" asks; get_ui_context is
+        the READ side (where the user already is)."""
+        data = {"spaceId": space, "source": "bao"}
+        etype = "ui.open_space"
+        if object_id:
+            data["objectId"] = object_id
+            etype = "ui.open_object"
+        return self._call("post", "/v1/events",
+                          {"type": etype, "scope": "device", "data": data})
 
     def get_ui_context(self, space):
         """The user's current view — the `ui_context` pointer any-ui keeps.
@@ -826,12 +1020,20 @@ class _Client:
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])
 
     def list_properties(self, space, type_key):
-        """A type's property definitions: [{id, name, xKey, kind}].
+        """A type's property definitions: [{id, name, xKey, kind,
+        format?, meta?, scope?}].
 
-        `type_key` is the type's xKey (builtins: xKey == id); an
-        unknown key ERRORS with the available catalog — the server
-        would answer a nonexistent id with a silent []. Reference
-        properties by xKey everywhere; writes resolve through it."""
+        `format` is the value convention when declared —
+        {"type": "date"|"datetime"|"links"|"select"|"multiselect",
+        "ui"?, "options"?} — CHECK IT before writing someone else's
+        type: a links prop takes ["any://<objectId>"] arrays, selects
+        take option keys, dates ISO strings; a prop without format is
+        a plain kind. `scope` is the write/sync class (local-scope
+        props exist only per-peer — the chat filter trap). `type_key`
+        is the type's xKey (builtins: xKey == id); an unknown key
+        ERRORS with the available catalog — the server would answer a
+        nonexistent id with a silent []. Reference properties by xKey
+        everywhere; writes resolve through it."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._fetch_props(space, tid)
 
@@ -882,6 +1084,85 @@ class _Client:
         return {"typeId": tid, "xKey": xkey, "created": created,
                 "addedProps": added}
 
+    def list_datasets(self, space, type_key):
+        """Runtime dataset definitions on a user type (by xKey) → [defs].
+
+        Each def: {id, name, displayName?, idRule, idPattern?,
+        deleteBy, skipHistory?, search?, fields: [{id, key, kind,
+        scope, required?, mutableBy, stamp?}], invalid?,
+        invalidReason?}. `invalid` marks a declaration that never
+        registers or accepts data — remove it (remove_dataset) and
+        re-declare."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call("get", f"/v1/spaces/{space}/types/{tid}/datasets")
+        return r.get("datasets") or []
+
+    def create_dataset(self, space, type_key, draft):
+        """Ensure a runtime dataset schema on a USER type (ADR-016).
+
+        draft: {"name": "<collection>", "displayName"?, "idRule":
+        "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
+        "search"?: {"title": "<field key>", "text": "<field key>",
+        "scope"?: "<index scope slug>"},
+        "fields": [{"key", "kind"?: string|number|boolean|array|
+        object, "required"?, "mutableBy"?: "author"|"any", "stamp"?:
+        "creator"|"createTime"|"modifyTime"}]}. Fields default
+        write-once; author gates (mutableBy/deleteBy "author") need a
+        {"stamp": "creator"} field; idRule "user" = caller-supplied
+        record ids (the upsert idempotency key). search.scope picks
+        the index scope the records land under (absent = "basic");
+        recall must query that scope to see them. Behavioral parts pin
+        first-write — to change them remove and re-declare.
+        Idempotent by collection name: an existing def is reused, but
+        the draft stays authoritative for the mutable search.* leaves
+        — a drifted title/text/scope is PATCHed back (already-indexed
+        records keep their stored scope until they re-index) →
+        {"datasetDefId", "created", "patched"?: [paths]}. Records live
+        per host object: write with upsert_records, read with
+        query(space, object_id, "<name>") — plain field keys in
+        filter/sort. Registered built-in types refuse (400
+        type.registered)."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        name = (draft or {}).get("name") or ""
+        for d in self.list_datasets(space, type_key):
+            if d.get("name") == name:
+                out = {"datasetDefId": d.get("id"), "created": False}
+                want = (draft or {}).get("search") or {}
+                have = d.get("search") or {}
+                set_ops, unset = {}, []
+                for leaf in ("title", "text", "scope"):
+                    w = want.get(leaf) or ""
+                    if w != (have.get(leaf) or ""):
+                        if w:
+                            set_ops[f"search.{leaf}"] = w
+                        else:
+                            unset.append(f"search.{leaf}")
+                if set_ops or unset:
+                    body = {}
+                    if set_ops:
+                        body["set"] = set_ops
+                    if unset:
+                        body["unset"] = unset
+                    self._call(
+                        "patch",
+                        f"/v1/spaces/{space}/types/{tid}/datasets/{d.get('id')}",
+                        body)
+                    out["patched"] = sorted(list(set_ops) + unset)
+                return out
+        r = self._call("post", f"/v1/spaces/{space}/types/{tid}/datasets",
+                       draft)
+        return {"datasetDefId": r.get("datasetDefId"), "created": True}
+
+    def remove_dataset(self, space, type_key, dataset_def_id):
+        """Tombstone a runtime dataset definition; returns {} (wire: 204).
+
+        dataset_def_id from list_datasets. Existing record data is NOT
+        cleaned up; subsequent writes drop once peers apply; the
+        search index evicts lazily."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._call(
+            "delete", f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}")
+
     def add_property(self, space, type_key, body):
         """POST one property onto a type (named by xKey — unknown keys
         error with the catalog). body: {"name", "xKey"?, "kind"?,
@@ -903,24 +1184,144 @@ class _Client:
         self._cat_invalidate(space)   # new prop -> refresh the propId map
         return res
 
-    # --- agent turns / chunks (server-assigned seq) ----------------------------
+    # --- bundles (SYN-163 / ADR-017 §0) ----------------------------------------
+    def _bundle_path(self, space, bundle_id, tail=""):
+        # bundle ids carry a slash ("bao/v1") — percent-encoded in path
+        # segments, verbatim in bodies
+        return f"/v1/spaces/{space}/bundles/{bundle_id.replace('/', '%2F')}{tail}"
+
+    def ensure_bundle(self, space, bundle_id, name=None, root_types=None,
+                      root_properties=None):
+        """Adopt-or-install a bundle → {bundle: {id, name, rootId,
+        roots, losers}, installed}.
+
+        A bundle is one install: a non-derived root object registered
+        under a permanent id in the space's bundles registry. With a
+        winner already registered this is a local read (installed:
+        False); otherwise the root is created with root_types attached
+        and registered in one change. rootId is provisional until the
+        space syncs; 409 bundle.not_ready (the winner's tree hasn't
+        landed on this device) is retryable. Ids are permanent — never
+        reuse one for a successor install."""
+        body = {"id": bundle_id}
+        if name:
+            body["name"] = name
+        if root_types:
+            body["rootTypes"] = list(root_types)
+        if root_properties:
+            body["rootProperties"] = root_properties
+        return self._call("post", f"/v1/spaces/{space}/bundles", body)
+
+    def list_bundles(self, space):
+        """The space's bundles registry rows → [{id, name, rootId,
+        roots, losers?}]. Read-only; non-empty `losers` = a resolved
+        concurrent install whose losing root may hold content."""
+        r = self._call("get", f"/v1/spaces/{space}/bundles")
+        return r.get("bundles") or []
+
+    def get_bundle(self, space, bundle_id):
+        """One registry row → {id, name, rootId, roots, losers?};
+        404 bundle.not_found when nobody ensured it yet."""
+        return self._call("get", self._bundle_path(space, bundle_id))
+
+    def bundle_child(self, space, bundle_id, seed, types=None):
+        """Derive a setup object under the bundle's winner → {objectId}.
+
+        Deterministic per (space, root, seed) — the same id on every
+        device, materialized on first call, cascade-deleted with the
+        root. Seeds are permanent. 409 bundle.not_ready until the
+        winner's tree is local (retryable). Cached per run."""
+        key = (space, bundle_id, seed)
+        if key not in self._bundle_children:
+            body = {"seed": seed}
+            if types:
+                body["types"] = list(types)
+            r = self._call("post",
+                           self._bundle_path(space, bundle_id, "/children"),
+                           body)
+            self._bundle_children[key] = r.get("objectId") or ""
+        return {"objectId": self._bundle_children[key]}
+
+    def resolve_loser(self, space, bundle_id, loser_root_id):
+        """Cascade-delete a losing bundle root after merging what
+        matters out of it → {} (idempotent). 409 bundle.loser_not_ready
+        until the loser's tree has settled (retry); 409
+        bundle.not_loser for the winner or an unclaimed root. The
+        server never merges — merge first, resolve second."""
+        return self._call("post", self._bundle_path(space, bundle_id, "/resolve"),
+                          {"loserRootId": loser_root_id})
+
+    # --- agent turns / chunks (client-assigned seq, ADR-017 §2) ----------------
+    def chat_log(self, space, chat_id):
+        """The chat's log object hosting agent_turns + agent_chunks →
+        {objectId}.
+
+        The `bao/log/v1` child of the chat's own bundle (ADR-017 §0):
+        deterministic, ensured with the agent_log type + datasets on
+        first use. Query turns/chunks on THIS object, never on the
+        chat itself. The chat must be a bundle root (every served chat
+        is — general-chat/v1 etc.; §0a covers future non-bundle
+        chats)."""
+        return {"objectId": self._chat_log(space, chat_id)}
+
+    def _chat_log(self, space, chat_id):
+        key = (space, "log-of", chat_id)
+        if key not in self._bundle_children:
+            row = next((b for b in self.list_bundles(space)
+                        if b.get("rootId") == chat_id), None)
+            if row is None:
+                raise AnyError(404, "bundle.not_found",
+                               f"chat {chat_id} is not a bundle root — "
+                               "no log child (ADR-017 §0a)")
+            self._ensure_store(space, "agent_log", "Agent Log",
+                               [_TURNS_DATASET, _CHUNKS_DATASET])
+            tid = self._resolve_type_or_raise(space, "agent_log")
+            child = self.bundle_child(space, row["id"], "bao/log/v1", [tid])
+            self._bundle_children[key] = child["objectId"]
+        return self._bundle_children[key]
+
+    def _next_seq(self, space, host, dataset):
+        rows = self.query(space, host, dataset, sort=["-seq"], limit=1)
+        return int((rows[0].get("seq") if rows else 0) or 0) + 1
+
     def append_turn(self, space, chat_id, body):
-        """Append an `agent_turns` record (server-assigned seq).
-        Harness-level; conversations write these for you. Strict body:
+        """Append an `agent_turns` record on the chat's log child.
+        Harness-level; conversations write these for you. Fields:
         `{seq?, fromAgent?, userName?, userText?, think?, replies?,
         effects?, messageIds?, traceRef?, interrupted?, llm?}` — llm
         subkeys `{stopReason, inTokens, outTokens, cacheRead,
-        cacheWrite, model, costUsd, fuelUsed, cells}`; any other key
-        (nested too) is a 400 request.unknown_field."""
-        return self._call("post",
-                          f"/v1/spaces/{space}/objects/{chat_id}/agent/turns", body)
+        cacheWrite, model, costUsd, fuelUsed, cells}`. seq absent →
+        max+1 (client-assigned; safe under the ADR-015 single active
+        writer, a duplicate seq write rejects). Returns {recordIds,
+        seq}."""
+        return self._append_log(space, chat_id, "agent_turns", body,
+                                search_text=True)
 
     def create_chunk(self, space, chat_id, body):
-        """Append a compressed history chunk record (harness-level; rollup).
-        Strict body: `{seq?, level?, fromAgent?, summary, periodStart,
-        periodEnd, fromSeq, toSeq, unitsCovered?}` — stray keys 400."""
-        return self._call("post",
-                          f"/v1/spaces/{space}/objects/{chat_id}/agent/chunks", body)
+        """Append a compressed history chunk record (harness-level;
+        rollup). Fields: `{seq?, level?, fromAgent?, summary,
+        periodStart, periodEnd, fromSeq, toSeq, unitsCovered?}`. seq
+        absent → max+1. Returns {recordIds, seq}."""
+        return self._append_log(space, chat_id, "agent_chunks", body)
+
+    def _append_log(self, space, chat_id, dataset, body, search_text=False):
+        host = self._chat_log(space, chat_id)
+        f = dict(body or {})
+        seq = int(f.get("seq") or 0) or self._next_seq(space, host, dataset)
+        f["seq"] = seq
+        if search_text:
+            # client-materialized index text (ADR-017 §1): the
+            # conversational content, question first
+            parts = [f.get("userText") or ""] + list(f.get("replies") or [])
+            f["searchText"] = " ".join(p for p in parts if p).strip()
+        rid = f"{seq:08d}"
+        r = self.upsert_records(space, host, dataset,
+                                [{"id": rid, "fields": f}])
+        rej = r.get("rejections") or []
+        if rej:
+            raise AnyError(409, "log.seq_collision",
+                           f"{dataset} seq {seq} rejected: {rej[0]}")
+        return {"recordIds": [rid], "seq": seq}
 
     # --- chat messages ---------------------------------------------------------
     def chat_send(self, space, chat_id, body):
@@ -1026,36 +1427,113 @@ class _Client:
         return out
 
     # --- agent memory (write path; reads go through /query on the brain) --------
-    def get_brain(self, space):
-        """The per-space brain object id hosting agent_memory_items.
+    def _ensure_store(self, space, xkey, name, datasets):
+        """Lazily provision a guest-owned agent store (ADR-017 §1):
+        ensure the user type by xKey + its dataset declarations.
+        Idempotent; the dataset ensure reconciles mutable search.*
+        leaves. Cached per run."""
+        key = (space, xkey)
+        if key in self._ensured_stores:
+            return
+        self.create_type(space, {"name": name, "xKey": xkey})
+        for d in datasets:
+            self.create_dataset(space, xkey, d)
+        self._ensured_stores.add(key)
 
-        `{objectId}` — derived, deterministic, no create race."""
-        return self._call("get", f"/v1/spaces/{space}/agent/brain")
+    def get_brain(self, space):
+        """The per-space brain object hosting agent_memory_items — the
+        `bao/v1` bundle's `bao/brain/v1` child (ADR-017 §0), with the
+        `agent_brain` type + dataset ensured lazily (guest-owned
+        store). `{objectId}` — deterministic, no create race; requires
+        the harness to have registered `bao/v1` (serve boot)."""
+        self._ensure_store(space, "agent_brain", "Agent Brain",
+                           [_MEM_DATASET, _JOB_STATE_DATASET,
+                            _ROI_DATASET])
+        tid = self._resolve_type_or_raise(space, "agent_brain")
+        return self.bundle_child(space, "bao/v1", "bao/brain/v1", [tid])
 
     def create_memory(self, space, fields):
         """Create a memory item (category + context required).
 
-        Server resolves the brain object. Returns ModifyResult —
-        recordIds[0] is the item id. Strict body: `{fromAgent?,
-        category, context, body?, tags?, entities?, keywords?,
-        confidence?, importance?, salience?, validFrom?, edges?,
-        chatId?, source?, provenance?}` — `source` is a lowercase slug
-        ("extraction", "user", …), `provenance` exactly `{fromSeq}`;
-        both create-only (not evolvable). Stray keys 400."""
-        return self._call("post", f"/v1/spaces/{space}/agent/memory", fields)
+        Writes the brain child's agent_memory_items dataset. Returns
+        ModifyResult — recordIds[0] is the item id. Fields:
+        `{fromAgent?, category, context, body?, tags?, entities?,
+        keywords?, confidence?, importance?, salience?, validFrom?,
+        edges?, chatId?, source?, provenance?}` — `source` is a
+        lowercase slug ("extraction", "user", …), `provenance` exactly
+        `{fromSeq}`; both create-only (not evolvable). Stray keys
+        raise. Scoring defaults when absent: confidence 5, importance
+        5, salience 10, accessCount 0, validFrom now."""
+        f = dict(fields or {})
+        allowed = set(_MEM_MUTABLE) | set(_MEM_CREATE_ONLY)
+        unknown = sorted(set(f) - allowed)
+        if unknown:
+            raise AnyError(400, "request.unknown_field",
+                           f"unknown memory fields {unknown}; accepted: "
+                           f"{sorted(allowed)}")
+        for req in ("category", "context"):
+            if not (isinstance(f.get(req), str) and f[req].strip()):
+                raise AnyError(400, "request.missing_field",
+                               f"{req} required (non-empty string)")
+        self._mem_check_ranges(f)
+        import time
+        f.setdefault("confidence", 5)
+        f.setdefault("importance", 5)
+        f.setdefault("salience", 10)
+        f.setdefault("accessCount", 0)
+        f.setdefault("validFrom", int(time.time()))
+        brain = self.get_brain(space)["objectId"]
+        ops = [{"type": "$set", "path": k, "value": v} for k, v in f.items()]
+        return self.modify(space, {
+            "objectId": brain, "dataset": "agent_memory_items",
+            "records": [{"id": "", "upsert": True, "ops": ops}]})
 
     def evolve_memory(self, space, item_id, fields):
         """Evolve a memory item's mutable fields (author-only).
 
-        modifiedAt is bumped server-side; the route is PATCH-only.
-        Mutable allow-list exactly `{salience, accessCount, confidence,
-        importance, context, body, tags, edges}` — anything else
-        (including source/provenance) is a 400."""
-        return self._call("patch", f"/v1/spaces/{space}/agent/memory/{item_id}", fields)
+        modifiedAt is bumped by its stamp on apply. Mutable allow-list
+        exactly `{salience, accessCount, confidence, importance,
+        context, body, tags, edges}` — anything else (including
+        source/provenance) raises; the declaration enforces the same
+        for other identities."""
+        f = dict(fields or {})
+        unknown = sorted(set(f) - set(_MEM_MUTABLE))
+        if unknown:
+            raise AnyError(400, "request.unknown_field",
+                           f"not evolvable: {unknown}; mutable: "
+                           f"{sorted(_MEM_MUTABLE)}")
+        if "context" in f and not (isinstance(f["context"], str)
+                                   and f["context"].strip()):
+            raise AnyError(400, "request.invalid_field",
+                           "context must stay a non-empty string")
+        self._mem_check_ranges(f)
+        brain = self.get_brain(space)["objectId"]
+        ops = [{"type": "$set", "path": k, "value": v} for k, v in f.items()]
+        return self.modify(space, {
+            "objectId": brain, "dataset": "agent_memory_items",
+            "records": [{"id": item_id, "ops": ops}]})
 
     def delete_memory(self, space, item_id):
-        """Delete a memory item by id (author-only)."""
-        return self._call("delete", f"/v1/spaces/{space}/agent/memory/{item_id}")
+        """Delete a memory item by id (author-only — the dataset's
+        deleteBy gate)."""
+        brain = self.get_brain(space)["objectId"]
+        return self.delete_records(space, brain, "agent_memory_items",
+                                   [item_id])
+
+    @staticmethod
+    def _mem_check_ranges(f):
+        for k, lo, hi in (("confidence", 0, 10), ("salience", 0, 10),
+                          ("importance", 1, 10)):
+            if k in f:
+                v = f[k]
+                if not isinstance(v, (int, float)) or not lo <= v <= hi:
+                    raise AnyError(400, "request.invalid_field",
+                                   f"{k} must be a number in {lo}..{hi}")
+        if "accessCount" in f:
+            v = f["accessCount"]
+            if not isinstance(v, (int, float)) or v < 0:
+                raise AnyError(400, "request.invalid_field",
+                               "accessCount must be a number >= 0")
 
 
 # --- flat module surface (ADR-010 §8) ----------------------------------------
@@ -1096,141 +1574,229 @@ def _space(sc):
     return _c()._resolve_space(_sid(sc))
 
 
-@span("any.create_object", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_object(spaceConfig, body):
     return _c().create_object(_space(spaceConfig), body)
 
 
-@span("any.update_object", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def update_object(spaceConfig, object_id, body):
     return _c().update_object(_space(spaceConfig), object_id, body)
 
 
-@span("any.delete_object", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def delete_object(spaceConfig, object_id):
     return _c().delete_object(_space(spaceConfig), object_id)
 
 
-@span("any.query_objects", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def query_objects(spaceConfig, *, normalize=True, **opts):
     return _c().query_objects(_space(spaceConfig), normalize=normalize, **opts)
 
 
-@span("any.list_programs", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_programs(spaceConfig, tools_only=False):
     return _c().list_programs(_space(spaceConfig), tools_only)
 
 
-@span("any.query", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def query(spaceConfig, object_id, dataset, **opts):
     return _c().query(_space(spaceConfig), object_id, dataset, **opts)
 
 
-@span("any.modify", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def modify(spaceConfig, body):
     return _c().modify(_space(spaceConfig), body)
 
 
-@span("any.upsert_record", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def upsert_record(spaceConfig, object_id, dataset, record_id, value):
     return _c().upsert_record(_space(spaceConfig), object_id, dataset,
                               record_id, value)
 
 
-@span("any.aggregate", kind="getter")  # noqa: F821 - guest global
-def aggregate(spaceConfig, pipeline):
-    return _c().aggregate(_space(spaceConfig), pipeline)
+@span(kind="mutator")  # noqa: F821 - guest global
+def upsert_records(spaceConfig, object_id, dataset, records, page_size=None):
+    return _c().upsert_records(_space(spaceConfig), object_id, dataset,
+                               records, page_size)
 
 
-@span("any.get_markdown", kind="getter")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
+def delete_records(spaceConfig, object_id, dataset, record_ids):
+    return _c().delete_records(_space(spaceConfig), object_id, dataset,
+                               record_ids)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def list_datasets(spaceConfig, type_key):
+    return _c().list_datasets(_space(spaceConfig), type_key)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def create_dataset(spaceConfig, type_key, draft):
+    return _c().create_dataset(_space(spaceConfig), type_key, draft)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def remove_dataset(spaceConfig, type_key, dataset_def_id):
+    return _c().remove_dataset(_space(spaceConfig), type_key, dataset_def_id)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def aggregate(spaceConfig, pipeline, object_id=None, dataset=None):
+    return _c().aggregate(_space(spaceConfig), pipeline, object_id, dataset)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def list_processes():
+    return _c().list_processes()
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def cancel_process(process_id, identity=None):
+    return _c().cancel_process(process_id, identity)
+
+
+# `_`-private (hidden from the tool inventory): progress@v1's transport
+def _process_register(body):
+    return _c()._process_register(body)
+
+
+def _process_progress(process_id, body):
+    return _c()._process_progress(process_id, body)
+
+
+def _process_finish(process_id, body):
+    return _c()._process_finish(process_id, body)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
 def get_markdown(spaceConfig, object_id):
     return _c().get_markdown(_space(spaceConfig), object_id)
 
 
-@span("any.put_markdown", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def put_markdown(spaceConfig, object_id, content):
     return _c().put_markdown(_space(spaceConfig), object_id, content)
 
 
-@span("any.edit_markdown", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def edit_markdown(spaceConfig, object_id, edits):
     return _c().edit_markdown(_space(spaceConfig), object_id, edits)
 
 
-@span("any.append_markdown", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def append_markdown(spaceConfig, object_id, content):
     return _c().append_markdown(_space(spaceConfig), object_id, content)
 
 
-@span("any.list_spaces", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_spaces(raw=False):
     return _c().list_spaces(raw)
 
 
-@span("any.get_space", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_space(spaceConfig, raw=False):
     return _c().get_space(_space(spaceConfig), raw)
 
 
-@span("any.general_chat", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def general_chat(spaceConfig):
     return _c().general_chat(_space(spaceConfig))
 
 
-@span("any.create_space", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
+def ensure_bundle(spaceConfig, bundle_id, name=None, root_types=None,
+                  root_properties=None):
+    return _c().ensure_bundle(_space(spaceConfig), bundle_id, name,
+                              root_types, root_properties)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def list_bundles(spaceConfig):
+    return _c().list_bundles(_space(spaceConfig))
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def get_bundle(spaceConfig, bundle_id):
+    return _c().get_bundle(_space(spaceConfig), bundle_id)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def bundle_child(spaceConfig, bundle_id, seed, types=None):
+    return _c().bundle_child(_space(spaceConfig), bundle_id, seed, types)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def resolve_loser(spaceConfig, bundle_id, loser_root_id):
+    return _c().resolve_loser(_space(spaceConfig), bundle_id, loser_root_id)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def chat_log(spaceConfig, chat_id):
+    return _c().chat_log(_space(spaceConfig), chat_id)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_space(name, description=None):
     return _c().create_space(name, description)
 
 
-@span("any.get_ui_context", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_ui_context(spaceConfig):
     return _c().get_ui_context(_space(spaceConfig))
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def open_in_ui(spaceConfig, object_id=None):
+    return _c().open_in_ui(_space(spaceConfig), object_id)
 
 
 # `_`-private: describe() hides it from the `## Tools` inventory — the
 # duplicate-pointer stopgap is the loop's business (toolcaller calls it
 # once per run), not a tool the model should reach for.
 @span("any.prune_ui_contexts", kind="mutator")  # noqa: F821 - guest global
+# explicit span name = display override (ADR-003 §4b): hidden def, public trace
 def _prune_ui_contexts(spaceConfig):
     return _c()._prune_ui_contexts(_space(spaceConfig))
 
 
-@span("any.list_types", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_types(spaceConfig):
     return _c().list_types(_space(spaceConfig))
 
 
-@span("any.list_properties", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def list_properties(spaceConfig, type_key):
     return _c().list_properties(_space(spaceConfig), type_key)
 
 
-@span("any.create_type", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_type(spaceConfig, body):
     return _c().create_type(_space(spaceConfig), body)
 
 
-@span("any.add_property", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def add_property(spaceConfig, type_key, body):
     return _c().add_property(_space(spaceConfig), type_key, body)
 
 
-@span("any.append_turn", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def append_turn(spaceConfig, chat_id, body):
     return _c().append_turn(_space(spaceConfig), chat_id, body)
 
 
-@span("any.create_chunk", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_chunk(spaceConfig, chat_id, body):
     return _c().create_chunk(_space(spaceConfig), chat_id, body)
 
 
-@span("any.chat_send", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def chat_send(spaceConfig, chat_id, body):
     return _c().chat_send(_space(spaceConfig), chat_id, body)
 
 
-@span("any.search", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def search(spaceConfig, query, scopes=None, limit=None, mode=None,
            enrich=True, **kw):
     if kw:   # A18: the guessed types= kwarg gets a redirect, not a bare TypeError
@@ -1242,27 +1808,27 @@ def search(spaceConfig, query, scopes=None, limit=None, mode=None,
     return _c().search(_space(spaceConfig), query, scopes, limit, mode, enrich)
 
 
-@span("any.backlinks", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def backlinks(spaceConfig, object_id):
     return _c().backlinks(_space(spaceConfig), object_id)
 
 
-@span("any.get_brain", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def get_brain(spaceConfig):
     return _c().get_brain(_space(spaceConfig))
 
 
-@span("any.create_memory", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def create_memory(spaceConfig, fields):
     return _c().create_memory(_space(spaceConfig), fields)
 
 
-@span("any.evolve_memory", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def evolve_memory(spaceConfig, item_id, fields):
     return _c().evolve_memory(_space(spaceConfig), item_id, fields)
 
 
-@span("any.delete_memory", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def delete_memory(spaceConfig, item_id):
     return _c().delete_memory(_space(spaceConfig), item_id)
 
@@ -1270,12 +1836,15 @@ def delete_memory(spaceConfig, item_id):
 # lift the method docstrings onto the public functions — ONE authored
 # copy (on _Client), rendered by describe()/help() from here
 for _f in (create_object, update_object, delete_object, query_objects,
-           list_programs, query, modify, upsert_record, aggregate,
-           get_markdown, put_markdown, edit_markdown, append_markdown,
-           list_spaces, get_space, general_chat, create_space,
-           get_ui_context, list_types, list_properties, create_type,
-           add_property, append_turn, create_chunk, chat_send, search,
-           backlinks, get_brain, create_memory, evolve_memory,
-           delete_memory):
+           list_programs, query, modify, upsert_record, upsert_records,
+           delete_records, list_datasets, create_dataset, remove_dataset,
+           aggregate, list_processes, cancel_process,
+           get_markdown, put_markdown, edit_markdown,
+           append_markdown, list_spaces, get_space, general_chat,
+           create_space, get_ui_context, open_in_ui, list_types,
+           list_properties,
+           create_type, add_property, append_turn, create_chunk,
+           chat_send, search, backlinks, get_brain, create_memory,
+           evolve_memory, delete_memory):
     _f.__doc__ = getattr(_Client, _f.__name__).__doc__
 del _f

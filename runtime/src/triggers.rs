@@ -266,7 +266,7 @@ pub fn rollup(t: &Trigger) -> Value {
 }
 
 /// The standing background jobs (ADR-006 §2, ADR-007 §1b/§4).
-pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str) -> Vec<Trigger> {
+pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger> {
     vec![
         Trigger::cron(
             "rollup",
@@ -282,8 +282,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "memory extraction",
             900.0,
             "agent:extraction@v1",
-            json!({"space": space, "chatId": chat_id,
-                             "brainId": brain_id}),
+            json!({"space": space, "chatId": chat_id}),
             owner,
             true,
         ),
@@ -292,7 +291,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "memory link generation",
             3600.0,
             "agent:linkgen@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             true,
         ),
@@ -302,7 +301,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "salience decay",
             86400.0,
             "agent:decay@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             false,
         ),
@@ -311,7 +310,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "reflection",
             86400.0,
             "agent:reflection@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             false,
         ),
@@ -320,7 +319,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "memory evolution",
             21600.0,
             "agent:evolution@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             false,
         ),
@@ -329,13 +328,24 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
 
 // --- the watcher (trigger #1) -------------------------------------------------
 
-/// Pure decision logic: dedup by message id, agent-message skip, and
+/// Pure decision logic: dedup by message id, SELF-message skip, and
 /// mid-run routing (a message during a live conversation INJECTS into
 /// its mailbox instead of starting a new run).
+///
+/// The skip is name-scoped (ADR-009 §8 amendment, 2026-08-16): only a
+/// message from THIS agent's own name — or an agent message with no
+/// name, the conservative read of legacy records — never self-triggers.
+/// A foreign agent name (`trigger:gmail-backfill`, a peer agent) is
+/// user-side input: it starts or injects like a human message. That is
+/// the visible-nudge mechanism — a program posts its completion into
+/// the chat under a `trigger:*` identity and the loop picks it up with
+/// the chat's history in context.
 #[derive(Default)]
 pub struct Watcher {
     seen: std::collections::BTreeSet<String>,
     pub live: BTreeMap<String, crate::broker::SharedMailbox>,
+    /// This agent's chat identity (`agent.name` on its own bubbles).
+    pub self_name: String,
 }
 
 pub enum WatchAction {
@@ -346,20 +356,78 @@ pub enum WatchAction {
 }
 
 impl Watcher {
+    pub fn new(self_name: impl Into<String>) -> Self {
+        Watcher { self_name: self_name.into(), ..Default::default() }
+    }
+
+    /// Self-authored (own name, or agent-tagged with no name) — the only
+    /// messages that never trigger. Shared with `snapshot_backlog`.
+    pub fn is_self_message(record: &Value, self_name: &str) -> bool {
+        match record.get("agent").filter(|a| !a.is_null()) {
+            None => false,
+            Some(agent) => {
+                let name = agent.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                name.is_empty() || name == self_name
+            }
+        }
+    }
+
+    /// The record's text, attributed and attachment-aware: a
+    /// foreign-agent message (a `trigger:*` nudge, a peer) gets a
+    /// harness-authored `[from agent …]` line derived from the
+    /// record's `agent.name` METADATA — the model's knowledge of the
+    /// sender no longer rests on a spoofable convention inside the
+    /// message text. Human messages pass through untouched. The
+    /// record's `attachments` map ({id: {type, link}}, create-only)
+    /// folds in as `[attachment <type>: <link>]` lines — links are the
+    /// doc-19 typed URIs any-ui sends (objects `any://o/<sid>/<oid>`,
+    /// files `any://f/<sid>/<fileId>`), which the model resolves via
+    /// any@v1. Folded into the TEXT (not an arg) so both attribution
+    /// and attachments survive into the persisted turn and every
+    /// future boot window unchanged.
+    pub fn attributed_text(record: &Value) -> String {
+        let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        let mut out = match record
+            .get("agent")
+            .filter(|a| !a.is_null())
+            .and_then(|a| a.get("name"))
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.is_empty())
+        {
+            Some(name) => {
+                format!("[from agent \"{name}\" — automated message, not the user]\n{text}")
+            }
+            None => text.to_string(),
+        };
+        if let Some(atts) = record.get("attachments").and_then(|a| a.as_object()) {
+            let mut keys: Vec<&String> = atts.keys().collect();
+            keys.sort(); // map order is arbitrary; stable lines for the turn log
+            for k in keys {
+                let link = atts[k].get("link").and_then(|l| l.as_str()).unwrap_or("");
+                if link.is_empty() {
+                    continue;
+                }
+                let kind = atts[k].get("type").and_then(|t| t.as_str()).unwrap_or("link");
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("[attachment {kind}: {link}]"));
+            }
+        }
+        out
+    }
+
     pub fn on_message(&mut self, chat_id: &str, record: &Value) -> WatchAction {
         let msg_id = record.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if !msg_id.is_empty() && !self.seen.insert(msg_id.to_string()) {
             return WatchAction::Dup;
         }
-        if record.get("agent").map(|a| !a.is_null()).unwrap_or(false) {
-            return WatchAction::Skip; // agent-authored — never self-trigger
+        if Self::is_self_message(record, &self.self_name) {
+            return WatchAction::Skip; // own bubble — never self-trigger
         }
-        let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
         if let Some(mailbox) = self.live.get(chat_id) {
-            mailbox
-                .lock()
-                .unwrap()
-                .push_back(json!({"kind": "inject", "text": text}));
+            mailbox.lock().unwrap().push_back(json!({
+                "kind": "inject", "text": Self::attributed_text(record)}));
             return WatchAction::Inject;
         }
         WatchAction::Start
@@ -476,12 +544,20 @@ mod tests {
 
     #[test]
     fn watcher_dedup_skip_inject_start() {
-        let mut w = Watcher::default();
+        let mut w = Watcher::new("bao");
         let human = json!({"id": "m1", "text": "hi"});
         assert!(matches!(w.on_message("c1", &human), WatchAction::Start));
         assert!(matches!(w.on_message("c1", &human), WatchAction::Dup));
         let agent = json!({"id": "m2", "text": "x", "agent": {"name": "bao"}});
         assert!(matches!(w.on_message("c1", &agent), WatchAction::Skip));
+        // legacy agent message without a name: conservative skip
+        let unnamed = json!({"id": "m2b", "text": "x", "agent": {}});
+        assert!(matches!(w.on_message("c1", &unnamed), WatchAction::Skip));
+        // a FOREIGN agent name is user-side input — the visible nudge
+        let nudge = json!({"id": "m2c", "text": "job done",
+                           "agent": {"name": "trigger:gmail-backfill"}});
+        assert!(matches!(w.on_message("c1", &nudge), WatchAction::Start));
+        w.conversation_done("c1");
         let mb: crate::broker::SharedMailbox = Default::default();
         w.live.insert("c1".into(), mb.clone());
         let m3 = json!({"id": "m3", "text": "also"});
@@ -490,5 +566,46 @@ mod tests {
         w.conversation_done("c1");
         let m4 = json!({"id": "m4", "text": "fresh"});
         assert!(matches!(w.on_message("c1", &m4), WatchAction::Start));
+    }
+
+    #[test]
+    fn attribution_is_metadata_derived_and_rides_the_inject() {
+        // harness-authored [from agent …] line from agent.name — the
+        // model's sender knowledge must not rest on the message text
+        let nudge = json!({"text": "job done",
+                           "agent": {"name": "trigger:backfill"}});
+        assert_eq!(
+            Watcher::attributed_text(&nudge),
+            "[from agent \"trigger:backfill\" — automated message, not the user]\njob done"
+        );
+        let human = json!({"id": "h1", "text": "hi"});
+        assert_eq!(Watcher::attributed_text(&human), "hi");
+
+        // attachments fold in as harness-derived lines, key-sorted;
+        // an attachment-only message still yields non-empty input
+        let attached = json!({"id": "h2", "text": "see these",
+            "attachments": {
+                "f0": {"type": "image", "link": "any://f/sp1/file9"},
+                "a0": {"type": "link", "link": "any://o/sp1/obj1"}}});
+        assert_eq!(
+            Watcher::attributed_text(&attached),
+            "see these\n[attachment link: any://o/sp1/obj1]\n\
+             [attachment image: any://f/sp1/file9]"
+        );
+        let only_att = json!({"id": "h3", "text": "",
+            "attachments": {"a0": {"type": "link", "link": "any://o/sp1/obj2"}}});
+        assert_eq!(
+            Watcher::attributed_text(&only_att),
+            "[attachment link: any://o/sp1/obj2]"
+        );
+
+        let mut w = Watcher::new("bao");
+        let mb: crate::broker::SharedMailbox = Default::default();
+        w.live.insert("c1".into(), mb.clone());
+        let m = json!({"id": "m9", "text": "done",
+                       "agent": {"name": "trigger:x"}});
+        assert!(matches!(w.on_message("c1", &m), WatchAction::Inject));
+        let queued = mb.lock().unwrap().pop_front().unwrap();
+        assert!(queued["text"].as_str().unwrap().starts_with("[from agent \"trigger:x\""));
     }
 }

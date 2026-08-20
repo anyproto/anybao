@@ -13,19 +13,75 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # enrichApply@v1 pair. propose() = the mechanical token-heavy stage 1
 # (synthesize block-cited units from editor_blocks → ground against
 # the space → reconcile new|enrich|conflict|redundant → persist the
-# draft); it never writes to target objects. apply() wraps the
-# server's deterministic POST /enrich/apply.
+# draft); it never writes to target objects. apply() is the
+# deterministic (no-LLM) stage 3, implemented HERE.
 #
-# Item record shape (server contract — any internal/enrichproposal):
+# THIS PROGRAM OWNS THE ENRICHMENT CONTRACT. The server's built-in
+# enriched_data/enrich_proposal types and its bespoke endpoints are
+# gone (any 03-api "Enrichment (moved userspace)"); both types are
+# plain user types this program ensures per space, and consumers
+# (any-ui) discover them by xKey, never by id:
+#   enrichments      — ONE hub object per space; its enriched_data
+#                      dataset holds every applied fact, joined to the
+#                      enriched object by `targetObjectId` (records no
+#                      longer ride the target — that needed the old
+#                      built-in's multitype attach).
+#   enrich_proposal  — one object per proposal run; items in its
+#                      enrich_proposal_items dataset:
 #   { text, source, outcome: "enrich|new",
 #     targetObjectId, targetKind: "collection|property",
 #     targetProperty: "<typeXKey>.<propXKey>", value, newType, newName }
-# `source` is `any://<space>/<transcript>#<blockId>,…` — provenance
+# `source` is comma-joined dataset-record URIs, one per cited block
+# (`any://o/<space>/<transcript>/editor_blocks/<blockId>,…`; block-less
+# = the bare object URI `any://o/<space>/<transcript>`) — provenance
 # that survives into enriched_data after the proposal is deleted.
+# Canonical grammar: any docs/19-links.md §Fragments (WEB-42); the old
+# `#<blockId>,…` fragment form is legacy, read-only, never written.
 
 import contextlib
 import json
 import re
+
+HUB_TYPE_XKEY = "enrichments"
+PROPOSAL_TYPE_XKEY = "enrich_proposal"
+
+# Facts are write-once (delete-and-rewrite, never edit — edits would
+# forge provenance); the user may delete one in the UI (deleteBy
+# anyone); creator/time are server-stamped; text indexes under the
+# generic `basic` scope via the x-search mapping.
+ENRICHED_DATA_DATASET = {
+    "name": "enriched_data",
+    "displayName": "Enriched Data",
+    "idRule": "auto",
+    "deleteBy": "anyone",
+    "search": {"text": "text"},
+    "fields": [
+        {"key": "text", "kind": "string"},
+        {"key": "source", "kind": "string"},
+        {"key": "target", "kind": "string"},
+        {"key": "value", "kind": "string"},
+        {"key": "targetObjectId", "kind": "string"},
+        {"key": "createdBy", "stamp": "creator"},
+        {"key": "createdAt", "stamp": "createTime"},
+    ],
+}
+
+# Items are edited by BOTH the agent (consolidation) and the human
+# reviewer (any-ui) — every field stays mutable. Proposals are
+# scaffolding, deleted on apply; no search mapping, so items never
+# leak into recall.
+ENRICH_PROPOSAL_ITEMS_DATASET = {
+    "name": "enrich_proposal_items",
+    "displayName": "Enrich Proposal Items",
+    "idRule": "auto",
+    "deleteBy": "anyone",
+    "fields": [
+        {"key": key, "kind": "string", "mutableBy": "any"}
+        for key in ("text", "source", "outcome", "targetObjectId",
+                    "targetKind", "targetProperty", "value",
+                    "newType", "newName")
+    ],
+}
 
 GROUND_LIMIT = 6
 BLOCK_LIMIT = 5000
@@ -189,14 +245,44 @@ def _type_catalog(c, space):
     return lines
 
 
+def _ensure_store(c, space):
+    """Ensure the userspace enrichment store — both types, their
+    datasets, and the per-space hub object — and return the hub's
+    object id. Idempotent (create_type/create_dataset are ensures);
+    an existing hub wins and duplicates are never auto-deleted (their
+    records live on them)."""
+    hub_type = c.create_type(space, {
+        "name": "Enrichments", "xKey": HUB_TYPE_XKEY,
+        "description": "Per-space enrichment store: sourced facts in "
+                       "the enriched_data dataset, joined to enriched "
+                       "objects by targetObjectId."})
+    c.create_dataset(space, HUB_TYPE_XKEY, ENRICHED_DATA_DATASET)
+    c.create_type(space, {
+        "name": "Enrich Proposal", "xKey": PROPOSAL_TYPE_XKEY,
+        "description": "Ephemeral, reviewable enrichment plan: one "
+                       "enrich_proposal_items record per proposed "
+                       "item; deleted on apply."})
+    c.create_dataset(space, PROPOSAL_TYPE_XKEY,
+                     ENRICH_PROPOSAL_ITEMS_DATASET)
+    hubs = c.query_objects(space,
+                           filter={"any.types": hub_type["typeId"]},
+                           limit=1)
+    if hubs:
+        return hubs[0]["id"]
+    return c.create_object(space, {
+        "types": [HUB_TYPE_XKEY], "name": "Enrichments"})["objectId"]
+
+
 def _source(space, transcript_id, blocks):
     if not transcript_id:
         return ""
-    base = f"any://{space}/{transcript_id}"
-    return base + "#" + ",".join(blocks) if blocks else base
+    if not blocks:
+        return f"any://o/{space}/{transcript_id}"
+    return ",".join(f"any://o/{space}/{transcript_id}/editor_blocks/{b}"
+                    for b in blocks)
 
 
-@span("enrich.analyze", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def analyze(space, opts=None):
     """The stage-1 analysis core WITHOUT persistence — previews, tests.
 
@@ -254,7 +340,7 @@ def analyze(space, opts=None):
             "tally": tally}
 
 
-@span("enrich.propose", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def propose(space, transcript_id, opts=None):
     """Stage 1: analyze the transcript and persist a DRAFT proposal.
 
@@ -280,6 +366,7 @@ def propose(space, transcript_id, opts=None):
 
     try:
         c = anymod
+        _ensure_store(c, space)  # so any-ui's Apply finds the hub too
         name = "transcript"
         rows = c.query_objects(space, filter={"id": transcript_id}, limit=1)
         if rows and (rows[0].get("any") or {}).get("name"):
@@ -336,48 +423,96 @@ def propose(space, transcript_id, opts=None):
             f"{_source(space, transcript_id, [])}\n"))
 
     return {"ok": True, "proposalId": pid,
-            "proposalLink": f"any://{space}/{pid}", "space": space,
+            "proposalLink": f"any://o/{space}/{pid}", "space": space,
             "transcriptId": transcript_id, "items": written,
             "errors": errors, "tally": tally}
 
 
-@span("enrich.apply", kind="mutator")  # noqa: F821 - guest global
+@span(kind="mutator")  # noqa: F821 - guest global
 def apply(space, proposal_id):
-    """Stage 3: apply a REVIEWED proposal server-side; deletes it after.
+    """Stage 3: deterministically apply a REVIEWED proposal; deletes it.
 
-    No LLM (shared with the any-ui Apply button): creates ONE object
-    per grouped newType+newName, sets real properties for `property`
-    items, writes an enriched_data provenance record onto every
-    target. Returns `{ok: True, proposalId, created, propertiesSet,
-    enrichedDataWritten, proposalDeleted, failures}` — non-empty
-    `failures` still means the rest applied. Re-apply of a
-    deleted/unknown proposal → {ok: False} (404
-    enrich.empty_proposal)."""
+    No LLM, client-side (the server built-ins are gone): creates ONE
+    object per grouped newType+newName, sets real properties for
+    `property` items, and writes an enriched_data provenance record
+    onto the space's Enrichments hub (joined by `targetObjectId`) for
+    every item; then deletes the proposal object. Returns `{ok: True,
+    proposalId, created, propertiesSet, enrichedDataWritten,
+    proposalDeleted, failures}` — non-empty `failures` still means the
+    rest applied. An empty/deleted/unknown proposal → {ok: False,
+    error}."""
+    anymod = use("any@v1")  # noqa: F821 - guest global
     if not space:
         return {"ok": False, "error": "space required"}
     if not proposal_id:
         return {"ok": False, "error": "proposalId required"}
-    base = effect("config.get",  # noqa: F821 - guest global
-                  {"key": "any.base_url"})["value"].rstrip("/")
-    reply = effect("http.post", {  # noqa: F821 - guest global
-        "url": f"{base}/v1/spaces/{space}/enrich/apply",
-        "json": {"proposalId": proposal_id}})
+    c = anymod
     try:
-        r = json.loads(reply.get("body") or "{}")
-    except ValueError:
-        r = {}
-    if reply["status"] >= 400:
-        err = r.get("error", {}) if isinstance(r, dict) else {}
+        items = c.query(space, proposal_id, "enrich_proposal_items",
+                        limit=1000)
+    except anymod.AnyError as e:
         return {"ok": False, "proposalId": proposal_id,
-                "error": (f"apply failed: HTTP {reply['status']} "
-                          f"{err.get('code', '')} {err.get('message', '')}"
-                          ).strip()}
-    return {"ok": True, "proposalId": proposal_id,
-            "created": r.get("created", 0),
-            "propertiesSet": r.get("propertiesSet", 0),
-            "enrichedDataWritten": r.get("enrichedDataWritten", 0),
-            "proposalDeleted": bool(r.get("proposalDeleted")),
-            "failures": r.get("failures") or []}
+                "error": f"apply failed: {e}"}
+    if not items:
+        return {"ok": False, "proposalId": proposal_id,
+                "error": "empty proposal — no items (already applied, "
+                         "deleted, or unknown)"}
+    try:
+        hub = _ensure_store(c, space)
+    except anymod.AnyError as e:
+        return {"ok": False, "proposalId": proposal_id,
+                "error": f"enrichment store unavailable: {e}"}
+
+    created, props_set, written, failures = 0, 0, 0, []
+    minted = {}  # (newType, newName) -> objectId: grouped facets, ONE object
+    for it in items:
+        iid = it.get("id") or "?"
+        try:
+            target = it.get("targetObjectId") or ""
+            if not target:
+                key = (it.get("newType") or "", it.get("newName") or "")
+                if not key[0] or not key[1]:
+                    failures.append(
+                        f"item {iid}: no target and no newType/newName")
+                    continue
+                if key not in minted:
+                    minted[key] = c.create_object(space, {
+                        "types": [key[0]], "name": key[1]})["objectId"]
+                    created += 1
+                target = minted[key]
+            is_prop = (it.get("targetKind") or "") == "property"
+            tprop = (it.get("targetProperty") or "") if is_prop else ""
+            value = (it.get("value") or "") if is_prop else ""
+            if tprop:
+                txk, _, pxk = tprop.partition(".")
+                if not txk or not pxk:
+                    failures.append(
+                        f"item {iid}: bad targetProperty {tprop!r}")
+                    continue
+                c.update_object(space, target, {txk: {pxk: value}})
+                props_set += 1
+            fact = {"text": it.get("text") or "",
+                    "source": it.get("source") or "",
+                    "target": tprop, "value": value,
+                    "targetObjectId": target}
+            c.modify(space, {
+                "objectId": hub, "dataset": "enriched_data",
+                "records": [{"id": "", "upsert": True, "ops": [
+                    {"type": "$set", "path": k, "value": v}
+                    for k, v in fact.items() if v != ""]}]})
+            written += 1
+        except anymod.AnyError as e:
+            failures.append(f"item {iid}: {e}")
+
+    deleted = True
+    try:
+        c.delete_object(space, proposal_id)
+    except anymod.AnyError as e:
+        deleted = False
+        failures.append(f"proposal delete: {e}")
+    return {"ok": True, "proposalId": proposal_id, "created": created,
+            "propertiesSet": props_set, "enrichedDataWritten": written,
+            "proposalDeleted": deleted, "failures": failures}
 
 
 def main(args):

@@ -58,20 +58,37 @@ class FakeBackends(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        # compose_system reads the space at boot: type catalog + brain
+        # compose_system reads the space at boot: type catalog + the
+        # ADR-017 store plumbing (bundles + dataset defs)
         if self.path.endswith("/v1/spaces"):
             # empty catalog -> space-name resolution passes strings
             # through (degenerate-env rule, ADR-010 §8)
             return self._reply({"spaces": []})
+        if "/types/" in self.path and self.path.endswith("/datasets"):
+            # defs pre-exist with matching search leaves — no PATCH
+            return self._reply({"datasets": [
+                {"id": "d1", "name": "agent_memory_items",
+                 "search": {"title": "context", "text": "body",
+                            "scope": "agent"}},
+                {"id": "d2", "name": "agent_job_state"},
+                {"id": "d3", "name": "agent_turns",
+                 "search": {"title": "userText", "text": "searchText",
+                            "scope": "history"}},
+                {"id": "d4", "name": "agent_chunks",
+                 "search": {"text": "summary", "scope": "history"}}]})
         if self.path.endswith("/types"):
-            return self._reply({"types": []})
+            return self._reply({"types": [
+                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain"},
+                {"id": "lg", "name": "Agent Log", "xKey": "agent_log"}]})
         if self.path.endswith("/properties"):
             # builtin-group filter paths resolve against these (A19);
             # program.any_tool rides the compose's tool query
             return self._reply({"properties": [
                 {"id": "name"}, {"id": "types"}, {"id": "any_tool"}]})
-        if self.path.endswith("/agent/brain"):
-            return self._reply({"objectId": "brain1"})
+        if self.path.endswith("/bundles"):
+            # the test chat c1 is a bundle root (ADR-017)
+            return self._reply({"bundles": [
+                {"id": "general-chat/v1", "rootId": "c1"}]})
         return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
 
     def do_POST(self):
@@ -87,9 +104,22 @@ class FakeBackends(BaseHTTPRequestHandler):
         if self.path.endswith("/query"):
             rows = cls.datasets.get(body.get("dataset", ""), [])
             return self._reply({"records": rows})
-        if self.path.endswith("/agent/turns"):
-            cls.turns.append(body)
-            return self._reply({"seq": len(cls.turns) - 1})
+        if "/types/" in self.path and self.path.endswith("/datasets"):
+            # a declaration the GET fixture doesn't list (e.g. the ROI
+            # dataset) — accept it
+            return self._reply({"datasetDefId": "dX", "created": True})
+        if self.path.endswith("/children"):
+            seed = body.get("seed", "")
+            oid = {"bao/brain/v1": "brain1", "bao/log/v1": "log1"}.get(
+                seed, f"child-{seed}")
+            return self._reply({"objectId": oid})
+        if self.path.endswith("/upsert"):
+            recs = [dict(r.get("fields") or {}, id=r["id"])
+                    for r in body.get("records") or []]
+            cls.datasets.setdefault(body["dataset"], []).extend(recs)
+            return self._reply({"created": len(recs), "updated": 0,
+                                "skipped": 0, "rejections": [],
+                                "pages": [{"recordIds": [r["id"] for r in recs]}]})
         if self.path.endswith("/chat/messages"):
             cls.chat_posts.append(body)
             return self._reply({"recordIds": [f"m{len(cls.chat_posts)}"]})

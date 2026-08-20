@@ -47,6 +47,13 @@ class FakeGuest:
         self.saves = []
         self.state_writes = []
 
+    # --- ADR-017: deterministic resolvers ---
+    def get_brain(self, space):
+        return {"objectId": "brain1"}
+
+    def chat_log(self, space, chat_id):
+        return {"objectId": chat_id}   # fake hosts both on one object
+
     # --- any@v1 client ---
     def query(self, space, object_id, dataset, filter=None, sort=None, limit=None):
         rows = [r for r in self.datasets[dataset] if _matches(r, filter or {})]

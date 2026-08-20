@@ -238,7 +238,7 @@ _TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
 _EXCERPT = 400
 
 
-@span("llm.chat", kind="getter")  # noqa: F821 - guest global
+@span(kind="getter")  # noqa: F821 - guest global
 def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     """One model call; returns the neutral Reply.
 

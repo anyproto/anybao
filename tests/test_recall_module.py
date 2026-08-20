@@ -40,20 +40,49 @@ def _reply(status, data):
 def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
     """The server's routes over the http syscall, captured as
     (VERB, path, json-body) like the wire. `brain` answers the
-    GET /agent/brain lazy-resolve route (None → 404, like a space
-    with no agent data)."""
+    ADR-017 brain-child derive (None → 404 bundle.not_found, like a
+    space where the harness never registered bao/v1)."""
     def fx(name, payload):
         assert name.startswith("http."), name
         path = payload["url"].removeprefix("http://any")
         body = payload.get("json")
         if path.endswith("/v1/spaces"):   # name-resolution plumbing (§8):
             return _reply(200, {"spaces": []})   # uncaptured, indices stable
+        # ADR-017 store plumbing — uncaptured so dataset-call indices
+        # stay stable across tests
+        if path.endswith("/bundles"):
+            # every chat in the fixtures is a bundle root; its log
+            # child is the chat id + "-log"
+            return _reply(200, {"bundles": [
+                {"id": "general-chat/v1", "rootId": (body or {}).get("rootId")
+                 or "chat9"},
+                {"id": "chat1-bundle/v1", "rootId": "chat1"}]})
+        if "/types/" in path and path.endswith("/datasets"):
+            return _reply(200, {"datasets": [
+                {"id": "d1", "name": "agent_memory_items",
+                 "search": {"title": "context", "text": "body",
+                            "scope": "agent"}},
+                {"id": "d2", "name": "agent_job_state"},
+                {"id": "d3", "name": "agent_turns",
+                 "search": {"title": "userText", "text": "searchText",
+                            "scope": "history"}},
+                {"id": "d4", "name": "agent_chunks",
+                 "search": {"text": "summary", "scope": "history"}}]})
+        if path.endswith("/children"):
+            if body and body.get("seed") == "bao/brain/v1":
+                if brain is None:
+                    return _reply(404, {"error": {
+                        "code": "bundle.not_found", "message": "no bao/v1"}})
+                capture.append(("POST", path, body))
+                return _reply(200, {"objectId": brain})
+            # a chat's log child hosts the same datasets under the
+            # chat's own id in these fixtures (host identity is what
+            # the assertions check)
+            root = path.rsplit("/bundles/", 1)[1].removesuffix("/children")
+            chat = {"general-chat%2Fv1": "chat9",
+                    "chat1-bundle%2Fv1": "chat1"}.get(root, "chat9")
+            return _reply(200, {"objectId": chat})
         capture.append((name.removeprefix("http.").upper(), path, body))
-        if path.endswith("/agent/brain"):
-            if brain is None:
-                return _reply(404, {"error": {"code": "request.not_found",
-                                              "message": "no brain"}})
-            return _reply(200, {"objectId": brain})
         if path.endswith("/search"):
             return _reply(200, {"hits": [HIT], "mode": "hybrid", "vectorStatus": "used"})
         if path.endswith("/objects/query"):
@@ -62,7 +91,9 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
             return _reply(200, {"properties": T1_PROPS})
         if path.endswith("/types"):
             return _reply(200, {"types": [
-                {"id": "t1", "name": "T One", "xKey": "t_one"}]})
+                {"id": "t1", "name": "T One", "xKey": "t_one"},
+                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain"},
+                {"id": "lg", "name": "Agent Log", "xKey": "agent_log"}]})
         if path.endswith("/backlinks"):
             return _reply(200, {"backlinks": [
                 {"objectId": "src9", "typeId": "t1", "propId": "p_ref"}]})
@@ -75,7 +106,7 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
 
 
 def build(fx, space="s1", **recall_kw):
-    nospan = lambda name, kind=None: (lambda f: f)  # noqa: E731
+    nospan = lambda name=None, kind=None: (lambda f: f)  # noqa: E731
     any_g = {"effect": fx, "span": nospan, "use": None}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
     any_g["_instance"] = any_g["_Client"]("http://any")   # skip config.get
@@ -102,10 +133,21 @@ def test_search_unwraps_hits_and_passes_scopes_limit():
     assert body == {"query": "qwery", "scopes": ["agent", "history"], "limit": 5}
 
 
-def test_search_defaults_all_three_scopes():
+def test_search_defaults_all_four_scopes():
     cap = []
     recall(cap).search("q")
-    assert cap[0][2]["scopes"] == ["agent", "history", "basic"]
+    assert cap[0][2]["scopes"] == ["agent", "history", "basic", "email"]
+
+
+def test_search_rejects_empty_query_before_the_wire():
+    # the index has no browse-all mode; an empty query must fail
+    # client-side with the enumeration hint, never reach the server
+    import pytest
+    cap = []
+    for bad in ("", "   ", None):
+        with pytest.raises(ValueError, match="agent_memory_items"):
+            recall(cap).search(bad)
+    assert cap == []
 
 
 # --- hydrate -----------------------------------------------------------------
@@ -137,7 +179,8 @@ def test_by_period_fans_out_merges_and_time_sorts():
 def test_by_period_wire_filters():
     cap = []
     recall(cap).by_period(100, 400)
-    by_dataset = {b["dataset"]: b for _, _, b in cap}
+    by_dataset = {b["dataset"]: b for _, _, b in cap
+                  if b and "dataset" in b}
     assert by_dataset["agent_memory_items"]["objectId"] == "brain1"
     assert by_dataset["agent_memory_items"]["filter"] == {
         "validFrom": {"$gte": 100, "$lte": 400}}
@@ -160,7 +203,8 @@ def test_binder_derives_chat_id_from_space_config_mapping():
     r = build(fake_any(cap, brain="brainX"),
               space={"spaceId": "s1", "chatId": "chat9"})
     r.by_period(0, 1)
-    by_dataset = {b["dataset"]: b for _, _, b in cap if b}
+    by_dataset = {b["dataset"]: b for _, _, b in cap
+                  if b and "dataset" in b}
     assert by_dataset["agent_turns"]["objectId"] == "chat9"
 
 
@@ -171,9 +215,10 @@ def test_by_period_resolves_brain_lazily_once():
               chat_object_id="chat1")
     assert [x["id"] for x in r.by_period(0, 1)] == ["m1"]
     r.by_period(0, 1)
-    brain_gets = [p for _, p, _ in cap if p.endswith("/agent/brain")]
-    assert len(brain_gets) == 1  # cached after the first resolve
-    by_dataset = {b["dataset"]: b for _, _, b in cap if b}
+    brain_gets = [p for _, p, _ in cap if p.endswith("/children")]
+    assert len(brain_gets) == 1  # child derive cached after the first resolve
+    by_dataset = {b["dataset"]: b for _, _, b in cap
+                  if b and "dataset" in b}
     assert by_dataset["agent_memory_items"]["objectId"] == "brainX"
 
 
