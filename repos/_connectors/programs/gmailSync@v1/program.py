@@ -761,8 +761,9 @@ def sync_now(space, q=None, max_messages=None):
     First runs drain the backlog one bounded slice at a time (call
     again — or let the cron — until done: True); after that each call
     is a coalesced history increment. q narrows the scope with Gmail
-    search syntax (default newer_than:1y; exclusions are negative
-    terms like -from:x). FUEL: each synced message costs ~0.3-0.6B of
+    search syntax (exclusions are negative terms like -from:x; falls
+    back to newer_than:1y ONLY on a never-armed sync — an existing
+    sync's coverage is status().q). FUEL: each synced message costs ~0.3-0.6B of
     the RUN's 50B budget, shared with every other turn of a
     conversation — from chat, pass max_messages (≤50) and call
     repeatedly, or better register the cron and let ticks run alone.
@@ -834,12 +835,17 @@ def start_backfill(space, agent_space, q=None):
 
 @span("gmailSync.status", kind="getter")  # noqa: F821 - guest global
 def status(space):
-    """Sync bookkeeping → {cursor, pageToken, syncedCount, mailboxId,
-    emailCount}.
+    """Sync bookkeeping → {q, cursor, pageToken, syncedCount,
+    mailboxId, emailCount}.
 
-    emailCount is the live email_messages record count on the mailbox
-    (server-side $count); a cursor with an empty pageToken means
-    backlog drained, ticking incrementally."""
+    `q` is the COVERAGE: the Gmail query the last backfill listed
+    (empty = never armed). The corpus contains that scope and nothing
+    older — never infer coverage from a default or from the dates of
+    synced messages (a 7d corpus also "falls within" two weeks). A
+    wider ask ⇒ re-arm start_backfill with the wider q. emailCount is
+    the live email_messages record count on the mailbox (server-side
+    $count); a cursor with an empty pageToken means backlog drained,
+    ticking incrementally."""
     types = {t.get("xKey") for t in _any.list_types(space)}
     if "sync_state" not in types:
         return {"configured": False, "emailCount": 0}
@@ -852,7 +858,8 @@ def status(space):
                              object_id=mid, dataset=_DATASET)
         recs = (agg or {}).get("records") or []
         count = int((recs[0] or {}).get("n") or 0) if recs else 0
-    return {"configured": bool(rows), "cursor": st.get("cursor") or "",
+    return {"configured": bool(rows), "q": st.get("last_q") or "",
+            "cursor": st.get("cursor") or "",
             "pageToken": st.get("page_token") or "",
             "syncedCount": int(st.get("synced_count") or 0),
             "mailboxId": mid, "emailCount": count}

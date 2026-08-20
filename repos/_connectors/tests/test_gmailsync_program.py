@@ -509,10 +509,14 @@ def test_object_era_state_migrates_to_dataset_relist_once():
 def test_status_reports_state_and_counts():
     fake = FakeAny(
         mail={"m1": {"labelIds": ["INBOX"]}},
-        states=[seeded_state(cursor="H9", page_token="PT", synced_count=1)])
+        states=[seeded_state(cursor="H9", page_token="PT", synced_count=1,
+                             last_q="newer_than:7d -from:x")])
     mod = load(gmail_fx({}), fake)
     out = mod.status("sp")
-    assert out == {"configured": True, "cursor": "H9", "pageToken": "PT",
+    # q = the arm's last_q verbatim — the coverage field; empty when
+    # the state predates the arm (never-armed / legacy checkpoint)
+    assert out == {"configured": True, "q": "newer_than:7d -from:x",
+                   "cursor": "H9", "pageToken": "PT",
                    "syncedCount": 1, "mailboxId": "mb1", "emailCount": 1}
 
 

@@ -49,7 +49,13 @@ a drained sync's window = `start_backfill` with the new q — it
 re-lists the new scope (synced mail skips); `sync_now` and the cron
 NEVER re-list, their q only filters what a tick sees.
 
-Watch progress with `status(space)` → `{cursor, pageToken,
+**Coverage = `status(space).q`, nothing else.** Never infer it from
+the `newer_than:1y` default (the arm may have used any q) or from the
+dates of synced messages (a 7-day corpus also "falls within" two
+weeks — absence of older mail proves nothing). Asked for a window
+wider than `status().q` ⇒ re-arm `start_backfill` with the wider q.
+
+Watch progress with `status(space)` → `{q, cursor, pageToken,
 syncedCount, mailboxId, emailCount}` (empty pageToken = backlog
 drained, now ticking incrementally) or
 `use("agent:progress@v1").jobs(space)` (job `"gmail-backfill"`) — the
