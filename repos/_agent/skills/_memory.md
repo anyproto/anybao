@@ -41,6 +41,12 @@ categories before inventing one (vocabulary drift kills recall).
   (`[{to, type}]`) and links-format properties on objects; expansion
   AFTER retrieval.
 
+"What do you remember?" is ENUMERATION, not search — `r.search("")`
+is rejected (the index has no browse-all mode). List the brain
+dataset instead: `c.query(space, c.get_brain(space)["objectId"],
+"agent_memory_items", limit=...)` (sort/filter by `category`,
+`createdAt`, `salience` as needed).
+
 Top hits for the user's message are auto-injected at turn start as an
 already-run `run_cell` (the recall idiom; `rec` stays bound for reuse)
 — dig explicitly when you need more than its digest shows. When a deliberate dig actually USES a memory item, bump it:

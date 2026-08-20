@@ -108,6 +108,17 @@ def test_search_defaults_all_four_scopes():
     assert cap[0][2]["scopes"] == ["agent", "history", "basic", "email"]
 
 
+def test_search_rejects_empty_query_before_the_wire():
+    # the index has no browse-all mode; an empty query must fail
+    # client-side with the enumeration hint, never reach the server
+    import pytest
+    cap = []
+    for bad in ("", "   ", None):
+        with pytest.raises(ValueError, match="agent_memory_items"):
+            recall(cap).search(bad)
+    assert cap == []
+
+
 # --- hydrate -----------------------------------------------------------------
 
 def test_hydrate_pairs_hits_with_records_one_in_query():

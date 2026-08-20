@@ -47,11 +47,20 @@ class Recall:
     def search(self, query, scopes=DEFAULT_SCOPES, limit=10):
         """Index search across scopes → a bare LIST of hits, no envelope.
 
-        Each `{scope, objectId, dataset, recordId, score, …}` —
-        already unwrapped from the `{hits, mode, vectorStatus}`
-        envelope that any@v1 `search` returns, so `hits[0]` works and
-        `hits["hits"]` does not. Default scopes ("agent", "history",
-        "basic", "email"), limit 10."""
+        query must be non-empty — the index has no browse-all mode; to
+        ENUMERATE memory, query the brain dataset instead (see the
+        error text below). Each hit `{scope, objectId, dataset,
+        recordId, score, …}` — already unwrapped from the `{hits,
+        mode, vectorStatus}` envelope that any@v1 `search` returns, so
+        `hits[0]` works and `hits["hits"]` does not. Default scopes
+        ("agent", "history", "basic", "email"), limit 10."""
+        if not (query or "").strip():
+            raise ValueError(
+                "search needs a non-empty query — the index has no "
+                "browse-all mode. To enumerate memory items: "
+                'a.query(space, a.get_brain(space)["objectId"], '
+                '"agent_memory_items"); for history use '
+                "history@v1 or by_period().")
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
         return reply.get("hits") or []
 
