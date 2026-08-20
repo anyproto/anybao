@@ -3,7 +3,6 @@ bs4 + markdownify importable and working under the REAL kernel import
 gate; internals (six, typing_extensions) stay outside the allowlist."""
 
 import pytest
-
 from kernelenv import load_kernel
 
 HTML = (

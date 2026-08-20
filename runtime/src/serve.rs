@@ -130,7 +130,10 @@ fn ensure_dataset(c: &Client, space: &str, type_id: &str, draft: &Value) -> Resu
     let name = draft["name"].as_str().unwrap_or_default();
     // no reconcile needed: the host stores declare no mutable
     // search.* leaves
-    if c.list_datasets(space, type_id)?.iter().any(|d| d["name"] == name) {
+    if c.list_datasets(space, type_id)?
+        .iter()
+        .any(|d| d["name"] == name)
+    {
         return Ok(());
     }
     c.create_dataset(space, type_id, draft)?;
@@ -203,29 +206,29 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         space,
         &cfg_t,
         &json!({
-            "name": CONFIG_DATASET, "displayName": "Agent Config",
-            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
-            "dynamic": true,
-            "fields": [
-                {"key": "key", "kind": "string", "mutableBy": "any"},
-                {"key": "secret", "kind": "boolean", "mutableBy": "any"},
-                {"key": "localValue", "kind": "string", "scope": "local",
-                 "mutableBy": "any"},
-            ]}),
+        "name": CONFIG_DATASET, "displayName": "Agent Config",
+        "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+        "dynamic": true,
+        "fields": [
+            {"key": "key", "kind": "string", "mutableBy": "any"},
+            {"key": "secret", "kind": "boolean", "mutableBy": "any"},
+            {"key": "localValue", "kind": "string", "scope": "local",
+             "mutableBy": "any"},
+        ]}),
     )?;
     ensure_dataset(
         c,
         space,
         &sec_t,
         &json!({
-            "name": SECRETS_DATASET, "displayName": "Agent Secrets",
-            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
-            "fields": [
-                {"key": "key", "kind": "string", "mutableBy": "any"},
-                {"key": "secret", "kind": "boolean", "mutableBy": "any"},
-                {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
-                 "mutableBy": "any"},
-            ]}),
+        "name": SECRETS_DATASET, "displayName": "Agent Secrets",
+        "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+        "fields": [
+            {"key": "key", "kind": "string", "mutableBy": "any"},
+            {"key": "secret", "kind": "boolean", "mutableBy": "any"},
+            {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
+             "mutableBy": "any"},
+        ]}),
     )?;
     ensure_dataset(
         c,
@@ -1163,7 +1166,9 @@ fn snapshot_backlog(data: &Value, self_name: &str) -> Vec<Value> {
         // content = text OR attachments (the server enforces at least
         // one); an attachment-only message is real input, not noise
         let has_text = rec["text"].as_str().is_some_and(|t| !t.is_empty());
-        let has_atts = rec["attachments"].as_object().is_some_and(|a| !a.is_empty());
+        let has_atts = rec["attachments"]
+            .as_object()
+            .is_some_and(|a| !a.is_empty());
         if has_text || has_atts {
             out.push(rec.clone());
         }
@@ -1766,8 +1771,7 @@ mod tests {
         // null docs and empty messages can't start a run; a message
         // that is ONLY an attachment (no caption) is real input
         let mut with_atts = msg("u3", "", false);
-        with_atts["attachments"] =
-            json!({"a0": {"type": "link", "link": "any://o/sp1/obj1"}});
+        with_atts["attachments"] = json!({"a0": {"type": "link", "link": "any://o/sp1/obj1"}});
         let data = json!({"records": [
             msg("u2", "real", false),
             with_atts,
