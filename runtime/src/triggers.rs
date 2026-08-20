@@ -357,7 +357,10 @@ pub enum WatchAction {
 
 impl Watcher {
     pub fn new(self_name: impl Into<String>) -> Self {
-        Watcher { self_name: self_name.into(), ..Default::default() }
+        Watcher {
+            self_name: self_name.into(),
+            ..Default::default()
+        }
     }
 
     /// Self-authored (own name, or agent-tagged with no name) — the only
@@ -407,7 +410,10 @@ impl Watcher {
                 if link.is_empty() {
                     continue;
                 }
-                let kind = atts[k].get("type").and_then(|t| t.as_str()).unwrap_or("link");
+                let kind = atts[k]
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("link");
                 if !out.is_empty() {
                     out.push('\n');
                 }
@@ -606,6 +612,9 @@ mod tests {
                        "agent": {"name": "trigger:x"}});
         assert!(matches!(w.on_message("c1", &m), WatchAction::Inject));
         let queued = mb.lock().unwrap().pop_front().unwrap();
-        assert!(queued["text"].as_str().unwrap().starts_with("[from agent \"trigger:x\""));
+        assert!(queued["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("[from agent \"trigger:x\""));
     }
 }

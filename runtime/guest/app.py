@@ -11,7 +11,6 @@ import ast
 # module plus datetime (proxied). Do not convert to importlib loops.
 import base64  # noqa: F401
 import bisect  # noqa: F401
-import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
 import builtins as _b
 import collections  # noqa: F401
 import contextlib  # noqa: F401
@@ -31,7 +30,6 @@ import html.parser  # noqa: F401
 import inspect  # noqa: F401
 import itertools  # noqa: F401
 import json
-import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
 import math  # noqa: F401
 import re  # noqa: F401
 import statistics  # noqa: F401
@@ -42,6 +40,8 @@ import types
 import typing  # noqa: F401
 import unicodedata  # noqa: F401
 
+import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
+import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
 import wit_world
 
 
