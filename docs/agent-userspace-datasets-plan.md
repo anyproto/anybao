@@ -77,14 +77,17 @@ derived" comment. Winner via the registry CRDT, loser roots GC-able
 (non-derived), restore = re-derive children from the winning rootId,
 feature teardown = one cascade delete.
 
-Requirements to feed into the in-progress upstream bundles HTTP
-surface: (a) userspace bundle REGISTRATION (root + registry row from a
-guest program), with id namespacing so userspace bundles can't collide
-with server-owned ones; (b) child derivation under a root. Registry
-read already exists (fenced `bundles` dataset query). Open question:
-type/dataset DEFINITIONS stay ensure-by-name (bundles cover object
-identity, not type identity) — confirm the server's type ensure is
-idempotent under concurrent creates.
+The in-progress upstream bundles update is confirmed (user,
+2026-08-20) to land a **generic derived-objects API** — bundle
+registration and child derivation for arbitrary bundle ids, replacing
+today's compiled-in-only installs (`bao/v1`, `general-chat/v1` are
+just rows, not special cases). So userspace registration is the
+design, not an ask; the details to watch when it lands: id
+namespacing between server- and userspace-owned bundles, and the open
+question that type/dataset DEFINITIONS stay ensure-by-name outside
+bundles (bundles cover object identity, not type identity) — confirm
+the server's type ensure is idempotent under concurrent creates.
+Registry read already exists (fenced `bundles` dataset query).
 
 ## Gap 2 — runtime-dataset index scope is pinned to "basic"
 
