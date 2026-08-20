@@ -92,15 +92,25 @@ takes single fields.
   `/agent/memory` endpoints to generic dataset ops, validation moves to
   the harness.
 
-## Sequencing
+## Sequencing (updated 2026-08-20, user-confirmed)
 
-1. Upstream: SYN-163 PR (tsar root + derived children + Bundles) and
-   the `search.scope` ask (could join SYN-163 or stand alone).
-2. anybao ADR in the ADR-016 mold (types, datasets, field decls,
-   record shapes, cutover).
-3. Cut config + secrets + triggers first (pure storage).
-4. Turns/chunks on per-chat ParentId children.
-5. Memory last (program surface widest).
-6. any-side deletion of `internal/agent*` + `/agent/*` endpoints +
-   `SpaceInfo` fields + agent chunkers (PR #171 precedent); any-ui
-   trails as with enrichment. Clean cut, no data migration.
+Status: SYN-163 bundles landed the mechanics (SDK #100 + any #172 —
+registry, tsar root `bao/v1`, `bundles.Child`) but the root is
+deliberately childless and there is NO HTTP surface for deriving
+children yet. `search.scope` landed (#173/SDK #101) and bao adopted
+it (email scope) — that gap is closed.
+
+1. **WAIT**: the bundles HTTP surface is in progress upstream
+   (sdk/any). When it lands, merge those PRs into the local-test
+   branches (`local-test-all` in both repos, go.mod replace as now).
+2. Then in one push:
+   - anybao ADR in the ADR-016 mold (types, datasets, field decls,
+     record shapes, cutover);
+   - implement agent derived objects + custom agent datasets in bao —
+     config + secrets + triggers first (pure storage), turns/chunks
+     as per-chat derived children, memory last (widest program
+     surface);
+   - **a new any PR** removing the hardcoded agent datasets:
+     `internal/agent*` + `/agent/*` endpoints + `SpaceInfo` id fields
+     + agent chunkers (PR #171 precedent); any-ui trails as with
+     enrichment. Clean cut, no data migration.
