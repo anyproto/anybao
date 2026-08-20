@@ -104,6 +104,10 @@ class FakeBackends(BaseHTTPRequestHandler):
         if self.path.endswith("/query"):
             rows = cls.datasets.get(body.get("dataset", ""), [])
             return self._reply({"records": rows})
+        if "/types/" in self.path and self.path.endswith("/datasets"):
+            # a declaration the GET fixture doesn't list (e.g. the ROI
+            # dataset) — accept it
+            return self._reply({"datasetDefId": "dX", "created": True})
         if self.path.endswith("/children"):
             seed = body.get("seed", "")
             oid = {"bao/brain/v1": "brain1", "bao/log/v1": "log1"}.get(

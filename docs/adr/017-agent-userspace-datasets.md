@@ -66,13 +66,14 @@ serve, to be decided when it lands:
   per-chat scoping and cascade-delete-with-chat; a chat wipe becomes
   a filtered delete-records pass.
 
-### 1. Types and datasets (userspace, ensured by anyrt at boot)
+### 1. Types and datasets (userspace, ensured by their writers)
 
 Five user types, same type/dataset names as before (the built-ins are
 deleted; no coexistence). Declarations use the runtime-dataset field
 surface: `stamp` for server-stamped identity/time, `mutableBy` for
-write rules, `scope: local` for device-local values, kind omitted =
-unconstrained value, `search.scope` for recall scoping.
+write rules, `scope: local` for device-local values, `dynamic: true`
+for free-form keyspaces (undeclared fields: any-typed, freely mutable
+— declared fields require a kind), `search.scope` for recall scoping.
 
 **Each store is ensured by its writer.** anyrt (host) ensures what it
 writes before any guest code can run: `agent_config` + `agent_secrets`
@@ -84,20 +85,24 @@ what only guest code writes, lazily on first use: `agent_brain` inside
 `create_type`/`create_dataset`, the enrich/gmailSync pattern.
 
 **`agent_config`** — dataset `agent_config`, `idRule: user` (record id
-= the dotted config key), `deleteBy: anyone`. Fields: `key` (string,
-`mutableBy: any`), `value` (unconstrained, `mutableBy: any`), `secret`
-(boolean, `mutableBy: any`), `localValue` (unconstrained, `scope:
-local`). The ADR-006 §3 cascade (localValue ?? value ?? default) is
-unchanged; anyrt already reads/writes this store through the generic
-query/modify surface, including the `scope: "local"` route.
+= the dotted config key), `deleteBy: anyone`, **`dynamic: true`**.
+Declared fields: `key` (string, `mutableBy: any`), `secret` (boolean,
+`mutableBy: any`), `localValue` (string, `scope: local`, `mutableBy:
+any`); `value` is UNDECLARED — the HTTP declaration path requires a
+kind per declared field, and dynamic-keyspace fields are any-typed and
+freely mutable (the DefaultHandler semantics). Device-local values are
+strings in practice; a non-string local write rejects loudly. The
+ADR-006 §3 cascade (localValue ?? value ?? default) is unchanged;
+anyrt already reads/writes this store through the generic query/modify
+surface, including the `scope: "local"` route.
 
 **`agent_secrets`** — dataset `agent_secrets`, `idRule: user` (record
 id = the secret ref), `deleteBy: anyone`. Fields: `key` (string),
-`secret` (boolean), `value` (unconstrained, `scope: local`). The
+`secret` (boolean), `value` (string, `scope: local`). The
 effect-boundary guest-read block keys on the dataset name and is
 unchanged (ADR-011 §4 stays: values raw, no host checks).
 
-**`agent_brain`** — dataset `agent_memory_items`, `idRule: auto`,
+**`agent_brain`** — three datasets. `agent_memory_items`: `idRule: auto`,
 `deleteBy: author` (author-only delete, as before). Write-once fields:
 `category` (string, required), `context` (string, required),
 `validFrom` (number), `chatId` (string), `fromAgent` (string).
@@ -109,14 +114,18 @@ Mutable (`mutableBy: author` — the evolve allowlist): `body`, `tags`
 Validation (required fields, 0–10 ranges, defaults, `embeddingRef`
 rejection, evolve allowlist beyond what `mutableBy` enforces) moves
 into the any@v1 wrappers — the triggers precedent: harness-enforced.
+The brain also hosts `agent_job_state` (cron cursors, one record per
+job id) and `agent_roi_injections` (autorecall's injection log,
+best-effort writes — a stale index hit pointing at a retired store is
+skipped, never a failed conversation) — both `idRule: user`,
+`deleteBy: anyone`, `dynamic: true`, zero declared fields.
 
 **`agent_trigger`** — datasets `agent_triggers` and
-`agent_trigger_runs`, both `idRule: user`, `deleteBy: anyone`, every
-field `mutableBy: any`, all unconstrained: `kind`, `spec`, `program`,
-`args`, `owner`, `enabled`, `limits`, plus the rollup fields
-(`lastRunAt`, `lastStatus`, `lastError`, `runCount`, …) — raw storage
-exactly as the DefaultHandler gave; invariants stay harness-enforced
-(ADR-006 §4 unchanged).
+`agent_trigger_runs`, both `idRule: user`, `deleteBy: anyone`,
+**`dynamic: true` with zero declared fields** — the whole record shape
+(kind/spec/program/args/owner/enabled/limits + the rollup fields)
+rides the free keyspace, raw storage exactly as the DefaultHandler
+gave; invariants stay harness-enforced (ADR-006 §4 unchanged).
 
 **`agent_log`** — datasets `agent_turns` and `agent_chunks`, both
 `idRule: user` (record id = zero-padded seq — lexical order stays

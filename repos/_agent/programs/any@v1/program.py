@@ -111,13 +111,18 @@ _MEM_DATASET = {
     ],
 }
 _JOB_STATE_DATASET = {
+    # free-form cursor records (lastSeq / lastModifiedAt / …), one per
+    # job id — the dynamic keyspace is the contract, like triggers
     "name": "agent_job_state", "displayName": "Agent Job State",
     "idRule": "user", "deleteBy": "anyone", "skipHistory": True,
-    "fields": [
-        {"key": "lastSeq", "kind": "number", "mutableBy": "any"},
-        {"key": "lastModifiedAt", "kind": "number", "mutableBy": "any"},
-        {"key": "lastCreatedAt", "kind": "number", "mutableBy": "any"},
-    ],
+    "dynamic": True, "fields": [],
+}
+_ROI_DATASET = {
+    # auto-recall injection log (autorecall@v1 §1b/§5 ROI metrics) —
+    # free-form records keyed "<itemId>:<ts>", harness-owned shapes
+    "name": "agent_roi_injections", "displayName": "Agent ROI Injections",
+    "idRule": "user", "deleteBy": "anyone", "skipHistory": True,
+    "dynamic": True, "fields": [],
 }
 _TURNS_DATASET = {
     "name": "agent_turns", "displayName": "Agent Turns",
@@ -1442,7 +1447,8 @@ class _Client:
         store). `{objectId}` — deterministic, no create race; requires
         the harness to have registered `bao/v1` (serve boot)."""
         self._ensure_store(space, "agent_brain", "Agent Brain",
-                           [_MEM_DATASET, _JOB_STATE_DATASET])
+                           [_MEM_DATASET, _JOB_STATE_DATASET,
+                            _ROI_DATASET])
         tid = self._resolve_type_or_raise(space, "agent_brain")
         return self.bundle_child(space, "bao/v1", "bao/brain/v1", [tid])
 

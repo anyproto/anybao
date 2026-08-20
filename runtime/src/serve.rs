@@ -166,44 +166,6 @@ fn bundle_child_retry(
     Err(last_err.unwrap()).context(format!("bundle child {seed} never became ready"))
 }
 
-/// Every field the trigger registry reads or writes — the datasets are
-/// non-dynamic, an undeclared field rejects the write.
-const TRIGGER_FIELDS: &[&str] = &[
-    "name",
-    "kind",
-    "spec",
-    "program",
-    "args",
-    "owner",
-    "enabled",
-    "limits",
-    "maxConsecutiveFailures",
-    "lastRunAt",
-    "lastStatus",
-    "lastDurationMs",
-    "lastFuel",
-    "lastCostUsd",
-    "runCount",
-    "consecutiveFailures",
-    "lastRunRef",
-];
-const TRIGGER_RUN_FIELDS: &[&str] = &[
-    "triggerId",
-    "ts",
-    "status",
-    "durationMs",
-    "error",
-    "traceRef",
-    "fuel",
-    "costUsd",
-];
-
-fn mutable_fields(keys: &[&str]) -> Vec<Value> {
-    keys.iter()
-        .map(|k| json!({"key": k, "mutableBy": "any"}))
-        .collect()
-}
-
 pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     // The bundle: adopt-or-install, brief not_ready retry (same class
     // as the chat ensure).
@@ -229,6 +191,13 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     let cfg_t = ensure_type(c, space, "Agent Config", "agent_config")?;
     let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
     let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    // Declared fields carry behavior (scope local needs a declaration,
+    // and a declared field needs a kind); everything free-form rides
+    // the `dynamic` keyspace — undeclared fields are any-typed and
+    // freely mutable, the old DefaultHandler semantics. Config `value`
+    // and the whole trigger record shape stay undeclared for exactly
+    // that reason; device-local values are strings in practice
+    // (API keys, addresses) — a non-string local write rejects loudly.
     ensure_dataset(
         c,
         space,
@@ -236,11 +205,12 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         &json!({
             "name": CONFIG_DATASET, "displayName": "Agent Config",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "dynamic": true,
             "fields": [
                 {"key": "key", "kind": "string", "mutableBy": "any"},
-                {"key": "value", "mutableBy": "any"},
                 {"key": "secret", "kind": "boolean", "mutableBy": "any"},
-                {"key": "localValue", "scope": "local", "mutableBy": "any"},
+                {"key": "localValue", "kind": "string", "scope": "local",
+                 "mutableBy": "any"},
             ]}),
     )?;
     ensure_dataset(
@@ -253,7 +223,8 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             "fields": [
                 {"key": "key", "kind": "string", "mutableBy": "any"},
                 {"key": "secret", "kind": "boolean", "mutableBy": "any"},
-                {"key": SECRETS_FIELD, "scope": "local", "mutableBy": "any"},
+                {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
+                 "mutableBy": "any"},
             ]}),
     )?;
     ensure_dataset(
@@ -263,7 +234,7 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         &json!({
             "name": "agent_triggers", "displayName": "Agent Triggers",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
-            "fields": mutable_fields(TRIGGER_FIELDS)}),
+            "dynamic": true, "fields": []}),
     )?;
     ensure_dataset(
         c,
@@ -272,7 +243,7 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         &json!({
             "name": "agent_trigger_runs", "displayName": "Agent Trigger Runs",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
-            "fields": mutable_fields(TRIGGER_RUN_FIELDS)}),
+            "dynamic": true, "fields": []}),
     )?;
     Ok(AgentStores {
         config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
