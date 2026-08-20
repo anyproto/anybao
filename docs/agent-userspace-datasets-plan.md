@@ -59,6 +59,33 @@ Until that PR lands, the only userspace pattern is enrich's
 create race, duplicate hubs never auto-deleted. Don't build on it for
 agent data; wait for SYN-163.
 
+## Bundles are for EVERY userspace feature, not just agent_*
+
+(2026-08-20, user-confirmed direction.) Each feature contract gets its
+own bundle per space, owned by the program that owns the contract:
+
+| bundle | space | root's derived children |
+|---|---|---|
+| `bao/v1` | bao | config, secrets, brain, trigger anchor |
+| `enrich/v1` | each enriched space | the enrichments hub |
+| `email/v1` | Emails space | `sync_state` + one mailbox child per address (seed = address) |
+
+This retires the two tolerated races shipped today: enrich's
+`_ensure_store` duplicate hubs ("never auto-deleted") and gmailSync's
+oldest-wins mailboxes + the `_ensure_state` "ui-context dance until
+derived" comment. Winner via the registry CRDT, loser roots GC-able
+(non-derived), restore = re-derive children from the winning rootId,
+feature teardown = one cascade delete.
+
+Requirements to feed into the in-progress upstream bundles HTTP
+surface: (a) userspace bundle REGISTRATION (root + registry row from a
+guest program), with id namespacing so userspace bundles can't collide
+with server-owned ones; (b) child derivation under a root. Registry
+read already exists (fenced `bundles` dataset query). Open question:
+type/dataset DEFINITIONS stay ensure-by-name (bundles cover object
+identity, not type identity) — confirm the server's type ensure is
+idempotent under concurrent creates.
+
 ## Gap 2 — runtime-dataset index scope is pinned to "basic"
 
 Index scopes are an open slug set (`index.ValidScope`), and
