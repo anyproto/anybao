@@ -83,6 +83,6 @@ The edit loop is 2 → chat → trace: deploy is the only publish step
   `any --addr 127.0.0.1:7009 space delete --yes <baoId>`.
 - **Shipped code**: just redeploy; the overlay updates in place.
 - **Fresh overlay space** (e.g. after nuking the data dir — which you
-  shouldn't): `POST /v1/spaces {"name":"_agentrepo","spaceType":"anytype.space"}`,
+  shouldn't): `POST /v1/spaces {"name":"_agentrepo"}`,
   then `any space update --name _agentrepo <id>` if the name comes
   back null, and put the id in `anybao.test.toml [overlays] agent`.
