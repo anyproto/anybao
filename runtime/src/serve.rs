@@ -39,22 +39,21 @@ fn now_s() -> f64 {
 /// of the account keys, so every device converges on the same id —
 /// materialized rows resolve, unmaterialized ones derive on the spot
 /// (lazy + idempotent). No migration path: a legacy same-named space
-/// is simply not the agent space anymore (clean cut, no-backcompat).
-/// Pre-registry servers (404) and non-registry names keep the v1 rule:
-/// name scan, create on miss.
+/// is simply not the agent space anymore (clean cut, no-backcompat —
+/// the registry route is required, servers without it are
+/// unsupported). Non-registry names keep the v1 rule: name scan,
+/// create on miss.
 pub fn ensure_space(c: &Client, name: &str) -> Result<String> {
-    match c.list_derived_spaces() {
-        Ok(rows) => {
-            if let Some(row) = rows.iter().find(|r| r["name"] == name) {
-                if row["created"] == Value::Bool(true) {
-                    return Ok(row["spaceId"].as_str().unwrap_or_default().to_string());
-                }
-                let created = c.create_derived_space(name)?;
-                return Ok(created["id"].as_str().unwrap_or_default().to_string());
-            }
+    let rows = c
+        .list_derived_spaces()
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("derived-space registry")?;
+    if let Some(row) = rows.iter().find(|r| r["name"] == name) {
+        if row["created"] == Value::Bool(true) {
+            return Ok(row["spaceId"].as_str().unwrap_or_default().to_string());
         }
-        Err(e) if e.status == 404 => {} // pre-registry server
-        Err(e) => return Err(e).context("derived-space registry"),
+        let created = c.create_derived_space(name)?;
+        return Ok(created["id"].as_str().unwrap_or_default().to_string());
     }
     for sp in c.list_spaces(None)? {
         if sp["name"] == name && sp.get("status").map(|s| s == "active").unwrap_or(true) {
@@ -81,14 +80,14 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
 /// The space's general chat — the `general-chat/v1` bundle's winning
 /// root (ADR-006 §0, amended 2026-08-20). The server keeps no catalog
 /// and installs nothing on its own (SYN-163: chats are not
-/// server-owned; SpaceInfo.generalChatObjectId is gone), so anybao
-/// ensures the bundle itself: adopt-or-install is idempotent and every
-/// client that runs it lands on the same chat. 409 `bundle.not_ready`
-/// (the winner's tree hasn't landed on this device yet) is retried
-/// briefly; a pre-bundles server (404 on the route) falls back to the
-/// old derived-chat SpaceInfo field.
+/// server-owned), so anybao ensures the bundle itself: adopt-or-install
+/// is idempotent and every client that runs it lands on the same chat.
+/// 409 `bundle.not_ready` (the winner's tree hasn't landed on this
+/// device yet) is retried briefly. The bundles route is REQUIRED — a
+/// server without it is unsupported (no-backcompat).
 fn general_chat(c: &Client, space: &str) -> Result<String> {
-    for attempt in 0..5 {
+    let mut last_err = None;
+    for _ in 0..5 {
         match c.ensure_bundle(space, "general-chat/v1", "General", &["chat"]) {
             Ok(reply) => {
                 return reply["bundle"]["rootId"]
@@ -97,20 +96,15 @@ fn general_chat(c: &Client, space: &str) -> Result<String> {
                     .map(str::to_string)
                     .context("general-chat bundle ensure returned no rootId");
             }
-            Err(e) if e.status == 404 => break, // pre-bundles server
-            Err(e) if e.status == 409 && attempt < 4 => {
+            Err(e) if e.status == 409 => {
                 // bundle.not_ready — winner's tree still syncing in
+                last_err = Some(e);
                 std::thread::sleep(Duration::from_secs(2));
             }
             Err(e) => return Err(e).context("general-chat bundle ensure"),
         }
     }
-    let info = c.get_space(space)?;
-    info["generalChatObjectId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .context("no general chat: bundles route absent and no generalChatObjectId (server too old)")
+    Err(last_err.unwrap()).context("general-chat bundle never became ready")
 }
 
 /// The space's single derived config object (ADR-006 §3), reported as
@@ -1465,19 +1459,14 @@ mod tests {
     }
 
     #[test]
-    fn ensure_space_falls_back_pre_registry() {
-        // old server: /v1/spaces/derived 404s → v1 rule (scan, create)
-        let (c, log) = scripted(&[
-            (
-                404,
-                json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
-            ),
-            spaces_reply(json!([])),
-            (201, json!({"id": "new-id"})),
-        ]);
-        assert_eq!(ensure_space(&c, "bao").unwrap(), "new-id");
-        let calls = log.lock().unwrap();
-        assert_eq!(calls[2].1, "/v1/spaces");
+    fn ensure_space_requires_the_registry_route() {
+        // no-backcompat: a server without the derived registry is
+        // unsupported — error, never a name-scan fallback
+        let (c, _) = scripted(&[(
+            404,
+            json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
+        )]);
+        assert!(ensure_space(&c, "bao").is_err());
     }
 
     #[test]
@@ -1504,18 +1493,15 @@ mod tests {
     }
 
     #[test]
-    fn general_chat_falls_back_pre_bundles() {
-        // old server: the bundles route 404s → the legacy SpaceInfo
-        // field still resolves the chat
-        let (c, log) = scripted(&[
-            (
-                404,
-                json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
-            ),
-            (200, json!({"id": "sp", "generalChatObjectId": "legacy-chat"})),
-        ]);
-        assert_eq!(general_chat(&c, "sp").unwrap(), "legacy-chat");
-        assert_eq!(log.lock().unwrap()[1].1, "/v1/spaces/sp");
+    fn general_chat_requires_the_bundles_route() {
+        // no-backcompat: a server without bundles is unsupported —
+        // error, never a SpaceInfo-field fallback
+        let (c, log) = scripted(&[(
+            404,
+            json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
+        )]);
+        assert!(general_chat(&c, "sp").is_err());
+        assert_eq!(log.lock().unwrap().len(), 1);
     }
 
     #[test]

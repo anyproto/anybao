@@ -58,20 +58,19 @@ check-then-create race. `ensure_space` resolution order:
    space simply stops being the agent space (clean cut,
    no-backcompat; §0's 2026-07-07 adoption rule is superseded for
    registry names).
-3. Pre-registry server (404) or non-registry name: the v1 rule —
-   name scan, create on miss.
+3. Non-registry name: the v1 rule — name scan, create on miss. The
+   registry route itself is required (no-backcompat: a server
+   without it is unsupported and errors loudly).
 
 **Amended 2026-08-20 (second) — the general chat is the
-`general-chat/v1` bundle.** With the SYN-163 bundles registry the
-server keeps no catalog and installs nothing on its own: chats are not
-server-owned, `SpaceInfo.generalChatObjectId` is gone, and every
-client lands on the space's one chat by ensuring the bundle
+`general-chat/v1` bundle.** The server keeps no catalog and installs
+nothing on its own (SYN-163): a space's one chat is the bundle's
+winning root, and every client lands on it by ensuring the bundle
 (`POST /v1/spaces/:s/bundles {id: "general-chat/v1", name: "General",
 rootTypes: ["chat"]}` — adopt-or-install, idempotent, offline-capable)
-and using its winning `rootId`. anybao ensures it at serve boot;
-409 `bundle.not_ready` (winner's tree still syncing to this device)
-retries briefly; a pre-bundles server (404 on the route) falls back
-to the legacy `generalChatObjectId` field.
+and using its `rootId`. anybao ensures it at serve boot; 409
+`bundle.not_ready` (winner's tree still syncing to this device)
+retries briefly. The bundles route is required (no-backcompat).
 
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
