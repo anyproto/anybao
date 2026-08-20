@@ -637,12 +637,10 @@ def test_create_space_wire_shape_and_full_row_reply():
         "generalChatObjectId": "chat9"}})
     r = client(fx).create_space("AI Startups")
     assert r["id"] == "sp9" and r["generalChatObjectId"] == "chat9"
-    assert fx.calls == [("POST", "/v1/spaces",
-                         {"name": "AI Startups", "spaceType": "anytype.space"})]
+    assert fx.calls == [("POST", "/v1/spaces", {"name": "AI Startups"})]
     # description only rides the wire when given
     client(fx).create_space("x", description="d")
-    assert fx.calls[-1][2] == {"name": "x", "spaceType": "anytype.space",
-                               "description": "d"}
+    assert fx.calls[-1][2] == {"name": "x", "description": "d"}
 
 
 _UI_CTX_TYPES = {

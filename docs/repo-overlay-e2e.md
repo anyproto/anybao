@@ -26,7 +26,7 @@ settings are reused. Keep this running in its own terminal.)
 
 ```fish
 set REPO_ID (curl -s -X POST http://127.0.0.1:7003/v1/spaces \
-  -d '{"name":"bao-repo","spaceType":"anytype.space"}' | jq -r .id)
+  -d '{"name":"bao-repo"}' | jq -r .id)
 
 cd ~/any/anybao
 ./runtime/target/release/anyrt deploy --addr http://127.0.0.1:7003 \

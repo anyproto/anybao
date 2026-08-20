@@ -380,13 +380,19 @@ impl Client {
     /// Reply carries the new space `id`. `agent_space: true` provisions
     /// the per-space config object (ADR-006 §3) so the harness can
     /// resolve `agentConfigObjectId` off the very first GET.
+    ///
+    /// No `spaceType`: the server allow-lists exactly one creatable
+    /// value and treats an absent field as that value (SDK
+    /// `spaceimpl::normalize_space_type`), so naming it buys nothing and
+    /// pins a literal that already went stale once — the pre-rename
+    /// `"anytype.space"` started 400ing here and left the agent unable
+    /// to create its own working space.
     pub fn create_space(&self, name: &str) -> Result<Value, AnyError> {
         self.call(
             "POST",
             "/v1/spaces",
             Some(&json!({
                 "name": name,
-                "spaceType": "anytype.space",
                 "agent_space": true
             })),
         )
@@ -1211,7 +1217,7 @@ mod tests {
         );
         assert_eq!(
             calls[5].2,
-            Some(json!({"name": "bao", "spaceType": "anytype.space", "agent_space": true}))
+            Some(json!({"name": "bao", "agent_space": true}))
         );
         assert_eq!(calls[7].2, Some(json!({"query": "q", "limit": 3})));
     }

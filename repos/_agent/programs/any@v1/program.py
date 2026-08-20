@@ -722,7 +722,7 @@ class _Client:
         resolve/create types against it before typed writes (types and
         xKeys are per-space). Check `list_spaces()` first — don't mint
         a duplicate of an existing active space."""
-        body = {"name": name, "spaceType": "anytype.space"}
+        body = {"name": name}
         if description:
             body["description"] = description
         r = self._call("post", "/v1/spaces", body)
