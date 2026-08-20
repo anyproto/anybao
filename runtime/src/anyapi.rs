@@ -416,6 +416,31 @@ impl Client {
         self.call("POST", &format!("/v1/spaces/derived/{name}"), None)
     }
 
+    // --- bundles (SYN-163) ---
+    /// POST /v1/spaces/{s}/bundles — adopt-or-install a bundle: a
+    /// non-derived root object registered under a permanent id in the
+    /// space's bundles registry ("general-chat/v1" — the slash is part
+    /// of the id, sent verbatim in bodies). With a winner already
+    /// registered this is a local read (`installed: false`); otherwise
+    /// the server creates the root with `root_types` attached and
+    /// registers it in one change. Reply `{bundle: {id, rootId, roots,
+    /// losers}, installed}` — `rootId` is provisional until the space
+    /// syncs; 409 `bundle.not_ready` means the winner's tree hasn't
+    /// landed on this device yet (retryable).
+    pub fn ensure_bundle(
+        &self,
+        space_id: &str,
+        id: &str,
+        name: &str,
+        root_types: &[&str],
+    ) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/bundles"),
+            Some(&json!({"id": id, "name": name, "rootTypes": root_types})),
+        )
+    }
+
     // --- sharing (ADR-009 §8) ---
     /// POST /v1/spaces/{s}/invites — mint the space's RequestToJoin
     /// invite. Reply `{inviteToken, spaceId}`. The token carries NO
@@ -1264,6 +1289,23 @@ mod tests {
             Some(json!({"name": "bao", "agent_space": true}))
         );
         assert_eq!(calls[9].2, Some(json!({"query": "q", "limit": 3})));
+    }
+
+    #[test]
+    fn ensure_bundle_posts_id_verbatim_in_body() {
+        let (c, log) = stub_client();
+        c.ensure_bundle("sp", "general-chat/v1", "General", &["chat"])
+            .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[0].0, "POST");
+        assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+        // the slash is part of the id — encoded only in PATH segments,
+        // verbatim in bodies
+        assert_eq!(
+            calls[0].2,
+            Some(json!({"id": "general-chat/v1", "name": "General",
+                        "rootTypes": ["chat"]}))
+        );
     }
 
     #[test]

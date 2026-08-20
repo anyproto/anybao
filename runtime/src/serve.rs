@@ -78,18 +78,39 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
     anyhow::bail!("space not found: {name_or_id:?} (run --from-space never creates one)")
 }
 
-/// The space's single derived general chat object — every space has
-/// exactly one, materialized by the server and reported on the
-/// single-space GET (ADR-006 §0). anybao watches this instead of a
-/// self-created chat object, so it shares the space's canonical chat
-/// with any other client (desktop UI, etc.).
+/// The space's general chat — the `general-chat/v1` bundle's winning
+/// root (ADR-006 §0, amended 2026-08-20). The server keeps no catalog
+/// and installs nothing on its own (SYN-163: chats are not
+/// server-owned; SpaceInfo.generalChatObjectId is gone), so anybao
+/// ensures the bundle itself: adopt-or-install is idempotent and every
+/// client that runs it lands on the same chat. 409 `bundle.not_ready`
+/// (the winner's tree hasn't landed on this device yet) is retried
+/// briefly; a pre-bundles server (404 on the route) falls back to the
+/// old derived-chat SpaceInfo field.
 fn general_chat(c: &Client, space: &str) -> Result<String> {
+    for attempt in 0..5 {
+        match c.ensure_bundle(space, "general-chat/v1", "General", &["chat"]) {
+            Ok(reply) => {
+                return reply["bundle"]["rootId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .context("general-chat bundle ensure returned no rootId");
+            }
+            Err(e) if e.status == 404 => break, // pre-bundles server
+            Err(e) if e.status == 409 && attempt < 4 => {
+                // bundle.not_ready — winner's tree still syncing in
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context("general-chat bundle ensure"),
+        }
+    }
     let info = c.get_space(space)?;
     info["generalChatObjectId"]
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .context("space has no generalChatObjectId — any server too old to derive it")
+        .context("no general chat: bundles route absent and no generalChatObjectId (server too old)")
 }
 
 /// The space's single derived config object (ADR-006 §3), reported as
@@ -1467,6 +1488,34 @@ mod tests {
             spaces_reply(json!([{"id": "mine", "name": "myspace", "status": "active"}])),
         ]);
         assert_eq!(ensure_space(&c, "myspace").unwrap(), "mine");
+    }
+
+    #[test]
+    fn general_chat_ensures_the_bundle() {
+        let (c, log) = scripted(&[(
+            200,
+            json!({"bundle": {"id": "general-chat/v1", "rootId": "chat-root"},
+                   "installed": false}),
+        )]);
+        assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+    }
+
+    #[test]
+    fn general_chat_falls_back_pre_bundles() {
+        // old server: the bundles route 404s → the legacy SpaceInfo
+        // field still resolves the chat
+        let (c, log) = scripted(&[
+            (
+                404,
+                json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
+            ),
+            (200, json!({"id": "sp", "generalChatObjectId": "legacy-chat"})),
+        ]);
+        assert_eq!(general_chat(&c, "sp").unwrap(), "legacy-chat");
+        assert_eq!(log.lock().unwrap()[1].1, "/v1/spaces/sp");
     }
 
     #[test]

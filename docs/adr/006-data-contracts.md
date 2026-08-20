@@ -61,6 +61,18 @@ check-then-create race. `ensure_space` resolution order:
 3. Pre-registry server (404) or non-registry name: the v1 rule —
    name scan, create on miss.
 
+**Amended 2026-08-20 (second) — the general chat is the
+`general-chat/v1` bundle.** With the SYN-163 bundles registry the
+server keeps no catalog and installs nothing on its own: chats are not
+server-owned, `SpaceInfo.generalChatObjectId` is gone, and every
+client lands on the space's one chat by ensuring the bundle
+(`POST /v1/spaces/:s/bundles {id: "general-chat/v1", name: "General",
+rootTypes: ["chat"]}` — adopt-or-install, idempotent, offline-capable)
+and using its winning `rootId`. anybao ensures it at serve boot;
+409 `bundle.not_ready` (winner's tree still syncing to this device)
+retries briefly; a pre-bundles server (404 on the route) falls back
+to the legacy `generalChatObjectId` field.
+
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
 - **Server-assigned `seq`**: append returns the allocated seq (single
