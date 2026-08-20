@@ -111,6 +111,10 @@ class FakeClient:
         self.queries.append((space, object_id, dataset, body))
         return [{"seq": 1}]
 
+    def chat_log(self, space, chat_id):
+        # ADR-017: the log child hosts turns/chunks; identity suffices
+        return {"objectId": chat_id}
+
 
 def test_recent_turns_and_chunks_at_level_thin_reads():
     c = FakeClient()

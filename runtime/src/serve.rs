@@ -9,7 +9,6 @@
 use crate::anyapi::Client;
 use crate::broker::{Broker, SharedMailbox};
 use crate::config::Config;
-use crate::deploy::ensure_typed;
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
@@ -107,28 +106,179 @@ fn general_chat(c: &Client, space: &str) -> Result<String> {
     Err(last_err.unwrap()).context("general-chat bundle never became ready")
 }
 
-/// The space's single derived config object (ADR-006 §3), reported as
-/// `agentConfigObjectId` on the single-space GET (same delivery path as
-/// generalChatObjectId). Holds the space-scope override layer of the
-/// config cascade. Returns None (not an error) when the server is too
-/// old to derive it — the harness then runs on hardcoded defaults only.
-fn agent_config_object(c: &Client, space: &str) -> Option<String> {
-    c.get_space(space).ok()?["agentConfigObjectId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+/// The host-written agent stores (ADR-017 §0/§1): anyrt registers the
+/// `bao/v1` bundle and derives + declares ONLY what it writes before
+/// guest code can run — config, secrets, triggers. Brain and chat
+/// logs are guest-owned (any@v1 ensures them lazily).
+pub struct AgentStores {
+    pub config: String,
+    pub secrets: String,
+    pub triggers: String,
 }
 
-/// The space's derived secrets object (`agent_secrets` dataset),
-/// reported as `agentSecretsObjectId` on the single-space GET. None =
-/// the any server predates the config/secrets split — secrets then stay
-/// on the config object (legacy layout) and the guest read-guard covers
-/// that object instead.
-fn agent_secrets_object(c: &Client, space: &str) -> Option<String> {
-    c.get_space(space).ok()?["agentSecretsObjectId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
+    for t in c.list_types(space)? {
+        if t["xKey"] == xkey {
+            return Ok(t["id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    let created = c.create_type(space, &json!({"name": name, "xKey": xkey}))?;
+    Ok(created["typeId"].as_str().unwrap_or_default().to_string())
+}
+
+fn ensure_dataset(c: &Client, space: &str, type_id: &str, draft: &Value) -> Result<()> {
+    let name = draft["name"].as_str().unwrap_or_default();
+    // no reconcile needed: the host stores declare no mutable
+    // search.* leaves
+    if c.list_datasets(space, type_id)?.iter().any(|d| d["name"] == name) {
+        return Ok(());
+    }
+    c.create_dataset(space, type_id, draft)?;
+    Ok(())
+}
+
+/// bundle_child with the same brief `bundle.not_ready` retry policy as
+/// the chat ensure (winner's tree still syncing to this device).
+fn bundle_child_retry(
+    c: &Client,
+    space: &str,
+    bundle: &str,
+    seed: &str,
+    types: &[&str],
+) -> Result<String> {
+    let mut last_err = None;
+    for _ in 0..5 {
+        match c.bundle_child(space, bundle, seed, types) {
+            Ok(reply) => {
+                return reply["objectId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .context("bundle child returned no objectId");
+            }
+            Err(e) if e.status == 409 => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context(format!("bundle child {seed}")),
+        }
+    }
+    Err(last_err.unwrap()).context(format!("bundle child {seed} never became ready"))
+}
+
+/// Every field the trigger registry reads or writes — the datasets are
+/// non-dynamic, an undeclared field rejects the write.
+const TRIGGER_FIELDS: &[&str] = &[
+    "name",
+    "kind",
+    "spec",
+    "program",
+    "args",
+    "owner",
+    "enabled",
+    "limits",
+    "maxConsecutiveFailures",
+    "lastRunAt",
+    "lastStatus",
+    "lastDurationMs",
+    "lastFuel",
+    "lastCostUsd",
+    "runCount",
+    "consecutiveFailures",
+    "lastRunRef",
+];
+const TRIGGER_RUN_FIELDS: &[&str] = &[
+    "triggerId",
+    "ts",
+    "status",
+    "durationMs",
+    "error",
+    "traceRef",
+    "fuel",
+    "costUsd",
+];
+
+fn mutable_fields(keys: &[&str]) -> Vec<Value> {
+    keys.iter()
+        .map(|k| json!({"key": k, "mutableBy": "any"}))
+        .collect()
+}
+
+pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
+    // The bundle: adopt-or-install, brief not_ready retry (same class
+    // as the chat ensure).
+    let mut last_err = None;
+    let mut registered = false;
+    for _ in 0..5 {
+        match c.ensure_bundle(space, "bao/v1", "bao", &["page"]) {
+            Ok(_) => {
+                registered = true;
+                break;
+            }
+            Err(e) if e.status == 409 => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context("bao/v1 bundle ensure"),
+        }
+    }
+    if !registered {
+        return Err(last_err.unwrap()).context("bao/v1 bundle never became ready");
+    }
+
+    let cfg_t = ensure_type(c, space, "Agent Config", "agent_config")?;
+    let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
+    let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    ensure_dataset(
+        c,
+        space,
+        &cfg_t,
+        &json!({
+            "name": CONFIG_DATASET, "displayName": "Agent Config",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "fields": [
+                {"key": "key", "kind": "string", "mutableBy": "any"},
+                {"key": "value", "mutableBy": "any"},
+                {"key": "secret", "kind": "boolean", "mutableBy": "any"},
+                {"key": "localValue", "scope": "local", "mutableBy": "any"},
+            ]}),
+    )?;
+    ensure_dataset(
+        c,
+        space,
+        &sec_t,
+        &json!({
+            "name": SECRETS_DATASET, "displayName": "Agent Secrets",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "fields": [
+                {"key": "key", "kind": "string", "mutableBy": "any"},
+                {"key": "secret", "kind": "boolean", "mutableBy": "any"},
+                {"key": SECRETS_FIELD, "scope": "local", "mutableBy": "any"},
+            ]}),
+    )?;
+    ensure_dataset(
+        c,
+        space,
+        &trg_t,
+        &json!({
+            "name": "agent_triggers", "displayName": "Agent Triggers",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "fields": mutable_fields(TRIGGER_FIELDS)}),
+    )?;
+    ensure_dataset(
+        c,
+        space,
+        &trg_t,
+        &json!({
+            "name": "agent_trigger_runs", "displayName": "Agent Trigger Runs",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "fields": mutable_fields(TRIGGER_RUN_FIELDS)}),
+    )?;
+    Ok(AgentStores {
+        config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
+        secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
+        triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
+    })
 }
 
 /// The Anthropic API key's config key — the record id/`key` on the config
@@ -506,14 +656,16 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let client = Arc::new(Client::new(&cfg.addr));
     let space = ensure_space(&client, &cfg.agent_space)?;
     let chat = general_chat(&client, &space)?;
-    let anchor = ensure_typed(&client, &space, "agent-triggers", "agent_trigger")?;
+    // ADR-017 §0: the bao/v1 bundle + the host-written store children
+    // (config, secrets, triggers). The trigger anchor IS the triggers
+    // child — deterministic, no name-scan.
+    let stores = provision_agent_stores(&client, &space)?;
+    let anchor = stores.triggers.clone();
 
     // Config cascade (ADR-006 §3): hardcoded defaults (from `bootstrap`)
-    // under the space-scope override layer read off the config object;
-    // secrets (the provider API keys) persist device-locally on the same
-    // object.
-    let config_obj = agent_config_object(&client, &space);
-    let secrets_obj = agent_secrets_object(&client, &space);
+    // under the space-scope override layer read off the config child.
+    let config_obj = Some(stores.config.clone());
+    let secrets_obj = Some(stores.secrets.clone());
     if let Some(obj) = &config_obj {
         let overrides = config_overrides(&client, &space, obj);
         info!("config obj={obj} overrides={}", overrides.len());
@@ -599,11 +751,6 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         }
     }
 
-    let brain = client.get_brain(&space)?["objectId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-
     // serve is space-only (ADR-009 §5): programs, skills, and the kernel
     // are already IN the space(s) — `anyrt deploy` is the publish step.
     // The system prompt is composed guest-side (toolcaller@v1) from the
@@ -649,7 +796,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let mut sched = Scheduler::new(&instance, Box::new(now_s));
     sched.arm();
     let mut registry = BTreeMap::new();
-    for t in standing_triggers(&space, &chat, &brain, &instance) {
+    for t in standing_triggers(&space, &chat, &instance) {
         if election.active.load(Ordering::Relaxed) {
             client.upsert_record(
                 &space,
@@ -1116,7 +1263,7 @@ fn trigger_ticker(
             let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
             let mut reg = shared.triggers.lock().unwrap();
             let standing: std::collections::BTreeSet<String> =
-                standing_triggers(&ctx.space, "", "", "")
+                standing_triggers(&ctx.space, "", "")
                     .into_iter()
                     .map(|t| t.id)
                     .collect();

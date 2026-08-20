@@ -280,13 +280,17 @@ def test_space_argument_must_be_a_string():
 
 
 def test_get_space_and_general_chat():
-    fx = wire(replies={"/spaces/s1": {"id": "s1",
-                                      "generalChatObjectId": "chat9"}})
+    # the chat is the general-chat/v1 bundle's winning root (ADR-017);
+    # the bundle id's slash is percent-encoded in the path
+    fx = wire(replies={"/spaces/s1": {"id": "s1"},
+                       "/bundles/general-chat%2Fv1": {
+                           "id": "general-chat/v1", "rootId": "chat9"}})
     c = client(fx)
-    assert c.get_space("s1")["generalChatObjectId"] == "chat9"
+    assert c.get_space("s1")["id"] == "s1"
     assert c.general_chat("s1") == "chat9"
     assert [(v, p) for v, p, _ in fx.calls] == [
-        ("GET", "/v1/spaces/s1"), ("GET", "/v1/spaces/s1")]
+        ("GET", "/v1/spaces/s1"),
+        ("GET", "/v1/spaces/s1/bundles/general-chat%2Fv1")]
 
 
 def test_delete_object_wire_path():
@@ -412,15 +416,42 @@ def test_catalog_refreshes_once_on_unknown_type_miss():
 
 
 def test_turns_chunks_chat_paths():
-    fx = wire()
+    # ADR-017: turns/chunks land on the chat's log child (bao/log/v1 of
+    # the chat's bundle) via upsert with a client-assigned seq; the
+    # agent_log store is ensured lazily (type + datasets pre-exist in
+    # this fixture, search leaves matching so nothing is patched)
+    fx = wire(replies={
+        "/types/lg/datasets": {"datasets": [
+            {"id": "d1", "name": "agent_turns",
+             "search": {"title": "userText", "text": "searchText",
+                        "scope": "history"}},
+            {"id": "d2", "name": "agent_chunks",
+             "search": {"text": "summary", "scope": "history"}}]},
+        "/types": {"types": [{"id": "lg", "xKey": "agent_log"}]},
+        "/children": {"objectId": "log1"},
+        "/bundles": {"bundles": [{"id": "general-chat/v1",
+                                  "rootId": "chat1"}]},
+        "/query": {"records": [{"id": "00000004", "seq": 4}]},
+        "/upsert": {"created": 1, "updated": 0, "skipped": 0},
+    })
     c = client(fx)
-    c.append_turn("s1", "chat1", {"userText": "hi"})
+    r = c.append_turn("s1", "chat1", {"userText": "hi", "replies": ["yo"]})
+    assert r == {"recordIds": ["00000005"], "seq": 5}
     c.create_chunk("s1", "chat1", {"level": 1})
     c.chat_send("s1", "chat1", {"text": "yo"})
-    assert [(v, p) for v, p, _ in fx.calls] == [
-        ("POST", "/v1/spaces/s1/objects/chat1/agent/turns"),
-        ("POST", "/v1/spaces/s1/objects/chat1/agent/chunks"),
-        ("POST", "/v1/spaces/s1/objects/chat1/chat/messages")]
+    turn_up = next(b for v, p, b in fx.calls
+                   if p.endswith("/upsert")
+                   and b["dataset"] == "agent_turns")
+    assert turn_up["objectId"] == "log1"
+    rec = turn_up["records"][0]
+    assert rec["id"] == "00000005"
+    assert rec["fields"]["seq"] == 5
+    assert rec["fields"]["searchText"] == "hi yo"
+    chunk_up = next(b for v, p, b in fx.calls
+                    if p.endswith("/upsert")
+                    and b["dataset"] == "agent_chunks")
+    assert chunk_up["records"][0]["fields"]["level"] == 1
+    assert fx.calls[-1][1] == "/v1/spaces/s1/objects/chat1/chat/messages"
 
 
 # --- catalog reads ---------------------------------------------------------------
@@ -607,18 +638,63 @@ def test_backlinks_unwraps_and_null_degrades_to_empty():
 
 # --- agent memory ---------------------------------------------------------------------
 
+def _brain_wire():
+    # agent_brain store pre-exists (type + datasets with matching
+    # search leaves), brain child derives to brain1
+    return {
+        "/types/br/datasets": {"datasets": [
+            {"id": "d1", "name": "agent_memory_items",
+             "search": {"title": "context", "text": "body",
+                        "scope": "agent"}},
+            {"id": "d2", "name": "agent_job_state"}]},
+        "/types": {"types": [{"id": "br", "xKey": "agent_brain"}]},
+        "/children": {"objectId": "brain1"},
+        "/modify": {"recordIds": ["m1"]},
+    }
+
+
 def test_memory_verbs_and_paths():
-    fx = wire(replies={"/agent/brain": {"objectId": "brain1"}})
+    fx = wire(replies=_brain_wire())
     c = client(fx)
     assert c.get_brain("s1") == {"objectId": "brain1"}
     c.create_memory("s1", {"category": "fact", "context": "x"})
     c.evolve_memory("s1", "m1", {"accessCount": 2})
     c.delete_memory("s1", "m1")
-    assert [(v, p) for v, p, _ in fx.calls] == [
-        ("GET", "/v1/spaces/s1/agent/brain"),
-        ("POST", "/v1/spaces/s1/agent/memory"),
-        ("PATCH", "/v1/spaces/s1/agent/memory/m1"),
-        ("DELETE", "/v1/spaces/s1/agent/memory/m1")]
+    create = next(b for v, p, b in fx.calls if p.endswith("/modify"))
+    assert create["objectId"] == "brain1"
+    assert create["dataset"] == "agent_memory_items"
+    assert create["records"][0]["id"] == ""      # auto-derived item id
+    assert create["records"][0]["upsert"] is True
+    set_fields = {op["path"]: op["value"]
+                  for op in create["records"][0]["ops"]}
+    # required + the scoring defaults (ADR-017: validation and
+    # defaults are client-side now)
+    assert set_fields["category"] == "fact"
+    assert set_fields["confidence"] == 5 and set_fields["salience"] == 10
+    assert set_fields["importance"] == 5 and set_fields["accessCount"] == 0
+    assert "validFrom" in set_fields
+    evolve = [b for v, p, b in fx.calls if p.endswith("/modify")][1]
+    assert evolve["records"][0]["id"] == "m1"
+    assert "upsert" not in evolve["records"][0]
+    assert fx.calls[-1][1] == "/v1/spaces/s1/delete-records"
+    assert fx.calls[-1][2]["recordIds"] == ["m1"]
+
+
+def test_memory_validation_is_client_side():
+    fx = wire(replies=_brain_wire())
+    c = client(fx)
+    err = load(wire())["AnyError"]  # class identity differs per load
+    with pytest.raises(Exception, match="category required"):
+        c.create_memory("s1", {"context": "x"})
+    with pytest.raises(Exception, match="unknown memory fields"):
+        c.create_memory("s1", {"category": "fact", "context": "x",
+                               "embeddingRef": "nope"})
+    with pytest.raises(Exception, match="not evolvable"):
+        c.evolve_memory("s1", "m1", {"category": "flip"})
+    with pytest.raises(Exception, match="confidence"):
+        c.create_memory("s1", {"category": "fact", "context": "x",
+                               "confidence": 11})
+    assert err  # silence unused warning
 
 
 # --- spaces & ui context ---------------------------------------------------------

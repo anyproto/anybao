@@ -31,9 +31,9 @@ def _summarize(text, system, tier):
                     if p["type"] == "text").strip()
 
 
-def _covered(c, space, chat, level):
+def _covered(c, space, log, level):
     """Max toSeq among level-N chunks — everything at or below is done."""
-    top = c.query(space, chat, "agent_chunks",
+    top = c.query(space, log, "agent_chunks",
                   filter={"level": level}, sort=["-seq"], limit=1)
     return top[0]["toSeq"] if top else 0
 
@@ -56,9 +56,9 @@ def _batches(items, size):
     return [items[i:i + size] for i in range(0, len(items) - size + 1, size)]
 
 
-def rollup_l1(c, space, chat, batch, tier):
-    covered = _covered(c, space, chat, 1)
-    turns = c.query(space, chat, "agent_turns",
+def rollup_l1(c, space, chat, log, batch, tier):
+    covered = _covered(c, space, log, 1)
+    turns = c.query(space, log, "agent_turns",
                     filter={"seq": {"$gt": covered}}, sort=["seq"])
     out = []
     for group in _batches(turns, batch):
@@ -70,9 +70,9 @@ def rollup_l1(c, space, chat, batch, tier):
     return out
 
 
-def rollup_ln(c, space, chat, level, batch, tier):
-    covered = _covered(c, space, chat, level)
-    children = c.query(space, chat, "agent_chunks",
+def rollup_ln(c, space, chat, log, level, batch, tier):
+    covered = _covered(c, space, log, level)
+    children = c.query(space, log, "agent_chunks",
                        filter={"level": level - 1, "seq": {"$gt": covered}},
                        sort=["seq"])
     out = []
@@ -91,9 +91,12 @@ def main(args):
     batch = args.get("batch", BATCH)
     tier = args.get("tier", TIER)
     c = use("any@v1")  # noqa: F821 - guest global
-    created = rollup_l1(c, space, chat, batch, tier)
+    # turns/chunks live on the chat's log child (ADR-017); create_chunk
+    # resolves it itself, reads query it directly
+    log = c.chat_log(space, chat)["objectId"]
+    created = rollup_l1(c, space, chat, log, batch, tier)
     for level in range(2, args.get("maxLevel", MAX_LEVEL) + 1):
-        created += rollup_ln(c, space, chat, level, batch, tier)
+        created += rollup_ln(c, space, chat, log, level, batch, tier)
     return {"created": len(created),
             "byLevel": {c2["level"]: sum(1 for x in created if x["level"] == c2["level"])
                         for c2 in created}}

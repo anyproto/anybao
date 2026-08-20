@@ -41,6 +41,7 @@ class Recall:
         self._space = space
         self._brain = brain_object_id
         self._chat = chat_object_id
+        self._log = None   # the chat's log child, resolved lazily
 
     # --- semantic ----------------------------------------------------------
     @span(kind="getter")  # noqa: F821 - guest global
@@ -111,13 +112,17 @@ class Recall:
                 sort=["validFrom"])
             out += [{**r, "source": "memory"} for r in items]
         if self._chat:
+            if self._log is None:
+                # turns/chunks live on the chat's log child (ADR-017)
+                self._log = (self._c.chat_log(self._space, self._chat)
+                             or {}).get("objectId")
             turns = self._c.query(
-                self._space, self._chat, "agent_turns",
+                self._space, self._log, "agent_turns",
                 filter={"createdAt": {"$gte": from_ts, "$lte": to_ts}},
                 sort=["createdAt"])
             out += [{**r, "source": "turn"} for r in turns]
             chunks = self._c.query(
-                self._space, self._chat, "agent_chunks",
+                self._space, self._log, "agent_chunks",
                 filter={"periodStart": {"$lte": to_ts}, "periodEnd": {"$gte": from_ts}},
                 sort=["periodStart"])
             out += [{**r, "source": "chunk"} for r in chunks]

@@ -7,7 +7,8 @@ classify-tier LLM proposes typed links from the CURATED edge vocabulary
 → written as edges via memory@v1 evolve. New edge types are never
 invented here (vocabulary drift is the known traversal killer — §3).
 Cursor = a plain agent_job_state record on the brain object. args:
-{space, brainId, batch?, tier?, maxLinks?}.
+{space, batch?, tier?, maxLinks?} — the brain resolves itself
+(ADR-017).
 """
 
 import json
@@ -75,8 +76,9 @@ def valid_links(proposals, neighbor_ids, existing_edges, max_links):
 
 
 def main(args):
-    space, brain = args["space"], args["brainId"]
+    space = args["space"]
     c = use("any@v1")  # noqa: F821 - guest global
+    brain = c.get_brain(space)["objectId"]
     last = _state(c, space, brain)
     items = c.query(space, brain, "agent_memory_items",
                     filter={"createdAt": {"$gt": last}}, sort=["createdAt"],

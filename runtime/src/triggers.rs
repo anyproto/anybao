@@ -266,7 +266,7 @@ pub fn rollup(t: &Trigger) -> Value {
 }
 
 /// The standing background jobs (ADR-006 §2, ADR-007 §1b/§4).
-pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str) -> Vec<Trigger> {
+pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger> {
     vec![
         Trigger::cron(
             "rollup",
@@ -282,8 +282,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "memory extraction",
             900.0,
             "agent:extraction@v1",
-            json!({"space": space, "chatId": chat_id,
-                             "brainId": brain_id}),
+            json!({"space": space, "chatId": chat_id}),
             owner,
             true,
         ),
@@ -292,7 +291,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "memory link generation",
             3600.0,
             "agent:linkgen@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             true,
         ),
@@ -302,7 +301,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "salience decay",
             86400.0,
             "agent:decay@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             false,
         ),
@@ -311,7 +310,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "reflection",
             86400.0,
             "agent:reflection@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             false,
         ),
@@ -320,7 +319,7 @@ pub fn standing_triggers(space: &str, chat_id: &str, brain_id: &str, owner: &str
             "memory evolution",
             21600.0,
             "agent:evolution@v1",
-            json!({"space": space, "brainId": brain_id}),
+            json!({"space": space}),
             owner,
             false,
         ),

@@ -141,13 +141,16 @@ def recent_turns(client, space, chat_id, limit):
     """Newest AGENTLOG turns first (descending seq) — the agent's own
     turn records, NOT the chat conversation. For what people said in a
     chat, read its messages: `client.query(space, chat_id,
-    "chat_messages", sort=["-createdAt"], limit=n)`. An empty [] here
-    just means this agent never logged turns on that chat."""
-    return client.query(space, chat_id, "agent_turns", sort=["-seq"], limit=limit)
+    "chat_messages", sort=["-createdAt"], limit=n)`. Turns live on the
+    chat's log child (ADR-017). An empty [] here just means this agent
+    never logged turns on that chat."""
+    log = client.chat_log(space, chat_id)["objectId"]
+    return client.query(space, log, "agent_turns", sort=["-seq"], limit=limit)
 
 
 @span(kind="getter")  # noqa: F821 - guest global
 def chunks_at_level(client, space, chat_id, level, limit):
     """Newest chunks of one level first (descending seq)."""
-    return client.query(space, chat_id, "agent_chunks",
+    log = client.chat_log(space, chat_id)["objectId"]
+    return client.query(space, log, "agent_chunks",
                         filter={"level": level}, sort=["-seq"], limit=limit)

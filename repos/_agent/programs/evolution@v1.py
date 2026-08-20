@@ -9,7 +9,7 @@ the cursor), show the LLM the item plus its edge neighbors and let it
 refresh ONLY `context` and `tags` (the mutable descriptive fields —
 never category/body/confidence from here). No-change replies are
 skipped. Cursor = agent_job_state record on the brain object. args:
-{space, brainId, batch?, tier?}.
+{space, batch?, tier?} — the brain resolves itself (ADR-017).
 """
 
 import json
@@ -60,9 +60,10 @@ def refresh(item, neighbors, tier):
 
 
 def main(args):
-    space, brain = args["space"], args["brainId"]
+    space = args["space"]
     tier = args.get("tier", TIER)
     c = use("any@v1")  # noqa: F821 - guest global
+    brain = c.get_brain(space)["objectId"]
     last = _state(c, space, brain)
     items = c.query(space, brain, "agent_memory_items",
                     filter={"modifiedAt": {"$gt": last}}, sort=["modifiedAt"],

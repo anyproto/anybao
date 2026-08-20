@@ -74,6 +74,15 @@ surface: `stamp` for server-stamped identity/time, `mutableBy` for
 write rules, `scope: local` for device-local values, kind omitted =
 unconstrained value, `search.scope` for recall scoping.
 
+**Each store is ensured by its writer.** anyrt (host) ensures what it
+writes before any guest code can run: `agent_config` + `agent_secrets`
+(the boot bootstrap writes synced key records + device-local values
+pre-overlay-sync; local-scope writes cannot create records) and
+`agent_trigger` (serve arms standing triggers). any@v1 (guest) ensures
+what only guest code writes, lazily on first use: `agent_brain` inside
+`get_brain`, `agent_log` inside the chat-log resolver — idempotent
+`create_type`/`create_dataset`, the enrich/gmailSync pattern.
+
 **`agent_config`** — dataset `agent_config`, `idRule: user` (record id
 = the dotted config key), `deleteBy: anyone`. Fields: `key` (string,
 `mutableBy: any`), `value` (unconstrained, `mutableBy: any`), `secret`
@@ -153,18 +162,19 @@ paths inside these methods are deleted, not conditionally kept.
 
 ### 4. anyrt (host)
 
-- Boot: ensure `bao/v1` + the four children + the five types + their
-  datasets (idempotent; the dataset ensure reconciles mutable
-  `search.*` leaves per ADR-016). The general chat ensure extends
-  with the log child.
+- Boot: register `bao/v1`, derive the config/secrets/triggers
+  children, ensure the three host-written types + datasets
+  (idempotent; the dataset ensure reconciles mutable `search.*`
+  leaves per ADR-016). Brain and log are guest-owned (§1) — the host
+  never touches them.
 - Config/secrets resolution: the bundle children replace the
   `SpaceInfo` id fields everywhere (config.rs bootstrap, serve boot).
 - Triggers: the anchor is the `bao/triggers/v1` child; `ensure_typed`
-  for the anchor is deleted.
-- Turns: serve's turn append writes the log child via upsert with
-  client seq + `searchText`.
+  for the anchor is deleted. Trigger args drop `brainId` — cron
+  programs resolve the brain themselves via `get_brain`
+  (deterministic ids are not passed around).
 - The anyapi.rs `/agent/*` client methods are deleted with their
-  routes.
+  routes; turns/chunks are guest-written only (toolcaller, rollup).
 
 ### 5. What is deleted where
 
