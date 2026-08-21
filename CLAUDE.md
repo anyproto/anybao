@@ -65,11 +65,12 @@ buffer (a saved pretty-print breaks the parse).
 
 The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
 dedicated **repo account** whose server runs locally at
-`http://127.0.0.1:7003` (data dir `~/.any-repo`). The default
+`http://127.0.0.1:7003` (data dir `~/.any-repo-prod`, prod network —
+full bring-up runbook: `docs/prod-repo-account.md`). The default
 `anybao.toml` account only *joins* them as guest — `anyrt deploy
 --target agent` through it 403s (`space.read_only`). Deploy via the
 repo server, addressing the space by raw id (the ids live in
-`anybao.toml [overlays]`):
+`anybao.toml [overlays]` and in the runbook):
 
 ```
 anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
