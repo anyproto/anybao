@@ -150,7 +150,10 @@ Synced mail (`email_messages` records on a `mailbox` object, ADR-016):
   `CATEGORY_PROMOTIONS`), `internalDate` (ms epoch — the sort key),
   `snippet`, `body` (cleaned markdown), `signature`, `participants`
   (normalized lowercase addresses from From/To/Cc — the person-join
-  key), plus derived `creator`/`createdAt`/`modifiedAt`. **For "what
+  key), `summary` (generated digest) and `notes` (the user's OWN
+  markdown notes — user-authored, edit only on request; both may be
+  empty and both survive re-sync), plus derived
+  `creator`/`createdAt`/`modifiedAt`. **For "what
   did X and I email about", use the synced corpus first — never the
   live gmail connector** (that is the raw provider API: slower,
   quota-bound, needs OAuth, and blind to the cleaned corpus; reach
@@ -162,7 +165,8 @@ Synced mail (`email_messages` records on a `mailbox` object, ADR-016):
   likewise `{"labelIds": "TRASH"}`. Bodies ride in the rows — no
   get_markdown step. Counts: `aggregate(space, [{"$count": "n"}],
   object_id=<mailboxId>, dataset="email_messages")`. Semantic search
-  covers mail — subject+body index under scope `basic`; hits carry
+  covers mail — subject + body + notes index under scope `email`
+  (recall queries it by default; `summary` is NOT indexed); hits carry
   `dataset: "email_messages"` + `recordId` (the gmail id) — fetch the
   full record with `query(..., filter={"id": {"$in": [...]}})`.
 - Threads are data, not structure: same `threadId` = one

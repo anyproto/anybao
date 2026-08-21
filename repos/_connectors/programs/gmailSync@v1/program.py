@@ -49,8 +49,10 @@ EMAIL_DATASET = {
     "idRule": "user",          # record id = Gmail message id (ADR-016 §1)
     "deleteBy": "author", "skipHistory": True,
     # scope "email": recall queries it explicitly (recall@v1 default
-    # scopes include it); keeps raw mail out of basic content search
-    "search": {"title": "subject", "text": "body", "scope": "email"},
+    # scopes include it); keeps raw mail out of basic content search.
+    # text is multi-field (SYN-179): user notes index alongside the
+    # body; summary stays unindexed (derived from body, regenerates)
+    "search": {"title": "subject", "text": ["body", "notes"], "scope": "email"},
     "fields": [
         # C1: Gmail's own names; write-once unless declared otherwise
         {"key": "threadId", "kind": "string"},
@@ -65,6 +67,11 @@ EMAIL_DATASET = {
         {"key": "body", "kind": "string"},
         {"key": "signature", "kind": "string"},
         {"key": "participants", "kind": "array"},
+        # annotation fields (ADR-016 §1 amendment): written by the UI /
+        # agent AFTER ingest, never by sync — sync upserts omit them,
+        # so a re-hydrate or label flip can't clobber an edit
+        {"key": "summary", "kind": "string", "mutableBy": "author"},
+        {"key": "notes", "kind": "string", "mutableBy": "author"},
         {"key": "creator", "stamp": "creator"},
         {"key": "createdAt", "stamp": "createTime"},
         {"key": "modifiedAt", "stamp": "modifyTime"},

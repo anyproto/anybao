@@ -1141,8 +1141,8 @@ class _Client:
 
         draft: {"name": "<collection>", "displayName"?, "idRule":
         "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
-        "search"?: {"title": "<field key>", "text": "<field key>",
-        "scope"?: "<index scope slug>"},
+        "search"?: {"title": "<field key>", "text": "<field key>" |
+        ["<field key>", ...], "scope"?: "<index scope slug>"},
         "fields": [{"key", "kind"?: string|number|boolean|array|
         object, "required"?, "mutableBy"?: "author"|"any", "stamp"?:
         "creator"|"createTime"|"modifyTime"}]}. Fields default
@@ -1150,7 +1150,10 @@ class _Client:
         {"stamp": "creator"} field; idRule "user" = caller-supplied
         record ids (the upsert idempotency key). search.scope picks
         the index scope the records land under (absent = "basic");
-        recall must query that scope to see them. Behavioral parts pin
+        recall must query that scope to see them. search.text may name
+        SEVERAL fields (SYN-179) — the indexer joins their values in
+        mapping order; the server stores a single-element array as the
+        bare string. Behavioral parts pin
         first-write — to change them remove and re-declare.
         Idempotent by collection name: an existing def is reused, but
         the draft stays authoritative for the mutable search.* leaves
@@ -1168,10 +1171,20 @@ class _Client:
                 out = {"datasetDefId": d.get("id"), "created": False}
                 want = (draft or {}).get("search") or {}
                 have = d.get("search") or {}
+
+                def _text_norm(v):
+                    # search.text is string-or-array (SYN-179); the
+                    # server stores single-element arrays as the bare
+                    # string, so drift-compare normalized lists
+                    return v if isinstance(v, list) else ([v] if v else [])
+
                 set_ops, unset = {}, []
                 for leaf in ("title", "text", "scope"):
                     w = want.get(leaf) or ""
-                    if w != (have.get(leaf) or ""):
+                    h = have.get(leaf) or ""
+                    same = (_text_norm(w) == _text_norm(h)
+                            if leaf == "text" else w == h)
+                    if not same:
                         if w:
                             set_ops[f"search.{leaf}"] = w
                         else:

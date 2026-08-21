@@ -451,6 +451,45 @@ def test_catalog_refreshes_once_on_unknown_type_miss():
     assert seen["n"] == 2
 
 
+def test_create_dataset_patches_drifted_multifield_text():
+    # SYN-179: a draft whose search.text names more fields than the
+    # existing def is drift — ensure PATCHes the array leaf back
+    fx = wire(replies={
+        "/types/mb/datasets": {"datasets": [
+            {"id": "d1", "name": "email_messages",
+             "search": {"title": "subject", "text": "body",
+                        "scope": "email"}}]},
+        "/types": {"types": [{"id": "mb", "xKey": "mailbox"}]},
+    })
+    r = client(fx).create_dataset("s1", "mailbox", {
+        "name": "email_messages",
+        "search": {"title": "subject", "text": ["body", "notes"],
+                   "scope": "email"}})
+    assert r == {"datasetDefId": "d1", "created": False,
+                 "patched": ["search.text"]}
+    verb, path, body = next(c for c in fx.calls if c[0] == "PATCH")
+    assert path.endswith("/types/mb/datasets/d1")
+    assert body == {"set": {"search.text": ["body", "notes"]}}
+
+
+def test_create_dataset_single_element_text_array_is_not_drift():
+    # The server stores a one-key array as the bare string; a draft
+    # saying ["body"] against a stored "body" must NOT patch
+    fx = wire(replies={
+        "/types/mb/datasets": {"datasets": [
+            {"id": "d1", "name": "email_messages",
+             "search": {"title": "subject", "text": "body",
+                        "scope": "email"}}]},
+        "/types": {"types": [{"id": "mb", "xKey": "mailbox"}]},
+    })
+    r = client(fx).create_dataset("s1", "mailbox", {
+        "name": "email_messages",
+        "search": {"title": "subject", "text": ["body"],
+                   "scope": "email"}})
+    assert r == {"datasetDefId": "d1", "created": False}
+    assert not [c for c in fx.calls if c[0] == "PATCH"]
+
+
 def test_turns_chunks_chat_paths():
     # ADR-017: turns/chunks land on the chat's log child (bao/log/v1 of
     # the chat's bundle) via upsert with a client-assigned seq; the

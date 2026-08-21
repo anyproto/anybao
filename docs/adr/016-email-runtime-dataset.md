@@ -52,15 +52,21 @@ runtime dataset **`email_messages`** declared via
   account is the single writer, per the SDK's IdRule:user contract).
 - `skipHistory: true` — the provider is the source of truth; label
   churn must not accrete history rows (#156's stance, kept).
-- `search: {title: subject, text: body, scope: email}` — the x-search
-  mapping; the server's SchemaChunker indexes records under the
-  declared scope, so mail participates in `/search` without
+- `search: {title: subject, text: [body, notes], scope: email}` — the
+  x-search mapping; the server's SchemaChunker indexes records under
+  the declared scope, so mail participates in `/search` without
   `editor_blocks`. **Amended 2026-08-20**: the server grew
   `search.scope` on runtime dataset declarations (any PR #173 / SDK
   #101); mail moves from the generic `basic` scope to its own `email`
   scope — raw mail stops polluting basic content search, and recall@v1
   adds `email` to its default scopes so bao still finds it. Already-
   indexed records keep their stored scope until they re-index.
+  **Amended 2026-08-21**: `text` names several fields (SYN-179 — the
+  indexer joins the values in mapping order) so user notes index
+  alongside the body; `summary` is deliberately NOT mapped — it
+  derives from the indexed body and regenerates. Requires a server
+  carrying SYN-179; on older servers the array form rejects at
+  declaration time.
 - Fields (C1: Gmail's own names, camelCase, verbatim): `threadId`,
   `from`, `to`, `cc`, `subject`, `date`, `internalDate` (number, the
   sort key), `snippet` — write-once; `labelIds` (array,
@@ -68,8 +74,15 @@ runtime dataset **`email_messages`** declared via
   fields `body` (clean_html markdown, ADR-012 §4 unchanged),
   `signature` (the §4 split, previously discarded — persona raw
   material now lands), `participants` (normalized from+to+cc address
-  array, see §3). **No `required` fields** — mail is garbage-tolerant;
-  an odd message must degrade to empty strings, never reject.
+  array, see §3); annotation fields `summary` (generated digest — the
+  UI fills it via a small program on a cheap model tier; on failure it
+  shows the error and fills nothing) and `notes` (the user's own
+  markdown, edited as plain text in the UI — a block editor cannot
+  attach to a record: `editor_blocks` is per-object), both string and
+  `mutableBy: author`, written after ingest and never by the sync —
+  sync upserts omit them, so a re-hydrate or label flip cannot clobber
+  an edit. **No `required` fields** — mail is garbage-tolerant; an odd
+  message must degrade to empty strings, never reject.
 
 Threads stay data, not structure: same `threadId` = one conversation,
 sorted by `internalDate` (#156's stance, kept). `sync_state` remains
@@ -120,7 +133,9 @@ emails are merely the first corpus. New flat methods, 1:1 over the
 server endpoints: `create_dataset` (ensure-by-name composite, the
 `create_type` pattern; since 2026-08-20 the draft stays authoritative
 for the mutable `search.*` leaves — a drifted title/text/scope on an
-existing def is PATCHed back, so scope changes roll out by deploy),
+existing def is PATCHed back, so scope changes roll out by deploy;
+`text` drift-compares as a normalized list since the server stores a
+single-element array as the bare string, SYN-179),
 `list_datasets`, `remove_dataset`,
 `upsert_records`, `delete_records`; `aggregate` gains
 `object_id`/`dataset` params for the per-object variant (dataset field

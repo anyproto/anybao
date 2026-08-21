@@ -42,6 +42,7 @@ class FakeAny:
         self.mailboxes = list(mailboxes or [])  # mailbox object rows
         self.types_created = []
         self.datasets_created = []
+        self.dataset_drafts = []               # every create_dataset draft
         self.deleted = []
         self.deleted_records = []
         self.upserts = []                      # every upsert_records call
@@ -103,6 +104,7 @@ class FakeAny:
 
     def create_dataset(self, space, type_key, draft):
         self.datasets_created.append((type_key, draft["name"]))
+        self.dataset_drafts.append(draft)
         return {"datasetDefId": "ds1", "created": True}
 
     # -- objects
@@ -383,6 +385,17 @@ def test_full_slice_creates_skips_and_checkpoints():
     assert fake.mailboxes[0]["mailbox"]["address"] == "me@example.com"
     assert st["mailbox_id"] == fake.mailboxes[0]["id"]
     assert st["store"] == "email_messages"
+    # ADR-016 §1 amendment (SYN-179): notes index beside the body,
+    # summary stays unmapped; both annotation fields are author-mutable
+    # and NEVER in a sync upsert (edits must survive re-sync)
+    draft = fake.dataset_drafts[0]
+    assert draft["search"]["text"] == ["body", "notes"]
+    annot = {f["key"]: f for f in draft["fields"]
+             if f["key"] in ("summary", "notes")}
+    assert set(annot) == {"summary", "notes"}
+    assert all(f["mutableBy"] == "author" for f in annot.values())
+    assert not any("summary" in r or "notes" in r
+                   for r in fake.mail.values())
 
 
 def test_tick_refuses_cleanly_when_run_budget_already_spent():
