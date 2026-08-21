@@ -410,27 +410,37 @@ impl Client {
     }
 
     // --- bundles (SYN-163) ---
-    /// POST /v1/spaces/{s}/bundles — adopt-or-install a bundle: a
-    /// non-derived root object registered under a permanent id in the
-    /// space's bundles registry ("general-chat/v1" — the slash is part
-    /// of the id, sent verbatim in bodies). With a winner already
-    /// registered this is a local read (`installed: false`); otherwise
-    /// the server creates the root with `root_types` attached and
-    /// registers it in one change. Reply `{bundle: {id, rootId, roots,
-    /// losers}, installed}` — `rootId` is provisional until the space
-    /// syncs; 409 `bundle.not_ready` means the winner's tree hasn't
-    /// landed on this device yet (retryable).
+    /// POST /v1/spaces/{s}/bundles — adopt-or-install a bundle: one
+    /// root object registered under a permanent id in the space's
+    /// bundles registry ("general-chat/v1" — the slash is part of the
+    /// id, sent verbatim in bodies). With a winner already registered
+    /// this is a local read (`installed: false`); otherwise the server
+    /// mints the root with `root_types` attached and registers it in
+    /// one change. Reply `{bundle: {id, rootId, roots, losers,
+    /// derived}, installed}`. `derived: true` (SYN-172) installs on
+    /// the root DERIVED from the bundle id — the same id on every
+    /// device, computed offline, so the install can never fork; the
+    /// price is permanence (a derived root is undeletable, so no
+    /// uninstall). Without it the root is created fresh and `rootId`
+    /// is provisional until the space syncs. 409 `bundle.not_ready`
+    /// means a winner's tree hasn't landed on this device yet
+    /// (retryable).
     pub fn ensure_bundle(
         &self,
         space_id: &str,
         id: &str,
         name: &str,
         root_types: &[&str],
+        derived: bool,
     ) -> Result<Value, AnyError> {
+        let mut body = json!({"id": id, "name": name, "rootTypes": root_types});
+        if derived {
+            body["derived"] = json!(true);
+        }
         self.call(
             "POST",
             &format!("/v1/spaces/{space_id}/bundles"),
-            Some(&json!({"id": id, "name": name, "rootTypes": root_types})),
+            Some(&body),
         )
     }
 
@@ -1284,7 +1294,9 @@ mod tests {
     #[test]
     fn ensure_bundle_posts_id_verbatim_in_body() {
         let (c, log) = stub_client();
-        c.ensure_bundle("sp", "general-chat/v1", "General", &["chat"])
+        c.ensure_bundle("sp", "general-chat/v1", "General", &["chat"], true)
+            .unwrap();
+        c.ensure_bundle("sp", "bao/v1", "bao", &["page"], false)
             .unwrap();
         let calls = log.lock().unwrap();
         assert_eq!(calls[0].0, "POST");
@@ -1294,7 +1306,13 @@ mod tests {
         assert_eq!(
             calls[0].2,
             Some(json!({"id": "general-chat/v1", "name": "General",
-                        "rootTypes": ["chat"]}))
+                        "rootTypes": ["chat"], "derived": true}))
+        );
+        // a created install carries no `derived` key at all
+        assert_eq!(
+            calls[1].2,
+            Some(json!({"id": "bao/v1", "name": "bao",
+                        "rootTypes": ["page"]}))
         );
     }
 

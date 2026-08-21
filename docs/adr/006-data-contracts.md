@@ -67,10 +67,22 @@ check-then-create race. `ensure_space` resolution order:
 nothing on its own (SYN-163): a space's one chat is the bundle's
 winning root, and every client lands on it by ensuring the bundle
 (`POST /v1/spaces/:s/bundles {id: "general-chat/v1", name: "General",
-rootTypes: ["chat"]}` — adopt-or-install, idempotent, offline-capable)
-and using its `rootId`. anybao ensures it at serve boot; 409
-`bundle.not_ready` (winner's tree still syncing to this device)
-retries briefly. The bundles route is required (no-backcompat).
+rootTypes: ["chat"], "derived": true}` — adopt-or-install, idempotent,
+offline-capable) and using its `rootId`. anybao ensures it at serve
+boot; 409 `bundle.not_ready` (an adopted created winner's tree still
+syncing to this device) retries briefly. The bundles route is required
+(no-backcompat).
+
+**Amended 2026-08-21 — the chat root is DERIVED (any #177,
+SYN-172).** `"derived": true` computes the root id from the bundle
+id, so every device and member — both sides of a 1-1 included —
+lands on the same chat offline and the install can never fork (chat
+content cannot be merged across objects, so a fork must be
+impossible rather than resolvable). The trade is permanence: a
+derived root is undeletable. A pre-convention created install is
+adopted, never migrated (`derived: false` in the reply). No
+backward compat: servers without any #177 are unsupported once this
+lands.
 
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 

@@ -1243,18 +1243,23 @@ class _Client:
         return f"/v1/spaces/{space}/bundles/{bundle_id.replace('/', '%2F')}{tail}"
 
     def ensure_bundle(self, space, bundle_id, name=None, root_types=None,
-                      root_properties=None):
+                      root_properties=None, derived=False):
         """Adopt-or-install a bundle → {bundle: {id, name, rootId,
-        roots, losers}, installed}.
+        roots, losers, derived}, installed}.
 
-        A bundle is one install: a non-derived root object registered
-        under a permanent id in the space's bundles registry. With a
-        winner already registered this is a local read (installed:
-        False); otherwise the root is created with root_types attached
-        and registered in one change. rootId is provisional until the
-        space syncs; 409 bundle.not_ready (the winner's tree hasn't
-        landed on this device) is retryable. Ids are permanent — never
-        reuse one for a successor install."""
+        A bundle is one install: one root object registered under a
+        permanent id in the space's bundles registry. With a winner
+        already registered this is a local read (installed: False);
+        otherwise the root is minted with root_types attached and
+        registered in one change. derived=True installs on the root
+        DERIVED from the bundle id — the same id on every device,
+        computed offline, so the install can never fork; the price is
+        permanence (a derived root is undeletable, so no uninstall —
+        the general-chat/v1 convention). Without it the root is
+        created fresh and rootId is provisional until the space syncs.
+        409 bundle.not_ready (a winner's tree hasn't landed on this
+        device) is retryable. Ids are permanent — never reuse one for
+        a successor install."""
         body = {"id": bundle_id}
         if name:
             body["name"] = name
@@ -1262,6 +1267,8 @@ class _Client:
             body["rootTypes"] = list(root_types)
         if root_properties:
             body["rootProperties"] = root_properties
+        if derived:
+            body["derived"] = True
         return self._call("post", f"/v1/spaces/{space}/bundles", body)
 
     def list_bundles(self, space):
@@ -1759,9 +1766,9 @@ def general_chat(spaceConfig):
 
 @span(kind="mutator")  # noqa: F821 - guest global
 def ensure_bundle(spaceConfig, bundle_id, name=None, root_types=None,
-                  root_properties=None):
+                  root_properties=None, derived=False):
     return _c().ensure_bundle(_space(spaceConfig), bundle_id, name,
-                              root_types, root_properties)
+                              root_types, root_properties, derived)
 
 
 @span(kind="getter")  # noqa: F821 - guest global
