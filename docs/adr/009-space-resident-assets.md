@@ -206,8 +206,10 @@ RunCtx}`; `runner::{Cage, RunOutcome, run_program}`; `replay`;
   durationMs, fuelUsed}`; the trace lands in the serve traces dir like
   any run, and the run is NOT gated by the ADR-015 standby flag
   (explicit invocation, same stance as embedder/CLI runs). First
-  consumer: any-ui's email summary fill — the UI owns the summary
-  program text and ships it per call. The endpoint runs inline on the
+  consumer: any-ui's email summary fill via the deployed `agent:ui@v1`
+  (the space-resident home for UI backend helpers — updates roll out
+  by deploy); inline `source` is the debugging escape hatch, not the
+  production path. The endpoint runs inline on the
   single control thread — a long program blocks other control calls;
   acceptable for its callers (trigger polls and election reads
   tolerate the latency). Loopback-only, same trust domain as the CLI.
