@@ -216,6 +216,11 @@ def _ui_context_pointer(rec):
 # normalization contract in ADR-006 §6.
 _RESERVED_GROUPS = {"any", "nav", "program", "_ver"}
 
+# Synthetic catalog rows: listed by GET /types in every space but not
+# attachable — no object carries them, and the meta-type's only
+# property (`type.xkey`) is writable solely on type rows.
+_SYNTHETIC_TYPES = {"any", "spaceIndex", "type"}
+
 
 class _Client:
     def __init__(self, base_url):
@@ -550,6 +555,13 @@ class _Client:
             if description is not None:
                 grp.setdefault("description", description)
         if isinstance(body.get("types"), list):
+            bad = [t for t in body["types"] if t in _SYNTHETIC_TYPES]
+            if bad:
+                raise ValueError(
+                    f"type(s) {bad} are synthetic catalog rows "
+                    "(any/spaceIndex/type) — they describe the space and "
+                    "are not attachable to objects. Use a user type, or "
+                    "omit types for a plain object.")
             body["types"] = [self._resolve_type_or_raise(space, t)
                              for t in body["types"]]
         if isinstance(body.get("initialProperties"), dict):
@@ -1053,15 +1065,42 @@ class _Client:
         kinds: {"format": {"type": "date"}} (types: date, datetime,
         links, select, multiselect) with kind omitted — the
         server derives it. xKeys default to a slug of the name.
-        Idempotent: an existing type (by xKey) is reused, only MISSING
-        properties are added. Returns {"typeId", "xKey", "created",
+        Idempotent: an existing USER type (by xKey, or by name for a
+        pre-metatype type listed without one — its handle is re-claimed
+        in place) is reused, only MISSING properties are added. A name
+        or xKey that collides with a builtin handle (any, spaceIndex,
+        type, chat, page, …) ERRORS — builtins cannot be created or
+        reshaped. Returns {"typeId", "xKey", "created",
         "addedProps": {xKey: propId}} — reference everything by xKey
         afterwards."""
         body = dict(body or {})
         props = body.pop("properties", None) or []
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
-        tid = next((t["id"] for t in self.list_types(space)
+        rows = self.list_types(space)
+        row = next((t for t in rows
                     if t.get("xKey") == xkey or t.get("id") == xkey), None)
+        if row is not None and not self._is_user_type(row):
+            raise ValueError(
+                f'"{xkey}" is the handle of the builtin type '
+                f'"{row.get("name")}" — builtins cannot be created or '
+                "reshaped. Pick another name, or pass an explicit "
+                'non-reserved "xKey".')
+        tid = row["id"] if row else None
+        if tid is None:
+            # a type from before the server's meta-type xkey move (any
+            # PR #176) lists with no xKey — re-claim its handle in
+            # place (one type.xkey write) instead of duplicating it
+            legacy = next(
+                (t for t in rows
+                 if not t.get("xKey") and self._is_user_type(t)
+                 and _slugify_xkey(t.get("name") or "") == xkey), None)
+            if legacy is not None:
+                self._call(
+                    "post",
+                    f"/v1/spaces/{space}/properties/{legacy['id']}/set/type",
+                    {"patch": {"xkey": xkey}})
+                self._cat_invalidate(space)
+                tid = legacy["id"]
         created = False
         if tid is None:
             req = {k: body[k] for k in ("name", "description", "iconCid")

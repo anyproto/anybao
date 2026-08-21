@@ -660,7 +660,8 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
 /// builtins have id == xKey).
 fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)> {
     let mut tid: Option<String> = None;
-    for t in client.list_types(space)? {
+    let types = client.list_types(space)?;
+    for t in &types {
         let key = t["xKey"].as_str().or_else(|| t["key"].as_str());
         if key == Some(SKILL_TYPE) {
             tid = t["id"]
@@ -668,6 +669,19 @@ fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)
                 .or_else(|| t["typeId"].as_str())
                 .map(str::to_string);
             break;
+        }
+    }
+    // A pre-metatype "Agent Skill" (any PR #176) reads back with no
+    // xKey — re-claim the handle in place rather than duplicating it.
+    if tid.is_none() {
+        for t in &types {
+            if t["xKey"].as_str().unwrap_or_default().is_empty() && t["name"] == "Agent Skill" {
+                if let Some(id) = t["id"].as_str() {
+                    client.set_properties(space, id, "type", &json!({"xkey": SKILL_TYPE}))?;
+                    tid = Some(id.to_string());
+                    break;
+                }
+            }
         }
     }
     let tid = match tid {

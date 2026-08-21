@@ -117,9 +117,21 @@ pub struct AgentStores {
 }
 
 fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
-    for t in c.list_types(space)? {
+    let types = c.list_types(space)?;
+    for t in &types {
         if t["xKey"] == xkey {
             return Ok(t["id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    // A type created before the server's meta-type xkey move (any PR
+    // #176) reads back with no xKey — re-claim its handle in place
+    // (one type.xkey write) instead of shadowing it with a duplicate.
+    for t in &types {
+        if t["xKey"].as_str().unwrap_or_default().is_empty() && t["name"] == name {
+            if let Some(tid) = t["id"].as_str() {
+                c.set_properties(space, tid, "type", &json!({"xkey": xkey}))?;
+                return Ok(tid.to_string());
+            }
         }
     }
     let created = c.create_type(space, &json!({"name": name, "xKey": xkey}))?;
@@ -1581,6 +1593,48 @@ mod tests {
 
     fn spaces_reply(rows: Value) -> (u16, Value) {
         (200, json!({"spaces": rows}))
+    }
+
+    #[test]
+    fn ensure_type_rekeys_legacy_xkeyless_type_by_name() {
+        // a type from before the server's meta-type xkey move (any PR
+        // #176) lists with no xKey — its handle is re-claimed in place
+        // with one type.xkey write, never shadowed by a duplicate
+        let (c, log) = scripted(&[
+            (
+                200,
+                json!({"types": [{"id": "t-legacy", "name": "Agent Config"}]}),
+            ),
+            (200, json!({})),
+        ]);
+        assert_eq!(
+            ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
+            "t-legacy"
+        );
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].0, "POST");
+        assert_eq!(calls[1].1, "/v1/spaces/s1/properties/t-legacy/set/type");
+        assert_eq!(calls[1].2, Some(json!({"patch": {"xkey": "agent_config"}})));
+    }
+
+    #[test]
+    fn ensure_type_creates_when_nothing_matches() {
+        // the meta-type catalog row (id == xKey == "type") is not a
+        // name-match candidate — a fresh space still creates
+        let (c, log) = scripted(&[
+            (
+                200,
+                json!({"types": [{"id": "type", "xKey": "type", "name": "Type"}]}),
+            ),
+            (201, json!({"typeId": "t-new"})),
+        ]);
+        assert_eq!(
+            ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
+            "t-new"
+        );
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[1].1, "/v1/spaces/s1/types");
     }
 
     #[test]

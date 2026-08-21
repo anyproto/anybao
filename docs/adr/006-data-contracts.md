@@ -408,6 +408,28 @@ mechanism, in the same layer — a guest helper, not the host):
   themselves (graph edges in `recall.neighbors` are identified by
   type/prop id).
 
+**Amended 2026-08-21 (any PR #176 — meta-type xkey).** The server
+stores a type's handle in the meta-type namespace (`type.xkey`); the
+catalog carries a third synthetic row `type` (id == xKey == `type`)
+next to `any`/`spaceIndex`, and every builtin handle is reserved
+against user types (`409 type.xkey_conflict`). Client contract:
+
+- The synthetic rows (`any`, `spaceIndex`, `type`) describe the space
+  and are **not attachable** — `create_object` rejects them in
+  `types` with an actionable error.
+- `create_type` **errors on any builtin-handle collision** (name slug
+  or explicit xKey) instead of silently reusing the builtin row — a
+  reuse used to hand back the builtin's id and then 400 on the
+  property adds.
+- A type created before the move lists with **no xKey** (the old
+  `any.xkey` row is not read back; property xKeys are unaffected).
+  Every ensure path — guest `create_type`, host `ensure_type`
+  (serve) and `skill_schema` (deploy) — re-claims the handle **in
+  place**: on an xKey miss, an xKey-less row matching by name/slug
+  gets one `type.xkey` property write
+  (`POST …/properties/{typeId}/set/type`) and is reused, never
+  shadowed by a duplicate type.
+
 **Scope / non-goals.** The `any.types` VALUES inside a normalized
 record stay raw type ids (matching bobrik-watch) — they are a builtin
 namespace, read by id internally; only the group *keys* are slugged.

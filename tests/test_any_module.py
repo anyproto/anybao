@@ -188,6 +188,42 @@ def test_create_type_idempotent_adds_only_missing():
     assert posts == ["/v1/spaces/s1/types/t9/properties"]  # no type POST, one prop
 
 
+def test_create_type_builtin_handle_errors():
+    fx = wire(replies={
+        "/types": {"types": [{"id": "type", "name": "Type", "xKey": "type"}]}})
+    with pytest.raises(ValueError, match="builtin"):
+        client(fx).create_type("s1", {"name": "Type"})
+    with pytest.raises(ValueError, match="builtin"):
+        client(fx).create_type("s1", {"name": "My Meta", "xKey": "type"})
+    assert [v for v, _, _ in fx.calls if v == "POST"] == []
+
+
+def test_create_type_rekeys_legacy_xkeyless_type_by_name():
+    # a type from before the server's meta-type xkey move lists with no
+    # xKey: create_type re-claims the handle in place (one type.xkey
+    # write) and reuses the type — no duplicate
+    fx = wire(replies={
+        "/types": {"types": [{"id": "t7", "name": "Old Widget"}]},
+        "/types/t7/properties": {"properties": [], "propId": "p1"}})
+    r = client(fx).create_type("s1", {
+        "name": "Old Widget", "properties": [{"name": "Note"}]})
+    assert r == {"typeId": "t7", "xKey": "old_widget", "created": False,
+                 "addedProps": {"note": "p1"}}
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts[0] == ("/v1/spaces/s1/properties/t7/set/type",
+                        {"patch": {"xkey": "old_widget"}})
+    assert not any(p == "/v1/spaces/s1/types" for p, _ in posts)
+
+
+def test_create_object_rejects_synthetic_types():
+    fx = wire()
+    with pytest.raises(ValueError, match="synthetic"):
+        client(fx).create_object("s1", {"types": ["type"]})
+    with pytest.raises(ValueError, match="synthetic"):
+        client(fx).create_object("s1", {"types": ["page", "spaceIndex"]})
+    assert fx.calls == []
+
+
 def test_add_property_defaults_xkey_and_kind():
     fx = wire(replies={"/types": {"types": [{"id": "t1"}]},
                        "/types/t1/properties": {"propId": "p1"}})
