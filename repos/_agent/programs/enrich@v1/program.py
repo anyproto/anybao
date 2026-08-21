@@ -439,8 +439,10 @@ def apply(space, proposal_id):
     every item; then deletes the proposal object. Returns `{ok: True,
     proposalId, created, propertiesSet, enrichedDataWritten,
     proposalDeleted, failures}` — non-empty `failures` still means the
-    rest applied. An empty/deleted/unknown proposal → {ok: False,
-    error}."""
+    rest applied. When EVERY item fails the proposal is KEPT (the
+    reviewed items are the only copy) and the result is {ok: False,
+    proposalDeleted: False, failures, error}. An empty/deleted/unknown
+    proposal → {ok: False, error}."""
     anymod = use("any@v1")  # noqa: F821 - guest global
     if not space:
         return {"ok": False, "error": "space required"}
@@ -503,6 +505,14 @@ def apply(space, proposal_id):
             written += 1
         except anymod.AnyError as e:
             failures.append(f"item {iid}: {e}")
+
+    if created == 0 and props_set == 0 and written == 0:
+        # total failure: the proposal is the only copy of the reviewed
+        # items — deleting it here would destroy them for nothing
+        return {"ok": False, "proposalId": proposal_id, "created": 0,
+                "propertiesSet": 0, "enrichedDataWritten": 0,
+                "proposalDeleted": False, "failures": failures,
+                "error": "nothing applied — proposal kept for review"}
 
     deleted = True
     try:

@@ -363,6 +363,24 @@ def test_apply_is_deterministic_and_hub_joined():
     assert fake.deleted == ["prop9"]
 
 
+def test_apply_total_failure_keeps_proposal():
+    """When EVERY item fails, the proposal must survive — it is the only
+    copy of the reviewed items (the 2026-08-21 arst run lost all 20)."""
+    fake = happy_fake()
+    fake.proposal_items = [
+        {"id": "i1", "text": "orphan one", "outcome": "new"},
+        {"id": "i2", "text": "orphan two", "outcome": "new"},
+    ]
+    out = load(fake).apply("s1", "prop9")
+    assert out["ok"] is False
+    assert "nothing applied" in out["error"]
+    assert out["proposalDeleted"] is False
+    assert len(out["failures"]) == 2
+    # nothing minted or written, and crucially nothing deleted
+    assert not fake.created and not fake.updates and not fake.modifies
+    assert not fake.deleted
+
+
 def test_apply_empty_or_unknown_proposal_is_clean():
     fake = happy_fake()
     out = load(fake).apply("s1", "gone")
