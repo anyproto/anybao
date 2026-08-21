@@ -1027,6 +1027,43 @@ impl RunCtx {
             },
         ))
     }
+
+    /// One-shot program run for the control API's POST /run
+    /// (ADR-009 §6): same resolver and trace discipline as `run`, but
+    /// returns the full CLI-run envelope — the caller wants the
+    /// program's VALUE, not just the status bookkeeping. `source`
+    /// serves the entry spec from caller-provided text (InlineResolver)
+    /// instead of a deployed program; its imports still resolve
+    /// through the space resolver.
+    pub fn run_value(&self, spec: &str, args: &Value, source: Option<&str>) -> Result<Value> {
+        self.ensure_ready()?;
+        let mut broker = self.broker(spec, Self::new_run_id());
+        if let Some(src) = source {
+            let inner = broker
+                .resolver
+                .take()
+                .context("serve broker always carries a resolver")?;
+            broker.resolver = Some(Box::new(crate::resolver::InlineResolver {
+                spec: spec.to_string(),
+                source: src.to_string(),
+                inner,
+            }));
+        }
+        let run_id = broker.writer.run_id();
+        let mailbox: SharedMailbox = Default::default();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
+        outcome.broker.writer.dump(&path)?;
+        Ok(json!({
+            "status": outcome.status,
+            "value": outcome.value,
+            "error": outcome.error,
+            "traceRef": run_id,
+            "durationMs": outcome.duration_ms,
+            "fuelUsed": outcome.fuel_used,
+        }))
+    }
 }
 
 /// Start a run for `text` — or, when one is already live on this chat,
@@ -1564,6 +1601,31 @@ fn handle_control(
             let t = reg.get_mut(*id).context("trigger not found")?;
             t.enabled = false;
             Ok(trigger_to_record(t))
+        }
+        // one-shot program run (ADR-009 §6): {program, args?} runs a
+        // deployed program (serve resolver: space programs + overlay
+        // aliases, alias-qualified specs); {source, args?, program?}
+        // runs caller-provided program TEXT instead — the entry module
+        // comes from the body (program names the trace, default
+        // "adhoc@v1"), its use() imports still resolve through the
+        // space resolver. Either way → the CLI run envelope {status,
+        // value, error, traceRef, durationMs, fuelUsed}. Runs inline
+        // on the control thread; the trigger registry lock is released
+        // first so a long run never stalls the ticker.
+        ("POST", ["run"]) => {
+            drop(reg);
+            let req: Map<String, Value> = serde_json::from_str(body)
+                .context("body must be JSON: {program | source, args?}")?;
+            let source = req.get("source").and_then(|v| v.as_str());
+            let spec = match req.get("program").and_then(|v| v.as_str()) {
+                Some(p) => p,
+                None if source.is_some() => "adhoc@v1",
+                None => anyhow::bail!(
+                    "body must carry program: \"<alias:name@vN>\" or source: \"<python>\""
+                ),
+            };
+            let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
+            ctx.run_value(spec, &args, source)
         }
         _ => anyhow::bail!("no route: {method} {path}"),
     }

@@ -193,6 +193,24 @@ RunCtx}`; `runner::{Cage, RunOutcome, run_program}`; `replay`;
   *output* (run-result JSON, deploy summaries, trace renders) stays
   stdout. Embedders get silence by default or full capture via their
   own subscriber; the bin installs a fmt subscriber.
+- **Control-API one-shot runs (amended 2026-08-21)**: the loopback
+  control API grows `POST /run`. `{program, args?}` runs a deployed
+  program (serve resolver: space programs + overlay aliases,
+  alias-qualified specs); `{source, args?, program?}` runs
+  caller-provided program TEXT — the entry module is served from the
+  body via `InlineResolver` (nothing lands in a space or on disk;
+  `program` just names the trace, default `adhoc@v1`), while its
+  `use()` imports resolve through the space resolver as usual (so
+  inline code imports alias-qualified: `use("agent:llm@v1")`). Either
+  form returns the CLI run envelope `{status, value, error, traceRef,
+  durationMs, fuelUsed}`; the trace lands in the serve traces dir like
+  any run, and the run is NOT gated by the ADR-015 standby flag
+  (explicit invocation, same stance as embedder/CLI runs). First
+  consumer: any-ui's email summary fill — the UI owns the summary
+  program text and ships it per call. The endpoint runs inline on the
+  single control thread — a long program blocks other control calls;
+  acceptable for its callers (trigger polls and election reads
+  tolerate the latency). Loopback-only, same trust domain as the CLI.
 
 ### 7. Capability forward-compat (note, not scope)
 

@@ -60,6 +60,36 @@ pub trait ModuleResolver {
     fn resolve(&mut self, spec: &str, frm: Option<&str>) -> Result<Value, ResolveError>;
 }
 
+/// One in-memory source over an inner resolver: the ENTRY spec is
+/// served from caller-provided text, every other spec — the entry's
+/// `use()` imports — delegates to `inner` (the serve space resolver).
+/// Serve's `POST /run {source}` path (ADR-009 §6): the caller owns the
+/// program text; nothing lands in a space or on the filesystem. The
+/// inline module's own imports must be alias-qualified
+/// (`agent:llm@v1`) — its pseudo object id has no defining space, so
+/// an unqualified import falls back to working-space resolution.
+pub struct InlineResolver {
+    pub spec: String,
+    pub source: String,
+    pub inner: Box<dyn ModuleResolver + Send>,
+}
+
+impl ModuleResolver for InlineResolver {
+    fn resolve(&mut self, spec: &str, frm: Option<&str>) -> Result<Value, ResolveError> {
+        if spec == self.spec && frm.is_none() {
+            return Ok(json!({
+                "spaceId": "", "objectId": "inline", "marker": 0,
+                "sourceHash": format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(self.source.as_bytes()))
+                ),
+                "source": self.source, "cache": "miss",
+            }));
+        }
+        self.inner.resolve(spec, frm)
+    }
+}
+
 /// (alias|None, name, version) from `[alias:]name@vN`.
 fn parse(spec: &str) -> Result<(Option<&str>, &str, &str), ResolveError> {
     let (alias, rest) = match spec.split_once(':') {
