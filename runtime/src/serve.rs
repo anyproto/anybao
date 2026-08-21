@@ -248,11 +248,42 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
-    Ok(AgentStores {
+    let stores = AgentStores {
         config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
         secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
         triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
-    })
+    };
+    // Display names only — every consumer resolves these anchors by
+    // bundle seed, never by name (ADR-017 §0), but a derived object
+    // materializes nameless and is illegible in the UI (and a nameless
+    // triggers anchor has already baited an agent into minting a
+    // name-discoverable duplicate the trigger loop never reads).
+    for (id, name) in [
+        (&stores.config, "agent-config"),
+        (&stores.secrets, "agent-secrets"),
+        (&stores.triggers, "agent-triggers"),
+    ] {
+        ensure_child_name(c, space, id, name)?;
+    }
+    Ok(stores)
+}
+
+/// Idempotent display-name stamp: read first so a no-op boot appends
+/// no change to the child's tree.
+fn ensure_child_name(c: &Client, space: &str, object_id: &str, want: &str) -> Result<()> {
+    let current = c
+        .get_properties(space, object_id)
+        .with_context(|| format!("read child properties {object_id}"))?
+        .pointer("/record/any/name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if current == want {
+        return Ok(());
+    }
+    c.set_properties(space, object_id, "any", &json!({"name": want}))
+        .with_context(|| format!("name child {object_id}"))?;
+    Ok(())
 }
 
 /// The Anthropic API key's config key — the record id/`key` on the config

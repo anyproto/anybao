@@ -174,8 +174,13 @@ paths inside these methods are deleted, not conditionally kept.
 - Boot: register `bao/v1`, derive the config/secrets/triggers
   children, ensure the three host-written types + datasets
   (idempotent; the dataset ensure reconciles mutable `search.*`
-  leaves per ADR-016). Brain and log are guest-owned (§1) — the host
-  never touches them.
+  leaves per ADR-016), and stamp display names on the three children
+  (`agent-config` / `agent-secrets` / `agent-triggers`; read-first so
+  a no-op boot appends no change). The names are UI legibility only —
+  every consumer resolves the anchors by bundle seed, never by name
+  (a derived child materializes nameless, and name-discovery invites
+  duplicates the runtime never reads). Brain and log are guest-owned
+  (§1) — the host never touches them.
 - Config/secrets resolution: the bundle children replace the
   `SpaceInfo` id fields everywhere (config.rs bootstrap, serve boot).
 - Triggers: the anchor is the `bao/triggers/v1` child; `ensure_typed`

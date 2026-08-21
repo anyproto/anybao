@@ -94,13 +94,14 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
 - **Memory policy** lives in the `_memory` skill —
   `mem.save_with_dedup` is THE save path, never raw `create_memory`.
 - **Reminders / one-shot schedules** ("remind me at/in …"): write an
-  `agent_triggers` record on the trigger anchor. Three spellings, one
+  `agent_triggers` record on the trigger anchor. Two spellings, one
   concept — don't mix them: the TYPE is `agent_trigger` (singular),
-  the DATASET is `agent_triggers` (plural), the anchor object's NAME
-  is `agent-triggers` (hyphen). Find the anchor:
-  `c.query_objects(space, filter={"any.name": "agent-triggers",
-  "any.types": "agent_trigger"})` — if several, the OLDEST (createdAt)
-  is the one the runtime follows. Then:
+  the DATASET is `agent_triggers` (plural). The anchor is the
+  `bao/triggers/v1` bundle child — resolve it, never search by name
+  (a name query can miss and tempt you into minting a duplicate the
+  runtime would never read):
+  `anchor_id = c.bundle_child(space, "bao/v1",
+  "bao/triggers/v1")["objectId"]`. Then:
   `c.upsert_record(space, anchor_id, "agent_triggers", "<slug>",
   {"name": "...", "kind": "once", "spec": {"at": now() + delay_s},
   "program": "agent:remind@v1", "args": {"space": space, "chatId":

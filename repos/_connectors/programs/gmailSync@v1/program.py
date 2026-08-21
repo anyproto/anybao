@@ -639,14 +639,12 @@ def _tid_frag(space_id):
 
 
 def _trigger_anchor(agent_space):
-    """The agent-triggers anchor object — OLDEST wins, the identical
-    rank the runtime's ensure_typed applies, so both sides converge."""
-    rows = _any.query_objects(agent_space, filter={
-        "any.name": "agent-triggers", "any.types": "agent_trigger"}, limit=10)
-    if not rows:
-        raise RuntimeError("no agent-triggers anchor in the agent space")
-    rows.sort(key=lambda r: (r.get("createdAt") or 0, r.get("id") or ""))
-    return rows[0]["id"]
+    """The `bao/triggers/v1` bundle child — the one anchor the runtime
+    seeds and polls (ADR-017 §0). Resolved via the bundle, never by
+    name: the derived id is deterministic per space, so this cannot
+    mint a duplicate the trigger loop would never read."""
+    return _any.bundle_child(agent_space, "bao/v1",
+                             "bao/triggers/v1")["objectId"]
 
 
 def _arm_hop(agent_space, space, q, gen, hop):

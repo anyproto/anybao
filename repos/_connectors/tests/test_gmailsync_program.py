@@ -113,10 +113,11 @@ class FakeAny:
         if "mailbox.address" in f:
             return [r for r in self.mailboxes
                     if r["mailbox"]["address"] == f["mailbox.address"]]
-        if f.get("any.name") == "agent-triggers":
-            return [{"id": "anchor1", "createdAt": 10},
-                    {"id": "anchor2", "createdAt": 99}]   # oldest must win
         return []
+
+    def bundle_child(self, space, bundle_id, seed, types=None):
+        assert (bundle_id, seed) == ("bao/v1", "bao/triggers/v1")
+        return {"objectId": "anchor1"}
 
     def upsert_record(self, space, object_id, dataset, record_id, value):
         self.records.append((space, object_id, dataset, record_id, value))

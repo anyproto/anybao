@@ -757,6 +757,16 @@ impl Client {
         )
     }
 
+    /// Full property record of one object (`{"record": {...}}`;
+    /// record is null for a property-less object).
+    pub fn get_properties(&self, space_id: &str, object_id: &str) -> Result<Value, AnyError> {
+        self.call(
+            "GET",
+            &format!("/v1/spaces/{space_id}/properties/{object_id}"),
+            None,
+        )
+    }
+
     pub fn set_properties(
         &self,
         space_id: &str,
