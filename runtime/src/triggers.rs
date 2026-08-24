@@ -267,6 +267,14 @@ pub fn reconcile_registry(
                     }
                     reg.insert(id.to_string(), t);
                 } else {
+                    if parsed.enabled && !live.enabled {
+                        // manual re-enable via the dataset: reset the
+                        // breaker and re-arm, matching the control
+                        // plane's enable — otherwise one more failure
+                        // instantly re-trips a spent breaker
+                        live.consecutive_failures = 0;
+                        live.next_due = None;
+                    }
                     live.enabled = parsed.enabled;
                 }
             }
@@ -793,6 +801,27 @@ mod tests {
         assert_eq!(reg["j"].spec["every_s"], json!(900.0));
         assert_eq!(reg["j"].next_due, None);
         assert!(reg["j"].enabled); // the record is the source of truth
+    }
+
+    #[test]
+    fn reconcile_reenable_resets_the_breaker() {
+        let mut reg = BTreeMap::new();
+        let standing = Default::default();
+        let recs = vec![rec("j", "peer-A", json!({}))];
+        reconcile_registry(&mut reg, &recs, "peer-A", true, &standing);
+        {
+            let t = reg.get_mut("j").unwrap();
+            t.enabled = false;
+            t.consecutive_failures = 3;
+            t.last_status = Some("auto_disabled".into());
+            t.next_due = Some(1060.0);
+        }
+        let mut resumed = rec("j", "peer-A", json!({}));
+        resumed["enabled"] = json!(true);
+        reconcile_registry(&mut reg, &[resumed], "peer-A", true, &standing);
+        assert!(reg["j"].enabled);
+        assert_eq!(reg["j"].consecutive_failures, 0); // breaker reset
+        assert_eq!(reg["j"].next_due, None); // re-armed forward
     }
 
     #[test]

@@ -330,7 +330,10 @@ providers stay silent until their effect needs them.
     registry entry from the record: crons re-arm strictly forward, and
     a `once` takes the record's `lastRunAt` as its consumed state — so
     rewriting the definition (which drops the rollup) re-arms the
-    shot. `enabled` edits alone are honored in place, no re-arm;
+    shot. `enabled` edits alone are honored in place, no re-arm — except a
+    false→true flip, which resets the circuit breaker and re-arms
+    forward (manual re-enable, same semantics as the control plane's
+    `enable`);
   - **evict** — a record repinned to another device, or deleted from
     the dataset, leaves the registry within a tick (delete and repin
     actually work; deleted record ids stay tombstoned server-side, so
