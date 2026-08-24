@@ -288,8 +288,8 @@ providers stay silent until their effect needs them.
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
 - Trigger object properties: `name`, `kind` (`cron | event | once`),
-  `spec` (cron expression | `{dataset, objectId?, filter?}` |
-  `{at: <epoch seconds>}`), `program`
+  `spec` (cron expression | `{dataset, objectId, filter?}` — event
+  delivery per ADR-018 §2 | `{at: <epoch seconds>}`), `program`
   (ADR-004 spec string), `args`, `owner` (the DEVICE PIN — see below),
   `enabled`, `logRuns`, and the observability rollup `lastRunAt /
   lastDurationMs / lastStatus / runCount / lastRunRef` (plan §4b
@@ -376,8 +376,10 @@ providers stay silent until their effect needs them.
   enabled trigger that can never fire gets a `lastStatus` marker
   stamped onto its record by a per-tick health pass — `invalid_spec`
   (a cron whose spec yields no next occurrence, a `once` without a
-  numeric `at`) or `unsupported_kind` (`event`: declared in the shape,
-  no evaluator yet — the marker holds until the event kind ships).
+  numeric `at`, an event without a `(dataset, objectId)` source) or
+  `unsupported_source` (an event source this runtime does not deliver
+  — ADR-018 §2, v1 delivers `chat_messages` only; the earlier
+  `unsupported_kind` marker is retired and cleared on sight).
   Markers self-clear once the definition is fixed and are overwritten
   by the first real run status. Only the owning device judges its own
   enabled entries. The ticker's other silent paths log on TRANSITIONS

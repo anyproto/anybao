@@ -1,6 +1,6 @@
 # ADR-018: Event triggers — chat-message sources, and the chat watcher as a trigger
 
-Status: **Proposed**
+Status: **Accepted** (2026-08-24)
 Date: 2026-08-24
 Builds on: ADR-006 §4 (trigger contract, device pins, reconcile),
 ADR-009 §8 (chat watch, snapshot backlog, deferred conversations),

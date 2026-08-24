@@ -14,8 +14,9 @@ use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::triggers::{
-    health_pass, reconcile_registry, rollup, standing_triggers, trigger_to_record, RunResult,
-    Scheduler, Trigger, WatchAction, Watcher,
+    desired_event_sources, event_args, event_source, health_pass, reconcile_registry, rollup,
+    standing_triggers, trigger_to_record, EventSource, RunResult, Scheduler, Trigger, WatchAction,
+    Watcher, CHAT_MESSAGES,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -523,6 +524,9 @@ struct Shared {
     /// live messages that arrived while overlays were pending. Drained
     /// by the trigger ticker once ensure_ready clears.
     backlog: Mutex<Vec<String>>,
+    /// Live event sources (ADR-018 §2): chat object id → the stop flag
+    /// of the thread watching it. Converged on the registry every tick.
+    event_sources: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
 }
 
 /// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
@@ -843,6 +847,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         scheduler: Mutex::new(sched),
         watcher: Mutex::new(Watcher::new(&cfg.agent_name)),
         backlog: Mutex::new(Vec::new()),
+        event_sources: Mutex::new(BTreeMap::new()),
     });
 
     let ctx = Arc::new(RunCtx {
@@ -1409,6 +1414,7 @@ fn trigger_ticker(
                             &trigger_to_record(t),
                         );
                     }
+                    reconcile_event_sources(&shared, &ctx, &stop);
                 }
             }
             let due: Vec<Trigger> = {
@@ -1429,40 +1435,177 @@ fn trigger_ticker(
                 out
             };
             for t in due {
-                let mailbox: SharedMailbox = Default::default();
-                let interrupt = Arc::new(AtomicBool::new(false));
-                let result = ctx.run(&t.program, &t.args, mailbox, interrupt, None);
-                let rr = result.map(|(_, rr)| rr).unwrap_or_else(|e| RunResult {
-                    status: "error".into(),
-                    duration_ms: 0,
-                    trace_ref: None,
-                    fuel: None,
-                    error: Some(e.to_string()),
-                });
-                let mut reg = shared.triggers.lock().unwrap();
-                if let Some(live) = reg.get_mut(&t.id) {
-                    let sched = shared.scheduler.lock().unwrap();
-                    let run_rec = sched.record_run(live, &rr);
-                    let ts_ms = (now_s() * 1000.0) as i64;
-                    let rid = format!("{}:{:020}", t.id, ts_ms);
-                    let _ = ctx.client.upsert_record(
-                        &ctx.space,
-                        &ctx.anchor,
-                        "agent_trigger_runs",
-                        &rid,
-                        &run_rec,
-                    );
-                    let _ = ctx.client.upsert_record(
-                        &ctx.space,
-                        &ctx.anchor,
-                        "agent_triggers",
-                        &t.id,
-                        &trigger_to_record(live),
-                    );
-                }
+                let rr = run_trigger_program(&ctx, &t.program, &t.args);
+                finish_run(&shared, &ctx, &t.id, &rr);
             }
         }
     })
+}
+
+/// One trigger fire: the program run, folded into a RunResult (a run
+/// path failure is an error result, never a panic).
+fn run_trigger_program(ctx: &RunCtx, program: &str, args: &Value) -> RunResult {
+    let mailbox: SharedMailbox = Default::default();
+    let interrupt = Arc::new(AtomicBool::new(false));
+    ctx.run(program, args, mailbox, interrupt, None)
+        .map(|(_, rr)| rr)
+        .unwrap_or_else(|e| RunResult {
+            status: "error".into(),
+            duration_ms: 0,
+            trace_ref: None,
+            fuel: None,
+            error: Some(e.to_string()),
+        })
+}
+
+/// Run bookkeeping (ADR-006 §4): the breaker + rollup on the registry
+/// entry, one `agent_trigger_runs` record, the trigger record
+/// rewritten. A no-op if the trigger was evicted mid-run.
+fn finish_run(shared: &Shared, ctx: &RunCtx, trigger_id: &str, rr: &RunResult) {
+    let mut reg = shared.triggers.lock().unwrap();
+    let Some(live) = reg.get_mut(trigger_id) else {
+        return;
+    };
+    let sched = shared.scheduler.lock().unwrap();
+    let run_rec = sched.record_run(live, rr);
+    let ts_ms = (now_s() * 1000.0) as i64;
+    let rid = format!("{trigger_id}:{ts_ms:020}");
+    let _ = ctx.client.upsert_record(
+        &ctx.space,
+        &ctx.anchor,
+        "agent_trigger_runs",
+        &rid,
+        &run_rec,
+    );
+    let _ = ctx.client.upsert_record(
+        &ctx.space,
+        &ctx.anchor,
+        "agent_triggers",
+        trigger_id,
+        &trigger_to_record(live),
+    );
+}
+
+// --- event sources (ADR-018 §2) ------------------------------------------------
+
+/// Converge the live source threads on the registry: one watch per
+/// distinct chat object across this device's enabled `chat_messages`
+/// event triggers. New objects get a thread; objects no trigger needs
+/// any more (disabled, repinned away, deleted, breaker-tripped) get
+/// their thread stopped.
+fn reconcile_event_sources(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &Arc<AtomicBool>) {
+    let desired = {
+        let reg = shared.triggers.lock().unwrap();
+        let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+        desired_event_sources(&reg, &instance)
+    };
+    let mut live = shared.event_sources.lock().unwrap();
+    let stale: Vec<String> = live
+        .keys()
+        .filter(|k| !desired.contains_key(*k))
+        .cloned()
+        .collect();
+    for object_id in stale {
+        if let Some(flag) = live.remove(&object_id) {
+            flag.store(true, Ordering::Relaxed);
+            info!("event source stopped: chat {object_id}");
+        }
+    }
+    for (object_id, trigger_ids) in desired {
+        if live.contains_key(&object_id) {
+            continue;
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        live.insert(object_id.clone(), flag.clone());
+        info!("event source started: chat {object_id} → {trigger_ids:?}");
+        let (shared, ctx, stop) = (shared.clone(), ctx.clone(), stop.clone());
+        std::thread::spawn(move || event_source_thread(shared, ctx, object_id, flag, stop));
+    }
+}
+
+/// One chat object's watch (ADR-018 §2, live-only): reconnect loop
+/// around the SSE feed; a snapshot only seeds the seen-set, `changes`
+/// fire the triggers that name this object. Exits when its own flag
+/// (source no longer desired) or the serve-wide stop is raised.
+fn event_source_thread(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    object_id: String,
+    own_stop: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+) {
+    let halted = || own_stop.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed);
+    let mut state = EventSource::default();
+    while !halted() {
+        let feed = ctx.client.subscribe_dataset(
+            &ctx.space,
+            &object_id,
+            CHAT_MESSAGES,
+            &json!({"sort": ["-createdAt"], "limit": 64}),
+        );
+        match feed {
+            Err(e) => warn!("event source {object_id}: subscribe failed ({e}); retrying in 2s"),
+            Ok(frames) => {
+                for frame in frames {
+                    if halted() {
+                        return;
+                    }
+                    match frame.event.as_str() {
+                        "ready" => {}
+                        "closed" => break,
+                        "snapshot" => {
+                            let records = frame.data["records"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default();
+                            state.seed(&records);
+                        }
+                        "changes" => {
+                            for record in state.fresh(records_in(&frame.data), &ctx.cfg.agent_name)
+                            {
+                                fire_event(&shared, &ctx, &object_id, &record);
+                            }
+                        }
+                        other => {
+                            warn!("event source {object_id}: unexpected frame {other:?}");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        sliced_sleep(Duration::from_secs(2), &stop);
+    }
+}
+
+/// Fire every enabled trigger of this device that names `object_id`,
+/// sequentially in the source thread, with full run bookkeeping.
+/// Deferred boot (ADR-009 §8) drops the event rather than queueing it —
+/// live-only means live-only.
+fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
+    if let Err(status) = ctx.ensure_ready() {
+        warn!("event on chat {object_id} dropped — not ready: {status}");
+        return;
+    }
+    let targets: Vec<Trigger> = {
+        let reg = shared.triggers.lock().unwrap();
+        let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+        reg.values()
+            .filter(|t| t.owner == instance && t.enabled)
+            .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
+            .cloned()
+            .collect()
+    };
+    for t in targets {
+        let args = event_args(&t, &ctx.space, object_id, record);
+        info!(
+            "event trigger {:?} fired by message {:?} on chat {object_id}",
+            t.id,
+            record.get("id").and_then(|v| v.as_str()).unwrap_or("")
+        );
+        let rr = run_trigger_program(ctx, &t.program, &args);
+        finish_run(shared, ctx, &t.id, &rr);
+    }
 }
 
 /// The election reconcile loop (ADR-015 §3/§4): poll the registry,

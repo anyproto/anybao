@@ -109,7 +109,12 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   the record within a tick and fires it once at `at`; it then
   self-disables and stays as its own audit trail. Recurring schedules:
   same record with `"kind": "cron"` and `spec {"cron": "<expr>"}` or
-  `{"every_s": n}`. Tell the user what you scheduled and for when.
+  `{"every_s": n}`. React to chat activity: `"kind": "event"` with
+  `spec {"dataset": "chat_messages", "objectId": <chat id>}` — every
+  new message in that chat (not your own) runs `program` with `args`
+  plus `event: {space, objectId, messageId, text, agent?,
+  attachments?}`; live only, no replay of messages missed while the
+  runtime was down. Tell the user what you scheduled and for when.
   The recipe above IS the record shape — never dump existing
   `agent_triggers` records to learn it (they drag huge `_ver` noise
   into context). `program` can be ANY program — `agent:remind@v1` for
