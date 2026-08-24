@@ -306,8 +306,11 @@ providers stay silent until their effect needs them.
   offline pinned device simply doesn't fire — intended: pins are the
   substrate for remote agent/VM runners. Repin = write `owner` on the
   record (UI or agent); the old device evicts within a tick, the new
-  one adopts on its next tick. Clearing `owner` floats the trigger
-  back to the election winner. When no peer id exists (devices API
+  one adopts on its next tick. An empty `owner` is UNASSIGNED — a
+  transient state the election-active device claims and stamps on its
+  next tick (every trigger is pinned once claimed; moving the active
+  bao never moves user triggers — ADR-018 §1). Clearing `owner`
+  reassigns the trigger to whoever is active now. When no peer id exists (devices API
   unavailable), the runtime stamps the legacy `anyrt-<pid>` form,
   which stays adoptable across restarts by construction.
 - **`once` kind (amended 2026-08-02, E11)**: fires when `now >= at`
