@@ -118,6 +118,12 @@ boot re-seeds it if deleted).
   (standing built-ins + `chat-watch`), and the deferred-conversation
   drain. The chat watch connects iff this device OWNS `chat-watch`;
   the `active` gate no longer addresses chat directly.
+- **Stand-down releases it on the record**: the losing device clears
+  `owner` on `chat-watch` (the one write a loser makes — a local evict
+  alone would be re-adopted next tick, since the record still names
+  this peer); the winner's takeover then stamps it, and an unassigned
+  responder is claimed by whoever is active in between. Convergence
+  is the record's: last write wins, the active device re-claims.
 - **Disabled/`enabled: false` on `chat-watch`** = bao stops answering
   chat everywhere — legal, loud in the UI (it is a pause like any
   other), and reversible.

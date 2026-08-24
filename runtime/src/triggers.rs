@@ -343,6 +343,44 @@ pub fn spec_invalid(sched: &Scheduler, t: &Trigger) -> bool {
     }
 }
 
+/// The reserved chat-responder record (ADR-018 §3): bao's own chat
+/// watch as a trigger — visible, pausable, repinnable. Dispatch is
+/// native (the ADR-009 §8 watcher), never a program run.
+pub const CHAT_WATCH_ID: &str = "chat-watch";
+pub const CHAT_WATCH_PROGRAM: &str = "internal:chat-watch";
+
+/// `chat-watch`, or a generation-suffixed reseed (`chat-watch-g2`)
+/// minted when the bare id was tombstoned by a delete.
+pub fn is_chat_watch(id: &str) -> bool {
+    id == CHAT_WATCH_ID
+        || id
+            .strip_prefix("chat-watch-g")
+            .is_some_and(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()))
+}
+
+pub fn chat_watch_trigger(id: &str, chat_id: &str, owner: &str) -> Trigger {
+    let mut t = Trigger::cron(
+        id,
+        "Chat responder",
+        0.0,
+        CHAT_WATCH_PROGRAM,
+        json!({}),
+        owner,
+        true,
+    );
+    t.kind = "event".into();
+    t.spec = json!({"dataset": CHAT_MESSAGES, "objectId": chat_id});
+    t
+}
+
+/// The id of the chat-responder entry this device runs: owned by it
+/// and enabled — the gate the chat watch connects on (ADR-018 §3).
+pub fn owned_chat_watch(reg: &BTreeMap<String, Trigger>, instance: &str) -> Option<String> {
+    reg.values()
+        .find(|t| is_chat_watch(&t.id) && t.owner == instance && t.enabled)
+        .map(|t| t.id.clone())
+}
+
 /// The chat objects this device must watch (ADR-018 §2): one source
 /// per distinct `objectId` across its own enabled, well-formed
 /// `chat_messages` event triggers → the trigger ids it feeds.
@@ -352,8 +390,8 @@ pub fn desired_event_sources(
 ) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for t in reg.values() {
-        if t.owner != instance || !t.enabled {
-            continue;
+        if t.owner != instance || !t.enabled || is_chat_watch(&t.id) {
+            continue; // the responder rides the native watcher, not a source thread
         }
         if let Some((CHAT_MESSAGES, object_id)) = event_source(t) {
             out.entry(object_id.to_string())
@@ -1109,6 +1147,30 @@ mod tests {
                 ("chat-2".to_string(), vec!["c".to_string()]),
             ])
         );
+    }
+
+    #[test]
+    fn chat_watch_ids_and_ownership_gate() {
+        assert!(is_chat_watch("chat-watch"));
+        assert!(is_chat_watch("chat-watch-g2"));
+        assert!(!is_chat_watch("chat-watch-g"));
+        assert!(!is_chat_watch("chat-watcher"));
+        let t = chat_watch_trigger("chat-watch", "chat-1", "peer-A");
+        assert_eq!(event_source(&t), Some(("chat_messages", "chat-1")));
+        assert_eq!(t.program, CHAT_WATCH_PROGRAM);
+        let mut reg = BTreeMap::new();
+        reg.insert("chat-watch".into(), t);
+        reg.insert("a".into(), event_trigger("a", "peer-A", "chat-1", true));
+        assert_eq!(
+            owned_chat_watch(&reg, "peer-A").as_deref(),
+            Some("chat-watch")
+        );
+        assert_eq!(owned_chat_watch(&reg, "peer-B"), None);
+        // the responder never gets a generic source thread of its own
+        let desired = desired_event_sources(&reg, "peer-A");
+        assert_eq!(desired["chat-1"], vec!["a".to_string()]);
+        reg.get_mut("chat-watch").unwrap().enabled = false;
+        assert_eq!(owned_chat_watch(&reg, "peer-A"), None); // paused = nobody answers here
     }
 
     #[test]

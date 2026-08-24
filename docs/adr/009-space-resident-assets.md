@@ -293,6 +293,15 @@ mechanics are:
   undrainable — and standing triggers dead — until a NEW chat message
   happened to arrive after sync.
 
+
+**Amended 2026-08-24 (ADR-018 §3) — the watcher's home.** The chat
+watch is the dispatch path of the reserved `chat-watch` trigger record
+("Chat responder"): it connects iff this device owns that enabled
+record, and every conversation start counts on the record's rollup.
+Everything above about the snapshot backlog, the deferred-boot bubble,
+dedup and the name-scoped self-skip is unchanged — it is the native
+handler behind `program: internal:chat-watch`, never a program run.
+
 ### 9. Non-goals
 
 Overlay manifest/trust format beyond what ADR-008 already fixes

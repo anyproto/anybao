@@ -85,31 +85,41 @@ the election thread. Standby means:
   full unanswered backlog (ADR-009 §8). Both devices post under the
   same `agent.name`, so the other device's replies terminate the
   backlog scan correctly. No "not ready" bubbles from a standby.
+  (Amended 2026-08-24, ADR-018 §3: the watch's gate is no longer
+  `active` itself but OWNERSHIP of the enabled `chat-watch` record —
+  the election moves that record on takeover, so the default is
+  unchanged, while a repin can hand chat to a standby device.)
 - **Trigger ticker: election-scoped, not idle** (amended 2026-08-24,
   with ADR-006 §4 device pinning): the ticker runs on standby too and
   fires the records PINNED to this device — pins are
   election-independent. What standby withholds: adopting unowned
-  records, the deferred-conversation drain, and the standing
-  built-ins (seeded ownerless at a standby boot — not runnable, not
+  records, the deferred-conversation drain (which follows `chat-watch`
+  ownership, ADR-018 §3), and the standing built-ins (seeded ownerless at a standby boot — not runnable, not
   upserted — until takeover stamps them). A PRUNED device (§4) fires
   nothing at all, pins included.
 - `ctx.run()` itself is NOT gated — embedder/CLI runs are explicit.
 
 Transitions (election thread only):
 
-- **Takeover** (false→true): for the STANDING built-ins only — pinned
-  records were never idle and never move on an election flip — re-arm
-  their crons strictly forward (`next_due = None` — a missed
-  occurrence while standby does not exist, the ADR-006 §4 cold-sync
-  rule; prevents the wake-and-replay burst that caused the incident),
-  stamp + upsert their records, then flip the flag. Chat watch
-  reconnects and drains the snapshot backlog.
+- **Takeover** (false→true): for the election-following set only —
+  the STANDING built-ins and the `chat-watch` record (ADR-018 §3);
+  pinned user records were never idle and never move on an election
+  flip — re-arm the crons strictly forward (`next_due = None` — a
+  missed occurrence while standby does not exist, the ADR-006 §4
+  cold-sync rule; prevents the wake-and-replay burst that caused the
+  incident), stamp + upsert their records (`chat-watch` is read back
+  from the dataset — a standby never held it), then flip the flag.
+  Owning `chat-watch` reconnects the watch, which drains the snapshot
+  backlog.
 - **Stand-down** (true→false): flip the flag, clear the deferred
   backlog (the new active device answers those), clear the standing
   built-ins' local ownership so they stop firing here (no record
-  write — the new winner's takeover stamps them), let in-flight runs
-  finish (same as shutdown — never interrupt a turn mid-flight).
-  Device-pinned records keep firing through the transition.
+  write — the new winner's takeover stamps them), and RELEASE
+  `chat-watch` on the record (owner cleared — the one stand-down
+  write: a local-only evict would be undone by the next reconcile,
+  which still reads this peer id), let in-flight runs finish (same as
+  shutdown — never interrupt a turn mid-flight). Device-pinned records
+  keep firing through the transition.
 
 ### 4. Cadence and degrade
 

@@ -14,9 +14,10 @@ use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::triggers::{
-    desired_event_sources, event_args, event_source, health_pass, reconcile_registry, rollup,
+    chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
+    is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
     standing_triggers, trigger_to_record, EventSource, RunResult, Scheduler, Trigger, WatchAction,
-    Watcher, CHAT_MESSAGES,
+    Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -527,6 +528,9 @@ struct Shared {
     /// Live event sources (ADR-018 §2): chat object id → the stop flag
     /// of the thread watching it. Converged on the registry every tick.
     event_sources: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+    /// The chat-responder record id (ADR-018 §3) — `chat-watch`, or a
+    /// generation-suffixed reseed when the bare id was tombstoned.
+    chat_watch_id: String,
 }
 
 /// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
@@ -842,12 +846,23 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         }
         registry.insert(t.id.clone(), t);
     }
+    // The chat responder (ADR-018 §3): a record like any other — seeded
+    // once, then claimed/repinned/paused through the dataset. A fresh
+    // seed on an active boot is stamped right away so the watch
+    // connects without waiting for the first reconcile tick.
+    let (chat_watch_id, seeded) = seed_chat_watch(&client, &space, &anchor, &chat, standing_owner)?;
+    if let Some(t) = seeded {
+        if boot_active {
+            registry.insert(t.id.clone(), t);
+        }
+    }
     let shared = Arc::new(Shared {
         triggers: Mutex::new(registry),
         scheduler: Mutex::new(sched),
         watcher: Mutex::new(Watcher::new(&cfg.agent_name)),
         backlog: Mutex::new(Vec::new()),
         event_sources: Mutex::new(BTreeMap::new()),
+        chat_watch_id,
     });
 
     let ctx = Arc::new(RunCtx {
@@ -887,10 +902,11 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), shutdown.clone());
         threads.push(std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                // standby (ADR-015 §3): stay DISCONNECTED, not muted —
-                // nothing lands in the seen-set, so takeover's snapshot
-                // yields the whole missed backlog
-                if !ctx.active.load(Ordering::Relaxed) {
+                // the watch connects iff this device OWNS the enabled
+                // chat-responder record (ADR-018 §3) — not merely muted:
+                // nothing lands in the seen-set, so a later takeover's
+                // snapshot yields the whole missed backlog (ADR-015 §3)
+                if !answers_chat(&shared) {
                     sliced_sleep(Duration::from_millis(500), &stop);
                     continue;
                 }
@@ -1178,7 +1194,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
         // shutdown and stand-down (ADR-015 §3) are observed per frame —
         // the read itself blocks until the server's next event/heartbeat
         // (ADR-009 open Q3); returning drops the stream
-        if stop.load(Ordering::Relaxed) || !ctx.active.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) || !answers_chat(shared) {
             return Ok(());
         }
         match frame.event.as_str() {
@@ -1202,6 +1218,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
                         let text = Watcher::attributed_text(&record);
+                        note_chat_start(shared, ctx);
                         if ready {
                             info!("backlog conversation: {:?}", preview(&text));
                             start_or_inject(shared, ctx, text);
@@ -1223,6 +1240,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
                         let text = Watcher::attributed_text(&record);
+                        note_chat_start(shared, ctx);
                         // deferred boot (ADR-009 §8): a message while
                         // overlays are pending gets a status bubble —
                         // the one host-authored operational reply —
@@ -1347,7 +1365,7 @@ fn trigger_ticker(
                 }
             }
             let active = ctx.active.load(Ordering::Relaxed);
-            if active {
+            if answers_chat(&shared) {
                 // answer user messages deferred while overlays were syncing
                 let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
                 for text in deferred {
@@ -1591,7 +1609,7 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
         let reg = shared.triggers.lock().unwrap();
         let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
         reg.values()
-            .filter(|t| t.owner == instance && t.enabled)
+            .filter(|t| t.owner == instance && t.enabled && !is_chat_watch(&t.id))
             .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
             .cloned()
             .collect()
@@ -1654,6 +1672,20 @@ fn election_thread(
                             t.owner.clear();
                         }
                     }
+                    // the chat responder is released for real — owner
+                    // cleared ON THE RECORD (the one stand-down write,
+                    // ADR-018 §3): a local-only evict would be undone by
+                    // the next reconcile, which still reads our peer id
+                    if let Some(mut t) = reg.remove(&shared.chat_watch_id) {
+                        t.owner.clear();
+                        let _ = ctx.client.upsert_record(
+                            &ctx.space,
+                            &ctx.anchor,
+                            "agent_triggers",
+                            &t.id,
+                            &trigger_to_record(&t),
+                        );
+                    }
                     info!("election: stand-down — another device is the active bao");
                 }
                 Some(_) => {} // verdict matches the current state
@@ -1692,6 +1724,114 @@ fn takeover(shared: &Shared, ctx: &RunCtx) {
             &trigger_to_record(t),
         );
     }
+    // the chat responder follows the election too (ADR-018 §3): the
+    // new winner re-stamps the record — an explicit write, and the
+    // newest explicit act wins over an earlier repin. The record is
+    // read back rather than taken from the registry: a standby never
+    // held it (foreign-owned → not adopted).
+    let Ok(recs) = ctx
+        .client
+        .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+    else {
+        return;
+    };
+    for rec in recs {
+        let Some(id) = rec.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if id != shared.chat_watch_id {
+            continue;
+        }
+        if let Some(mut t) = record_to_trigger(id, &rec) {
+            t.owner = instance.clone();
+            let _ = ctx.client.upsert_record(
+                &ctx.space,
+                &ctx.anchor,
+                "agent_triggers",
+                id,
+                &trigger_to_record(&t),
+            );
+            reg.insert(id.to_string(), t);
+        }
+    }
+}
+
+/// Does this device answer chat right now — own the enabled
+/// chat-responder record (ADR-018 §3)?
+fn answers_chat(shared: &Shared) -> bool {
+    let reg = shared.triggers.lock().unwrap();
+    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+    owned_chat_watch(&reg, &instance).is_some()
+}
+
+/// A conversation start counts as one "run" on the responder's rollup
+/// (no per-message run records — turns are logged as agent_turns).
+fn note_chat_start(shared: &Shared, ctx: &RunCtx) {
+    let mut reg = shared.triggers.lock().unwrap();
+    let Some(t) = reg.get_mut(&shared.chat_watch_id) else {
+        return;
+    };
+    t.run_count += 1;
+    t.last_run_at = Some(now_s());
+    t.last_status = Some("ok".into());
+    t.consecutive_failures = 0;
+    let _ = ctx.client.upsert_record(
+        &ctx.space,
+        &ctx.anchor,
+        "agent_triggers",
+        &t.id,
+        &trigger_to_record(t),
+    );
+}
+
+/// Seed the chat-responder record once (ADR-018 §3): an existing
+/// `chat-watch*` record is left untouched (its owner/enabled are user
+/// state); otherwise write `chat-watch`, falling through generation
+/// suffixes when the bare id was tombstoned by a delete. Returns the
+/// live id and the trigger when this boot created it.
+fn seed_chat_watch(
+    client: &Client,
+    space: &str,
+    anchor: &str,
+    chat: &str,
+    owner: &str,
+) -> Result<(String, Option<Trigger>)> {
+    let recs = client
+        .query(space, anchor, "agent_triggers", &json!({}))
+        .context("reading agent_triggers to seed the chat responder")?;
+    if let Some(id) = recs
+        .iter()
+        .filter_map(|r| r.get("id").and_then(|v| v.as_str()))
+        .find(|id| is_chat_watch(id))
+    {
+        return Ok((id.to_string(), None));
+    }
+    for gen in 1..=5u32 {
+        let id = if gen == 1 {
+            CHAT_WATCH_ID.to_string()
+        } else {
+            format!("{CHAT_WATCH_ID}-g{gen}")
+        };
+        let t = chat_watch_trigger(&id, chat, owner);
+        match client.upsert_record(space, anchor, "agent_triggers", &id, &trigger_to_record(&t)) {
+            Ok(reply) if reply_tombstoned(&reply) => continue,
+            Ok(_) => return Ok((id, Some(t))),
+            Err(e) if e.code.contains("record_deleted") => continue,
+            Err(e) => return Err(e).context("seeding the chat responder record"),
+        }
+    }
+    anyhow::bail!("chat responder: every generation id is tombstoned")
+}
+
+/// A modify reply whose rejections say the id is a deleted record.
+fn reply_tombstoned(reply: &Value) -> bool {
+    reply["rejections"].as_array().is_some_and(|rs| {
+        rs.iter().any(|r| {
+            ["reason", "code"]
+                .iter()
+                .any(|k| r[k].as_str().is_some_and(|v| v.contains("record_deleted")))
+        })
+    })
 }
 
 // --- the localhost control API -------------------------------------------------
@@ -1997,6 +2137,59 @@ mod tests {
         let calls = log.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+    }
+
+    #[test]
+    fn chat_watch_seeds_once_and_leaves_an_existing_record_alone() {
+        // fresh space: one read, one write of the bare id
+        let (c, log) = scripted(&[(200, json!({"records": []})), (200, json!({}))]);
+        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "peer-A").unwrap();
+        assert_eq!(id, "chat-watch");
+        let t = seeded.expect("this boot created it");
+        assert_eq!((t.kind.as_str(), t.owner.as_str()), ("event", "peer-A"));
+        assert_eq!(t.spec["objectId"], json!("chat-1"));
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].1, "/v1/spaces/sp/modify");
+        assert_eq!(
+            calls[1].2.as_ref().unwrap()["records"][0]["id"],
+            json!("chat-watch")
+        );
+        drop(calls);
+
+        // an existing (even generation-suffixed) record is user state:
+        // owner/enabled untouched, no write
+        let (c, log) = scripted(&[(
+            200,
+            json!({"records": [{"id": "rollup"}, {"id": "chat-watch-g2", "owner": "peer-B",
+                                "enabled": false}]}),
+        )]);
+        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "peer-A").unwrap();
+        assert_eq!(id, "chat-watch-g2");
+        assert!(seeded.is_none());
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn chat_watch_reseeds_under_a_generation_when_tombstoned() {
+        let (c, log) = scripted(&[
+            (200, json!({"records": []})),
+            (
+                200,
+                json!({"rejections": [{"recordId": "chat-watch",
+                                          "reason": "upsert.record_deleted"}]}),
+            ),
+            (200, json!({})),
+        ]);
+        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "").unwrap();
+        assert_eq!(id, "chat-watch-g2");
+        assert_eq!(seeded.unwrap().owner, ""); // standby boot: unassigned
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[2].2.as_ref().unwrap()["records"][0]["id"],
+            json!("chat-watch-g2")
+        );
     }
 
     #[test]
