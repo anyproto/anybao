@@ -14,8 +14,8 @@ use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::triggers::{
-    reconcile_registry, rollup, standing_triggers, trigger_to_record, RunResult, Scheduler,
-    Trigger, WatchAction, Watcher,
+    health_pass, reconcile_registry, rollup, standing_triggers, trigger_to_record, RunResult,
+    Scheduler, Trigger, WatchAction, Watcher,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -1303,111 +1303,163 @@ fn trigger_ticker(
     ctx: Arc<RunCtx>,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || loop {
-        sliced_sleep(Duration::from_secs(5), &stop);
-        if stop.load(Ordering::Relaxed) {
-            return;
-        }
-        // pruned (ADR-015 §4): a tombstoned device fires NOTHING —
-        // standby, by contrast, still fires its device-pinned records
-        if ctx.pruned {
-            continue;
-        }
-        // deferred boot (ADR-009 §8): don't burn trigger runs (and the
-        // circuit breaker) while overlays are still syncing. This is a
-        // PROBE, not the cheap check — readiness must clear without
-        // waiting for a chat message (the backlog drain below and
-        // trigger start both hang off it); a no-op once synced.
-        if ctx.ensure_ready().is_err() {
-            continue;
-        }
-        let active = ctx.active.load(Ordering::Relaxed);
-        if active {
-            // answer user messages deferred while overlays were syncing
-            let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
-            for text in deferred {
-                info!("deferred conversation: {:?}", preview(&text));
-                start_or_inject(&shared, &ctx, text);
+    std::thread::spawn(move || {
+        // "why isn't it firing" must be answerable from the log
+        // (ADR-006 §4 observability): gate and reconcile failures log
+        // on TRANSITIONS — visible without flooding a 5s loop.
+        let mut was_ready = true;
+        let mut reconcile_failing = false;
+        loop {
+            sliced_sleep(Duration::from_secs(5), &stop);
+            if stop.load(Ordering::Relaxed) {
+                return;
             }
-        }
-        // the dataset is the source of truth (ADR-006 §4): converge
-        // the registry on the records — adopt pins + (when active)
-        // unowned records, refresh edited definitions, evict repinned
-        // and deleted ones. Runs on standby too: pins are
-        // election-independent.
-        if let Ok(recs) = ctx
-            .client
-            .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
-        {
-            let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
-            let standing: std::collections::BTreeSet<String> =
-                standing_triggers(&ctx.space, "", "")
-                    .into_iter()
-                    .map(|t| t.id)
-                    .collect();
-            let stamp = {
-                let mut reg = shared.triggers.lock().unwrap();
-                reconcile_registry(&mut reg, &recs, &instance, active, &standing)
-            };
-            for t in &stamp {
-                let _ = ctx.client.upsert_record(
-                    &ctx.space,
-                    &ctx.anchor,
-                    "agent_triggers",
-                    &t.id,
-                    &trigger_to_record(t),
-                );
-                info!("trigger adopted from dataset: {:?} ({})", t.id, t.kind);
+            // pruned (ADR-015 §4): a tombstoned device fires NOTHING —
+            // standby, by contrast, still fires its device-pinned
+            // records. Boot already warned loudly; stay quiet here.
+            if ctx.pruned {
+                continue;
             }
-        }
-        let due: Vec<Trigger> = {
-            let mut reg = shared.triggers.lock().unwrap();
-            let sched = shared.scheduler.lock().unwrap();
-            let mut out = Vec::new();
-            for t in reg.values_mut() {
-                if t.kind == "cron" && sched.cron_due(t) {
-                    out.push(t.clone());
-                    sched.advance_cron(t);
-                } else if sched.once_due(t) {
-                    out.push(t.clone());
-                    // consume the shot before the run: at-most-once even
-                    // if the run path dies mid-way (ADR-006 §4)
-                    t.enabled = false;
+            // deferred boot (ADR-009 §8): don't burn trigger runs (and
+            // the circuit breaker) while overlays are still syncing.
+            // This is a PROBE, not the cheap check — readiness must
+            // clear without waiting for a chat message (the backlog
+            // drain below and trigger start both hang off it); a no-op
+            // once synced.
+            match ctx.ensure_ready() {
+                Err(e) => {
+                    if was_ready {
+                        info!("trigger ticker: paused — {e}");
+                        was_ready = false;
+                    }
+                    continue;
+                }
+                Ok(()) => {
+                    if !was_ready {
+                        info!("trigger ticker: overlays ready — resuming");
+                        was_ready = true;
+                    }
                 }
             }
-            out
-        };
-        for t in due {
-            let mailbox: SharedMailbox = Default::default();
-            let interrupt = Arc::new(AtomicBool::new(false));
-            let result = ctx.run(&t.program, &t.args, mailbox, interrupt, None);
-            let rr = result.map(|(_, rr)| rr).unwrap_or_else(|e| RunResult {
-                status: "error".into(),
-                duration_ms: 0,
-                trace_ref: None,
-                fuel: None,
-                error: Some(e.to_string()),
-            });
-            let mut reg = shared.triggers.lock().unwrap();
-            if let Some(live) = reg.get_mut(&t.id) {
+            let active = ctx.active.load(Ordering::Relaxed);
+            if active {
+                // answer user messages deferred while overlays were syncing
+                let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
+                for text in deferred {
+                    info!("deferred conversation: {:?}", preview(&text));
+                    start_or_inject(&shared, &ctx, text);
+                }
+            }
+            // the dataset is the source of truth (ADR-006 §4): converge
+            // the registry on the records — adopt pins + (when active)
+            // unowned records, refresh edited definitions, evict
+            // repinned and deleted ones. Runs on standby too: pins are
+            // election-independent.
+            match ctx
+                .client
+                .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+            {
+                Err(e) => {
+                    if !reconcile_failing {
+                        warn!(
+                            "agent_triggers reconcile query failed ({e}) — \
+                             registry runs unrefreshed until it recovers"
+                        );
+                        reconcile_failing = true;
+                    }
+                }
+                Ok(recs) => {
+                    if reconcile_failing {
+                        info!("agent_triggers reconcile recovered");
+                        reconcile_failing = false;
+                    }
+                    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+                    let standing: std::collections::BTreeSet<String> =
+                        standing_triggers(&ctx.space, "", "")
+                            .into_iter()
+                            .map(|t| t.id)
+                            .collect();
+                    let stamp = {
+                        let mut reg = shared.triggers.lock().unwrap();
+                        reconcile_registry(&mut reg, &recs, &instance, active, &standing)
+                    };
+                    for t in &stamp {
+                        let _ = ctx.client.upsert_record(
+                            &ctx.space,
+                            &ctx.anchor,
+                            "agent_triggers",
+                            &t.id,
+                            &trigger_to_record(t),
+                        );
+                        info!("trigger adopted from dataset: {:?} ({})", t.id, t.kind);
+                    }
+                    // health pass: mark enabled-but-inert definitions on
+                    // their records (and clear the marks once fixed)
+                    let marked = {
+                        let mut reg = shared.triggers.lock().unwrap();
+                        let sched = shared.scheduler.lock().unwrap();
+                        health_pass(&sched, &mut reg, &standing)
+                    };
+                    for t in &marked {
+                        let _ = ctx.client.upsert_record(
+                            &ctx.space,
+                            &ctx.anchor,
+                            "agent_triggers",
+                            &t.id,
+                            &trigger_to_record(t),
+                        );
+                    }
+                }
+            }
+            let due: Vec<Trigger> = {
+                let mut reg = shared.triggers.lock().unwrap();
                 let sched = shared.scheduler.lock().unwrap();
-                let run_rec = sched.record_run(live, &rr);
-                let ts_ms = (now_s() * 1000.0) as i64;
-                let rid = format!("{}:{:020}", t.id, ts_ms);
-                let _ = ctx.client.upsert_record(
-                    &ctx.space,
-                    &ctx.anchor,
-                    "agent_trigger_runs",
-                    &rid,
-                    &run_rec,
-                );
-                let _ = ctx.client.upsert_record(
-                    &ctx.space,
-                    &ctx.anchor,
-                    "agent_triggers",
-                    &t.id,
-                    &trigger_to_record(live),
-                );
+                let mut out = Vec::new();
+                for t in reg.values_mut() {
+                    if t.kind == "cron" && sched.cron_due(t) {
+                        out.push(t.clone());
+                        sched.advance_cron(t);
+                    } else if sched.once_due(t) {
+                        out.push(t.clone());
+                        // consume the shot before the run: at-most-once even
+                        // if the run path dies mid-way (ADR-006 §4)
+                        t.enabled = false;
+                    }
+                }
+                out
+            };
+            for t in due {
+                let mailbox: SharedMailbox = Default::default();
+                let interrupt = Arc::new(AtomicBool::new(false));
+                let result = ctx.run(&t.program, &t.args, mailbox, interrupt, None);
+                let rr = result.map(|(_, rr)| rr).unwrap_or_else(|e| RunResult {
+                    status: "error".into(),
+                    duration_ms: 0,
+                    trace_ref: None,
+                    fuel: None,
+                    error: Some(e.to_string()),
+                });
+                let mut reg = shared.triggers.lock().unwrap();
+                if let Some(live) = reg.get_mut(&t.id) {
+                    let sched = shared.scheduler.lock().unwrap();
+                    let run_rec = sched.record_run(live, &rr);
+                    let ts_ms = (now_s() * 1000.0) as i64;
+                    let rid = format!("{}:{:020}", t.id, ts_ms);
+                    let _ = ctx.client.upsert_record(
+                        &ctx.space,
+                        &ctx.anchor,
+                        "agent_trigger_runs",
+                        &rid,
+                        &run_rec,
+                    );
+                    let _ = ctx.client.upsert_record(
+                        &ctx.space,
+                        &ctx.anchor,
+                        "agent_triggers",
+                        &t.id,
+                        &trigger_to_record(live),
+                    );
+                }
             }
         }
     })

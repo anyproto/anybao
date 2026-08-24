@@ -366,6 +366,19 @@ providers stay silent until their effect needs them.
   `limits: {fuelPerRun?, timeoutS?, maxCostPerRun?}` — enforced by the
   executor mechanics (ADR-003 fuel/epoch) and the llm effect (cost).
   A background program structurally cannot run away.
+- **Inert definitions are marked, not silent (2026-08-24)**: an
+  enabled trigger that can never fire gets a `lastStatus` marker
+  stamped onto its record by a per-tick health pass — `invalid_spec`
+  (a cron whose spec yields no next occurrence, a `once` without a
+  numeric `at`) or `unsupported_kind` (`event`: declared in the shape,
+  no evaluator yet — the marker holds until the event kind ships).
+  Markers self-clear once the definition is fixed and are overwritten
+  by the first real run status. Only the owning device judges its own
+  enabled entries. The ticker's other silent paths log on TRANSITIONS
+  (never per-tick): overlays-not-ready pause/resume, and reconcile
+  query failure/recovery — "why isn't it firing" must be answerable
+  from the record or the log (the BOB-39 lesson: bao could not
+  diagnose a stalled scheduler from inside).
 - **Circuit breaker**: `maxConsecutiveFailures` (default 3) —
   exceeded ⇒ trigger auto-disables (`enabled: false`,
   `lastStatus: "auto_disabled"`, reason in the last run record);

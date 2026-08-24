@@ -295,6 +295,71 @@ pub fn reconcile_registry(
     stamp
 }
 
+/// `lastStatus` marker: a definition the scheduler can never arm
+/// (unparseable cron expression, a `once` without a numeric `at`).
+pub const STATUS_INVALID_SPEC: &str = "invalid_spec";
+/// `lastStatus` marker: a `kind` the ticker has no evaluator for
+/// (`event`, declared in ADR-006 §4 but not yet implemented).
+pub const STATUS_UNSUPPORTED_KIND: &str = "unsupported_kind";
+
+/// The definition can never arm: a cron whose spec yields no next
+/// occurrence, or a `once` without a numeric `at`.
+pub fn spec_invalid(sched: &Scheduler, t: &Trigger) -> bool {
+    match t.kind.as_str() {
+        "cron" => sched.compute_next_due(t).is_none(),
+        "once" => t.spec.get("at").and_then(|v| v.as_f64()).is_none(),
+        _ => false,
+    }
+}
+
+/// Health pass (ADR-006 §4 observability): a trigger that LOOKS armed
+/// but can never fire — unimplemented kind, unarmable spec — gets a
+/// `lastStatus` marker stamped so the record itself says why nothing
+/// happens (a silent never-due trigger was undiagnosable from inside —
+/// BOB-39). Markers self-clear once the definition is fixed. Only this
+/// device's live, enabled entries are judged; standing built-ins are
+/// code-owned and always valid. Returns the triggers whose records
+/// need persisting.
+pub fn health_pass(
+    sched: &Scheduler,
+    reg: &mut BTreeMap<String, Trigger>,
+    standing: &std::collections::BTreeSet<String>,
+) -> Vec<Trigger> {
+    let mut changed = Vec::new();
+    for t in reg.values_mut() {
+        if standing.contains(&t.id) || t.owner != sched.instance_id() || !t.enabled {
+            continue;
+        }
+        let marker = if t.kind == "event" {
+            Some(STATUS_UNSUPPORTED_KIND)
+        } else if spec_invalid(sched, t) {
+            Some(STATUS_INVALID_SPEC)
+        } else {
+            None
+        };
+        match marker {
+            Some(m) if t.last_status.as_deref() != Some(m) => {
+                tracing::warn!(
+                    "trigger {:?}: {m} — enabled but can never fire as defined",
+                    t.id
+                );
+                t.last_status = Some(m.into());
+                changed.push(t.clone());
+            }
+            None if matches!(
+                t.last_status.as_deref(),
+                Some(STATUS_INVALID_SPEC | STATUS_UNSUPPORTED_KIND)
+            ) =>
+            {
+                t.last_status = None; // fixed — clear the marker
+                changed.push(t.clone());
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
 /// Parse an `agent_triggers` dataset record into a Trigger (ADR-006 §4
 /// dataset-is-source-of-truth). Returns None for records missing the
 /// definition core — the caller logs and skips, never crashes.
@@ -772,6 +837,86 @@ mod tests {
         reconcile_registry(&mut reg2, &recs, "peer-A", true, &standing);
         assert!(reg2.contains_key("rollup"));
         assert!(reg2.contains_key("ok")); // malformed record keeps the live entry
+    }
+
+    #[test]
+    fn spec_invalid_flags_unarmable_definitions() {
+        let t = Arc::new(Mutex::new(1000.0));
+        let sched = Scheduler::new("i1", clock(t));
+        let ok = Trigger::cron("a", "a", 60.0, "p@v1", json!({}), "i1", true);
+        assert!(!spec_invalid(&sched, &ok));
+        let mut bad_cron = ok.clone();
+        bad_cron.spec = json!({"cron": "not a cron"});
+        assert!(spec_invalid(&sched, &bad_cron));
+        let mut empty_spec = ok.clone();
+        empty_spec.spec = json!({});
+        assert!(spec_invalid(&sched, &empty_spec));
+        let mut once = ok.clone();
+        once.kind = "once".into();
+        once.spec = json!({"at": 1500.0});
+        assert!(!spec_invalid(&sched, &once));
+        once.spec = json!({"at": "tomorrow"});
+        assert!(spec_invalid(&sched, &once));
+        let mut event = ok.clone();
+        event.kind = "event".into();
+        assert!(!spec_invalid(&sched, &event)); // judged by kind, not spec
+    }
+
+    #[test]
+    fn health_pass_marks_inert_definitions_and_clears_on_fix() {
+        let t = Arc::new(Mutex::new(1000.0));
+        let sched = Scheduler::new("peer-A", clock(t));
+        let standing: std::collections::BTreeSet<String> =
+            ["rollup".to_string()].into_iter().collect();
+        let mut reg = BTreeMap::new();
+        let mut ev = Trigger::cron("ev", "ev", 60.0, "p@v1", json!({}), "peer-A", true);
+        ev.kind = "event".into();
+        reg.insert("ev".into(), ev);
+        let mut bad = Trigger::cron("bad", "bad", 60.0, "p@v1", json!({}), "peer-A", true);
+        bad.spec = json!({"cron": "nope"});
+        reg.insert("bad".into(), bad);
+        // not judged: foreign pin, disabled, standing, healthy
+        reg.insert(
+            "foreign".into(),
+            Trigger::cron("foreign", "f", 60.0, "p@v1", json!({}), "peer-B", true),
+        );
+        let mut off = Trigger::cron("off", "off", 60.0, "p@v1", json!({}), "peer-A", false);
+        off.spec = json!({});
+        reg.insert("off".into(), off);
+        let mut standing_bad = Trigger::cron(
+            "rollup",
+            "rollup",
+            3600.0,
+            "agent:rollup@v1",
+            json!({}),
+            "peer-A",
+            true,
+        );
+        standing_bad.spec = json!({});
+        reg.insert("rollup".into(), standing_bad);
+        reg.insert(
+            "fine".into(),
+            Trigger::cron("fine", "fine", 60.0, "p@v1", json!({}), "peer-A", true),
+        );
+
+        let changed = health_pass(&sched, &mut reg, &standing);
+        let ids: Vec<&str> = changed.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["bad", "ev"]);
+        assert_eq!(
+            reg["ev"].last_status.as_deref(),
+            Some(STATUS_UNSUPPORTED_KIND)
+        );
+        assert_eq!(reg["bad"].last_status.as_deref(), Some(STATUS_INVALID_SPEC));
+        assert!(reg["fine"].last_status.is_none());
+        // steady state: no repeat writes, no repeat warns
+        assert!(health_pass(&sched, &mut reg, &standing).is_empty());
+        // fixing the spec clears the marker; a real run status is untouched
+        reg.get_mut("bad").unwrap().spec = json!({"every_s": 60.0});
+        let cleared = health_pass(&sched, &mut reg, &standing);
+        assert_eq!(cleared.len(), 1);
+        assert!(reg["bad"].last_status.is_none());
+        reg.get_mut("fine").unwrap().last_status = Some("ok".into());
+        assert!(health_pass(&sched, &mut reg, &standing).is_empty());
     }
 
     #[test]
