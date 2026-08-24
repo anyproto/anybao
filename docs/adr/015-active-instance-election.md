@@ -4,7 +4,9 @@ Status: **Accepted** (2026-08-17), amended 2026-08-18 (§4: the SDK
 review pass hardened tombstone semantics — 409 `device.pruned` on
 self-row writes is now PERMANENT STANDBY, never the disabled-active
 degrade; plus a brief boot retry now that registry unavailability is
-an error rather than an empty read)
+an error rather than an empty read), amended 2026-08-24 (§3: the gate
+narrowed for device-pinned triggers, ADR-006 §4 — standby no longer
+idles the whole ticker)
 Date: 2026-08-17
 Builds on: ADR-006 §4 (triggers: single-owner, missed-occurrence
 rule), ADR-009 §6 (serve/lib surface), ADR-009 §8 (snapshot backlog —
@@ -83,22 +85,31 @@ the election thread. Standby means:
   full unanswered backlog (ADR-009 §8). Both devices post under the
   same `agent.name`, so the other device's replies terminate the
   backlog scan correctly. No "not ready" bubbles from a standby.
-- **Trigger ticker idle** — no runs, no dataset adoption, no
-  ownership stamping. At boot in standby, the standing-trigger
-  records are not upserted either (registry stays in-memory).
+- **Trigger ticker: election-scoped, not idle** (amended 2026-08-24,
+  with ADR-006 §4 device pinning): the ticker runs on standby too and
+  fires the records PINNED to this device — pins are
+  election-independent. What standby withholds: adopting unowned
+  records, the deferred-conversation drain, and the standing
+  built-ins (seeded ownerless at a standby boot — not runnable, not
+  upserted — until takeover stamps them). A PRUNED device (§4) fires
+  nothing at all, pins included.
 - `ctx.run()` itself is NOT gated — embedder/CLI runs are explicit.
 
 Transitions (election thread only):
 
-- **Takeover** (false→true): re-arm every cron strictly forward
-  (`next_due = None` — a missed occurrence while standby does not
-  exist, the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
-  burst that caused the incident), stamp + upsert the registry's
-  trigger records, then flip the flag. Chat watch reconnects and
-  drains the snapshot backlog.
+- **Takeover** (false→true): for the STANDING built-ins only — pinned
+  records were never idle and never move on an election flip — re-arm
+  their crons strictly forward (`next_due = None` — a missed
+  occurrence while standby does not exist, the ADR-006 §4 cold-sync
+  rule; prevents the wake-and-replay burst that caused the incident),
+  stamp + upsert their records, then flip the flag. Chat watch
+  reconnects and drains the snapshot backlog.
 - **Stand-down** (true→false): flip the flag, clear the deferred
-  backlog (the new active device answers those), let in-flight runs
+  backlog (the new active device answers those), clear the standing
+  built-ins' local ownership so they stop firing here (no record
+  write — the new winner's takeover stamps them), let in-flight runs
   finish (same as shutdown — never interrupt a turn mid-flight).
+  Device-pinned records keep firing through the transition.
 
 ### 4. Cadence and degrade
 

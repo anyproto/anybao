@@ -14,8 +14,8 @@ use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::triggers::{
-    record_to_trigger, rollup, standing_triggers, trigger_to_record, RunResult, Scheduler, Trigger,
-    WatchAction, Watcher,
+    reconcile_registry, rollup, standing_triggers, trigger_to_record, RunResult, Scheduler,
+    Trigger, WatchAction, Watcher,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -809,12 +809,25 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // below aren't stamped) until the election thread flips the gate.
     let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
 
-    let instance = format!("anyrt-{}", std::process::id());
+    // This device's trigger identity (ADR-006 §4): the registry peer
+    // id — stable across restarts, so a pinned record survives them.
+    // No peer id (devices API unavailable) falls back to the legacy
+    // `anyrt-<pid>` stamp, which every reader treats as UNOWNED — the
+    // degrade path stays restart-safe too.
+    let instance = election
+        .self_peer
+        .clone()
+        .unwrap_or_else(|| format!("anyrt-{}", std::process::id()));
+    let boot_active = election.active.load(Ordering::Relaxed);
     let mut sched = Scheduler::new(&instance, Box::new(now_s));
     sched.arm();
     let mut registry = BTreeMap::new();
-    for t in standing_triggers(&space, &chat, &instance) {
-        if election.active.load(Ordering::Relaxed) {
+    // The standing built-ins follow the ELECTION, not a pin: a standby
+    // boot seeds them ownerless (not runnable) and takeover stamps
+    // them; device-pinned records are the ticker's reconcile job.
+    let standing_owner = if boot_active { instance.as_str() } else { "" };
+    for t in standing_triggers(&space, &chat, standing_owner) {
+        if boot_active {
             client.upsert_record(
                 &space,
                 &anchor,
@@ -846,6 +859,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         oauth,
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
+        pruned: election.pruned,
     });
 
     let mut threads = vec![
@@ -926,13 +940,18 @@ pub struct RunCtx {
     /// every Broker
     pub oauth: Arc<crate::oauth::OauthState>,
     /// single-active gate (ADR-015 §3): false = standby (chat watch
-    /// disconnected, ticker idle). Written ONLY by the election thread
-    /// after boot. `ctx.run()` itself is not gated — embedder/CLI runs
-    /// are explicit.
+    /// disconnected; ownerless-trigger adoption and the standing
+    /// built-ins idle — device-pinned triggers still fire, ADR-006
+    /// §4). Written ONLY by the election thread after boot.
+    /// `ctx.run()` itself is not gated — embedder/CLI runs are
+    /// explicit.
     pub active: Arc<AtomicBool>,
     /// this device's peer id in the devices registry; None = server
     /// predates /v1/devices (election disabled, gate permanently true)
     pub self_peer: Option<String>,
+    /// tombstoned device (ADR-015 §4): unlike standby, a pruned device
+    /// fires NOTHING — not even its pins
+    pub pruned: bool,
 }
 
 impl RunCtx {
@@ -1289,9 +1308,9 @@ fn trigger_ticker(
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        // standby (ADR-015 §3): no runs, no adoption, no ownership
-        // stamping — the election thread owns the transitions
-        if !ctx.active.load(Ordering::Relaxed) {
+        // pruned (ADR-015 §4): a tombstoned device fires NOTHING —
+        // standby, by contrast, still fires its device-pinned records
+        if ctx.pruned {
             continue;
         }
         // deferred boot (ADR-009 §8): don't burn trigger runs (and the
@@ -1302,60 +1321,43 @@ fn trigger_ticker(
         if ctx.ensure_ready().is_err() {
             continue;
         }
-        // answer user messages deferred while overlays were syncing
-        let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
-        for text in deferred {
-            info!("deferred conversation: {:?}", preview(&text));
-            start_or_inject(&shared, &ctx, text);
+        let active = ctx.active.load(Ordering::Relaxed);
+        if active {
+            // answer user messages deferred while overlays were syncing
+            let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
+            for text in deferred {
+                info!("deferred conversation: {:?}", preview(&text));
+                start_or_inject(&shared, &ctx, text);
+            }
         }
-        // the dataset is the source of truth (ADR-006 §4): adopt records
-        // the registry has never seen (ownerless or ours), honor enabled
-        // edits on adopted ones; foreign owners and malformed records are
-        // left alone (the latter loudly)
+        // the dataset is the source of truth (ADR-006 §4): converge
+        // the registry on the records — adopt pins + (when active)
+        // unowned records, refresh edited definitions, evict repinned
+        // and deleted ones. Runs on standby too: pins are
+        // election-independent.
         if let Ok(recs) = ctx
             .client
             .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
         {
             let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
-            let mut reg = shared.triggers.lock().unwrap();
             let standing: std::collections::BTreeSet<String> =
                 standing_triggers(&ctx.space, "", "")
                     .into_iter()
                     .map(|t| t.id)
                     .collect();
-            for rec in recs {
-                let Some(id) = rec.get("id").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                if standing.contains(id) {
-                    continue; // built-ins are code-owned, not record-owned
-                }
-                match reg.get_mut(id) {
-                    Some(live) => {
-                        if let Some(en) = rec.get("enabled").and_then(|v| v.as_bool()) {
-                            live.enabled = en;
-                        }
-                    }
-                    None => {
-                        let Some(mut t) = record_to_trigger(id, &rec) else {
-                            warn!("agent_triggers {id:?}: malformed record — skipped");
-                            continue;
-                        };
-                        if !t.owner.is_empty() && t.owner != instance {
-                            continue; // foreign-owned
-                        }
-                        t.owner = instance.clone(); // adopt + stamp
-                        let _ = ctx.client.upsert_record(
-                            &ctx.space,
-                            &ctx.anchor,
-                            "agent_triggers",
-                            id,
-                            &trigger_to_record(&t),
-                        );
-                        info!("trigger adopted from dataset: {id:?} ({})", t.kind);
-                        reg.insert(id.to_string(), t);
-                    }
-                }
+            let stamp = {
+                let mut reg = shared.triggers.lock().unwrap();
+                reconcile_registry(&mut reg, &recs, &instance, active, &standing)
+            };
+            for t in &stamp {
+                let _ = ctx.client.upsert_record(
+                    &ctx.space,
+                    &ctx.anchor,
+                    "agent_triggers",
+                    &t.id,
+                    &trigger_to_record(t),
+                );
+                info!("trigger adopted from dataset: {:?} ({})", t.id, t.kind);
             }
         }
         let due: Vec<Trigger> = {
@@ -1441,6 +1443,22 @@ fn election_thread(
                     // the new active device answers these; in-flight
                     // runs finish on their own (never interrupt a turn)
                     shared.backlog.lock().unwrap().clear();
+                    // the standing built-ins follow the election: drop
+                    // their local ownership so they stop firing here
+                    // (the new winner's takeover stamps the records —
+                    // no write from the loser, no race). Device-pinned
+                    // records stay runnable — that's the pin.
+                    let standing: std::collections::BTreeSet<String> =
+                        standing_triggers(&ctx.space, "", "")
+                            .into_iter()
+                            .map(|t| t.id)
+                            .collect();
+                    let mut reg = shared.triggers.lock().unwrap();
+                    for t in reg.values_mut() {
+                        if standing.contains(&t.id) {
+                            t.owner.clear();
+                        }
+                    }
                     info!("election: stand-down — another device is the active bao");
                 }
                 Some(_) => {} // verdict matches the current state
@@ -1449,15 +1467,24 @@ fn election_thread(
     })
 }
 
-/// Takeover prep (ADR-015 §3), run BEFORE the gate flips: re-arm every
-/// cron strictly forward (a missed occurrence while standby does not
-/// exist — the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
-/// burst), then stamp + publish the registry's trigger records that the
-/// standby boot skipped.
+/// Takeover prep (ADR-015 §3), run BEFORE the gate flips. Only the
+/// STANDING built-ins move with the election: re-arm their crons
+/// strictly forward (a missed occurrence while standby does not exist
+/// — the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
+/// burst), stamp + publish the records the standby boot skipped.
+/// Device-pinned records never move on an election flip — they were
+/// firing here all along (or belong to another device).
 fn takeover(shared: &Shared, ctx: &RunCtx) {
     let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+    let standing: std::collections::BTreeSet<String> = standing_triggers(&ctx.space, "", "")
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
     let mut reg = shared.triggers.lock().unwrap();
     for t in reg.values_mut() {
+        if !standing.contains(&t.id) {
+            continue;
+        }
         if t.kind == "cron" {
             t.next_due = None; // next tick arms forward, no fire
         }
@@ -1578,6 +1605,9 @@ fn handle_control(
             )?;
             Ok(Value::Array(rows))
         }
+        // The mutating routes write THROUGH to the dataset (ADR-006 §4:
+        // the dataset is the source of truth — a registry-only edit
+        // would be reverted by the next reconcile tick).
         ("PATCH", ["triggers", id]) => {
             let t = reg.get_mut(*id).context("trigger not found")?;
             let patch: Map<String, Value> = serde_json::from_str(body)?;
@@ -1588,19 +1618,31 @@ fn handle_control(
             if let Some(en) = patch.get("enabled").and_then(|v| v.as_bool()) {
                 t.enabled = en;
             }
-            Ok(trigger_to_record(t))
+            let rec = trigger_to_record(t);
+            let _ = ctx
+                .client
+                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+            Ok(rec)
         }
         ("POST", ["triggers", id, "enable"]) => {
             let t = reg.get_mut(*id).context("trigger not found")?;
             t.enabled = true;
             t.consecutive_failures = 0; // manual re-enable resets the breaker
             t.next_due = None;
-            Ok(trigger_to_record(t))
+            let rec = trigger_to_record(t);
+            let _ = ctx
+                .client
+                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+            Ok(rec)
         }
         ("POST", ["triggers", id, "disable"]) => {
             let t = reg.get_mut(*id).context("trigger not found")?;
             t.enabled = false;
-            Ok(trigger_to_record(t))
+            let rec = trigger_to_record(t);
+            let _ = ctx
+                .client
+                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+            Ok(rec)
         }
         // one-shot program run (ADR-009 §6): {program, args?} runs a
         // deployed program (serve resolver: space programs + overlay

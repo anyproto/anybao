@@ -290,10 +290,26 @@ providers stay silent until their effect needs them.
 - Trigger object properties: `name`, `kind` (`cron | event | once`),
   `spec` (cron expression | `{dataset, objectId?, filter?}` |
   `{at: <epoch seconds>}`), `program`
-  (ADR-004 spec string), `args`, `owner` (instance UUID), `enabled`,
-  `logRuns`, and the observability rollup `lastRunAt / lastDurationMs /
-  lastStatus / runCount / lastRunRef` (plan §4b semantics: single-owner,
-  at-most-once, boot-disarmed, arm-after-sync).
+  (ADR-004 spec string), `args`, `owner` (the DEVICE PIN — see below),
+  `enabled`, `logRuns`, and the observability rollup `lastRunAt /
+  lastDurationMs / lastStatus / runCount / lastRunRef` (plan §4b
+  semantics: single-owner, at-most-once, boot-disarmed,
+  arm-after-sync).
+- **`owner` is a device pin (amended 2026-08-24)**: the peer id of the
+  device (ADR-015 / SYN-165 devices registry) that runs this trigger —
+  stable across restarts, unlike the pre-amendment `anyrt-<pid>`
+  stamps, which any reader now treats as UNOWNED (a pid never survives
+  a restart; the live incident: every serve restart permanently
+  orphaned all adopted triggers). A pinned trigger fires on its device
+  whenever that device's serve is up — election-independent (a standby
+  bao still fires its pins; only a PRUNED device fires nothing). An
+  offline pinned device simply doesn't fire — intended: pins are the
+  substrate for remote agent/VM runners. Repin = write `owner` on the
+  record (UI or agent); the old device evicts within a tick, the new
+  one adopts on its next tick. Clearing `owner` floats the trigger
+  back to the election winner. When no peer id exists (devices API
+  unavailable), the runtime stamps the legacy `anyrt-<pid>` form,
+  which stays adoptable across restarts by construction.
 - **`once` kind (amended 2026-08-02, E11)**: fires when `now >= at`
   provided it has never run (`lastRunAt` empty), then auto-disables
   (`enabled: false`) — the record stays as its own audit trail. A
@@ -302,16 +318,30 @@ providers stay silent until their effect needs them.
   missed-occurrence-does-not-exist rule). A failed run consumes the
   shot (at-most-once bias): no retry, the error lives in the run
   record.
-- **The dataset is the source of truth (amended 2026-08-02, E11)**:
-  the owner reconciles its registry from `agent_triggers` records
-  every tick — records it has never seen are parsed and, when
-  `owner` is empty or its own, ADOPTED (owner stamped + persisted);
-  foreign-owned records are left alone. `enabled` edits on adopted
-  records are honored on the next tick. Malformed records are
-  skipped loudly (log), never crash the ticker. This is what lets
-  the agent CREATE triggers (reminders above all) by writing a
-  record — previously the registry only ever held the standing
-  built-ins.
+- **The dataset is the source of truth (amended 2026-08-02 E11;
+  reconcile semantics 2026-08-24)**: every tick, each running device
+  CONVERGES its in-memory registry on the `agent_triggers` records
+  (`triggers::reconcile_registry`):
+  - **adopt** — a record pinned to this device, or (election-active
+    only) an unowned record, which gets this device's peer id stamped
+    + persisted;
+  - **refresh** — a definition-core edit (`kind / spec / program /
+    args / name / limits / maxConsecutiveFailures`) rebuilds the
+    registry entry from the record: crons re-arm strictly forward, and
+    a `once` takes the record's `lastRunAt` as its consumed state — so
+    rewriting the definition (which drops the rollup) re-arms the
+    shot. `enabled` edits alone are honored in place, no re-arm;
+  - **evict** — a record repinned to another device, or deleted from
+    the dataset, leaves the registry within a tick (delete and repin
+    actually work; deleted record ids stay tombstoned server-side, so
+    recreating a trigger means a new id).
+  Foreign-pinned records are otherwise left alone; malformed records
+  are skipped loudly (log) and keep any live entry, never crash the
+  ticker. The standing built-ins are code-owned: their record ids are
+  ignored by the reconcile and their entries never evicted — they
+  follow the ELECTION (ADR-015), not a pin. This is what lets the
+  agent CREATE triggers (reminders above all) by writing a record —
+  previously the registry only ever held the standing built-ins.
 - `trigger_runs` dataset ON the trigger object: `{ts, durationMs,
   status, error?, traceRef}` — the run's trace in ADR-001 format
   (inline small / file attachment large), keep-last-N retention.
@@ -320,7 +350,10 @@ providers stay silent until their effect needs them.
   if the honor system proves insufficient.
 - **API surface is a monitoring tool, not just CRUD** (review
   2026-07-07): `create / delete / patch / enable / disable / list /
-  get / runs(triggerId)`. **`list` carries enough to monitor without
+  get / runs(triggerId)`. The mutating control-plane routes write
+  THROUGH to the dataset record (2026-08-24) — the dataset is the
+  source of truth, so a registry-only edit would be reverted by the
+  next reconcile tick. **`list` carries enough to monitor without
   opening traces**: definition + owner + enabled + the §4 rollup
   (lastRunAt/lastStatus/lastDurationMs/runCount/lastRunRef) **+
   aggregated resource stats** — `lastFuel`, `lastCostUsd`,

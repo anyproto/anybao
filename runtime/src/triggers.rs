@@ -183,6 +183,118 @@ impl Scheduler {
     }
 }
 
+/// Pre-device-registry owner stamps (`anyrt-<pid>`, ADR-006 §4 before
+/// the 2026-08-24 amendment): a pid never survives a restart, so these
+/// values can never match a live instance again — read as UNOWNED.
+/// Doubles as the degrade path: an election-disabled run (no peer id)
+/// still stamps `anyrt-<pid>`, and stays adoptable across restarts.
+pub fn is_legacy_owner(owner: &str) -> bool {
+    owner
+        .strip_prefix("anyrt-")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The definition core differs — everything the user/agent authors.
+/// `enabled` is deliberately excluded (honored in place, no re-arm) and
+/// so are the runtime-owned rollup fields.
+pub fn definition_differs(a: &Trigger, b: &Trigger) -> bool {
+    a.kind != b.kind
+        || a.spec != b.spec
+        || a.program != b.program
+        || a.args != b.args
+        || a.name != b.name
+        || a.limits != b.limits
+        || a.max_consecutive_failures != b.max_consecutive_failures
+}
+
+/// One dataset reconcile pass (ADR-006 §4, device-pinning amendment):
+/// the registry converges on the `agent_triggers` records.
+///
+/// - A record pinned to this device (`owner == instance`) is adopted —
+///   election-independent, so a standby device fires its pins.
+/// - An UNOWNED record (`owner` empty, or a legacy `anyrt-<pid>`
+///   stamp) is adopted only by the election-active device, which
+///   stamps its peer id.
+/// - A foreign-owned record is left alone — and EVICTED from the
+///   registry if it was ours before (a repin moves a live trigger off
+///   this device within one tick).
+/// - A definition-core edit rebuilds the registry entry from the
+///   record: crons re-arm strictly forward; a `once` takes the
+///   record's `lastRunAt` as its consumed state, so rewriting the
+///   definition (which drops the rollup) re-arms the shot.
+/// - A registry entry whose record vanished is evicted (delete works).
+/// - Standing built-ins are code-owned: their record ids are skipped
+///   and their registry entries never evicted.
+///
+/// Mutates the registry in place; returns the triggers whose records
+/// must be (re)persisted with this device's ownership stamp. Malformed
+/// records are skipped loudly and keep any live registry entry.
+pub fn reconcile_registry(
+    reg: &mut BTreeMap<String, Trigger>,
+    recs: &[Value],
+    instance: &str,
+    active: bool,
+    standing: &std::collections::BTreeSet<String>,
+) -> Vec<Trigger> {
+    let mut stamp: Vec<Trigger> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = Default::default();
+    for rec in recs {
+        let Some(id) = rec.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if standing.contains(id) {
+            continue; // built-ins are code-owned, not record-owned
+        }
+        seen.insert(id.to_string());
+        let Some(parsed) = record_to_trigger(id, rec) else {
+            tracing::warn!("agent_triggers {id:?}: malformed record — skipped");
+            continue;
+        };
+        let unowned = parsed.owner.is_empty() || is_legacy_owner(&parsed.owner);
+        let mine = parsed.owner == instance || (unowned && active);
+        match reg.get_mut(id) {
+            Some(live) => {
+                if !mine {
+                    reg.remove(id); // repinned away / unpinned while standby
+                    continue;
+                }
+                if definition_differs(live, &parsed) {
+                    let mut t = parsed;
+                    let restamp = t.owner != instance;
+                    t.owner = instance.to_string();
+                    if restamp {
+                        stamp.push(t.clone());
+                    }
+                    reg.insert(id.to_string(), t);
+                } else {
+                    live.enabled = parsed.enabled;
+                }
+            }
+            None => {
+                if !mine {
+                    continue; // pinned to another device
+                }
+                let mut t = parsed;
+                let restamp = t.owner != instance;
+                t.owner = instance.to_string();
+                if restamp {
+                    stamp.push(t.clone());
+                }
+                reg.insert(id.to_string(), t);
+            }
+        }
+    }
+    let gone: Vec<String> = reg
+        .keys()
+        .filter(|k| !standing.contains(*k) && !seen.contains(*k))
+        .cloned()
+        .collect();
+    for k in gone {
+        reg.remove(&k);
+    }
+    stamp
+}
+
 /// Parse an `agent_triggers` dataset record into a Trigger (ADR-006 §4
 /// dataset-is-source-of-truth). Returns None for records missing the
 /// definition core — the caller logs and skips, never crashes.
@@ -527,6 +639,139 @@ mod tests {
         )
         .is_none());
         assert!(record_to_trigger("x", &json!({"kind": "once"})).is_none());
+    }
+
+    #[test]
+    fn legacy_owner_stamps_are_recognized() {
+        assert!(is_legacy_owner("anyrt-573756"));
+        assert!(is_legacy_owner("anyrt-1"));
+        assert!(!is_legacy_owner("")); // empty is unowned, not legacy
+        assert!(!is_legacy_owner("anyrt-")); // no pid
+        assert!(!is_legacy_owner("anyrt-12x")); // not a pid
+        assert!(!is_legacy_owner("12D3KooWQRTgVWHF")); // a peer id
+    }
+
+    fn rec(id: &str, owner: &str, extra: Value) -> Value {
+        let mut r = json!({"id": id, "kind": "cron", "spec": {"every_s": 60.0},
+                           "program": "p@v1", "args": {}, "owner": owner,
+                           "enabled": true});
+        if let Some(obj) = extra.as_object() {
+            for (k, v) in obj {
+                r[k] = v.clone();
+            }
+        }
+        r
+    }
+
+    #[test]
+    fn reconcile_adopts_own_pins_even_on_standby() {
+        let mut reg = BTreeMap::new();
+        let standing = Default::default();
+        let recs = vec![
+            rec("mine", "peer-A", json!({})),
+            rec("other", "peer-B", json!({})),
+        ];
+        let stamp = reconcile_registry(&mut reg, &recs, "peer-A", false, &standing);
+        assert!(reg.contains_key("mine")); // pin fires regardless of election
+        assert!(!reg.contains_key("other")); // foreign pin left alone
+        assert!(stamp.is_empty()); // owner already correct — no write
+    }
+
+    #[test]
+    fn reconcile_unowned_and_legacy_need_the_active_device() {
+        let mut reg = BTreeMap::new();
+        let standing = Default::default();
+        let recs = vec![
+            rec("free", "", json!({})),
+            rec("stale", "anyrt-4242", json!({})), // dead pid — unowned
+        ];
+        // standby adopts neither…
+        assert!(reconcile_registry(&mut reg, &recs, "peer-A", false, &standing).is_empty());
+        assert!(reg.is_empty());
+        // …the active device adopts both and stamps its peer id
+        let stamp = reconcile_registry(&mut reg, &recs, "peer-A", true, &standing);
+        assert_eq!(stamp.len(), 2);
+        assert!(stamp.iter().all(|t| t.owner == "peer-A"));
+        assert_eq!(reg["free"].owner, "peer-A");
+        assert_eq!(reg["stale"].owner, "peer-A");
+    }
+
+    #[test]
+    fn reconcile_repin_away_and_delete_evict() {
+        let mut reg = BTreeMap::new();
+        let standing = Default::default();
+        let recs = vec![rec("a", "", json!({})), rec("b", "", json!({}))];
+        reconcile_registry(&mut reg, &recs, "peer-A", true, &standing);
+        assert_eq!(reg.len(), 2);
+        // "a" repinned to another device, "b" deleted from the dataset
+        let recs = vec![rec("a", "peer-B", json!({}))];
+        reconcile_registry(&mut reg, &recs, "peer-A", true, &standing);
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn reconcile_refreshes_edited_definitions_and_rearms() {
+        let mut reg = BTreeMap::new();
+        let standing = Default::default();
+        let recs = vec![rec("j", "peer-A", json!({}))];
+        reconcile_registry(&mut reg, &recs, "peer-A", true, &standing);
+        reg.get_mut("j").unwrap().next_due = Some(1060.0); // armed
+                                                           // enabled-only edit: honored in place, no re-arm
+        let mut toggled = rec("j", "peer-A", json!({}));
+        toggled["enabled"] = json!(false);
+        reconcile_registry(&mut reg, &[toggled], "peer-A", true, &standing);
+        assert!(!reg["j"].enabled);
+        assert_eq!(reg["j"].next_due, Some(1060.0));
+        // spec edit: entry rebuilt from the record, re-armed forward
+        let edited = rec("j", "peer-A", json!({"spec": {"every_s": 900.0}}));
+        reconcile_registry(&mut reg, &[edited], "peer-A", true, &standing);
+        assert_eq!(reg["j"].spec["every_s"], json!(900.0));
+        assert_eq!(reg["j"].next_due, None);
+        assert!(reg["j"].enabled); // the record is the source of truth
+    }
+
+    #[test]
+    fn reconcile_rearms_a_rewritten_once_and_skips_standing_and_malformed() {
+        let mut reg = BTreeMap::new();
+        let standing: std::collections::BTreeSet<String> =
+            ["rollup".to_string()].into_iter().collect();
+        // a consumed once, re-armed by rewriting the definition
+        // (the rewrite drops lastRunAt — the recipe/UI write only the core)
+        let consumed = json!({"id": "r", "kind": "once", "spec": {"at": 100.0},
+            "program": "p@v1", "args": {}, "owner": "peer-A",
+            "enabled": false, "lastRunAt": 100.5});
+        reconcile_registry(&mut reg, &[consumed], "peer-A", true, &Default::default());
+        assert_eq!(reg["r"].last_run_at, Some(100.5)); // stays consumed
+        let rearmed = json!({"id": "r", "kind": "once", "spec": {"at": 500.0},
+            "program": "p@v1", "args": {}, "owner": "peer-A", "enabled": true});
+        reconcile_registry(&mut reg, &[rearmed], "peer-A", true, &Default::default());
+        assert_eq!(reg["r"].last_run_at, None); // fresh shot
+        assert!(reg["r"].enabled);
+        // standing record ids are ignored; malformed keeps a live entry
+        let mut reg2: BTreeMap<String, Trigger> = BTreeMap::new();
+        reg2.insert(
+            "rollup".into(),
+            Trigger::cron(
+                "rollup",
+                "rollup",
+                3600.0,
+                "agent:rollup@v1",
+                json!({}),
+                "",
+                true,
+            ),
+        );
+        reg2.insert(
+            "ok".into(),
+            Trigger::cron("ok", "ok", 60.0, "p@v1", json!({}), "peer-A", true),
+        );
+        let recs = vec![
+            rec("rollup", "peer-B", json!({})), // code-owned — never adopted or evicted
+            json!({"id": "ok", "kind": "sometimes", "program": "p@v1"}), // malformed
+        ];
+        reconcile_registry(&mut reg2, &recs, "peer-A", true, &standing);
+        assert!(reg2.contains_key("rollup"));
+        assert!(reg2.contains_key("ok")); // malformed record keeps the live entry
     }
 
     #[test]
