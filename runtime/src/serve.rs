@@ -87,20 +87,36 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
 /// chat's id is a function of the bundle id, identical on every device
 /// and member, so the chat can never fork — chat content cannot be
 /// merged across objects, so a fork must be impossible rather than
-/// resolvable. A pre-convention created install is adopted as-is.
-/// A residual 409 `bundle.not_ready` (an adopted created winner whose
-/// tree hasn't landed here yet) is retried briefly. The bundles route
-/// is REQUIRED — a server without it is unsupported (no-backcompat).
+/// resolvable. A space whose registry already carries a CREATED
+/// `general-chat/v1` install (the server adopts it, `derived` absent
+/// in the reply) is REFUSED, loudly: no migration, no created-root
+/// fallback — the fix is deleting that chat object (a deleted winner
+/// reads as uninstalled, so the next boot installs the derived root)
+/// or a fresh account (no-backcompat, no real users). A residual 409 `bundle.not_ready` (a created winner
+/// whose tree hasn't landed here yet) is retried briefly so the
+/// refusal names the root. The bundles route is REQUIRED — a server
+/// without it is unsupported (no-backcompat).
 fn general_chat(c: &Client, space: &str) -> Result<String> {
     let mut last_err = None;
     for _ in 0..5 {
         match c.ensure_bundle(space, "general-chat/v1", "General", &["chat"], true) {
             Ok(reply) => {
-                return reply["bundle"]["rootId"]
+                let root = reply["bundle"]["rootId"]
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
-                    .context("general-chat bundle ensure returned no rootId");
+                    .context("general-chat bundle ensure returned no rootId")?;
+                if reply["bundle"]["derived"] != json!(true) {
+                    anyhow::bail!(
+                        "space {space} carries a pre-convention CREATED general-chat/v1 \
+                         install (chat object {root}); the chat root must be DERIVED \
+                         (ADR-006 §0, any #177) and there is no migration — delete that \
+                         chat object (a deleted winner reads as uninstalled; the derived \
+                         bao space itself cannot be deleted) or use a fresh account, then \
+                         run serve again"
+                    );
+                }
+                return Ok(root);
             }
             Err(e) if e.status == 409 => {
                 // bundle.not_ready — winner's tree still syncing in
@@ -2138,13 +2154,30 @@ mod tests {
     fn general_chat_ensures_the_bundle() {
         let (c, log) = scripted(&[(
             200,
-            json!({"bundle": {"id": "general-chat/v1", "rootId": "chat-root"},
+            json!({"bundle": {"id": "general-chat/v1", "rootId": "chat-root",
+                              "derived": true},
                    "installed": false}),
         )]);
         assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
         let calls = log.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+    }
+
+    #[test]
+    fn general_chat_refuses_a_created_install() {
+        // no-backcompat: a pre-convention created winner is adopted by
+        // the server (`derived` absent) — serve refuses loudly instead
+        // of running on a forkable chat; the message names the root
+        let (c, log) = scripted(&[(
+            200,
+            json!({"bundle": {"id": "general-chat/v1", "rootId": "old-root"},
+                   "installed": false}),
+        )]);
+        let err = general_chat(&c, "sp").unwrap_err().to_string();
+        assert!(err.contains("CREATED general-chat/v1"), "{err}");
+        assert!(err.contains("old-root"), "{err}");
+        assert_eq!(log.lock().unwrap().len(), 1);
     }
 
     #[test]

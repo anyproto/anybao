@@ -79,10 +79,14 @@ id, so every device and member — both sides of a 1-1 included —
 lands on the same chat offline and the install can never fork (chat
 content cannot be merged across objects, so a fork must be
 impossible rather than resolvable). The trade is permanence: a
-derived root is undeletable. A pre-convention created install is
-adopted, never migrated (`derived: false` in the reply). No
-backward compat: servers without any #177 are unsupported once this
-lands.
+derived root is undeletable. A pre-convention CREATED install
+(`derived` absent in the reply — the server adopts whatever the
+registry holds) is REFUSED at serve boot with an error naming the
+chat object: no migration and no created-root fallback. Recovery is
+deleting that chat object — a deleted winner reads as uninstalled, so
+the next boot installs the derived root (the derived bao space itself
+is undeletable) — or a fresh account. No backward compat: servers
+without any #177 are unsupported.
 
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
