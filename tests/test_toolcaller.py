@@ -5,6 +5,7 @@ mailbox/span/trace effects."""
 from pathlib import Path
 
 import pytest
+from kernelenv import kernel_globals
 
 SRC = (Path(__file__).resolve().parents[1] / "repos" / "_agent"
        / "programs" / "toolcaller@v1.py").read_text()
@@ -139,7 +140,7 @@ class World:
 
 def run(world, **args):
     g = {"effect": world.effect, "use": world.use, "subcell": world.subcell,
-         "now": lambda: 1234}
+         **kernel_globals(now=1234)}
     exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
     return g["main"]({"space": "s1", "chatId": "c1", "userText": "go",
                       "traceRef": "run_x", **args})
@@ -373,7 +374,7 @@ def _helpers():
         return FakeToolModule(spec)
 
     g = {"effect": None, "use": fake_use, "subcell": None,
-         "now": lambda: 0,
+         **kernel_globals(now=0),
          "describe": lambda mod: f"described:{mod.desc}"}
     exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
     return g
@@ -388,9 +389,12 @@ class TwoSpaces:
                      ("s2", "_extra", "# shipped extra")],
             "user": [("u1", "_core", "# user core")]}
         self.tools = {
-            "code": [("p1", "webSearch", "v1", 1, "searches the web"),
-                     ("p2", "shippedOnly", "v1", 2, "only shipped")],
-            "user": [("q1", "webSearch", "v1", 9, "my patched search")]}
+            # createdAt as server instants with DIFFERING stamps — equal
+            # dicts would hide a raw-dict sort (ADR-019 §Context 2)
+            "code": [("p1", "webSearch", "v1", {"$date": 1000}, "searches the web"),
+                     ("p2", "shippedOnly", "v1", {"$date": "1970-01-01T00:00:02Z"},
+                      "only shipped")],
+            "user": [("q1", "webSearch", "v1", {"$date": 9000}, "my patched search")]}
         self.readmes = {"conn": ("r1", "# Connectors\n\nintegrations live here")}
 
     def list_types(self, space):
@@ -467,7 +471,7 @@ def test_tool_docs_broken_tool_lists_with_error():
     # a tool whose source fails to load must not sink the compose
     g = _helpers()
     two = TwoSpaces()
-    two.tools["code"].append(("p3", "broken", "v1", 3, "x"))
+    two.tools["code"].append(("p3", "broken", "v1", {"$date": 3000}, "x"))
     docs = g["_tool_docs"](two, "code", "code")
     assert "### broken" in docs
     assert "(unavailable: ValueError: boom)" in docs

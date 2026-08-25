@@ -7,20 +7,35 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from kernelenv import kernel_globals
+
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 
 def run_main(src_name, fake, args):
-    g = {"use": fake.use}
+    g = {"use": fake.use, **kernel_globals()}
     exec(compile((PROGRAMS_DIR / src_name).read_text(), src_name, "exec"), g)
     return g["main"](args)
+
+
+_K = kernel_globals()
+
+
+def at(seconds):
+    """A server instant for a fixture stamp (ADR-019)."""
+    return _K["instant"](seconds)
+
+
+def _cmp(v):
+    s = _K["ts_s"](v) if isinstance(v, dict) else None
+    return s if s is not None else v
 
 
 def _matches(rec, flt):
     for k, cond in flt.items():
         v = rec.get(k)
         if isinstance(cond, dict):
-            if "$gt" in cond and not (v is not None and v > cond["$gt"]):
+            if "$gt" in cond and not (v is not None and _cmp(v) > _cmp(cond["$gt"])):
                 return False
         elif v != cond:
             return False
@@ -54,7 +69,7 @@ class FakeGuest:
     def query(self, space, object_id, dataset, filter=None, sort=None, limit=None):
         rows = [r for r in self.datasets[dataset] if _matches(r, filter or {})]
         for key in reversed(sort or []):
-            rows = sorted(rows, key=lambda r: r[key.lstrip("-")],
+            rows = sorted(rows, key=lambda r: _cmp(r[key.lstrip("-")]),
                           reverse=key.startswith("-"))
         return rows[:limit] if limit else rows
 
@@ -97,7 +112,7 @@ class FakeGuest:
 
 def turn(seq):
     return {"seq": seq, "userText": f"u{seq}", "replies": [f"r{seq}"],
-            "createdAt": 1000 + seq}
+            "createdAt": at(1000 + seq)}
 
 
 # --- extraction ---------------------------------------------------------------
@@ -155,7 +170,7 @@ LG_ARGS = {"space": "s1", "brainId": "brain1"}
 
 def item(iid, ts, edges=None):
     return {"id": iid, "category": "fact", "context": f"ctx {iid}",
-            "createdAt": ts, "edges": edges or []}
+            "createdAt": at(ts), "edges": edges or []}
 
 
 def test_linkgen_writes_only_curated_vocabulary_to_real_neighbors():
@@ -176,7 +191,7 @@ def test_linkgen_writes_only_curated_vocabulary_to_real_neighbors():
                              "edges": [{"to": "m2", "type": "relates_to"}]}]
     # self was not offered as a neighbor
     assert "id=m1" not in fake.llm_calls[0]["messages"][0]["parts"][0]["text"]
-    assert fake.state_writes[-1]["value"] == {"lastCreatedAt": 100}
+    assert fake.state_writes[-1]["value"] == {"lastCreatedAt": at(100)}
 
 
 def test_linkgen_appends_to_existing_edges_and_respects_cursor():

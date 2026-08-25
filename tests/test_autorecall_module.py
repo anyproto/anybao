@@ -5,6 +5,8 @@ guards, caps, the accessCount bump, and the ROI log."""
 from pathlib import Path
 from types import SimpleNamespace
 
+from kernelenv import kernel_globals
+
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 SRC = (PROGRAMS_DIR / "autorecall@v1.py").read_text()
 
@@ -16,11 +18,12 @@ CHUNK_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_chunks",
              "recordId": "c1", "score": 0.017}
 
 MEM_REC = {"id": "m1", "category": "preference", "context": "prefers dark roast",
-           "confidence": 8, "validFrom": 1751328000, "accessCount": 2}   # 2025-07-01
+           "confidence": 8, "validFrom": {"$date": 1751328000000},        # 2025-07-01
+           "accessCount": 2}
 TURN_REC = {"id": "t1", "seq": 4, "userText": "let's plan the trip\nmore",
-            "createdAt": 1751328000}
+            "createdAt": {"$date": "2025-07-01T00:00:00.000Z"}}
 CHUNK_REC = {"id": "c1", "seq": 1, "level": 1, "fromSeq": 1, "toSeq": 3,
-             "summary": "planned the trip", "periodStart": 1751328000}
+             "summary": "planned the trip", "periodStart": {"$date": 1751328000000}}
 
 
 class FakeRecall:
@@ -65,7 +68,7 @@ def load(hits, recs=None, fail=False):
         "recall@v1": SimpleNamespace(recall=lambda client, space, **kw: rec),
         "memory@v1": SimpleNamespace(memory=lambda client, space: mem),
     }
-    g = {"use": lambda spec: modules[spec],
+    g = {**kernel_globals(), "use": lambda spec: modules[spec],
          "span": lambda name=None, kind=None: (lambda fn: fn)}
     exec(compile(SRC, "autorecall@v1.py", "exec"), g)
     return g, rec, mem
@@ -144,7 +147,10 @@ def test_date_helper_civil_from_epoch():
     assert g["_date"](0) == "undated"          # zero = missing
     assert g["_date"](86400) == "1970-01-02"
     assert g["_date"](1751328000) == "2025-07-01"
+    assert g["_date"]({"$date": "2025-07-01T23:30:00Z"}) == "2025-07-01"   # host zone UTC
+    assert g["_date"]({"$date": 1751328000000}) == "2025-07-01"
     assert g["_date"]("soon") == "undated"
+    assert g["_date"]({"$date": "garbage"}) == "undated"
 
 
 # --- ROI log ------------------------------------------------------------------

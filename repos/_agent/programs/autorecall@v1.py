@@ -41,25 +41,17 @@ def approx_tokens(text):
     return (len(text) + 3) // 4
 
 
-def _civil(days):
-    """Days since 1970-01-01 → (year, month, day), proleptic Gregorian
-    (the standard civil-from-days algorithm)."""
-    days += 719468
-    era = days // 146097
-    doe = days - era * 146097
-    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
-    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
-    mp = (5 * doy + 2) // 153
-    day = doy - (153 * mp + 2) // 5 + 1
-    month = mp + 3 if mp < 10 else mp - 9
-    return yoe + era * 400 + (1 if month <= 2 else 0), month, day
+_OFFSET = []   # the host's zone, read once per run (ADR-019 §8)
 
 
 def _date(ts):
-    if not isinstance(ts, (int, float)) or not ts:
+    """Calendar date of an instant (or seconds) in the host's zone;
+    zero/missing/unreadable → "undated"."""
+    if not ts or ts_s(ts) is None:  # noqa: F821 - guest global
         return "undated"
-    y, m, d = _civil(int(ts) // 86400)
-    return f"{y:04d}-{m:02d}-{d:02d}"
+    if not _OFFSET:
+        _OFFSET.append(tz_offset())  # noqa: F821 - guest global
+    return fmt_ts(ts, "%Y-%m-%d", offset_s=_OFFSET[0]).split(" ")[0]  # noqa: F821
 
 
 def memory_line(item):

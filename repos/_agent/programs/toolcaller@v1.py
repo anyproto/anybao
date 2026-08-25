@@ -17,7 +17,6 @@ left alone; ceilings still bound the run and the replies return to the
 caller (the subagent@v1 wrapper).
 """
 
-import datetime
 import re
 
 # markdown-link destinations in a reply: [Name](any://…) — the source
@@ -113,11 +112,13 @@ def _context_suffix(ctx):
     degrades to timestamp-only. The suffix rides the llm message only;
     the persisted turn keeps the raw userText."""
     epoch = now()  # noqa: F821 - guest global
-    stamp = datetime.datetime.fromtimestamp(
-        int(epoch), datetime.UTC).strftime("%a %Y-%m-%d %H:%M UTC")
+    # the host's local zone with its offset spelled out (ADR-019 §8)
+    stamp = fmt_ts(epoch, "%a %Y-%m-%d %H:%M")  # noqa: F821 - guest global
     line = f"\n\n[now: {stamp}"
     if ctx and ctx.get("spaceId"):
-        age = _fmt_age(max(0, epoch - ctx["updatedAt"] / 1000.0))
+        upd = ctx.get("updatedAt")   # client ms today; tolerate an instant
+        upd_s = ts_s(upd) if isinstance(upd, dict) else (upd or 0) / 1000.0  # noqa: F821
+        age = _fmt_age(max(0, epoch - (upd_s or 0)))
         line += (f" | user's view — space: {ctx['spaceId']}"
                  + (f", object: {ctx['objectId']}" if ctx.get("objectId") else "")
                  + (f", view: {ctx['view']}" if ctx.get("view") else "")
@@ -331,7 +332,7 @@ def _tool_docs(c, space, code_space=None):
                 body = f"(unavailable: {type(e).__name__}: {e})"
             block = [f"### {name}", f'Import: `use("{spec}")`', body]
             # dict by name: a later source (the working space) shadows
-            tools[name] = (p.get("createdAt") or 0, name,
+            tools[name] = (ts_s(p.get("createdAt")) or 0, name,  # noqa: F821
                            "\n\n".join(b for b in block if b))
     if not tools:
         return ""

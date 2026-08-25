@@ -38,7 +38,8 @@ def main(args):
         salience = item.get("salience")
         if not isinstance(salience, (int, float)) or salience <= floor:
             continue
-        idle_s = max(0, ts - (item.get("modifiedAt") or item.get("createdAt") or ts))
+        touched = ts_s(item.get("modifiedAt")) or ts_s(item.get("createdAt")) or ts  # noqa: F821
+        idle_s = max(0, ts - touched)
         new = max(floor, decayed(salience, idle_s, half_life))
         if new < salience:
             mem.evolve(item["id"], salience=new)

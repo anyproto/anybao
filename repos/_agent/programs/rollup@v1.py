@@ -64,8 +64,11 @@ def rollup_l1(c, space, chat, log, batch, tier):
     for group in _batches(turns, batch):
         summary = _summarize("\n\n".join(_turn_text(t) for t in group),
                              _L1_SYSTEM, tier)
-        period = (min(t.get("createdAt", 0) for t in group),
-                  max(t.get("createdAt", 0) for t in group))
+        # the chunk period is the turns' createdAt instants, verbatim
+        # (ADR-019 §2) — ordered through ts_s, never compared raw
+        stamps = sorted((t.get("createdAt") for t in group),
+                        key=lambda v: ts_s(v) or 0)  # noqa: F821
+        period = (stamps[0], stamps[-1])
         out.append(_emit(c, space, chat, 1, group, summary, period))
     return out
 
@@ -80,8 +83,10 @@ def rollup_ln(c, space, chat, log, level, batch, tier):
         summary = _summarize(
             "\n".join("- " + (c2.get("summary") or "") for c2 in group),
             _LN_SYSTEM, tier)
-        period = (min(c2.get("periodStart", 0) for c2 in group),
-                  max(c2.get("periodEnd", 0) for c2 in group))
+        period = (min((c2.get("periodStart") for c2 in group),
+                      key=lambda v: ts_s(v) or 0),  # noqa: F821
+                  max((c2.get("periodEnd") for c2 in group),
+                      key=lambda v: ts_s(v) or 0))  # noqa: F821
         out.append(_emit(c, space, chat, level, group, summary, period))
     return out
 

@@ -169,12 +169,12 @@ class FakeAny:
         oid = f"obj{self._n}"
         props = (body.get("initialProperties") or {})
         if "mailbox" in props:
-            self.mailboxes.append({"id": oid, "createdAt": self._n,
+            self.mailboxes.append({"id": oid, "createdAt": {"$date": self._n * 1000},
                                    "mailbox": dict(props["mailbox"])})
         if "sync_state" in props:
             self.states.append({"id": oid,
                                 "sync_state": dict(props["sync_state"]),
-                                "modifiedAt": 100})
+                                "modifiedAt": {"$date": 100000}})
         return {"objectId": oid}
 
     def update_object(self, space, oid, body):
@@ -208,7 +208,7 @@ def seeded_state(**kw):
     st = {"cursor": "", "page_token": "", "synced_count": 0,
           "store": "email_messages", "mailbox_id": "mb1"}
     st.update(kw)
-    return {"id": "st1", "modifiedAt": 5, "sync_state": st}
+    return {"id": "st1", "modifiedAt": {"$date": 5000}, "sync_state": st}
 
 
 def b64url(text):
@@ -493,7 +493,7 @@ def test_duplicate_sync_states_freshest_wins_stale_deleted():
     stale = seeded_state(cursor="H1", synced_count=1)
     stale["id"] = "stOld"
     fresh = seeded_state(cursor="H100", synced_count=4)
-    fresh["id"], fresh["modifiedAt"] = "stNew", 9
+    fresh["id"], fresh["modifiedAt"] = "stNew", {"$date": "1970-01-01T00:00:09Z"}
     fake = FakeAny(states=[stale, fresh])
     history = {"historyId": "H101", "history": []}
     out = load(gmail_fx({}, history=history), fake).sync_now("sp")
@@ -507,7 +507,7 @@ def test_object_era_state_migrates_to_dataset_relist_once():
     # cursor minted for the OBJECT corpus — resuming it would tick
     # incrementally forever and never backfill the dataset. The marker
     # check wipes the checkpoint exactly once; the tick re-lists.
-    fake = FakeAny(states=[{"id": "st1", "modifiedAt": 5,
+    fake = FakeAny(states=[{"id": "st1", "modifiedAt": {"$date": 5000},
                             "sync_state": {"cursor": "H50", "page_token": "",
                                            "synced_count": 83}}])
     out = load(gmail_fx({}, pages=[{"messages": []}]), fake).sync_now("sp")

@@ -296,7 +296,7 @@ def _ensure_state(space):
     follow a stale cursor). Returns (objectId, state-dict)."""
     rows = _any.query_objects(space, filter={"any.types": "sync_state"},
                               limit=10)
-    rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
+    rows.sort(key=lambda r: ts_s(r.get("modifiedAt")) or 0, reverse=True)  # noqa: F821
     if rows:
         for r in rows[1:]:
             try:  # noqa: SIM105 - best-effort, no contextlib in guest
@@ -338,7 +338,7 @@ def _ensure_mailbox(space, state_id, state):
     addr = (prof["body"].get("emailAddress") or "").lower()
     rows = _any.query_objects(space, filter={"mailbox.address": addr},
                               limit=10)
-    rows.sort(key=lambda r: (r.get("createdAt") or 0, r.get("id") or ""))
+    rows.sort(key=lambda r: (ts_s(r.get("createdAt")) or 0, r.get("id") or ""))  # noqa: F821
     if rows:
         mid = rows[0]["id"]
     else:
@@ -855,7 +855,7 @@ def status(space):
     if "sync_state" not in types:
         return {"configured": False, "emailCount": 0}
     rows = _any.query_objects(space, filter={"any.types": "sync_state"}, limit=10)
-    rows.sort(key=lambda r: r.get("modifiedAt") or 0, reverse=True)
+    rows.sort(key=lambda r: ts_s(r.get("modifiedAt")) or 0, reverse=True)  # noqa: F821
     st = dict(rows[0].get("sync_state") or {}) if rows else {}
     count, mid = 0, st.get("mailbox_id") or ""
     if mid:

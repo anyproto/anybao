@@ -8,25 +8,39 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from kernelenv import kernel_globals
+
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 DAY = 86400
 NOW = 1_700_000_000
+_K = kernel_globals(now=NOW)
+
+
+def at(seconds):
+    """A server instant for a fixture stamp (ADR-019)."""
+    return _K["instant"](seconds)
 
 
 def run_main(src_name, fake, args, now=NOW):
-    g = {"use": fake.use, "now": lambda: now}
+    g = {"use": fake.use, **kernel_globals(now=now)}
     exec(compile((PROGRAMS_DIR / src_name).read_text(), src_name, "exec"), g)
     return g["main"](args)
+
+
+def _cmp(v):
+    # instants compare by their seconds (ADR-019); everything else raw
+    s = _K["ts_s"](v) if isinstance(v, dict) else None
+    return s if s is not None else v
 
 
 def _matches(rec, flt):
     for k, cond in flt.items():
         v = rec.get(k)
         if isinstance(cond, dict):
-            if "$gt" in cond and not (v is not None and v > cond["$gt"]):
+            if "$gt" in cond and not (v is not None and _cmp(v) > _cmp(cond["$gt"])):
                 return False
-            if "$lt" in cond and not (v is not None and v < cond["$lt"]):
+            if "$lt" in cond and not (v is not None and _cmp(v) < _cmp(cond["$lt"])):
                 return False
             if "$in" in cond and v not in cond["$in"]:
                 return False
@@ -103,11 +117,11 @@ ARGS = {"space": "s1", "brainId": "brain1"}
 
 def test_decay_halves_at_half_life_and_respects_floor():
     items = [
-        {"id": "hot", "salience": 0.8, "modifiedAt": NOW},            # idle 0
-        {"id": "warm", "salience": 0.8, "modifiedAt": NOW - 30 * DAY},
-        {"id": "cold", "salience": 0.8, "createdAt": NOW - 300 * DAY},
-        {"id": "floored", "salience": 0.1, "modifiedAt": NOW - 300 * DAY},
-        {"id": "unscored", "modifiedAt": NOW - 300 * DAY},
+        {"id": "hot", "salience": 0.8, "modifiedAt": at(NOW)},            # idle 0
+        {"id": "warm", "salience": 0.8, "modifiedAt": at(NOW - 30 * DAY)},
+        {"id": "cold", "salience": 0.8, "createdAt": at(NOW - 300 * DAY)},
+        {"id": "floored", "salience": 0.1, "modifiedAt": at(NOW - 300 * DAY)},
+        {"id": "unscored", "modifiedAt": at(NOW - 300 * DAY)},
     ]
     fake = FakeGuest(items=items)
     out = run_main("decay@v1.py", fake, ARGS)
@@ -119,7 +133,7 @@ def test_decay_halves_at_half_life_and_respects_floor():
 
 
 def test_decay_is_idempotent_at_floor():
-    items = [{"id": "a", "salience": 0.1, "modifiedAt": NOW - 999 * DAY}]
+    items = [{"id": "a", "salience": 0.1, "modifiedAt": at(NOW - 999 * DAY)}]
     fake = FakeGuest(items=items)
     assert run_main("decay@v1.py", fake, ARGS)["updated"] == 0
 
@@ -128,7 +142,7 @@ def test_decay_is_idempotent_at_floor():
 
 def stale(iid, category="fact", conf=5, edges=None):
     return {"id": iid, "category": category, "context": f"ctx {iid}",
-            "accessCount": 0, "createdAt": NOW - 30 * DAY,
+            "accessCount": 0, "createdAt": at(NOW - 30 * DAY),
             "confidence": conf, "edges": edges or []}
 
 
@@ -163,7 +177,7 @@ def test_reflection_contradiction_lowers_both_and_links():
 def test_reflection_skips_small_clusters_and_recalled_items():
     items = [stale("m1"), stale("m2"),                       # cluster of 2 < 3
              {**stale("m4"), "accessCount": 3},              # recalled — excluded
-             {**stale("m5"), "createdAt": NOW - DAY}]        # too young
+             {**stale("m5"), "createdAt": at(NOW - DAY)}]        # too young
     fake = FakeGuest(items=items)
     out = run_main("reflection@v1.py", fake, ARGS)
     assert out == {"clusters": 1, "insights": 0, "contradictions": 0, "errors": 0}

@@ -429,6 +429,16 @@ def propose(space, transcript_id, opts=None):
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
+
+def _prop_kind(c, space, type_xkey, prop_xkey):
+    try:
+        for p in c.list_properties(space, type_xkey):
+            if prop_xkey in (p.get("xKey"), p.get("name"), p.get("id")):
+                return p.get("kind")
+    except Exception:
+        return None
+    return None
+
 def apply(space, proposal_id):
     """Stage 3: deterministically apply a REVIEWED proposal; deletes it.
 
@@ -491,6 +501,16 @@ def apply(space, proposal_id):
                     failures.append(
                         f"item {iid}: bad targetProperty {tprop!r}")
                     continue
+                # ADR-019 §5: a datetime-kind target takes an instant;
+                # the reviewed value is the LLM's ISO string
+                if _prop_kind(c, space, txk, pxk) == "datetime":
+                    try:
+                        value = instant(value)  # noqa: F821 - guest global
+                    except (TypeError, ValueError):
+                        failures.append(
+                            f"item {iid}: {tprop} is a date, value "
+                            f"{value!r} is not ISO-8601")
+                        continue
                 c.update_object(space, target, {txk: {pxk: value}})
                 props_set += 1
             fact = {"text": it.get("text") or "",

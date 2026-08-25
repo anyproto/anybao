@@ -151,3 +151,12 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     app = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(app)
     return app
+
+
+def kernel_globals(now=0.0, offset_s=0):
+    """The kernel's pure time globals (ADR-019 §1/§8) for harnesses
+    that exec a program under a hand-made namespace: ts_s / instant /
+    fmt_ts / tz_offset / now, backed by a fixed clock."""
+    app = load_kernel(effect=lambda n, p: {"epoch": now, "offset_s": offset_s})
+    return {"ts_s": app.ts_s, "instant": app.instant, "fmt_ts": app.fmt_ts,
+            "tz_offset": app.tz_offset, "now": app.now}

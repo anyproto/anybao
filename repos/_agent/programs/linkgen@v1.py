@@ -39,7 +39,9 @@ def _first_json_array(text):
 def _state(c, space, brain):
     rows = c.query(space, brain, STATE_DATASET,
                    filter={"id": STATE_ID}, limit=1)
-    return rows[0].get("lastCreatedAt", 0) if rows else 0
+    # the cursor is the newest swept item's createdAt instant, stored
+    # verbatim (ADR-019 §2); a pre-instant seconds cursor still wraps
+    return instant(rows[0].get("lastCreatedAt") or 0) if rows else instant(0)  # noqa: F821
 
 
 def _save_state(c, space, brain, last_ts):
@@ -107,5 +109,6 @@ def main(args):
                 linked += 1
         except Exception:
             errors += 1  # counted loud; the sweep continues
-    _save_state(c, space, brain, max(i.get("createdAt", 0) for i in items))
+    newest = max(items, key=lambda i: ts_s(i.get("createdAt")) or 0)  # noqa: F821
+    _save_state(c, space, brain, newest.get("createdAt"))
     return {"swept": len(items), "linked": linked, "errors": errors}

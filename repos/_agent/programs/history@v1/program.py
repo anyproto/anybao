@@ -154,3 +154,20 @@ def chunks_at_level(client, space, chat_id, level, limit):
     log = client.chat_log(space, chat_id)["objectId"]
     return client.query(space, log, "agent_chunks",
                         filter={"level": level}, sort=["-seq"], limit=limit)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def activity(client, space, chat_id, unit="day", limit=90):
+    """Turns per calendar period, oldest first: [{"period": <instant>,
+    "turns": n}] — `unit` ∈ day | week | month. Native date arithmetic
+    over agent_turns.createdAt (ADR-019 §3, $dateTrunc); the periods
+    are UTC instants — render with fmt_ts."""
+    log = client.chat_log(space, chat_id)["objectId"]
+    r = client.aggregate(space, [
+        {"$group": {"_id": {"$dateTrunc": {"date": "$createdAt", "unit": unit}},
+                    "turns": {"$count": {}}}},
+        {"$sort": {"id": 1}},
+        {"$limit": limit}],
+        object_id=log, dataset="agent_turns")
+    return [{"period": row.get("id"), "turns": row.get("turns")}
+            for row in (r or {}).get("records", [])]

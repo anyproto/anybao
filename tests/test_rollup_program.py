@@ -5,6 +5,14 @@ llm@v1 modules injected through the `use` seam."""
 from pathlib import Path
 from types import SimpleNamespace
 
+from kernelenv import kernel_globals
+
+_K = kernel_globals()
+
+
+def at(seconds):
+    return _K["instant"](seconds)
+
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 SRC = (PROGRAMS_DIR / "rollup@v1.py").read_text()
 
@@ -64,14 +72,14 @@ def _matches(rec, flt):
 
 
 def run_main(fake, args):
-    g = {"use": fake.use}
+    g = {"use": fake.use, **kernel_globals()}
     exec(compile(SRC, "rollup@v1.py", "exec"), g)
     return g["main"](args)
 
 
 def turn(seq, ts=None):
     return {"seq": seq, "userText": f"u{seq}", "replies": [f"r{seq}"],
-            "createdAt": ts if ts is not None else 1000 + seq}
+            "createdAt": at(ts if ts is not None else 1000 + seq)}
 
 
 ARGS = {"space": "s1", "chatId": "chat1"}
@@ -84,7 +92,8 @@ def test_l1_rolls_complete_batches_only():
     assert [(c["fromSeq"], c["toSeq"]) for c in l1] == [(1, 10), (11, 20)]
     assert all(c["unitsCovered"] == 10 for c in l1)
     # period from the covered turns' timestamps
-    assert (l1[0]["periodStart"], l1[0]["periodEnd"]) == (1001, 1010)
+    # the period is the turns' own instants, verbatim (ADR-019 §2)
+    assert (l1[0]["periodStart"], l1[0]["periodEnd"]) == (at(1001), at(1010))
     # partial tail 21-25 untouched; no L2 (only 2 L1 chunks)
     assert all(c["level"] == 1 for c in fake.created)
 
@@ -106,7 +115,7 @@ def test_no_complete_batch_no_llm_calls():
 
 def test_l2_summarizes_child_summaries_only():
     chunks = [{"seq": i, "level": 1, "fromSeq": i * 10 - 9, "toSeq": i * 10,
-               "summary": f"c{i}", "periodStart": 100 + i, "periodEnd": 200 + i}
+               "summary": f"c{i}", "periodStart": at(100 + i), "periodEnd": at(200 + i)}
               for i in range(1, 11)]
     fake = FakeSpace(chunks=chunks)
     run_main(fake, ARGS)
@@ -114,7 +123,7 @@ def test_l2_summarizes_child_summaries_only():
     assert len(l2) == 1
     # range is over CHILD CHUNK seqs, not turn seqs
     assert (l2[0]["fromSeq"], l2[0]["toSeq"]) == (1, 10)
-    assert (l2[0]["periodStart"], l2[0]["periodEnd"]) == (101, 210)
+    assert (l2[0]["periodStart"], l2[0]["periodEnd"]) == (at(101), at(210))
     # the L2 prompt contains child summaries, no raw turn text
     prompt = fake.llm_calls[-1]["messages"][0]["parts"][0]["text"]
     assert "- c1" in prompt and "user:" not in prompt

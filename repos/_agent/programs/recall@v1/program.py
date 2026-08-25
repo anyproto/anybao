@@ -26,8 +26,8 @@ _TS_FIELD = {"memory": "validFrom", "turn": "createdAt", "chunk": "periodStart"}
 
 
 def _ts(rec):
-    v = rec.get(_TS_FIELD[rec["source"]]) or rec.get("createdAt") or 0
-    return v if isinstance(v, (int, float)) else 0
+    v = rec.get(_TS_FIELD[rec["source"]]) or rec.get("createdAt")
+    return ts_s(v) or 0  # noqa: F821 - guest global (ADR-019 §1)
 
 
 class Recall:
@@ -85,10 +85,13 @@ class Recall:
     # --- temporal ----------------------------------------------------------
     @span(kind="getter")  # noqa: F821 - guest global
     def by_period(self, from_ts, to_ts):
-        """Everything in [from_ts, to_ts] (unix seconds, inclusive).
+        """Everything in [from_ts, to_ts] (unix seconds or ISO strings,
+        inclusive).
 
         Memory items by validFrom, turns by createdAt, chunks by
-        period overlap. Merged, time-sorted, each record tagged with
+        period overlap — one instant range scan per source (ADR-019
+        §3; the bounds go through instant()). Merged, time-sorted (the
+        records' own instants via ts_s), each record tagged with
         `source` ∈ memory/turn/chunk. The memory source self-resolves
         via get_brain when the binder got no brain_object_id; raises
         when NO source is bound (a silent [] read as "nothing
@@ -105,10 +108,11 @@ class Recall:
                 "chat_object_id=...) (a spaceConfig mapping with chatId "
                 "binds it automatically)")
         out = []
+        lo, hi = instant(from_ts), instant(to_ts)  # noqa: F821 - guest globals
         if self._brain:
             items = self._c.query(
                 self._space, self._brain, "agent_memory_items",
-                filter={"validFrom": {"$gte": from_ts, "$lte": to_ts}},
+                filter={"validFrom": {"$gte": lo, "$lte": hi}},
                 sort=["validFrom"])
             out += [{**r, "source": "memory"} for r in items]
         if self._chat:
@@ -118,12 +122,12 @@ class Recall:
                              or {}).get("objectId")
             turns = self._c.query(
                 self._space, self._log, "agent_turns",
-                filter={"createdAt": {"$gte": from_ts, "$lte": to_ts}},
+                filter={"createdAt": {"$gte": lo, "$lte": hi}},
                 sort=["createdAt"])
             out += [{**r, "source": "turn"} for r in turns]
             chunks = self._c.query(
                 self._space, self._log, "agent_chunks",
-                filter={"periodStart": {"$lte": to_ts}, "periodEnd": {"$gte": from_ts}},
+                filter={"periodStart": {"$lte": hi}, "periodEnd": {"$gte": lo}},
                 sort=["periodStart"])
             out += [{**r, "source": "chunk"} for r in chunks]
         out.sort(key=_ts)

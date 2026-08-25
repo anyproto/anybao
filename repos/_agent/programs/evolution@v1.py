@@ -39,7 +39,8 @@ def _first_json(text):
 def _state(c, space, brain):
     rows = c.query(space, brain, STATE_DATASET,
                    filter={"id": STATE_ID}, limit=1)
-    return rows[0].get("lastModifiedAt", 0) if rows else 0
+    # newest swept modifiedAt instant, verbatim (ADR-019 §2)
+    return instant(rows[0].get("lastModifiedAt") or 0) if rows else instant(0)  # noqa: F821
 
 
 def _save_state(c, space, brain, last_ts):
@@ -101,5 +102,6 @@ def main(args):
         if fields:  # ONLY context/tags — enforced here, not prompt trust
             mem.evolve(item["id"], **fields)
             refreshed += 1
-    _save_state(c, space, brain, max(i.get("modifiedAt", 0) for i in items))
+    newest = max(items, key=lambda i: ts_s(i.get("modifiedAt")) or 0)  # noqa: F821
+    _save_state(c, space, brain, newest.get("modifiedAt"))
     return {"swept": len(linked), "refreshed": refreshed, "errors": errors}

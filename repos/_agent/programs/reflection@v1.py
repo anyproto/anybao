@@ -58,7 +58,8 @@ def main(args):
     mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
     rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
     items = c.query(space, brain, "agent_memory_items",
-                    filter={"accessCount": 0, "createdAt": {"$lt": cutoff}})
+                    filter={"accessCount": 0,
+                            "createdAt": {"$lt": instant(cutoff)}})  # noqa: F821
 
     clusters = {}
     for i in items:

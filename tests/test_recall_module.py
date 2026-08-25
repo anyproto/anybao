@@ -7,6 +7,14 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from kernelenv import kernel_globals
+
+_K = kernel_globals()
+
+
+def at(seconds):
+    return _K["instant"](seconds)
+
 PROGRAMS = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 ANY_SRC = (PROGRAMS / "any@v1" / "program.py").read_text()
 RECALL_SRC = (PROGRAMS / "recall@v1" / "program.py").read_text()
@@ -107,11 +115,11 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
 
 def build(fx, space="s1", **recall_kw):
     nospan = lambda name=None, kind=None: (lambda f: f)  # noqa: E731
-    any_g = {"effect": fx, "span": nospan, "use": None}
+    any_g = {"effect": fx, "span": nospan, "use": None, **kernel_globals()}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
     any_g["_instance"] = any_g["_Client"]("http://any")   # skip config.get
     any_mod = SimpleNamespace(**any_g)
-    rec_g = {"effect": fx, "span": nospan,
+    rec_g = {"effect": fx, "span": nospan, **kernel_globals(),
              "use": lambda spec: {"any@v1": any_mod}[spec]}
     exec(compile(RECALL_SRC, "recall@v1.py", "exec"), rec_g)
     return rec_g["recall"](any_mod, space, **recall_kw)
@@ -168,9 +176,10 @@ def test_hydrate_pairs_hits_with_records_one_in_query():
 def test_by_period_fans_out_merges_and_time_sorts():
     cap = []
     r = recall(cap,
-               memory=[{"id": "m1", "validFrom": 300}],
-               turns=[{"id": "t1", "createdAt": 100}, {"id": "t2", "createdAt": 400}],
-               chunks=[{"id": "c1", "periodStart": 200, "periodEnd": 350}])
+               memory=[{"id": "m1", "validFrom": at(300)}],
+               turns=[{"id": "t1", "createdAt": at(100)},
+                      {"id": "t2", "createdAt": {"$date": "1970-01-01T00:06:40Z"}}],
+               chunks=[{"id": "c1", "periodStart": at(200), "periodEnd": at(350)}])
     recs = r.by_period(100, 400)
     assert [(x["id"], x["source"]) for x in recs] == [
         ("t1", "turn"), ("c1", "chunk"), ("m1", "memory"), ("t2", "turn")]
@@ -182,13 +191,22 @@ def test_by_period_wire_filters():
     by_dataset = {b["dataset"]: b for _, _, b in cap
                   if b and "dataset" in b}
     assert by_dataset["agent_memory_items"]["objectId"] == "brain1"
+    # ADR-019 §3: one instant literal shape on every source
+    lo, hi = at(100), at(400)
     assert by_dataset["agent_memory_items"]["filter"] == {
-        "validFrom": {"$gte": 100, "$lte": 400}}
+        "validFrom": {"$gte": lo, "$lte": hi}}
     assert by_dataset["agent_turns"]["objectId"] == "chat1"
-    assert by_dataset["agent_turns"]["filter"] == {"createdAt": {"$gte": 100, "$lte": 400}}
+    assert by_dataset["agent_turns"]["filter"] == {"createdAt": {"$gte": lo, "$lte": hi}}
     # chunks match on period OVERLAP, not containment
     assert by_dataset["agent_chunks"]["filter"] == {
-        "periodStart": {"$lte": 400}, "periodEnd": {"$gte": 100}}
+        "periodStart": {"$lte": hi}, "periodEnd": {"$gte": lo}}
+
+
+def test_by_period_takes_iso_bounds_and_refuses_bare_literals_downstream():
+    cap = []
+    recall(cap).by_period("1970-01-01T00:01:40Z", "1970-01-01T00:06:40Z")
+    turns = next(b for _, _, b in cap if b and b.get("dataset") == "agent_turns")
+    assert turns["filter"] == {"createdAt": {"$gte": at(100), "$lte": at(400)}}
 
 
 def test_by_period_skips_sources_without_object_id():
