@@ -124,3 +124,28 @@ def test_recent_turns_and_chunks_at_level_thin_reads():
     H["chunks_at_level"](c, "s1", "chat1", 2, 7)
     assert c.queries[1] == ("s1", "chat1", "agent_chunks",
                             {"filter": {"level": 2}, "sort": ["-seq"], "limit": 7})
+
+
+def test_activity_groups_turns_by_calendar_period_over_the_log():
+    # ADR-019 §3: native date arithmetic ($dateTrunc) over the turns'
+    # createdAt instants, run on the chat's log child
+    calls = []
+
+    class Client:
+        def chat_log(self, space, chat_id):
+            return {"objectId": f"{chat_id}-log"}
+
+        def aggregate(self, space, pipeline, object_id=None, dataset=None):
+            calls.append((space, pipeline, object_id, dataset))
+            return {"records": [{"id": {"$date": "2026-08-24T00:00:00Z"}, "turns": 3},
+                                {"id": {"$date": "2026-08-25T00:00:00Z"}, "turns": 1}]}
+
+    out = H["activity"](Client(), "s1", "chat1", unit="day")
+    assert out == [{"period": {"$date": "2026-08-24T00:00:00Z"}, "turns": 3},
+                   {"period": {"$date": "2026-08-25T00:00:00Z"}, "turns": 1}]
+    space, pipeline, oid, ds = calls[0]
+    assert (space, oid, ds) == ("s1", "chat1-log", "agent_turns")
+    assert pipeline[0] == {"$group": {
+        "_id": {"$dateTrunc": {"date": "$createdAt", "unit": "day"}},
+        "turns": {"$count": {}}}}
+    assert pipeline[1] == {"$sort": {"id": 1}}
