@@ -93,11 +93,12 @@ becomes a number.
 Field kinds pin at first declaration (`create_dataset` reuses an
 existing def by name; the SDK pins kinds per definition), so a space
 whose agent stores predate this ADR keeps `number` there. The cut is
-clean, per the no-back-compat rule: such stores are removed
-(`remove_dataset`) and re-declared; their records are copied by a
-one-off scratch program that maps the three fields through
-`instant(...)`. Prod carries no agent data yet (bring-up pending);
-the rigs are scratch.
+clean, per the no-back-compat rule: **such a bao space is wiped** and
+re-created — no legacy check in code. Running the new bao against an
+old store fails loudly on its first write (`400 dataset.validation:
+kind mismatch: got datetime, declared number`, verified on `:7135`),
+which is the whole detection. Prod carries no agent data yet
+(bring-up pending); the rigs are scratch.
 
 ### 3. Temporal recall is one native range query per source
 

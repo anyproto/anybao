@@ -244,6 +244,9 @@ Fix the tests that compare stamps directly:
   crons once (`anyrt trigger run rollup`, `linkgen`, `evolution`,
   `reflection`) and read the traces: no `TypeError`, cursors advance,
   filters return a subset.
+- Any rig whose bao space predates ADR-019: **wipe the bao space**
+  (old `number`-kinded stores; the new bao's first write 400s with
+  `dataset.validation: kind mismatch`). No in-code legacy check.
 - `:7129/:7019` test rig — **back up the data dirs**, then restart on the
   new binary; watch the SDK re-index sweep finish (mixed-shape window),
   then repeat the cron runs. This is the only place the
