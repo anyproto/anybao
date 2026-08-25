@@ -33,8 +33,13 @@ def wire(replies=None, status=200, config=None):
     return fx
 
 
-def load(fx):
-    g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f), "use": None}
+def load(fx, now=1_787_673_600.0):
+    # ts_s / instant / now are kernel globals (ADR-019 §1) — the real
+    # implementations, loaded from the guest kernel source
+    from kernelenv import load_kernel
+    k = load_kernel(effect=lambda n, p: {"epoch": now, "offset_s": 0})
+    g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f),
+         "use": None, "ts_s": k.ts_s, "instant": k.instant, "now": k.now}
     exec(compile(SRC, "any@v1.py", "exec"), g)
     return g
 
@@ -239,7 +244,7 @@ def test_add_property_defaults_xkey_and_kind():
 # filter paths under any/nav/program resolve against them (A19).
 _ANY_PROPS = {"properties": [
     {"id": "id", "kind": "string", "scope": "derived"},
-    {"id": "createdAt", "kind": "number", "scope": "derived"},
+    {"id": "createdAt", "kind": "datetime", "scope": "derived"},
     {"id": "name", "name": "Name", "kind": "string", "scope": "synced"},
     {"id": "description", "kind": "string", "scope": "synced"},
     {"id": "types", "kind": "array", "scope": "synced"}]}
@@ -748,6 +753,7 @@ def test_memory_verbs_and_paths():
     assert set_fields["confidence"] == 5 and set_fields["salience"] == 10
     assert set_fields["importance"] == 5 and set_fields["accessCount"] == 0
     assert "validFrom" in set_fields
+    assert set_fields["validFrom"] == {"$date": 1787673600000}   # instant(now())
     evolve = [b for v, p, b in fx.calls if p.endswith("/modify")][1]
     assert evolve["records"][0]["id"] == "m1"
     assert "upsert" not in evolve["records"][0]
@@ -858,8 +864,8 @@ def test_prune_ui_contexts_ranks_by_server_mtime_when_updated_at_ties():
     # pointers written before any-ui carried updated_at (or by a client
     # that never set it): server modifiedAt breaks the tie
     fx = _ui_ctx_wire([
-        {"id": "o1", "modifiedAt": 20, "T1": {"p_s": "sp1", "p_v": "grid"}},
-        {"id": "o2", "modifiedAt": 10, "T1": {"p_s": "sp2", "p_v": "object"}}])
+        {"id": "o1", "modifiedAt": {"$date": 20000}, "T1": {"p_s": "sp1", "p_v": "grid"}},
+        {"id": "o2", "modifiedAt": {"$date": 10000}, "T1": {"p_s": "sp2", "p_v": "object"}}])
     ctx = client(fx)._prune_ui_contexts("s1")
     assert ctx["spaceId"] == "sp1" and ctx["updatedAt"] == 0
     assert _deleted(fx) == ["o2"]
@@ -1135,7 +1141,8 @@ def _dup_type_fx(type_rows, pointers_by_tid):
 
 def test_prune_converges_duplicate_types_on_freshest():
     fx = _dup_type_fx(
-        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 9}],
+        [{"id": "T1", "modifiedAt": {"$date": 5000}},
+         {"id": "T2", "modifiedAt": {"$date": 9000}}],
         {"T1": [{"id": "o1", "T1": {"p_s": "sp1", "p_u": 999}}],
          "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 100}}]})
     ctx = client(fx)._prune_ui_contexts("s1")
@@ -1147,7 +1154,8 @@ def test_prune_converges_duplicate_types_on_freshest():
 
 def test_prune_deletes_everything_when_no_pointer_carries_the_winner():
     fx = _dup_type_fx(
-        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 9}],
+        [{"id": "T1", "modifiedAt": {"$date": 5000}},
+         {"id": "T2", "modifiedAt": {"$date": 9000}}],
         {"T1": [{"id": "o1", "T1": {"p_s": "sp1", "p_u": 999}}], "T2": []})
     assert client(fx)._prune_ui_contexts("s1") is None
     assert _deleted(fx) == ["o1", "T1"]   # UI re-creates on the winner
@@ -1155,7 +1163,8 @@ def test_prune_deletes_everything_when_no_pointer_carries_the_winner():
 
 def test_prune_duplicate_type_tie_breaks_on_id():
     fx = _dup_type_fx(
-        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 5}],
+        [{"id": "T1", "modifiedAt": {"$date": 5000}},
+         {"id": "T2", "modifiedAt": {"$date": 5000}}],
         {"T1": [], "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 1}}]})
     assert client(fx)._prune_ui_contexts("s1")["spaceId"] == "sp2"
     assert _deleted(fx) == ["T1"]         # T2 wins the (mtime, id) tie
@@ -1165,7 +1174,8 @@ def test_get_ui_context_reads_across_duplicate_types_without_deleting():
     # the read path is availability-first: freshest pointer wins even on a
     # loser type, and a pure getter never prunes
     fx = _dup_type_fx(
-        [{"id": "T1", "modifiedAt": 5}, {"id": "T2", "modifiedAt": 9}],
+        [{"id": "T1", "modifiedAt": {"$date": 5000}},
+         {"id": "T2", "modifiedAt": {"$date": 9000}}],
         {"T1": [{"id": "o1", "T1": {"p_s": "sp1", "p_u": 999}}],
          "T2": [{"id": "o2", "T2": {"q_s": "sp2", "q_u": 100}}]})
     assert client(fx).get_ui_context("s1")["spaceId"] == "sp1"
@@ -1186,3 +1196,60 @@ def test_open_in_ui_publishes_device_scope_ui_events():
     assert b2["type"] == "ui.open_object"
     assert b2["data"] == {"spaceId": SID, "objectId": "obj1",
                           "source": "bao"}
+
+
+# --- ADR-019 §4: bare time literals are refused at the client boundary ---------
+
+def test_dataset_query_refuses_bare_literal_on_stamp_and_datetime_field():
+    fx = wire(replies={"/query": {"records": []}})
+    c = client(fx)
+    with pytest.raises(ValueError, match="createdAt.*instant"):
+        c.query("s1", "log1", "agent_turns", filter={"createdAt": {"$gte": 100}})
+    with pytest.raises(ValueError, match="validFrom"):
+        c.query("s1", "b1", "agent_memory_items",
+                filter={"$and": [{"validFrom": {"$lt": "2026-08-01"}}]})
+    with pytest.raises(ValueError, match="periodStart"):
+        c.query("s1", "log1", "agent_chunks", filter={"periodStart": 5})
+    with pytest.raises(ValueError, match="createdAt"):
+        c.query("s1", "chat1", "chat_messages", filter={"createdAt": {"$in": [1, 2]}})
+    assert fx.calls == []            # nothing reached the wire
+
+
+def test_dataset_query_passes_instants_and_unknown_keys():
+    fx = wire(replies={"/query": {"records": []}})
+    c = client(fx)
+    lit = {"$date": 1787673600000}
+    c.query("s1", "log1", "agent_turns",
+            filter={"createdAt": {"$gte": lit, "$lte": {"$date": "2026-09-01T00:00:00Z"}},
+                    "seq": {"$gt": 3}, "lastModifiedAt": {"$gt": 7}})
+    assert fx.calls[-1][2]["filter"]["createdAt"]["$gte"] == lit
+    c.query("s1", "log1", "agent_turns", filter={"createdAt": {"$exists": True}})
+    c.query("s1", "log1", "agent_turns", filter={"createdAt": {"$in": [lit]}})
+
+
+def test_create_dataset_draft_registers_its_datetime_keys():
+    fx = wire(replies={**_CAT, "/types/bafyTASK/datasets": {"datasets": []},
+                       "/query": {"records": []}})
+    c = client(fx)
+    c.create_dataset("s1", "task", {"name": "events", "idRule": "user",
+                                    "deleteBy": "anyone",
+                                    "fields": [{"key": "at", "kind": "datetime"}]})
+    with pytest.raises(ValueError, match='"at"'):
+        c.query("s1", "o1", "events", filter={"at": {"$lt": 1}})
+
+
+def test_objects_query_refuses_bare_literal_on_stamps_and_datetime_props():
+    cat = {**_CAT, "/types/bafyTASK/properties": {"properties": [
+        {"id": "bafyDUE", "name": "Due", "xKey": "due", "kind": "datetime",
+         "format": {"type": "date"}},
+        {"id": "bafySTATUS", "name": "Status", "xKey": "status", "kind": "string"}]}}
+    fx = wire(replies={**cat, "/objects/query": {"records": []}})
+    c = client(fx)
+    with pytest.raises(ValueError, match="createdAt"):
+        c.query_objects("s1", filter={"any.createdAt": {"$gte": 1756058400}})
+    with pytest.raises(ValueError, match="bafyDUE"):
+        c.query_objects("s1", filter={"task.due": "2026-08-25"})
+    c.query_objects("s1", filter={"task.status": "open",
+                                  "task.due": {"$lt": {"$date": 1787673600000}},
+                                  "modifiedAt": {"$gte": {"$date": "2026-08-01T00:00:00Z"}}})
+    assert fx.calls[-1][2]["filter"]["bafyTASK.bafyDUE"] == {"$lt": {"$date": 1787673600000}}

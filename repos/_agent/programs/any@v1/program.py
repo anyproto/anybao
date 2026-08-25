@@ -100,7 +100,7 @@ _MEM_DATASET = {
         {"key": "accessCount", "kind": "number", "mutableBy": "author"},
         {"key": "entities", "kind": "array"},
         {"key": "keywords", "kind": "array"},
-        {"key": "validFrom", "kind": "number"},
+        {"key": "validFrom", "kind": "datetime"},  # ADR-019 §2
         {"key": "chatId", "kind": "string"},
         {"key": "fromAgent", "kind": "string"},
         {"key": "source", "kind": "string"},
@@ -155,8 +155,8 @@ _CHUNKS_DATASET = {
         {"key": "level", "kind": "number"},
         {"key": "fromAgent", "kind": "string"},
         {"key": "summary", "kind": "string"},
-        {"key": "periodStart", "kind": "number"},
-        {"key": "periodEnd", "kind": "number"},
+        {"key": "periodStart", "kind": "datetime"},  # ADR-019 §2
+        {"key": "periodEnd", "kind": "datetime"},
         {"key": "fromSeq", "kind": "number"},
         {"key": "toSeq", "kind": "number"},
         {"key": "unitsCovered", "kind": "number"},
@@ -164,6 +164,69 @@ _CHUNKS_DATASET = {
         {"key": "createdAt", "stamp": "createTime"},
     ],
 }
+
+
+# --- ADR-019 §4: instant keys the client guards on ---------------------------
+# Server stamps are instants on EVERY dataset; declared datetime fields
+# come from the declarations this module owns (+ create_dataset drafts
+# seen in this run). A bare number/string literal against one of these
+# never errors server-side — it silently matches all or nothing.
+_STAMP_KEYS = frozenset({"createdAt", "modifiedAt", "createTime", "modifyTime"})
+_TIME_OPS = ("$eq", "$in", "$nin", "$gt", "$gte", "$lt", "$lte")
+
+
+def _datetime_keys(decl):
+    return {f["key"] for f in (decl or {}).get("fields") or []
+            if f.get("kind") == "datetime"
+            or f.get("stamp") in ("createTime", "modifyTime")}
+
+
+_DATASET_TIME_KEYS = {d["name"]: _datetime_keys(d) for d in
+                      (_MEM_DATASET, _TURNS_DATASET, _CHUNKS_DATASET)}
+
+
+def _is_instant(v):
+    return (isinstance(v, dict) and set(v) == {"$date"}
+            and isinstance(v["$date"], (int, float, str))
+            and not isinstance(v["$date"], bool))
+
+
+def _check_time_literal(key, kind, cond):
+    """Raise unless every comparable operand under `cond` is an instant.
+    `cond` is a bare value or an operator dict; non-comparison
+    operators ($exists, $regex, …) are the server's business."""
+    def bad(v):
+        raise ValueError(
+            f'filter key "{key}" is {kind}: compare it to an instant '
+            f'{{"$date": …}} — instant(seconds) / instant("<ISO>") — not '
+            f'{json.dumps(v)[:60]}; a bare literal silently matches every '
+            f"row ($gte/$lt) or none ($eq/$in) (ADR-019 §4)")
+    if not isinstance(cond, dict) or _is_instant(cond):
+        if cond is not None and not _is_instant(cond):
+            bad(cond)
+        return
+    for op, v in cond.items():
+        if op in ("$in", "$nin"):
+            if not isinstance(v, list) or not all(_is_instant(x) for x in v):
+                bad(v)
+        elif op in _TIME_OPS and not _is_instant(v):
+            bad(v)
+        elif op == "$not":
+            _check_time_literal(key, kind, v)
+
+
+def _guard_filter(filt, time_keys, kind_of=None):
+    """Walk a filter (through $and/$or/$nor) checking instant keys.
+    `time_keys`: set of keys that are instants; `kind_of(key)` may
+    add more (e.g. catalog-resolved datetime properties)."""
+    if not isinstance(filt, dict):
+        return
+    for k, v in filt.items():
+        if k in ("$and", "$or", "$nor") and isinstance(v, list):
+            for sub in v:
+                _guard_filter(sub, time_keys, kind_of)
+        elif k in time_keys or (kind_of and kind_of(k)):
+            _check_time_literal(k, "an instant (datetime)", v)
 
 
 class AnyError(Exception):
@@ -197,7 +260,7 @@ def _trim_space_row(r):
 
 def _ui_context_rank(rec):
     group = rec.get("ui_context") or {}
-    return (group.get("updated_at") or 0, rec.get("modifiedAt") or 0)
+    return (group.get("updated_at") or 0, ts_s(rec.get("modifiedAt")) or 0)  # noqa: F821
 
 
 def _ui_context_pointer(rec):
@@ -231,6 +294,8 @@ class _Client:
         # ids — ADR-006 §6. Invalidated after create_type / add_property.
         self._types_cache = {}   # space -> {"by_id", "by_xkey", "rows"}
         self._props_cache = {}   # (space, type_id) -> [prop rows]
+        # dataset name -> instant keys (ADR-019 §4); drafts add to it
+        self._dataset_time_keys = {k: set(v) for k, v in _DATASET_TIME_KEYS.items()}
         self._spaces_cache = None   # space rows for name resolution (§8)
         self._bundle_children = {}  # (space, bundleId, seed) -> objectId
         self._ensured_stores = set()  # (space, xKey) lazily provisioned
@@ -437,6 +502,16 @@ class _Client:
                 f'(filter/sort key "{path}")')
         return f"{tid}.{pid}"
 
+    def _prop_kind(self, space, resolved_key):
+        """Kind of a RESOLVED "typeId.propId" key (None when unknown)."""
+        if not isinstance(resolved_key, str) or "." not in resolved_key:
+            return None
+        tid, _, pid = resolved_key.partition(".")
+        if tid in _RESERVED_GROUPS or tid == "_ver":
+            return None
+        return next((p.get("kind") for p in self._type_props(space, tid)
+                     if p.get("id") == pid), None)
+
     def _resolve_type_value(self, space, v):
         """Resolve type xKeys appearing as an `any.types` filter VALUE
         (string, list, or operator dict like {$in:[...]}) so the agent can
@@ -621,7 +696,12 @@ class _Client:
         `any.createdAt` → `createdAt`). Records come back
         NORMALIZED (user-type groups keyed by type xKey, props by prop
         xKey) unless normalize=False — pass that when you need the raw
-        content ids (e.g. graph edges) — ADR-006 §6."""
+        content ids (e.g. graph edges) — ADR-006 §6. Time is an
+        INSTANT: `createdAt`/`modifiedAt` and every `date`/`datetime`
+        property read as `{"$date": "<RFC 3339>"}` (`ts_s(v)` → seconds)
+        and a filter compares them only to `instant(seconds)` — a bare
+        number raises here (server-side it would silently match every
+        row) — ADR-019."""
         unknown = set(opts) - {"filter", "sort", "limit", "offset"}
         if unknown:
             # an unvisited key (e.g. `filters=`) would make the server
@@ -631,6 +711,10 @@ class _Client:
                 "the wire accepts filter/sort/limit/offset")
         if "filter" in opts:
             opts["filter"] = self._resolve_filter(space, opts["filter"])
+            # ADR-019 §4: resolved keys — stamps are bare, user props
+            # "typeId.propId" (kind from the catalog)
+            _guard_filter(opts["filter"], _STAMP_KEYS,
+                          lambda k: self._prop_kind(space, k) == "datetime")
         if "sort" in opts:
             opts["sort"] = self._resolve_sort(space, opts["sort"])
         recs = self._call("post", f"/v1/spaces/{space}/objects/query",
@@ -660,9 +744,16 @@ class _Client:
     def query(self, space, object_id, dataset, **opts):
         """Per-object dataset query (chat_messages, agent_turns, …).
         None-valued opts are dropped so callers can pass through
-        optional filter/sort/limit unchecked."""
+        optional filter/sort/limit unchecked. Stamps (`createdAt`,
+        `modifiedAt`) and datetime fields (`validFrom`, `periodStart`/
+        `periodEnd`) are instants `{"$date": …}`: read with `ts_s`,
+        filter with `instant(seconds)` — a bare number raises
+        (ADR-019 §4)."""
         body = {"objectId": object_id, "dataset": dataset}
         body.update({k: v for k, v in opts.items() if v is not None})
+        # ADR-019 §4: stamps + declared datetime fields take instants only
+        _guard_filter(body.get("filter"),
+                      _STAMP_KEYS | self._dataset_time_keys.get(dataset, set()))
         return self._call("post", f"/v1/spaces/{space}/query", body).get("records", [])
 
     def modify(self, space, body):
@@ -969,7 +1060,8 @@ class _Client:
         rows = {r.get("id"): r for r in self.query_objects(
             space, filter={"id": {"$in": ids}}, limit=len(ids))}
         return sorted(ids, key=lambda i: (
-            (rows.get(i) or {}).get("modifiedAt") or 0, i), reverse=True)
+            ts_s((rows.get(i) or {}).get("modifiedAt")) or 0, i),  # noqa: F821
+            reverse=True)
 
     def _ui_context_pairs(self, space, tids=None):
         """(typeId, pointer-record) pairs, freshest pointer first.
@@ -1039,7 +1131,9 @@ class _Client:
         {"type": "date"|"datetime"|"links"|"select"|"multiselect",
         "ui"?, "options"?} — CHECK IT before writing someone else's
         type: a links prop takes ["any://<objectId>"] arrays, selects
-        take option keys, dates ISO strings; a prop without format is
+        take option keys, dates/datetimes an instant `instant(seconds)`
+        or `instant("<ISO>")` (kind `datetime`; a legacy prop declared
+        `kind: string` keeps ISO strings); a prop without format is
         a plain kind. `scope` is the write/sync class (local-scope
         props exist only per-peer — the chat filter trap). `type_key`
         is the type's xKey (builtins: xKey == id); an unknown key
@@ -1166,6 +1260,9 @@ class _Client:
         type.registered)."""
         tid = self._resolve_type_or_raise(space, type_key)
         name = (draft or {}).get("name") or ""
+        if name:   # ADR-019 §4: this run's queries guard the draft's dates
+            self._dataset_time_keys.setdefault(name, set()).update(
+                _datetime_keys(draft))
         for d in self.list_datasets(space, type_key):
             if d.get("name") == name:
                 out = {"datasetDefId": d.get("id"), "created": False}
@@ -1221,7 +1318,8 @@ class _Client:
         "format"?}. kind ∈ string | number | boolean | null | array |
         object (default "string"); dates/links/selects go via
         {"format": {"type": "date" | "datetime" | "links" | "select" |
-        "multiselect"}} with kind omitted (server derives it;
+        "multiselect"}} with kind omitted (server derives it —
+        date/datetime ⇒ `datetime`, written as `instant(...)`;
         "tags" is reserved). Returns {"propId": str}."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._post_property(space, tid, body)
@@ -1230,7 +1328,7 @@ class _Client:
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
         if "format" not in body:      # with a format, the server derives
-            body.setdefault("kind", "string")   # kind (links⇒array, date⇒string)
+            body.setdefault("kind", "string")   # kind (links⇒array, date⇒datetime)
         res = self._call("post",
                          f"/v1/spaces/{space}/types/{type_id}/properties", body)
         self._cat_invalidate(space)   # new prop -> refresh the propId map
@@ -1522,7 +1620,8 @@ class _Client:
         lowercase slug ("extraction", "user", …), `provenance` exactly
         `{fromSeq}`; both create-only (not evolvable). Stray keys
         raise. Scoring defaults when absent: confidence 5, importance
-        5, salience 10, accessCount 0, validFrom now."""
+        5, salience 10, accessCount 0, validFrom now. `validFrom` is an
+        instant — `instant(seconds)` (ADR-019 §2)."""
         f = dict(fields or {})
         allowed = set(_MEM_MUTABLE) | set(_MEM_CREATE_ONLY)
         unknown = sorted(set(f) - allowed)
@@ -1535,12 +1634,15 @@ class _Client:
                 raise AnyError(400, "request.missing_field",
                                f"{req} required (non-empty string)")
         self._mem_check_ranges(f)
-        import time
         f.setdefault("confidence", 5)
         f.setdefault("importance", 5)
         f.setdefault("salience", 10)
         f.setdefault("accessCount", 0)
-        f.setdefault("validFrom", int(time.time()))
+        f.setdefault("validFrom", instant(now()))  # noqa: F821 - guest globals
+        if not _is_instant(f["validFrom"]):
+            raise AnyError(400, "request.invalid_field",
+                           "validFrom must be an instant — instant(seconds) "
+                           "(ADR-019 §2)")
         brain = self.get_brain(space)["objectId"]
         ops = [{"type": "$set", "path": k, "value": v} for k, v in f.items()]
         return self.modify(space, {
