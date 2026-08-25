@@ -31,6 +31,7 @@ Part      = Text{text}
           | ToolCall{id, name, args}            # name == "run_cell"
           | ToolResult{call_id, content, is_error}
           | Thinking{text?, provider_state?}    # opaque blob, round-tripped
+          | File{media_type, data, name?}       # base64; adapter routes by media type (ADR-020 §3)
 LLMReply  = {parts: [Part], stop: "done"|"tool"|"length", usage: Usage}
 Usage     = {in, out, cacheRead, cacheWrite}    # tokens; cache* may be 0
 ```
@@ -57,7 +58,8 @@ never resent — the DeepSeek convention treats it as advisory output),
 parses a ```cell block out of plain text into a ToolCall — the codeAct
 heritage makes the tool interface emulatable on any completion
 endpoint). Tier→provider/model resolution comes from the `config.get`
-syscall.
+syscall. Tiers: `codegen`, `classify`, `vision` (file reads —
+`llm.read`, ADR-020 §4).
 
 ### 2. One tool; the turn cycle
 

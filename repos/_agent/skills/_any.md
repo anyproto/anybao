@@ -107,9 +107,12 @@ Links (`any://` URIs — the one reference format):
   `[attachment link: any://o/<sid>/<oid>]` /
   `[attachment image: any://f/<sid>/<fileId>]` lines — a message may
   be ONLY attachments. Resolve `o/` targets with the ids from the URI
-  (`get_markdown` / `query_objects` / `query`); `f/` files have no
-  read surface here yet — refer to them by link, don't try to fetch
-  bytes.
+  (`get_markdown` / `query_objects` / `query`); `f/` files are READ
+  with `use("llm@v1").read("<the any://f/… link verbatim>", "<your
+  question>")` — the model sees the file (image / pdf / text) and the
+  call returns its answer text (ADR-020). Bytes: `file_content(space,
+  link)` (base64); `list_files(space, objectId)` lists an object's
+  attachments. Other formats (docx…) need converting to text first.
 - **Outgoing attachments**: `chat_send` takes `attachments`:
   `{"a0": {"type": "link", "link": "any://o/<sid>/<oid>"}, …}` (≤32,
   keys `[A-Za-z0-9_-]+`, type `link` or `image`) — attach the objects

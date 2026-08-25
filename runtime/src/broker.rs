@@ -11,6 +11,7 @@ use crate::trace::{input_key, TraceWriter};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -841,11 +842,29 @@ impl Broker {
             .iter()
             .filter_map(|h| resp.header(h).map(|v| (h.to_lowercase(), json!(v))))
             .collect();
-        let body = resp.into_string().map_err(|e| EffectFailure {
-            type_: "URLError".into(),
-            message: e.to_string(),
-        })?;
-        Ok(json!({"status": status, "headers": headers, "body": body, "url": final_url}))
+        // `response: "base64"` — raw bytes, base64 in `body` (ADR-020 §1);
+        // default is text, as before. A multi-MB body spills to the blob
+        // sidecar like any big output.
+        let as_base64 = payload.get("response").and_then(|r| r.as_str()) == Some("base64");
+        let mut out = json!({"status": status, "headers": headers, "url": final_url});
+        if as_base64 {
+            let mut bytes = Vec::new();
+            resp.into_reader()
+                .read_to_end(&mut bytes)
+                .map_err(|e| EffectFailure {
+                    type_: "URLError".into(),
+                    message: e.to_string(),
+                })?;
+            use base64::Engine as _;
+            out["body"] = json!(base64::engine::general_purpose::STANDARD.encode(&bytes));
+            out["encoding"] = json!("base64");
+        } else {
+            out["body"] = json!(resp.into_string().map_err(|e| EffectFailure {
+                type_: "URLError".into(),
+                message: e.to_string(),
+            })?);
+        }
+        Ok(out)
     }
 
     /// Refuse guest http requests that would touch stored secrets: a
@@ -1814,6 +1833,34 @@ mod tests {
         // the secret still never reaches the trace
         let dump = serde_json::to_string(&b.writer.records).unwrap();
         assert!(!dump.contains("sk-live"));
+    }
+
+    /// `response: "base64"` reads raw bytes (a PNG is not UTF-8) and
+    /// hands them back base64 with `encoding` set — ADR-020 §1.
+    #[test]
+    fn http_get_base64_response() {
+        let png_head: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0xff, 0xfe, 0x00];
+        let bytes = png_head.clone();
+        let base = fake_server(1, move |req| {
+            let resp = tiny_http::Response::from_data(bytes.clone())
+                .with_header(tiny_http::Header::from_bytes("Content-Type", "image/png").unwrap());
+            let _ = req.respond(resp);
+        });
+        let mut b = make_broker("run_b64");
+        let out = b
+            .call(
+                "http.get",
+                json!({"url": format!("{base}/f"), "response": "base64"}),
+            )
+            .unwrap();
+        assert_eq!(out["status"], json!(200));
+        assert_eq!(out["encoding"], json!("base64"));
+        assert_eq!(out["headers"]["content-type"], json!("image/png"));
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(out["body"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, png_head);
     }
 
     #[test]

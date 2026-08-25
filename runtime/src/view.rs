@@ -154,6 +154,39 @@ fn pretty_body(raw: &str, pad: &str) -> String {
     }
 }
 
+/// Binary payloads elided for the eye (ADR-020 §6): a base64 `data`
+/// string next to a `media_type` (a File part / provider source
+/// block) renders as `<base64 N bytes mime>`. `--seq N` bypasses this.
+fn elide_binary(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut out = serde_json::Map::new();
+            let mime = m.get("media_type").and_then(|x| x.as_str());
+            for (k, x) in m {
+                if k == "data" && mime.is_some() && x.as_str().is_some_and(|d| d.len() > 256) {
+                    out.insert(
+                        k.clone(),
+                        Value::String(base64_marker(x.as_str().unwrap(), mime)),
+                    );
+                } else {
+                    out.insert(k.clone(), elide_binary(x));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(elide_binary).collect()),
+        _ => v.clone(),
+    }
+}
+
+fn base64_marker(b64: &str, mime: Option<&str>) -> String {
+    let n = b64.len() / 4 * 3 - b64.bytes().rev().take(2).filter(|b| *b == b'=').count();
+    format!(
+        "<base64 {n} bytes{}>",
+        mime.map(|m| format!(" {m}")).unwrap_or_default()
+    )
+}
+
 /// One effect, rendered semantically — the wire body is noise unless
 /// something went wrong (errors always render in full) or --full asks.
 /// Under --full the body is pretty-printed as an indented block.
@@ -172,14 +205,22 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
         let path = short_path(r["input"]["url"].as_str().unwrap_or("?"));
         let status = r["output"]["status"].as_i64().unwrap_or(0);
         let mut line = format!("{head} {} {path} → {status} ({dur}ms)", rest.to_uppercase());
-        let body = s(&r["output"]["body"]);
+        let body = if r["output"]["encoding"] == "base64" {
+            let mime = r["output"]["headers"]["content-type"].as_str();
+            base64_marker(r["output"]["body"].as_str().unwrap_or(""), mime)
+        } else {
+            s(&r["output"]["body"])
+        };
         if full {
             // request first (the query/filter/body you sent), then response
             let label = format!("{pad}    ");
             let inner = format!("{pad}      ");
             let req = &r["input"]["json"];
             if !req.is_null() {
-                line.push_str(&format!("\n{label}req:\n{}", pretty_json(req, &inner)));
+                line.push_str(&format!(
+                    "\n{label}req:\n{}",
+                    pretty_json(&elide_binary(req), &inner)
+                ));
             }
             if !body.is_empty() {
                 line.push_str(&format!("\n{label}resp:\n{}", pretty_body(&body, &inner)));

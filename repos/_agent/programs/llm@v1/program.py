@@ -3,8 +3,10 @@
 Use for one-off structured judgments (classification, extraction,
 scoring) inside a cell — a sub-call, not a way to talk to the user.
 `chat(messages, system=…, tier="classify")`; Part is `{type:
-text|tool_call|tool_result|thinking, …}`, the reply `{parts, stop:
-done|tool|length, usage: {in, out}}`."""
+text|tool_call|tool_result|thinking|file, …}`, the reply `{parts, stop:
+done|tool|length, usage: {in, out}}`. `read(file, prompt)` puts one
+`any` file (image / pdf / text — an `any://f/…` attachment) in front
+of the model and returns its answer (ADR-020)."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -13,7 +15,36 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # boundary. The api key never enters the guest — the request names a
 # `credential` (config ref + header), the HOST injects the header.
 
+import base64
 import json
+
+
+class UnsupportedMedia(Exception):
+    """A File part this provider's wire cannot carry (ADR-020 §3) —
+    raised while building the request, before any http call."""
+
+    def __init__(self, media_type, provider):
+        self.media_type = media_type
+        self.provider = provider
+        super().__init__(
+            f"{provider} cannot read {media_type!r} files; supported: "
+            + ", ".join(_MEDIA[provider]))
+
+
+# provider -> media classes carried natively (ADR-020 §3)
+_MEDIA = {"anthropic": ("image/*", "application/pdf", "text/*"),
+          "openai-compat": ("image/*",)}
+
+
+def _media_class(media_type):
+    mt = (media_type or "").split(";", 1)[0].strip().lower()
+    if mt.startswith("image/"):
+        return "image"
+    if mt == "application/pdf":
+        return "pdf"
+    if mt.startswith("text/") or mt in ("application/json", "application/xml"):
+        return "text"
+    return None
 
 
 class LlmError(Exception):
@@ -68,7 +99,29 @@ class AnthropicAdapter:
                     p.get("provider_state")
                     or {"type": "thinking", "thinking": p.get("text", "")}
                 )
+            elif t == "file":
+                blocks.append(self._file_block(p))
         return {"role": m["role"], "content": blocks}
+
+    @staticmethod
+    def _file_block(p):
+        mt = p["media_type"]
+        cls = _media_class(mt)
+        if cls == "image":
+            return {"type": "image",
+                    "source": {"type": "base64", "media_type": mt, "data": p["data"]}}
+        if cls == "pdf":
+            return {"type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf",
+                               "data": p["data"]}}
+        if cls == "text":
+            text = base64.b64decode(p["data"]).decode("utf-8", "replace")
+            block = {"type": "document",
+                     "source": {"type": "text", "media_type": "text/plain", "data": text}}
+            if p.get("name"):
+                block["title"] = p["name"]
+            return block
+        raise UnsupportedMedia(mt, "anthropic")
 
     @staticmethod
     def _mark_cache(api_msgs):
@@ -145,7 +198,17 @@ class OpenAICompatAdapter:
                 out.append({"role": "tool", "tool_call_id": r["call_id"],
                             "content": r["content"]})
             return out
-        msg = {"role": m["role"], "content": " ".join(texts)}
+        files = [p for p in m["parts"] if p["type"] == "file"]
+        if files:
+            content = [{"type": "text", "text": " ".join(texts)}] if texts else []
+            for f in files:
+                if _media_class(f["media_type"]) != "image":
+                    raise UnsupportedMedia(f["media_type"], "openai-compat")
+                content.append({"type": "image_url", "image_url": {
+                    "url": f"data:{f['media_type']};base64,{f['data']}"}})
+            msg = {"role": m["role"], "content": content}
+        else:
+            msg = {"role": m["role"], "content": " ".join(texts)}
         if calls:
             msg["tool_calls"] = [
                 {"id": c["id"], "type": "function",
@@ -243,10 +306,14 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     """One model call; returns the neutral Reply.
 
     `messages`: `[{"role": "user"|"assistant", "parts": [Part]}]` —
-    Part is `{"type": "text", "text"}` for plain turns;
+    Part is `{"type": "text", "text"}` for plain turns; `{"type":
+    "file", "media_type", "data": <base64>, "name"?}` puts a file in
+    the turn (image / pdf / text natively — `any.file_content` returns
+    that shape; `read()` is the one-call form);
     `tool_call`/`tool_result`/`thinking` parts round-trip loop
-    traffic. `tier`: "codegen" (default, the strong model) or
-    "classify" (fast/cheap — one-off judgments). `tools`: `[{name,
+    traffic. `tier`: "codegen" (default, the strong model),
+    "classify" (fast/cheap — one-off judgments) or "vision" (file
+    reads). `tools`: `[{name,
     description, input_schema?}]`, empty for plain completions.
     `max_tokens` overrides the default 32768 output cap (lower it for
     small classify-style calls). Returns `{parts, stop:
@@ -272,3 +339,31 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     if resp["status"] >= 400:
         raise LlmError(resp["status"], resp["body"][:_EXCERPT])
     return adapter.parse_response(json.loads(resp["body"]))
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
+    """Ask the model about ONE file and return its answer text.
+
+    `file`: an `any://f/<spaceId>/<fileId>` URI (the `[attachment …]`
+    line of a chat message — pass it verbatim), a bare fileId with
+    `space=`, or a `{mime|media_type, data: <base64>, name?}` dict
+    (e.g. `any.file_content(...)`'s result). Natively readable:
+    images (png/jpeg/gif/webp), PDF, text; anything else raises
+    `UnsupportedMedia` before any call — convert to text first.
+    `prompt` is the question; `system` optional. Returns the reply's
+    text (str). Bytes cross the wire once per read — re-read rather
+    than keeping files in the conversation (ADR-020 §5)."""
+    if isinstance(file, str):
+        any_ = use("any@v1")  # noqa: F821 - guest global
+        if not file.startswith("any://f/") and not space:
+            raise TypeError("a bare fileId needs space=; or pass the any://f/ URI")
+        file = any_.file_content(space or file.split("/")[3], file)
+    part = {"type": "file",
+            "media_type": file.get("media_type") or file.get("mime"),
+            "data": file["data"]}
+    if file.get("name"):
+        part["name"] = file["name"]
+    reply = chat([{"role": "user", "parts": [part, {"type": "text", "text": prompt}]}],
+                 system=system, tier=tier, max_tokens=max_tokens)
+    return "\n".join(p["text"] for p in reply["parts"] if p["type"] == "text")

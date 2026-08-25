@@ -48,6 +48,8 @@ Two additions, both recorded so replay stays pure:
 
 - The http result (`{status, headers, body}`) gains `url` — the FINAL
   url after the client followed redirects.
+- With `response: "base64"` the result gains `encoding: "base64"` and
+  `body` is the base64 of the raw bytes (ADR-020 §1).
 - Requests accept `redirects` — the max follow count for that request;
   `0` = manual, the 3xx and its `location` header come back as data.
 - Credentialed requests: the host owns the follow decision — default

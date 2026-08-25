@@ -1267,3 +1267,67 @@ def test_create_type_posts_property_formats_without_a_kind():
     posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
     assert posted[0] == {"name": "When", "xKey": "when", "format": {"type": "datetime"}}
     assert posted[1] == {"name": "Title", "xKey": "title", "kind": "string"}
+
+
+# --- files (ADR-020 §2) -------------------------------------------------------
+
+def test_file_content_reads_base64_and_parses_refs():
+    import base64
+    raw = b"\x89PNG\r\n\x1a\n\x00\xff"
+    seen = []
+
+    def fx(name, payload):
+        seen.append((name, payload))
+        if name == "config.get":
+            return {"value": "http://any"}
+        assert name == "http.get" and payload["response"] == "base64"
+        return {"status": 200, "headers": {"content-type": "image/png"},
+                "body": base64.b64encode(raw).decode()}
+
+    g = load(fx)
+    c = g["_Client"]("http://any")
+    r = c.file_content("s-given", "any://f/s-in-uri/file9?variant=thumb")
+    assert r == {"fileId": "file9", "mime": "image/png", "size": len(raw),
+                 "data": base64.b64encode(raw).decode()}
+    assert seen[-1][1]["url"] == "http://any/v1/spaces/s-in-uri/files/file9/content?variant=thumb"
+    # bare fileId → the given space
+    c.file_content("s-given", "file9")
+    assert seen[-1][1]["url"] == "http://any/v1/spaces/s-given/files/file9/content"
+    # malformed URI is refused before any call
+    n = len(seen)
+    with pytest.raises(g["AnyError"]):
+        c.file_content("s", "any://f/onlyone")
+    assert len(seen) == n
+
+
+def test_file_content_error_body_is_decoded():
+    import base64
+
+    def fx(name, payload):
+        body = json.dumps({"error": {"code": "file.not_available", "message": "not yet"}})
+        return {"status": 409, "headers": {}, "body": base64.b64encode(body.encode()).decode()}
+
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as e:
+        g["_Client"]("http://any").file_content("s", "f")
+    assert e.value.status == 409 and e.value.code == "file.not_available"
+
+
+def test_list_files_narrows_by_object():
+    fx = wire(replies={"/files?objectId=o1": {"files": [{"fileId": "f1", "mime": "text/plain"}]}})
+    c = client(fx)
+    assert c.list_files("s1", "o1") == [{"fileId": "f1", "mime": "text/plain"}]
+    assert fx.calls == [("GET", "/v1/spaces/s1/files?objectId=o1", None)]
+
+
+def test_file_not_available_carries_sync_hint():
+    import base64
+
+    def fx(name, payload):
+        body = json.dumps({"error": {"code": "file.not_available", "message": "no bytes"}})
+        return {"status": 409, "headers": {}, "body": base64.b64encode(body.encode()).decode()}
+
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as e:
+        g["_Client"]("http://any").file_content("s", "f")
+    assert "not synced" in str(e.value)

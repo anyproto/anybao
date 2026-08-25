@@ -6,6 +6,7 @@ config resolution, provider URL, the credential dict (ref + header
 ONLY — a key value never appears in the syscall payload), the
 anthropic-version header, and the error path."""
 
+import base64
 import json
 from pathlib import Path
 
@@ -268,3 +269,78 @@ def test_chat_error_status_raises_llm_error_with_excerpt():
     assert e.value.status == 500
     assert "upstream exploded" in str(e.value)
     assert len(e.value.body) <= 400  # excerpt, not the whole body
+
+
+# --- File parts (ADR-020 §3/§4) ----------------------------------------------
+
+PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+TXT_B64 = base64.b64encode(b"hello, file").decode()
+
+
+def _file_msg(media_type, data=PNG_B64, name=None):
+    part = {"type": "file", "media_type": media_type, "data": data}
+    if name:
+        part["name"] = name
+    return [{"role": "user", "parts": [part, {"type": "text", "text": "what is it?"}]}]
+
+
+def test_anthropic_routes_file_parts_by_media_type():
+    a = LLM["AnthropicAdapter"]()
+    img = a.build_request(_file_msg("image/png"), "", [], "m")["messages"][0]["content"]
+    assert img[0] == {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                  "data": PNG_B64},
+                      "cache_control": {"type": "ephemeral"}} or img[0]["type"] == "image"
+    assert img[0]["source"]["data"] == PNG_B64
+    pdf = a.build_request(_file_msg("application/pdf"), "", [], "m")["messages"][0]["content"]
+    assert pdf[0]["type"] == "document" and pdf[0]["source"]["media_type"] == "application/pdf"
+    txt = a.build_request(_file_msg("text/markdown; charset=utf-8", TXT_B64, "notes.md"),
+                          "", [], "m")["messages"][0]["content"]
+    # text source is DECODED text, not base64; the name becomes the title
+    assert txt[0]["source"] == {"type": "text", "media_type": "text/plain",
+                                "data": "hello, file"}
+    assert txt[0]["title"] == "notes.md"
+    # the prompt follows the file; cache breakpoint lands on the last block
+    assert txt[1]["type"] == "text" and "cache_control" in txt[1]
+
+
+def test_unsupported_media_raises_before_any_call():
+    a = LLM["AnthropicAdapter"]()
+    with pytest.raises(LLM["UnsupportedMedia"]) as e:
+        a.build_request(_file_msg("application/vnd.openxmlformats-officedocument."
+                                  "wordprocessingml.document"), "", [], "m")
+    assert "anthropic cannot read" in str(e.value)
+    o = LLM["OpenAICompatAdapter"]()
+    with pytest.raises(LLM["UnsupportedMedia"]):
+        o.build_request(_file_msg("application/pdf"), "", [], "m")
+    # images ride the openai wire as a data URI
+    req = o.build_request(_file_msg("image/png"), "", [], "m")
+    content = req["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "what is it?"}
+    assert content[1]["image_url"]["url"] == f"data:image/png;base64,{PNG_B64}"
+
+
+def test_read_resolves_ref_through_any_and_uses_vision_tier():
+    host = FakeHost({"provider": "anthropic", "model": "eyes",
+                     "base_url": "https://api.example", "api_key_ref": "k"},
+                    body={"content": [{"type": "text", "text": "a cat"}],
+                          "stop_reason": "end_turn", "usage": {}})
+    fetched = []
+
+    class FakeAny:
+        def file_content(self, space, file):
+            fetched.append((space, file))
+            return {"fileId": "f1", "mime": "image/png", "size": 8, "data": PNG_B64}
+
+    g = load(host)
+    g["use"] = lambda spec: FakeAny() if spec == "any@v1" else pytest.fail(spec)
+    out = g["read"]("any://f/sp1/f1", "what is it?")
+    assert out == "a cat"
+    assert fetched == [("sp1", "any://f/sp1/f1")]
+    assert host.config_keys == ["llm.tier.vision"]
+    content = host.posts[0]["json"]["messages"][0]["content"]
+    assert content[0]["type"] == "image" and content[1]["text"] == "what is it?"
+    # an already-fetched dict skips any@v1
+    assert g["read"]({"mime": "image/png", "data": PNG_B64}, "again?") == "a cat"
+    assert len(fetched) == 1
+    with pytest.raises(TypeError):
+        g["read"]("bare-file-id", "?")

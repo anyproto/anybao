@@ -5,6 +5,12 @@
         "base_url": "https://api.anthropic.com",
         "api_key_ref": "llm.key.anthropic"
     },
+    "llm.tier.vision": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "base_url": "https://api.anthropic.com",
+        "api_key_ref": "llm.key.anthropic"
+    },
     "llm.tier.classify": {
         "provider": "anthropic",
         "model": "claude-haiku-4-5-20251001",

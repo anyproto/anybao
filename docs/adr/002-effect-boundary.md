@@ -34,7 +34,9 @@ def http_get(ctx, url, *, params=None, headers=None, timeout=None): ...
 (`fetch`, `console.log`); anybao's effect catalog mimics Python idioms —
 the model has seen far more requests-style Python than JS-in-Python:
 `http.get/head/post/put/patch/delete(...)` with `params=/headers=/json=`
-(plus `redirects=` — max follows for the request, `0` = manual)
+(plus `redirects=` — max follows for the request, `0` = manual; and
+`response="base64"` — the body comes back as base64 of the raw bytes,
+ADR-020 §1)
 returning a `Response` (`.status`, `.json()`, `.text`, and `.url` — the
 final post-redirect url; both added by ADR-008 §2; `head` classifies as
 `read` like `get`, `patch` as `mutate` — added 2026-07-28 for the REST

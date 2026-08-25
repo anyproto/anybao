@@ -58,6 +58,10 @@ def _slugify_xkey(name):
 # idiom that resolves it. Keep entries to codes where a local action
 # exists — never paraphrase the server message itself.
 _HINTS = {
+    "file.not_available": (
+        "the file's bytes have not synced to this device yet (attach "
+        "still in flight from the sender) — tell the user and read it "
+        "again later; do not retry in a loop"),
     "request.unknown_field": (
         "strict body — resend with only the accepted fields named in "
         "the message; stray keys are rejected, never silently dropped"),
@@ -1696,6 +1700,67 @@ class _Client:
                 raise AnyError(400, "request.invalid_field",
                                "accessCount must be a number >= 0")
 
+    # --- files (files v2; ADR-020 §2) -----------------------------------------
+    @staticmethod
+    def _file_ref(space, file):
+        """(space, fileId, query) from an `any://f/<sid>/<fid>[?…]` URI or
+        a bare fileId (space stays the given one)."""
+        if isinstance(file, dict):
+            file = file.get("link") or file.get("fileId") or file.get("id") or ""
+        if not isinstance(file, str) or not file:
+            raise TypeError(f"file must be an any://f/ URI or a fileId, got {file!r}")
+        query = ""
+        if "?" in file:
+            file, query = file.split("?", 1)
+        if file.startswith("any://f/"):
+            parts = file[len("any://f/"):].split("/")
+            if len(parts) != 2 or not all(parts):
+                raise AnyError(400, "request.invalid_field",
+                               f"malformed file URI {file!r} (any://f/<spaceId>/<fileId>)")
+            space, file = parts
+        return space, file, query
+
+    def list_files(self, space, object_id=None):
+        """Files in the space — `[{fileId, objectId, name, mime, size, …}]`;
+        `object_id` narrows to one object's attachments. Files are
+        addressed `any://f/<spaceId>/<fileId>` (chat attachments arrive
+        as such lines); read one with file_content / llm.read."""
+        q = f"?objectId={object_id}" if object_id else ""
+        return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
+
+    def file_content(self, space, file):
+        """The file's bytes, base64 — `{fileId, mime, size, data}`. `file`
+        is an `any://f/<spaceId>/<fileId>` URI (a chat `[attachment …]`
+        line; `?variant=thumb` passes through) or a bare fileId in
+        `space`. Feed the result to `llm.read` / a File part; it is
+        NOT text — decode `data` yourself only for text/* files."""
+        space, file_id, query = self._file_ref(space, file)
+        url = self._base + f"/v1/spaces/{space}/files/{file_id}/content"
+        if query:
+            url += "?" + query
+        reply = effect("http.get", {"url": url, "response": "base64"})  # noqa: F821
+        if reply["status"] >= 400:
+            try:
+                data = json.loads(_b64decode(reply.get("body") or ""))
+            except ValueError:
+                data = {}
+            err = data.get("error", {}) if isinstance(data, dict) else {}
+            raise AnyError(reply["status"], err.get("code", "unknown"),
+                           err.get("message", ""))
+        b64 = reply.get("body") or ""
+        mime = (reply.get("headers") or {}).get("content-type", "application/octet-stream")
+        mime = mime.split(";", 1)[0].strip()
+        size = len(b64) // 4 * 3 - b64[-2:].count("=")
+        return {"fileId": file_id, "mime": mime, "size": size, "data": b64}
+
+
+def _b64decode(s):
+    import base64
+    try:
+        return base64.b64decode(s).decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        return ""
+
 
 # --- flat module surface (ADR-010 §8) ----------------------------------------
 # One private _Client instance carries the connection + per-space xKey
@@ -1834,6 +1899,16 @@ def _process_finish(process_id, body):
 @span(kind="getter")  # noqa: F821 - guest global
 def get_markdown(spaceConfig, object_id):
     return _c().get_markdown(_space(spaceConfig), object_id)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def list_files(spaceConfig, object_id=None):
+    return _c().list_files(_space(spaceConfig), object_id)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def file_content(spaceConfig, file):
+    return _c().file_content(_space(spaceConfig), file)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
@@ -2000,7 +2075,7 @@ for _f in (create_object, update_object, delete_object, query_objects,
            list_programs, query, modify, upsert_record, upsert_records,
            delete_records, list_datasets, create_dataset, remove_dataset,
            aggregate, list_processes, cancel_process,
-           get_markdown, put_markdown, edit_markdown,
+           get_markdown, put_markdown, edit_markdown, list_files, file_content,
            append_markdown, list_spaces, get_space, general_chat,
            create_space, get_ui_context, open_in_ui, list_types,
            list_properties,
