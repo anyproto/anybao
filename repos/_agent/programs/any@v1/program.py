@@ -1527,6 +1527,35 @@ class _Client:
             self._enrich_hits(space, result.get("hits") or [])
         return result
 
+    # established scopes every space has (docs/13-index.md); dataset
+    # declarations mint the rest (`search.scope`) — the set is open
+    _FIXED_SCOPES = ("basic", "chat", "props")
+
+    def list_search_scopes(self, space):
+        """The search scopes this space's index can answer → sorted
+        list, e.g. ["agent", "basic", "chat", "email", "history",
+        "props"]. `basic` (object names + editor text), `chat`
+        (messages) and `props` (property values, FTS-only) always;
+        every runtime dataset declared with a `search.scope` adds its
+        own (`email` for synced mail, `agent`/`history` for bao's
+        memory and turns). `search(space, q)` with no `scopes` covers
+        ALL of them; pass a subset to narrow. Costs one datasets
+        listing + one call per declaring type."""
+        scopes = set(self._FIXED_SCOPES)
+        rows = self._call("get", f"/v1/spaces/{space}/datasets").get("datasets", [])
+        for type_id in sorted({r.get("typeId") for r in rows
+                               if r.get("typeId") and "." in str(r.get("typeId"))
+                               or (r.get("typeId") or "").startswith("bafy")}):
+            try:
+                defs = self._call("get", f"/v1/spaces/{space}/types/{type_id}/datasets")
+            except AnyError:
+                continue
+            for d in defs.get("datasets", defs if isinstance(defs, list) else []):
+                sc = (d.get("search") or {}).get("scope")
+                if sc:
+                    scopes.add(sc)
+        return sorted(scopes)
+
     def _enrich_hits(self, space, hits):
         """Add `title` + `type` to each search hit in place, best-effort:
         one $in query resolves object names/types, list_types maps the
@@ -1906,6 +1935,11 @@ def get_markdown(spaceConfig, object_id):
 
 
 @span(kind="getter")  # noqa: F821 - guest global
+def list_search_scopes(spaceConfig):
+    return _c().list_search_scopes(_space(spaceConfig))
+
+
+@span(kind="getter")  # noqa: F821 - guest global
 def list_files(spaceConfig, object_id=None):
     return _c().list_files(_space(spaceConfig), object_id)
 
@@ -2080,6 +2114,7 @@ for _f in (create_object, update_object, delete_object, query_objects,
            delete_records, list_datasets, create_dataset, remove_dataset,
            aggregate, list_processes, cancel_process,
            get_markdown, put_markdown, edit_markdown, list_files, file_content,
+           list_search_scopes,
            append_markdown, list_spaces, get_space, general_chat,
            create_space, get_ui_context, open_in_ui, list_types,
            list_properties,

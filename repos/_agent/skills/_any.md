@@ -64,6 +64,17 @@ fails in the standard overlay setup, ADR-004 §2):
   for the full object. Hits are matched RECORDS, so several can share
   one `objectId` — dedup on it. (`search(..., enrich=False)` skips the
   title/type resolution when you only need ids.)
+- **Search scopes**: the index is partitioned by scope — `basic`
+  (object names + editor text), `chat` (messages), `props` (property
+  values), and one per declared dataset: `email` (synced mail),
+  `agent` (memory items), `history` (turns/rollups). **No `scopes`
+  argument = ALL scopes** — that is the right default for "find
+  anything about X"; `scopes=["basic"]` finds only pages/notes and
+  returns nothing for mail or chat. `list_search_scopes(space)` gives
+  the live set for a space (new datasets mint new scopes). Hits carry
+  `scope`, `dataset` and `recordId`; a record hit (mail, message,
+  memory) resolves with `query(space, objectId, dataset,
+  filter={"id": {"$in": [...]}})`, not `query_objects`.
 
 Spaces:
 

@@ -389,7 +389,7 @@ def test_full_slice_creates_skips_and_checkpoints():
     # summary stays unmapped; both annotation fields are author-mutable
     # and NEVER in a sync upsert (edits must survive re-sync)
     draft = fake.dataset_drafts[0]
-    assert draft["search"]["text"] == ["body", "notes"]
+    assert draft["search"]["text"] == ["from", "body", "notes"]
     annot = {f["key"]: f for f in draft["fields"]
              if f["key"] in ("summary", "notes")}
     assert set(annot) == {"summary", "notes"}

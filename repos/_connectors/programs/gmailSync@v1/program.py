@@ -50,9 +50,11 @@ EMAIL_DATASET = {
     "deleteBy": "author", "skipHistory": True,
     # scope "email": recall queries it explicitly (recall@v1 default
     # scopes include it); keeps raw mail out of basic content search.
-    # text is multi-field (SYN-179): user notes index alongside the
-    # body; summary stays unindexed (derived from body, regenerates)
-    "search": {"title": "subject", "text": ["body", "notes"], "scope": "email"},
+    # text is multi-field (SYN-179), joined in mapping order: the
+    # sender leads (head of the doc survives the embedder's input
+    # clamp), then body, then user notes; summary stays unindexed
+    # (derived from body, regenerates). ADR-016 §1 as amended 2026-08-25.
+    "search": {"title": "subject", "text": ["from", "body", "notes"], "scope": "email"},
     "fields": [
         # C1: Gmail's own names; write-once unless declared otherwise
         {"key": "threadId", "kind": "string"},

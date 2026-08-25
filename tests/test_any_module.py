@@ -1337,3 +1337,24 @@ def test_file_not_available_carries_sync_hint():
     with pytest.raises(g["AnyError"]) as e:
         g["_Client"]("http://any").file_content("s", "f")
     assert "not synced" in str(e.value)
+
+
+def test_list_search_scopes_unions_fixed_and_declared():
+    fx = wire(replies={
+        "/v1/spaces/s1/datasets": {"datasets": [
+            {"name": "chat_messages", "typeId": "chat"},
+            {"name": "email_messages", "typeId": "bafyreimailbox00000000000000"},
+            {"name": "agent_turns", "typeId": "bafyreiagentlog0000000000000"}]},
+        "bafyreimailbox00000000000000/datasets": {"datasets": [
+            {"name": "email_messages",
+             "search": {"title": "subject", "text": ["from", "body"], "scope": "email"}}]},
+        "bafyreiagentlog0000000000000/datasets": {"datasets": [
+            {"name": "agent_turns", "search": {"text": "text", "scope": "history"}},
+            {"name": "agent_chunks", "search": {"text": "summary", "scope": "history"}}]}})
+    c = client(fx)
+    assert c.list_search_scopes("s1") == ["basic", "chat", "email", "history", "props"]
+    # builtin datasets (typeId "chat") are not walked — one call per user type
+    assert [p for _, p, _ in fx.calls] == [
+        "/v1/spaces/s1/datasets",
+        "/v1/spaces/s1/types/bafyreiagentlog0000000000000/datasets",
+        "/v1/spaces/s1/types/bafyreimailbox00000000000000/datasets"]

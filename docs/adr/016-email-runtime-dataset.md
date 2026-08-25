@@ -66,7 +66,13 @@ runtime dataset **`email_messages`** declared via
   alongside the body; `summary` is deliberately NOT mapped — it
   derives from the indexed body and regenerates. Requires a server
   carrying SYN-179; on older servers the array form rejects at
-  declaration time.
+  declaration time. **Amended 2026-08-25**: `text` is `[from, body,
+  notes]` — the sender leads, so "mail from X" is a search hit, not
+  only a `participants` filter (live: sender queries ranked None in
+  every mode on a 427-message corpus). `from` sits first because the
+  embedder clamps long records to their head (`docs/13-index.md`).
+  Already-indexed records keep the old text until they re-index —
+  the index is "from the next change".
 - Fields (C1: Gmail's own names, camelCase, verbatim): `threadId`,
   `from`, `to`, `cc`, `subject`, `date`, `internalDate` (number, the
   sort key), `snippet` — write-once; `labelIds` (array,
