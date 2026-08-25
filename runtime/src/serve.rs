@@ -83,13 +83,18 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
 /// and installs nothing on its own (SYN-163: chats are not
 /// server-owned), so anybao ensures the bundle itself: adopt-or-install
 /// is idempotent and every client that runs it lands on the same chat.
-/// 409 `bundle.not_ready` (the winner's tree hasn't landed on this
-/// device yet) is retried briefly. The bundles route is REQUIRED — a
-/// server without it is unsupported (no-backcompat).
+/// The convention asks for a DERIVED root (any #177, SYN-172): the
+/// chat's id is a function of the bundle id, identical on every device
+/// and member, so the chat can never fork — chat content cannot be
+/// merged across objects, so a fork must be impossible rather than
+/// resolvable. A pre-convention created install is adopted as-is.
+/// A residual 409 `bundle.not_ready` (an adopted created winner whose
+/// tree hasn't landed here yet) is retried briefly. The bundles route
+/// is REQUIRED — a server without it is unsupported (no-backcompat).
 fn general_chat(c: &Client, space: &str) -> Result<String> {
     let mut last_err = None;
     for _ in 0..5 {
-        match c.ensure_bundle(space, "general-chat/v1", "General", &["chat"]) {
+        match c.ensure_bundle(space, "general-chat/v1", "General", &["chat"], true) {
             Ok(reply) => {
                 return reply["bundle"]["rootId"]
                     .as_str()
@@ -189,7 +194,10 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     let mut last_err = None;
     let mut registered = false;
     for _ in 0..5 {
-        match c.ensure_bundle(space, "bao/v1", "bao", &["page"]) {
+        // Created root on purpose: the bao space is single-account
+        // (owner escape covers offline installs) and created stays the
+        // default — a derived root could never be uninstalled.
+        match c.ensure_bundle(space, "bao/v1", "bao", &["page"], false) {
             Ok(_) => {
                 registered = true;
                 break;
