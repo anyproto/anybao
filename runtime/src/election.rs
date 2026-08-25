@@ -32,6 +32,10 @@ pub struct Election {
     pub enabled: bool,
     pub active: Arc<AtomicBool>,
     pub self_peer: Option<String>,
+    /// Tombstoned device (§4): unlike plain standby — which still
+    /// fires the triggers pinned to this device (ADR-006 §4) — a
+    /// pruned device runs NOTHING.
+    pub pruned: bool,
 }
 
 impl Election {
@@ -40,6 +44,7 @@ impl Election {
             enabled: false,
             active: Arc::new(AtomicBool::new(true)),
             self_peer: None,
+            pruned: false,
         }
     }
 
@@ -50,6 +55,7 @@ impl Election {
             enabled: false,
             active: Arc::new(AtomicBool::new(false)),
             self_peer: None,
+            pruned: true,
         }
     }
 }
@@ -199,6 +205,7 @@ fn boot_with(client: &Client, version: &str, retry_delay: std::time::Duration) -
             enabled: true,
             active: Arc::new(AtomicBool::new(active)),
             self_peer: Some(peer),
+            pruned: false,
         };
     }
     warn!("election: device registration failed ({last_err}) — election disabled this run");

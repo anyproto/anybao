@@ -70,6 +70,39 @@ chat messages with a status bubble (ADR-009 §8, no polling). The
 joining account must be on the same (prod) network — the join
 handshake goes through the network's coordinator.
 
+## Test spaces (prod network, created 2026-08-24)
+
+The same repo account also owns TEST copies of both spaces, so
+unreleased runtime/repo changes can be exercised from real prod-network
+clients without touching the prod overlays:
+
+- `_agentrepo-test` `bafyreigm425yqiipjfch27bfbtjufwvpaykhm2hyp4hyorrw3jrfg3qyai.36hw3g1lpszh6`
+- `_connectorsrepo-test` `bafyreiereib4edvu2wmpejofrra44h4t3uahl7n3goobeocudbyljsomva.36hw3g1lpszh6`
+- guest keys: `nix develop -c ./bin/any --addr 127.0.0.1:7003 invite
+  guest-key <id>` (idempotent) — tokens live in `anybao.prod.test.toml`
+
+They are consumed by a throwaway **test user account**
+`A9Q1oxYfScTwh2kJy3q2dMPmvEAQ6SHZA14owzRFaFfk9uWb` (data dir
+`~/any/any-prod-test-user`, recovery phrase in its `ACCOUNT.txt` —
+import it into a desktop app to add a second device, e.g. to test
+trigger repinning):
+
+```fish
+# user server on the PROD network (no --config), port 7005
+cd ~/any/any && nix develop -c ./bin/any run --data-dir ~/any/any-prod-test-user --addr 127.0.0.1:7005
+# the test bao (control port 7014, traces in traces-prod-test/)
+cd ~/any/anybao && ./runtime/target/release/anyrt serve --config-file anybao.prod.test.toml
+# browser UI against it
+cd ~/any/any-ui && VITE_API_TARGET=http://127.0.0.1:7005 VITE_ANYRT_TARGET=http://127.0.0.1:7014 pnpm dev
+```
+
+Deploy exactly like prod, through :7003 by raw id:
+
+```fish
+./runtime/target/release/anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent      --target bafyreigm425yqiipjfch27bfbtjufwvpaykhm2hyp4hyorrw3jrfg3qyai.36hw3g1lpszh6
+./runtime/target/release/anyrt deploy --addr http://127.0.0.1:7003 --source repos/_connectors --target bafyreiereib4edvu2wmpejofrra44h4t3uahl7n3goobeocudbyljsomva.36hw3g1lpszh6
+```
+
 ## Day-to-day
 
 - Publish a change: `anyrt deploy --addr http://127.0.0.1:7003 --source

@@ -77,6 +77,25 @@ anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
   --target <agent space id>          # same for repos/_connectors
 ```
 
+## Prod-network TEST environment (`anybao.prod.test.toml`)
+
+For exercising unreleased runtime/repo changes from real prod-network
+clients (desktop app, browser UI) WITHOUT touching the prod overlays:
+a throwaway user account (`~/any/any-prod-test-user`, server
+`127.0.0.1:7005`, control `7014`) runs a test bao against TEST copies
+of the repo spaces — `_agentrepo-test` / `_connectorsrepo-test`, owned
+by the same prod repo account (:7003) and joined via guest keys. The
+staging rigs (`anybao.7131.toml` etc., `--config any-config.yml`) are
+on the staging network and unreachable from prod clients; this one is
+not. Ids, commands and the browser recipe live in the toml's header
+and in `docs/prod-repo-account.md` § Test spaces. Deploy to it
+through :7003 by raw id, exactly like prod:
+
+```
+anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
+  --target bafyreigm425yqiipjfch27bfbtjufwvpaykhm2hyp4hyorrw3jrfg3qyai.36hw3g1lpszh6
+```
+
 ## Skill: analyze a toolcaller run
 
 "Why did bao do that?" — the whole user-message→final-reply exchange

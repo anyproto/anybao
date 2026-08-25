@@ -288,12 +288,31 @@ providers stay silent until their effect needs them.
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
 - Trigger object properties: `name`, `kind` (`cron | event | once`),
-  `spec` (cron expression | `{dataset, objectId?, filter?}` |
-  `{at: <epoch seconds>}`), `program`
-  (ADR-004 spec string), `args`, `owner` (instance UUID), `enabled`,
-  `logRuns`, and the observability rollup `lastRunAt / lastDurationMs /
-  lastStatus / runCount / lastRunRef` (plan §4b semantics: single-owner,
-  at-most-once, boot-disarmed, arm-after-sync).
+  `spec` (cron expression | `{dataset, objectId, filter?}` — event
+  delivery per ADR-018 §2 | `{at: <epoch seconds>}`), `program`
+  (ADR-004 spec string), `args`, `owner` (the DEVICE PIN — see below),
+  `enabled`, `logRuns`, and the observability rollup `lastRunAt /
+  lastDurationMs / lastStatus / runCount / lastRunRef` (plan §4b
+  semantics: single-owner, at-most-once, boot-disarmed,
+  arm-after-sync).
+- **`owner` is a device pin (amended 2026-08-24)**: the peer id of the
+  device (ADR-015 / SYN-165 devices registry) that runs this trigger —
+  stable across restarts, unlike the pre-amendment `anyrt-<pid>`
+  stamps, which any reader now treats as UNOWNED (a pid never survives
+  a restart; the live incident: every serve restart permanently
+  orphaned all adopted triggers). A pinned trigger fires on its device
+  whenever that device's serve is up — election-independent (a standby
+  bao still fires its pins; only a PRUNED device fires nothing). An
+  offline pinned device simply doesn't fire — intended: pins are the
+  substrate for remote agent/VM runners. Repin = write `owner` on the
+  record (UI or agent); the old device evicts within a tick, the new
+  one adopts on its next tick. An empty `owner` is UNASSIGNED — a
+  transient state the election-active device claims and stamps on its
+  next tick (every trigger is pinned once claimed; moving the active
+  bao never moves user triggers — ADR-018 §1). Clearing `owner`
+  reassigns the trigger to whoever is active now. When no peer id exists (devices API
+  unavailable), the runtime stamps the legacy `anyrt-<pid>` form,
+  which stays adoptable across restarts by construction.
 - **`once` kind (amended 2026-08-02, E11)**: fires when `now >= at`
   provided it has never run (`lastRunAt` empty), then auto-disables
   (`enabled: false`) — the record stays as its own audit trail. A
@@ -302,16 +321,33 @@ providers stay silent until their effect needs them.
   missed-occurrence-does-not-exist rule). A failed run consumes the
   shot (at-most-once bias): no retry, the error lives in the run
   record.
-- **The dataset is the source of truth (amended 2026-08-02, E11)**:
-  the owner reconciles its registry from `agent_triggers` records
-  every tick — records it has never seen are parsed and, when
-  `owner` is empty or its own, ADOPTED (owner stamped + persisted);
-  foreign-owned records are left alone. `enabled` edits on adopted
-  records are honored on the next tick. Malformed records are
-  skipped loudly (log), never crash the ticker. This is what lets
-  the agent CREATE triggers (reminders above all) by writing a
-  record — previously the registry only ever held the standing
-  built-ins.
+- **The dataset is the source of truth (amended 2026-08-02 E11;
+  reconcile semantics 2026-08-24)**: every tick, each running device
+  CONVERGES its in-memory registry on the `agent_triggers` records
+  (`triggers::reconcile_registry`):
+  - **adopt** — a record pinned to this device, or (election-active
+    only) an unowned record, which gets this device's peer id stamped
+    + persisted;
+  - **refresh** — a definition-core edit (`kind / spec / program /
+    args / name / limits / maxConsecutiveFailures`) rebuilds the
+    registry entry from the record: crons re-arm strictly forward, and
+    a `once` takes the record's `lastRunAt` as its consumed state — so
+    rewriting the definition (which drops the rollup) re-arms the
+    shot. `enabled` edits alone are honored in place, no re-arm — except a
+    false→true flip, which resets the circuit breaker and re-arms
+    forward (manual re-enable, same semantics as the control plane's
+    `enable`);
+  - **evict** — a record repinned to another device, or deleted from
+    the dataset, leaves the registry within a tick (delete and repin
+    actually work; deleted record ids stay tombstoned server-side, so
+    recreating a trigger means a new id).
+  Foreign-pinned records are otherwise left alone; malformed records
+  are skipped loudly (log) and keep any live entry, never crash the
+  ticker. The standing built-ins are code-owned: their record ids are
+  ignored by the reconcile and their entries never evicted — they
+  follow the ELECTION (ADR-015), not a pin. This is what lets the
+  agent CREATE triggers (reminders above all) by writing a record —
+  previously the registry only ever held the standing built-ins.
 - `trigger_runs` dataset ON the trigger object: `{ts, durationMs,
   status, error?, traceRef}` — the run's trace in ADR-001 format
   (inline small / file attachment large), keep-last-N retention.
@@ -320,7 +356,10 @@ providers stay silent until their effect needs them.
   if the honor system proves insufficient.
 - **API surface is a monitoring tool, not just CRUD** (review
   2026-07-07): `create / delete / patch / enable / disable / list /
-  get / runs(triggerId)`. **`list` carries enough to monitor without
+  get / runs(triggerId)`. The mutating control-plane routes write
+  THROUGH to the dataset record (2026-08-24) — the dataset is the
+  source of truth, so a registry-only edit would be reverted by the
+  next reconcile tick. **`list` carries enough to monitor without
   opening traces**: definition + owner + enabled + the §4 rollup
   (lastRunAt/lastStatus/lastDurationMs/runCount/lastRunRef) **+
   aggregated resource stats** — `lastFuel`, `lastCostUsd`,
@@ -333,6 +372,21 @@ providers stay silent until their effect needs them.
   `limits: {fuelPerRun?, timeoutS?, maxCostPerRun?}` — enforced by the
   executor mechanics (ADR-003 fuel/epoch) and the llm effect (cost).
   A background program structurally cannot run away.
+- **Inert definitions are marked, not silent (2026-08-24)**: an
+  enabled trigger that can never fire gets a `lastStatus` marker
+  stamped onto its record by a per-tick health pass — `invalid_spec`
+  (a cron whose spec yields no next occurrence, a `once` without a
+  numeric `at`, an event without a `(dataset, objectId)` source) or
+  `unsupported_source` (an event source this runtime does not deliver
+  — ADR-018 §2, v1 delivers `chat_messages` only; the earlier
+  `unsupported_kind` marker is retired and cleared on sight).
+  Markers self-clear once the definition is fixed and are overwritten
+  by the first real run status. Only the owning device judges its own
+  enabled entries. The ticker's other silent paths log on TRANSITIONS
+  (never per-tick): overlays-not-ready pause/resume, and reconcile
+  query failure/recovery — "why isn't it firing" must be answerable
+  from the record or the log (the BOB-39 lesson: bao could not
+  diagnose a stalled scheduler from inside).
 - **Circuit breaker**: `maxConsecutiveFailures` (default 3) —
   exceeded ⇒ trigger auto-disables (`enabled: false`,
   `lastStatus: "auto_disabled"`, reason in the last run record);

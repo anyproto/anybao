@@ -14,8 +14,10 @@ use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::triggers::{
-    record_to_trigger, rollup, standing_triggers, trigger_to_record, RunResult, Scheduler, Trigger,
-    WatchAction, Watcher,
+    chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
+    is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
+    standing_triggers, trigger_to_record, EventSource, RunResult, Scheduler, Trigger, WatchAction,
+    Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -523,6 +525,12 @@ struct Shared {
     /// live messages that arrived while overlays were pending. Drained
     /// by the trigger ticker once ensure_ready clears.
     backlog: Mutex<Vec<String>>,
+    /// Live event sources (ADR-018 §2): chat object id → the stop flag
+    /// of the thread watching it. Converged on the registry every tick.
+    event_sources: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+    /// The chat-responder record id (ADR-018 §3) — `chat-watch`, or a
+    /// generation-suffixed reseed when the bare id was tombstoned.
+    chat_watch_id: String,
 }
 
 /// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
@@ -809,12 +817,25 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // below aren't stamped) until the election thread flips the gate.
     let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
 
-    let instance = format!("anyrt-{}", std::process::id());
+    // This device's trigger identity (ADR-006 §4): the registry peer
+    // id — stable across restarts, so a pinned record survives them.
+    // No peer id (devices API unavailable) falls back to the legacy
+    // `anyrt-<pid>` stamp, which every reader treats as UNOWNED — the
+    // degrade path stays restart-safe too.
+    let instance = election
+        .self_peer
+        .clone()
+        .unwrap_or_else(|| format!("anyrt-{}", std::process::id()));
+    let boot_active = election.active.load(Ordering::Relaxed);
     let mut sched = Scheduler::new(&instance, Box::new(now_s));
     sched.arm();
     let mut registry = BTreeMap::new();
-    for t in standing_triggers(&space, &chat, &instance) {
-        if election.active.load(Ordering::Relaxed) {
+    // The standing built-ins follow the ELECTION, not a pin: a standby
+    // boot seeds them ownerless (not runnable) and takeover stamps
+    // them; device-pinned records are the ticker's reconcile job.
+    let standing_owner = if boot_active { instance.as_str() } else { "" };
+    for t in standing_triggers(&space, &chat, standing_owner) {
+        if boot_active {
             client.upsert_record(
                 &space,
                 &anchor,
@@ -825,11 +846,23 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         }
         registry.insert(t.id.clone(), t);
     }
+    // The chat responder (ADR-018 §3): a record like any other — seeded
+    // once, then claimed/repinned/paused through the dataset. A fresh
+    // seed on an active boot is stamped right away so the watch
+    // connects without waiting for the first reconcile tick.
+    let (chat_watch_id, seeded) = seed_chat_watch(&client, &space, &anchor, &chat, standing_owner)?;
+    if let Some(t) = seeded {
+        if boot_active {
+            registry.insert(t.id.clone(), t);
+        }
+    }
     let shared = Arc::new(Shared {
         triggers: Mutex::new(registry),
         scheduler: Mutex::new(sched),
         watcher: Mutex::new(Watcher::new(&cfg.agent_name)),
         backlog: Mutex::new(Vec::new()),
+        event_sources: Mutex::new(BTreeMap::new()),
+        chat_watch_id,
     });
 
     let ctx = Arc::new(RunCtx {
@@ -846,6 +879,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         oauth,
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
+        pruned: election.pruned,
     });
 
     let mut threads = vec![
@@ -868,10 +902,11 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), shutdown.clone());
         threads.push(std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                // standby (ADR-015 §3): stay DISCONNECTED, not muted —
-                // nothing lands in the seen-set, so takeover's snapshot
-                // yields the whole missed backlog
-                if !ctx.active.load(Ordering::Relaxed) {
+                // the watch connects iff this device OWNS the enabled
+                // chat-responder record (ADR-018 §3) — not merely muted:
+                // nothing lands in the seen-set, so a later takeover's
+                // snapshot yields the whole missed backlog (ADR-015 §3)
+                if !answers_chat(&shared) {
                     sliced_sleep(Duration::from_millis(500), &stop);
                     continue;
                 }
@@ -926,13 +961,18 @@ pub struct RunCtx {
     /// every Broker
     pub oauth: Arc<crate::oauth::OauthState>,
     /// single-active gate (ADR-015 §3): false = standby (chat watch
-    /// disconnected, ticker idle). Written ONLY by the election thread
-    /// after boot. `ctx.run()` itself is not gated — embedder/CLI runs
-    /// are explicit.
+    /// disconnected; ownerless-trigger adoption and the standing
+    /// built-ins idle — device-pinned triggers still fire, ADR-006
+    /// §4). Written ONLY by the election thread after boot.
+    /// `ctx.run()` itself is not gated — embedder/CLI runs are
+    /// explicit.
     pub active: Arc<AtomicBool>,
     /// this device's peer id in the devices registry; None = server
     /// predates /v1/devices (election disabled, gate permanently true)
     pub self_peer: Option<String>,
+    /// tombstoned device (ADR-015 §4): unlike standby, a pruned device
+    /// fires NOTHING — not even its pins
+    pub pruned: bool,
 }
 
 impl RunCtx {
@@ -1154,7 +1194,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
         // shutdown and stand-down (ADR-015 §3) are observed per frame —
         // the read itself blocks until the server's next event/heartbeat
         // (ADR-009 open Q3); returning drops the stream
-        if stop.load(Ordering::Relaxed) || !ctx.active.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) || !answers_chat(shared) {
             return Ok(());
         }
         match frame.event.as_str() {
@@ -1178,6 +1218,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
                         let text = Watcher::attributed_text(&record);
+                        note_chat_start(shared, ctx);
                         if ready {
                             info!("backlog conversation: {:?}", preview(&text));
                             start_or_inject(shared, ctx, text);
@@ -1199,6 +1240,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
                         let text = Watcher::attributed_text(&record);
+                        note_chat_start(shared, ctx);
                         // deferred boot (ADR-009 §8): a message while
                         // overlays are pending gets a status bubble —
                         // the one host-authored operational reply —
@@ -1284,131 +1326,304 @@ fn trigger_ticker(
     ctx: Arc<RunCtx>,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || loop {
-        sliced_sleep(Duration::from_secs(5), &stop);
-        if stop.load(Ordering::Relaxed) {
-            return;
-        }
-        // standby (ADR-015 §3): no runs, no adoption, no ownership
-        // stamping — the election thread owns the transitions
-        if !ctx.active.load(Ordering::Relaxed) {
-            continue;
-        }
-        // deferred boot (ADR-009 §8): don't burn trigger runs (and the
-        // circuit breaker) while overlays are still syncing. This is a
-        // PROBE, not the cheap check — readiness must clear without
-        // waiting for a chat message (the backlog drain below and
-        // trigger start both hang off it); a no-op once synced.
-        if ctx.ensure_ready().is_err() {
-            continue;
-        }
-        // answer user messages deferred while overlays were syncing
-        let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
-        for text in deferred {
-            info!("deferred conversation: {:?}", preview(&text));
-            start_or_inject(&shared, &ctx, text);
-        }
-        // the dataset is the source of truth (ADR-006 §4): adopt records
-        // the registry has never seen (ownerless or ours), honor enabled
-        // edits on adopted ones; foreign owners and malformed records are
-        // left alone (the latter loudly)
-        if let Ok(recs) = ctx
-            .client
-            .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
-        {
-            let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
-            let mut reg = shared.triggers.lock().unwrap();
-            let standing: std::collections::BTreeSet<String> =
-                standing_triggers(&ctx.space, "", "")
-                    .into_iter()
-                    .map(|t| t.id)
-                    .collect();
-            for rec in recs {
-                let Some(id) = rec.get("id").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                if standing.contains(id) {
-                    continue; // built-ins are code-owned, not record-owned
-                }
-                match reg.get_mut(id) {
-                    Some(live) => {
-                        if let Some(en) = rec.get("enabled").and_then(|v| v.as_bool()) {
-                            live.enabled = en;
-                        }
+    std::thread::spawn(move || {
+        // "why isn't it firing" must be answerable from the log
+        // (ADR-006 §4 observability): gate and reconcile failures log
+        // on TRANSITIONS — visible without flooding a 5s loop.
+        let mut was_ready = true;
+        let mut reconcile_failing = false;
+        loop {
+            sliced_sleep(Duration::from_secs(5), &stop);
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            // pruned (ADR-015 §4): a tombstoned device fires NOTHING —
+            // standby, by contrast, still fires its device-pinned
+            // records. Boot already warned loudly; stay quiet here.
+            if ctx.pruned {
+                continue;
+            }
+            // deferred boot (ADR-009 §8): don't burn trigger runs (and
+            // the circuit breaker) while overlays are still syncing.
+            // This is a PROBE, not the cheap check — readiness must
+            // clear without waiting for a chat message (the backlog
+            // drain below and trigger start both hang off it); a no-op
+            // once synced.
+            match ctx.ensure_ready() {
+                Err(e) => {
+                    if was_ready {
+                        info!("trigger ticker: paused — {e}");
+                        was_ready = false;
                     }
-                    None => {
-                        let Some(mut t) = record_to_trigger(id, &rec) else {
-                            warn!("agent_triggers {id:?}: malformed record — skipped");
-                            continue;
-                        };
-                        if !t.owner.is_empty() && t.owner != instance {
-                            continue; // foreign-owned
-                        }
-                        t.owner = instance.clone(); // adopt + stamp
+                    continue;
+                }
+                Ok(()) => {
+                    if !was_ready {
+                        info!("trigger ticker: overlays ready — resuming");
+                        was_ready = true;
+                    }
+                }
+            }
+            let active = ctx.active.load(Ordering::Relaxed);
+            if answers_chat(&shared) {
+                // answer user messages deferred while overlays were syncing
+                let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
+                for text in deferred {
+                    info!("deferred conversation: {:?}", preview(&text));
+                    start_or_inject(&shared, &ctx, text);
+                }
+            }
+            // the dataset is the source of truth (ADR-006 §4): converge
+            // the registry on the records — adopt pins + (when active)
+            // unowned records, refresh edited definitions, evict
+            // repinned and deleted ones. Runs on standby too: pins are
+            // election-independent.
+            match ctx
+                .client
+                .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+            {
+                Err(e) => {
+                    if !reconcile_failing {
+                        warn!(
+                            "agent_triggers reconcile query failed ({e}) — \
+                             registry runs unrefreshed until it recovers"
+                        );
+                        reconcile_failing = true;
+                    }
+                }
+                Ok(recs) => {
+                    if reconcile_failing {
+                        info!("agent_triggers reconcile recovered");
+                        reconcile_failing = false;
+                    }
+                    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+                    let standing: std::collections::BTreeSet<String> =
+                        standing_triggers(&ctx.space, "", "")
+                            .into_iter()
+                            .map(|t| t.id)
+                            .collect();
+                    let stamp = {
+                        let mut reg = shared.triggers.lock().unwrap();
+                        reconcile_registry(&mut reg, &recs, &instance, active, &standing)
+                    };
+                    for t in &stamp {
                         let _ = ctx.client.upsert_record(
                             &ctx.space,
                             &ctx.anchor,
                             "agent_triggers",
-                            id,
-                            &trigger_to_record(&t),
+                            &t.id,
+                            &trigger_to_record(t),
                         );
-                        info!("trigger adopted from dataset: {id:?} ({})", t.kind);
-                        reg.insert(id.to_string(), t);
+                        info!("trigger adopted from dataset: {:?} ({})", t.id, t.kind);
+                    }
+                    // health pass: mark enabled-but-inert definitions on
+                    // their records (and clear the marks once fixed)
+                    let marked = {
+                        let mut reg = shared.triggers.lock().unwrap();
+                        let sched = shared.scheduler.lock().unwrap();
+                        health_pass(&sched, &mut reg, &standing)
+                    };
+                    for t in &marked {
+                        let _ = ctx.client.upsert_record(
+                            &ctx.space,
+                            &ctx.anchor,
+                            "agent_triggers",
+                            &t.id,
+                            &trigger_to_record(t),
+                        );
+                    }
+                    reconcile_event_sources(&shared, &ctx, &stop);
+                }
+            }
+            let due: Vec<Trigger> = {
+                let mut reg = shared.triggers.lock().unwrap();
+                let sched = shared.scheduler.lock().unwrap();
+                let mut out = Vec::new();
+                for t in reg.values_mut() {
+                    if t.kind == "cron" && sched.cron_due(t) {
+                        out.push(t.clone());
+                        sched.advance_cron(t);
+                    } else if sched.once_due(t) {
+                        out.push(t.clone());
+                        // consume the shot before the run: at-most-once even
+                        // if the run path dies mid-way (ADR-006 §4)
+                        t.enabled = false;
+                    }
+                }
+                out
+            };
+            for t in due {
+                let rr = run_trigger_program(&ctx, &t.program, &t.args);
+                finish_run(&shared, &ctx, &t.id, &rr);
+            }
+        }
+    })
+}
+
+/// One trigger fire: the program run, folded into a RunResult (a run
+/// path failure is an error result, never a panic).
+fn run_trigger_program(ctx: &RunCtx, program: &str, args: &Value) -> RunResult {
+    let mailbox: SharedMailbox = Default::default();
+    let interrupt = Arc::new(AtomicBool::new(false));
+    ctx.run(program, args, mailbox, interrupt, None)
+        .map(|(_, rr)| rr)
+        .unwrap_or_else(|e| RunResult {
+            status: "error".into(),
+            duration_ms: 0,
+            trace_ref: None,
+            fuel: None,
+            error: Some(e.to_string()),
+        })
+}
+
+/// Run bookkeeping (ADR-006 §4): the breaker + rollup on the registry
+/// entry, one `agent_trigger_runs` record, the trigger record
+/// rewritten. A no-op if the trigger was evicted mid-run.
+fn finish_run(shared: &Shared, ctx: &RunCtx, trigger_id: &str, rr: &RunResult) {
+    let mut reg = shared.triggers.lock().unwrap();
+    let Some(live) = reg.get_mut(trigger_id) else {
+        return;
+    };
+    let sched = shared.scheduler.lock().unwrap();
+    let run_rec = sched.record_run(live, rr);
+    let ts_ms = (now_s() * 1000.0) as i64;
+    let rid = format!("{trigger_id}:{ts_ms:020}");
+    let _ = ctx.client.upsert_record(
+        &ctx.space,
+        &ctx.anchor,
+        "agent_trigger_runs",
+        &rid,
+        &run_rec,
+    );
+    let _ = ctx.client.upsert_record(
+        &ctx.space,
+        &ctx.anchor,
+        "agent_triggers",
+        trigger_id,
+        &trigger_to_record(live),
+    );
+}
+
+// --- event sources (ADR-018 §2) ------------------------------------------------
+
+/// Converge the live source threads on the registry: one watch per
+/// distinct chat object across this device's enabled `chat_messages`
+/// event triggers. New objects get a thread; objects no trigger needs
+/// any more (disabled, repinned away, deleted, breaker-tripped) get
+/// their thread stopped.
+fn reconcile_event_sources(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &Arc<AtomicBool>) {
+    let desired = {
+        let reg = shared.triggers.lock().unwrap();
+        let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+        desired_event_sources(&reg, &instance)
+    };
+    let mut live = shared.event_sources.lock().unwrap();
+    let stale: Vec<String> = live
+        .keys()
+        .filter(|k| !desired.contains_key(*k))
+        .cloned()
+        .collect();
+    for object_id in stale {
+        if let Some(flag) = live.remove(&object_id) {
+            flag.store(true, Ordering::Relaxed);
+            info!("event source stopped: chat {object_id}");
+        }
+    }
+    for (object_id, trigger_ids) in desired {
+        if live.contains_key(&object_id) {
+            continue;
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        live.insert(object_id.clone(), flag.clone());
+        info!("event source started: chat {object_id} → {trigger_ids:?}");
+        let (shared, ctx, stop) = (shared.clone(), ctx.clone(), stop.clone());
+        std::thread::spawn(move || event_source_thread(shared, ctx, object_id, flag, stop));
+    }
+}
+
+/// One chat object's watch (ADR-018 §2, live-only): reconnect loop
+/// around the SSE feed; a snapshot only seeds the seen-set, `changes`
+/// fire the triggers that name this object. Exits when its own flag
+/// (source no longer desired) or the serve-wide stop is raised.
+fn event_source_thread(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    object_id: String,
+    own_stop: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+) {
+    let halted = || own_stop.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed);
+    let mut state = EventSource::default();
+    while !halted() {
+        let feed = ctx.client.subscribe_dataset(
+            &ctx.space,
+            &object_id,
+            CHAT_MESSAGES,
+            &json!({"sort": ["-createdAt"], "limit": 64}),
+        );
+        match feed {
+            Err(e) => warn!("event source {object_id}: subscribe failed ({e}); retrying in 2s"),
+            Ok(frames) => {
+                for frame in frames {
+                    if halted() {
+                        return;
+                    }
+                    match frame.event.as_str() {
+                        "ready" => {}
+                        "closed" => break,
+                        "snapshot" => {
+                            let records = frame.data["records"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default();
+                            state.seed(&records);
+                        }
+                        "changes" => {
+                            for record in state.fresh(records_in(&frame.data), &ctx.cfg.agent_name)
+                            {
+                                fire_event(&shared, &ctx, &object_id, &record);
+                            }
+                        }
+                        other => {
+                            warn!("event source {object_id}: unexpected frame {other:?}");
+                            break;
+                        }
                     }
                 }
             }
         }
-        let due: Vec<Trigger> = {
-            let mut reg = shared.triggers.lock().unwrap();
-            let sched = shared.scheduler.lock().unwrap();
-            let mut out = Vec::new();
-            for t in reg.values_mut() {
-                if t.kind == "cron" && sched.cron_due(t) {
-                    out.push(t.clone());
-                    sched.advance_cron(t);
-                } else if sched.once_due(t) {
-                    out.push(t.clone());
-                    // consume the shot before the run: at-most-once even
-                    // if the run path dies mid-way (ADR-006 §4)
-                    t.enabled = false;
-                }
-            }
-            out
-        };
-        for t in due {
-            let mailbox: SharedMailbox = Default::default();
-            let interrupt = Arc::new(AtomicBool::new(false));
-            let result = ctx.run(&t.program, &t.args, mailbox, interrupt, None);
-            let rr = result.map(|(_, rr)| rr).unwrap_or_else(|e| RunResult {
-                status: "error".into(),
-                duration_ms: 0,
-                trace_ref: None,
-                fuel: None,
-                error: Some(e.to_string()),
-            });
-            let mut reg = shared.triggers.lock().unwrap();
-            if let Some(live) = reg.get_mut(&t.id) {
-                let sched = shared.scheduler.lock().unwrap();
-                let run_rec = sched.record_run(live, &rr);
-                let ts_ms = (now_s() * 1000.0) as i64;
-                let rid = format!("{}:{:020}", t.id, ts_ms);
-                let _ = ctx.client.upsert_record(
-                    &ctx.space,
-                    &ctx.anchor,
-                    "agent_trigger_runs",
-                    &rid,
-                    &run_rec,
-                );
-                let _ = ctx.client.upsert_record(
-                    &ctx.space,
-                    &ctx.anchor,
-                    "agent_triggers",
-                    &t.id,
-                    &trigger_to_record(live),
-                );
-            }
-        }
-    })
+        sliced_sleep(Duration::from_secs(2), &stop);
+    }
+}
+
+/// Fire every enabled trigger of this device that names `object_id`,
+/// sequentially in the source thread, with full run bookkeeping.
+/// Deferred boot (ADR-009 §8) drops the event rather than queueing it —
+/// live-only means live-only.
+fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
+    if let Err(status) = ctx.ensure_ready() {
+        warn!("event on chat {object_id} dropped — not ready: {status}");
+        return;
+    }
+    let targets: Vec<Trigger> = {
+        let reg = shared.triggers.lock().unwrap();
+        let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+        reg.values()
+            .filter(|t| t.owner == instance && t.enabled && !is_chat_watch(&t.id))
+            .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
+            .cloned()
+            .collect()
+    };
+    for t in targets {
+        let args = event_args(&t, &ctx.space, object_id, record);
+        info!(
+            "event trigger {:?} fired by message {:?} on chat {object_id}",
+            t.id,
+            record.get("id").and_then(|v| v.as_str()).unwrap_or("")
+        );
+        let rr = run_trigger_program(ctx, &t.program, &args);
+        finish_run(shared, ctx, &t.id, &rr);
+    }
 }
 
 /// The election reconcile loop (ADR-015 §3/§4): poll the registry,
@@ -1441,6 +1656,36 @@ fn election_thread(
                     // the new active device answers these; in-flight
                     // runs finish on their own (never interrupt a turn)
                     shared.backlog.lock().unwrap().clear();
+                    // the standing built-ins follow the election: drop
+                    // their local ownership so they stop firing here
+                    // (the new winner's takeover stamps the records —
+                    // no write from the loser, no race). Device-pinned
+                    // records stay runnable — that's the pin.
+                    let standing: std::collections::BTreeSet<String> =
+                        standing_triggers(&ctx.space, "", "")
+                            .into_iter()
+                            .map(|t| t.id)
+                            .collect();
+                    let mut reg = shared.triggers.lock().unwrap();
+                    for t in reg.values_mut() {
+                        if standing.contains(&t.id) {
+                            t.owner.clear();
+                        }
+                    }
+                    // the chat responder is released for real — owner
+                    // cleared ON THE RECORD (the one stand-down write,
+                    // ADR-018 §3): a local-only evict would be undone by
+                    // the next reconcile, which still reads our peer id
+                    if let Some(mut t) = reg.remove(&shared.chat_watch_id) {
+                        t.owner.clear();
+                        let _ = ctx.client.upsert_record(
+                            &ctx.space,
+                            &ctx.anchor,
+                            "agent_triggers",
+                            &t.id,
+                            &trigger_to_record(&t),
+                        );
+                    }
                     info!("election: stand-down — another device is the active bao");
                 }
                 Some(_) => {} // verdict matches the current state
@@ -1449,15 +1694,24 @@ fn election_thread(
     })
 }
 
-/// Takeover prep (ADR-015 §3), run BEFORE the gate flips: re-arm every
-/// cron strictly forward (a missed occurrence while standby does not
-/// exist — the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
-/// burst), then stamp + publish the registry's trigger records that the
-/// standby boot skipped.
+/// Takeover prep (ADR-015 §3), run BEFORE the gate flips. Only the
+/// STANDING built-ins move with the election: re-arm their crons
+/// strictly forward (a missed occurrence while standby does not exist
+/// — the ADR-006 §4 cold-sync rule; prevents the wake-and-replay
+/// burst), stamp + publish the records the standby boot skipped.
+/// Device-pinned records never move on an election flip — they were
+/// firing here all along (or belong to another device).
 fn takeover(shared: &Shared, ctx: &RunCtx) {
     let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+    let standing: std::collections::BTreeSet<String> = standing_triggers(&ctx.space, "", "")
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
     let mut reg = shared.triggers.lock().unwrap();
     for t in reg.values_mut() {
+        if !standing.contains(&t.id) {
+            continue;
+        }
         if t.kind == "cron" {
             t.next_due = None; // next tick arms forward, no fire
         }
@@ -1470,6 +1724,114 @@ fn takeover(shared: &Shared, ctx: &RunCtx) {
             &trigger_to_record(t),
         );
     }
+    // the chat responder follows the election too (ADR-018 §3): the
+    // new winner re-stamps the record — an explicit write, and the
+    // newest explicit act wins over an earlier repin. The record is
+    // read back rather than taken from the registry: a standby never
+    // held it (foreign-owned → not adopted).
+    let Ok(recs) = ctx
+        .client
+        .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+    else {
+        return;
+    };
+    for rec in recs {
+        let Some(id) = rec.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if id != shared.chat_watch_id {
+            continue;
+        }
+        if let Some(mut t) = record_to_trigger(id, &rec) {
+            t.owner = instance.clone();
+            let _ = ctx.client.upsert_record(
+                &ctx.space,
+                &ctx.anchor,
+                "agent_triggers",
+                id,
+                &trigger_to_record(&t),
+            );
+            reg.insert(id.to_string(), t);
+        }
+    }
+}
+
+/// Does this device answer chat right now — own the enabled
+/// chat-responder record (ADR-018 §3)?
+fn answers_chat(shared: &Shared) -> bool {
+    let reg = shared.triggers.lock().unwrap();
+    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
+    owned_chat_watch(&reg, &instance).is_some()
+}
+
+/// A conversation start counts as one "run" on the responder's rollup
+/// (no per-message run records — turns are logged as agent_turns).
+fn note_chat_start(shared: &Shared, ctx: &RunCtx) {
+    let mut reg = shared.triggers.lock().unwrap();
+    let Some(t) = reg.get_mut(&shared.chat_watch_id) else {
+        return;
+    };
+    t.run_count += 1;
+    t.last_run_at = Some(now_s());
+    t.last_status = Some("ok".into());
+    t.consecutive_failures = 0;
+    let _ = ctx.client.upsert_record(
+        &ctx.space,
+        &ctx.anchor,
+        "agent_triggers",
+        &t.id,
+        &trigger_to_record(t),
+    );
+}
+
+/// Seed the chat-responder record once (ADR-018 §3): an existing
+/// `chat-watch*` record is left untouched (its owner/enabled are user
+/// state); otherwise write `chat-watch`, falling through generation
+/// suffixes when the bare id was tombstoned by a delete. Returns the
+/// live id and the trigger when this boot created it.
+fn seed_chat_watch(
+    client: &Client,
+    space: &str,
+    anchor: &str,
+    chat: &str,
+    owner: &str,
+) -> Result<(String, Option<Trigger>)> {
+    let recs = client
+        .query(space, anchor, "agent_triggers", &json!({}))
+        .context("reading agent_triggers to seed the chat responder")?;
+    if let Some(id) = recs
+        .iter()
+        .filter_map(|r| r.get("id").and_then(|v| v.as_str()))
+        .find(|id| is_chat_watch(id))
+    {
+        return Ok((id.to_string(), None));
+    }
+    for gen in 1..=5u32 {
+        let id = if gen == 1 {
+            CHAT_WATCH_ID.to_string()
+        } else {
+            format!("{CHAT_WATCH_ID}-g{gen}")
+        };
+        let t = chat_watch_trigger(&id, chat, owner);
+        match client.upsert_record(space, anchor, "agent_triggers", &id, &trigger_to_record(&t)) {
+            Ok(reply) if reply_tombstoned(&reply) => continue,
+            Ok(_) => return Ok((id, Some(t))),
+            Err(e) if e.code.contains("record_deleted") => continue,
+            Err(e) => return Err(e).context("seeding the chat responder record"),
+        }
+    }
+    anyhow::bail!("chat responder: every generation id is tombstoned")
+}
+
+/// A modify reply whose rejections say the id is a deleted record.
+fn reply_tombstoned(reply: &Value) -> bool {
+    reply["rejections"].as_array().is_some_and(|rs| {
+        rs.iter().any(|r| {
+            ["reason", "code"]
+                .iter()
+                .any(|k| r[k].as_str().is_some_and(|v| v.contains("record_deleted")))
+        })
+    })
 }
 
 // --- the localhost control API -------------------------------------------------
@@ -1578,6 +1940,9 @@ fn handle_control(
             )?;
             Ok(Value::Array(rows))
         }
+        // The mutating routes write THROUGH to the dataset (ADR-006 §4:
+        // the dataset is the source of truth — a registry-only edit
+        // would be reverted by the next reconcile tick).
         ("PATCH", ["triggers", id]) => {
             let t = reg.get_mut(*id).context("trigger not found")?;
             let patch: Map<String, Value> = serde_json::from_str(body)?;
@@ -1588,19 +1953,31 @@ fn handle_control(
             if let Some(en) = patch.get("enabled").and_then(|v| v.as_bool()) {
                 t.enabled = en;
             }
-            Ok(trigger_to_record(t))
+            let rec = trigger_to_record(t);
+            let _ = ctx
+                .client
+                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+            Ok(rec)
         }
         ("POST", ["triggers", id, "enable"]) => {
             let t = reg.get_mut(*id).context("trigger not found")?;
             t.enabled = true;
             t.consecutive_failures = 0; // manual re-enable resets the breaker
             t.next_due = None;
-            Ok(trigger_to_record(t))
+            let rec = trigger_to_record(t);
+            let _ = ctx
+                .client
+                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+            Ok(rec)
         }
         ("POST", ["triggers", id, "disable"]) => {
             let t = reg.get_mut(*id).context("trigger not found")?;
             t.enabled = false;
-            Ok(trigger_to_record(t))
+            let rec = trigger_to_record(t);
+            let _ = ctx
+                .client
+                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+            Ok(rec)
         }
         // one-shot program run (ADR-009 §6): {program, args?} runs a
         // deployed program (serve resolver: space programs + overlay
@@ -1760,6 +2137,59 @@ mod tests {
         let calls = log.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
+    }
+
+    #[test]
+    fn chat_watch_seeds_once_and_leaves_an_existing_record_alone() {
+        // fresh space: one read, one write of the bare id
+        let (c, log) = scripted(&[(200, json!({"records": []})), (200, json!({}))]);
+        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "peer-A").unwrap();
+        assert_eq!(id, "chat-watch");
+        let t = seeded.expect("this boot created it");
+        assert_eq!((t.kind.as_str(), t.owner.as_str()), ("event", "peer-A"));
+        assert_eq!(t.spec["objectId"], json!("chat-1"));
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].1, "/v1/spaces/sp/modify");
+        assert_eq!(
+            calls[1].2.as_ref().unwrap()["records"][0]["id"],
+            json!("chat-watch")
+        );
+        drop(calls);
+
+        // an existing (even generation-suffixed) record is user state:
+        // owner/enabled untouched, no write
+        let (c, log) = scripted(&[(
+            200,
+            json!({"records": [{"id": "rollup"}, {"id": "chat-watch-g2", "owner": "peer-B",
+                                "enabled": false}]}),
+        )]);
+        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "peer-A").unwrap();
+        assert_eq!(id, "chat-watch-g2");
+        assert!(seeded.is_none());
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn chat_watch_reseeds_under_a_generation_when_tombstoned() {
+        let (c, log) = scripted(&[
+            (200, json!({"records": []})),
+            (
+                200,
+                json!({"rejections": [{"recordId": "chat-watch",
+                                          "reason": "upsert.record_deleted"}]}),
+            ),
+            (200, json!({})),
+        ]);
+        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "").unwrap();
+        assert_eq!(id, "chat-watch-g2");
+        assert_eq!(seeded.unwrap().owner, ""); // standby boot: unassigned
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[2].2.as_ref().unwrap()["records"][0]["id"],
+            json!("chat-watch-g2")
+        );
     }
 
     #[test]
