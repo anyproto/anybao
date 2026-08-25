@@ -444,6 +444,16 @@ impl Client {
         )
     }
 
+    /// GET /v1/spaces/{s}/bundles — the space's bundles registry, a
+    /// LOCKED read: the reply comes back after the convergence wait,
+    /// so `synced: true` + no row is a definitive miss while
+    /// `synced: false` (cold device, wait expired) makes absence
+    /// provisional — never install on it. Reply `{bundles: [{id, name,
+    /// rootId, roots, losers, derived}], synced}`.
+    pub fn list_bundles(&self, space_id: &str) -> Result<Value, AnyError> {
+        self.call("GET", &format!("/v1/spaces/{space_id}/bundles"), None)
+    }
+
     /// POST /v1/spaces/{s}/bundles/{id}/children — derive a setup
     /// object under the bundle's winner: deterministic per (space,
     /// root, seed), same id on every device, cascade-deleted with the
