@@ -528,8 +528,14 @@ impl Broker {
                     .collect();
                 Ok(json!({"items": items}))
             }
-            "time.now" => Ok(json!({"epoch": SystemTime::now()
-                .duration_since(UNIX_EPOCH).unwrap().as_secs_f64()})),
+            // ADR-019 §8: the host's UTC offset rides the same recorded
+            // effect — the guest renders times in the user's local zone
+            // without a second nondeterministic source.
+            "time.now" => Ok(json!({
+                "epoch": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
+                "offset_s": chrono::Local::now().offset().local_minus_utc(),
+                "tz": std::env::var("TZ").ok(),
+            })),
             // Cooperative budgeting (ADR-003 §2 fuel): long jobs check
             // remaining fuel and checkpoint + exit before exhausting —
             // an out-of-fuel trap kills the whole run unrecoverably.

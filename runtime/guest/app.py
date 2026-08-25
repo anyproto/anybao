@@ -64,6 +64,68 @@ def now():
     return _effect("time.now")["epoch"]
 
 
+def tz_offset():
+    """The host's UTC offset in seconds (recorded with time.now) —
+    the user's local zone for rendering, ADR-019 §8."""
+    return int(_effect("time.now").get("offset_s") or 0)
+
+
+# ---- instants (ADR-019 §1): the only time shape crossing the boundary -----
+
+def ts_s(v):
+    """Unix seconds of a server instant `{"$date": "<RFC 3339>" | <millis>}`.
+    A bare number passes through (kind-pinned numeric fields, rows an
+    older peer materialized as seconds); anything else -> None. Never
+    compare or subtract raw stamps — go through this."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, dict) and "$date" in v:
+        d = v["$date"]
+        if isinstance(d, (int, float)) and not isinstance(d, bool):
+            return d / 1000.0
+        if isinstance(d, str):
+            try:
+                return datetime.datetime.fromisoformat(
+                    d.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+    return None
+
+
+def instant(seconds):
+    """The write / filter literal for an instant: `{"$date": <millis>}`.
+    Takes unix seconds (`now()`, `ts_s(...)`); an instant passes
+    through; an ISO-8601 string is parsed (a bare date = midnight UTC)."""
+    if isinstance(seconds, dict) and "$date" in seconds:
+        return seconds
+    if isinstance(seconds, str):
+        dt = datetime.datetime.fromisoformat(seconds.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.UTC)
+        seconds = dt.timestamp()
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise TypeError(f"instant(): seconds, an ISO string or an instant, "
+                        f"not {type(seconds).__name__}")
+    return {"$date": int(round(seconds * 1000))}
+
+
+def fmt_ts(v, fmt="%a %Y-%m-%d %H:%M", offset_s=None):
+    """Render an instant (or seconds) in the user's local zone as
+    `<fmt> +HH:MM`; `offset_s` defaults to the host's (tz_offset()).
+    An unreadable value renders as "undated"."""
+    s = ts_s(v)
+    if s is None:
+        return "undated"
+    off = tz_offset() if offset_s is None else int(offset_s)
+    tz = datetime.timezone(datetime.timedelta(seconds=off))
+    sign = "+" if off >= 0 else "-"
+    hh, mm = divmod(abs(off) // 60, 60)
+    return (datetime.datetime.fromtimestamp(s, tz).strftime(fmt)
+            + f" {sign}{hh:02d}:{mm:02d}")
+
+
 def rand():
     return _effect("random.random")["value"]
 
@@ -539,6 +601,10 @@ def _fresh_ns() -> dict:
         "EffectError": EffectError,
         "http": http,
         "now": now,
+        "tz_offset": tz_offset,
+        "ts_s": ts_s,           # instants, ADR-019 §1
+        "instant": instant,
+        "fmt_ts": fmt_ts,
         "rand": rand,
         "env": env,
         "uuid4": uuid4,

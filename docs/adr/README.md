@@ -32,6 +32,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 016 | Email corpus on runtime dataset schemas | Accepted |
 | 017 | Agent data on userspace datasets — bundle-child stores | Accepted |
 | 018 | Event triggers — chat sources, chat watcher as a trigger | Accepted |
+| 019 | Instants — native dates in agent data and queries | Accepted  |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
