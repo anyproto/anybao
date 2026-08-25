@@ -2394,7 +2394,11 @@ mod tests {
     }
 
     fn msg(id: &str, text: &str, agent: bool) -> Value {
-        let mut m = json!({"id": id, "text": text, "createdAt": 1});
+        // server stamps are instants (ADR-019); the backlog cut reads
+        // authorship, never the stamp, so an older peer's bare seconds
+        // (see `msg_legacy`) must walk the same
+        let mut m = json!({"id": id, "text": text,
+            "createdAt": {"$date": "2026-08-25T16:00:00.000Z"}});
         if agent {
             m["agent"] = json!({"name": "bao", "done": true});
         }

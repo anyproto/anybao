@@ -149,6 +149,16 @@ impl FakeSpace {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Seed one object row verbatim (property groups + top-level keys such
+    /// as a `createdAt` instant) — for tests that rank server stamps.
+    pub fn seed_object(&self, space: &str, oid: &str, props: Value) {
+        self.state
+            .lock()
+            .expect("fake lock")
+            .objects
+            .insert((space.to_string(), oid.to_string()), props);
+    }
 }
 
 fn group_get<'a>(props: &'a Value, dotted: &str) -> Option<&'a Value> {

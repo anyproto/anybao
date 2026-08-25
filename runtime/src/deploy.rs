@@ -571,10 +571,7 @@ pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyho
         "filter": {"any.name": name, "any.types": type_id}, "limit": 50}),
     )?;
     let winner = rows.iter().min_by_key(|r| {
-        let created = r["createdAt"]
-            .as_f64()
-            .map(|s| (s * 1000.0) as i64)
-            .unwrap_or(i64::MIN);
+        let created = instant_ms(&r["createdAt"]).unwrap_or(i64::MIN);
         (created, r["id"].as_str().unwrap_or_default().to_string())
     });
     if let Some(r) = winner {
@@ -587,6 +584,23 @@ pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyho
         "initialProperties": {"any": {"name": name}}}),
     )?;
     Ok(created["objectId"].as_str().unwrap_or_default().to_string())
+}
+
+/// Unix millis of a server instant `{"$date": "<RFC 3339>" | <millis>}`
+/// (ADR-019 §1); a bare number is read as unix seconds (a row an older
+/// peer materialized). Anything else → None.
+pub fn instant_ms(v: &Value) -> Option<i64> {
+    match v {
+        Value::Object(o) => match o.get("$date") {
+            Some(Value::String(s)) => chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| d.timestamp_millis()),
+            Some(Value::Number(n)) => n.as_f64().map(|ms| ms as i64),
+            _ => None,
+        },
+        Value::Number(n) => n.as_f64().map(|s| (s * 1000.0) as i64),
+        _ => None,
+    }
 }
 
 // --- repo deploy — a source folder published to a space (ADR-009 §2) ---
@@ -813,6 +827,53 @@ mod tests {
     }
 
     // --- static source scan (ADR-010 §4) ---
+
+    #[test]
+    fn instant_ms_reads_both_wire_forms_and_legacy_seconds() {
+        assert_eq!(
+            instant_ms(&json!({"$date": "2026-08-25T16:00:00.000Z"})),
+            Some(1787673600000)
+        );
+        assert_eq!(
+            instant_ms(&json!({"$date": "2026-08-25T18:00:00+02:00"})),
+            Some(1787673600000)
+        );
+        assert_eq!(
+            instant_ms(&json!({"$date": 1787673600000i64})),
+            Some(1787673600000)
+        );
+        assert_eq!(instant_ms(&json!(1787673600.0)), Some(1787673600000));
+        assert_eq!(instant_ms(&json!({"$date": "soon"})), None);
+        assert_eq!(instant_ms(&Value::Null), None);
+    }
+
+    #[test]
+    fn ensure_typed_oldest_instant_wins_over_smaller_id() {
+        // ADR-019 §6: the anchor tiebreak parses instants — with the
+        // pre-instant `as_f64` every row ranked i64::MIN and the pick
+        // silently became "smallest id" (a different anchor than the
+        // one carrying trigger history)
+        let fake = FakeSpace::new();
+        fake.seed_object(
+            "sp",
+            "zzz-older",
+            json!({
+            "any": {"name": "agent-triggers", "types": ["anchor"]},
+            "createdAt": {"$date": "2026-08-01T00:00:00Z"}}),
+        );
+        fake.seed_object(
+            "sp",
+            "aaa-newer",
+            json!({
+            "any": {"name": "agent-triggers", "types": ["anchor"]},
+            "createdAt": {"$date": 1787673600000i64}}),
+        );
+        let c = Client::with_transport(Box::new(fake));
+        assert_eq!(
+            ensure_typed(&c, "sp", "agent-triggers", "anchor").unwrap(),
+            "zzz-older"
+        );
+    }
 
     #[test]
     fn module_docstring_forms() {
