@@ -35,8 +35,10 @@ categories before inventing one (vocabulary drift kills recall).
   limit=...)` — memories, turns/chunks, and content in one call.
   Returns a bare LIST of hit pointers (unlike `c.search`, which wraps
   them in `{hits, mode, vectorStatus}`); hydrate via `r.hydrate(hits)`.
-- **Temporal**: `r.by_period(from, to)` — fans across memory items
-  (`validFrom`), turns (`createdAt`), and chunks (period overlap).
+- **Temporal**: `r.by_period(from, to)` — seconds or ISO strings;
+  one instant range scan each over memory items (`validFrom`), turns
+  (`createdAt`) and chunks (period overlap), merged by time. Per-day/
+  week/month turn counts: `history.activity(c, space, chat_id, unit)`.
 - **Graph**: `r.neighbors(object_id)` — follow a hit's `edges`
   (`[{to, type}]`) and links-format properties on objects; expansion
   AFTER retrieval.
@@ -45,7 +47,8 @@ categories before inventing one (vocabulary drift kills recall).
 is rejected (the index has no browse-all mode). List the brain
 dataset instead: `c.query(space, c.get_brain(space)["objectId"],
 "agent_memory_items", limit=...)` (sort/filter by `category`,
-`createdAt`, `salience` as needed).
+`salience`; time fields `validFrom`/`createdAt`/`modifiedAt` are
+instants — filter with `instant(seconds)`, render with `fmt_ts`).
 
 Top hits for the user's message are auto-injected at turn start as an
 already-run `run_cell` (the recall idiom; `rec` stays bound for reuse)

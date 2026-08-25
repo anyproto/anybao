@@ -29,9 +29,16 @@ re-elides it.
 Plain Python, top-level statements. The last expression is captured.
 `print()` freely — it goes to you, never to the user. Only the curated
 stdlib imports work (`json`, `re`, `math`, `inspect`, …). Anything
-nondeterministic is a GLOBAL backed by a recorded effect: `now()`,
+nondeterministic is a GLOBAL backed by a recorded effect: `now()`
+(unix seconds), `tz_offset()` (the user's UTC offset, seconds),
 `rand()`, `env(name)`, `uuid4()`, plus proxied
-`datetime`/`random`/`time`. Raw web: `http.get(url)`,
+`datetime`/`random`/`time`. Server time is an INSTANT `{"$date": …}`
+(every `createdAt`/`modifiedAt`, every date/datetime property or
+field): `ts_s(v)` → seconds, `instant(seconds | "<ISO>")` → the
+literal for writes and filters, `fmt_ts(v)` → local-time text with
+its offset. Never subtract or sort raw stamps; a bare number in a
+date filter is refused by the client (server-side it would silently
+match everything). Raw web: `http.get(url)`,
 `http.post(url, json=...)` (`.json()` on the response).
 
 **Discover APIs natively, never guess.** `help(mod)` prints a module's

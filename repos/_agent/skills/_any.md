@@ -126,7 +126,8 @@ Chat:
   chat_send into your OWN serving chat: your replies and narration are
   delivered there automatically — a manual send duplicates them. Read
   with `c.query(space,
-  chat_id, "chat_messages", sort=["-createdAt"], limit=n)` — NOT
+  chat_id, "chat_messages", sort=["-createdAt"], limit=n)` (its
+  `createdAt`/`modifiedAt` are instants — `ts_s`/`fmt_ts`) — NOT
   `history.recent_turns` (that's the agentlog, not the conversation).
   NEVER create a chat object or pick one from a query — name-matched
   "general" chats are peer-made impostors that split the conversation
@@ -153,7 +154,9 @@ Synced mail (`email_messages` records on a `mailbox` object, ADR-016):
   key), `summary` (generated digest) and `notes` (the user's OWN
   markdown notes — user-authored, edit only on request; both may be
   empty and both survive re-sync), plus derived
-  `creator`/`createdAt`/`modifiedAt`. **For "what
+  `creator`/`createdAt`/`modifiedAt` (instants; a date-range filter
+  on them is `{"createdAt": {"$gte": instant(t0)}}` — `internalDate`
+  stays a plain ms number). **For "what
   did X and I email about", use the synced corpus first — never the
   live gmail connector** (that is the raw provider API: slower,
   quota-bound, needs OAuth, and blind to the cleaned corpus; reach
