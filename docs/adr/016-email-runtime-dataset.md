@@ -48,7 +48,7 @@ runtime dataset **`email_messages`** declared via
   default id pattern). The id doubles as the upsert idempotency key;
   no `gmail_id` field exists.
 - `deleteBy: author`, with `creator`/`createdAt`/`modifiedAt` stamp
-  fields (creator stamp is required by the author gates; the sync
+  fields (the time stamps are `datetime` instants, ADR-019) (creator stamp is required by the author gates; the sync
   account is the single writer, per the SDK's IdRule:user contract).
 - `skipHistory: true` — the provider is the source of truth; label
   churn must not accrete history rows (#156's stance, kept).

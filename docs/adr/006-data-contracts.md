@@ -516,6 +516,17 @@ issues extra `list_types` / `list_properties` http effects; under replay
 these are recorded and deterministic (no compatibility concern — no
 backcompat, traces regenerate).
 
+### 7. Instants (added 2026-08-25, ADR-019)
+
+Every server time — the derived `createdAt`/`modifiedAt` stamps, chat
+stamps, runtime-dataset `createTime`/`modifyTime`, and every property
+or field of kind `datetime` — crosses the boundary as an instant
+`{"$date": …}`. Guests read it through `ts_s`, write and filter it
+through `instant`; the `any@v1` client refuses a bare literal against
+such a key. The trigger spec's `{at: <epoch seconds>}` (§4) and the
+other host-authored numbers in `dynamic` datasets are not instants
+and stay numbers. Contract and rationale: ADR-019.
+
 ## Consequences
 
 - History scales: token-budgeted window over hierarchical chunks = all

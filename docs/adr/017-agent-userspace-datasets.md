@@ -110,7 +110,8 @@ Mutable (`mutableBy: author` — the evolve allowlist): `body`, `tags`
 (array), `entities` (array), `keywords` (array), `confidence`
 (number), `importance` (number), `salience` (number), `accessCount`
 (number), `edges` (array). Stamps: `creator`, `createdAt`,
-`modifiedAt`. Search: `{title: context, text: body, scope: "agent"}`.
+`modifiedAt`. `validFrom` and the stamps are `datetime` instants
+(ADR-019 §2). Search: `{title: context, text: body, scope: "agent"}`.
 Validation (required fields, 0–10 ranges, defaults, `embeddingRef`
 rejection, evolve allowlist beyond what `mutableBy` enforces) moves
 into the any@v1 wrappers — the triggers precedent: harness-enforced.
@@ -136,9 +137,9 @@ default). Turns: `seq` (number), `fromAgent`, `userName`, `userText`,
 **`searchText`** (string) — client-materialized userText + replies
 concatenation (the ADR-016 computed-fields rule; the mapping takes
 single fields). Chunks: `seq` (number), `level` (number), `fromAgent`,
-`summary`, `periodStart`/`periodEnd` (number), `fromSeq`/`toSeq`
-(number), `unitsCovered` (number). Stamps on both: `creator`,
-`createdAt`. Search: turns `{title: userText, text: searchText,
+`summary`, `periodStart`/`periodEnd` (datetime — the turns' own
+`createdAt` instants, ADR-019 §2), `fromSeq`/`toSeq` (number),
+`unitsCovered` (number). Stamps on both: `creator`, `createdAt`. Search: turns `{title: userText, text: searchText,
 scope: "history"}`; chunks `{title: summary, text: summary, scope:
 "history"}`. Recall scopes (`agent`, `history`) are therefore
 unchanged for every consumer.

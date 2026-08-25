@@ -132,8 +132,9 @@ The recall tool composes the axes the storage now supports (ADR-006):
 - **Semantic**: `recall.search(q, scopes=["agent","history","basic"])`
   — memories, turns/chunks, and content in one call (the restored
   one-surface behavior).
-- **Temporal**: `recall.by_period(from, to)` — fans across memory
-  (validFrom), turns (createdAt), chunks (periodStart/End).
+- **Temporal**: `recall.by_period(from, to)` — one instant range
+  scan each over memory (validFrom), turns (createdAt), chunks
+  (periodStart/End); all three fields are `datetime` (ADR-019 §3).
 - **Graph**: `neighbors(id)` expansion on hits (forward props +
   backlinks, names resolved) — the third dimension applied AFTER
   retrieval, GraphRAG local-search style.
