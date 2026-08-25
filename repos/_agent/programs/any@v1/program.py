@@ -1209,7 +1209,7 @@ class _Client:
                 pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
                 if pxkey in have:
                     continue
-                extra = {k: p[k] for k in ("kind", "meta") if k in p}
+                extra = {k: p[k] for k in ("kind", "meta", "format") if k in p}
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
                 added[pxkey] = self._post_property(space, tid, extra)["propId"]

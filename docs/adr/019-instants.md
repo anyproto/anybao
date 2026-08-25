@@ -226,6 +226,15 @@ hidden conversion.
 
 ## Upstream tickets (to file)
 
+- `any-sync-sdk`: `/upsert` (batch ingest) rejected every `$date`
+  form on a declared `datetime` field — `goToAnyenc` converted the
+  `encoding/json` map without the extjson wrapper rule `/modify`'s
+  fastjson path applies (`kind mismatch: got object, declared
+  datetime`, found by `tests/test_instants_integration.py`). Fixed
+  locally on `fix/upsert-extjson-date` (single-key `$`-map → the
+  fastjson decoder); needs an SDK tag + `any` bump before chunks
+  (rollup) write on a released server.
+
 - `any`: schema-aware filter literal validation in `checkFilter` —
   reject `$eq/$in/$gt/$gte/$lt/$lte` operands that are not instants on
   `datetime`-kind properties / dataset fields (`filter.invalid`, path +

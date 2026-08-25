@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from kernelenv import kernel_globals  # ts_s / instant / fmt_ts (ADR-019)
 
 DEFAULT_SERVER = "http://127.0.0.1:7009"
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
@@ -196,7 +197,7 @@ def guest_use(any_server):
     def use(spec):
         if spec not in cache:
             g = {"effect": eff, "span": lambda n=None, kind=None: (lambda f: f), "use": use,
-                 "now": lambda: int(_time.time())}
+                 **kernel_globals(now=int(_time.time()), offset_s=0)}
             # flat <spec>.py or the tool-authoring folder <spec>/program.py
             # — same order as the runtime's local_source_path
             path = PROGRAMS_DIR / f"{spec}.py"

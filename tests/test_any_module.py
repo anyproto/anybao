@@ -1253,3 +1253,17 @@ def test_objects_query_refuses_bare_literal_on_stamps_and_datetime_props():
                                   "task.due": {"$lt": {"$date": 1787673600000}},
                                   "modifiedAt": {"$gte": {"$date": "2026-08-01T00:00:00Z"}}})
     assert fx.calls[-1][2]["filter"]["bafyTASK.bafyDUE"] == {"$lt": {"$date": 1787673600000}}
+
+
+def test_create_type_posts_property_formats_without_a_kind():
+    # ADR-019 §5: a date-format property declared through create_type
+    # reaches the wire with its format and NO kind (server derives
+    # datetime) — the format used to be dropped on this path
+    fx = wire(replies={**_CAT, "/types": {"types": [], "typeId": "tNew"},
+                       "/types/tNew/properties": {"properties": [], "propId": "p1"}})
+    client(fx).create_type("s1", {"name": "Event", "properties": [
+        {"name": "When", "format": {"type": "datetime"}},
+        {"name": "Title"}]})
+    posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
+    assert posted[0] == {"name": "When", "xKey": "when", "format": {"type": "datetime"}}
+    assert posted[1] == {"name": "Title", "xKey": "title", "kind": "string"}
