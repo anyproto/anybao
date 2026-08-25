@@ -64,29 +64,35 @@ check-then-create race. `ensure_space` resolution order:
 
 **Amended 2026-08-20 (second) — the general chat is the
 `general-chat/v1` bundle.** The server keeps no catalog and installs
-nothing on its own (SYN-163): a space's one chat is the bundle's
-winning root, and every client lands on it by ensuring the bundle
-(`POST /v1/spaces/:s/bundles {id: "general-chat/v1", name: "General",
-rootTypes: ["chat"], "derived": true}` — adopt-or-install, idempotent,
-offline-capable) and using its `rootId`. anybao ensures it at serve
-boot; 409 `bundle.not_ready` (an adopted created winner's tree still
-syncing to this device) retries briefly. The bundles route is required
+nothing on its own (SYN-163): a space's one chat is the bundle's root,
+and every client lands on it through the bundles registry. anybao
+resolves it at serve boot. The bundles route is required
 (no-backcompat).
 
 **Amended 2026-08-21 — the chat root is DERIVED (any #177,
-SYN-172).** `"derived": true` computes the root id from the bundle
-id, so every device and member — both sides of a 1-1 included —
-lands on the same chat offline and the install can never fork (chat
-content cannot be merged across objects, so a fork must be
-impossible rather than resolvable). The trade is permanence: a
-derived root is undeletable. A pre-convention CREATED install
-(`derived` absent in the reply — the server adopts whatever the
-registry holds) is REFUSED at serve boot with an error naming the
-chat object: no migration and no created-root fallback. Recovery is
-deleting that chat object — a deleted winner reads as uninstalled, so
-the next boot installs the derived root (the derived bao space itself
-is undeletable) — or a fresh account. No backward compat: servers
+SYN-172).** The install is `POST /v1/spaces/:s/bundles {id:
+"general-chat/v1", name: "General", rootTypes: ["chat"], "derived":
+true}`: the root id is computed from the bundle id, so every device
+and member — both sides of a 1-1 included — lands on the same chat
+offline and the install can never fork (chat content cannot be merged
+across objects, so a fork must be impossible rather than resolvable).
+The trade is permanence: a derived root is undeletable. Servers
 without any #177 are unsupported.
+
+**Amended 2026-08-25 — read first, ensure on a definitive miss.**
+Serve boot reads the registry (`GET /v1/spaces/:s/bundles`, a locked
+read: `synced: true` + no row is a definitive miss; `synced: false`
+makes absence provisional — re-read, never install, because a derived
+ensure on a device that has not yet seen an existing install demotes
+that install to a loser irreversibly). A `general-chat/v1` row bound
+to a non-derived root is not a general chat under this contract:
+serve stops with `derived general chat not found in space <id>:
+general-chat/v1 is bound to non-derived chat object <object>` — no
+created-root fallback, no migration. Recovery: delete that chat
+object (a deleted winning root reads as uninstalled, so the next boot
+installs the derived root; the derived bao space itself is
+undeletable) or use a fresh account. Same shape as any-ui
+(`docs/general-chat-bundle.md`).
 
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
