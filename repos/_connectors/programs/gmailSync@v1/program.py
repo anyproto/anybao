@@ -686,7 +686,8 @@ def _notify_agent(agent_space, text):
             "text": text,
             "agent": {"name": "trigger:gmail-backfill", "done": True}})
         return (sent or {}).get("id") or chat
-    except Exception:
+    except Exception as e:  # visible in the trace, never fatal
+        print(f"notify failed: {type(e).__name__}: {e}")
         return None
 
 

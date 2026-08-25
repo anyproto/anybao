@@ -325,12 +325,18 @@ def test_get_space_and_general_chat():
     # the bundle id's slash is percent-encoded in the path
     fx = wire(replies={"/spaces/s1": {"id": "s1"},
                        "/bundles/general-chat%2Fv1": {
-                           "id": "general-chat/v1", "rootId": "chat9"}})
+                           "bundle": {"id": "general-chat/v1", "rootId": "chat9",
+                                      "roots": ["old", "chat9"], "derived": True},
+                           "synced": True}})
     c = client(fx)
     assert c.get_space("s1")["id"] == "s1"
+    # the locked-read envelope {bundle, synced} is unwrapped to the row
+    row = c.get_bundle("s1", "general-chat/v1")
+    assert row["rootId"] == "chat9" and row["synced"] is True
     assert c.general_chat("s1") == "chat9"
     assert [(v, p) for v, p, _ in fx.calls] == [
         ("GET", "/v1/spaces/s1"),
+        ("GET", "/v1/spaces/s1/bundles/general-chat%2Fv1"),
         ("GET", "/v1/spaces/s1/bundles/general-chat%2Fv1")]
 
 

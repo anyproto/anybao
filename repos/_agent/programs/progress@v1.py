@@ -114,7 +114,8 @@ def _arm_notify(notify, space, job, summary):
         _any.chat_send(agent_space, chat, {
             "text": summary, "agent": {"name": f"trigger:{job}", "done": True}})
         return chat
-    except Exception:
+    except Exception as e:  # visible in the trace, never fatal
+        print(f"notify failed: {type(e).__name__}: {e}")
         return None
 
 

@@ -1381,9 +1381,13 @@ class _Client:
         return r.get("bundles") or []
 
     def get_bundle(self, space, bundle_id):
-        """One registry row → {id, name, rootId, roots, losers?};
-        404 bundle.not_found when nobody ensured it yet."""
-        return self._call("get", self._bundle_path(space, bundle_id))
+        """One registry row → {id, name, rootId, roots, losers?,
+        derived, synced}; 404 bundle.not_found when nobody ensured it
+        yet. The wire is a locked read `{bundle, synced}` — `synced`
+        False means the registry may still be arriving from peers."""
+        r = self._call("get", self._bundle_path(space, bundle_id))
+        row = r.get("bundle") if isinstance(r.get("bundle"), dict) else r
+        return {**row, "synced": r.get("synced", True)}
 
     def bundle_child(self, space, bundle_id, seed, types=None):
         """Derive a setup object under the bundle's winner → {objectId}.
