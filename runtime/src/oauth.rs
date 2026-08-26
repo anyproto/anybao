@@ -134,6 +134,10 @@ pub struct OauthState {
     pub providers: BTreeMap<String, ProviderDescriptor>,
     /// `connector.oauth.*` sub-ref values — the authoritative live copy.
     secrets: Mutex<BTreeMap<String, String>>,
+    /// The secrets store (ADR-021 §4): a sub-ref absent from the live
+    /// copy is read from the row — `.client_id`/`.client_secret`
+    /// entered through the UI are ordinary rows, no restart.
+    pub source: Option<Arc<dyn crate::broker::SecretSource>>,
     /// Access tokens by handle ref (`connector.oauth.google`).
     tokens: Mutex<BTreeMap<String, CachedToken>>,
     /// Per-ref single-flight refresh gate (ADR-011 §6).
@@ -176,6 +180,7 @@ impl OauthState {
         OauthState {
             providers,
             secrets: Mutex::new(BTreeMap::new()),
+            source: None,
             tokens: Mutex::new(BTreeMap::new()),
             flight: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
@@ -185,6 +190,21 @@ impl OauthState {
             shutdown: Arc::new(AtomicBool::new(false)),
             agent: ureq::agent(),
         }
+    }
+
+    /// The OAuth client for a sub-ref (`.client_id` / `.client_secret`):
+    /// the connector-bundled value (metadata, a public client — ADR-011
+    /// §3) wins; a seeded secret row is the self-hoster override only
+    /// when nothing was bundled.
+    fn client_value(&self, key: &str) -> Option<String> {
+        let bundled = self
+            .meta
+            .lock()
+            .expect("oauth meta lock poisoned")
+            .get(key)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|s| !s.is_empty());
+        bundled.or_else(|| self.secret(key))
     }
 
     /// Grant metadata loaded back from the store at boot (serve).
@@ -213,7 +233,16 @@ impl OauthState {
         }
     }
 
+    /// The store is the truth when there is one (ADR-021 §4): a
+    /// `.client_id`/`.client_secret` rotated through the UI must not be
+    /// shadowed by the boot-loaded live copy. The live map answers only
+    /// without a store (no-store mode) or when the store is unreachable.
     pub fn secret(&self, key: &str) -> Option<String> {
+        if let Some(src) = &self.source {
+            if let Ok(v) = src.read(key) {
+                return v;
+            }
+        }
         self.secrets
             .lock()
             .expect("oauth secrets lock poisoned")
@@ -256,19 +285,18 @@ impl OauthState {
                 format!("{provider} is not connected — run the provider's connect first"),
             )
         })?;
-        let client_id = self.secret(&format!("{handle}.client_id")).ok_or_else(|| {
-            fail(
-                "not_configured",
-                format!(
-                    "no {handle}.client_id — seed it (and {handle}.client_secret) \
-                     via .connectors.env / --secrets-file"
-                ),
-            )
-        })?;
+        let client_id = self
+            .client_value(&format!("{handle}.client_id"))
+            .ok_or_else(|| {
+                fail(
+                    "not_configured",
+                    format!("no OAuth client for {provider} — the connector must pass client_id to connect()"),
+                )
+            })?;
         // A Desktop-client secret is a public-client secret (ADR-011 §3):
         // sent when present, proves nothing, never required.
         let client_secret = self
-            .secret(&format!("{handle}.client_secret"))
+            .client_value(&format!("{handle}.client_secret"))
             .unwrap_or_default();
         if desc.client_auth != "post_body" {
             return Err(fail(
@@ -300,7 +328,11 @@ impl OauthState {
                 if err_code == "invalid_grant" {
                     // lifecycle, not a bug (ADR-011 §6): revoked, expired,
                     // 7-day Testing cap, ~6mo idle — drop it, ask to re-consent
-                    self.drop_grant(provider);
+                    if let Err(e) = self.drop_grant(provider) {
+                        // the dead token stays in the row; the next
+                        // refresh fails the same way — loud, not wrong
+                        tracing::warn!("oauth: could not delete dead {provider} token ({e})");
+                    }
                     return Err(fail(
                         "oauth_reconsent_required",
                         format!(
@@ -369,6 +401,10 @@ impl OauthState {
         provider: &str,
         scopes: Option<Vec<String>>,
         timeout_s: Option<f64>,
+        // the connector-bundled OAuth client (public client, ADR-011 §3):
+        // remembered as non-secret metadata so refresh-at-injection works
+        // after a restart without a guest call
+        client: Option<(String, String)>,
     ) -> Result<Value, EffectFailure> {
         let desc = self
             .providers
@@ -376,16 +412,38 @@ impl OauthState {
             .cloned()
             .ok_or_else(|| fail("not_configured", format!("no oauth provider {provider:?}")))?;
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
-        let client_id = self.secret(&format!("{handle}.client_id")).ok_or_else(|| {
-            fail(
-                "not_configured",
-                format!(
-                    "no {handle}.client_id — create a Desktop-app OAuth client \
-                     and seed {handle}.client_id / {handle}.client_secret via \
-                     .connectors.env / --secrets-file"
-                ),
-            )
-        })?;
+        if let Some((id, secret)) = client.filter(|(id, _)| !id.is_empty()) {
+            for (sub, v) in [("client_id", id), ("client_secret", secret)] {
+                let key = format!("{handle}.{sub}");
+                let changed = self
+                    .meta
+                    .lock()
+                    .expect("oauth meta lock poisoned")
+                    .insert(key.clone(), json!(v))
+                    .as_ref()
+                    .and_then(|old| old.as_str().map(|s| s != v))
+                    .unwrap_or(true);
+                if changed {
+                    if let Some(p) = &self.persist {
+                        if let Err(e) = p.persist_meta(&key, &json!(v)) {
+                            tracing::warn!("oauth: could not persist {key} ({e})");
+                        }
+                    }
+                }
+            }
+        }
+        let client_id = self
+            .client_value(&format!("{handle}.client_id"))
+            .ok_or_else(|| {
+                fail(
+                    "not_configured",
+                    format!(
+                        "no OAuth client for {provider} — the connector must pass \
+                         client_id (and client_secret) to connect(); a self-hosted \
+                         override can be entered in Credentials as {handle}.client_id"
+                    ),
+                )
+            })?;
 
         let flow = {
             let mut flows = self.flows.lock().expect("oauth flows lock poisoned");
@@ -503,7 +561,20 @@ impl OauthState {
                     .is_ok();
             }
         }
-        self.drop_grant(provider);
+        if let Err(e) = self.drop_grant(provider) {
+            return Err(fail(
+                "disconnect_failed",
+                format!(
+                    "{provider}: provider revoke {} but the stored refresh token \
+                     could not be deleted ({e}) — retry disconnect",
+                    if revoked {
+                        "succeeded"
+                    } else {
+                        "was not confirmed"
+                    }
+                ),
+            ));
+        }
         {
             let mut meta = self.meta.lock().expect("oauth meta lock poisoned");
             for sub in ["granted_scopes", "account"] {
@@ -720,10 +791,10 @@ impl OauthState {
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
         let refresh_ref = format!("{handle}.refresh");
         let client_id = self
-            .secret(&format!("{handle}.client_id"))
+            .client_value(&format!("{handle}.client_id"))
             .unwrap_or_default();
         let client_secret = self
-            .secret(&format!("{handle}.client_secret"))
+            .client_value(&format!("{handle}.client_secret"))
             .unwrap_or_default();
         let resp = self
             .agent
@@ -829,7 +900,10 @@ impl OauthState {
 
     /// Forget a dead grant: cache + live copy + stored value (empty
     /// value = the store's delete path).
-    fn drop_grant(&self, provider: &str) {
+    /// Forget the grant. Err = the stored token could NOT be deleted:
+    /// with the store as the truth (`secret()`), the caller must not
+    /// report the grant gone while the row still holds it.
+    fn drop_grant(&self, provider: &str) -> Result<(), String> {
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
         let refresh_ref = format!("{handle}.refresh");
         self.tokens
@@ -841,10 +915,10 @@ impl OauthState {
             .expect("oauth secrets lock poisoned")
             .remove(&refresh_ref);
         if let Some(p) = &self.persist {
-            if let Err(e) = p.persist_secret(&refresh_ref, "") {
-                tracing::warn!("oauth: could not delete stored {refresh_ref} ({e})");
-            }
+            p.persist_secret(&refresh_ref, "")
+                .map_err(|e| e.to_string())?;
         }
+        Ok(())
     }
 }
 
@@ -1217,7 +1291,7 @@ mod tests {
         let (state, url_slot, calls) = connect_state(&token_url, "");
         let slot = url_slot.clone();
         let clicker = std::thread::spawn(move || complete_consent(&slot, "authcode1", false, None));
-        let out = state.connect("testprov", None, Some(5.0)).unwrap();
+        let out = state.connect("testprov", None, Some(5.0), None).unwrap();
         let q = clicker.join().unwrap();
 
         assert_eq!(out["ok"], json!(true));
@@ -1262,7 +1336,9 @@ mod tests {
         let (state, url_slot, _) = connect_state(&token_url, "");
         let slot = url_slot.clone();
         let clicker = std::thread::spawn(move || complete_consent(&slot, "authcode1", true, None));
-        let err = state.connect("testprov", None, Some(5.0)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
         clicker.join().unwrap();
         assert_eq!(err.type_, "state_mismatch");
         assert!(bodies.lock().unwrap().is_empty()); // no exchange happened
@@ -1276,7 +1352,9 @@ mod tests {
         let slot = url_slot.clone();
         let clicker =
             std::thread::spawn(move || complete_consent(&slot, "", false, Some("access_denied")));
-        let err = state.connect("testprov", None, Some(5.0)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
         clicker.join().unwrap();
         assert_eq!(err.type_, "consent_denied");
 
@@ -1285,7 +1363,9 @@ mod tests {
         let (state, url_slot, _) = connect_state(&token_url, "");
         let slot = url_slot.clone();
         let clicker = std::thread::spawn(move || complete_consent(&slot, "authcode2", false, None));
-        let err = state.connect("testprov", None, Some(5.0)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
         clicker.join().unwrap();
         assert_eq!(err.type_, "no_refresh_token");
     }
@@ -1295,7 +1375,9 @@ mod tests {
         let (token_url, _) = capturing_endpoint(full_token_response());
         let (state, url_slot, _) = connect_state(&token_url, "");
         // nobody clicks inside the connect timeout
-        let err = state.connect("testprov", None, Some(0.2)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(0.2), None)
+            .unwrap_err();
         assert_eq!(err.type_, "consent_timeout");
         let st = state.status("testprov").unwrap();
         assert_eq!(st["connected"], json!(false));
@@ -1320,14 +1402,78 @@ mod tests {
         let (token_url, _) = capturing_endpoint(full_token_response());
         let (state, url_slot, calls) = connect_state(&token_url, "");
         let s2 = state.clone();
-        let waiter = std::thread::spawn(move || s2.connect("testprov", None, Some(5.0)));
+        let waiter = std::thread::spawn(move || s2.connect("testprov", None, Some(5.0), None));
         // second connect while pending: joins — one receiver, one URL
-        let err = state.connect("testprov", None, Some(0.2)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(0.2), None)
+            .unwrap_err();
         assert_eq!(err.type_, "consent_timeout");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         complete_consent(&url_slot, "authcode4", false, None);
         let out = waiter.join().unwrap().unwrap();
         assert_eq!(out["ok"], json!(true));
+    }
+
+    /// ADR-021 §4: the store answers first — a `.client_id` rotated
+    /// through the UI is not shadowed by the boot-loaded live copy.
+    struct RowSource(BTreeMap<String, String>);
+    impl crate::broker::SecretSource for RowSource {
+        fn read(&self, key: &str) -> Result<Option<String>, String> {
+            Ok(self.0.get(key).cloned())
+        }
+        fn mark_missing(&self, _key: &str, _about: &Value, _run_id: &str) {}
+        fn mark_rejected(&self, _key: &str, _about: &Value, _run_id: &str, _status: u16) {}
+    }
+
+    #[test]
+    fn store_shadows_the_live_copy_for_sub_refs() {
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let mut state = seeded_state(&token_url, None);
+        assert_eq!(
+            state
+                .secret("connector.oauth.testprov.client_id")
+                .as_deref(),
+            Some("cid")
+        );
+        state.source = Some(Arc::new(RowSource(BTreeMap::from([(
+            "connector.oauth.testprov.client_id".to_string(),
+            "cid-rotated".to_string(),
+        )]))));
+        assert_eq!(
+            state
+                .secret("connector.oauth.testprov.client_id")
+                .as_deref(),
+            Some("cid-rotated")
+        );
+        // a ref the store lacks is a miss, not a stale live hit
+        assert!(state.secret("connector.oauth.testprov.refresh").is_none());
+    }
+
+    struct FailingPersist;
+    impl SecretPersist for FailingPersist {
+        fn persist_secret(&self, _key: &str, _value: &str) -> anyhow::Result<()> {
+            anyhow::bail!("store write failed")
+        }
+        fn persist_meta(&self, _key: &str, _value: &Value) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn disconnect_fails_loudly_when_the_stored_token_survives() {
+        let (revoke_url, _) = capturing_endpoint(json!({}));
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let mut providers = test_provider(&token_url);
+        providers.get_mut("testprov").unwrap().revoke_url = revoke_url;
+        let state = OauthState::new(providers, Some(Box::new(FailingPersist)));
+        let mut seeds = BTreeMap::from([(
+            "connector.oauth.testprov.refresh".to_string(),
+            "refresh-secret".to_string(),
+        )]);
+        state.seed(&mut seeds);
+        let err = state.disconnect("testprov").unwrap_err();
+        assert_eq!(err.type_, "disconnect_failed");
+        assert!(err.message.contains("revoke succeeded"));
     }
 
     #[test]

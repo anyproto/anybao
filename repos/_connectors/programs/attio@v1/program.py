@@ -17,7 +17,6 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 import json
 
 _BASE = "https://api.attio.com/v2"
-_CRED = {"ref": "connector.key.attio", "header": "Authorization", "prefix": "Bearer "}
 _MAX_RETRIES = 3
 _TIMEOUT_S = 60
 
@@ -26,13 +25,19 @@ _REQUIRED_SCOPES = ("record_permission:read, object_configuration:read, "
 _SCOPE_HINT = ("Attio tokens default to NO scopes — create/edit the integration "
                "under Workspace settings -> Developers and grant these read "
                "scopes: " + _REQUIRED_SCOPES + ".")
+_CRED = {"ref": "connector.key.attio", "header": "Authorization", "prefix": "Bearer ",
+         "about": {"label": "Attio access token", "hosts": ["api.attio.com"],
+                   "help": "https://developers.attio.com", "note": _SCOPE_HINT}}
+
+# ADR-021: the host posts a credential prompt into the chat when the
+# ref is missing; the human enters the key there (or in Credentials).
+ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, or in "
+              "Credentials in the app (CLI: a .connectors.env beside anybao.toml)")
 
 _NOT_CONNECTED = (
     "Attio not connected — create an access token at Workspace settings -> "
-    "Developers (developers.attio.com), grant the read scopes, then import "
-    "an .env file containing connector.key.attio=<token> (any-ui: Help > "
-    "Import connector keys; CLI: a .connectors.env beside anybao.toml). "
-    + _SCOPE_HINT
+    "Developers (developers.attio.com), grant the read scopes, then "
+    + ENTER_HINT + " as connector.key.attio. " + _SCOPE_HINT
 )
 
 

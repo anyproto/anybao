@@ -52,12 +52,14 @@ def test_connect_passes_scopes_and_timeout():
     ga, fake = load({"oauth.connect": granted})
     out = ga.connect(scopes=["s1", "s2"], timeout=30)
     assert out == granted
+    client = {"client_id": ga._CLIENT_ID, "client_secret": ga._CLIENT_SECRET}
+    assert client["client_id"] and client["client_secret"]  # bundled, ADR-011 §3
     assert fake.calls == [("oauth.connect", {
-        "provider": "google", "scopes": ["s1", "s2"], "timeout": 30.0})]
+        "provider": "google", "scopes": ["s1", "s2"], "timeout": 30.0, **client})]
 
     out = ga.connect()
     assert out == granted
-    assert fake.calls[1] == ("oauth.connect", {"provider": "google"})
+    assert fake.calls[1] == ("oauth.connect", {"provider": "google", **client})
 
 
 def test_status_and_disconnect_pass_through():
@@ -73,8 +75,8 @@ def test_status_and_disconnect_pass_through():
 
 def test_typed_failures_map_to_actionable_messages():
     cases = [
-        ("not_configured", "no connector.oauth.google.client_id — seed it",
-         ("Cloud Console", "Import connector keys")),
+        ("not_configured", "no OAuth client for google",
+         ("ships its own OAuth client", "Credentials")),
         ("consent_timeout", "consent for google is still pending",
          ("status()",)),
         ("not_connected", "google is not connected",

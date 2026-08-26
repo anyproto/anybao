@@ -225,7 +225,11 @@ def test_chat_anthropic_url_credential_and_parse():
     assert post["url"] == "https://api.example/v1/messages"
     assert post["headers"]["anthropic-version"] == "2023-06-01"
     # the credential names the ref + header — never a key value
-    assert post["credential"] == {"ref": "llm.keys.anthropic", "header": "x-api-key"}
+    cred = post["credential"]
+    assert (cred["ref"], cred["header"]) == ("llm.keys.anthropic", "x-api-key")
+    # ADR-021 §1: the descriptor the host shows when the key is missing
+    assert cred["about"]["label"] == "Anthropic API key"
+    assert cred["about"]["hosts"] == ["api.example"]
     assert post["json"]["model"] == "claude-x"
     assert post["json"]["system"][0]["text"] == "SYS"
     assert reply["stop"] == "tool" and reply["parts"][1]["args"] == {"code": "1+1"}
@@ -240,8 +244,10 @@ def test_chat_openai_compat_url_and_bearer_credential():
     assert host.config_keys == ["llm.tier.classify"]
     post = host.posts[0]
     assert post["url"] == "http://localhost:8000/v1/chat/completions"
-    assert post["credential"] == {"ref": "llm.keys.local",
-                                  "header": "Authorization", "prefix": "Bearer "}
+    cred = post["credential"]
+    assert (cred["ref"], cred["header"], cred["prefix"]) == (
+        "llm.keys.local", "Authorization", "Bearer ")
+    assert cred["about"]["hosts"] == ["localhost:8000"]
     assert reply["stop"] == "tool"
     assert reply["usage"] == {"in": 90, "out": 20, "cacheRead": 0,
                               "cacheWrite": 0}

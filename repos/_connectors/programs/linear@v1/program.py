@@ -21,16 +21,21 @@ import json
 
 _ENDPOINT = "https://api.linear.app/graphql"
 _KEY_URL = "https://linear.app/settings/api"
-_CRED = {"ref": "connector.key.linear", "header": "Authorization"}
+_CRED = {"ref": "connector.key.linear", "header": "Authorization",
+         "about": {"label": "Linear personal API key",
+                   "hosts": ["api.linear.app"], "help": _KEY_URL}}
 _DEFAULT_FIRST = 25
 _MAX_FIRST = 100
 _TIMEOUT_S = 60
 
+# ADR-021: the host posts a credential prompt into the chat when the
+# ref is missing; the human enters the key there (or in Credentials).
+ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, or in "
+              "Credentials in the app (CLI: a .connectors.env beside anybao.toml)")
+
 _NOT_CONNECTED = (
     "Linear not connected — create a personal API key at " + _KEY_URL
-    + ", then import an .env file containing connector.key.linear=<key> "
-    + "(any-ui: Help > Import connector keys; CLI: a .connectors.env "
-    + "beside anybao.toml)."
+    + ", then " + ENTER_HINT + " as connector.key.linear."
 )
 
 

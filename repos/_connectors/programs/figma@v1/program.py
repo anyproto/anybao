@@ -22,18 +22,25 @@ import re
 
 _BASE = "https://api.figma.com/v1"
 _TOKEN_URL = "https://www.figma.com/settings (Security -> Personal access tokens)"
-_CRED = {"ref": "connector.key.figma", "header": "X-Figma-Token"}
 _DEFAULT_DEPTH = 8
 _MAX_RETRIES = 3
 _TIMEOUT_S = 60
 
 _SCOPES = "current_user:read, file_metadata:read, file_content:read, file_comments:read"
+_CRED = {"ref": "connector.key.figma", "header": "X-Figma-Token",
+         "about": {"label": "Figma personal access token",
+                   "hosts": ["api.figma.com"], "help": _TOKEN_URL,
+                   "note": "Tick the read scopes: " + _SCOPES}}
+
+# ADR-021: the host posts a credential prompt into the chat when the
+# ref is missing; the human enters the key there (or in Credentials).
+ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, or in "
+              "Credentials in the app (CLI: a .connectors.env beside anybao.toml)")
 
 _NOT_CONNECTED = (
     "Figma not connected — create a Personal Access Token at " + _TOKEN_URL
-    + ", ticking read scopes (" + _SCOPES + "), then import an .env file "
-    + "containing connector.key.figma=<token> (any-ui: Help > Import "
-    + "connector keys; CLI: a .connectors.env beside anybao.toml)."
+    + ", ticking read scopes (" + _SCOPES + "), then " + ENTER_HINT
+    + " as connector.key.figma."
 )
 
 

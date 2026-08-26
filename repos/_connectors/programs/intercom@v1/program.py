@@ -21,17 +21,23 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 import json
 
 _BASE = "https://api.intercom.io"
-_CRED = {"ref": "connector.key.intercom", "header": "Authorization", "prefix": "Bearer "}
+_TOKEN_PATH = ("Developer Hub: Settings -> Developers -> your app -> Configure "
+               "-> Authentication")
+_CRED = {"ref": "connector.key.intercom", "header": "Authorization", "prefix": "Bearer ",
+         "about": {"label": "Intercom access token", "hosts": ["api.intercom.io"],
+                   "help": "https://developers.intercom.com", "note": _TOKEN_PATH}}
 _HEADERS = {"Accept": "application/json", "Intercom-Version": "2.15"}
 _MAX_RETRIES = 3
 _TIMEOUT_S = 60
 
+# ADR-021: the host posts a credential prompt into the chat when the
+# ref is missing; the human enters the key there (or in Credentials).
+ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, or in "
+              "Credentials in the app (CLI: a .connectors.env beside anybao.toml)")
+
 _NOT_CONNECTED = (
-    "Intercom not connected — create an Access Token in the Developer Hub "
-    "(Settings -> Developers -> your app -> Configure -> Authentication), "
-    "then import an .env file containing connector.key.intercom=<token> "
-    "(any-ui: Help > Import connector keys; CLI: a .connectors.env beside "
-    "anybao.toml)."
+    "Intercom not connected — create an Access Token in the " + _TOKEN_PATH
+    + ", then " + ENTER_HINT + " as connector.key.intercom."
 )
 
 

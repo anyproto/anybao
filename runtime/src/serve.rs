@@ -263,11 +263,28 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         &json!({
         "name": SECRETS_DATASET, "displayName": "Agent Secrets",
         "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+        // A system dataset: declared, not dynamic. The synced metadata
+        // (ADR-021 §1/§2) carries no secret material — the value is the
+        // one device-local field.
         "fields": [
             {"key": "key", "kind": "string", "mutableBy": "any"},
             {"key": "secret", "kind": "boolean", "mutableBy": "any"},
             {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
              "mutableBy": "any"},
+            {"key": "status", "kind": "string", "mutableBy": "any"},
+            {"key": "updatedAt", "kind": "datetime", "mutableBy": "any"},
+            {"key": "label", "kind": "string", "mutableBy": "any"},
+            {"key": "hosts", "kind": "array", "mutableBy": "any"},
+            {"key": "help", "kind": "string", "mutableBy": "any"},
+            {"key": "note", "kind": "string", "mutableBy": "any"},
+            {"key": "requestedBy", "kind": "string", "mutableBy": "any"},
+            {"key": "requestedIn", "kind": "string", "mutableBy": "any"},
+            {"key": "requestedAt", "kind": "datetime", "mutableBy": "any"},
+            {"key": "rejectedAt", "kind": "datetime", "mutableBy": "any"},
+            {"key": "rejectedWith", "kind": "number", "mutableBy": "any"},
+            // non-secret OAuth metadata rows (`.granted_scopes`, `.account`,
+            // the bundled `.client_id`/`.client_secret`): `{value}`
+            {"key": "meta", "kind": "object", "mutableBy": "any"},
         ]}),
     )?;
     ensure_dataset(
@@ -392,8 +409,11 @@ fn bootstrap_secrets(
     field: &str,
     secrets: &mut BTreeMap<String, String>,
     overrides: &BTreeMap<String, String>,
-) {
+) -> Vec<String> {
     let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
+    // refs whose value could NOT be written to the store: they must
+    // survive in the map for this run (the only place they exist)
+    let mut unpersisted = Vec::new();
 
     // 1. Hard seeds: write-through, open ref set, empty deletes.
     for (secret_ref, value) in overrides {
@@ -411,15 +431,19 @@ fn bootstrap_secrets(
         secrets.insert(secret_ref.clone(), value.clone());
         match stored {
             Some(ref s) if s == value => {
-                info!("config: {secret_ref} loaded from device-local store")
+                info!("config: {secret_ref} loaded from device-local store");
+                stamp_set_if_needed(c, space, obj, dataset, &rows, secret_ref);
             }
             other => match persist_local_secret(c, space, obj, dataset, field, secret_ref, value) {
                 Ok(()) if other.is_some() => info!("config: {secret_ref} rotated (hard seed)"),
                 Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
-                Err(e) => warn!(
-                    "config: could not persist {secret_ref} device-locally ({e}); \
-                     using the seeded value this run"
-                ),
+                Err(e) => {
+                    warn!(
+                        "config: could not persist {secret_ref} device-locally ({e}); \
+                         using the seeded value this run"
+                    );
+                    unpersisted.push(secret_ref.to_string());
+                }
             },
         }
     }
@@ -442,6 +466,7 @@ fn bootstrap_secrets(
         if let Some(key) = stored {
             secrets.insert(secret_ref.into(), key.into());
             info!("config: {secret_ref} loaded from device-local store");
+            stamp_set_if_needed(c, space, obj, dataset, &rows, secret_ref);
         }
     }
 
@@ -458,10 +483,13 @@ fn bootstrap_secrets(
     for (secret_ref, key) in soft {
         match persist_local_secret(c, space, obj, dataset, field, &secret_ref, &key) {
             Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
-            Err(e) => warn!(
-                "config: could not persist {secret_ref} device-locally ({e}); \
-                 using the seeded value this run"
-            ),
+            Err(e) => {
+                warn!(
+                    "config: could not persist {secret_ref} device-locally ({e}); \
+                         using the seeded value this run"
+                );
+                unpersisted.push(secret_ref.to_string());
+            }
         }
     }
     if !secrets.contains_key(ANTHROPIC_SECRET_REF) {
@@ -471,6 +499,32 @@ fn bootstrap_secrets(
              keys; CLI: .connectors.env beside the config file); llm effects \
              will fail until one is set"
         );
+    }
+    unpersisted
+}
+
+/// A stored row that predates ADR-021 (or was written by a seed
+/// without touching metadata) gets its `status: "set"` stamp at boot.
+fn stamp_set_if_needed(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    rows: &[Value],
+    key: &str,
+) {
+    let status = rows
+        .iter()
+        .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
+        .and_then(|r| r.get("status"))
+        .and_then(|v| v.as_str());
+    if status == Some("set") {
+        return;
+    }
+    let patch = json!({"status": "set", "updatedAt": {"$date": now_rfc3339()},
+                       "requestedIn": Value::Null});
+    if let Err(e) = upsert_secret_row(c, space, obj, dataset, key, &patch) {
+        warn!("config: could not stamp {key} set ({e})");
     }
 }
 
@@ -498,24 +552,119 @@ fn persist_local_secret(
     key: &str,
     secret: &str,
 ) -> Result<()> {
-    c.upsert_record(
+    let status = if secret.is_empty() { "missing" } else { "set" };
+    upsert_secret_row(
+        c,
         space,
         obj,
         dataset,
         key,
-        &json!({"key": key, "secret": true}),
+        &json!({"status": status, "updatedAt": {"$date": now_rfc3339()},
+                "requestedIn": Value::Null}),
     )?;
     c.set_local_field(space, obj, dataset, key, field, &json!(secret))?;
     Ok(())
 }
 
+/// Stamp `patch` onto the ref's synced row as per-path ops (`$set`,
+/// null = `$unset`), upserting the record — no read-merge-write, so a
+/// concurrent UI save is never clobbered by a stamp built on a stale
+/// read. `key`/`secret` ride along on every write (the row may be new);
+/// the device-local value is never touched (local scope, separate
+/// write). ADR-021 §2/§4.
+fn upsert_secret_row(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    key: &str,
+    patch: &Value,
+) -> Result<()> {
+    let mut ops = vec![
+        json!({"type": "$set", "path": "key", "value": key}),
+        json!({"type": "$set", "path": "secret", "value": true}),
+    ];
+    if let Some(p) = patch.as_object() {
+        for (k, v) in p {
+            if v.is_null() {
+                ops.push(json!({"type": "$unset", "path": k}));
+            } else {
+                ops.push(json!({"type": "$set", "path": k, "value": v}));
+            }
+        }
+    }
+    c.modify(
+        space,
+        &json!({
+            "objectId": obj, "dataset": dataset,
+            "records": [{"id": key, "upsert": true, "ops": ops}]}),
+    )?;
+    Ok(())
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 /// The serve-side secret write path for managed OAuth (ADR-011 §3) —
 /// the same two-step local-scope write the bootstrap uses, plus the
 /// synced non-secret metadata record.
-struct ServeSecretStore {
+pub struct ServeSecretStore {
     client: Arc<Client>,
     space: String,
     obj: String,
+}
+
+impl crate::broker::SecretSource for ServeSecretStore {
+    fn read(&self, key: &str) -> Result<Option<String>, String> {
+        let rows = self
+            .client
+            .query(&self.space, &self.obj, SECRETS_DATASET, &json!({}))
+            .map_err(|e| e.to_string())?;
+        Ok(stored_local_secret(&rows, key, SECRETS_FIELD))
+    }
+
+    fn mark_missing(&self, key: &str, about: &Value, run_id: &str) {
+        self.stamp(
+            key,
+            about,
+            json!({"status": "missing", "requestedBy": run_id}),
+        );
+    }
+
+    fn mark_rejected(&self, key: &str, about: &Value, run_id: &str, http_status: u16) {
+        self.stamp(
+            key,
+            about,
+            // a rejection is a new event: the previous bubble (a
+            // "missing" card, or an older rejection) no longer covers
+            // it — clearing requestedIn lets the wrapper re-ask
+            json!({"status": "rejected", "requestedBy": run_id,
+                   "rejectedAt": {"$date": now_rfc3339()}, "rejectedWith": http_status,
+                   "requestedIn": Value::Null}),
+        );
+    }
+}
+
+impl ServeSecretStore {
+    fn stamp(&self, key: &str, about: &Value, base: Value) {
+        let mut patch = base.as_object().cloned().unwrap_or_default();
+        for k in ["label", "hosts", "help", "note"] {
+            if let Some(v) = about.get(k).filter(|v| !v.is_null()) {
+                patch.insert(k.into(), v.clone());
+            }
+        }
+        if let Err(e) = upsert_secret_row(
+            &self.client,
+            &self.space,
+            &self.obj,
+            SECRETS_DATASET,
+            key,
+            &Value::Object(patch),
+        ) {
+            warn!("secrets: could not stamp {key} ({e})");
+        }
+    }
 }
 
 impl crate::oauth::SecretPersist for ServeSecretStore {
@@ -532,12 +681,19 @@ impl crate::oauth::SecretPersist for ServeSecretStore {
     }
 
     fn persist_meta(&self, key: &str, value: &Value) -> Result<()> {
-        self.client.upsert_record(
+        let mut ops = vec![
+            json!({"type": "$set", "path": "key", "value": key}),
+            json!({"type": "$set", "path": "secret", "value": false}),
+        ];
+        ops.push(if value.is_null() {
+            json!({"type": "$unset", "path": "meta"})
+        } else {
+            json!({"type": "$set", "path": "meta", "value": {"value": value}})
+        });
+        self.client.modify(
             &self.space,
-            &self.obj,
-            SECRETS_DATASET,
-            key,
-            &json!({"key": key, "value": value}),
+            &json!({"objectId": self.obj, "dataset": SECRETS_DATASET,
+                    "records": [{"id": key, "upsert": true, "ops": ops}]}),
         )?;
         Ok(())
     }
@@ -586,6 +742,32 @@ pub struct AgentHandle {
 }
 
 impl AgentHandle {
+    /// The lib embedder's secret write (ADR-021 §4): the same two-step
+    /// row write the boot seeds use — no restart, the next credentialed
+    /// effect reads the row. Empty `value` deletes. Errors on a server
+    /// without the secrets object (seeds-only mode has nothing to
+    /// write to) and for managed OAuth sub-refs, which have their own
+    /// custody (ADR-011).
+    pub fn set_secret(&self, key: &str, value: &str) -> Result<()> {
+        if key.starts_with(crate::oauth::OAUTH_REF_PREFIX) && key.ends_with(".refresh") {
+            anyhow::bail!("{key} is a managed OAuth token — use the provider's connect()");
+        }
+        let store = self
+            .ctx
+            .secret_store
+            .as_ref()
+            .context("no secrets store (server without the agent secrets object)")?;
+        persist_local_secret(
+            &store.client,
+            &store.space,
+            &store.obj,
+            SECRETS_DATASET,
+            SECRETS_FIELD,
+            key,
+            value,
+        )
+    }
+
     /// Signal shutdown and join the service threads. Latency is
     /// bounded by the SSE stream: the watcher only observes the flag
     /// on the next frame/heartbeat (or the sliced reconnect sleep).
@@ -728,10 +910,11 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // every run's Broker (sys_http). No migration from the pre-split
     // layout: secrets left on an old config object are ignored, and
     // re-importing an .env is a two-click operation.
+    let mut unpersisted = Vec::new();
     let secrets_guard = match &secrets_obj {
         Some(sobj) => {
             let overrides = std::mem::take(&mut cfg.secret_overrides);
-            bootstrap_secrets(
+            unpersisted = bootstrap_secrets(
                 &client,
                 &space,
                 sobj,
@@ -770,6 +953,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // the static secret map — per-run broker snapshots never hold a
     // refresh token (§4/§6). persist None = the documented degraded
     // no-store mode: flows work, nothing survives the process.
+    let secret_store: Option<Arc<ServeSecretStore>> = secrets_obj.as_ref().map(|obj| {
+        Arc::new(ServeSecretStore {
+            client: client.clone(),
+            space: space.clone(),
+            obj: obj.clone(),
+        })
+    });
     let persist: Option<Box<dyn crate::oauth::SecretPersist>> = secrets_obj.as_ref().map(|obj| {
         Box::new(ServeSecretStore {
             client: client.clone(),
@@ -781,8 +971,20 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let mut oauth_state = crate::oauth::OauthState::new(crate::oauth::builtin_providers(), persist);
     oauth_state.consent = cfg.consent_hook.clone();
     oauth_state.shutdown = shutdown.clone();
+    oauth_state.source = secret_store
+        .clone()
+        .map(|s| s as Arc<dyn crate::broker::SecretSource>);
     let oauth = Arc::new(oauth_state);
     oauth.seed(&mut cfg.secrets);
+    // ADR-021 §4: with a store, the row is the credential and brokers
+    // read it at injection time — the seeded map is dropped so no
+    // per-run snapshot exists to go stale. Without a store the map is
+    // the documented fallback.
+    if secret_store.is_some() {
+        // seeds the store refused keep living in the map — the
+        // broker's fallback after a store miss
+        cfg.secrets.retain(|k, _| unpersisted.contains(k));
+    }
     // grant metadata (.granted_scopes/.account — synced, non-secret)
     // loads back so oauth.status survives a restart; best-effort
     if let Some(sobj) = &secrets_obj {
@@ -792,9 +994,16 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
                     continue;
                 };
                 if k.starts_with(crate::oauth::OAUTH_REF_PREFIX)
-                    && (k.ends_with(".granted_scopes") || k.ends_with(".account"))
+                    && (k.ends_with(".granted_scopes")
+                        || k.ends_with(".account")
+                        || k.ends_with(".client_id")
+                        || k.ends_with(".client_secret"))
                 {
-                    if let Some(v) = row.get("value").filter(|v| !v.is_null()) {
+                    if let Some(v) = row
+                        .get("meta")
+                        .and_then(|m| m.get("value"))
+                        .filter(|v| !v.is_null())
+                    {
                         oauth.seed_meta(k, v.clone());
                     }
                 }
@@ -903,6 +1112,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         code_space,
         secrets_guard,
         oauth,
+        secret_store,
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
@@ -986,6 +1196,9 @@ pub struct RunCtx {
     /// managed OAuth state (ADR-011) — one per serve, threaded into
     /// every Broker
     pub oauth: Arc<crate::oauth::OauthState>,
+    /// the secrets store (ADR-021 §4) — None on a server without the
+    /// secrets object (seeds-only degraded mode)
+    pub secret_store: Option<Arc<ServeSecretStore>>,
     /// single-active gate (ADR-015 §3): false = standby (chat watch
     /// disconnected; ownerless-trigger adoption and the standing
     /// built-ins idle — device-pinned triggers still fire, ADR-006
@@ -1053,6 +1266,10 @@ impl RunCtx {
         );
         b.secrets_guard = self.secrets_guard.clone();
         b.oauth = Some(self.oauth.clone());
+        b.secret_store = self
+            .secret_store
+            .clone()
+            .map(|s| s as Arc<dyn crate::broker::SecretSource>);
         b.resolver = Some(Box::new(AnyModuleResolver::new(
             self.client.clone(),
             &self.space,
@@ -1090,6 +1307,7 @@ impl RunCtx {
                 trace_ref: Some(run_id),
                 fuel: Some(outcome.fuel_used as i64),
                 error: outcome.error.map(|e| e.to_string()),
+                missing_secrets: outcome.broker.missing_secrets.clone(),
             },
         ))
     }
@@ -1130,6 +1348,122 @@ impl RunCtx {
             "fuelUsed": outcome.fuel_used,
         }))
     }
+}
+
+/// `type: message` of a run's error envelope, clipped for a chat line.
+fn short_error(raw: &str) -> String {
+    let s = serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| {
+            Some(format!(
+                "{}: {}",
+                v["type"].as_str()?,
+                v["message"].as_str()?
+            ))
+        })
+        .unwrap_or_else(|| raw.to_string());
+    let s = s.replace('\n', " ");
+    if s.chars().count() > 160 {
+        format!("{}…", s.chars().take(160).collect::<String>())
+    } else {
+        s
+    }
+}
+
+/// Post the credential-request bubble for each ref still `missing`
+/// whose row does not already name this chat as the place a live
+/// request sits (`requestedIn`; cleared by the write that sets the
+/// value) — ADR-021 §2. Everything the UI renders comes off the row;
+/// the message only links it.
+fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
+    let Some(store) = &ctx.secret_store else {
+        return 0;
+    };
+    let mut posted = 0;
+    for r in refs {
+        let rows = ctx
+            .client
+            .query(&ctx.space, &store.obj, SECRETS_DATASET, &json!({}))
+            .unwrap_or_default();
+        let row = rows
+            .iter()
+            .find(|row| row.get("key").and_then(|v| v.as_str()) == Some(r.as_str()));
+        let status = row
+            .and_then(|row| row.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("missing");
+        let requested_in = row
+            .and_then(|row| row.get("requestedIn"))
+            .and_then(|v| v.as_str());
+        if status == "set" || requested_in == Some(ctx.chat.as_str()) {
+            continue;
+        }
+        let label = row
+            .and_then(|row| row.get("label"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| r.clone());
+        let hosts: Vec<String> = row
+            .and_then(|row| row.get("hosts"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|h| h.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let used_for = if hosts.is_empty() {
+            String::new()
+        } else {
+            format!(", used for {}", hosts.join(", "))
+        };
+        let text = if status == "rejected" {
+            let code = row
+                .and_then(|row| row.get("rejectedWith"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(401);
+            let by = if hosts.is_empty() {
+                "the service".to_string()
+            } else {
+                hosts.join(", ")
+            };
+            format!("The {label} was rejected by {by} ({code}) — please enter a new one (`{r}`).")
+        } else {
+            format!("I need a credential to continue: {label} (`{r}`{used_for}).")
+        };
+        let sent = ctx.client.chat_send(
+            &ctx.space,
+            &ctx.chat,
+            &json!({
+                "text": text,
+                "agent": {"name": ctx.cfg.agent_name, "done": true},
+                "attachments": {"credreq": {
+                    "type": "credential_request",
+                    "link": format!("any://o/{}?key={r}", store.obj)}}}),
+        );
+        match sent {
+            Ok(_) => {
+                posted += 1;
+                // requestedIn/At only — status was stamped by the miss;
+                // re-asserting it here could undo a save that landed
+                // between the miss and this write
+                let patch = json!({"requestedIn": ctx.chat,
+                                   "requestedAt": {"$date": now_rfc3339()}});
+                if let Err(e) = upsert_secret_row(
+                    &ctx.client,
+                    &ctx.space,
+                    &store.obj,
+                    SECRETS_DATASET,
+                    r,
+                    &patch,
+                ) {
+                    warn!("secrets: could not stamp request for {r} ({e})");
+                }
+            }
+            Err(e) => warn!("secrets: could not post request for {r} ({e})"),
+        }
+    }
+    posted
 }
 
 /// Start a run for `text` — or, when one is already live on this chat,
@@ -1175,7 +1509,34 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
             Some(run_id),
         );
         if let Ok((trace_ref, rr)) = &result {
-            if rr.status != "ok" {
+            // ADR-021 §2: one request bubble per missing ref (the host
+            // is the only emitter). A run that died ON the miss — the
+            // LLM key — gets the request instead of "Something broke".
+            // …or on the destination's 401 (LlmError) — either way the
+            // request bubble (or the "still waiting" line) IS the reply
+            let died_on_miss = rr.status != "ok" && !rr.missing_secrets.is_empty();
+            let posted = post_credential_requests(&ctx, &rr.missing_secrets);
+            if died_on_miss && posted == 0 {
+                // the bubble for this ref already sits in the chat
+                // (dedup) — a silent turn would read as "bao is gone";
+                // the last error rides along so the human can see WHY
+                let refs = rr.missing_secrets.join("`, `");
+                let why = rr
+                    .error
+                    .as_deref()
+                    .map(short_error)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" Last attempt: {s}"))
+                    .unwrap_or_default();
+                let _ = ctx.client.chat_send(
+                    &ctx.space,
+                    &ctx.chat,
+                    &json!({
+                    "text": format!("Still waiting for `{refs}` — see the credential prompt above.{why}"),
+                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                );
+            }
+            if rr.status != "ok" && !died_on_miss {
                 // The typed error goes INTO the chat: the next turn
                 // boots with this message in its window, so the model
                 // can act on it (FuelExhausted's text says to redo the
@@ -1499,6 +1860,7 @@ fn run_trigger_program(ctx: &RunCtx, program: &str, args: &Value) -> RunResult {
             trace_ref: None,
             fuel: None,
             error: Some(e.to_string()),
+            missing_secrets: Vec::new(),
         })
 }
 

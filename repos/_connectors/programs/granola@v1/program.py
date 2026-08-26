@@ -23,19 +23,24 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 _BASE = "https://public-api.granola.ai/v1"
 _KEY_PATH = "Granola desktop app -> Settings -> Connectors -> API keys"
-_CRED = {"ref": "connector.key.granola", "header": "Authorization", "prefix": "Bearer "}
+_CRED = {"ref": "connector.key.granola", "header": "Authorization", "prefix": "Bearer ",
+         "about": {"label": "Granola API key", "hosts": ["public-api.granola.ai"],
+                   "note": _KEY_PATH + " (Business or Enterprise plan)"}}
 _DEFAULT_LIMIT = 25
 _MAX_LIMIT = 100
 _MAX_PAGES = 20
 _RATE_RETRIES = 3
 _TIMEOUT_S = 60
 
+# ADR-021: the host posts a credential prompt into the chat when the
+# ref is missing; the human enters the key there (or in Credentials).
+ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, or in "
+              "Credentials in the app (CLI: a .connectors.env beside anybao.toml)")
+
 _NOT_CONNECTED = (
     "Granola not connected — create an API key in " + _KEY_PATH
     + " (requires a Granola Business or Enterprise plan; free/Basic plans "
-    + "cannot mint a key), then import an .env file containing "
-    + "connector.key.granola=<key> (any-ui: Help > Import connector keys; "
-    + "CLI: a .connectors.env beside anybao.toml)."
+    + "cannot mint a key), then " + ENTER_HINT + " as connector.key.granola."
 )
 
 

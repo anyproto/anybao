@@ -74,6 +74,9 @@ pub struct RunResult {
     pub trace_ref: Option<String>,
     pub fuel: Option<i64>,
     pub error: Option<String>,
+    /// Static credential refs the run resolved to nothing (ADR-021
+    /// §2) — the chat wrapper posts a request bubble per ref.
+    pub missing_secrets: Vec<String>,
 }
 
 pub struct Scheduler {
@@ -754,6 +757,16 @@ impl Watcher {
                     out.push('\n');
                 }
                 out.push_str(&format!("[attachment {kind}: {link}]"));
+                // ADR-021 §5: a credential_set is a cue to ACT, not news
+                // to acknowledge — the run that needed the key never
+                // finished (or failed), so the model must redo it.
+                if kind == "credential_set" {
+                    out.push_str(
+                        "\n[runtime: the user just entered this credential. Do NOT merely \
+                         acknowledge it — go back to the last user request before the \
+                         credential prompt and carry it out now, replying with its result.]",
+                    );
+                }
             }
         }
         out
@@ -1222,6 +1235,7 @@ mod tests {
             trace_ref: None,
             fuel: None,
             error: Some("boom".into()),
+            missing_secrets: Vec::new(),
         };
         for _ in 0..3 {
             sched.record_run(&mut tr, &fail);
