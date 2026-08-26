@@ -423,7 +423,8 @@ fn bootstrap_secrets(
         secrets.insert(secret_ref.clone(), value.clone());
         match stored {
             Some(ref s) if s == value => {
-                info!("config: {secret_ref} loaded from device-local store")
+                info!("config: {secret_ref} loaded from device-local store");
+                stamp_set_if_needed(c, space, obj, dataset, &rows, secret_ref);
             }
             other => match persist_local_secret(c, space, obj, dataset, field, secret_ref, value) {
                 Ok(()) if other.is_some() => info!("config: {secret_ref} rotated (hard seed)"),
@@ -454,13 +455,7 @@ fn bootstrap_secrets(
         if let Some(key) = stored {
             secrets.insert(secret_ref.into(), key.into());
             info!("config: {secret_ref} loaded from device-local store");
-            if row.get("status").and_then(|v| v.as_str()) != Some("set") {
-                let patch = json!({"status": "set", "updatedAt": {"$date": now_rfc3339()},
-                                   "requestedIn": Value::Null});
-                if let Err(e) = upsert_secret_row(c, space, obj, dataset, secret_ref, &patch) {
-                    warn!("config: could not stamp {secret_ref} set ({e})");
-                }
-            }
+            stamp_set_if_needed(c, space, obj, dataset, &rows, secret_ref);
         }
     }
 
@@ -490,6 +485,31 @@ fn bootstrap_secrets(
              keys; CLI: .connectors.env beside the config file); llm effects \
              will fail until one is set"
         );
+    }
+}
+
+/// A stored row that predates ADR-021 (or was written by a seed
+/// without touching metadata) gets its `status: "set"` stamp at boot.
+fn stamp_set_if_needed(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    rows: &[Value],
+    key: &str,
+) {
+    let status = rows
+        .iter()
+        .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
+        .and_then(|r| r.get("status"))
+        .and_then(|v| v.as_str());
+    if status == Some("set") {
+        return;
+    }
+    let patch = json!({"status": "set", "updatedAt": {"$date": now_rfc3339()},
+                       "requestedIn": Value::Null});
+    if let Err(e) = upsert_secret_row(c, space, obj, dataset, key, &patch) {
+        warn!("config: could not stamp {key} set ({e})");
     }
 }
 
@@ -549,17 +569,13 @@ fn upsert_secret_row(
         .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
         .and_then(|r| r.as_object().cloned())
         .unwrap_or_default();
-    // synced fields only: drop server-derived + local-scope keys
-    for k in [
-        "id",
-        "_ver",
-        "createdAt",
-        "modifiedAt",
-        "creator",
-        SECRETS_FIELD,
-    ] {
-        row.remove(k);
-    }
+    // synced fields only: drop server-derived (`_ver`, `_addSeq`, …),
+    // stamp and local-scope keys — a write carrying them is rejected
+    row.retain(|k, _| {
+        !k.starts_with('_')
+            && !matches!(k.as_str(), "id" | "createdAt" | "modifiedAt" | "creator")
+            && k != SECRETS_FIELD
+    });
     row.insert("key".into(), json!(key));
     row.insert("secret".into(), json!(true));
     if let Some(p) = patch.as_object() {
