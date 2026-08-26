@@ -263,11 +263,23 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         &json!({
         "name": SECRETS_DATASET, "displayName": "Agent Secrets",
         "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+        // A system dataset: declared, not dynamic. The synced metadata
+        // (ADR-021 §1/§2) carries no secret material — the value is the
+        // one device-local field.
         "fields": [
             {"key": "key", "kind": "string", "mutableBy": "any"},
             {"key": "secret", "kind": "boolean", "mutableBy": "any"},
             {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
              "mutableBy": "any"},
+            {"key": "status", "kind": "string", "mutableBy": "any"},
+            {"key": "updatedAt", "kind": "datetime", "mutableBy": "any"},
+            {"key": "label", "kind": "string", "mutableBy": "any"},
+            {"key": "hosts", "kind": "array", "mutableBy": "any"},
+            {"key": "help", "kind": "string", "mutableBy": "any"},
+            {"key": "note", "kind": "string", "mutableBy": "any"},
+            {"key": "requestedBy", "kind": "string", "mutableBy": "any"},
+            {"key": "requestedIn", "kind": "string", "mutableBy": "any"},
+            {"key": "requestedAt", "kind": "datetime", "mutableBy": "any"},
         ]}),
     )?;
     ensure_dataset(
@@ -442,6 +454,13 @@ fn bootstrap_secrets(
         if let Some(key) = stored {
             secrets.insert(secret_ref.into(), key.into());
             info!("config: {secret_ref} loaded from device-local store");
+            if row.get("status").and_then(|v| v.as_str()) != Some("set") {
+                let patch = json!({"status": "set", "updatedAt": {"$date": now_rfc3339()},
+                                   "requestedIn": Value::Null});
+                if let Err(e) = upsert_secret_row(c, space, obj, dataset, secret_ref, &patch) {
+                    warn!("config: could not stamp {secret_ref} set ({e})");
+                }
+            }
         }
     }
 
@@ -498,24 +517,106 @@ fn persist_local_secret(
     key: &str,
     secret: &str,
 ) -> Result<()> {
-    c.upsert_record(
+    let status = if secret.is_empty() { "missing" } else { "set" };
+    upsert_secret_row(
+        c,
         space,
         obj,
         dataset,
         key,
-        &json!({"key": key, "secret": true}),
+        &json!({"status": status, "updatedAt": {"$date": now_rfc3339()},
+                "requestedIn": Value::Null}),
     )?;
     c.set_local_field(space, obj, dataset, key, field, &json!(secret))?;
     Ok(())
 }
 
+/// Merge `patch` into the ref's synced row (whole-value upsert: the
+/// dataset is declared, so every write carries the full metadata) —
+/// `key`/`secret` are always stamped, the device-local value is never
+/// touched (local scope, separate write). ADR-021 §2/§4.
+fn upsert_secret_row(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    key: &str,
+    patch: &Value,
+) -> Result<()> {
+    let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
+    let mut row = rows
+        .into_iter()
+        .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
+        .and_then(|r| r.as_object().cloned())
+        .unwrap_or_default();
+    // synced fields only: drop server-derived + local-scope keys
+    for k in [
+        "id",
+        "_ver",
+        "createdAt",
+        "modifiedAt",
+        "creator",
+        SECRETS_FIELD,
+    ] {
+        row.remove(k);
+    }
+    row.insert("key".into(), json!(key));
+    row.insert("secret".into(), json!(true));
+    if let Some(p) = patch.as_object() {
+        for (k, v) in p {
+            if v.is_null() {
+                row.remove(k);
+            } else {
+                row.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    c.upsert_record(space, obj, dataset, key, &Value::Object(row))?;
+    Ok(())
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 /// The serve-side secret write path for managed OAuth (ADR-011 §3) —
 /// the same two-step local-scope write the bootstrap uses, plus the
 /// synced non-secret metadata record.
-struct ServeSecretStore {
+pub struct ServeSecretStore {
     client: Arc<Client>,
     space: String,
     obj: String,
+}
+
+impl crate::broker::SecretSource for ServeSecretStore {
+    fn read(&self, key: &str) -> Result<Option<String>, String> {
+        let rows = self
+            .client
+            .query(&self.space, &self.obj, SECRETS_DATASET, &json!({}))
+            .map_err(|e| e.to_string())?;
+        Ok(stored_local_secret(&rows, key, SECRETS_FIELD))
+    }
+
+    fn mark_missing(&self, key: &str, about: &Value, run_id: &str) {
+        let mut patch = Map::new();
+        patch.insert("status".into(), json!("missing"));
+        patch.insert("requestedBy".into(), json!(run_id));
+        for k in ["label", "hosts", "help", "note"] {
+            if let Some(v) = about.get(k).filter(|v| !v.is_null()) {
+                patch.insert(k.into(), v.clone());
+            }
+        }
+        if let Err(e) = upsert_secret_row(
+            &self.client,
+            &self.space,
+            &self.obj,
+            SECRETS_DATASET,
+            key,
+            &Value::Object(patch),
+        ) {
+            warn!("secrets: could not mark {key} missing ({e})");
+        }
+    }
 }
 
 impl crate::oauth::SecretPersist for ServeSecretStore {
@@ -586,6 +687,32 @@ pub struct AgentHandle {
 }
 
 impl AgentHandle {
+    /// The lib embedder's secret write (ADR-021 §4): the same two-step
+    /// row write the boot seeds use — no restart, the next credentialed
+    /// effect reads the row. Empty `value` deletes. Errors on a server
+    /// without the secrets object (seeds-only mode has nothing to
+    /// write to) and for managed OAuth sub-refs, which have their own
+    /// custody (ADR-011).
+    pub fn set_secret(&self, key: &str, value: &str) -> Result<()> {
+        if key.starts_with(crate::oauth::OAUTH_REF_PREFIX) && key.ends_with(".refresh") {
+            anyhow::bail!("{key} is a managed OAuth token — use the provider's connect()");
+        }
+        let store = self
+            .ctx
+            .secret_store
+            .as_ref()
+            .context("no secrets store (server without the agent secrets object)")?;
+        persist_local_secret(
+            &store.client,
+            &store.space,
+            &store.obj,
+            SECRETS_DATASET,
+            SECRETS_FIELD,
+            key,
+            value,
+        )
+    }
+
     /// Signal shutdown and join the service threads. Latency is
     /// bounded by the SSE stream: the watcher only observes the flag
     /// on the next frame/heartbeat (or the sliced reconnect sleep).
@@ -770,6 +897,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // the static secret map — per-run broker snapshots never hold a
     // refresh token (§4/§6). persist None = the documented degraded
     // no-store mode: flows work, nothing survives the process.
+    let secret_store: Option<Arc<ServeSecretStore>> = secrets_obj.as_ref().map(|obj| {
+        Arc::new(ServeSecretStore {
+            client: client.clone(),
+            space: space.clone(),
+            obj: obj.clone(),
+        })
+    });
     let persist: Option<Box<dyn crate::oauth::SecretPersist>> = secrets_obj.as_ref().map(|obj| {
         Box::new(ServeSecretStore {
             client: client.clone(),
@@ -781,8 +915,18 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let mut oauth_state = crate::oauth::OauthState::new(crate::oauth::builtin_providers(), persist);
     oauth_state.consent = cfg.consent_hook.clone();
     oauth_state.shutdown = shutdown.clone();
+    oauth_state.source = secret_store
+        .clone()
+        .map(|s| s as Arc<dyn crate::broker::SecretSource>);
     let oauth = Arc::new(oauth_state);
     oauth.seed(&mut cfg.secrets);
+    // ADR-021 §4: with a store, the row is the credential and brokers
+    // read it at injection time — the seeded map is dropped so no
+    // per-run snapshot exists to go stale. Without a store the map is
+    // the documented fallback.
+    if secret_store.is_some() {
+        cfg.secrets.clear();
+    }
     // grant metadata (.granted_scopes/.account — synced, non-secret)
     // loads back so oauth.status survives a restart; best-effort
     if let Some(sobj) = &secrets_obj {
@@ -903,6 +1047,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         code_space,
         secrets_guard,
         oauth,
+        secret_store,
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
@@ -986,6 +1131,9 @@ pub struct RunCtx {
     /// managed OAuth state (ADR-011) — one per serve, threaded into
     /// every Broker
     pub oauth: Arc<crate::oauth::OauthState>,
+    /// the secrets store (ADR-021 §4) — None on a server without the
+    /// secrets object (seeds-only degraded mode)
+    pub secret_store: Option<Arc<ServeSecretStore>>,
     /// single-active gate (ADR-015 §3): false = standby (chat watch
     /// disconnected; ownerless-trigger adoption and the standing
     /// built-ins idle — device-pinned triggers still fire, ADR-006
@@ -1053,6 +1201,10 @@ impl RunCtx {
         );
         b.secrets_guard = self.secrets_guard.clone();
         b.oauth = Some(self.oauth.clone());
+        b.secret_store = self
+            .secret_store
+            .clone()
+            .map(|s| s as Arc<dyn crate::broker::SecretSource>);
         b.resolver = Some(Box::new(AnyModuleResolver::new(
             self.client.clone(),
             &self.space,
@@ -1090,6 +1242,7 @@ impl RunCtx {
                 trace_ref: Some(run_id),
                 fuel: Some(outcome.fuel_used as i64),
                 error: outcome.error.map(|e| e.to_string()),
+                missing_secrets: outcome.broker.missing_secrets.clone(),
             },
         ))
     }
@@ -1129,6 +1282,83 @@ impl RunCtx {
             "durationMs": outcome.duration_ms,
             "fuelUsed": outcome.fuel_used,
         }))
+    }
+}
+
+/// Post the credential-request bubble for each ref still `missing`
+/// whose row does not already name this chat as the place a live
+/// request sits (`requestedIn`; cleared by the write that sets the
+/// value) — ADR-021 §2. Everything the UI renders comes off the row;
+/// the message only links it.
+fn post_credential_requests(ctx: &RunCtx, refs: &[String]) {
+    let Some(store) = &ctx.secret_store else {
+        return;
+    };
+    for r in refs {
+        let rows = ctx
+            .client
+            .query(&ctx.space, &store.obj, SECRETS_DATASET, &json!({}))
+            .unwrap_or_default();
+        let row = rows
+            .iter()
+            .find(|row| row.get("key").and_then(|v| v.as_str()) == Some(r.as_str()));
+        let status = row
+            .and_then(|row| row.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("missing");
+        let requested_in = row
+            .and_then(|row| row.get("requestedIn"))
+            .and_then(|v| v.as_str());
+        if status == "set" || requested_in == Some(ctx.chat.as_str()) {
+            continue;
+        }
+        let label = row
+            .and_then(|row| row.get("label"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| r.clone());
+        let hosts: Vec<String> = row
+            .and_then(|row| row.get("hosts"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|h| h.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let used_for = if hosts.is_empty() {
+            String::new()
+        } else {
+            format!(", used for {}", hosts.join(", "))
+        };
+        let text = format!("I need a credential to continue: {label} (`{r}`{used_for}).");
+        let sent = ctx.client.chat_send(
+            &ctx.space,
+            &ctx.chat,
+            &json!({
+                "text": text,
+                "agent": {"name": ctx.cfg.agent_name, "done": true},
+                "attachments": {"credreq": {
+                    "type": "credential_request",
+                    "link": format!("any://o/{}?key={r}", store.obj)}}}),
+        );
+        match sent {
+            Ok(_) => {
+                let patch = json!({"status": "missing", "requestedIn": ctx.chat,
+                                   "requestedAt": {"$date": now_rfc3339()}});
+                if let Err(e) = upsert_secret_row(
+                    &ctx.client,
+                    &ctx.space,
+                    &store.obj,
+                    SECRETS_DATASET,
+                    r,
+                    &patch,
+                ) {
+                    warn!("secrets: could not stamp request for {r} ({e})");
+                }
+            }
+            Err(e) => warn!("secrets: could not post request for {r} ({e})"),
+        }
     }
 }
 
@@ -1175,7 +1405,17 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
             Some(run_id),
         );
         if let Ok((trace_ref, rr)) = &result {
-            if rr.status != "ok" {
+            // ADR-021 §2: one request bubble per missing ref (the host
+            // is the only emitter). A run that died ON the miss — the
+            // LLM key — gets the request instead of "Something broke".
+            let died_on_miss = rr.status != "ok"
+                && rr
+                    .error
+                    .as_deref()
+                    .map(|raw| raw.contains("SecretMissing"))
+                    .unwrap_or(false);
+            post_credential_requests(&ctx, &rr.missing_secrets);
+            if rr.status != "ok" && !died_on_miss {
                 // The typed error goes INTO the chat: the next turn
                 // boots with this message in its window, so the model
                 // can act on it (FuelExhausted's text says to redo the
@@ -1499,6 +1739,7 @@ fn run_trigger_program(ctx: &RunCtx, program: &str, args: &Value) -> RunResult {
             trace_ref: None,
             fuel: None,
             error: Some(e.to_string()),
+            missing_secrets: Vec::new(),
         })
 }
 

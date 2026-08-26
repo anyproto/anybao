@@ -134,6 +134,10 @@ pub struct OauthState {
     pub providers: BTreeMap<String, ProviderDescriptor>,
     /// `connector.oauth.*` sub-ref values — the authoritative live copy.
     secrets: Mutex<BTreeMap<String, String>>,
+    /// The secrets store (ADR-021 §4): a sub-ref absent from the live
+    /// copy is read from the row — `.client_id`/`.client_secret`
+    /// entered through the UI are ordinary rows, no restart.
+    pub source: Option<Arc<dyn crate::broker::SecretSource>>,
     /// Access tokens by handle ref (`connector.oauth.google`).
     tokens: Mutex<BTreeMap<String, CachedToken>>,
     /// Per-ref single-flight refresh gate (ADR-011 §6).
@@ -176,6 +180,7 @@ impl OauthState {
         OauthState {
             providers,
             secrets: Mutex::new(BTreeMap::new()),
+            source: None,
             tokens: Mutex::new(BTreeMap::new()),
             flight: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
@@ -214,11 +219,17 @@ impl OauthState {
     }
 
     pub fn secret(&self, key: &str) -> Option<String> {
-        self.secrets
+        let live = self
+            .secrets
             .lock()
             .expect("oauth secrets lock poisoned")
             .get(key)
-            .cloned()
+            .cloned();
+        live.or_else(|| {
+            self.source
+                .as_ref()
+                .and_then(|src| src.read(key).ok().flatten())
+        })
     }
 
     /// The cached access token for a handle ref, if it outlives the

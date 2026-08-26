@@ -74,6 +74,9 @@ pub struct RunResult {
     pub trace_ref: Option<String>,
     pub fuel: Option<i64>,
     pub error: Option<String>,
+    /// Static credential refs the run resolved to nothing (ADR-021
+    /// §2) — the chat wrapper posts a request bubble per ref.
+    pub missing_secrets: Vec<String>,
 }
 
 pub struct Scheduler {
@@ -1222,6 +1225,7 @@ mod tests {
             trace_ref: None,
             fuel: None,
             error: Some("boom".into()),
+            missing_secrets: Vec::new(),
         };
         for _ in 0..3 {
             sched.record_run(&mut tr, &fail);
