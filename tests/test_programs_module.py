@@ -46,6 +46,9 @@ class FakeAny:
 
     def __init__(self, spaces=(SID,)):
         self.spaces = {s: {} for s in spaces}
+        # spaces whose `program` user type has been declared (ADR-010 §5):
+        # a space nobody deployed to has no such type at all
+        self.typed = set()
         self.markers = {}
         self._n = 0
 
@@ -56,6 +59,7 @@ class FakeAny:
 
     def seed(self, sid, name, version, code="x = 1\n"):
         """A pre-existing program (e.g. an overlay export)."""
+        self.typed.add(sid)
         self._n += 1
         oid = f"obj{self._n}"
         self._objs(sid)[oid] = {
@@ -67,10 +71,11 @@ class FakeAny:
     # --- the any@v1 methods programs@v1 calls ---
     def list_types(self, sid):
         self._objs(sid)
-        return [{"id": "progT", "xKey": "program"}]
+        return [{"id": "progT", "xKey": "program"}] if sid in self.typed else []
 
     def create_type(self, sid, body):
         assert body["xKey"] == "program"
+        self.typed.add(sid)
         self.ensured = getattr(self, "ensured", []) + [(sid, "type")]
         return {"typeId": "progT", "xKey": "program", "created": False}
 
@@ -228,6 +233,15 @@ def test_overlay_exported_spec_refused():
     out = p.create_program(SID, {"name": "any", "version": "v9",
                                  "source": PLAIN})
     assert out["ok"]
+
+
+def test_overlay_without_the_program_type_is_skipped():
+    # An overlay nobody deployed to has no `program` type — the guard
+    # must skip it, not blow up on the unresolvable filter path
+    # (any@v1 raises for an unknown type head). Live-caught 2026-08-26.
+    fake = FakeAny(spaces=(SID, OVL))          # OVL never seeded -> untyped
+    _, p = kernel(fake, overlays={"agent": OVL})
+    assert p.create_program(SID, {"name": "job", "source": PLAIN})["ok"]
 
 
 def test_alias_bound_to_working_space_is_skipped():

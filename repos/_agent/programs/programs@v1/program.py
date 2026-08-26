@@ -271,6 +271,8 @@ def _shadow_guard(sid, name, version):
     for alias, overlay_space in sorted(_overlay_aliases().items()):
         if overlay_space == sid:
             continue  # degenerate alias bound to the working space itself
+        if not _has_store(overlay_space):
+            continue  # an overlay with no program type exports nothing
         if _any().query_objects(
                 overlay_space,
                 filter={"program.name": name, "program.version": version},
