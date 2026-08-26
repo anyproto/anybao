@@ -155,6 +155,21 @@ convention anyway.
   host-side, `any@v1`'s xKey catalog guest-side; any-ui resolves
   `program` by xKey like `agent_skill`). No client may assume the
   literal `"program"` as an id.
+- **Rollout is fleet-wide, not per-space** (rig-verified 2026-08-26).
+  A server that still registers the builtin keeps answering `GET
+  /types` with its own `{id: "program", xKey: "program", builtIn:
+  true}` row — and, once it joins a space published by the new stack,
+  ALSO the synced user row under the same xKey. Host `find_type` and
+  guest `_catalog` both take the first xKey match, i.e. the builtin, so
+  such a peer resolves the OLD literal shape and finds **zero**
+  programs in a space deployed the new way — silently, not as an error.
+  any-ui is the exception (`typeIdByXKey` skips `builtIn: true`).
+  Therefore: upgrade every `any` server in a fleet together with
+  `anyrt`; a half-upgraded fleet is not a supported state. The two
+  wrong orders fail loudly and write nothing — an old `anyrt` against a
+  new server gets `400 dataset.validation` on the first property write,
+  a new `anyrt` against an old server `400 type.registered` at the
+  ensure.
 - **Accepted loss**: method docs leave the search index (source is
   code, never indexed). Discovery = prompt inventory + `help()`.
   `summary` is NOT indexed either; revisit only if evidence demands

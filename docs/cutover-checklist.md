@@ -47,6 +47,13 @@ Startup:
 - [ ] `program` user type + `program_source`/`program_manifest`
       datasets present in the agent space (deploy ensured them —
       ADR-010 §5); no `search` mapping on either.
+- [ ] EVERY `any` server in the fleet rebuilt without the `program` /
+      `mini_app` builtins BEFORE any deploy (ADR-010 §5 rollout): a
+      peer that still registers them resolves the old literal shape and
+      lists zero programs, silently.
+- [ ] Orphaned pre-cutover objects (`any.types` = the literal
+      `"program"` / `"mini_app"`) deleted per space — deploy cannot
+      match them, so they linger as untyped junk.
 - [ ] Skills deployed as `agent_skill` objects (`_core`, `_soul`,
       `_any`, `_memory`, `_space_context`, `_meta_skill`).
 - [ ] Trigger control API answering on `127.0.0.1:7010` (`GET
