@@ -38,15 +38,43 @@ the same file. One difference matters: an empty
 the provider's `disconnect()` to revoke provider-side (ADR-011 §8).
 
 Both paths feed the same map (`Config::secret_overrides`); when a ref
-appears in both, `--secrets-file` wins. In any-ui the same mechanism
-is fed **from memory** (no file persisted): Help → Import connector
-keys parses the picked .env into `Config::secret_overrides` and
-restarts the agent. Lib embedders use `ConfigBuilder::secret_override`.
+appears in both, `--secrets-file` wins. They are boot-time seeds only.
+
+## Entering keys while running (ADR-021)
+
+The stored row **is** the credential: the broker reads the
+`agent_secrets` row at injection time (after the effect is recorded),
+so a key written while serve runs is used by the very next
+credentialed effect — no restart. Writers:
+
+- **The chat prompt.** When a credentialed effect finds no value the
+  host stamps the row `status: "missing"` (with the connector's
+  descriptor — label, hosts, help) and posts one request bubble into
+  the chat (`attachments.credreq.type = "credential_request"`); the
+  UI renders it as an inline form and, after writing the row, sends a
+  user message with a `credential_set` attachment that the agent
+  retries on. A missing LLM key takes this path too — the request is
+  posted by the host, no model turn needed.
+- **Credentials** in the app: every row, upsert/delete.
+- **Help → Import connector keys** in any-ui: the same per-row write
+  for each entry of a picked .env (`AgentHandle::set_secret`, the lib
+  embedder's write; empty value deletes).
+
+Row metadata is synced and non-secret: `status` (`missing`|`set`),
+`updatedAt`, `label`, `hosts` (the destinations the key is meant for —
+shown at entry; enforcement is ADR-021 §7), `help`, `note`,
+`requestedBy` (the run that missed it), `requestedIn`/`requestedAt`
+(the chat holding a live request bubble; cleared by the write that
+sets the value). The value lives only in the device-local field.
+`config.get` refuses the `connector.key.*`, `llm.key.*` and
+`connector.oauth.*` namespaces wholesale.
 
 `anyrt run` accepts the same `--secrets-file` (and reads
 `.connectors.env`), but a one-shot run has no store: seeds are this
 run's in-memory map only — nothing is persisted, and empty values are
-simply dropped.
+simply dropped. The map is the **no-store fallback** (also serve
+against a server without the secrets object); with a store it is
+never consulted.
 
 ## Soft seeds (embedder bootstrap)
 
@@ -57,15 +85,17 @@ stored > soft seeds**.
 
 ## Later starts
 
-Stored secrets load generically — every secret-marked record, any ref:
+Boot writes the seeds through and logs what the store holds — every
+secret-marked record, any ref:
 
 ```
 config: llm.key.anthropic loaded from device-local store
 ```
 
-No anthropic key anywhere → serve still starts but warns; llm effects
-fail on first use until one is imported. A fresh space (or a
-deleted-and-recreated one) has an empty store — re-import.
+then drops the in-memory map: with a store, the broker reads rows.
+No anthropic key anywhere → serve still starts but warns; the first
+conversation gets a credential prompt instead of a reply. A fresh
+space (or a deleted-and-recreated one) has an empty store.
 
 ## Guest read-guard
 
@@ -76,7 +106,9 @@ import instructions, raised **before** execution so the refusal is the
 recorded fact and no secret ever reaches a trace or the model context.
 Guest code never needs the values: the host injects `credential:
 {ref}` headers after recording (ADR-008), and a missing key surfaces
-as each connector's actionable not-connected error.
+as a typed `SecretMissing` failure (message `no secret for credential
+ref "<ref>"`, which connectors map to their not-connected error) plus
+the chat prompt above.
 
 ## Upgrading from the pre-split layout
 

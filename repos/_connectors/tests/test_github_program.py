@@ -68,8 +68,11 @@ def test_whoami_and_credential_plumbing():
     req = fake.requests[0]
     assert req["verb"] == "get"
     # the secret never crosses as a header — only the named ref
-    assert req["credential"] == {"ref": "connector.key.github",
-                                 "header": "Authorization", "prefix": "Bearer "}
+    cred = req["credential"]
+    assert (cred["ref"], cred["header"], cred["prefix"]) == (
+        "connector.key.github", "Authorization", "Bearer ")
+    # ADR-021 §1: the descriptor rides along, host-bound
+    assert cred["about"]["hosts"] == ["api.github.com"]
     assert "Authorization" not in req["headers"]
     assert req["headers"]["X-GitHub-Api-Version"] == "2022-11-28"
     assert req["headers"]["Accept"] == "application/vnd.github+json"
@@ -82,7 +85,7 @@ def test_missing_secret_maps_to_connect_help():
     assert out["ok"] is False
     assert "GitHub not connected" in out["error"]
     assert "connector.key.github" in out["error"]
-    assert "Import connector keys" in out["error"]
+    assert "credential prompt" in out["error"]
 
 
 def test_401_maps_to_token_expired():

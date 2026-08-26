@@ -73,8 +73,11 @@ def test_whoami_and_raw_key_plumbing():
     req = fake.requests[0]
     assert req["url"] == "https://api.linear.app/graphql"
     # personal keys go RAW in Authorization — ref only, NO Bearer prefix
-    assert req["credential"] == {"ref": "connector.key.linear",
-                                 "header": "Authorization"}
+    cred = req["credential"]
+    assert (cred["ref"], cred["header"]) == ("connector.key.linear", "Authorization")
+    assert "prefix" not in cred
+    # ADR-021 §1: the descriptor rides along, host-bound
+    assert cred["about"]["hosts"] == ["api.linear.app"]
 
 
 def test_missing_secret_maps_to_connect_help():
@@ -84,7 +87,7 @@ def test_missing_secret_maps_to_connect_help():
     assert out["ok"] is False
     assert "linear.app/settings/api" in out["error"]
     assert "connector.key.linear" in out["error"]
-    assert "Import connector keys" in out["error"]
+    assert "credential prompt" in out["error"]
 
 
 def test_graphql_errors_array_maps_to_error():

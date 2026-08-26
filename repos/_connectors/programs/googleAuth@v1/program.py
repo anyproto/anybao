@@ -24,9 +24,9 @@ _CRED = {"ref": "connector.oauth.google", "header": "Authorization", "prefix": "
 _CONFIGURE_HINT = (
     " — create an OAuth client in Google Cloud Console (APIs & Services > "
     "Credentials > Create credentials > OAuth client ID > Desktop app), then "
-    "import an .env containing connector.oauth.google.client_id=<id> and "
-    "connector.oauth.google.client_secret=<secret> (any-ui: Help > Import "
-    "connector keys; CLI: a .connectors.env beside anybao.toml)."
+    "enter connector.oauth.google.client_id and "
+    "connector.oauth.google.client_secret in Credentials in the app (CLI: a "
+    ".connectors.env beside anybao.toml)."
 )
 
 

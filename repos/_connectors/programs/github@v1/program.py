@@ -28,7 +28,19 @@ import json
 
 _BASE = "https://api.github.com"
 _TOKEN_URL = "https://github.com/settings/tokens?type=beta"
-_CRED = {"ref": "connector.key.github", "header": "Authorization", "prefix": "Bearer "}
+_TOKEN_NOTE = (
+    "Fine-grained PAT. Repository: Issues, Pull requests, Contents, Metadata; "
+    "Account: Notifications for list_notifications. Read-only covers the "
+    "wrapped getters; grant Read and write on Issues/Pull requests if you "
+    "intend request() writes."
+)
+# `about` is the credential descriptor (ADR-021 §1): what the host
+# shows the human when the key is missing, and the destination hosts
+# the key is meant for.
+_CRED = {"ref": "connector.key.github", "header": "Authorization", "prefix": "Bearer ",
+         "about": {"label": "GitHub personal access token",
+                   "hosts": ["api.github.com"], "help": _TOKEN_URL,
+                   "note": _TOKEN_NOTE}}
 _HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -37,14 +49,15 @@ _HEADERS = {
 _MAX_RETRIES = 3
 _TIMEOUT_S = 60
 
+# ADR-021: the host posts a credential prompt into the chat when the
+# ref is missing; the human enters the key there (or in Credentials).
+ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, or in "
+              "Credentials in the app (CLI: a .connectors.env beside anybao.toml)")
+
 _NOT_CONNECTED = (
     "GitHub not connected — create a fine-grained Personal Access Token at "
-    + _TOKEN_URL + " (Repository: Issues, Pull requests, Contents, Metadata; "
-    + "Account: Notifications for list_notifications — Read-only covers the "
-    + "wrapped getters; grant Read and write on Issues/Pull requests if you "
-    + "intend request() writes), then import an .env file containing "
-    + "connector.key.github=<token> (any-ui: Help > Import connector keys; "
-    + "CLI: a .connectors.env beside anybao.toml)."
+    + _TOKEN_URL + " (" + _TOKEN_NOTE + "), then " + ENTER_HINT
+    + " as connector.key.github."
 )
 
 

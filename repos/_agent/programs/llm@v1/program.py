@@ -324,15 +324,23 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     req = adapter.build_request(messages, system, tools or [], prov["model"])
     if max_tokens:
         req["max_tokens"] = max_tokens
+    # `about` (ADR-021 §1): the descriptor the host shows the human
+    # when the key is missing — the one credential the agent cannot
+    # ask for itself.
+    host = prov["base_url"].split("//", 1)[-1].split("/", 1)[0]
     if prov["provider"] == "anthropic":
         url = prov["base_url"].rstrip("/") + "/v1/messages"
         headers = {"anthropic-version": "2023-06-01"}
-        credential = {"ref": prov["api_key_ref"], "header": "x-api-key"}
+        credential = {"ref": prov["api_key_ref"], "header": "x-api-key",
+                      "about": {"label": "Anthropic API key", "hosts": [host],
+                                "help": "https://console.anthropic.com/settings/keys"}}
     else:
         url = prov["base_url"].rstrip("/") + "/chat/completions"
         headers = {}
         credential = {"ref": prov["api_key_ref"], "header": "Authorization",
-                      "prefix": "Bearer "}
+                      "prefix": "Bearer ",
+                      "about": {"label": prov["provider"] + " API key",
+                                "hosts": [host]}}
     resp = effect("http.post", {  # noqa: F821 - guest global
         "url": url, "headers": headers, "json": req,
         "timeout": _TIMEOUT_S, "credential": credential})

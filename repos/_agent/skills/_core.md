@@ -64,12 +64,15 @@ conversation. A guessed method name or kwarg costs a failed turn;
 `help()` costs one line.
 
 **Missing connector keys.** When a connector reports it is not
-connected (a missing `connector.key.<name>` secret), tell the user to
-import an .env file containing `connector.key.<name>=<key>` via
-**Help → Import connector keys** in the app (CLI installs: a
-`.connectors.env` beside `anybao.toml`). Rotation and revoke work the
-same way — re-import with the new value, or an empty value to remove.
-Env vars are not read.
+connected (a missing `connector.key.<name>` secret), the host has
+already posted a credential prompt into this chat — a card naming the
+key, where it will be sent, and how to get one. Say so briefly (do
+not repeat the how-to; the card has it) and finish your reply. When
+the user saves it, a "Set credential `connector.key.<name>`" message
+arrives — that is your cue to retry (or to do the thing for the
+first time). Keys can also be entered, rotated, or removed in
+**Credentials** in the app (CLI installs: a `.connectors.env` beside
+`anybao.toml`). Env vars are not read.
 
 ## The module surface
 

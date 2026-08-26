@@ -74,7 +74,7 @@ def test_status_and_disconnect_pass_through():
 def test_typed_failures_map_to_actionable_messages():
     cases = [
         ("not_configured", "no connector.oauth.google.client_id — seed it",
-         ("Cloud Console", "Import connector keys")),
+         ("Cloud Console", "Credentials")),
         ("consent_timeout", "consent for google is still pending",
          ("status()",)),
         ("not_connected", "google is not connected",
