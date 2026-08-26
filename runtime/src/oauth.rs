@@ -192,6 +192,21 @@ impl OauthState {
         }
     }
 
+    /// The OAuth client for a sub-ref (`.client_id` / `.client_secret`):
+    /// the connector-bundled value (metadata, a public client — ADR-011
+    /// §3) wins; a seeded secret row is the self-hoster override only
+    /// when nothing was bundled.
+    fn client_value(&self, key: &str) -> Option<String> {
+        let bundled = self
+            .meta
+            .lock()
+            .expect("oauth meta lock poisoned")
+            .get(key)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|s| !s.is_empty());
+        bundled.or_else(|| self.secret(key))
+    }
+
     /// Grant metadata loaded back from the store at boot (serve).
     pub fn seed_meta(&self, key: &str, value: Value) {
         self.meta
@@ -270,19 +285,18 @@ impl OauthState {
                 format!("{provider} is not connected — run the provider's connect first"),
             )
         })?;
-        let client_id = self.secret(&format!("{handle}.client_id")).ok_or_else(|| {
-            fail(
-                "not_configured",
-                format!(
-                    "no {handle}.client_id — seed it (and {handle}.client_secret) \
-                     via .connectors.env / --secrets-file"
-                ),
-            )
-        })?;
+        let client_id = self
+            .client_value(&format!("{handle}.client_id"))
+            .ok_or_else(|| {
+                fail(
+                    "not_configured",
+                    format!("no OAuth client for {provider} — the connector must pass client_id to connect()"),
+                )
+            })?;
         // A Desktop-client secret is a public-client secret (ADR-011 §3):
         // sent when present, proves nothing, never required.
         let client_secret = self
-            .secret(&format!("{handle}.client_secret"))
+            .client_value(&format!("{handle}.client_secret"))
             .unwrap_or_default();
         if desc.client_auth != "post_body" {
             return Err(fail(
@@ -387,6 +401,10 @@ impl OauthState {
         provider: &str,
         scopes: Option<Vec<String>>,
         timeout_s: Option<f64>,
+        // the connector-bundled OAuth client (public client, ADR-011 §3):
+        // remembered as non-secret metadata so refresh-at-injection works
+        // after a restart without a guest call
+        client: Option<(String, String)>,
     ) -> Result<Value, EffectFailure> {
         let desc = self
             .providers
@@ -394,16 +412,38 @@ impl OauthState {
             .cloned()
             .ok_or_else(|| fail("not_configured", format!("no oauth provider {provider:?}")))?;
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
-        let client_id = self.secret(&format!("{handle}.client_id")).ok_or_else(|| {
-            fail(
-                "not_configured",
-                format!(
-                    "no {handle}.client_id — create a Desktop-app OAuth client \
-                     and seed {handle}.client_id / {handle}.client_secret via \
-                     .connectors.env / --secrets-file"
-                ),
-            )
-        })?;
+        if let Some((id, secret)) = client.filter(|(id, _)| !id.is_empty()) {
+            for (sub, v) in [("client_id", id), ("client_secret", secret)] {
+                let key = format!("{handle}.{sub}");
+                let changed = self
+                    .meta
+                    .lock()
+                    .expect("oauth meta lock poisoned")
+                    .insert(key.clone(), json!(v))
+                    .as_ref()
+                    .and_then(|old| old.as_str().map(|s| s != v))
+                    .unwrap_or(true);
+                if changed {
+                    if let Some(p) = &self.persist {
+                        if let Err(e) = p.persist_meta(&key, &json!(v)) {
+                            tracing::warn!("oauth: could not persist {key} ({e})");
+                        }
+                    }
+                }
+            }
+        }
+        let client_id = self
+            .client_value(&format!("{handle}.client_id"))
+            .ok_or_else(|| {
+                fail(
+                    "not_configured",
+                    format!(
+                        "no OAuth client for {provider} — the connector must pass \
+                         client_id (and client_secret) to connect(); a self-hosted \
+                         override can be entered in Credentials as {handle}.client_id"
+                    ),
+                )
+            })?;
 
         let flow = {
             let mut flows = self.flows.lock().expect("oauth flows lock poisoned");
@@ -751,10 +791,10 @@ impl OauthState {
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
         let refresh_ref = format!("{handle}.refresh");
         let client_id = self
-            .secret(&format!("{handle}.client_id"))
+            .client_value(&format!("{handle}.client_id"))
             .unwrap_or_default();
         let client_secret = self
-            .secret(&format!("{handle}.client_secret"))
+            .client_value(&format!("{handle}.client_secret"))
             .unwrap_or_default();
         let resp = self
             .agent
@@ -1251,7 +1291,7 @@ mod tests {
         let (state, url_slot, calls) = connect_state(&token_url, "");
         let slot = url_slot.clone();
         let clicker = std::thread::spawn(move || complete_consent(&slot, "authcode1", false, None));
-        let out = state.connect("testprov", None, Some(5.0)).unwrap();
+        let out = state.connect("testprov", None, Some(5.0), None).unwrap();
         let q = clicker.join().unwrap();
 
         assert_eq!(out["ok"], json!(true));
@@ -1296,7 +1336,9 @@ mod tests {
         let (state, url_slot, _) = connect_state(&token_url, "");
         let slot = url_slot.clone();
         let clicker = std::thread::spawn(move || complete_consent(&slot, "authcode1", true, None));
-        let err = state.connect("testprov", None, Some(5.0)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
         clicker.join().unwrap();
         assert_eq!(err.type_, "state_mismatch");
         assert!(bodies.lock().unwrap().is_empty()); // no exchange happened
@@ -1310,7 +1352,9 @@ mod tests {
         let slot = url_slot.clone();
         let clicker =
             std::thread::spawn(move || complete_consent(&slot, "", false, Some("access_denied")));
-        let err = state.connect("testprov", None, Some(5.0)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
         clicker.join().unwrap();
         assert_eq!(err.type_, "consent_denied");
 
@@ -1319,7 +1363,9 @@ mod tests {
         let (state, url_slot, _) = connect_state(&token_url, "");
         let slot = url_slot.clone();
         let clicker = std::thread::spawn(move || complete_consent(&slot, "authcode2", false, None));
-        let err = state.connect("testprov", None, Some(5.0)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
         clicker.join().unwrap();
         assert_eq!(err.type_, "no_refresh_token");
     }
@@ -1329,7 +1375,9 @@ mod tests {
         let (token_url, _) = capturing_endpoint(full_token_response());
         let (state, url_slot, _) = connect_state(&token_url, "");
         // nobody clicks inside the connect timeout
-        let err = state.connect("testprov", None, Some(0.2)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(0.2), None)
+            .unwrap_err();
         assert_eq!(err.type_, "consent_timeout");
         let st = state.status("testprov").unwrap();
         assert_eq!(st["connected"], json!(false));
@@ -1354,9 +1402,11 @@ mod tests {
         let (token_url, _) = capturing_endpoint(full_token_response());
         let (state, url_slot, calls) = connect_state(&token_url, "");
         let s2 = state.clone();
-        let waiter = std::thread::spawn(move || s2.connect("testprov", None, Some(5.0)));
+        let waiter = std::thread::spawn(move || s2.connect("testprov", None, Some(5.0), None));
         // second connect while pending: joins — one receiver, one URL
-        let err = state.connect("testprov", None, Some(0.2)).unwrap_err();
+        let err = state
+            .connect("testprov", None, Some(0.2), None)
+            .unwrap_err();
         assert_eq!(err.type_, "consent_timeout");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         complete_consent(&url_slot, "authcode4", false, None);
@@ -1372,6 +1422,7 @@ mod tests {
             Ok(self.0.get(key).cloned())
         }
         fn mark_missing(&self, _key: &str, _about: &Value, _run_id: &str) {}
+        fn mark_rejected(&self, _key: &str, _about: &Value, _run_id: &str, _status: u16) {}
     }
 
     #[test]

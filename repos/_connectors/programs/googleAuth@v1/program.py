@@ -19,14 +19,22 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # not apply to managed refs).
 
 _PROVIDER = "google"
+# The OAuth client this connector ships with (ADR-011 §3): a Google
+# "Desktop app" client is a PUBLIC client — its id and "secret" are
+# bundled, extractable by design, and prove nothing; PKCE + the loopback
+# redirect are the protection. Only the refresh token is a secret, and
+# it never leaves the host. The host remembers these as non-secret
+# metadata rows so refresh keeps working across restarts; a self-hosted
+# override is a `connector.oauth.google.client_id` row in Credentials.
+_CLIENT_ID = "519847309896-if7o0qblp6dr4d5elr1ibuhkge8c2mc3.apps.googleusercontent.com"
+_CLIENT_SECRET = "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"
 _CRED = {"ref": "connector.oauth.google", "header": "Authorization", "prefix": "Bearer "}
 
 _CONFIGURE_HINT = (
-    " — create an OAuth client in Google Cloud Console (APIs & Services > "
-    "Credentials > Create credentials > OAuth client ID > Desktop app), then "
-    "enter connector.oauth.google.client_id and "
-    "connector.oauth.google.client_secret in Credentials in the app (CLI: a "
-    ".connectors.env beside anybao.toml)."
+    " — this connector ships its own OAuth client, so this means the "
+    "runtime is older than the connector or the provider table lacks "
+    "google; a self-hosted override is a connector.oauth.google.client_id "
+    "row in Credentials in the app."
 )
 
 
@@ -63,7 +71,8 @@ def connect(scopes=None, timeout=None):
     scopes: optional list to override the default read-only union
     (gmail/calendar/drive-metadata/sheets); Google re-consents
     incrementally, so adding a scope later keeps earlier grants."""
-    payload = {"provider": _PROVIDER}
+    payload = {"provider": _PROVIDER, "client_id": _CLIENT_ID,
+               "client_secret": _CLIENT_SECRET}
     if scopes:
         payload["scopes"] = list(scopes)
     if timeout is not None:
