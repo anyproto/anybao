@@ -263,14 +263,16 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         &json!({
         "name": SECRETS_DATASET, "displayName": "Agent Secrets",
         "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
-        // A system dataset: declared, not dynamic. The synced metadata
-        // (ADR-021 §1/§2) carries no secret material — the value is the
-        // one device-local field.
+        // A system dataset: declared, not dynamic. The value is
+        // ACCOUNT-scoped (synced — ADR-021 §4: any-sync encrypts every
+        // change with the space's ACL read key, so a synced field is
+        // end-to-end encrypted and the owner-only bao space is the
+        // at-rest guarantee); a key entered on any device reaches the
+        // device running the agent.
         "fields": [
             {"key": "key", "kind": "string", "mutableBy": "any"},
             {"key": "secret", "kind": "boolean", "mutableBy": "any"},
-            {"key": SECRETS_FIELD, "kind": "string", "scope": "local",
-             "mutableBy": "any"},
+            {"key": SECRETS_FIELD, "kind": "string", "mutableBy": "any"},
             {"key": "status", "kind": "string", "mutableBy": "any"},
             {"key": "updatedAt", "kind": "datetime", "mutableBy": "any"},
             {"key": "label", "kind": "string", "mutableBy": "any"},
@@ -351,11 +353,10 @@ const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 /// The `agent_config` dataset name (mirrors the server-side type).
 const CONFIG_DATASET: &str = "agent_config";
 
-/// The `agent_secrets` dataset + its local-scope value field (mirrors
-/// the server-side `internal/agentsecrets` type): the dedicated home of
-/// device-local secrets, split out of `agent_config` so the broker can
-/// block guest reads of the whole dataset by name/object id while the
-/// config object stays guest-readable.
+/// The `agent_secrets` dataset + its value field: the dedicated home of
+/// account-scoped secrets (ADR-021 §4), split out of `agent_config` so
+/// the broker can block guest reads of the whole dataset by name/object
+/// id while the config object stays guest-readable.
 const SECRETS_DATASET: &str = "agent_secrets";
 const SECRETS_FIELD: &str = "value";
 
@@ -380,17 +381,17 @@ fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> 
         .collect()
 }
 
-/// Device-local secret persistence (ADR-006 §3). Config secrets (the
-/// provider API keys and any other ref) live as a never-synced
-/// `localValue` on their config record, not in synced space data. On
-/// serve start, three passes:
+/// Secret persistence (ADR-021 §4). Config secrets (the provider API
+/// keys and any other ref) live as the account-scoped `value` of their
+/// `agent_secrets` row — synced end-to-end encrypted, owner-only space.
+/// On serve start, three passes:
 ///
 /// 1. HARD seeds (`Config::secret_overrides` — the `.connectors.env`
 ///    file or an embedder's in-memory feed; open ref set): persisted
 ///    write-through — a stored value that differs is ROTATED, an empty
 ///    override DELETES the stored secret. This is the rotation path;
 ///    env vars never rotate.
-/// 2. Stored device-local values (every secret-marked record) load
+/// 2. Stored values (every secret-marked record) load
 ///    into `secrets`; stored wins over embedder-fed soft seeds.
 /// 3. Soft seeds (whatever the embedder put in `Config::secrets`, e.g.
 ///    bundled demo keys — env vars are NOT read, removed 2026-07-28):
@@ -422,8 +423,8 @@ fn bootstrap_secrets(
             secrets.remove(secret_ref);
             if stored.is_some() {
                 match persist_local_secret(c, space, obj, dataset, field, secret_ref, "") {
-                    Ok(()) => info!("config: {secret_ref} removed from device-local store"),
-                    Err(e) => warn!("config: could not remove {secret_ref} device-locally ({e})"),
+                    Ok(()) => info!("config: {secret_ref} removed from store"),
+                    Err(e) => warn!("config: could not remove {secret_ref} ({e})"),
                 }
             }
             continue;
@@ -431,15 +432,15 @@ fn bootstrap_secrets(
         secrets.insert(secret_ref.clone(), value.clone());
         match stored {
             Some(ref s) if s == value => {
-                info!("config: {secret_ref} loaded from device-local store");
+                info!("config: {secret_ref} loaded from store");
                 stamp_set_if_needed(c, space, obj, dataset, &rows, secret_ref);
             }
             other => match persist_local_secret(c, space, obj, dataset, field, secret_ref, value) {
                 Ok(()) if other.is_some() => info!("config: {secret_ref} rotated (hard seed)"),
-                Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
+                Ok(()) => info!("config: {secret_ref} bootstrapped to store"),
                 Err(e) => {
                     warn!(
-                        "config: could not persist {secret_ref} device-locally ({e}); \
+                        "config: could not persist {secret_ref} ({e}); \
                          using the seeded value this run"
                     );
                     unpersisted.push(secret_ref.to_string());
@@ -465,7 +466,7 @@ fn bootstrap_secrets(
             .filter(|s| !s.is_empty());
         if let Some(key) = stored {
             secrets.insert(secret_ref.into(), key.into());
-            info!("config: {secret_ref} loaded from device-local store");
+            info!("config: {secret_ref} loaded from store");
             stamp_set_if_needed(c, space, obj, dataset, &rows, secret_ref);
         }
     }
@@ -482,10 +483,10 @@ fn bootstrap_secrets(
         .collect();
     for (secret_ref, key) in soft {
         match persist_local_secret(c, space, obj, dataset, field, &secret_ref, &key) {
-            Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
+            Ok(()) => info!("config: {secret_ref} bootstrapped to store"),
             Err(e) => {
                 warn!(
-                    "config: could not persist {secret_ref} device-locally ({e}); \
+                    "config: could not persist {secret_ref} ({e}); \
                          using the seeded value this run"
                 );
                 unpersisted.push(secret_ref.to_string());
@@ -528,7 +529,7 @@ fn stamp_set_if_needed(
     }
 }
 
-/// The device-local secret value for `key` from already-queried rows
+/// The stored secret value for `key` from already-queried rows
 /// (None when unset/empty).
 fn stored_local_secret(rows: &[Value], key: &str, field: &str) -> Option<String> {
     rows.iter()
@@ -538,11 +539,10 @@ fn stored_local_secret(rows: &[Value], key: &str, field: &str) -> Option<String>
         .filter(|s| !s.is_empty())
 }
 
-/// The two-step local-scope write the server requires (ADR-006 §3): a
-/// synced upsert materializes the record — carrying only the non-secret
-/// key name + a `secret` marker — then a device-local `$set` writes the
-/// secret into the never-synced `localValue` field. Local scope cannot
-/// create records, hence the synced record first.
+/// One synced per-path write (ADR-021 §4): metadata stamps + the value.
+/// The value is account-scoped — end-to-end encrypted by any-sync, never
+/// in a trace (resolved after recording), never guest-readable (the
+/// read-guard covers the whole object).
 fn persist_local_secret(
     c: &Client,
     space: &str,
@@ -560,10 +560,8 @@ fn persist_local_secret(
         dataset,
         key,
         &json!({"status": status, "updatedAt": {"$date": now_rfc3339()},
-                "requestedIn": Value::Null}),
-    )?;
-    c.set_local_field(space, obj, dataset, key, field, &json!(secret))?;
-    Ok(())
+                "requestedIn": Value::Null, field: secret}),
+    )
 }
 
 /// Stamp `patch` onto the ref's synced row as per-path ops (`$set`,

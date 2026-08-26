@@ -86,7 +86,7 @@ same way the triggers anchor `bao/triggers/v1` is resolved) — or take
 | -------------- | --------------------- | --------------------- | -------------------------------------------------------------------------------- |
 | `key`          | string (= id)         | runtime / client      | the ref: `connector.key.<x>`, `llm.key.<p>`, `connector.oauth.<p>.<sub>`         |
 | `secret`       | boolean               | runtime / client      | `true` for credential rows, `false` for OAuth metadata rows                      |
-| `value`        | string, **local scope** | client / runtime    | the secret — device-local, never syncs; **write-only for clients** (§5)          |
+| `value`        | string (synced, E2E-encrypted by any-sync) | client / runtime | the secret — account-scoped; **write-only for clients** (§5)        |
 | `status`       | `missing` \| `rejected` \| `set` | runtime / client | `rejected` = the destination answered 401 with the stored value          |
 | `updatedAt`    | datetime `{"$date": RFC3339}` | client / runtime | last value write                                                            |
 | `label`        | string                | runtime               | human name, e.g. "GitHub personal access token"                                 |
@@ -101,57 +101,44 @@ same way the triggers anchor `bao/triggers/v1` is resolved) — or take
 | `meta`         | `{ "value": any }`    | runtime               | OAuth metadata rows only (§6)                                                   |
 
 Read it as a live window/subscription on the dataset (the same
-mechanism as `agent_triggers`). **A same-device query returns `value`**
-(local scope is per device, not per process): strip it at the read
-seam; never render, log, or keep it.
+mechanism as `agent_triggers`). **Every read returns `value`**: strip
+it at the read seam; never render, log, or keep it.
 
 ## 3. Writing a credential (the only write a client makes)
 
-Two `POST /v1/spaces/{spaceId}/modify` calls, in this order:
+One `POST /v1/spaces/{spaceId}/modify` with **per-path ops** (the server
+merges records field by field; a whole-record `$set` does *not* remove
+absent keys, so `requestedIn` must be unset explicitly):
 
-1. Synced metadata, **per-path ops** (the server merges records field by
-   field; a whole-record `$set` does *not* remove absent keys, so
-   `requestedIn` must be unset explicitly):
+```json
+{
+  "objectId": "<secretsObjectId>",
+  "dataset": "agent_secrets",
+  "records": [{
+    "id": "<ref>",
+    "upsert": true,
+    "ops": [
+      { "type": "$set",   "path": "key",       "value": "<ref>" },
+      { "type": "$set",   "path": "secret",    "value": true },
+      { "type": "$set",   "path": "status",    "value": "set" },
+      { "type": "$set",   "path": "updatedAt", "value": { "$date": "2026-08-26T12:00:00.000Z" } },
+      { "type": "$set",   "path": "value",     "value": "<secret>" },
+      { "type": "$unset", "path": "requestedIn" }
+    ]
+  }]
+}
+```
 
-   ```json
-   {
-     "objectId": "<secretsObjectId>",
-     "dataset": "agent_secrets",
-     "records": [{
-       "id": "<ref>",
-       "upsert": true,
-       "ops": [
-         { "type": "$set",   "path": "key",       "value": "<ref>" },
-         { "type": "$set",   "path": "secret",    "value": true },
-         { "type": "$set",   "path": "status",    "value": "set" },
-         { "type": "$set",   "path": "updatedAt", "value": { "$date": "2026-08-26T12:00:00.000Z" } },
-         { "type": "$unset", "path": "requestedIn" }
-       ]
-     }]
-   }
-   ```
-
-2. The value, **local scope**:
-
-   ```json
-   {
-     "objectId": "<secretsObjectId>",
-     "dataset": "agent_secrets",
-     "scope": "local",
-     "records": [{ "id": "<ref>", "ops": [{ "type": "$set", "path": "value", "value": "<secret>" }] }]
-   }
-   ```
-
-Delete = the same pair with `status: "missing"` and value `""`.
+Delete = the same with `status: "missing"` and value `""`.
 
 Rules:
 - Never write `label`/`hosts`/`help`/`note` — they are the runtime's.
 - Never write refs ending in `.refresh` under `connector.oauth.`
   (managed tokens) or any `.account`/`.granted_scopes`/`.client_id`/
   `.client_secret` row (metadata).
-- The value must reach the **runtime's device** store. The client and
-  the serve share one `any` server today (desktop/embedded). A remote
-  runtime is out of scope for this contract (ADR-021 "Out of scope").
+- The value syncs within the account (end-to-end encrypted by
+  any-sync), so a key entered on a phone reaches the desktop running
+  the agent — no same-device requirement.
 - Then send `credential_set` (§1).
 
 ## 4. Rendering the request card
@@ -204,7 +191,8 @@ those too.
 
 ## 5. Security rules (non-negotiable)
 
-- The value is write-only for clients. Strip `value` from every read.
+- The value is write-only for clients. Strip `value` from every read
+  (it syncs to every device of the account).
 - Never display, log, toast, copy to analytics, or persist the value
   outside the local-scope write.
 - Show `hosts` at entry; an unbound key is called out, not hidden.
@@ -242,7 +230,7 @@ not from the tool.
 - [ ] Live-read `agent_secrets` on that object; strip `value`.
 - [ ] Card: headline, label, ref, hosts sentence (empty → warning), help + note, password + Save.
 - [ ] Per-card state from the chat (answered / superseded / open).
-- [ ] Save = two-step write (§3) → `credential_set` → arm typing.
+- [ ] Save = the per-path write (§3) → `credential_set` → arm typing.
 - [ ] `credential_set` rendered as a system row.
 - [ ] Credentials tool with the synthetic LLM row and read-only OAuth rows.
 - [ ] Security rules (§5).
