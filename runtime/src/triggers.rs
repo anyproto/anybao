@@ -757,6 +757,16 @@ impl Watcher {
                     out.push('\n');
                 }
                 out.push_str(&format!("[attachment {kind}: {link}]"));
+                // ADR-021 §5: a credential_set is a cue to ACT, not news
+                // to acknowledge — the run that needed the key never
+                // finished (or failed), so the model must redo it.
+                if kind == "credential_set" {
+                    out.push_str(
+                        "\n[runtime: the user just entered this credential. Do NOT merely \
+                         acknowledge it — go back to the last user request before the \
+                         credential prompt and carry it out now, replying with its result.]",
+                    );
+                }
             }
         }
         out

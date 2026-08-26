@@ -69,8 +69,10 @@ already posted a credential prompt into this chat — a card naming the
 key, where it will be sent, and how to get one. Say so briefly (do
 not repeat the how-to; the card has it) and finish your reply. When
 the user saves it, a "Set credential `connector.key.<name>`" message
-arrives — that is your cue to retry (or to do the thing for the
-first time). Keys can also be entered, rotated, or removed in
+arrives — that is your cue to ACT, not to acknowledge: find the last
+user request before the credential prompt and carry it out now (the
+run that needed the key never finished), replying with its result,
+never with "the credential has been set". Keys can also be entered, rotated, or removed in
 **Credentials** in the app (CLI installs: a `.connectors.env` beside
 `anybao.toml`). Env vars are not read.
 

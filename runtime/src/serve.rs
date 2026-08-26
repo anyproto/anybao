@@ -280,6 +280,11 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             {"key": "requestedBy", "kind": "string", "mutableBy": "any"},
             {"key": "requestedIn", "kind": "string", "mutableBy": "any"},
             {"key": "requestedAt", "kind": "datetime", "mutableBy": "any"},
+            {"key": "rejectedAt", "kind": "datetime", "mutableBy": "any"},
+            {"key": "rejectedWith", "kind": "number", "mutableBy": "any"},
+            // non-secret OAuth metadata rows (`.granted_scopes`, `.account`,
+            // the bundled `.client_id`/`.client_secret`): `{value}`
+            {"key": "meta", "kind": "object", "mutableBy": "any"},
         ]}),
     )?;
     ensure_dataset(
@@ -620,9 +625,30 @@ impl crate::broker::SecretSource for ServeSecretStore {
     }
 
     fn mark_missing(&self, key: &str, about: &Value, run_id: &str) {
-        let mut patch = Map::new();
-        patch.insert("status".into(), json!("missing"));
-        patch.insert("requestedBy".into(), json!(run_id));
+        self.stamp(
+            key,
+            about,
+            json!({"status": "missing", "requestedBy": run_id}),
+        );
+    }
+
+    fn mark_rejected(&self, key: &str, about: &Value, run_id: &str, http_status: u16) {
+        self.stamp(
+            key,
+            about,
+            // a rejection is a new event: the previous bubble (a
+            // "missing" card, or an older rejection) no longer covers
+            // it — clearing requestedIn lets the wrapper re-ask
+            json!({"status": "rejected", "requestedBy": run_id,
+                   "rejectedAt": {"$date": now_rfc3339()}, "rejectedWith": http_status,
+                   "requestedIn": Value::Null}),
+        );
+    }
+}
+
+impl ServeSecretStore {
+    fn stamp(&self, key: &str, about: &Value, base: Value) {
+        let mut patch = base.as_object().cloned().unwrap_or_default();
         for k in ["label", "hosts", "help", "note"] {
             if let Some(v) = about.get(k).filter(|v| !v.is_null()) {
                 patch.insert(k.into(), v.clone());
@@ -636,7 +662,7 @@ impl crate::broker::SecretSource for ServeSecretStore {
             key,
             &Value::Object(patch),
         ) {
-            warn!("secrets: could not mark {key} missing ({e})");
+            warn!("secrets: could not stamp {key} ({e})");
         }
     }
 }
@@ -655,12 +681,19 @@ impl crate::oauth::SecretPersist for ServeSecretStore {
     }
 
     fn persist_meta(&self, key: &str, value: &Value) -> Result<()> {
-        self.client.upsert_record(
+        let mut ops = vec![
+            json!({"type": "$set", "path": "key", "value": key}),
+            json!({"type": "$set", "path": "secret", "value": false}),
+        ];
+        ops.push(if value.is_null() {
+            json!({"type": "$unset", "path": "meta"})
+        } else {
+            json!({"type": "$set", "path": "meta", "value": {"value": value}})
+        });
+        self.client.modify(
             &self.space,
-            &self.obj,
-            SECRETS_DATASET,
-            key,
-            &json!({"key": key, "value": value}),
+            &json!({"objectId": self.obj, "dataset": SECRETS_DATASET,
+                    "records": [{"id": key, "upsert": true, "ops": ops}]}),
         )?;
         Ok(())
     }
@@ -961,9 +994,16 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
                     continue;
                 };
                 if k.starts_with(crate::oauth::OAUTH_REF_PREFIX)
-                    && (k.ends_with(".granted_scopes") || k.ends_with(".account"))
+                    && (k.ends_with(".granted_scopes")
+                        || k.ends_with(".account")
+                        || k.ends_with(".client_id")
+                        || k.ends_with(".client_secret"))
                 {
-                    if let Some(v) = row.get("value").filter(|v| !v.is_null()) {
+                    if let Some(v) = row
+                        .get("meta")
+                        .and_then(|m| m.get("value"))
+                        .filter(|v| !v.is_null())
+                    {
                         oauth.seed_meta(k, v.clone());
                     }
                 }
@@ -1310,6 +1350,26 @@ impl RunCtx {
     }
 }
 
+/// `type: message` of a run's error envelope, clipped for a chat line.
+fn short_error(raw: &str) -> String {
+    let s = serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| {
+            Some(format!(
+                "{}: {}",
+                v["type"].as_str()?,
+                v["message"].as_str()?
+            ))
+        })
+        .unwrap_or_else(|| raw.to_string());
+    let s = s.replace('\n', " ");
+    if s.chars().count() > 160 {
+        format!("{}…", s.chars().take(160).collect::<String>())
+    } else {
+        s
+    }
+}
+
 /// Post the credential-request bubble for each ref still `missing`
 /// whose row does not already name this chat as the place a live
 /// request sits (`requestedIn`; cleared by the write that sets the
@@ -1357,7 +1417,20 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
         } else {
             format!(", used for {}", hosts.join(", "))
         };
-        let text = format!("I need a credential to continue: {label} (`{r}`{used_for}).");
+        let text = if status == "rejected" {
+            let code = row
+                .and_then(|row| row.get("rejectedWith"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(401);
+            let by = if hosts.is_empty() {
+                "the service".to_string()
+            } else {
+                hosts.join(", ")
+            };
+            format!("The {label} was rejected by {by} ({code}) — please enter a new one (`{r}`).")
+        } else {
+            format!("I need a credential to continue: {label} (`{r}`{used_for}).")
+        };
         let sent = ctx.client.chat_send(
             &ctx.space,
             &ctx.chat,
@@ -1439,22 +1512,27 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
             // ADR-021 §2: one request bubble per missing ref (the host
             // is the only emitter). A run that died ON the miss — the
             // LLM key — gets the request instead of "Something broke".
-            let died_on_miss = rr.status != "ok"
-                && rr
-                    .error
-                    .as_deref()
-                    .map(|raw| raw.contains("SecretMissing"))
-                    .unwrap_or(false);
+            // …or on the destination's 401 (LlmError) — either way the
+            // request bubble (or the "still waiting" line) IS the reply
+            let died_on_miss = rr.status != "ok" && !rr.missing_secrets.is_empty();
             let posted = post_credential_requests(&ctx, &rr.missing_secrets);
             if died_on_miss && posted == 0 {
                 // the bubble for this ref already sits in the chat
-                // (dedup) — a silent turn would read as "bao is gone"
+                // (dedup) — a silent turn would read as "bao is gone";
+                // the last error rides along so the human can see WHY
                 let refs = rr.missing_secrets.join("`, `");
+                let why = rr
+                    .error
+                    .as_deref()
+                    .map(short_error)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" Last attempt: {s}"))
+                    .unwrap_or_default();
                 let _ = ctx.client.chat_send(
                     &ctx.space,
                     &ctx.chat,
                     &json!({
-                    "text": format!("Still waiting for `{refs}` — see the credential prompt above."),
+                    "text": format!("Still waiting for `{refs}` — see the credential prompt above.{why}"),
                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                 );
             }

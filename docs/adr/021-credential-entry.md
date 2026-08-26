@@ -97,8 +97,15 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
    system dataset): these are declared fields — `hosts` an array,
    the two timestamps `datetime` — and there is no reconcile for
    pre-existing datasets (no backward compatibility: recreate).
-   `status ∈ {missing, set}`; `set` is stamped by §4 and by
+   `status ∈ {missing, rejected, set}`; `set` is stamped by §4 and by
    `bootstrap_secrets` for every stored/seeded value at boot.
+   **`rejected`**: the destination answered **401** to a request
+   carrying the ref — the stored value is wrong. The broker stamps it
+   (`rejectedAt`, `rejectedWith: 401`) and queues the ref exactly like
+   a miss, so a wrong key gets the same card ("…was rejected — enter a
+   new one") with no connector involvement and no model-callable
+   "ask for a secret" surface. 403 is not a rejection (usually scopes);
+   managed OAuth refs are excluded (their own reconsent path).
 2. The run wrapper (`start_or_inject`, the same place the "Something
    broke" text is posted) sends **one** chat message per
    `(chat, ref)` while `status == missing`:
@@ -117,9 +124,11 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
    `missing` and the row's `requestedIn` is not this chat; posting
    stamps `requestedIn`/`requestedAt`, the write that sets the value
    clears `requestedIn` — so a retry that fails again re-asks.
-3. When the failed ref is the **LLM key** the run cannot produce a
-   reply; the wrapper's error branch posts the request *instead of*
-   "Something broke". On serve boot with no LLM key nothing is posted
+3. When the failed ref is the **LLM key** (missing, or the provider's
+   401) the run cannot produce a reply; the wrapper's error branch
+   posts the request *instead of* "Something broke" — any run that
+   failed with a queued credential request is reported by that
+   request alone. On serve boot with no LLM key nothing is posted
    proactively — the first user message triggers it, and the
    Credentials dashboard (§5) shows the row regardless.
 

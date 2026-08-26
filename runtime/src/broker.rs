@@ -84,6 +84,10 @@ pub trait SecretSource: Send + Sync {
     /// guest passed (`about`), so the run wrapper can post ONE request
     /// bubble and the dashboard can render it (ADR-021 §2).
     fn mark_missing(&self, key: &str, about: &Value, run_id: &str);
+    /// The destination answered 401 to a request carrying this ref:
+    /// the stored value is wrong. Stamp `status: "rejected"` so the
+    /// same request bubble asks for a replacement (ADR-021 §2).
+    fn mark_rejected(&self, key: &str, about: &Value, run_id: &str, http_status: u16);
 }
 
 pub struct Broker {
@@ -131,8 +135,9 @@ pub struct Broker {
     /// The secrets store (ADR-021 §4); None = seeds only (`anyrt run`,
     /// or a server without the secrets object).
     pub secret_store: Option<Arc<dyn SecretSource>>,
-    /// Static refs that resolved to nothing this run, in first-miss
-    /// order (ADR-021 §2) — the run wrapper posts the request bubbles.
+    /// Static refs that need the human this run — resolved to nothing,
+    /// or rejected (401) by their destination — in first-event order
+    /// (ADR-021 §2); the run wrapper posts the request bubbles.
     pub missing_secrets: Vec<String>,
     /// Host-emit depth (ADR-011 §6): >0 while a syscall re-enters
     /// `call` to record its own nested effect (`oauth.refresh`).
@@ -635,7 +640,19 @@ impl Broker {
                 .collect()
         });
         let timeout = payload.get("timeout").and_then(|t| t.as_f64());
-        state.connect(provider, scopes, timeout)
+        // the connector's bundled public client (ADR-011 §3) — not a
+        // secret, recorded in the trace like the rest of the payload
+        let client = payload.get("client_id").and_then(|v| v.as_str()).map(|id| {
+            (
+                id.to_string(),
+                payload
+                    .get("client_secret")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        });
+        state.connect(provider, scopes, timeout, client)
     }
 
     fn sys_oauth_status(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
@@ -786,6 +803,7 @@ impl Broker {
         // Static refs read the per-run map; managed oauth refs resolve
         // through the token lifecycle (ADR-011 §6) — same guest shape,
         // different custody.
+        let mut static_ref: Option<(String, Value)> = None;
         let cred = match payload.get("credential").and_then(|c| c.as_object()) {
             Some(cred) => {
                 let r = cred
@@ -806,6 +824,8 @@ impl Broker {
                 let value = if r.starts_with(OAUTH_REF_PREFIX) {
                     self.resolve_managed(&r)?
                 } else {
+                    static_ref =
+                        Some((r.clone(), cred.get("about").cloned().unwrap_or(Value::Null)));
                     self.resolve_static(&r, cred.get("about"))?
                 };
                 Some((header, format!("{prefix}{value}")))
@@ -883,6 +903,20 @@ impl Broker {
             cur_url = next;
         };
         let status = resp.status();
+        // ADR-021 §2: a 401 to a static-ref request means the stored
+        // value is wrong — the host asks for a replacement, the same
+        // way it asks for a missing one. 403 is left alone (scopes,
+        // not the key); managed refs have their own reconsent path.
+        if status == 401 {
+            if let Some((r, about)) = &static_ref {
+                if !self.missing_secrets.iter().any(|m| m == r) {
+                    self.missing_secrets.push(r.clone());
+                    if let Some(store) = &self.secret_store {
+                        store.mark_rejected(r, about, &self.writer.run_id(), status);
+                    }
+                }
+            }
+        }
         let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
         let headers: Map<String, Value> = resp
             .headers_names()
@@ -1826,6 +1860,31 @@ mod tests {
                 .unwrap()
                 .push((key.into(), about.clone()));
         }
+        fn mark_rejected(&self, key: &str, about: &Value, _run_id: &str, status: u16) {
+            self.missing
+                .lock()
+                .unwrap()
+                .push((format!("{key}#{status}"), about.clone()));
+        }
+    }
+
+    #[test]
+    fn a_401_on_a_static_ref_marks_it_rejected() {
+        let base = fake_server(1, move |req| {
+            let _ = req.respond(tiny_http::Response::from_string("nope").with_status_code(401));
+        });
+        let mut b = make_broker("run_adr021_401");
+        let store = Arc::new(MemStore {
+            rows: [("connector.key.x".to_string(), "sk-wrong".to_string())].into(),
+            missing: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        let out = b
+            .call("http.get", cred_payload(format!("{base}/a")))
+            .unwrap();
+        assert_eq!(out["status"], json!(401));
+        assert_eq!(b.missing_secrets, vec!["connector.key.x".to_string()]);
+        assert_eq!(store.missing.lock().unwrap()[0].0, "connector.key.x#401");
     }
 
     #[test]
