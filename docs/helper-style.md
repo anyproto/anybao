@@ -60,10 +60,10 @@ obj["book"]["author"]           # reads mirror the write shape
   /types/:id/properties` → `[{id,name,xKey,kind}]`).
 - **Cache keyed by RESOLVED spaceId**, TTL-bounded, invalidatable — a
   cross-space call must not read another space's catalog.
-- Conceptual keys (`"program"`, `"chat"`, user xKeys) resolve to real
-  ids through the catalog. Built-in registered types have literal
-  string ids (`"program"`, `"chat"`, `"nav"`, `"editor"`); user types
-  have `bafyrei…` hashes.
+- Conceptual keys (`"chat"`, user xKeys such as `"program"`) resolve to
+  real ids through the catalog. Built-in registered types have literal
+  string ids (`"chat"`, `"nav"`, `"editor"`); user types (including
+  `program` / `mini_app`) have `bafyrei…` hashes.
 
 ## 5. Space handling
 

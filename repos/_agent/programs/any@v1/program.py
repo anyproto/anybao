@@ -278,10 +278,12 @@ def _ui_context_pointer(rec):
 
 
 # Builtin type namespaces whose group + property keys are already literal
-# handles (`any.name`, `any.types`, `nav.parentId`, `program.name`). They are
-# never reverse-mapped on read nor xKey-resolved on write — see the xKey
-# normalization contract in ADR-006 §6.
-_RESERVED_GROUPS = {"any", "nav", "program", "_ver"}
+# handles (`any.name`, `any.types`, `nav.parentId`). They are never
+# reverse-mapped on read nor xKey-resolved on write — see the xKey
+# normalization contract in ADR-006 §6. `program` and `mini_app` are
+# harness-declared USER types (ADR-010 §5, ADR-008 §6): resolved by xKey
+# like any other.
+_RESERVED_GROUPS = {"any", "nav", "_ver"}
 
 # Synthetic catalog rows: listed by GET /types in every space but not
 # attachable — no object carries them, and the meta-type's only
@@ -397,7 +399,7 @@ class _Client:
 
     @staticmethod
     def _is_user_type(row):
-        # Builtins report xKey == id (chat, program, nav, any); user types
+        # Builtins report xKey == id (chat, editor, nav, any); user types
         # have a CID id and a slug xKey — only those are (reverse-)mapped.
         return bool(row) and row.get("id") and row.get("id") != row.get("xKey")
 
@@ -440,7 +442,7 @@ class _Client:
     def _resolve_prop_groups(self, space, groups):
         """Nested write groups {typeXKey: {propXKey: val}} -> the id-keyed
         shape the server writes by {typeId: {propId: val}}. Reserved builtin
-        namespaces (any/nav/program) pass through with literal prop keys.
+        namespaces (any/nav) pass through with literal prop keys.
         Unknown type/property keys ERROR — never silently dropped (a
         misplaced key once lost a whole batch of writes)."""
         out = {}
@@ -465,7 +467,7 @@ class _Client:
     def _resolve_path(self, space, path):
         """A readable dotted filter/sort key "typeXKey.propXKey" -> the
         server's "typeId.propId". Keys whose head is a builtin (any.*,
-        nav.*, program.*, bare `id`) pass through unchanged. An
+        nav.*, bare `id`) pass through unchanged. An
         unresolvable head or prop ERRORS — the store answers a typo'd
         key with a silent empty set, never an error (ADR-006 §6 makes
         both halves of that contract ours, reads like writes)."""
@@ -734,6 +736,8 @@ class _Client:
         for depth, `use()` it and `help(mod)`. Import one from another
         space with `use("<alias-or-spaceId>:<name>@<version>")`."""
         out = []
+        if self._resolve_type_seg(space, "program") is None:
+            return []   # no program type = nothing was ever deployed here
         for p in self.query_objects(space, filter={"any.types": "program"},
                                     limit=200):
             prog = p.get("program") or {}

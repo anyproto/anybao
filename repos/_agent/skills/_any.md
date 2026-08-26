@@ -26,7 +26,8 @@ fails in the standard overlay setup, ADR-004 §2):
 - Types and properties are referenced by **xKey** (the stable slug,
   e.g. `"pages"` / `"author"`), NOT the display name and NEVER the raw
   content id — the client resolves xKeys to ids under the hood.
-  Builtins use their id (`chat`, `editor`, `program`, `nav`, `any`).
+  Builtins use their id (`chat`, `editor`, `nav`, `any`); `program` and
+  `mini_app` are ordinary user types (xKey = that slug).
   Three catalog rows are SYNTHETIC — `any`, `spaceIndex`, and `type`
   (the meta-type) — they describe the space itself, are never
   attachable to objects, and their handles are reserved: naming a new

@@ -65,6 +65,20 @@ class FakeAny:
         return oid
 
     # --- the any@v1 methods programs@v1 calls ---
+    def list_types(self, sid):
+        self._objs(sid)
+        return [{"id": "progT", "xKey": "program"}]
+
+    def create_type(self, sid, body):
+        assert body["xKey"] == "program"
+        self.ensured = getattr(self, "ensured", []) + [(sid, "type")]
+        return {"typeId": "progT", "xKey": "program", "created": False}
+
+    def create_dataset(self, sid, type_key, draft):
+        assert type_key == "program"
+        self.ensured = getattr(self, "ensured", []) + [(sid, draft["name"])]
+        return {"ok": True}
+
     def get_space(self, sc):
         sid = sc if isinstance(sc, str) else (sc.get("spaceId") or sc.get("id"))
         self._objs(sid)
@@ -140,6 +154,9 @@ def test_create_tool_is_live_on_use():
     out = p.create_program(SID, {"name": "mailWatch", "source": TOOL})
     assert out == {"ok": True, "objectId": out["objectId"],
                    "spec": "mailWatch@v1", "anyTool": True, "probe": "ok"}
+    # the store was declared before the first write (ADR-017 §1)
+    assert fake.ensured == [(SID, "type"), (SID, "program_source"),
+                            (SID, "program_manifest")]
     # deploy's exact storage shape: derived props + program_source/main
     row = fake.spaces[SID][out["objectId"]]
     assert row["program"] == {

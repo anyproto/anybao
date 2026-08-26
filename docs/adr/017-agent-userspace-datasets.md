@@ -84,6 +84,13 @@ what only guest code writes, lazily on first use: `agent_brain` inside
 `get_brain`, `agent_log` inside the chat-log resolver — idempotent
 `create_type`/`create_dataset`, the enrich/gmailSync pattern.
 
+The same rule covers the two former server builtins that carried code
+(amended 2026-08-26): `program` — ensured by `anyrt deploy` in the
+target space and by `programs@v1` in the working space (ADR-010 §5,
+ADR-013 §1) — and `mini_app`, ensured by `miniapp@v1` (ADR-008 §6).
+Both declare their datasets without a `search` mapping: code is never
+indexed.
+
 **`agent_config`** — dataset `agent_config`, `idRule: user` (record id
 = the dotted config key), `deleteBy: anyone`, **`dynamic: true`**.
 Declared fields: `key` (string, `mutableBy: any`), `secret` (boolean,

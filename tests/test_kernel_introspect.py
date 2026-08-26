@@ -125,6 +125,9 @@ def test_tool_docs_composes_from_real_programs():
     tc = app.use("toolcaller@v1")
 
     class C:
+        def list_types(self, space):
+            return [{"id": "progT", "xKey": "program"}]
+
         def query_objects(self, space, filter=None, **kw):
             return [
                 {"id": "p1", "createdAt": 1, "program":

@@ -9,9 +9,12 @@ rewrite source. Prefer `edit()` for small changes and
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
-# ADR-008 §6. Content lives in the per-object dataset `mini_app`,
-# single record "main", flat string fields; writes are per-field $set
-# ops. Every source write runs the runtime-script guard: author
+# ADR-008 §6. `mini_app` is a harness-declared USER type (xKey
+# `mini_app`) this program — its writer — ensures per space (ADR-017
+# §1); content lives in its runtime dataset `mini_app` (declared
+# without a search mapping: HTML is code, never indexed), single record
+# "main", flat string fields; writes are per-field $set ops. Every
+# source write runs the runtime-script guard: author
 # copies of the react/react-dom/useAnytypeState tags are stripped and
 # all three are prepended in load order (they must precede the
 # author's inline script).
@@ -22,6 +25,14 @@ import re
 _TYPE = "mini_app"
 _DATASET = "mini_app"
 _RECORD = "main"
+_TYPE_DECL = {"name": "Mini App", "xKey": _TYPE}
+_DATASET_DECL = {
+    "name": _DATASET, "displayName": "Mini App",
+    "idRule": "user", "deleteBy": "anyone", "dynamic": True,
+    "fields": [{"key": "source", "kind": "string", "mutableBy": "any"},
+               {"key": "state", "kind": "string", "mutableBy": "any"},
+               {"key": "readme", "kind": "string", "mutableBy": "any"}]}
+_ensured = set()
 
 # the embed loads these by relative src; they must precede the
 # author's inline <script>, react before react-dom
@@ -39,7 +50,23 @@ def _client():
     return use("any@v1")  # noqa: F821 - guest global
 
 
+def _has_store(c, space):
+    return any((t.get("xKey") or t.get("key")) == _TYPE
+               for t in c.list_types(space))
+
+
+def _ensure_store(c, space):
+    """Idempotently declare the `mini_app` type + dataset (cached per run)."""
+    if space in _ensured:
+        return
+    c.create_type(space, _TYPE_DECL)
+    c.create_dataset(space, _TYPE, _DATASET_DECL)
+    _ensured.add(space)
+
+
 def _find(c, space, name):
+    if not _has_store(c, space):
+        return None   # no mini_app type = no apps here yet
     for row in c.query_objects(space, filter={"any.types": _TYPE}):
         if ((row.get("any") or {}).get("name")) == name:
             return row["id"]
@@ -160,6 +187,7 @@ def create(space, name, source, state=None, readme=""):
     st = _ser_state(state)
     if not st["ok"]:
         return {"ok": False, "error": st["error"]}
+    _ensure_store(c, space)
     oid = c.create_object(space, {
         "types": [_TYPE],
         "initialProperties": {"any": {"name": name}}})["objectId"]
@@ -288,6 +316,8 @@ def get_source(space, name, frm=None, to=None):
 def list(space):  # noqa: A001 - the tool surface name (ADR-008 §6)
     """Every mini app in the space: [{id, name}], name-sorted."""
     c = _client()
+    if not _has_store(c, space):
+        return []
     apps = [{"id": row["id"], "name": (row.get("any") or {}).get("name")}
             for row in c.query_objects(space, filter={"any.types": _TYPE})]
     return sorted([a for a in apps if a["name"]], key=lambda a: a["name"])

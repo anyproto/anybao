@@ -462,11 +462,14 @@ mechanism, in the same layer — a guest helper, not the host):
   Invalidated after `create_type` / `add_property`; resolvers refresh
   once on a miss so a freshly-created type/prop resolves.
 - **Builtin vs user types**: builtins report `xKey == id` (`any`, `nav`,
-  `program`, `chat`, …); only user types (CID id, slug xKey) are
-  (reverse-)mapped. Reserved namespaces (`any`/`nav`/`program`/`_ver`)
-  pass through with their literal keys on both read and write.
+  `chat`, `editor`, …); only user types (CID id, slug xKey) are
+  (reverse-)mapped. Reserved namespaces (`any`/`nav`/`_ver`) pass
+  through with their literal keys on both read and write. `program`
+  and `mini_app` are harness-declared USER types (ADR-010 §5, ADR-008
+  §6; amended 2026-08-26 — the server builtins are deleted): their
+  groups and paths resolve by xKey like any other user type.
   **Amended 2026-08-04 (dev task A19)**: filter/sort/aggregate PATHS
-  under `any`/`nav`/`program` no longer pass blind — the tail resolves
+  under `any`/`nav` no longer pass blind — the tail resolves
   against the builtin's own property catalog (the server exposes it:
   `/types/any/properties`), an unknown tail errors with the list, and
   `any`-group props with `scope: "derived"` (`id`, `author`,
@@ -518,7 +521,10 @@ record stay raw type ids (matching bobrik-watch) — they are a builtin
 namespace, read by id internally; only the group *keys* are slugged.
 The **host** Rust client (`runtime/src/anyapi.rs`) stays a raw
 pass-through: it is host-internal (deploy, boot, serve, resolver) and
-only ever touches builtin types, so it needs no catalog. Normalization
+carries no general catalog — the few user types the host writes or
+reads (`agent_skill`, the ADR-017 stores, `program`) each resolve their
+own `{typeId, propIds}` by xKey at the call site (`skill_schema`,
+`serve::ensure_type`, `program_schema::ProgramSchema`). Normalization
 issues extra `list_types` / `list_properties` http effects; under replay
 these are recorded and deterministic (no compatibility concern — no
 backcompat, traces regenerate).

@@ -134,16 +134,30 @@ convention anyway.
 
 ### 5. Program objects carry source, nothing else
 
-- The server `program` type keeps `program_source` and the
-  `name`/`version`/`any_tool`/`summary` properties. The
-  `program_description`/`program_methods` datasets and their index
-  chunkers are removed upstream (`~/any/any`,
-  `internal/program/`).
+- `program` is a **harness-declared user type** (amended 2026-08-26;
+  the server builtin `internal/program/` is deleted — the server has
+  no reason to know what a program is, ADR-017's stance): xKey
+  `program`, display name "Program", properties
+  `name`/`version`/`any_tool`/`summary` (all `meta.index: none`),
+  runtime datasets `program_source` (`{code}`) and `program_manifest`
+  (`{manifest}`) — `idRule: user` (record `"main"`), `deleteBy:
+  anyone`, `dynamic`, fields `mutableBy: any`, and **no `search`
+  mapping** so the schema chunker never indexes them. Normative
+  declaration: `runtime/src/program_schema.rs`; `programs@v1` carries
+  the same declaration for the working space (ADR-013 §1).
+- **Ensured by its writers** (ADR-017 §1): `anyrt deploy` ensures the
+  store in every target space before the first program write;
+  `programs@v1` ensures it in the working space on `create_program`.
+  Readers (the module resolver, `list_programs`, toolcaller's compose)
+  only look it up — a space without the type simply has no programs.
+- Type id is a per-space CID: every filter path / property group /
+  `types` entry goes through the resolved schema (`ProgramSchema`
+  host-side, `any@v1`'s xKey catalog guest-side; any-ui resolves
+  `program` by xKey like `agent_skill`). No client may assume the
+  literal `"program"` as an id.
 - **Accepted loss**: method docs leave the search index (source is
   code, never indexed). Discovery = prompt inventory + `help()`.
-  Decided at implementation (2026-07-28): `summary` is NOT indexed
-  either — builtin type decls carry no `meta["index"]` flag and the
-  SDK change isn't warranted; revisit only if evidence demands
+  `summary` is NOT indexed either; revisit only if evidence demands
   program recall.
 - any-ui's ProgramView renders from `program_source` (docstring +
   source); tracked in any-ui, the contract here is: the doc datasets
@@ -154,9 +168,10 @@ convention anyway.
 A program is `<name>@vN.py` or `<name>@vN/program.py` — no
 `description.md`, no `schema.md`, no markdown splitting anywhere in
 the pipeline (`toolmd` deleted, with its parity tests). Deploy
-writes `program_source`, sets `name`/`version`/`any_tool`/`summary`
-(§4), and enforces §1's docstring budget; the fingerprint hashes the
-source and the derived properties.
+ensures the target space's `program` schema (§5, once per run), writes
+`program_source`, sets `name`/`version`/`any_tool`/`summary` (§4), and
+enforces §1's docstring budget; the fingerprint hashes the source and
+the derived properties.
 
 ### 7. The convention is taught where programs are authored
 

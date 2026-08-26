@@ -44,6 +44,9 @@ Startup:
 - [ ] Programs deployed hash-gated (`rollup@v1`, `extraction@v1`,
       `linkgen@v1`, + gated `decay/reflection/evolution@v1` present but
       their triggers DISABLED); re-run of serve reports `unchanged`.
+- [ ] `program` user type + `program_source`/`program_manifest`
+      datasets present in the agent space (deploy ensured them —
+      ADR-010 §5); no `search` mapping on either.
 - [ ] Skills deployed as `agent_skill` objects (`_core`, `_soul`,
       `_any`, `_memory`, `_space_context`, `_meta_skill`).
 - [ ] Trigger control API answering on `127.0.0.1:7010` (`GET

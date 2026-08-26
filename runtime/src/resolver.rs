@@ -13,13 +13,12 @@
 #![allow(dead_code)]
 
 use crate::anyapi::{AnyError, Client};
+use crate::program_schema::{ProgramSchema, SOURCE_DATASET};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
-
-pub const PROGRAM_TYPE: &str = "program";
 
 #[derive(Debug)]
 pub enum ResolveError {
@@ -117,6 +116,11 @@ pub struct AnyModuleResolver {
     /// chain's `frm` resolves transitive imports against this
     /// (ADR-004 §2.4)
     origins: BTreeMap<String, String>,
+    /// space → its `program` schema (None = no program type there;
+    /// types don't change mid-run, so a space with programs is cached
+    /// for the resolver's life; a miss is re-probed — a deploy may
+    /// land later)
+    schemas: BTreeMap<String, ProgramSchema>,
 }
 
 impl AnyModuleResolver {
@@ -133,7 +137,19 @@ impl AnyModuleResolver {
             aliases,
             probed: BTreeSet::new(),
             origins: BTreeMap::new(),
+            schemas: BTreeMap::new(),
         }
+    }
+
+    fn schema_in(&mut self, space: &str) -> Result<Option<ProgramSchema>, AnyError> {
+        if let Some(s) = self.schemas.get(space) {
+            return Ok(Some(s.clone()));
+        }
+        let found = ProgramSchema::lookup(&self.client, space)?;
+        if let Some(s) = &found {
+            self.schemas.insert(space.to_string(), s.clone());
+        }
+        Ok(found)
     }
 
     fn resolve_in(
@@ -143,10 +159,15 @@ impl AnyModuleResolver {
         version: &str,
         spec: &str,
     ) -> Result<Value, ResolveError> {
+        // no `program` type in the space = nothing was ever deployed there
+        let Some(s) = self.schema_in(space)? else {
+            return Err(ResolveError::NotFound(format!(
+                "program not found: {spec} (space {space} has no programs)"
+            )));
+        };
         let recs = self.client.query_objects(
             space,
-            &json!({"filter": {(format!("{PROGRAM_TYPE}.name")): name,
-                               (format!("{PROGRAM_TYPE}.version")): version},
+            &json!({"filter": {s.path("name"): name, s.path("version"): version},
                     "limit": 1}),
         )?;
         let Some(oid) = recs.first().and_then(|r| r["id"].as_str()) else {
@@ -154,9 +175,7 @@ impl AnyModuleResolver {
                 "program not found: {spec} (space {space})"
             )));
         };
-        let src = self
-            .client
-            .query(space, oid, "program_source", &json!({}))?;
+        let src = self.client.query(space, oid, SOURCE_DATASET, &json!({}))?;
         let Some(main) = src.first() else {
             return Err(ResolveError::NotFound(format!(
                 "program {spec} has no source record"
@@ -317,12 +336,15 @@ mod tests {
     }
 
     fn seed_program(c: &Client, space: &str, name: &str, version: &str, code: &str) {
+        let s = ProgramSchema::ensure(c, space).unwrap();
         let res = c
             .create_object(
                 space,
-                &json!({"types": ["program"],
+                &json!({"types": [s.type_id],
                         "initialProperties": {"any": {"name": name},
-                                              "program": {"name": name, "version": version}}}),
+                                              s.type_id.clone(): s.group(&[
+                                                  ("name", json!(name)),
+                                                  ("version", json!(version))])}}),
             )
             .unwrap();
         let oid = res["objectId"].as_str().unwrap().to_string();
@@ -486,10 +508,12 @@ mod tests {
             Err(ResolveError::BadSpec(_))
         ));
         // program object exists but has no program_source main record
+        let s = ProgramSchema::ensure(&c, "cur").unwrap();
         c.create_object(
             "cur",
-            &json!({"types": ["program"],
-                    "initialProperties": {"program": {"name": "hollow", "version": "v1"}}}),
+            &json!({"types": [s.type_id],
+                    "initialProperties": {s.type_id.clone(): s.group(&[
+                        ("name", json!("hollow")), ("version", json!("v1"))])}}),
         )
         .unwrap();
         let err = r.resolve("hollow@v1", None).unwrap_err();

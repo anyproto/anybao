@@ -59,7 +59,11 @@ the point.
 An agent-authored program is a `program`-typed object **in the
 agent's working space**, bit-identical in shape to what deploy
 writes: source in `program_source`/"main"/{code}, derived `summary` +
-`any_tool` properties per ADR-010 §4, `name@vN` addressing. Nothing
+`any_tool` properties per ADR-010 §4, `name@vN` addressing. `program`
+is a user type (ADR-010 §5), so `programs@v1` — the working space's
+writer — ensures the type + datasets there on `create_program`
+(idempotent, the same declaration deploy uses; ADR-017 §1) — deploy
+only ever targets overlay/repo spaces. Nothing
 downstream can tell the difference (§7 pre-commitment satisfied):
 `use("name@vN")` resolves unqualified specs in the working space
 (ADR-004 §2), `list_programs` already lists it, `help()` already
