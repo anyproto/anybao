@@ -218,18 +218,21 @@ impl OauthState {
         }
     }
 
+    /// The store is the truth when there is one (ADR-021 §4): a
+    /// `.client_id`/`.client_secret` rotated through the UI must not be
+    /// shadowed by the boot-loaded live copy. The live map answers only
+    /// without a store (no-store mode) or when the store is unreachable.
     pub fn secret(&self, key: &str) -> Option<String> {
-        let live = self
-            .secrets
+        if let Some(src) = &self.source {
+            if let Ok(v) = src.read(key) {
+                return v;
+            }
+        }
+        self.secrets
             .lock()
             .expect("oauth secrets lock poisoned")
             .get(key)
-            .cloned();
-        live.or_else(|| {
-            self.source
-                .as_ref()
-                .and_then(|src| src.read(key).ok().flatten())
-        })
+            .cloned()
     }
 
     /// The cached access token for a handle ref, if it outlives the
@@ -311,7 +314,11 @@ impl OauthState {
                 if err_code == "invalid_grant" {
                     // lifecycle, not a bug (ADR-011 §6): revoked, expired,
                     // 7-day Testing cap, ~6mo idle — drop it, ask to re-consent
-                    self.drop_grant(provider);
+                    if let Err(e) = self.drop_grant(provider) {
+                        // the dead token stays in the row; the next
+                        // refresh fails the same way — loud, not wrong
+                        tracing::warn!("oauth: could not delete dead {provider} token ({e})");
+                    }
                     return Err(fail(
                         "oauth_reconsent_required",
                         format!(
@@ -514,7 +521,20 @@ impl OauthState {
                     .is_ok();
             }
         }
-        self.drop_grant(provider);
+        if let Err(e) = self.drop_grant(provider) {
+            return Err(fail(
+                "disconnect_failed",
+                format!(
+                    "{provider}: provider revoke {} but the stored refresh token \
+                     could not be deleted ({e}) — retry disconnect",
+                    if revoked {
+                        "succeeded"
+                    } else {
+                        "was not confirmed"
+                    }
+                ),
+            ));
+        }
         {
             let mut meta = self.meta.lock().expect("oauth meta lock poisoned");
             for sub in ["granted_scopes", "account"] {
@@ -840,7 +860,10 @@ impl OauthState {
 
     /// Forget a dead grant: cache + live copy + stored value (empty
     /// value = the store's delete path).
-    fn drop_grant(&self, provider: &str) {
+    /// Forget the grant. Err = the stored token could NOT be deleted:
+    /// with the store as the truth (`secret()`), the caller must not
+    /// report the grant gone while the row still holds it.
+    fn drop_grant(&self, provider: &str) -> Result<(), String> {
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
         let refresh_ref = format!("{handle}.refresh");
         self.tokens
@@ -852,10 +875,10 @@ impl OauthState {
             .expect("oauth secrets lock poisoned")
             .remove(&refresh_ref);
         if let Some(p) = &self.persist {
-            if let Err(e) = p.persist_secret(&refresh_ref, "") {
-                tracing::warn!("oauth: could not delete stored {refresh_ref} ({e})");
-            }
+            p.persist_secret(&refresh_ref, "")
+                .map_err(|e| e.to_string())?;
         }
+        Ok(())
     }
 }
 
@@ -1339,6 +1362,67 @@ mod tests {
         complete_consent(&url_slot, "authcode4", false, None);
         let out = waiter.join().unwrap().unwrap();
         assert_eq!(out["ok"], json!(true));
+    }
+
+    /// ADR-021 §4: the store answers first — a `.client_id` rotated
+    /// through the UI is not shadowed by the boot-loaded live copy.
+    struct RowSource(BTreeMap<String, String>);
+    impl crate::broker::SecretSource for RowSource {
+        fn read(&self, key: &str) -> Result<Option<String>, String> {
+            Ok(self.0.get(key).cloned())
+        }
+        fn mark_missing(&self, _key: &str, _about: &Value, _run_id: &str) {}
+    }
+
+    #[test]
+    fn store_shadows_the_live_copy_for_sub_refs() {
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let mut state = seeded_state(&token_url, None);
+        assert_eq!(
+            state
+                .secret("connector.oauth.testprov.client_id")
+                .as_deref(),
+            Some("cid")
+        );
+        state.source = Some(Arc::new(RowSource(BTreeMap::from([(
+            "connector.oauth.testprov.client_id".to_string(),
+            "cid-rotated".to_string(),
+        )]))));
+        assert_eq!(
+            state
+                .secret("connector.oauth.testprov.client_id")
+                .as_deref(),
+            Some("cid-rotated")
+        );
+        // a ref the store lacks is a miss, not a stale live hit
+        assert!(state.secret("connector.oauth.testprov.refresh").is_none());
+    }
+
+    struct FailingPersist;
+    impl SecretPersist for FailingPersist {
+        fn persist_secret(&self, _key: &str, _value: &str) -> anyhow::Result<()> {
+            anyhow::bail!("store write failed")
+        }
+        fn persist_meta(&self, _key: &str, _value: &Value) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn disconnect_fails_loudly_when_the_stored_token_survives() {
+        let (revoke_url, _) = capturing_endpoint(json!({}));
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let mut providers = test_provider(&token_url);
+        providers.get_mut("testprov").unwrap().revoke_url = revoke_url;
+        let state = OauthState::new(providers, Some(Box::new(FailingPersist)));
+        let mut seeds = BTreeMap::from([(
+            "connector.oauth.testprov.refresh".to_string(),
+            "refresh-secret".to_string(),
+        )]);
+        state.seed(&mut seeds);
+        let err = state.disconnect("testprov").unwrap_err();
+        assert_eq!(err.type_, "disconnect_failed");
+        assert!(err.message.contains("revoke succeeded"));
     }
 
     #[test]

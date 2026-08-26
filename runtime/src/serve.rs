@@ -404,8 +404,11 @@ fn bootstrap_secrets(
     field: &str,
     secrets: &mut BTreeMap<String, String>,
     overrides: &BTreeMap<String, String>,
-) {
+) -> Vec<String> {
     let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
+    // refs whose value could NOT be written to the store: they must
+    // survive in the map for this run (the only place they exist)
+    let mut unpersisted = Vec::new();
 
     // 1. Hard seeds: write-through, open ref set, empty deletes.
     for (secret_ref, value) in overrides {
@@ -429,10 +432,13 @@ fn bootstrap_secrets(
             other => match persist_local_secret(c, space, obj, dataset, field, secret_ref, value) {
                 Ok(()) if other.is_some() => info!("config: {secret_ref} rotated (hard seed)"),
                 Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
-                Err(e) => warn!(
-                    "config: could not persist {secret_ref} device-locally ({e}); \
-                     using the seeded value this run"
-                ),
+                Err(e) => {
+                    warn!(
+                        "config: could not persist {secret_ref} device-locally ({e}); \
+                         using the seeded value this run"
+                    );
+                    unpersisted.push(secret_ref.to_string());
+                }
             },
         }
     }
@@ -472,10 +478,13 @@ fn bootstrap_secrets(
     for (secret_ref, key) in soft {
         match persist_local_secret(c, space, obj, dataset, field, &secret_ref, &key) {
             Ok(()) => info!("config: {secret_ref} bootstrapped to device-local store"),
-            Err(e) => warn!(
-                "config: could not persist {secret_ref} device-locally ({e}); \
-                 using the seeded value this run"
-            ),
+            Err(e) => {
+                warn!(
+                    "config: could not persist {secret_ref} device-locally ({e}); \
+                         using the seeded value this run"
+                );
+                unpersisted.push(secret_ref.to_string());
+            }
         }
     }
     if !secrets.contains_key(ANTHROPIC_SECRET_REF) {
@@ -486,6 +495,7 @@ fn bootstrap_secrets(
              will fail until one is set"
         );
     }
+    unpersisted
 }
 
 /// A stored row that predates ADR-021 (or was written by a seed
@@ -551,10 +561,12 @@ fn persist_local_secret(
     Ok(())
 }
 
-/// Merge `patch` into the ref's synced row (whole-value upsert: the
-/// dataset is declared, so every write carries the full metadata) —
-/// `key`/`secret` are always stamped, the device-local value is never
-/// touched (local scope, separate write). ADR-021 §2/§4.
+/// Stamp `patch` onto the ref's synced row as per-path ops (`$set`,
+/// null = `$unset`), upserting the record — no read-merge-write, so a
+/// concurrent UI save is never clobbered by a stamp built on a stale
+/// read. `key`/`secret` ride along on every write (the row may be new);
+/// the device-local value is never touched (local scope, separate
+/// write). ADR-021 §2/§4.
 fn upsert_secret_row(
     c: &Client,
     space: &str,
@@ -563,31 +575,25 @@ fn upsert_secret_row(
     key: &str,
     patch: &Value,
 ) -> Result<()> {
-    let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
-    let mut row = rows
-        .into_iter()
-        .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
-        .and_then(|r| r.as_object().cloned())
-        .unwrap_or_default();
-    // synced fields only: drop server-derived (`_ver`, `_addSeq`, …),
-    // stamp and local-scope keys — a write carrying them is rejected
-    row.retain(|k, _| {
-        !k.starts_with('_')
-            && !matches!(k.as_str(), "id" | "createdAt" | "modifiedAt" | "creator")
-            && k != SECRETS_FIELD
-    });
-    row.insert("key".into(), json!(key));
-    row.insert("secret".into(), json!(true));
+    let mut ops = vec![
+        json!({"type": "$set", "path": "key", "value": key}),
+        json!({"type": "$set", "path": "secret", "value": true}),
+    ];
     if let Some(p) = patch.as_object() {
         for (k, v) in p {
             if v.is_null() {
-                row.remove(k);
+                ops.push(json!({"type": "$unset", "path": k}));
             } else {
-                row.insert(k.clone(), v.clone());
+                ops.push(json!({"type": "$set", "path": k, "value": v}));
             }
         }
     }
-    c.upsert_record(space, obj, dataset, key, &Value::Object(row))?;
+    c.modify(
+        space,
+        &json!({
+            "objectId": obj, "dataset": dataset,
+            "records": [{"id": key, "upsert": true, "ops": ops}]}),
+    )?;
     Ok(())
 }
 
@@ -871,10 +877,11 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // every run's Broker (sys_http). No migration from the pre-split
     // layout: secrets left on an old config object are ignored, and
     // re-importing an .env is a two-click operation.
+    let mut unpersisted = Vec::new();
     let secrets_guard = match &secrets_obj {
         Some(sobj) => {
             let overrides = std::mem::take(&mut cfg.secret_overrides);
-            bootstrap_secrets(
+            unpersisted = bootstrap_secrets(
                 &client,
                 &space,
                 sobj,
@@ -941,7 +948,9 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // per-run snapshot exists to go stale. Without a store the map is
     // the documented fallback.
     if secret_store.is_some() {
-        cfg.secrets.clear();
+        // seeds the store refused keep living in the map — the
+        // broker's fallback after a store miss
+        cfg.secrets.retain(|k, _| unpersisted.contains(k));
     }
     // grant metadata (.granted_scopes/.account — synced, non-secret)
     // loads back so oauth.status survives a restart; best-effort
@@ -1306,10 +1315,11 @@ impl RunCtx {
 /// request sits (`requestedIn`; cleared by the write that sets the
 /// value) — ADR-021 §2. Everything the UI renders comes off the row;
 /// the message only links it.
-fn post_credential_requests(ctx: &RunCtx, refs: &[String]) {
+fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     let Some(store) = &ctx.secret_store else {
-        return;
+        return 0;
     };
+    let mut posted = 0;
     for r in refs {
         let rows = ctx
             .client
@@ -1360,7 +1370,11 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) {
         );
         match sent {
             Ok(_) => {
-                let patch = json!({"status": "missing", "requestedIn": ctx.chat,
+                posted += 1;
+                // requestedIn/At only — status was stamped by the miss;
+                // re-asserting it here could undo a save that landed
+                // between the miss and this write
+                let patch = json!({"requestedIn": ctx.chat,
                                    "requestedAt": {"$date": now_rfc3339()}});
                 if let Err(e) = upsert_secret_row(
                     &ctx.client,
@@ -1376,6 +1390,7 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) {
             Err(e) => warn!("secrets: could not post request for {r} ({e})"),
         }
     }
+    posted
 }
 
 /// Start a run for `text` — or, when one is already live on this chat,
@@ -1430,7 +1445,19 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
                     .as_deref()
                     .map(|raw| raw.contains("SecretMissing"))
                     .unwrap_or(false);
-            post_credential_requests(&ctx, &rr.missing_secrets);
+            let posted = post_credential_requests(&ctx, &rr.missing_secrets);
+            if died_on_miss && posted == 0 {
+                // the bubble for this ref already sits in the chat
+                // (dedup) — a silent turn would read as "bao is gone"
+                let refs = rr.missing_secrets.join("`, `");
+                let _ = ctx.client.chat_send(
+                    &ctx.space,
+                    &ctx.chat,
+                    &json!({
+                    "text": format!("Still waiting for `{refs}` — see the credential prompt above."),
+                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                );
+            }
             if rr.status != "ok" && !died_on_miss {
                 // The typed error goes INTO the chat: the next turn
                 // boots with this message in its window, so the model
