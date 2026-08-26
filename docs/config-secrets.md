@@ -1,8 +1,9 @@
 # Config secrets — seeding, rotation, storage
 
 Config secrets (the Anthropic key, connector keys, any other ref)
-persist **device-locally** as never-synced local values (ADR-006 §3) on
-the per-space **secrets object** — the derived `agent_secrets` dataset
+persist **account-scoped** — the synced `value` of their row (ADR-021
+§4; any-sync end-to-end encrypts every change, the bao space is
+owner-only) on the per-space **secrets object** — the derived `agent_secrets` dataset
 (seed `any/agent-secrets/v1`, reported as
 `SpaceInfo.agentSecretsObjectId`), split out of `agent_config` so
 config stays guest-readable while secrets are not. Env vars are **not
@@ -44,8 +45,9 @@ appears in both, `--secrets-file` wins. They are boot-time seeds only.
 
 The stored row **is** the credential: the broker reads the
 `agent_secrets` row at injection time (after the effect is recorded),
-so a key written while serve runs is used by the very next
-credentialed effect — no restart. Writers:
+so a key written while serve runs — from ANY of the account's devices,
+a phone included — is used by the very next credentialed effect. No
+restart. Writers:
 
 - **The chat prompt.** When a credentialed effect finds no value the
   host stamps the row `status: "missing"` (with the connector's
@@ -65,7 +67,9 @@ Row metadata is synced and non-secret: `status` (`missing`|`set`),
 shown at entry; enforcement is ADR-021 §7), `help`, `note`,
 `requestedBy` (the run that missed it), `requestedIn`/`requestedAt`
 (the chat holding a live request bubble; cleared by the write that
-sets the value). The value lives only in the device-local field.
+sets the value). The value is the row's synced `value` field —
+readable by the account's own devices only, stripped by the UI at its
+read seam.
 `config.get` refuses the `connector.key.*`, `llm.key.*` and
 `connector.oauth.*` namespaces wholesale.
 

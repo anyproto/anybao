@@ -222,6 +222,13 @@ failure. v2 chunk record:
 
 ### 3. Config object (`agent_config` dataset on a derived object)
 
+> **Superseded for secrets (ADR-021 §4, 2026-08-26):** secret values
+> are account-scoped synced fields on the `agent_secrets` row — any-sync
+> encrypts every change with the space's read key, so a synced field is
+> end-to-end encrypted and a key entered on any device reaches the
+> device running the agent. The device-local scope below is no longer
+> used for secrets.
+
 - Per-space object derived from seed `any/agent-config/v1` (spaceIndex
   pattern). Records keyed by dotted config key
   (`llm.tier.codegen`, `overlays.std`, `loop.max_turns`).

@@ -1,8 +1,10 @@
 # ADR-021: Credential entry — request-in-chat, store-read secrets, the Credentials dashboard
 
 Status: **Accepted** (2026-08-26; §4 revised in review — the store is the
-source of truth, no runtime write surface)
-Builds on: ADR-006 §3 (device-local secrets on the derived object),
+source of truth, no runtime write surface; amended the same day: the
+value is **account-scoped**, not device-local)
+Builds on: ADR-006 §3 (secrets on the derived object — the device-local
+scope of that section is superseded by §4 here),
 ADR-008 §1 (credential refs), ADR-011 §4 (host binding deferred to
 *this* design), §5.1 (the `agent.request` channel), ADR-018 §3 (the
 chat responder), `docs/config-secrets.md`.
@@ -31,7 +33,7 @@ What already exists and is reused unchanged:
 
 - The store: `agent_secrets` on the `bao/secrets/v1` bundle child
   (`serve.rs:293`), rows `{key, secret: true, <synced metadata…>,
-  localValue: <device-local>}`; two-step write `persist_local_secret`
+  value}`; write `persist_local_secret`
   (`serve.rs:492`); open ref set; the guest read-guard.
 - The chat `agent` field `{name, debugLink?, done}` — shipped (the
   ADR-011 §5.1 prerequisite is met), written by the guest
@@ -41,9 +43,7 @@ What already exists and is reused unchanged:
   enum by design** in `any` (`internal/chat/handler.go:270-300`),
   unknown types render as chips in any-ui. This is the one carrier
   that needs no `any` change; `agent` is a closed allowlist.
-- any-ui's own `any` client on the same device as the embedded serve
-  (`anyrt::serve::start(cfg)`, any-ui `agent.rs:209`) — it can write
-  the device-local field of a row itself.
+- any-ui's own `any` client — it can write a row itself.
 - ADR-011 §4 explicitly parked per-secret destination metadata ("each
   secret ships with its host/scope restrictions, most likely bundled
   with its connector, the human double-checks the scope at entry")
@@ -148,50 +148,53 @@ Once the row's `status` flips to `set` the same message renders as
 edit). Unknown/old clients still show a chip → the Credentials
 dashboard.
 
-### 4. The store is the source of truth; the broker reads it at injection time
+### 4. The store is the source of truth; the value is account-scoped; the broker reads at injection time
 
 There is no runtime write surface and no in-memory secret map to keep
-consistent. The `agent_secrets` row IS the credential: whoever can
-write the device-local field (the UI's own `any` client on the same
-device, `.connectors.env` at boot, the OAuth flow) writes it, and the
-broker **reads the row when it injects** — one loopback `query`
-against the secrets object per credentialed http effect, the same
-call `bootstrap_secrets` makes today, made *after* the effect is
-recorded so the trace stays value-free and replay never reads the
-store. Cost is one local query in front of an outbound request;
-consistency stops being a property to maintain: a retry injected
-into a live conversation sees the new value because nothing was
-snapshotted.
+consistent. The `agent_secrets` row IS the credential, and its `value`
+is an ordinary **synced** field: whoever holds the space writes it —
+the UI on any device (desktop, phone), `.connectors.env` at boot, the
+OAuth flow — and the broker **reads the row when it injects**: one
+loopback `query` against the secrets object per credentialed http
+effect, made *after* the effect is recorded so the trace stays
+value-free and replay never reads the store. Consistency stops being a
+property to maintain: a retry injected into a live conversation sees
+the new value because nothing was snapshotted, and a key entered on a
+phone reaches the desktop that runs the agent through sync.
+
+**Why account-scoped is safe (the ADR-011 "at-rest" gate):** any-sync
+encrypts every change with the space's ACL read key before it leaves
+the device (`objecttree/changebuilder.go`, `readKey.Encrypt`); sync
+nodes only ever hold ciphertext, and the bao space is owner-only. The
+value therefore never exists in cleartext outside the account's own
+devices — the same guarantee a device-local field gave, minus the
+"only on the device that typed it" restriction that made remote entry
+impossible. This supersedes ADR-006 §3's device-local scope for
+secrets.
+
+What stays: the guest read-guard (the whole secrets object is refused
+to guest http), `config.get`'s namespace refusal, and
+resolve-after-record. Managed OAuth refresh tokens sync the same way —
+the active device (ADR-015) refreshes; the rest hold ciphertext.
 
 Why this replaces the per-run clone of `cfg.secrets` (`serve.rs:1048`)
 rather than sharing it: the map was inherited from the env-var era —
-the store was added as persistence *for* the map. Managed OAuth
-already lives outside it (`OauthState`, ADR-011 §6, which caches only
-the ~1h access token, for refresh cost); static refs now match.
+the store was added as persistence *for* the map. Seeds remain as the
+**no-store fallback only** (`anyrt run`, a server without the secrets
+object); in serve with a store, `bootstrap_secrets` writes hard/soft
+seeds through at boot (stamping `status: "set"`), then the map is
+dropped except for seeds the store refused.
 
-Seeds remain, as the **no-store fallback only**: `anyrt run` (no
-space store) and a server without the secrets object keep resolving
-from the seeded map, exactly as documented for those modes. In serve
-with a store, `bootstrap_secrets` still writes hard/soft seeds
-through at boot (now also stamping `status: "set"`), then the map is
-dropped; the broker's static-ref path is *store if present, else
-seeds*.
-
-The write is the existing two-step (`persist_local_secret`): synced
-`{key, secret: true, status: "set", updatedAt, label?, hosts?, …}`
-upsert, then the device-local `$set` of the value. Empty value =
-delete (the hard-seed semantics). Managed OAuth sub-refs
-(`connector.oauth.*.refresh`) are not user-writable from the UI; the
-`.client_id`/`.client_secret` refs are ordinary rows. The guest
-read-guard is unaffected — it blocks *guest* http against the secrets
-object, not the UI's client, and the guest never needs the value.
+The write is one per-path `modify`: `$set key/secret/status/updatedAt/
+value`, `$unset requestedIn`. Empty value = delete. Managed OAuth
+sub-refs (`connector.oauth.*.refresh`) are not user-writable from the
+UI; the OAuth client is bundled with the connector (ADR-011 §3) and
+kept as non-secret `meta` rows.
 
 No restart, anywhere: `Help → Import connector keys` performs the
-same writes per entry through `AgentHandle::set_secret` — the lib
-embedder's write (ADR-009 §6 surface), not a runtime route — instead
-of `restart_agent_with_secret_overrides`. Managed OAuth sub-refs read
-the row too (`OauthState::secret` falls back to the store), so
-`.client_id`/`.client_secret` entered in the UI need no restart.
+same write per entry through `AgentHandle::set_secret` — the lib
+embedder's write (ADR-009 §6 surface), not a runtime route.
+`OauthState::secret` falls back to the store too.
 
 `config.get` refuses the `connector.key.*` and `llm.key.*`
 namespaces wholesale (amends ADR-011 §9's presence rule for static
@@ -233,9 +236,8 @@ schemas, firehose convergence): anchor = `deriveBundleChild(space,
 Rows shown: every stored/`missing` row, plus the always-present
 `llm.key.<provider>` for the configured provider. Per row: label,
 ref, status (`missing` / `set <when>`), hosts, help link, a
-password input with Save, Delete. Values are never read back (the
-device-local field is not in the synced window; the UI only writes
-it, §4). Managed OAuth rows render their `.account` /
+password input with Save, Delete. Values are never displayed (the
+UI strips `value` at its read seam and only ever writes it, §4). Managed OAuth rows render their `.account` /
 `.granted_scopes` and a Connect/Disconnect that call `googleAuth`
 through the existing `POST /run` — no new surface.
 
@@ -255,8 +257,9 @@ shape carries it from day one.
 
 ## Out of scope
 
-- Remote instances: the write path is same-device (the UI's client
-  and the serve share one `any` device store). A remote serve needs the ADR-011 §5.1 transport-B
+- A runtime on a machine outside the account (a hosted bao) — the
+  value syncs within the account's devices only; a hosted runtime
+  would need the ADR-011 §5.1 transport-B hop. A remote serve needs the ADR-011 §5.1 transport-B
   hop for the *value*; the request/`credential_set` messages are
   already the right channel for it.
 - Account-scoped (synced) secrets — still gated on at-rest guarantees.
