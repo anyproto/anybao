@@ -316,7 +316,11 @@ impl State {
             .entry((space.to_string(), tid.to_string()))
             .or_default()
             .push(json!({"id": pid, "xKey": body["xKey"],
-                         "name": body["name"], "kind": body["kind"]}));
+                         "name": body["name"], "kind": body["kind"],
+                         // ADR-022: keep the definition's format/meta/scope
+                         // so host tests can observe them
+                         "format": body["format"], "meta": body["meta"],
+                         "scope": body["scope"]}));
         json!({"propId": pid})
     }
 }

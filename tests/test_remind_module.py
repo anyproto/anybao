@@ -14,7 +14,7 @@ def run_main(args):
     calls = []
 
     def fx(name, payload):
-        if name == "config.get":
+        if name in ("config.get", "runtime.get"):
             return {"value": "http://any"}
         calls.append((name, payload))
         return {"status": 201, "headers": {},

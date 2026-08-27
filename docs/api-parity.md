@@ -54,6 +54,26 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C3. Drift refresh 2026-08-27 (pin → any 20708cd, staging :7134 `/v1/openapi.json`)
+
+- **Removed** (stale mappings, routes gone from the server): agent/brain,
+  agent/memory (+ item PATCH/DELETE), objects/:id/agent/chunks,
+  objects/:id/agent/turns, ui/commands (+ subscribe). Their consumers
+  moved to userspace datasets (ADR-017) — `append_turn` /
+  `create_chunk` write through `modify`, not a dedicated route.
+- **Changed contract, fingerprint refreshed only**: 21 routes (ACL
+  family, spaces create/join/get/list/delete/settings, one-to-one,
+  account, `GET /datasets`, push/token). Diffed the helper-mapped ones
+  (`GET /spaces`, `GET /spaces/:id`, `POST /spaces/join`, `acl/accept`,
+  `POST /spaces`, `DELETE /spaces/:id`): operation bodies identical
+  except `DELETE /spaces/:id` gaining a documented 409 — description /
+  component churn, no wire change.
+- **push/token** (POST/DELETE): excluded as *not exposed yet* — client
+  push plumbing, no agent use case so far.
+- **Uncovered, untriaged**: 30 new routes (bundles, datasets, devices,
+  processes, events, derived spaces, attach/detach, upsert, object GET)
+  — tracked in BOB-66.
+
 ## C2. Drift refresh 2026-08-01 (pin → any@main afa3ed4)
 
 21 new endpoints triaged; `POST /spaces/join` contract change (documented
@@ -62,13 +82,17 @@ raw spaces/modify (helper wraps it internally).
 
 - **Mapped**: objects/:id/backlinks → `anyclient.backlinks` (any@v1
   `any.backlinks` — shipped ahead of the pin); enrich/apply → enrich@v1
-  (guest http, the one direct-URL call).
+  (guest http, the one direct-URL call); `PATCH`/`DELETE`
+  types/:id/properties/:propId + properties/:id/attach|detach/:typeId
+  → any@v1 `patch_property`/`set_option`/`remove_option`/
+  `archive_property`/`delete_property`/`attach_type`/`detach_type`
+  (ADR-022 §4; guest-direct, no host passthrough — the host client
+  has no consumer).
 - **Excluded**: debug/p2p (diagnostic); push/token GET/POST/DELETE +
   push/subscriptions (client push plumbing, UI-side).
 - **Unmapped, demand-driven** (C): object **history** ×4 (version
   history/diff — future "what changed" capability); `PATCH
-  spaces/:id/settings` (space management); `PATCH`/`DELETE`
-  types/:id/properties/:propId (schema facade growth); chat
+  spaces/:id/settings` (space management); chat
   **reactions-read** (read-tracking group); `DELETE files/:fileId`
   (files v2 group).
 

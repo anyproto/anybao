@@ -234,13 +234,14 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     let cfg_t = ensure_type(c, space, "Agent Config", "agent_config")?;
     let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
     let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
-    // Declared fields carry behavior (scope local needs a declaration,
-    // and a declared field needs a kind); everything free-form rides
-    // the `dynamic` keyspace — undeclared fields are any-typed and
-    // freely mutable, the old DefaultHandler semantics. Config `value`
-    // and the whole trigger record shape stay undeclared for exactly
-    // that reason; device-local values are strings in practice
-    // (API keys, addresses) — a non-string local write rejects loudly.
+    // Declared fields carry behavior (a declared field needs a kind);
+    // everything free-form rides the `dynamic` keyspace — undeclared
+    // fields are any-typed and freely mutable. Config `value` is
+    // any-typed (tier objects, strings, lists) and the whole trigger
+    // record shape stays undeclared for exactly that reason.
+    // `agent_config` is `{key, value}` synced only (ADR-006 §3) — no
+    // device-local tier; a pre-existing space keeps its retired
+    // declarations inert (ensure_dataset never reconciles).
     ensure_dataset(
         c,
         space,
@@ -251,9 +252,6 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         "dynamic": true,
         "fields": [
             {"key": "key", "kind": "string", "mutableBy": "any"},
-            {"key": "secret", "kind": "boolean", "mutableBy": "any"},
-            {"key": "localValue", "kind": "string", "scope": "local",
-             "mutableBy": "any"},
         ]}),
     )?;
     ensure_dataset(
@@ -360,25 +358,99 @@ const CONFIG_DATASET: &str = "agent_config";
 const SECRETS_DATASET: &str = "agent_secrets";
 const SECRETS_FIELD: &str = "value";
 
-/// Space-scope config overrides read off the config object's
-/// `agent_config` dataset: one record per dotted key, `{key, value}`.
-/// These shadow the hardcoded `bootstrap` defaults (cascade:
-/// space-override ?? default). Best-effort: a query hiccup or an
-/// empty/fresh object yields no overrides rather than failing serve.
-fn config_overrides(c: &Client, space: &str, obj: &str) -> Vec<(String, Value)> {
+/// Config seeding (ADR-006 §3) — the seed passes of
+/// [`bootstrap_secrets`], over the `agent_config` store (one `{key,
+/// value}` row per dotted key). Nothing is loaded into the host: the
+/// store is read through on every `config.get`.
+///
+/// 1. HARD seeds (`Config::config_overrides` — the config file's
+///    `[config]` table / serve's `--config`): write-through — a stored
+///    value that differs is overwritten. The per-rig lever.
+/// 2. SOFT seeds (`config_defaults.json`): persisted only for keys with
+///    no row — fresh-space defaults, never rewriting an existing space.
+///
+/// Best-effort: a failed query or write warns and serve goes on (a
+/// missing row then fails its `config.get` loudly, per key).
+fn bootstrap_config(c: &Client, space: &str, obj: &str, hard: &BTreeMap<String, Value>) {
     let rows = match c.query(space, obj, CONFIG_DATASET, &json!({})) {
         Ok(rows) => rows,
         Err(e) => {
-            warn!("config overrides unavailable ({e}); using defaults");
-            return Vec::new();
+            warn!("config store unavailable at seed time ({e})");
+            return;
         }
     };
-    rows.iter()
+    let stored: BTreeMap<String, Value> = rows
+        .iter()
         .filter_map(|r| {
             let k = r.get("key")?.as_str()?.to_string();
             Some((k, r.get("value")?.clone()))
         })
-        .collect()
+        .collect();
+    for (key, value) in hard {
+        if stored.get(key) == Some(value) {
+            continue;
+        }
+        match upsert_config_row(c, space, obj, key, value) {
+            Ok(()) if stored.contains_key(key) => info!("config: {key} overwritten (hard seed)"),
+            Ok(()) => info!("config: {key} bootstrapped to store (hard seed)"),
+            Err(e) => warn!("config: could not persist {key} ({e})"),
+        }
+    }
+    for (key, value) in crate::config::config_defaults() {
+        if hard.contains_key(&key) || stored.contains_key(&key) {
+            continue;
+        }
+        match upsert_config_row(c, space, obj, &key, &value) {
+            Ok(()) => info!("config: {key} bootstrapped to store (default)"),
+            Err(e) => warn!("config: could not persist {key} ({e})"),
+        }
+    }
+}
+
+/// One synced upsert of a config row — per-path ops, no
+/// read-merge-write (a concurrent UI save is never clobbered).
+fn upsert_config_row(c: &Client, space: &str, obj: &str, key: &str, value: &Value) -> Result<()> {
+    c.modify(
+        space,
+        &json!({
+            "objectId": obj, "dataset": CONFIG_DATASET,
+            "records": [{"id": key, "upsert": true, "ops": [
+                {"type": "$set", "path": "key", "value": key},
+                {"type": "$set", "path": "value", "value": value}]}]}),
+    )?;
+    Ok(())
+}
+
+/// The serve-side agent-config store (ADR-006 §3): the config child's
+/// `agent_config` dataset, read through per `config.get`, written per
+/// `config.set`. One per serve, threaded into every Broker; no cache.
+pub struct ServeConfigStore {
+    client: Arc<Client>,
+    space: String,
+    obj: String,
+}
+
+impl crate::broker::ConfigStore for ServeConfigStore {
+    fn read(&self, key: &str) -> Result<Option<Value>, String> {
+        let rows = self
+            .client
+            .query(
+                &self.space,
+                &self.obj,
+                CONFIG_DATASET,
+                &json!({"filter": {"key": key}}),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .iter()
+            .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
+            .and_then(|r| r.get("value").cloned()))
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Result<(), String> {
+        upsert_config_row(&self.client, &self.space, &self.obj, key, value)
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Secret persistence (ADR-021 §4). Config secrets (the provider API
@@ -893,17 +965,20 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let stores = provision_agent_stores(&client, &space)?;
     let anchor = stores.triggers.clone();
 
-    // Config cascade (ADR-006 §3): hardcoded defaults (from `bootstrap`)
-    // under the space-scope override layer read off the config child.
+    // Config store (ADR-006 §3): seed the config child (hard, then
+    // soft), then read through to it — the host keeps no copy.
     let config_obj = Some(stores.config.clone());
     let secrets_obj = Some(stores.secrets.clone());
-    if let Some(obj) = &config_obj {
-        let overrides = config_overrides(&client, &space, obj);
-        info!("config obj={obj} overrides={}", overrides.len());
-        for (k, v) in overrides {
-            cfg.config.insert(k, v);
-        }
-    }
+    let config_store: Option<Arc<ServeConfigStore>> = config_obj.as_ref().map(|obj| {
+        let hard = std::mem::take(&mut cfg.config_overrides);
+        bootstrap_config(&client, &space, obj, &hard);
+        info!("config obj={obj}");
+        Arc::new(ServeConfigStore {
+            client: client.clone(),
+            space: space.clone(),
+            obj: obj.clone(),
+        })
+    });
     // The guest read-guard target — the secrets object, threaded into
     // every run's Broker (sys_http). No migration from the pre-split
     // layout: secrets left on an old config object are ignored, and
@@ -1028,10 +1103,12 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     }
     let aliases = alias_map(&cfg.overlays, &space);
     let code_space = aliases["agent"].clone();
-    // guest-visible alias map — the programs@v1 shadow guard reads it
-    // to refuse overlay-exported specs (ADR-013 §1)
-    cfg.config
-        .insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
+    // runtime wiring the guest reads via `runtime.get` (ADR-006 §3):
+    // the server url and the alias map the programs@v1 shadow guard
+    // uses to refuse overlay-exported specs (ADR-013 §1)
+    let mut runtime: BTreeMap<String, Value> = BTreeMap::new();
+    runtime.insert("any.base_url".into(), Value::String(cfg.addr.clone()));
+    runtime.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
 
     // kernel is embedded (ADR-009 §4) — the cage always boots eagerly;
     // pending overlays only gate program resolution
@@ -1111,6 +1188,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         secrets_guard,
         oauth,
         secret_store,
+        config_store,
+        runtime,
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
@@ -1197,6 +1276,11 @@ pub struct RunCtx {
     /// the secrets store (ADR-021 §4) — None on a server without the
     /// secrets object (seeds-only degraded mode)
     pub secret_store: Option<Arc<ServeSecretStore>>,
+    /// the agent-config store (ADR-006 §3) — read through, no cache
+    pub config_store: Option<Arc<ServeConfigStore>>,
+    /// runtime wiring for `runtime.get` (`any.base_url`,
+    /// `overlays.aliases`) — per device, from the runtime config
+    pub runtime: BTreeMap<String, Value>,
     /// single-active gate (ADR-015 §3): false = standby (chat watch
     /// disconnected; ownerless-trigger adoption and the standing
     /// built-ins idle — device-pinned triggers still fire, ADR-006
@@ -1253,9 +1337,11 @@ impl RunCtx {
         if let Err(e) = writer.stream_to(&trace_path) {
             warn!("trace streaming unavailable ({e}); will write at run end");
         }
+        // agent config is read through the store (ADR-006 §3): the
+        // seeds map is empty here — nothing to go stale
         let mut b = Broker::new(
             writer,
-            self.cfg.config.clone(),
+            BTreeMap::new(),
             self.cfg.secrets.clone(),
             // no local programs dir: serve resolves modules from the
             // space only (the resolver below) — never the filesystem
@@ -1268,6 +1354,11 @@ impl RunCtx {
             .secret_store
             .clone()
             .map(|s| s as Arc<dyn crate::broker::SecretSource>);
+        b.config_store = self
+            .config_store
+            .clone()
+            .map(|s| s as Arc<dyn crate::broker::ConfigStore>);
+        b.runtime = self.runtime.clone();
         b.resolver = Some(Box::new(AnyModuleResolver::new(
             self.client.clone(),
             &self.space,
@@ -2850,5 +2941,87 @@ mod tests {
         assert_eq!(m.get("agent").map(String::as_str), Some("codeSpace"));
         assert_eq!(m.get("std").map(String::as_str), Some("stdSpace"));
         assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn bootstrap_config_seeds_defaults_only_where_no_row() {
+        // ADR-006 §3: soft seeds persist-if-missing; a stored row is
+        // left alone (the json default never rewrites a space)
+        let defaults = crate::config::config_defaults();
+        let n = defaults.len();
+        let stored_ws = json!({"provider": "gemini", "model": "custom-model"});
+        let mut replies = vec![(
+            200,
+            json!({"records": [{"id": "search.provider.websearch",
+                                "key": "search.provider.websearch",
+                                "value": stored_ws}]}),
+        )];
+        for _ in 0..n - 1 {
+            replies.push((200, json!({})));
+        }
+        let (c, log) = scripted(&replies);
+        bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
+        let calls = log.lock().unwrap();
+        // one query + one upsert per missing default (the stored key skipped)
+        assert_eq!(calls.len(), n);
+        let written: Vec<&str> = calls[1..]
+            .iter()
+            .map(|c| c.2.as_ref().unwrap()["records"][0]["id"].as_str().unwrap())
+            .collect();
+        assert!(!written.contains(&"search.provider.websearch"));
+        assert!(written.contains(&"llm.tier.codegen"));
+        assert!(calls[1].1.ends_with("/modify"));
+    }
+
+    #[test]
+    fn bootstrap_config_hard_seed_overwrites_a_differing_row() {
+        let defaults = crate::config::config_defaults();
+        let rows: Vec<Value> = defaults
+            .iter()
+            .map(|(k, v)| json!({"id": k, "key": k, "value": v}))
+            .collect();
+        let (c, log) = scripted(&[(200, json!({"records": rows})), (200, json!({}))]);
+        let mut hard = BTreeMap::new();
+        let forced = json!({"provider": "gemini", "model": "rig-model"});
+        hard.insert("search.provider.deepresearch".to_string(), forced.clone());
+        bootstrap_config(&c, "s1", "cfgobj", &hard);
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        let rec = &calls[1].2.as_ref().unwrap()["records"][0];
+        assert_eq!(rec["id"], "search.provider.deepresearch");
+        assert_eq!(rec["upsert"], true);
+        assert_eq!(
+            rec["ops"][1],
+            json!({"type": "$set", "path": "value", "value": forced})
+        );
+    }
+
+    #[test]
+    fn bootstrap_config_store_unreachable_writes_nothing() {
+        let (c, log) = scripted(&[(500, json!({"error": "boom"}))]);
+        bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn serve_config_store_reads_through_by_key() {
+        let (c, log) = scripted(&[(
+            200,
+            json!({"records": [{"id": "llm.tier.codegen", "key": "llm.tier.codegen",
+                                "value": {"model": "m"}}]}),
+        )]);
+        let store = ServeConfigStore {
+            client: Arc::new(c),
+            space: "s1".into(),
+            obj: "cfgobj".into(),
+        };
+        use crate::broker::ConfigStore as _;
+        assert_eq!(
+            store.read("llm.tier.codegen").unwrap(),
+            Some(json!({"model": "m"}))
+        );
+        let calls = log.lock().unwrap();
+        assert!(calls[0].1.ends_with("/query"));
+        assert_eq!(calls[0].2.as_ref().unwrap()["dataset"], "agent_config");
     }
 }

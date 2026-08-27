@@ -658,32 +658,6 @@ impl Client {
         )
     }
 
-    /// Set a single DEVICE-LOCAL field on an existing record — the
-    /// `scope: "local"` write route (ADR-006 §3). The value never syncs;
-    /// the dataset schema must declare `field` local-scope (else the
-    /// server rejects it as a synced field). The record must already
-    /// exist from a prior synced write: local scope cannot create records
-    /// (no upsert), needs an explicit id, and carries no traceIds. Only
-    /// `field` is touched — a partial `$set`, so sibling synced fields
-    /// (which a local change may not write) are left alone.
-    pub fn set_local_field(
-        &self,
-        space_id: &str,
-        object_id: &str,
-        dataset: &str,
-        record_id: &str,
-        field: &str,
-        value: &Value,
-    ) -> Result<Value, AnyError> {
-        self.modify(
-            space_id,
-            &json!({
-                "objectId": object_id, "dataset": dataset, "scope": "local",
-                "records": [{"id": record_id,
-                             "ops": [{"type": "$set", "path": field, "value": value}]}]}),
-        )
-    }
-
     // --- editor markdown (content, NOT markdown — wire landmine) ---
     pub fn get_markdown(&self, space_id: &str, object_id: &str) -> Result<String, AnyError> {
         let reply = self.call(
@@ -1091,31 +1065,6 @@ mod tests {
             Some(json!({"objectId": "obj", "dataset": "agent_triggers",
                         "records": [{"id": "t1", "upsert": true,
                                      "ops": [{"type": "$set", "path": "", "value": {"kind": "cron"}}]}]}))
-        );
-    }
-
-    #[test]
-    fn set_local_field_wire_shape() {
-        let (c, log) = stub_client();
-        c.set_local_field(
-            "sp",
-            "obj",
-            "agent_config",
-            "llm.key.anthropic",
-            "localValue",
-            &json!("sk-secret"),
-        )
-        .unwrap();
-        let calls = log.lock().unwrap();
-        assert_eq!(calls[0].1, "/v1/spaces/sp/modify");
-        assert_eq!(
-            calls[0].2,
-            // scope=local, explicit id, NO upsert, partial $set on the one field.
-            Some(
-                json!({"objectId": "obj", "dataset": "agent_config", "scope": "local",
-                        "records": [{"id": "llm.key.anthropic",
-                                     "ops": [{"type": "$set", "path": "localValue", "value": "sk-secret"}]}]})
-            )
         );
     }
 

@@ -290,6 +290,122 @@ _RESERVED_GROUPS = {"any", "nav", "_ver"}
 # property (`type.xkey`) is writable solely on type rows.
 _SYNTHETIC_TYPES = {"any", "spaceIndex", "type"}
 
+# --- ADR-022: property handles, formats, options -----------------------------
+# any-ui stamps `xKey` as a KIND MARKER (`select` on every Select, `tags`
+# on every Multiselect, …) and sends none for Text/Number/Check — so an
+# xKey is a handle only when it is unique on its type and not a marker;
+# otherwise the property resolves by name (ADR-022 §1). Bridge: drop
+# once any-ui carries the marker in `xKind`.
+_MARKER_XKEYS = frozenset({
+    "select", "tags", "links", "relation", "date", "datetime", "url",
+    "email", "longtext", "multiselect", "checkbox", "number", "text"})
+_FORMATS = ("select", "multiselect", "links", "date", "datetime")
+_KINDS = ("string", "number", "boolean", "null", "array", "object",
+          "datetime")
+# any-ui's option palette (optionPalette.ts) — colors are free strings on
+# the wire; these are the ten the UI renders as swatches.
+_OPTION_COLORS = ("grey", "yellow", "orange", "red", "pink", "purple",
+                  "blue", "ice", "teal", "green")
+# definition paths pinned at first write (property-lifecycle §2) —
+# a PATCH on them is 400 property.immutable; refused client-side
+_PINNED_PATHS = ("id", "key", "kind", "scope", "items", "properties",
+                 "format", "format.type")
+_ARCHIVED_META = "anyUiArchived"   # any-ui's removal marker (meta.<k>)
+_LEXID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_UNSET = object()   # encoder sentinel: value None ⇒ $unset
+
+
+def _lexid_after(pos):
+    """A byte-compare-greater position after `pos` ("" ⇒ first)."""
+    if not pos:
+        return "a0"
+    last = pos[-1]
+    i = _LEXID_ALPHABET.find(last)
+    if 0 <= i < len(_LEXID_ALPHABET) - 1:
+        return pos[:-1] + _LEXID_ALPHABET[i + 1]
+    return pos + "1"
+
+
+def _assign_handles(props):
+    """Stamp `handle` on every property row (ADR-022 §1): the xKey when
+    unique on the type and not a kind marker, else the name; a true
+    duplicate is suffixed with its id so no two handles collide."""
+    xk_count = {}
+    for p in props:
+        xk = p.get("xKey")
+        if xk:
+            xk_count[xk] = xk_count.get(xk, 0) + 1
+    for p in props:
+        xk = p.get("xKey")
+        if xk and xk not in _MARKER_XKEYS and xk_count[xk] == 1:
+            p["handle"] = xk
+        else:
+            p["handle"] = p.get("name") or p.get("id")
+    h_count = {}
+    for p in props:
+        h_count[p["handle"]] = h_count.get(p["handle"], 0) + 1
+    for p in props:
+        if h_count[p["handle"]] > 1:
+            p["handle"] = f'{p["handle"]}~{p.get("id")}'
+    return props
+
+
+def _is_archived(p):
+    return str((p.get("meta") or {}).get(_ARCHIVED_META) or "") == "1"
+
+
+def _options_of(pdef):
+    return ((pdef.get("format") or {}).get("options") or {})
+
+
+def _ordered_options(pdef):
+    """[{key, name, color, pos}] by pos (byte compare), then key."""
+    opts = _options_of(pdef)
+    rows = [{"key": k, "name": (v or {}).get("name") or k,
+             "color": (v or {}).get("color") or "grey",
+             "pos": (v or {}).get("pos") or ""} for k, v in opts.items()]
+    rows.sort(key=lambda r: (r["pos"] == "", r["pos"], r["key"]))
+    return rows
+
+
+def _prop_sort_key(p):
+    pos = (p.get("meta") or {}).get("pos") or ""
+    return (pos == "", pos, (p.get("name") or "").casefold(), p.get("id") or "")
+
+
+def _link_object_id(v):
+    """The object id inside any accepted link spelling, or None: a bare
+    id, `any://<id>`, legacy `any://<sid>/<id>`, typed `any://o/<sid>/
+    <id>`, or a row/stub dict carrying `id`."""
+    if isinstance(v, dict):
+        return v.get("id") or v.get("objectId")
+    if not isinstance(v, str):
+        return None
+    if v.startswith("any://"):
+        segs = [s for s in v[6:].split("#")[0].split("/") if s]
+        if len(segs) == 1:
+            return segs[0]
+        if len(segs) == 2:
+            return segs[1]
+        if len(segs) >= 3 and segs[0] == "o":
+            return segs[2]
+        return None
+    return v if _looks_like_object_id(v) else None
+
+
+def _looks_like_object_id(s):
+    return (isinstance(s, str) and len(s) >= 40 and " " not in s
+            and s.startswith("bafy"))
+
+
+def _slugify_option_key(name):
+    return _slugify_xkey(name).replace(".", "_") or "option"
+
+
+def _pick_color(key):
+    # deterministic (replay-safe) stand-in for any-ui's random pick
+    return _OPTION_COLORS[sum(ord(ch) for ch in key) % len(_OPTION_COLORS)]
+
 
 class _Client:
     def __init__(self, base_url):
@@ -305,6 +421,7 @@ class _Client:
         self._spaces_cache = None   # space rows for name resolution (§8)
         self._bundle_children = {}  # (space, bundleId, seed) -> objectId
         self._ensured_stores = set()  # (space, xKey) lazily provisioned
+        self._stub_cache = {}   # space -> {objectId: {id, name, types}} (ADR-022 §3)
 
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
@@ -362,13 +479,17 @@ class _Client:
     # property defs per space, resolve readable xKeys -> ids on write, and
     # reverse-map records -> xKey-nested on read. Builtins (id == xKey) pass
     # through untouched.
-    def _catalog(self, space):
+    @staticmethod
+    def _check_space(space):
         # a non-string space (a list_spaces() row or the whole list)
         # otherwise surfaces frames deep as an unhashable-key TypeError
         if not isinstance(space, str) or not space:
             raise TypeError(
                 f"space must be a space id string, got {type(space).__name__}"
                 " — pick one id from list_spaces()")
+
+    def _catalog(self, space):
+        self._check_space(space)
         cat = self._types_cache.get(space)
         if cat is None:
             by_id, by_xkey, rows = {}, {}, []
@@ -385,12 +506,19 @@ class _Client:
         return cat
 
     def _type_props(self, space, type_id):
+        self._check_space(space)
         key = (space, type_id)
         props = self._props_cache.get(key)
         if props is None:
-            props = self._fetch_props(space, type_id)
+            props = _assign_handles([dict(p) for p in
+                                     self._fetch_props(space, type_id)
+                                     if isinstance(p, dict)])
             self._props_cache[key] = props
         return props
+
+    def _prop_def(self, space, type_id, prop_id):
+        return next((p for p in self._type_props(space, type_id)
+                     if p.get("id") == prop_id), None)
 
     def _cat_invalidate(self, space):
         self._types_cache.pop(space, None)
@@ -418,14 +546,31 @@ class _Client:
         return None
 
     def _resolve_prop_seg(self, space, type_id, seg, _retried=False):
-        """A prop id, xKey, or name under type_id -> prop id (or None)."""
-        for p in self._type_props(space, type_id):
-            if seg in (p.get("id"), p.get("xKey"), p.get("name")):
-                return p.get("id")
+        """A prop id, handle, name, or xKey under type_id -> prop id (or
+        None). Tiers are tried in that order; a tier matching MORE than
+        one property errors listing the candidates — never first-match
+        (any-ui's marker xKeys make `select` name several, ADR-022 §1)."""
+        props = self._type_props(space, type_id)
+        for field in ("id", "handle", "name", "xKey"):
+            hits = [p for p in props if seg and p.get(field) == seg]
+            if len(hits) == 1:
+                return hits[0].get("id")
+            if len(hits) > 1:
+                cands = ", ".join(
+                    f'"{p["handle"]}" ({p.get("name")}, id {p.get("id")})'
+                    for p in hits)
+                raise ValueError(
+                    f'property key "{seg}" is ambiguous on this type — it '
+                    f"matches {len(hits)} properties by {field}: {cands}. "
+                    "Use the handle.")
         if not _retried:
             self._cat_invalidate(space)
             return self._resolve_prop_seg(space, type_id, seg, True)
         return None
+
+    def _prop_handles(self, space, type_id):
+        return ", ".join(f'"{p["handle"]}"' for p in
+                         self._type_props(space, type_id))
 
     def _type_handles(self, space):
         return ", ".join(f'"{t.get("xKey") or t.get("id")}" ({t.get("name")})'
@@ -439,12 +584,14 @@ class _Client:
                 f"{self._type_handles(space)}")
         return tid
 
-    def _resolve_prop_groups(self, space, groups):
+    def _resolve_prop_groups(self, space, groups, ctx=None):
         """Nested write groups {typeXKey: {propXKey: val}} -> the id-keyed
         shape the server writes by {typeId: {propId: val}}. Reserved builtin
         namespaces (any/nav) pass through with literal prop keys.
         Unknown type/property keys ERROR — never silently dropped (a
-        misplaced key once lost a whole batch of writes)."""
+        misplaced key once lost a whole batch of writes). With a write
+        `ctx` (ADR-022 §2) every value is encoded against its
+        definition; None values are collected as unsets."""
         out = {}
         for gk, gv in groups.items():
             if gk in _RESERVED_GROUPS:
@@ -459,9 +606,247 @@ class _Client:
             for pk, pv in gv.items():
                 pid = self._resolve_prop_seg(space, tid, pk)
                 if not pid:
-                    raise ValueError(f'unknown property "{pk}" on type "{gk}"')
-                resolved[pid] = pv
+                    raise ValueError(
+                        f'unknown property "{pk}" on type "{gk}". Its '
+                        f"properties: {self._prop_handles(space, tid)}")
+                pdef = self._prop_def(space, tid, pid) or {}
+                if ctx is None:
+                    resolved[pid] = pv
+                    continue
+                wire = self._encode_value(space, tid, pdef, pv, ctx)
+                if wire is _UNSET:
+                    ctx["unsets"].append((tid, pdef))
+                    continue
+                if wire != pv:
+                    ctx["resolved"][f'{gk}.{pdef.get("handle") or pk}'] = wire
+                if _is_archived(pdef):
+                    ctx["warnings"].append(
+                        f'property "{pdef.get("handle")}" on "{gk}" is '
+                        "archived in the UI (meta.anyUiArchived) — written "
+                        "anyway")
+                resolved[pid] = wire
             out[tid] = {**out.get(tid, {}), **resolved}
+        return out
+
+    # --- ADR-022 §2: definition-aware value encoding -------------------------
+    @staticmethod
+    def _write_ctx(create_options=True):
+        return {"create_options": create_options, "resolved": {},
+                "createdOptions": [], "warnings": [], "unsets": [],
+                "option_patches": {}}
+
+    def _encode_value(self, space, tid, pdef, value, ctx):
+        """The wire value for `value` against its definition — option
+        names → keys (minting missing options), object names/URIs →
+        `any://<id>`, dates → instants, scalars kind-checked; None ⇒
+        _UNSET. Raises ValueError naming the expected shape."""
+        fmt = (pdef.get("format") or {}).get("type")
+        kind = pdef.get("kind")
+        handle = pdef.get("handle") or pdef.get("name") or pdef.get("id")
+        if value is None:
+            return _UNSET
+        if fmt == "select":
+            if isinstance(value, list):
+                if len(value) != 1:
+                    raise ValueError(
+                        f'"{handle}" is a single select — pass one option, '
+                        f"not {len(value)}")
+                value = value[0]
+            return self._option_key(space, tid, pdef, value, ctx)
+        if fmt == "multiselect":
+            vals = value if isinstance(value, list) else [value]
+            out = []
+            for v in vals:
+                k = self._option_key(space, tid, pdef, v, ctx)
+                if k not in out:
+                    out.append(k)
+            return out
+        if fmt == "links":
+            vals = value if isinstance(value, list) else [value]
+            out = []
+            for v in vals:
+                oid = _link_object_id(v)
+                if oid is None:
+                    if not isinstance(v, str) or not v.strip():
+                        raise ValueError(
+                            f'"{handle}" is a links property — pass object '
+                            f"ids, any:// links, or object names, not "
+                            f"{json.dumps(v)[:60]}")
+                    oid = self._object_id_by_name(space, pdef, v.strip())
+                uri = "any://" + oid
+                if uri not in out:
+                    out.append(uri)
+            return out
+        if fmt in ("date", "datetime"):
+            return self._encode_instant(handle, fmt, kind, value)
+        return self._encode_kind(handle, kind, value)
+
+    def _option_key(self, space, tid, pdef, value, ctx):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f'"{pdef.get("handle")}" takes an option name or key '
+                f"(string), not {json.dumps(value)[:60]}")
+        value = value.strip()
+        opts = _options_of(pdef)
+        pending = ctx["option_patches"].get((tid, pdef.get("id")), {})
+        if value in opts or value in pending:
+            return value
+        by_name = [k for k, o in list(opts.items()) + list(pending.items())
+                   if (o or {}).get("name") == value]
+        if not by_name:
+            by_name = [k for k, o in list(opts.items()) + list(pending.items())
+                       if ((o or {}).get("name") or "").casefold()
+                       == value.casefold()]
+        if len(by_name) == 1:
+            return by_name[0]
+        if len(by_name) > 1:
+            raise ValueError(
+                f'option "{value}" on "{pdef.get("handle")}" is ambiguous: '
+                f"keys {by_name} — pass the key")
+        if not ctx["create_options"]:
+            names = ", ".join(f'"{o["name"]}"' for o in _ordered_options(pdef))
+            raise ValueError(
+                f'"{value}" is not an option of "{pdef.get("handle")}" '
+                f"(create_options=False). Options: {names or 'none'}")
+        base = _slugify_option_key(value)
+        key, n = base, 1
+        while key in opts or key in pending:
+            n += 1
+            key = f"{base}_{n}"
+        last = max([o["pos"] for o in _ordered_options(pdef) if o["pos"]]
+                   + [o["pos"] for o in pending.values()] or [""])
+        pending[key] = {"name": value, "color": _pick_color(key),
+                        "pos": _lexid_after(last)}
+        ctx["option_patches"][(tid, pdef.get("id"))] = pending
+        ctx["createdOptions"].append(
+            {"property": pdef.get("handle"), "key": key, "name": value,
+             "color": pending[key]["color"]})
+        return key
+
+    def _object_id_by_name(self, space, pdef, name):
+        """Exact `any.name` match (then casefold-unique) within the links
+        prop's `format.filter`; 0 or >1 hits error with candidates."""
+        cand_filter = (pdef.get("format") or {}).get("filter")
+        filt = {"any.name": name}
+        if isinstance(cand_filter, dict) and cand_filter:
+            filt = {"$and": [cand_filter, filt]}
+        rows = self._call("post", f"/v1/spaces/{space}/objects/query",
+                          {"filter": filt, "limit": 5}).get("records") or []
+        rows = [r for r in rows if isinstance(r, dict)]
+        if len(rows) == 1:
+            return rows[0]["id"]
+        if not rows:
+            raise ValueError(
+                f'no object named "{name}" for links property '
+                f'"{pdef.get("handle")}" — search(space, "{name}") for '
+                "the id, or create the object first (links never mint)")
+        cands = "; ".join(
+            f'{r["id"]} ({", ".join(self._dexify(space, (r.get("any") or {}).get("types") or []))})'
+            for r in rows)
+        raise ValueError(
+            f'"{name}" names {len(rows)} objects — pass an id: {cands}')
+
+    @staticmethod
+    def _encode_instant(handle, fmt, kind, value):
+        if _is_instant(value):
+            secs = ts_s(value)  # noqa: F821 - guest global
+        elif isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError(
+                f'"{handle}" is a {fmt}: pass instant(seconds) / an ISO '
+                f"string / epoch seconds, not {json.dumps(value)[:60]}")
+        else:
+            try:
+                secs = ts_s(instant(value))  # noqa: F821 - guest globals
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f'"{handle}" is a {fmt}: {value!r} is not a date '
+                    f"({e})") from None
+        if secs is None:
+            raise ValueError(f'"{handle}": unreadable instant {value!r}')
+        if fmt == "date":
+            secs = secs - (secs % 86400)
+        if kind == "string":   # legacy ISO-string convention
+            import time
+            t = time.gmtime(secs)
+            return (time.strftime("%Y-%m-%d", t) if fmt == "date"
+                    else time.strftime("%Y-%m-%dT%H:%M:%SZ", t))
+        return instant(secs)  # noqa: F821 - guest global
+
+    @staticmethod
+    def _encode_kind(handle, kind, value):
+        def bad(expect):
+            raise ValueError(
+                f'"{handle}" is kind {kind}: expected {expect}, got '
+                f"{json.dumps(value)[:60]}")
+        if kind == "number":
+            if isinstance(value, bool):
+                bad("a number")
+            if isinstance(value, (int, float)):
+                return value
+            if isinstance(value, str):
+                try:
+                    f = float(value)
+                except ValueError:
+                    bad("a number")
+                return int(f) if f.is_integer() and "." not in value else f
+            bad("a number")
+        if kind == "boolean":
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str) and value.strip().lower() in (
+                    "true", "false", "yes", "no"):
+                return value.strip().lower() in ("true", "yes")
+            bad("true/false")
+        if kind == "string":
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return str(value)
+            bad("a string")
+        if kind == "array":
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                bad("a list")
+            return [value]
+        if kind == "object":
+            if isinstance(value, dict):
+                return value
+            bad("an object")
+        return value
+
+    def _apply_option_patches(self, space, ctx):
+        for (tid, pid), pending in ctx["option_patches"].items():
+            sets = {}
+            for key, o in pending.items():
+                for leaf in ("name", "color", "pos"):
+                    sets[f"format.options.{key}.{leaf}"] = o[leaf]
+            self._call("patch",
+                       f"/v1/spaces/{space}/types/{tid}/properties/{pid}",
+                       {"set": sets})
+            self._props_cache.pop((space, tid), None)
+        ctx["option_patches"] = {}
+
+    def _apply_unsets(self, space, object_id, ctx):
+        for tid, pdef in ctx["unsets"]:
+            scope = pdef.get("scope") or "synced"
+            if scope != "synced":
+                raise ValueError(
+                    f'"{pdef.get("handle")}" is scope {scope} — the server '
+                    "has no unset route for non-synced properties; write "
+                    "an empty value instead")
+            self._call("post", f"/v1/spaces/{space}/modify", {
+                "objectId": object_id, "dataset": "objects",
+                "records": [{"id": object_id, "upsert": False, "ops": [
+                    {"type": "$unset", "path": f'{tid}.{pdef.get("id")}'}]}]})
+        ctx["unsets"] = []
+
+    @staticmethod
+    def _write_result(object_id, ctx):
+        out = {"objectId": object_id}
+        for k in ("resolved", "createdOptions", "warnings"):
+            if ctx[k]:
+                out[k] = ctx[k]
         return out
 
     def _resolve_path(self, space, path):
@@ -537,9 +922,53 @@ class _Client:
             return filt
         out = {}
         for k, v in filt.items():
-            out[self._resolve_path(space, k)] = (
-                self._resolve_type_value(space, v) if k == "any.types" else v)
+            if k in ("$and", "$or", "$nor") and isinstance(v, list):
+                out[k] = [self._resolve_filter(space, sub) for sub in v]
+                continue
+            rk = self._resolve_path(space, k)
+            if k == "any.types":
+                v = self._resolve_type_value(space, v)
+            else:
+                v = self._encode_filter_value(space, rk, v)
+            out[rk] = v
         return out
+
+    def _encode_filter_value(self, space, resolved_key, cond):
+        """Display forms in filter VALUES → wire (ADR-022 §3): option
+        names → keys, object names/links → `any://<id>`. Never mints.
+        Only comparison operands are touched ($exists/$regex/… pass)."""
+        if not isinstance(resolved_key, str) or "." not in resolved_key:
+            return cond
+        tid, _, pid = resolved_key.partition(".")
+        if tid in _RESERVED_GROUPS or tid == "_ver":
+            return cond
+        pdef = self._prop_def(space, tid, pid)
+        fmt = ((pdef or {}).get("format") or {}).get("type")
+        if fmt not in ("select", "multiselect", "links"):
+            return cond
+        ctx = self._write_ctx(create_options=False)
+
+        def one(x):
+            if fmt == "links":
+                oid = _link_object_id(x)
+                if oid is None and isinstance(x, str) and x.strip():
+                    oid = self._object_id_by_name(space, pdef, x.strip())
+                return "any://" + oid if oid else x
+            return self._option_key(space, tid, pdef, x, ctx) \
+                if isinstance(x, str) else x
+        if isinstance(cond, dict):
+            out = {}
+            for op, v in cond.items():
+                if op in ("$in", "$nin", "$all") and isinstance(v, list):
+                    out[op] = [one(x) for x in v]
+                elif op in ("$eq", "$ne"):
+                    out[op] = one(v)
+                else:
+                    out[op] = v
+            return out
+        if isinstance(cond, list):
+            return [one(x) for x in cond]
+        return one(cond)
 
     def _resolve_sort(self, space, sort):
         if not isinstance(sort, list):
@@ -579,10 +1008,16 @@ class _Client:
             if not self._is_user_type(row) or not isinstance(v, dict):
                 out[k] = v
                 continue
-            label = {p["id"]: (p.get("xKey") or p.get("name") or p["id"])
-                     for p in self._type_props(space, k) if p.get("id")}
-            out[row.get("xKey") or k] = {label.get(pk, pk): pv
-                                         for pk, pv in v.items()}
+            defs = {p["id"]: p for p in self._type_props(space, k)
+                    if p.get("id")}
+            grp = {}
+            for pk, pv in v.items():
+                pdef = defs.get(pk)
+                if pdef is None:
+                    grp[pk] = pv
+                    continue
+                grp[pdef["handle"]] = self._display_value(pdef, pv)
+            out[row.get("xKey") or k] = grp
         # `any.types` VALUES are type ids on the wire — speak xKeys
         # (builtins already are; unknown ids pass through)
         any_group = out.get("any")
@@ -591,6 +1026,69 @@ class _Client:
                 ((cat["by_id"].get(t) or {}).get("xKey") or t)
                 for t in any_group["types"]]}
         return out
+
+    # --- ADR-022 §3: hydrated reads -------------------------------------------
+    @staticmethod
+    def _display_value(pdef, v):
+        """Select keys → option names (a dangling key passes through);
+        links stay `any://` strings here and are resolved in bulk by
+        _hydrate_links. Instants stay instants (ADR-019)."""
+        fmt = (pdef.get("format") or {}).get("type")
+        if fmt not in ("select", "multiselect"):
+            return v
+        opts = _options_of(pdef)
+
+        def name(k):
+            o = opts.get(k) if isinstance(k, str) else None
+            return (o or {}).get("name") or k
+        if fmt == "select":
+            return name(v)
+        return [name(k) for k in v] if isinstance(v, list) else v
+
+    def _hydrate_links(self, space, recs):
+        """Replace links-format values in normalized records with
+        [{id, name, types}] stubs — ONE batched $in query per page
+        (cap 200 ids; the tail stays raw), memoized per client."""
+        cat = self._catalog(space)
+        slots = []   # (group dict, key, [uris])
+        for rec in recs:
+            if not isinstance(rec, dict):
+                continue
+            for gk, gv in rec.items():
+                tid = cat["by_xkey"].get(gk)
+                if not tid or not isinstance(gv, dict):
+                    continue
+                for p in self._type_props(space, tid):
+                    if ((p.get("format") or {}).get("type") == "links"
+                            and isinstance(gv.get(p["handle"]), list)):
+                        slots.append((gv, p["handle"], gv[p["handle"]]))
+        want = []
+        for _, _, uris in slots:
+            for u in uris:
+                oid = _link_object_id(u) if isinstance(u, str) else None
+                if oid and oid not in self._stub_cache.get(space, {}) \
+                        and oid not in want:
+                    want.append(oid)
+        stubs = self._stub_cache.setdefault(space, {})
+        if want:
+            rows = self._call(
+                "post", f"/v1/spaces/{space}/objects/query",
+                {"filter": {"id": {"$in": want[:200]}},
+                 "limit": 200}).get("records") or []
+            for r in rows:
+                if isinstance(r, dict) and r.get("id"):
+                    anyg = r.get("any") or {}
+                    stubs[r["id"]] = {
+                        "id": r["id"], "name": anyg.get("name"),
+                        "types": self._dexify(space, anyg.get("types") or [])}
+            for oid in want[:200]:
+                stubs.setdefault(oid, {"id": oid, "name": None, "types": []})
+        for grp, key, uris in slots:
+            out = []
+            for u in uris:
+                oid = _link_object_id(u) if isinstance(u, str) else None
+                out.append(stubs.get(oid, u) if oid else u)
+            grp[key] = out
 
     def _dexify(self, space, v):
         """Deep-map USER-type ids -> xKeys anywhere in a result payload
@@ -607,26 +1105,44 @@ class _Client:
         return v
 
     # --- objects -------------------------------------------------------------
-    def create_object(self, space, body):
-        """Create a typed object; returns {"objectId"}.
+    def create_object(self, space, body, create_options=True):
+        """Create a typed object; returns {"objectId", "resolved"?,
+        "createdOptions"?, "warnings"?}.
 
-        Top-level `name` / `description` route into the `any` group
-        (parity with update_object). Everything else: `types` entries
+        Top-level `name` / `description` route into the `any` group and
+        `markdown` (alias `body`) becomes the editor body — one call
+        creates the page (parity with update_object; the wire itself
+        takes no body, so it is a create + put_markdown). Everything
+        else: `types` entries
         and `initialProperties` group + property keys are given as
-        xKeys (or ids) and resolved to the content-ids the server
+        handles (or ids) and resolved to the content-ids the server
         writes by; reserved groups (any/nav) pass through literal.
         Unknown type/property keys — and unknown TOP-LEVEL keys, which
-        the wire would silently drop — error — ADR-006 §6."""
+        the wire would silently drop — error — ADR-006 §6.
+        VALUES are encoded against each property's definition
+        (ADR-022 §2): select/multiselect take option NAMES or keys — a
+        missing option is created (any-ui style key/color/pos; pass
+        `create_options=False` to refuse) and reported in
+        `createdOptions`; links take object names, ids or any://
+        links (a name must match exactly one object; links never
+        create objects); date/datetime take instant()/ISO/epoch and
+        land as instants (dates at midnight UTC); number/boolean/
+        string are kind-checked. `resolved` echoes every value that
+        changed on the way to the wire."""
         body = dict(body or {})
         unknown = set(body) - {"types", "initialProperties", "nav",
-                               "name", "description"}
+                               "name", "description", "markdown", "body"}
         if unknown:
             raise ValueError(
                 f"create_object: unknown top-level key(s) {sorted(unknown)} "
                 "would be dropped by the wire (it accepts types/"
                 "initialProperties/nav). Properties go in initialProperties "
                 'keyed by type xKey — {"any": {"name": ...}} — or pass '
-                "name/description at top level.")
+                "name/description/markdown at top level.")
+        markdown = body.pop("markdown", None)
+        body_md = body.pop("body", None)
+        if markdown is None:
+            markdown = body_md
         name = body.pop("name", None)
         description = body.pop("description", None)
         if name is not None or description is not None:
@@ -645,20 +1161,34 @@ class _Client:
                     "omit types for a plain object.")
             body["types"] = [self._resolve_type_or_raise(space, t)
                              for t in body["types"]]
+        ctx = self._write_ctx(create_options)
         if isinstance(body.get("initialProperties"), dict):
             body["initialProperties"] = self._resolve_prop_groups(
-                space, body["initialProperties"])
-        return self._call("post", f"/v1/spaces/{space}/objects", body)
+                space, body["initialProperties"], ctx)
+            # None at create = simply absent
+            for g in list(body["initialProperties"]):
+                if not body["initialProperties"][g]:
+                    del body["initialProperties"][g]
+        self._apply_option_patches(space, ctx)   # options before the value
+        res = self._call("post", f"/v1/spaces/{space}/objects", body)
+        object_id = res.get("objectId")
+        if markdown is not None and object_id:
+            self.put_markdown(space, object_id, markdown)
+        return self._write_result(object_id, ctx)
 
-    def update_object(self, space, object_id, body):
-        """Update an object's name / editor body / properties by xKey.
+    def update_object(self, space, object_id, body, create_options=True):
+        """Update an object's name / editor body / properties by handle.
 
         `body`: {"name"?, "description"?, "markdown"?/"body"?,
         "<typeXKey>": {prop: value}, …} — same nested type-group shape as
         create_object (top-level name/description route into the `any`
         group, parity with create_object). Property keys resolve to ids;
-        groups are resolved BEFORE any write so a bad key can't land a
-        partial update. Returns {"objectId"}."""
+        groups are resolved and every value encoded against its
+        definition BEFORE any write so a bad key or value can't land a
+        partial update (value rules: see create_object — option names,
+        object names, dates; `None` CLEARS a property via $unset).
+        Patches go one per (type, scope). Returns {"objectId",
+        "resolved"?, "createdOptions"?, "warnings"?}."""
         body = dict(body or {})
         markdown = body.pop("markdown", None)
         body_md = body.pop("body", None)
@@ -666,19 +1196,35 @@ class _Client:
             markdown = body_md
         name = body.pop("name", None)
         description = body.pop("description", None)
-        groups = self._resolve_prop_groups(space, body)   # raises before write
+        ctx = self._write_ctx(create_options)
+        groups = self._resolve_prop_groups(space, body, ctx)   # raises before write
         if name is not None:
             groups.setdefault("any", {}).setdefault("name", name)
         if description is not None:
             groups.setdefault("any", {}).setdefault("description", description)
         if markdown is not None:
             self.put_markdown(space, object_id, markdown)
+        self._apply_option_patches(space, ctx)
+        self._apply_unsets(space, object_id, ctx)
         for tid, patch in groups.items():
-            if patch:
+            for scoped in self._split_by_scope(space, tid, patch):
                 self._call("post",
                           f"/v1/spaces/{space}/properties/{object_id}/set/{tid}",
-                          {"patch": patch})
-        return {"objectId": object_id}
+                          {"patch": scoped})
+        return self._write_result(object_id, ctx)
+
+    def _split_by_scope(self, space, tid, patch):
+        """One patch per declared scope — the set route takes a single
+        scope per call (data-types § Scopes)."""
+        if not patch:
+            return []
+        if tid in _RESERVED_GROUPS:
+            return [patch]
+        by_scope = {}
+        for pid, v in patch.items():
+            pdef = self._prop_def(space, tid, pid) or {}
+            by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
+        return list(by_scope.values())
 
     def delete_object(self, space, object_id):
         """Delete an object permanently; returns {} (wire: 204).
@@ -725,8 +1271,11 @@ class _Client:
             opts["sort"] = self._resolve_sort(space, opts["sort"])
         recs = self._call("post", f"/v1/spaces/{space}/objects/query",
                           opts).get("records", [])
-        return [self._normalize_record(space, r) for r in recs] if normalize \
-            else recs
+        if not normalize:
+            return recs
+        out = [self._normalize_record(space, r) for r in recs]
+        self._hydrate_links(space, out)   # ADR-022 §3
+        return out
 
     def list_programs(self, space, tools_only=False):
         """Programs deployed in a space: [{name, version, anyTool, summary}].
@@ -1131,25 +1680,40 @@ class _Client:
         """Every type in the space: rows of {id, xKey, name, …} (builtins included)."""
         return self._call("get", f"/v1/spaces/{space}/types").get("types", [])
 
-    def list_properties(self, space, type_key):
-        """A type's property definitions: [{id, name, xKey, kind,
-        format?, meta?, scope?}].
+    def list_properties(self, space, type_key, include_archived=False):
+        """A type's property definitions, in display order: [{handle,
+        id, name, xKey, kind, scope, format?, options?, meta?}].
 
-        `format` is the value convention when declared —
-        {"type": "date"|"datetime"|"links"|"select"|"multiselect",
-        "ui"?, "options"?} — CHECK IT before writing someone else's
-        type: a links prop takes ["any://<objectId>"] arrays, selects
-        take option keys, dates/datetimes an instant `instant(seconds)`
-        or `instant("<ISO>")` (kind `datetime`; a legacy prop declared
-        `kind: string` keeps ISO strings); a prop without format is
-        a plain kind. `scope` is the write/sync class (local-scope
-        props exist only per-peer — the chat filter trap). `type_key`
-        is the type's xKey (builtins: xKey == id); an unknown key
-        ERRORS with the available catalog — the server would answer a
-        nonexistent id with a silent []. Reference properties by xKey
-        everywhere; writes resolve through it."""
+        `handle` is THE key to read/write the property by (the xKey
+        when it is a real slug, else the name — any-ui stamps
+        `xKey: "select"` on every Select, so xKeys alone collide).
+        `format` is the value convention when declared — {"type":
+        "date"|"datetime"|"links"|"select"|"multiselect", "ui"?,
+        "filter"?, "options"?}; `options` is the ordered
+        [{key, name, color}] of a select/multiselect (values store the
+        KEY; write by name or key, a new name mints an option).
+        A links prop takes object names/ids/any:// links; dates take
+        instant()/ISO/epoch; a prop without format is a plain kind
+        (write the JSON shape). `scope` is the write/sync class
+        (local-scope props exist only per-peer — the chat filter
+        trap). Rows the UI archived (meta.anyUiArchived) are hidden
+        unless `include_archived=True`. `type_key` is the type's xKey
+        (builtins: xKey == id); an unknown key ERRORS with the catalog
+        — the server would answer a nonexistent id with a silent []."""
         tid = self._resolve_type_or_raise(space, type_key)
-        return self._fetch_props(space, tid)
+        self._props_cache.pop((space, tid), None)   # a listing reads fresh
+        rows = []
+        for p in sorted(self._type_props(space, tid), key=_prop_sort_key):
+            if _is_archived(p) and not include_archived:
+                continue
+            row = dict(p)
+            if _options_of(p):
+                row["options"] = [{k: o[k] for k in ("key", "name", "color")}
+                                  for o in _ordered_options(p)]
+            if _is_archived(p):
+                row["archived"] = True
+            rows.append(row)
+        return rows
 
     def _fetch_props(self, space, type_id):
         # wire read by resolved id — internals (catalog, normalize) call
@@ -1217,7 +1781,8 @@ class _Client:
                 pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
                 if pxkey in have:
                     continue
-                extra = {k: p[k] for k in ("kind", "meta", "format") if k in p}
+                extra = {k: p[k] for k in ("kind", "meta", "format", "scope",
+                                           "description") if k in p}
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
                 added[pxkey] = self._post_property(space, tid, extra)["propId"]
@@ -1323,24 +1888,223 @@ class _Client:
     def add_property(self, space, type_key, body):
         """POST one property onto a type (named by xKey — unknown keys
         error with the catalog). body: {"name", "xKey"?, "kind"?,
-        "format"?}. kind ∈ string | number | boolean | null | array |
-        object (default "string"); dates/links/selects go via
-        {"format": {"type": "date" | "datetime" | "links" | "select" |
-        "multiselect"}} with kind omitted (server derives it —
-        date/datetime ⇒ `datetime`, written as `instant(...)`;
-        "tags" is reserved). Returns {"propId": str}."""
+        "format"?, "scope"?, "description"?, "meta"?}. kind ∈ string |
+        number | boolean | null | array | object (default "string");
+        dates/links/selects go via {"format": {"type": "date" |
+        "datetime" | "links" | "select" | "multiselect", "options"?:
+        {key: {name, color?}}, "filter"?: <objects-query filter that
+        narrows a links prop's candidates>}} with kind omitted (server
+        derives it — date/datetime ⇒ `datetime`, written as
+        `instant(...)`; "tags" is reserved). `scope` ∈ synced (default)
+        | account | local — pinned like kind. The property is appended
+        to the type's display order (meta.pos). Returns {"propId"}."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._post_property(space, tid, body)
 
     def _post_property(self, space, type_id, body):
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
-        if "format" not in body:      # with a format, the server derives
+        fmt = body.get("format")
+        if fmt is None:      # with a format, the server derives
             body.setdefault("kind", "string")   # kind (links⇒array, date⇒datetime)
+        elif isinstance(fmt, dict):
+            if fmt.get("type") not in _FORMATS:
+                raise ValueError(
+                    f'format.type must be one of {list(_FORMATS)}, got '
+                    f'{fmt.get("type")!r} ("tags" is reserved server-side)')
+            opts = fmt.get("options")
+            if isinstance(opts, dict):
+                fmt = dict(fmt)
+                fmt["options"] = {}
+                last = ""
+                for k, o in opts.items():
+                    o = dict(o or {}) if isinstance(o, dict) else {"name": o}
+                    o.setdefault("name", k)
+                    o.setdefault("color", _pick_color(k))
+                    last = o.setdefault("pos", _lexid_after(last))
+                    fmt["options"][k] = o
+                body["format"] = fmt
+        if body.get("kind") not in (None,) + _KINDS:
+            raise ValueError(
+                f'kind must be one of {list(_KINDS)}, got {body["kind"]!r} — '
+                "dates/links/selects are FORMATS ({\"format\": {\"type\": …}})")
+        meta = dict(body.get("meta") or {})
+        if "pos" not in meta:
+            last = max([(p.get("meta") or {}).get("pos") or ""
+                        for p in self._type_props(space, type_id)] or [""])
+            meta["pos"] = _lexid_after(last)
+        body["meta"] = {k: str(v) for k, v in meta.items()}
         res = self._call("post",
                          f"/v1/spaces/{space}/types/{type_id}/properties", body)
         self._cat_invalidate(space)   # new prop -> refresh the propId map
         return res
+
+    # --- ADR-022 §4: definition surface ---------------------------------------
+    def _resolve_prop_or_raise(self, space, tid, prop_key):
+        pid = self._resolve_prop_seg(space, tid, prop_key)
+        if not pid:
+            raise ValueError(
+                f'unknown property "{prop_key}" — properties: '
+                f"{self._prop_handles(space, tid)}")
+        return pid
+
+    def patch_property(self, space, type_key, prop_key, set=None, unset=None):
+        """PATCH a property definition: `set` {path: string} / `unset`
+        [path]. Mutable paths: name, description, xKey, xKind,
+        meta.<k> (pos = display order lexid, index = search scope or
+        "none", icon), format.ui, format.filter (a filter object),
+        format.meta.<k>, format.options.<key>.{name,color,pos}.
+        kind / scope / format.type / an option's KEY are pinned —
+        refused here (define a new property instead). `set` must hit a
+        scalar leaf; `unset` may name a container (unsetting
+        `format.options.<key>` deletes the option). Returns {}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        body = {}
+        for path in list((set or {}).keys()) + list(unset or []):
+            if path in _PINNED_PATHS or path.split(".")[0] in ("id", "key"):
+                raise ValueError(
+                    f'"{path}" is pinned at first write (400 '
+                    "property.immutable) — kind/scope/format.type never "
+                    "change; add a new property instead")
+        if set:
+            body["set"] = {k: (v if k == "format.filter" else str(v))
+                           for k, v in set.items()}
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("patch_property: nothing to set or unset")
+        self._call("patch",
+                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}", body)
+        self._props_cache.pop((space, tid), None)
+        return {}
+
+    def set_option(self, space, type_key, prop_key, option, name=None,
+                   color=None, pos=None):
+        """Create or update one select/multiselect option. `option` is
+        an existing key or name (matched like writes do), or a NEW name
+        — then the key is minted (slug, uniquified) with `color` (one
+        of grey yellow orange red pink purple blue ice teal green;
+        default picked) and appended `pos`. Rename with `name=`,
+        recolor with `color=`. Returns {"key", "name", "color",
+        "created"}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        pdef = self._prop_def(space, tid, pid) or {}
+        if (pdef.get("format") or {}).get("type") not in ("select", "multiselect"):
+            raise ValueError(
+                f'"{pdef.get("handle")}" is not a select/multiselect '
+                "(options live on those formats only)")
+        ctx = self._write_ctx(True)
+        key = self._option_key(space, tid, pdef, option, ctx)
+        created = bool(ctx["createdOptions"])
+        cur = dict(_options_of(pdef).get(key) or
+                   ctx["option_patches"].get((tid, pid), {}).get(key) or {})
+        sets = {}
+        if created:
+            sets.update({f"format.options.{key}.{leaf}": cur[leaf]
+                         for leaf in ("name", "color", "pos")})
+        if name is not None:
+            sets[f"format.options.{key}.name"] = name
+        if color is not None:
+            if color not in _OPTION_COLORS:
+                raise ValueError(f"color must be one of {list(_OPTION_COLORS)}")
+            sets[f"format.options.{key}.color"] = color
+        if pos is not None:
+            sets[f"format.options.{key}.pos"] = pos
+        if sets:
+            self._call("patch",
+                       f"/v1/spaces/{space}/types/{tid}/properties/{pid}",
+                       {"set": sets})
+            self._props_cache.pop((space, tid), None)
+        return {"key": key, "name": name or cur.get("name") or key,
+                "color": color or cur.get("color"), "created": created}
+
+    def remove_option(self, space, type_key, prop_key, option):
+        """Delete an option (by key or name). Values still holding the
+        key stay as dangling keys — by design; rewrite them first if
+        that matters. Returns {"key"}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        pdef = self._prop_def(space, tid, pid) or {}
+        ctx = self._write_ctx(False)
+        key = self._option_key(space, tid, pdef, option, ctx)
+        self._call("patch",
+                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}",
+                   {"unset": [f"format.options.{key}"]})
+        self._props_cache.pop((space, tid), None)
+        return {"key": key}
+
+    def reorder_property(self, space, type_key, prop_key, after=None):
+        """Move a property in the type's display order: after the
+        property `after` (a handle), or first when `after=""`; `None`
+        = last. Re-expresses meta.pos for the whole type (sequential
+        writes — the server serializes schema edits). Returns {"order":
+        [handles]}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        rows = sorted(self._type_props(space, tid), key=_prop_sort_key)
+        target = next(p for p in rows if p["id"] == pid)
+        rest = [p for p in rows if p["id"] != pid]
+        if after is None:
+            rest.append(target)
+        elif after == "":
+            rest.insert(0, target)
+        else:
+            aid = self._resolve_prop_or_raise(space, tid, after)
+            idx = next(i for i, p in enumerate(rest) if p["id"] == aid)
+            rest.insert(idx + 1, target)
+        pos = ""
+        for p in rest:
+            pos = _lexid_after(pos)
+            if (p.get("meta") or {}).get("pos") != pos:
+                self._call("patch",
+                           f"/v1/spaces/{space}/types/{tid}/properties/{p['id']}",
+                           {"set": {"meta.pos": pos}})
+        self._props_cache.pop((space, tid), None)
+        return {"order": [p["handle"] for p in rest]}
+
+    def archive_property(self, space, type_key, prop_key, restore=False):
+        """Hide a property the way the UI removes one: the reversible
+        `meta.anyUiArchived` marker (values untouched; `restore=True`
+        clears it). Prefer this over delete_property. Returns {}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        body = ({"unset": [f"meta.{_ARCHIVED_META}"]} if restore
+                else {"set": {f"meta.{_ARCHIVED_META}": "1"}})
+        self._call("patch",
+                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}", body)
+        self._props_cache.pop((space, tid), None)
+        return {}
+
+    def delete_property(self, space, type_key, prop_key):
+        """PERMANENTLY tombstone a property definition (CRDT — the id
+        never comes back; stored values stay as orphans). The UI never
+        does this; use archive_property unless the user insists.
+        Returns {}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        self._call("delete",
+                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}")
+        self._props_cache.pop((space, tid), None)
+        return {}
+
+    def attach_type(self, space, object_id, type_key):
+        """Add a type to an object (`any.types`) — the membership route
+        the UI uses to put an object in a collection. Idempotent;
+        unknown type/object 404. Returns {}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        self._call("post",
+                   f"/v1/spaces/{space}/properties/{object_id}/attach/{tid}")
+        return {}
+
+    def detach_type(self, space, object_id, type_key):
+        """Remove a type from an object's `any.types`. Values under that
+        type stay as orphans and come back on re-attach. Returns {}."""
+        tid = self._resolve_type_seg(space, type_key) or type_key
+        self._call("post",
+                   f"/v1/spaces/{space}/properties/{object_id}/detach/{tid}")
+        return {}
 
     # --- bundles (SYN-163 / ADR-017 §0) ----------------------------------------
     def _bundle_path(self, space, bundle_id, tail=""):
@@ -1812,7 +2576,7 @@ _instance = None
 def _c():
     global _instance
     if _instance is None:
-        base = effect("config.get", {"key": "any.base_url"})["value"]  # noqa: F821
+        base = effect("runtime.get", {"key": "any.base_url"})["value"]  # noqa: F821
         _instance = _Client(base)
     return _instance
 
@@ -1838,13 +2602,14 @@ def _space(sc):
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def create_object(spaceConfig, body):
-    return _c().create_object(_space(spaceConfig), body)
+def create_object(spaceConfig, body, create_options=True):
+    return _c().create_object(_space(spaceConfig), body, create_options)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def update_object(spaceConfig, object_id, body):
-    return _c().update_object(_space(spaceConfig), object_id, body)
+def update_object(spaceConfig, object_id, body, create_options=True):
+    return _c().update_object(_space(spaceConfig), object_id, body,
+                              create_options)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
@@ -2045,8 +2810,51 @@ def list_types(spaceConfig):
 
 
 @span(kind="getter")  # noqa: F821 - guest global
-def list_properties(spaceConfig, type_key):
-    return _c().list_properties(_space(spaceConfig), type_key)
+def list_properties(spaceConfig, type_key, include_archived=False):
+    return _c().list_properties(_space(spaceConfig), type_key, include_archived)
+
+
+# --- ADR-022 §4: definition surface -----------------------------------------
+@span(kind="mutator")  # noqa: F821 - guest global
+def patch_property(spaceConfig, type_key, prop_key, set=None, unset=None):
+    return _c().patch_property(_space(spaceConfig), type_key, prop_key, set, unset)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def set_option(spaceConfig, type_key, prop_key, option, name=None, color=None,
+               pos=None):
+    return _c().set_option(_space(spaceConfig), type_key, prop_key, option,
+                           name, color, pos)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def remove_option(spaceConfig, type_key, prop_key, option):
+    return _c().remove_option(_space(spaceConfig), type_key, prop_key, option)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def reorder_property(spaceConfig, type_key, prop_key, after=None):
+    return _c().reorder_property(_space(spaceConfig), type_key, prop_key, after)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def archive_property(spaceConfig, type_key, prop_key, restore=False):
+    return _c().archive_property(_space(spaceConfig), type_key, prop_key, restore)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def delete_property(spaceConfig, type_key, prop_key):
+    return _c().delete_property(_space(spaceConfig), type_key, prop_key)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def attach_type(spaceConfig, object_id, type_key):
+    return _c().attach_type(_space(spaceConfig), object_id, type_key)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def detach_type(spaceConfig, object_id, type_key):
+    return _c().detach_type(_space(spaceConfig), object_id, type_key)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
@@ -2121,7 +2929,9 @@ for _f in (create_object, update_object, delete_object, query_objects,
            list_search_scopes,
            append_markdown, list_spaces, get_space, general_chat,
            create_space, get_ui_context, open_in_ui, list_types,
-           list_properties,
+           list_properties, patch_property, set_option, remove_option,
+           reorder_property, archive_property, delete_property,
+           attach_type, detach_type,
            create_type, add_property, append_turn, create_chunk,
            chat_send, search, backlinks, get_brain, create_memory,
            evolve_memory, delete_memory):

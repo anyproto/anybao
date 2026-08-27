@@ -192,7 +192,7 @@ def test_full_conversation_through_the_binary(backends):
     effects = {json.loads(ln)["effect"] for ln in trace.read_text().splitlines()
                if json.loads(ln).get("kind") == "effect"}
     assert all(e.split(".")[0] in
-               ("http", "mailbox", "module", "kernel", "trace", "config",
+               ("http", "mailbox", "module", "kernel", "trace", "config", "runtime",
                 "time", "random", "env", "uuid4", "sleep", "batch")
                for e in effects), effects
 

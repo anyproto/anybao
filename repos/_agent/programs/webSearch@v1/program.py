@@ -37,6 +37,9 @@ def _request(prov, query):
             "system_instruction": {"parts": [{"text": _SYSTEM}]},
             "contents": [{"role": "user", "parts": [{"text": query}]}],
             "tools": [{"google_search": {}}],
+            # a 4-8 sentence synthesis needs no deliberation, and
+            # thinking tokens bill at the output rate (ADR-008 §3)
+            "generation_config": {"thinking_config": {"thinking_level": "low"}},
         },
         "timeout": _TIMEOUT_S,
         "credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key"},

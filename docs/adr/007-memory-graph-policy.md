@@ -92,7 +92,8 @@ the judge decides — no magic similarity constant to drift.
   it (`search-before-create`, already doctrine for objects); the
   identities directory anchors people.
 - **Typed-property preference**: a recorded fact naming two entities ⇒
-  ensure both objects exist, link via an object-kind property. Prose
+  ensure both objects exist, link via a links-format property (ADR-022
+  §2 resolves object names to `any://` refs). Prose
   mentions feed the index; properties feed the graph. Memory edges are
   properties (plan §4b) and may point at ANY object, not just
   memories.

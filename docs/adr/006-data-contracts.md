@@ -222,97 +222,65 @@ failure. v2 chunk record:
 
 ### 3. Config object (`agent_config` dataset on a derived object)
 
-> **Superseded for secrets (ADR-021 §4, 2026-08-26):** secret values
-> are account-scoped synced fields on the `agent_secrets` row — any-sync
-> encrypts every change with the space's read key, so a synced field is
-> end-to-end encrypted and a key entered on any device reaches the
-> device running the agent. The device-local scope below is no longer
-> used for secrets.
+The agent's non-secret configuration — the LLM tiers and the search
+providers — lives in the bao space, not in the binary. Secrets live
+beside it in `agent_secrets` (ADR-021 §4); the two stores share one
+scope and one bootstrap shape.
 
-- Per-space object derived from seed `any/agent-config/v1` (spaceIndex
-  pattern). Records keyed by dotted config key
-  (`llm.tier.codegen`, `overlays.std`, `loop.max_turns`).
-- **Cascade via record-scoped fields** (slice 22): schema declares
-  `value` (synced) and `localValue` (ScopeLocal). Resolution:
-  `localValue ?? value ?? default`. Device-level overrides never sync;
-  space-level values replicate.
-- **Account tier deferred**: record-field account scope is
-  declared-not-writable in the SDK today (plan §4 caveat) — the
-  cascade ships device→space→default now; account slots in when the
-  SDK mirror lands (upstream item).
-- **Secrets are `localValue`-only, enforced** by the config helper
-  (`secret: true` declarations refuse synced writes) and consumed only
-  inside effect implementations (ADR-002 `ctx`).
+**What is config, what is not.** Agent config is what programs read
+through `config.get`: `llm.tier.*` (ADR-006 §0 tiers), `search.provider.
+websearch`, `search.provider.deepresearch`. Runtime wiring is a
+different namespace with a different effect: `runtime.get` serves
+`any.base_url` (from `addr`) and `overlays.aliases` (from the toml
+`[overlays]` table) — per device, from the runtime config, never the
+space. The behavioral knobs (`loop.max_turns` etc.) are module
+constants in `toolcaller@v1.py`, not config.
 
-**Implemented 2026-07-16 (MVP — device-local scope + secrets deferred).**
-The config object now exists as a server built-in: the `agent_config`
-type (`internal/agentconfig`, a `DefaultHandler` dataset) on an object
-derived from seed `any/agent-config/v1`, materialized by the server and
-reported as `agentConfigObjectId` on the single-space GET — the same
-delivery path as `generalChatObjectId` (unconditional derive in
-`spaceToAPI`; object-level `Derive` has no create-free id compute, so
-gating on the `agent_space` create flag is deferred). anybao's
-`create_space` sends `agent_space: true` to eagerly provision it.
+**Store.** `agent_config` on the host-written config child of the
+bao/v1 bundle (ADR-017 §0): one record per dotted key, `{key, value}`;
+`key` declared, `value` on the dynamic keyspace (any-typed), `dynamic:
+true`, `DataVersion "1"`. `value` is a synced field in the owner-only
+bao space — any-sync encrypts every change with the space read key, so
+it is end-to-end encrypted and reaches every device of the account,
+exactly like `agent_secrets.value`. There is no device-local tier: a
+per-device difference is runtime wiring by definition, and it lives in
+the toml. Existing spaces that still carry the retired `localValue` /
+`secret` declarations keep them inert — `ensure_dataset` is
+create-if-absent and nothing migrates.
 
-Divergences from the design above, all deferred as follow-ups:
-- **Cascade is `space-override ?? default`, not `localValue ?? value ??
-  default`.** The harness holds the DEFAULT layer as data — `llm.tier.*`
-  in `runtime/src/config_defaults.json` (embedded via `include_str!`,
-  seeded by `bootstrap` in `main.rs`; `any.base_url` stays addr-derived)
-  — and overlays space-scope override records (`{key, value}` on the
-  config object, read at serve start) on top. Record-field *local* scope
-  (slice 22) is now wired for secrets (see the 2026-07-17 amendment);
-  *account* scope stays deferred until the SDK mirror lands.
-- ~~**Secrets stay device-local via env/`secrets` map**, not on the config
-  object.~~ **Resolved 2026-07-17 — secrets now persist device-locally on
-  the config object** (see the amendment below). The env var seeds the
-  store once; later starts read it back.
-- The behavioral knobs the design listed as config keys
-  (`loop.max_turns` etc.) are deliberately NOT config — they're hardcoded
-  module constants + per-run args in `toolcaller@v1.py`.
+**Seeding (serve start)** — the seed passes of `bootstrap_secrets`,
+over `agent_config`; nothing is loaded into the host:
 
-**Amended 2026-07-17 — device-local secret persistence landed.** The
-`localValue ?? value ?? default` cascade's device layer now exists for
-secrets, closing the second divergence above. Why it was blocked and what
-changed:
+1. **Hard seeds** = the config file's `[config]` table: write-through —
+   a stored value that differs is overwritten. This is the per-rig
+   lever ("this environment runs model X"), the config analogue of
+   `.connectors.env`.
+2. **Soft seeds** = `runtime/src/config_defaults.json` (embedded via
+   `include_str!`): persisted only for keys with no row. They are the
+   fresh-space defaults, nothing more — changing the json changes what
+   a NEW space gets; an existing space keeps its rows.
 
-- **The blocker was server-side, not the SDK.** The SDK/HTTP `scope:
-  "local"` write route is mature (chat's unread flags use it). But the
-  `agent_config` dataset shipped schema-less (`DefaultHandler{}`, no
-  declared fields) → a *Dynamic* keyspace where undeclared fields default
-  to `ScopeSynced`, and the apply path rejects a *local* write to a synced
-  field. A device-local field is writable only when the dataset schema
-  **declares** it `ScopeLocal`. So the MVP could not persist a secret
-  locally without an upstream schema change — cleanly deferred rather than
-  worked around (isolation/upstream-fix doctrine).
-- **Upstream (`~/any/any`, `internal/agentconfig`):** the dataset now
-  declares a schema — `Dynamic: true` retained (undeclared dotted keys
-  still work, synced) plus explicit fields: `value` synced (space
-  override), `localValue` **`ScopeLocal`** (device-only, never synced),
-  `secret` synced marker. `DataVersion` stays `"1"` — additive, no older
-  writer rejected, config object not re-minted. A server HTTP test
-  (`handlers_agentconfig_scope_test.go`) proves the local write is
-  accepted, reads back, mints no DAG change, and is refused on the synced
-  route.
-- **Harness (`anyrt`):** a `set_local_field` client helper does the
-  server-required two-step (a synced upsert materializes the record id
-  carrying only `{key, secret}`, then a local `$set` writes the secret
-  into `localValue` — local scope cannot create records). `serve`
-  bootstraps once: a present device-local value is authoritative (env is a
-  noop); an empty store with `ANTHROPIC_API_KEY` in env persists it now;
-  both empty warns (serve still starts). The secret still lives only in
-  the in-memory `secrets` map at runtime and is never read by cells —
-  `localValue` is just its device-local at-rest home instead of the env.
+**Reads are read-through.** `config.get` queries the row on every
+call; the host holds no copy, so a row written by a cell, the UI, or
+another device is live for the next cell. A store hiccup fails that
+`config.get` loudly (`ConfigError`), per key — never a stale value.
+`anyrt run` (offline, no space) answers from the soft seeds (+ its
+`--config` file) instead of a store.
 
-**Amended 2026-07-22 — persistence covers all provider keys.** The
-bootstrap above ran for the Anthropic key only; `GEMINI_API_KEY` /
-`TOGETHER_API_KEY` were env-per-run, so an embedder launch without env
-(e.g. a Dock-launched app) lost web search. `serve` now runs the same
-load-authoritative / persist-from-env cycle over every provider ref
-(`llm.key.anthropic`, `google.key.gemini`, `llm.key.together` — the
-`PROVIDER_SECRET_REFS` table, mirroring `bootstrap_maps`'s env pairs).
-Only the required Anthropic key warns when absent; the optional
-providers stay silent until their effect needs them.
+**Effects.**
+- `config.get {key}` → `{value}` — the row; refuses the secret
+  namespaces by name (`llm.key.*`, `connector.key.*`, oauth refs).
+- `config.set {key, value}` — mutate, traced (ADR-002): upserts the
+  row. Refuses the secret namespaces with `ConfigError`.
+- `runtime.get {key}` → `{value}` — runtime wiring (`any.base_url`,
+  `overlays.aliases`); `KeyError` otherwise.
+- `config@v1` (`list/get/set/set_model`) is the agent's tool: `get`,
+  `set`, `set_model` over the effects, `list` a plain dataset query
+  through `any@v1` (the `bao/config/v1` child of the `bao/v1` bundle).
+  A config mini-app is the UI's equivalent.
+
+Server side, `agentconfig` stays a dynamic dataset with a declared
+`key` — no upstream change.
 
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
@@ -515,6 +483,14 @@ against user types (`409 type.xkey_conflict`). Client contract:
   gets one `type.xkey` property write
   (`POST …/properties/{typeId}/set/type`) and is reused, never
   shadowed by a duplicate type.
+
+**Amended 2026-08-27 (ADR-022).** The property handle is the xKey
+only when it is unique on its type and not any-ui's kind marker
+(`select`/`tags`/`links`/…), else the name; ambiguity errors. Values
+are encoded against the definition on write (option names → keys,
+object names → `any://` refs, dates → instants, `None` → `$unset`)
+and hydrated on read (option names, `{id, name, types}` link stubs) —
+the no-silent-drop rule now covers values. Contract: ADR-022.
 
 **Scope / non-goals.** The `any.types` VALUES inside a normalized
 record stay raw type ids (matching bobrik-watch) — they are a builtin

@@ -190,7 +190,7 @@ def guest_use(any_server):
                 params=payload.get("params"), headers=payload.get("headers"),
                 json_body=payload.get("json"), body=payload.get("body"),
                 timeout=payload.get("timeout"))
-        if name == "config.get":
+        if name in ("config.get", "runtime.get"):
             return {"value": {"any.base_url": any_server}[payload["key"]]}
         raise AssertionError(f"unexpected effect in guest shim: {name}")
 

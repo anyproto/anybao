@@ -19,28 +19,63 @@ fails in the standard overlay setup, ADR-004 §2):
 - Discover existing types before creating new ones —
   `c.query_objects(space, ...)` over the catalog or
   `c.list_properties(space, type_xkey)` for one type's property map
-  (`[{id, name, xKey, kind}]`). Types are ALWAYS named by xKey (an
-  unknown xKey errors with the catalog); never pass or repeat raw
-  type content-ids. Find an existing fit first; avoid inventing
-  parallel types.
-- Types and properties are referenced by **xKey** (the stable slug,
-  e.g. `"pages"` / `"author"`), NOT the display name and NEVER the raw
-  content id — the client resolves xKeys to ids under the hood.
+  (`[{handle, name, kind, scope, format?, options?}]`, in display
+  order). Types are ALWAYS named by xKey (an unknown xKey errors with
+  the catalog); never pass or repeat raw type content-ids. Find an
+  existing fit first; avoid inventing parallel types.
+- Types are referenced by **xKey** (the stable slug, e.g. `"pages"`),
+  properties by their **`handle`** (the xKey when it is a real slug,
+  else the display name — UI-made properties often carry no xKey or a
+  marker one like `select`), NEVER the raw content id — the client
+  resolves handles to ids under the hood; an ambiguous key errors
+  listing the candidates.
   Builtins use their id (`chat`, `editor`, `nav`, `any`); `program` and
   `mini_app` are ordinary user types (xKey = that slug).
+- **Property formats — check `format` before writing someone else's
+  type** (ADR-022). A property is a `kind` (string/number/boolean/
+  array/object/datetime) plus an optional `format.type`; writes are
+  encoded against the definition, so pass the HUMAN form:
+  | format | write | reads back as |
+  |---|---|---|
+  | `select` | an option NAME (or key): `"Done"` | the option name |
+  | `multiselect` | a list of names: `["Backend", "Urgent"]` | names |
+  | `links` (objects) | object NAMES, ids or `any://` links: `["Dune", "<id>"]` | `[{id, name, types}]` stubs |
+  | `date` / `datetime` | `instant(...)`, an ISO string, epoch seconds | an instant |
+  | none | the kind's JSON shape (`3`, `true`, `"text"`) | verbatim |
+  A select name that doesn't exist yet **creates the option** (the
+  result's `createdOptions` says so — check it; pass
+  `create_options=False` to refuse); a links NAME must match exactly
+  one object (0 or many → error with candidates: search, then pass
+  the id) — links never create objects. `None` clears a property.
+  The result's `resolved` echoes every value that changed on the way
+  to the wire. Filters take the same human forms (`{"task.Status":
+  "Done"}`); a name that is not an option errors. Options themselves:
+  `c.set_option(s, type, prop, "Blocked", color="red")` /
+  `c.remove_option(...)`; property definitions: `c.patch_property`
+  (rename, icon, order), `c.archive_property` (what the UI's delete
+  does), `c.reorder_property`. Membership in a collection/type is
+  `c.attach_type(s, obj_id, type)` / `detach_type` — never edit
+  `any.types` by hand. Free-form labels live in the builtin
+  `any.tags` (string array) — a select is the typed alternative.
   Three catalog rows are SYNTHETIC — `any`, `spaceIndex`, and `type`
   (the meta-type) — they describe the space itself, are never
   attachable to objects, and their handles are reserved: naming a new
   type after any builtin errors.
-- `c.create_type(s, {"name", "properties": [{"name", "kind"}, …]})` —
-  idempotent composite; xKeys auto-slug from names; result is
-  immediately writable (never poll). Returns `{typeId, xKey, created,
-  addedProps}` — carry the `xKey` forward, not the id.
+- `c.create_type(s, {"name", "properties": [{"name", "kind"?,
+  "format"?}, …]})` — idempotent composite; xKeys auto-slug from
+  names; result is immediately writable (never poll). Dates, selects
+  and object links are FORMATS, not kinds: `{"name": "Status",
+  "format": {"type": "select", "options": {"todo": "To do", "done":
+  "Done"}}}`, `{"name": "Due", "format": {"type": "date"}}`, `{"name":
+  "Related", "format": {"type": "links", "filter": {"any.types":
+  "page"}}}`. Returns `{typeId, xKey, created, addedProps}` — carry
+  the `xKey` forward, not the id.
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":
   {"any": {"name": "Dune"}, "book": {"author": "Frank Herbert",
-  "year": 1965}}})`. Edit an existing object the same way with
+  "year": 1965}}, "markdown": "# Dune\n…"})` — `markdown` at create
+  writes the page body too. Edit an existing object the same way with
   `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
   {"rating": 9}})`. Properties placed anywhere else, or an unknown
   type/property key, error — never silently dropped.
@@ -82,7 +117,13 @@ Spaces:
 - You live in the user's space (chat, history, brain) with your code in
   the agent overlay, but you can reach **every space**: the spaceConfig
   is an explicit argument on every `any@v1` call. Cross-space is normal.
-- Your home space: the bound `baoSpaceConfig` global. The user's
+- Your home space (the bound `baoSpaceConfig` global) holds ONLY your
+  own machinery — programs, skills, memory, history, config. **User
+  content never goes there**: the UI hides the home space, so a page,
+  collection or type created in it is invisible to the user. Every
+  object the user asks for lands in a USER space — `currentUserSpace`
+  by default, or the space they name; if neither is clear, ask which
+  space, never fall back to home. The user's
   current view: the bound `currentUserSpace` global (mirrored on the
   newest user message as `[now: … | user's view — space: …, object:
   …]`) — "here" / "this page" / "this space" means THAT: pass

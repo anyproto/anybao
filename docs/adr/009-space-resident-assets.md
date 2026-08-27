@@ -40,8 +40,8 @@ confined to CLI bootstrap.
 
 One TOML file for everything host-side; CLI flags override file
 values; secrets NEVER appear in it (ADR-006 §3 / ADR-008 §1 unchanged:
-`.connectors.env` / `--secrets-file` hard seeds, device-local
-`localValue` — `docs/config-secrets.md`).
+`.connectors.env` / `--secrets-file` hard seeds into the
+`agent_secrets` store — `docs/config-secrets.md`).
 
 ```toml
 # anybao.toml
@@ -64,9 +64,9 @@ traces = "traces"
 ```
 
 - Host precedence: built-in defaults < `anybao.toml` < CLI flag.
-- Guest cascade (lowest→highest): `config_defaults.json` < `[config]`
-  table < `--config` JSON < space `agent_config` overrides — the
-  existing cascade gains one layer, nothing else moves.
+- Guest config: the `[config]` table (+ `--config` JSON) is the HARD
+  seed written through to the space's `agent_config` store at serve
+  start; `config_defaults.json` soft-seeds a fresh space (ADR-006 §3).
 - Discovery: `--config-file <path>`; default `./anybao.toml` when
   present, else pure defaults. Unknown keys are a parse error (typos
   fail loudly; single-repo tool, no forward-compat lenience).
