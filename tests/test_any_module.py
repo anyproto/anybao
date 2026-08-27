@@ -156,6 +156,7 @@ def test_object_type_property_creation_paths():
         ("GET", "/v1/spaces/s1/types"),          # idempotency probe
         ("POST", "/v1/spaces/s1/types"),
         ("GET", "/v1/spaces/s1/types"),          # add_property xKey resolution
+        ("GET", "/v1/spaces/s1/types/t1/properties"),   # meta.pos append (ADR-022 §4)
         ("POST", "/v1/spaces/s1/types/t1/properties")]
 
 
@@ -174,8 +175,11 @@ def test_create_type_composite_fans_out_properties():
     # slugged xKey on the type, no inline properties on the wire
     assert posts[0] == ("/v1/spaces/s1/types",
                         {"name": "Comic Book", "xKey": "comic_book"})
-    assert posts[1][1] == {"name": "Author", "xKey": "author", "kind": "string"}
-    assert posts[2][1] == {"name": "year", "xKey": "year", "kind": "number"}
+    # each property appended to the display order (meta.pos, ADR-022 §4)
+    assert posts[1][1] == {"name": "Author", "xKey": "author", "kind": "string",
+                           "meta": {"pos": "a0"}}
+    assert posts[2][1] == {"name": "year", "xKey": "year", "kind": "number",
+                           "meta": {"pos": "a0"}}   # fake lists no props → a0
 
 
 def test_create_type_idempotent_adds_only_missing():
@@ -234,7 +238,7 @@ def test_add_property_defaults_xkey_and_kind():
                        "/types/t1/properties": {"propId": "p1"}})
     client(fx).add_property("s1", "t1", {"name": "Due Date"})
     assert fx.calls[-1][2] == {"name": "Due Date", "xKey": "due_date",
-                               "kind": "string"}
+                               "kind": "string", "meta": {"pos": "a0"}}
 
 
 # --- xKey normalization (ADR-006 §6) -------------------------------------------
@@ -547,7 +551,7 @@ def test_list_types_and_properties_unwrap():
                        "/types/t1/properties": {"properties": [{"id": "p1"}]}})
     c = client(fx)
     assert c.list_types("s1") == [{"id": "t1"}]
-    assert c.list_properties("s1", "t1") == [{"id": "p1"}]
+    assert c.list_properties("s1", "t1") == [{"id": "p1", "handle": "p1"}]
     assert [(v, p) for v, p, _ in fx.calls] == [
         ("GET", "/v1/spaces/s1/types"),
         ("GET", "/v1/spaces/s1/types"),   # list_properties type resolution
@@ -558,7 +562,10 @@ def test_list_properties_takes_xkey_and_errors_on_unknown():
     fx = wire(replies=_CAT)
     c = client(fx)
     # xKey resolves to the CID route — the agent never needs the id
-    assert c.list_properties("s1", "task")[0]["xKey"] == "status"
+    rows = c.list_properties("s1", "task")
+    # display order: no meta.pos → by name; handle = the slug xKey
+    assert [(r["handle"], r["xKey"]) for r in rows] == [
+        ("priority", "priority"), ("status", "status")]
     assert any(p.endswith("/types/bafyTASK/properties") for _, p, _ in fx.calls)
     # unknown key errors with the catalog (server would answer 200 [])
     with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
@@ -1269,8 +1276,10 @@ def test_create_type_posts_property_formats_without_a_kind():
         {"name": "When", "format": {"type": "datetime"}},
         {"name": "Title"}]})
     posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
-    assert posted[0] == {"name": "When", "xKey": "when", "format": {"type": "datetime"}}
-    assert posted[1] == {"name": "Title", "xKey": "title", "kind": "string"}
+    assert posted[0] == {"name": "When", "xKey": "when", "format": {"type": "datetime"},
+                         "meta": {"pos": "a0"}}
+    assert posted[1] == {"name": "Title", "xKey": "title", "kind": "string",
+                         "meta": {"pos": "a0"}}
 
 
 # --- files (ADR-020 §2) -------------------------------------------------------
