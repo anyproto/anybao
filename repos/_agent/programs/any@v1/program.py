@@ -663,7 +663,7 @@ class _Client:
             return out
         if fmt == "links":
             vals = value if isinstance(value, list) else [value]
-            out = []
+            out, explicit = [], []
             for v in vals:
                 oid = _link_object_id(v)
                 if oid is None:
@@ -673,13 +673,46 @@ class _Client:
                             f"ids, any:// links, or object names, not "
                             f"{json.dumps(v)[:60]}")
                     oid = self._object_id_by_name(space, pdef, v.strip())
+                elif oid not in explicit:
+                    explicit.append(oid)
                 uri = "any://" + oid
                 if uri not in out:
                     out.append(uri)
+            # a links value is the bare in-space id (no space segment):
+            # an id from another space is unresolvable by every reader,
+            # so an explicit id must exist HERE — verified before any
+            # write, with the same batched lookup hydration uses
+            self._assert_links_in_space(space, handle, explicit)
             return out
         if fmt in ("date", "datetime"):
             return self._encode_instant(handle, fmt, kind, value)
         return self._encode_kind(handle, kind, value)
+
+    def _assert_links_in_space(self, space, handle, ids):
+        """Every explicit link id must be an object of `space` (links
+        are in-space references). One `$in` query for the ids not
+        already known to the stub cache; a miss raises before any
+        write. Names never reach here — they resolved in-space."""
+        stubs = self._stub_cache.setdefault(space, {})
+        want = [i for i in ids if i not in stubs]
+        if want:
+            rows = self._call(
+                "post", f"/v1/spaces/{space}/objects/query",
+                {"filter": {"id": {"$in": want[:200]}},
+                 "limit": 200}).get("records") or []
+            for r in rows:
+                if isinstance(r, dict) and r.get("id"):
+                    anyg = r.get("any") or {}
+                    stubs[r["id"]] = {
+                        "id": r["id"], "name": anyg.get("name"),
+                        "types": self._dexify(space, anyg.get("types") or [])}
+        missing = [i for i in ids if i not in stubs]
+        if missing:
+            raise ValueError(
+                f'"{handle}": object {missing[0]} is not in this space — '
+                "links properties are in-space references; for an object "
+                "in another space put a typed link in the body instead: "
+                "[Name](any://o/<spaceId>/<objectId>)")
 
     def _option_key(self, space, tid, pdef, value, ctx):
         if not isinstance(value, str) or not value.strip():

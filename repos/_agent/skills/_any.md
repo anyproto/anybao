@@ -46,7 +46,11 @@ fails in the standard overlay setup, ADR-004 §2):
   result's `createdOptions` says so — check it; pass
   `create_options=False` to refuse); a links NAME must match exactly
   one object (0 or many → error with candidates: search, then pass
-  the id) — links never create objects. `None` clears a property.
+  the id) — links never create objects. Links are IN-SPACE: an id
+  from another space is refused (bare `any://<id>` has no space
+  segment, so no reader could resolve it) — reference a foreign object
+  in the body as `[Name](any://o/<spaceId>/<objectId>)` instead.
+  `None` clears a property.
   The result's `resolved` echoes every value that changed on the way
   to the wire. Filters take the same human forms (`{"task.Status":
   "Done"}`); a name that is not an option errors. Options themselves:

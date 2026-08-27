@@ -184,9 +184,22 @@ def test_links_accept_ids_uris_and_names():
     assert posts(fx, "/set/bafyTASK")[0][2] == {
         "patch": {"pREL": ["any://" + DUNE, "any://" + HEAT]}}
     assert r["resolved"] == {"task.Related": ["any://" + DUNE, "any://" + HEAT]}
-    # the name lookup went to the objects query, exact any.name
+    # the name lookup went to the objects query, exact any.name; the
+    # explicit ids were verified in-space with one batched $in
     lookups = [b for v, p, b in fx.calls if p.endswith("/objects/query")]
-    assert lookups == [{"filter": {"any.name": "Dune"}, "limit": 5}]
+    assert lookups == [{"filter": {"any.name": "Dune"}, "limit": 5},
+                       {"filter": {"id": {"$in": [DUNE, HEAT]}}, "limit": 200}]
+
+
+def test_links_explicit_id_must_exist_in_the_space():
+    # an id from another space is unresolvable by every reader (bare
+    # any://<id>, no space segment) — refused before any write, with
+    # the typed-link advice for cross-space references
+    fx = rig()
+    ghost = "bafyreighostghostghostghostghostghostghostghostghostobj9"
+    with pytest.raises(ValueError, match="not in this space.*any://o/<spaceId>"):
+        client(fx).update_object("s1", "o1", {"task": {"Related": [DUNE, ghost]}})
+    assert posts(fx, "/set/bafyTASK") == []
 
 
 def test_links_name_zero_or_many_matches_error_never_mint():
