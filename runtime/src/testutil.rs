@@ -129,6 +129,8 @@ struct State {
     addseq: BTreeMap<(String, String, String), i64>,
     types: BTreeMap<String, Vec<Value>>,
     props: BTreeMap<(String, String), Vec<Value>>,
+    /// (space, typeId) → runtime dataset definitions (ADR-016)
+    dataset_defs: BTreeMap<(String, String), Vec<Value>>,
     markdown: BTreeMap<(String, String), String>,
     /// (space, fileId) → (objectId, name, bytes)
     files: BTreeMap<(String, String), (String, String, Vec<u8>)>,
@@ -268,6 +270,20 @@ impl State {
     }
 
     fn set_properties(&mut self, space: &str, oid: &str, tid: &str, patch: &Value) -> Value {
+        // the meta-type: `set/type` on a type row patches the catalog
+        // entry (`type.xkey` re-claim, any PR #176)
+        if tid == "type" {
+            if let Some(rows) = self.types.get_mut(space) {
+                for t in rows.iter_mut() {
+                    if t["id"] == oid {
+                        if let Some(x) = patch["xkey"].as_str() {
+                            t["xKey"] = json!(x);
+                        }
+                    }
+                }
+            }
+            return json!({"ok": true});
+        }
         let props = self
             .objects
             .entry((space.to_string(), oid.to_string()))
@@ -328,6 +344,21 @@ impl Transport for FakeSpace {
                 json!({"types": s.types.get(*sp).cloned().unwrap_or_default()})
             }
             ("POST", ["v1", "spaces", sp, "types"]) => s.create_type(sp, &body),
+            ("GET", ["v1", "spaces", sp, "types", tid, "datasets"]) => {
+                json!({"datasets": s.dataset_defs
+                    .get(&(sp.to_string(), tid.to_string())).cloned().unwrap_or_default()})
+            }
+            ("POST", ["v1", "spaces", sp, "types", tid, "datasets"]) => {
+                let defs = s
+                    .dataset_defs
+                    .entry((sp.to_string(), tid.to_string()))
+                    .or_default();
+                let id = format!("ds{}", defs.len() + 1);
+                let mut def = body.clone();
+                def["id"] = json!(id);
+                defs.push(def);
+                json!({"datasetDefId": id})
+            }
             ("GET", ["v1", "spaces", sp, "types", tid, "properties"]) => {
                 json!({"properties": s.props.get(&(sp.to_string(), tid.to_string()))
                                       .cloned().unwrap_or_default()})

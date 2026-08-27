@@ -315,6 +315,11 @@ def _tool_docs(c, space, code_space=None):
                if code_space != space else [(space, "")])
     tools = {}
     for sp, prefix in sources:
+        # `program` is a user type deploy/programs@v1 declare (ADR-010
+        # §5) — a space with none has no tools, not an error
+        if not any((t.get("xKey") or t.get("key")) == "program"
+                   for t in c.list_types(sp)):
+            continue
         for p in c.query_objects(sp, filter={"program.any_tool": True}):
             prog = p.get("program") or {}
             name = prog.get("name") or "?"

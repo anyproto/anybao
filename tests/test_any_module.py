@@ -914,9 +914,6 @@ def test_prune_ui_contexts_survives_a_failed_delete():
 _PROG_REPLIES = {
     "/types": {"types": [{"id": "bafyPROG", "name": "Program", "xKey": "program"}]},
     "/types/any/properties": _ANY_PROPS,
-    "/types/program/properties": {"properties": [
-        {"id": "name"}, {"id": "version"}, {"id": "any_tool"},
-        {"id": "summary"}]},
     "/types/bafyPROG/properties": {"properties": [
         {"id": "bafyNAME", "name": "Name", "xKey": "name"},
         {"id": "bafyVER", "name": "Version", "xKey": "version"},
@@ -1024,13 +1021,14 @@ def test_unknown_builtin_prop_errors_with_the_catalog():
     assert not any(p.endswith("/objects/query") for _, p, _ in fx.calls)
 
 
-def test_program_group_paths_still_pass():
-    # toolcaller's compose filters {"program.any_tool": True} — the
-    # builtin-group check must resolve it, never reject it
+def test_program_group_paths_resolve_like_any_user_type():
+    # toolcaller's compose filters {"program.any_tool": True} — `program`
+    # is a harness-declared user type (ADR-010 §5), so the path resolves
+    # to the space's typeId.propId like any other xKey path
     fx = wire(replies={**_PROG_REPLIES, "/objects/query": {"records": []}})
     client(fx).query_objects("s1", filter={"program.any_tool": True})
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
-    assert body["filter"] == {"program.any_tool": True}
+    assert body["filter"] == {"bafyPROG.bafyTOOL": True}
 
 
 # --- space-name resolution + row trim (ADR-010 §8 / A20) -----------------------

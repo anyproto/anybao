@@ -398,7 +398,8 @@ class TwoSpaces:
         self.readmes = {"conn": ("r1", "# Connectors\n\nintegrations live here")}
 
     def list_types(self, space):
-        return [{"id": "skillT", "xKey": "agent_skill"}]
+        return [{"id": "skillT", "xKey": "agent_skill"},
+                {"id": "progT", "xKey": "program"}]
 
     def query_objects(self, space, filter=None, limit=None, **kw):
         if filter == {"any.types": "skillT"}:

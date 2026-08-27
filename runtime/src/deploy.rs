@@ -3,10 +3,11 @@
 //! overlay, any package space). Hash-gated: unchanged programs skip
 //! all writes.
 //!
-//! Program storage (mirrors internal/program, ADR-010 §5/§6): a
-//! `program`-typed object per program, source in
-//! `program_source`/"main"/{code} — docs live in the source's
-//! docstrings, there are no doc datasets. Deploy DERIVES the cached
+//! Program storage (ADR-010 §5/§6): a `program`-typed object per
+//! program — `program` is a harness-declared USER type that deploy
+//! ensures per target space (`program_schema`, xKey `program`) —
+//! source in `program_source`/"main"/{code} — docs live in the
+//! source's docstrings, there are no doc datasets. Deploy DERIVES the cached
 //! properties from a static source scan (ADR-010 §4): `summary` = the
 //! module docstring's first line; `any_tool` = the source declares
 //! `__any_tool__ = True`, validated to carry the tool shape (docstring
@@ -21,6 +22,7 @@
 #![allow(dead_code)]
 
 use crate::anyapi::{AnyError, Client};
+use crate::program_schema::{ProgramSchema, MANIFEST_DATASET, SOURCE_DATASET};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -28,8 +30,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
 use std::path::Path;
-
-pub const PROGRAM_TYPE: &str = "program";
 
 /// Python-truthiness of a JSON value (`if manifest:`) — the manifest is
 /// only mixed into the fingerprint when truthy, keeping no-manifest
@@ -397,6 +397,8 @@ pub struct Deployer<'a> {
     client: &'a Client,
     space: String,
     frozen: bool,
+    /// the target space's ensured `program` schema (lazy, once)
+    schema: RefCell<Option<ProgramSchema>>,
 }
 
 impl<'a> Deployer<'a> {
@@ -405,7 +407,17 @@ impl<'a> Deployer<'a> {
             client,
             space: space.to_string(),
             frozen: false,
+            schema: RefCell::new(None),
         }
+    }
+
+    /// The target space's `program` schema, ensured once per deployer
+    /// (type + properties + the two datasets — ADR-010 §5).
+    fn schema(&self) -> anyhow::Result<ProgramSchema> {
+        if self.schema.borrow().is_none() {
+            *self.schema.borrow_mut() = Some(ProgramSchema::ensure(self.client, &self.space)?);
+        }
+        Ok(self.schema.borrow().clone().expect("ensured above"))
     }
 
     pub fn frozen(mut self, frozen: bool) -> Self {
@@ -415,21 +427,16 @@ impl<'a> Deployer<'a> {
 
     /// Existing program object by name+version: (id, program prop
     /// group) — the props feed the in-space fingerprint.
-    fn find_program(&self, name: &str, version: &str) -> Result<Option<(String, Value)>, AnyError> {
+    fn find_program(&self, name: &str, version: &str) -> anyhow::Result<Option<(String, Value)>> {
+        let s = self.schema()?;
         let recs = self.client.query_objects(
             &self.space,
-            &json!({"filter": {format!("{PROGRAM_TYPE}.name"): name,
-                               format!("{PROGRAM_TYPE}.version"): version},
+            &json!({"filter": {s.path("name"): name, s.path("version"): version},
                     "limit": 1}),
         )?;
-        Ok(recs.first().and_then(|r| {
-            r["id"].as_str().map(|id| {
-                (
-                    id.to_string(),
-                    r.get(PROGRAM_TYPE).cloned().unwrap_or(json!({})),
-                )
-            })
-        }))
+        Ok(recs
+            .first()
+            .and_then(|r| r["id"].as_str().map(|id| (id.to_string(), s.read(r)))))
     }
 
     fn in_space_fingerprint(
@@ -439,7 +446,7 @@ impl<'a> Deployer<'a> {
     ) -> Result<Option<String>, AnyError> {
         let src = self
             .client
-            .query(&self.space, object_id, "program_source", &json!({}))?;
+            .query(&self.space, object_id, SOURCE_DATASET, &json!({}))?;
         let Some(main) = src.first() else {
             return Ok(None);
         };
@@ -448,7 +455,7 @@ impl<'a> Deployer<'a> {
         let any_tool = props["any_tool"].as_bool().unwrap_or(false);
         let man_recs = self
             .client
-            .query(&self.space, object_id, "program_manifest", &json!({}))?;
+            .query(&self.space, object_id, MANIFEST_DATASET, &json!({}))?;
         let manifest = man_recs
             .first()
             .and_then(|r| r.get("manifest"))
@@ -475,16 +482,18 @@ impl<'a> Deployer<'a> {
         }
 
         let (any_tool, summary) = (p.any_tool(), p.summary());
+        let s = self.schema()?;
         let (oid, status) = match found {
             None => {
                 let res = self.client.create_object(
                     &self.space,
                     &json!({
-                    "types": [PROGRAM_TYPE],
+                    "types": [s.type_id],
                     "initialProperties": {
                         "any": {"name": p.name},
-                        PROGRAM_TYPE: {"name": p.name, "version": p.version,
-                                       "any_tool": any_tool, "summary": summary},
+                        s.type_id.clone(): s.group(&[
+                            ("name", json!(p.name)), ("version", json!(p.version)),
+                            ("any_tool", json!(any_tool)), ("summary", json!(summary))]),
                     }}),
                 )?;
                 let oid = res["objectId"]
@@ -497,8 +506,8 @@ impl<'a> Deployer<'a> {
                 self.client.set_properties(
                     &self.space,
                     &existing,
-                    PROGRAM_TYPE,
-                    &json!({"any_tool": any_tool, "summary": summary}),
+                    &s.type_id,
+                    &s.group(&[("any_tool", json!(any_tool)), ("summary", json!(summary))]),
                 )?;
                 (existing, "updated")
             }
@@ -507,7 +516,7 @@ impl<'a> Deployer<'a> {
         self.client.upsert_record(
             &self.space,
             &oid,
-            "program_source",
+            SOURCE_DATASET,
             "main",
             &json!({"code": p.code}),
         )?;
@@ -515,14 +524,14 @@ impl<'a> Deployer<'a> {
             self.client.upsert_record(
                 &self.space,
                 &oid,
-                "program_manifest",
+                MANIFEST_DATASET,
                 "main",
                 &json!({"manifest": p.manifest}),
             )?;
         } else {
             // a program that lost its manifest must not keep a stale one
             // (the in-space fingerprint would never converge)
-            self.clear_dataset(&oid, "program_manifest")?;
+            self.clear_dataset(&oid, MANIFEST_DATASET)?;
         }
         Ok(status)
     }
@@ -1077,6 +1086,26 @@ mod tests {
         Client::with_transport(Box::new(FakeSpace::new()))
     }
 
+    /// The space's resolved program schema — deploy ensured it.
+    fn schema(c: &Client, space: &str) -> ProgramSchema {
+        ProgramSchema::lookup(c, space)
+            .unwrap()
+            .expect("deploy ensures the schema")
+    }
+
+    #[test]
+    fn deploy_ensures_the_program_schema_in_the_target_space() {
+        let c = client();
+        assert!(ProgramSchema::lookup(&c, "agent").unwrap().is_none());
+        Deployer::new(&c, "agent")
+            .deploy_one(&ProgramSource::new("t", "v1", PROG))
+            .unwrap();
+        let s = schema(&c, "agent");
+        // the object carries the RESOLVED type id, never the xKey literal
+        let rows = c.query_objects("agent", &json!({})).unwrap();
+        assert_eq!(rows[0]["any"]["types"], json!([s.type_id]));
+    }
+
     #[test]
     fn deploy_creates_then_unchanged() {
         let c = client();
@@ -1091,11 +1120,12 @@ mod tests {
             .query("agent", "obj1", "program_source", &json!({}))
             .unwrap();
         assert_eq!(src[0]["code"], json!(TOOL));
+        let s = schema(&c, "agent");
         let tools = c
-            .query_objects("agent", &json!({"filter": {"program.any_tool": true}}))
+            .query_objects("agent", &json!({"filter": {s.path("any_tool"): true}}))
             .unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["program"]["summary"], json!("One-liner summary."));
+        assert_eq!(s.read(&tools[0])["summary"], json!("One-liner summary."));
     }
 
     #[test]
@@ -1117,8 +1147,9 @@ mod tests {
         let d = Deployer::new(&c, "agent");
         d.deploy_one(&ProgramSource::new("lib", "v1", PROG))
             .unwrap();
+        let s = schema(&c, "agent");
         let progs = c
-            .query_objects("agent", &json!({"filter": {"program.any_tool": true}}))
+            .query_objects("agent", &json!({"filter": {s.path("any_tool"): true}}))
             .unwrap();
         assert!(progs.is_empty());
     }
@@ -1130,11 +1161,8 @@ mod tests {
         let bad = ProgramSource::new("t", "v1", "__any_tool__ = True\n");
         let err = d.deploy_one(&bad).unwrap_err();
         assert!(err.to_string().contains("no module docstring"));
-        // nothing was written
-        assert!(c
-            .query_objects("agent", &json!({"filter": {"program.name": "t"}}))
-            .unwrap()
-            .is_empty());
+        // nothing was written (the schema ensure itself is not a program write)
+        assert!(c.query_objects("agent", &json!({})).unwrap().is_empty());
     }
 
     #[test]

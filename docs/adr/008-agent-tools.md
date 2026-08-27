@@ -120,10 +120,14 @@ subPages, answer, sources, searchQueries, timing, usage}`.
 
 ### 6. `miniapp@v1` (folder tool)
 
-Over the server builtin `mini_app` type: content lives in the
-per-object dataset `mini_app`, single record `"main"`, flat string
-fields `source` (full HTML) / `state` (JSON text) / `readme`
-(markdown); the object's `any.name` is the addressing slug. Writes are
+Over the harness-declared `mini_app` user type (amended 2026-08-26;
+the server builtin is deleted — xKey `mini_app`, ensured by this
+program, its writer, on `create`; ADR-017 §1): content lives in its
+runtime dataset `mini_app` (`idRule: user`, `dynamic`, string fields
+`mutableBy: any`, no `search` mapping — HTML is never indexed), single
+record `"main"`, flat string fields `source` (full HTML) / `state`
+(JSON text) / `readme` (markdown); the object's `any.name` is the
+addressing slug. any-ui resolves the type by xKey. Writes are
 per-field `$set` ops (via `modify`) so updating state never rewrites
 source. Surface (snake_case):
 `create(name, source, state?, readme?)`, `update(name, …)`,

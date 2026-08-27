@@ -58,8 +58,9 @@ ws = use("<spaceId>:websearch@v1")  # explicit space, strict
 **Demand-driven, no source parsing.** `use()` at runtime is the only
 discovery mechanism — nothing ever scans program text for imports.
 Resolution and fetching are **host-side** (broker effect
-`module.resolve`: query the program object by name/version props →
-read `program_source`); the guest executes the returned source into a
+`module.resolve`: resolve the space's `program` schema by xKey (ADR-010
+§5; no type = no programs there), query the program object by
+name/version props → read `program_source`); the guest executes the returned source into a
 module object in the kernel namespace. A transitive `use()` inside a
 loaded module fires its own resolution at call time, resolved against
 the requester's defining space via the frame chain (§5) — the import

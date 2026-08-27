@@ -201,11 +201,56 @@ def _validate_source(spec, code):
 
 # --- storage (deploy's exact shape, ADR-013 §1) ------------------------------
 
+# The `program` store, declared exactly as deploy declares it
+# (runtime/src/program_schema.rs is normative): a user type by xKey, four
+# unindexed properties, two runtime datasets WITHOUT a search mapping
+# (source is code, never indexed — ADR-010 §5). programs@v1 is the
+# writer in a working space, so it ensures the store there (ADR-017 §1).
+_PROGRAM_TYPE = {
+    "name": "Program", "xKey": "program",
+    "properties": [
+        {"name": "Name", "xKey": "name", "kind": "string",
+         "meta": {"index": "none"}},
+        {"name": "Version", "xKey": "version", "kind": "string",
+         "meta": {"index": "none"}},
+        {"name": "Any Tool", "xKey": "any_tool", "kind": "boolean",
+         "meta": {"index": "none"}},
+        {"name": "Summary", "xKey": "summary", "kind": "string",
+         "meta": {"index": "none"}}]}
+_PROGRAM_DATASETS = [
+    {"name": "program_source", "displayName": "Program Source",
+     "idRule": "user", "deleteBy": "anyone", "dynamic": True,
+     "fields": [{"key": "code", "kind": "string", "mutableBy": "any"}]},
+    {"name": "program_manifest", "displayName": "Program Manifest",
+     "idRule": "user", "deleteBy": "anyone", "dynamic": True,
+     "fields": [{"key": "manifest", "kind": "object", "mutableBy": "any"}]}]
+_ensured = set()
+
+
 def _space_id(spaceConfig):
     return _any().get_space(spaceConfig)["id"]
 
 
+def _ensure_store(sid):
+    """Idempotently declare the `program` type + datasets in a working
+    space (deploy does the same for overlays). Cached per run."""
+    if sid in _ensured:
+        return
+    a = _any()
+    a.create_type(sid, _PROGRAM_TYPE)
+    for d in _PROGRAM_DATASETS:
+        a.create_dataset(sid, "program", d)
+    _ensured.add(sid)
+
+
+def _has_store(sid):
+    return any((t.get("xKey") or t.get("key")) == "program"
+               for t in _any().list_types(sid))
+
+
 def _find(sid, name, version):
+    if not _has_store(sid):
+        return None   # no program type = nothing was ever written here
     rows = _any().query_objects(
         sid, filter={"program.name": name, "program.version": version},
         limit=1)
@@ -226,6 +271,8 @@ def _shadow_guard(sid, name, version):
     for alias, overlay_space in sorted(_overlay_aliases().items()):
         if overlay_space == sid:
             continue  # degenerate alias bound to the working space itself
+        if not _has_store(overlay_space):
+            continue  # an overlay with no program type exports nothing
         if _any().query_objects(
                 overlay_space,
                 filter={"program.name": name, "program.version": version},
@@ -331,6 +378,7 @@ def create_program(spaceConfig, body):
             f"{spec} already exists in this space — update_program / "
             "edit_program to change it, or bump the version")
     _shadow_guard(sid, name, version)
+    _ensure_store(sid)
     oid = _any().create_object(sid, {
         "types": ["program"],
         "name": name,

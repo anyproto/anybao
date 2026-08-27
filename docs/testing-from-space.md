@@ -7,7 +7,8 @@ against the live server, in the real agent runtime environment?
 **Short answer:** there is **no `/run` endpoint on the any server**. The
 any server (`~/any/any`, port 7001) is a pure data/object store —
 `POST /v1/spaces/{space}/query`, objects, records, search. It stores
-program *source* (as `program_source` records on `program` objects) but
+program *source* (as `program_source` records on `program`-typed objects
+— a harness-declared user type, ADR-010 §5) but
 never executes it. **All program execution lives in `anyrt`.** "Running
 from the space" means pointing an `anyrt` process at the deployed source
 and letting it resolve + run through the effect boundary. Three ways to
