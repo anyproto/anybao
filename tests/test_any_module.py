@@ -360,6 +360,23 @@ def test_create_object_routes_top_level_name_and_description():
     assert "name" not in body and "description" not in body
 
 
+def test_create_object_markdown_writes_the_body_after_create():
+    # one call creates a page: the wire takes no body, so markdown
+    # (alias `body`) rides as a put_markdown right after the create
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"},
+                       "/editor/markdown": {}})
+    client(fx).create_object("s1", {"types": ["task"], "name": "Dune",
+                                    "markdown": "# Dune\n\nsand"})
+    paths = [(v, p) for v, p, _ in fx.calls]
+    i_create = paths.index(("POST", "/v1/spaces/s1/objects"))
+    i_md = paths.index(("PUT", "/v1/spaces/s1/objects/o9/editor/markdown"))
+    assert i_create < i_md
+    body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
+    assert "markdown" not in body
+    md = next(b for v, p, b in fx.calls if p.endswith("/editor/markdown"))
+    assert md["content"] == "# Dune\n\nsand"
+
+
 def test_create_object_unknown_top_level_key_raises_never_posts():
     # the wire accepts only types/initialProperties/nav and silently
     # drops the rest — the client refuses instead of losing intent

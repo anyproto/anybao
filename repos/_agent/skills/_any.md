@@ -74,7 +74,8 @@ fails in the standard overlay setup, ADR-004 §2):
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":
   {"any": {"name": "Dune"}, "book": {"author": "Frank Herbert",
-  "year": 1965}}})`. Edit an existing object the same way with
+  "year": 1965}}, "markdown": "# Dune\n…"})` — `markdown` at create
+  writes the page body too. Edit an existing object the same way with
   `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
   {"rating": 9}})`. Properties placed anywhere else, or an unknown
   type/property key, error — never silently dropped.

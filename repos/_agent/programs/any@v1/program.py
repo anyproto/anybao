@@ -1109,8 +1109,11 @@ class _Client:
         """Create a typed object; returns {"objectId", "resolved"?,
         "createdOptions"?, "warnings"?}.
 
-        Top-level `name` / `description` route into the `any` group
-        (parity with update_object). Everything else: `types` entries
+        Top-level `name` / `description` route into the `any` group and
+        `markdown` (alias `body`) becomes the editor body — one call
+        creates the page (parity with update_object; the wire itself
+        takes no body, so it is a create + put_markdown). Everything
+        else: `types` entries
         and `initialProperties` group + property keys are given as
         handles (or ids) and resolved to the content-ids the server
         writes by; reserved groups (any/nav) pass through literal.
@@ -1128,14 +1131,18 @@ class _Client:
         changed on the way to the wire."""
         body = dict(body or {})
         unknown = set(body) - {"types", "initialProperties", "nav",
-                               "name", "description"}
+                               "name", "description", "markdown", "body"}
         if unknown:
             raise ValueError(
                 f"create_object: unknown top-level key(s) {sorted(unknown)} "
                 "would be dropped by the wire (it accepts types/"
                 "initialProperties/nav). Properties go in initialProperties "
                 'keyed by type xKey — {"any": {"name": ...}} — or pass '
-                "name/description at top level.")
+                "name/description/markdown at top level.")
+        markdown = body.pop("markdown", None)
+        body_md = body.pop("body", None)
+        if markdown is None:
+            markdown = body_md
         name = body.pop("name", None)
         description = body.pop("description", None)
         if name is not None or description is not None:
@@ -1164,7 +1171,10 @@ class _Client:
                     del body["initialProperties"][g]
         self._apply_option_patches(space, ctx)   # options before the value
         res = self._call("post", f"/v1/spaces/{space}/objects", body)
-        return self._write_result(res.get("objectId"), ctx)
+        object_id = res.get("objectId")
+        if markdown is not None and object_id:
+            self.put_markdown(space, object_id, markdown)
+        return self._write_result(object_id, ctx)
 
     def update_object(self, space, object_id, body, create_options=True):
         """Update an object's name / editor body / properties by handle.
