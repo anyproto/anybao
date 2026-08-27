@@ -98,6 +98,13 @@ The agent can introspect its own runs from inside a conversation too —
   `autorecall.plan`) collapse composites to one line.
 - `cell` — the host cell verdict: ok/interrupted + fuel/duration.
 
+A property write's autoresolutions (ADR-022 §2) are readable in the
+trace without decoding the wire: the `any.update_object` /
+`any.create_object` span result carries `resolved` (`{"task.Status":
+"in_review"}` — what the model's words became) and `createdOptions`
+(options minted on the way); the PATCH on `…/properties/<propId>`
+right before the `set` is the minting itself.
+
 ## If you want a run in the UI
 
 The designed escape hatch is an on-demand **promote** — upload one

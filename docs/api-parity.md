@@ -62,13 +62,17 @@ raw spaces/modify (helper wraps it internally).
 
 - **Mapped**: objects/:id/backlinks → `anyclient.backlinks` (any@v1
   `any.backlinks` — shipped ahead of the pin); enrich/apply → enrich@v1
-  (guest http, the one direct-URL call).
+  (guest http, the one direct-URL call); `PATCH`/`DELETE`
+  types/:id/properties/:propId + properties/:id/attach|detach/:typeId
+  → any@v1 `patch_property`/`set_option`/`remove_option`/
+  `archive_property`/`delete_property`/`attach_type`/`detach_type`
+  (ADR-022 §4; guest-direct, no host passthrough — the host client
+  has no consumer).
 - **Excluded**: debug/p2p (diagnostic); push/token GET/POST/DELETE +
   push/subscriptions (client push plumbing, UI-side).
 - **Unmapped, demand-driven** (C): object **history** ×4 (version
   history/diff — future "what changed" capability); `PATCH
-  spaces/:id/settings` (space management); `PATCH`/`DELETE`
-  types/:id/properties/:propId (schema facade growth); chat
+  spaces/:id/settings` (space management); chat
   **reactions-read** (read-tracking group); `DELETE files/:fileId`
   (files v2 group).
 
