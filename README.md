@@ -73,7 +73,7 @@ one agent process, the UI in a browser:
 # 1. the any server (needs a real nodeconf for sharing/guest joins —
 #    without one it boots the sanitized embedded fallback and joins NO
 #    network):
-cd ~/any/any && ./bin/any run --config ./any-config.yml   # 127.0.0.1:7001
+cd ~/any/any && ./bin/any run --config ./configs/any-config.yml   # 127.0.0.1:7001
 
 # 2. the agent (this repo; anybao.toml carries space + agent overlay):
 make runtime && ./runtime/target/release/anyrt serve
@@ -89,7 +89,7 @@ Browser mode has NO embedded agent — `anyrt serve` IS the agent. Don't
 also run the desktop app against the same working space: two agents on
 one chat means doubled replies.
 
-**Prod-network test environment**: `anybao.prod.test.toml` (untracked,
+**Prod-network test environment**: `configs/anybao.prod.test.toml` (untracked,
 header documents everything) runs a test bao on a throwaway prod-network
 account (`:7005`, control `:7014`) against `_agentrepo-test` /
 `_connectorsrepo-test` — test copies of the repo spaces owned by the

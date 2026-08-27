@@ -17,3 +17,4 @@ anybao.test.toml
 .connectors.env
 tools/eval/results/
 /scratch/
+/configs/

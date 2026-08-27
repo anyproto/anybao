@@ -14,8 +14,8 @@ Deploy (hash-gated, upsert-only — stale space objects need manual
 deletion):
 
 ```sh
-anyrt deploy --source repos/_agent      --target agent      [--config-file anybao.test.toml]
-anyrt deploy --source repos/_connectors --target connectors [--config-file anybao.test.toml]
+anyrt deploy --source repos/_agent      --target agent      [--config-file configs/anybao.staging.toml]
+anyrt deploy --source repos/_connectors --target connectors [--config-file configs/anybao.staging.toml]
 ```
 
 `--target` resolves through the config's `[overlays]`; a raw space id

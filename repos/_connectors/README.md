@@ -34,7 +34,7 @@ repo offers; per-tool docs live in the space (`program_description` /
 ```sh
 # from the anybao checkout (anyrt + config live there):
 anyrt deploy --source repos/_connectors --target connectors \
-    --config-file anybao.test.toml
+    --config-file configs/anybao.staging.toml
 ```
 
 Hash-gated: only changed assets re-upload; a running serve picks

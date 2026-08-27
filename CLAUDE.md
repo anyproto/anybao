@@ -61,33 +61,50 @@ Gotcha: `tests/fixtures/*.jsonl` are JSONL — one record per line is the
 parse contract. View pretty with `jq . <file>`; never reformat the
 buffer (a saved pretty-print breaks the parse).
 
+## Local configs + data dirs (gitignored)
+
+Host configs live in `configs/` — `anybao.toml` (prod),
+`anybao.prod.test.toml`, `anybao.staging.toml`, plus the
+`.connectors.env*` files anyrt reads *beside the config file*. Nothing
+sits at the repo root any more, so `anyrt`'s default `./anybao.toml`
+lookup no longer resolves: pass `--config-file configs/<name>.toml`
+every time, prod included.
+
+`any`-server data dirs live in `~/any/any/datadirs/` (also gitignored):
+`repo-prod` (:7003 repo account), `prod-test-user` (:7005),
+`staging-user` (:7134), `staging-repo` (:7021). The `any` configs are
+in `~/any/any/configs/` — `any-config.yml` (prod network) and
+`any-config-staging.yml` (staging); `staging.yml` stays at that repo's
+root because its e2e tests look for it there.
+
 ## Deploying to the PROD repo spaces
 
 The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
 dedicated **repo account** whose server runs locally at
-`http://127.0.0.1:7003` (data dir `~/.any-repo-prod`, prod network —
-full bring-up runbook: `docs/prod-repo-account.md`). The default
-`anybao.toml` account only *joins* them as guest — `anyrt deploy
---target agent` through it 403s (`space.read_only`). Deploy via the
-repo server, addressing the space by raw id (the ids live in
-`anybao.toml [overlays]` and in the runbook):
+`http://127.0.0.1:7003` (data dir `~/any/any/datadirs/repo-prod`, prod network —
+full bring-up runbook: `docs/prod-repo-account.md`). The
+`configs/anybao.toml` account only *joins* them as guest — `anyrt
+deploy --target agent` through it 403s (`space.read_only`). Deploy via
+the repo server, addressing the space by raw id (the ids live in
+`configs/anybao.toml [overlays]` and in the runbook):
 
 ```
 anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
   --target <agent space id>          # same for repos/_connectors
 ```
 
-## Prod-network TEST environment (`anybao.prod.test.toml`)
+## Prod-network TEST environment (`configs/anybao.prod.test.toml`)
 
 For exercising unreleased runtime/repo changes from real prod-network
 clients (desktop app, browser UI) WITHOUT touching the prod overlays:
-a throwaway user account (`~/any/any-prod-test-user`, server
+a throwaway user account (`~/any/any/datadirs/prod-test-user`, server
 `127.0.0.1:7005`, control `7014`) runs a test bao against TEST copies
 of the repo spaces — `_agentrepo-test` / `_connectorsrepo-test`, owned
 by the same prod repo account (:7003) and joined via guest keys. The
-staging rigs (`anybao.7131.toml` etc., `--config any-config.yml`) are
-on the staging network and unreachable from prod clients; this one is
-not. Ids, commands and the browser recipe live in the toml's header
+staging rig (`configs/anybao.staging.toml`, server on the staging
+network via `--config configs/any-config-staging.yml`) is unreachable
+from prod clients; this one is not. Ids, commands and the browser
+recipe live in the toml's header
 and in `docs/prod-repo-account.md` § Test spaces. Deploy to it
 through :7003 by raw id, exactly like prod:
 
