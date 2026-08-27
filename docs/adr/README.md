@@ -35,6 +35,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 019 | Instants — native dates in agent data and queries | Accepted  |
 | 020 | File input — `any` files as model input, by reference | Accepted  |
 | 021 | Credential entry — request-in-chat, store-read secrets, Credentials dashboard | Accepted  |
+| 022 | Property formats — value resolution, hydration, option CRUD in `any@v1` | Accepted  |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the

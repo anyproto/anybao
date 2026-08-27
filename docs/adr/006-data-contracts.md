@@ -516,6 +516,14 @@ against user types (`409 type.xkey_conflict`). Client contract:
   (`POST …/properties/{typeId}/set/type`) and is reused, never
   shadowed by a duplicate type.
 
+**Amended 2026-08-27 (ADR-022).** The property handle is the xKey
+only when it is unique on its type and not any-ui's kind marker
+(`select`/`tags`/`links`/…), else the name; ambiguity errors. Values
+are encoded against the definition on write (option names → keys,
+object names → `any://` refs, dates → instants, `None` → `$unset`)
+and hydrated on read (option names, `{id, name, types}` link stubs) —
+the no-silent-drop rule now covers values. Contract: ADR-022.
+
 **Scope / non-goals.** The `any.types` VALUES inside a normalized
 record stay raw type ids (matching bobrik-watch) — they are a builtin
 namespace, read by id internally; only the group *keys* are slugged.
