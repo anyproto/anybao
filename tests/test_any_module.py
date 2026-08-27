@@ -17,7 +17,7 @@ def wire(replies=None, status=200, config=None):
     calls = []
 
     def fx(name, payload):
-        if name == "config.get":
+        if name in ("config.get", "runtime.get"):
             return {"value": (config or {})[payload["key"]]}
         assert name.startswith("http."), name
         path = payload["url"].removeprefix("http://any")
@@ -449,7 +449,7 @@ def test_catalog_refreshes_once_on_unknown_type_miss():
     seen = {"n": 0}
 
     def fx(name, payload):
-        if name == "config.get":
+        if name in ("config.get", "runtime.get"):
             return {"value": None}
         path = payload["url"].removeprefix("http://any")
         if path.endswith("/types"):
@@ -1291,7 +1291,7 @@ def test_file_content_reads_base64_and_parses_refs():
 
     def fx(name, payload):
         seen.append((name, payload))
-        if name == "config.get":
+        if name in ("config.get", "runtime.get"):
             return {"value": "http://any"}
         assert name == "http.get" and payload["response"] == "base64"
         return {"status": 200, "headers": {"content-type": "image/png"},

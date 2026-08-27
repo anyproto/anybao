@@ -26,17 +26,18 @@ secret (`llm.key.anthropic` from `ANTHROPIC_API_KEY`).
 ### 1. Credentials generalize past the LLM key
 
 - New config namespace `search.provider.<tool>`, same value shape as
-  `llm.tier.*`: `{provider, model, base_url, api_key_ref}`. Defaults
-  (in `config_defaults.json`): `search.provider.websearch` and
+  `llm.tier.*`: `{provider, model, base_url, api_key_ref}`. Rows in
+  the space's `agent_config` (ADR-006 §3), soft-seeded from
+  `config_defaults.json` for a fresh space: `search.provider.websearch` and
   `search.provider.deepresearch`, both `gemini` /
-  `gemini-2.5-flash` / `https://generativelanguage.googleapis.com` /
+  `gemini-3.7-flash` / `https://generativelanguage.googleapis.com` /
   `api_key_ref: "google.key.gemini"`.
 - ~~`bootstrap` seeds `secrets["google.key.gemini"]` from the
   `GEMINI_API_KEY` env var, exactly parallel to the Anthropic key.~~
   (env sourcing removed 2026-07-28 — the ref seeds like any other
   secret: `.connectors.env` / `--secrets-file` hard seeds into the
-  device-local store, see `docs/config-secrets.md`.) Secrets stay
-  device-local (ADR-006 §3): never config, never readable from cells
+  store, see `docs/config-secrets.md`.) Secrets are never config
+  (ADR-021 §4, `agent_secrets`): never readable from cells
   (`config.get` refuses secret keys).
 - Guest requests name `credential: {ref: "google.key.gemini",
   header: "x-goog-api-key"}`; the host injects the header value after
@@ -67,7 +68,9 @@ closer to bobrik's `redirect: manual`).
 ### 3. `webSearch@v1` (folder tool)
 
 - `search(*queries)` — each query is one Gemini `generateContent` call
-  with the `google_search` grounding tool; multi-query fan-out goes
+  with the `google_search` grounding tool at `thinking_level: low`
+  (a 4-8 sentence synthesis needs no deliberation and thinking tokens
+  bill at the output rate); multi-query fan-out goes
   through the `batch` effect (one guest→host round-trip; host-side
   execution is sequential today — parallelizing `sys_batch` is a
   runtime follow-up, not this tool's concern).

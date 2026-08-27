@@ -108,6 +108,12 @@ pub struct Config {
     /// embedder feeding parsed keys from memory (any-ui import dialog /
     /// bundled demo seeds).
     pub secret_overrides: BTreeMap<String, String>,
+    /// Hard config seeds (ADR-006 §3): the config file's `[config]`
+    /// table (+ serve's `--config` JSON). Write-through to the space's
+    /// `agent_config` store at serve start — the per-rig lever, the
+    /// config twin of `secret_overrides`. Also layered into `config`
+    /// for `run`, which has no store.
+    pub config_overrides: BTreeMap<String, Value>,
     /// Lib-mode consent delivery (ADR-011 §5.1, an ADR-009 §6 surface):
     /// the embedder receives each consent URL and owns opening the
     /// browser — the serve may be a headless daemon. None = system
@@ -128,6 +134,7 @@ impl Default for Config {
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
             secret_overrides: BTreeMap::new(),
+            config_overrides: BTreeMap::new(),
             consent_hook: None,
         }
     }
@@ -311,7 +318,9 @@ impl Config {
             c.traces_dir = traces;
         }
         for (key, value) in fc.config {
-            c.config.insert(key, toml_to_json(value)?);
+            let value = toml_to_json(value)?;
+            c.config.insert(key.clone(), value.clone());
+            c.config_overrides.insert(key, value);
         }
         Ok(c)
     }
@@ -335,12 +344,18 @@ impl Config {
     }
 }
 
-/// Config defaults (ADR-006 §3): the harness's DEFAULT layer, sourced
-/// from `config_defaults.json` (embedded at build — data, not Rust
-/// literals; edit the json to change model/tier defaults). Sits under
-/// any `--config` file and the space-scope override read off the config
-/// object at serve start.
+/// Config soft seeds (ADR-006 §3): what a FRESH bao space gets in its
+/// `agent_config` store, sourced from `config_defaults.json` (embedded
+/// at build — data, not Rust literals). Persisted only for keys with no
+/// row; an existing space keeps its rows, so editing the json changes
+/// new spaces, not running ones (`config.set` does that). `anyrt run`
+/// (no store) reads them directly.
 pub const CONFIG_DEFAULTS: &str = include_str!("config_defaults.json");
+
+/// The soft seeds as a map.
+pub fn config_defaults() -> BTreeMap<String, Value> {
+    serde_json::from_str(CONFIG_DEFAULTS).expect("config_defaults.json is valid JSON")
+}
 
 /// Secret refs with env seeding + device-local persistence: (secrets-map
 /// ref / config record key, seeding env var). One list drives both
@@ -387,18 +402,13 @@ pub fn parse_secrets_env(text: &str) -> BTreeMap<String, String> {
     map
 }
 
-/// Guest-config bootstrap: seed `any.base_url` from `addr`, layer
-/// `CONFIG_DEFAULTS` under existing keys. Secrets do NOT come from env
+/// Guest-config seeds: layer `CONFIG_DEFAULTS` under existing keys
+/// (`addr` is runtime wiring — `runtime.get`, never a config key). Secrets do NOT come from env
 /// (removed 2026-07-28) — soft seeds enter via `Config::secrets`
 /// (embedder-fed, e.g. bundled demo keys), hard seeds via
 /// `secret_overrides` / [`SECRETS_ENV_FILE`].
-pub fn bootstrap_maps(config: &mut BTreeMap<String, Value>, addr: &str) {
-    config
-        .entry("any.base_url".into())
-        .or_insert_with(|| Value::String(addr.to_string()));
-    let defaults: BTreeMap<String, Value> =
-        serde_json::from_str(CONFIG_DEFAULTS).expect("config_defaults.json is valid JSON");
-    for (key, value) in defaults {
+pub fn bootstrap_maps(config: &mut BTreeMap<String, Value>, _addr: &str) {
+    for (key, value) in config_defaults() {
         config.entry(key).or_insert(value);
     }
 }
@@ -566,16 +576,10 @@ traces = "t"
             .config_value("llm.tier.codegen", json!({"provider": "mine"}))
             .build();
         bootstrap(&mut c);
-        // existing key wins; absent defaults land; addr seeds base_url
+        // existing key wins; absent defaults land; addr is NOT a config key
         assert_eq!(c.config["llm.tier.codegen"]["provider"], json!("mine"));
-        assert_eq!(c.config["any.base_url"], json!("http://x:1"));
         assert!(c.config.contains_key("llm.tier.classify"));
-        // a pre-set base_url is never clobbered
-        let mut c2 = Config::builder().addr("http://y:2").build();
-        c2.config
-            .insert("any.base_url".into(), json!("http://kept:9"));
-        bootstrap(&mut c2);
-        assert_eq!(c2.config["any.base_url"], json!("http://kept:9"));
+        assert!(!c.config.contains_key("any.base_url"));
     }
 
     #[test]

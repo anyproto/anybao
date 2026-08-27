@@ -261,12 +261,20 @@ fn main() -> Result<()> {
             // any.base_url comes from --addr, never the space (you
             // can't read the space without already knowing the url).
             config::bootstrap_maps(&mut config, &addr);
+            // runtime wiring (ADR-006 §3): a --config file may still
+            // carry any.base_url (it wins over --addr); it moves to the
+            // runtime namespace, never the agent-config seeds
+            let any_base = config
+                .remove("any.base_url")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| addr.clone());
+            let mut runtime: BTreeMap<String, Value> = BTreeMap::new();
+            runtime.insert("any.base_url".into(), Value::String(any_base.clone()));
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
             let from: Option<(Arc<anyapi::Client>, String)> = match &from_space {
                 Some(space) => {
-                    let base = config["any.base_url"].as_str().unwrap_or(&addr).to_string();
-                    let client = Arc::new(anyapi::Client::new(&base));
+                    let client = Arc::new(anyapi::Client::new(&any_base));
                     let space_id = serve::find_space(&client, space)?;
                     Some((client, space_id))
                 }
@@ -276,7 +284,7 @@ fn main() -> Result<()> {
             // alias map for the programs@v1 shadow guard (ADR-013 §1)
             if let Some((_, space_id)) = &from {
                 let aliases = serve::alias_map(&host.overlays, space_id);
-                config.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
+                runtime.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
             }
             let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> =
                 from.as_ref().map(|(client, space_id)| {
@@ -287,10 +295,7 @@ fn main() -> Result<()> {
                         serve::alias_map(&host.overlays, space_id),
                     )) as Box<dyn resolver::ModuleResolver + Send>
                 });
-            let any_base = config
-                .get("any.base_url")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            let any_base = Some(any_base);
             // kernel is embedded (ADR-009 §4); --kernel is a dev override
             let cage = match &kernel {
                 Some(path) => runner::Cage::new(
@@ -314,6 +319,7 @@ fn main() -> Result<()> {
                 routes::Classifier::new(any_base.as_deref()),
             );
             broker.resolver = resolver;
+            broker.runtime = runtime;
             broker.oauth = Some(oauth_state);
             let out = runner::run_program(
                 &cage,
@@ -360,7 +366,8 @@ fn main() -> Result<()> {
             // guest cascade (ADR-009 §1): the [config] table already
             // seeded cfg.config; the --config JSON file shadows it
             for (k, v) in load_map(&config)? {
-                cfg.config.insert(k, v);
+                cfg.config.insert(k.clone(), v.clone());
+                cfg.config_overrides.insert(k, v);
             }
             // --secrets-file = HARD seeds, the CLI twin of any-ui's
             // .env import: merged over .connectors.env (flag wins),

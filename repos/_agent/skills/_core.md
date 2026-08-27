@@ -76,6 +76,13 @@ never with "the credential has been set". Keys can also be entered, rotated, or 
 **Credentials** in the app (CLI installs: a `.connectors.env` beside
 `anybao.toml`). Env vars are not read.
 
+**Configuration (models, providers).** Which model each LLM tier and
+search tool uses is config, not code: `cfg = use("agent:config@v1")`,
+`cfg.list(baoSpaceConfig)` / `cfg.get(key)` / `cfg.set_model(key, model)`. A change
+persists in the home space and is live for the next run — never
+suggest a restart or a file edit. Keys are dotted (`llm.tier.codegen`,
+`search.provider.websearch`); API keys are credentials, not config.
+
 ## The module surface
 
 `use("name@vN")` imports a deployed module. The inventory — every

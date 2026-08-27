@@ -76,6 +76,19 @@ struct SpanFrame {
 /// injection time — after the effect is recorded, so the trace stays
 /// value-free and replay never reads it. `secrets` (the seeded map)
 /// is the no-store fallback only.
+/// The agent-config store (ADR-006 §3): the space's `agent_config`
+/// dataset, one `{key, value}` row per dotted key. `config.get` reads
+/// through to it on every call and `config.set` writes it — the host
+/// holds no copy, so a row written by anyone (a cell, the UI, another
+/// device) is live for the next cell. None = `anyrt run` (no space):
+/// the broker's `config` seeds map stands in.
+pub trait ConfigStore: Send + Sync {
+    /// Err = the store could not be reached; Ok(None) = no row.
+    fn read(&self, key: &str) -> Result<Option<Value>, String>;
+    /// Err = the store could not be written (typed `ConfigError`).
+    fn set(&self, key: &str, value: &Value) -> Result<(), String>;
+}
+
 pub trait SecretSource: Send + Sync {
     /// Err = the store could not be reached (a typed failure, not a
     /// miss); Ok(None) = no row / empty value.
@@ -95,7 +108,13 @@ pub struct Broker {
     /// space-backed module resolution (serve); None = programs_dir only
     pub resolver: Option<Box<dyn crate::resolver::ModuleResolver + Send>>,
     pub current_cell: Option<String>,
+    /// Offline agent-config seeds — `anyrt run` only (no space, no
+    /// store). Serve passes an empty map: the store is the truth.
     pub config: BTreeMap<String, Value>,
+    /// Runtime wiring the guest may read via `runtime.get`
+    /// (`any.base_url`, `overlays.aliases`): derived from the runtime
+    /// config per device, never agent config (ADR-006 §3).
+    pub runtime: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, String>,
     pub env: BTreeMap<String, String>,
     /// Local programs dir for offline resolution (`anyrt run` only).
@@ -135,6 +154,8 @@ pub struct Broker {
     /// The secrets store (ADR-021 §4); None = seeds only (`anyrt run`,
     /// or a server without the secrets object).
     pub secret_store: Option<Arc<dyn SecretSource>>,
+    /// The config store (ADR-006 §3); None = `config.set` refused.
+    pub config_store: Option<Arc<dyn ConfigStore>>,
     /// Static refs that need the human this run — resolved to nothing,
     /// or rejected (401) by their destination — in first-event order
     /// (ADR-021 §2); the run wrapper posts the request bubbles.
@@ -163,6 +184,7 @@ impl Broker {
             resolver: None,
             current_cell: None,
             config,
+            runtime: BTreeMap::new(),
             secrets,
             env: BTreeMap::new(),
             programs_dir,
@@ -179,6 +201,7 @@ impl Broker {
             secrets_guard: None,
             oauth: None,
             secret_store: None,
+            config_store: None,
             missing_secrets: Vec::new(),
             hosted: 0,
             span_stack: Vec::new(),
@@ -528,6 +551,8 @@ impl Broker {
         match name {
             // ADR-011 §5: the token lifecycle mutates device state
             "oauth.connect" | "oauth.disconnect" | "oauth.refresh" => "mutate",
+            // ADR-006 §3: a store row + the live map
+            "config.set" => "mutate",
             _ => "read",
         }
     }
@@ -548,6 +573,8 @@ impl Broker {
         match name {
             n if n.starts_with("http.") => self.sys_http(n, payload),
             "config.get" => self.sys_config_get(payload),
+            "config.set" => self.sys_config_set(payload),
+            "runtime.get" => self.sys_runtime_get(payload),
             "mailbox.drain" => {
                 let items: Vec<Value> = self
                     .mailbox
@@ -985,29 +1012,89 @@ impl Broker {
         Ok(())
     }
 
-    fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
-        let key = payload.get("key").and_then(|k| k.as_str()).unwrap_or("");
-        // secret refs are refused by NAMESPACE, not presence — oauth
-        // values live in the managed state (ADR-011 §9) and static ones
-        // in the store (ADR-021 §4), never in this map, so a presence
-        // check could not cover them; the map is the seeds fallback
-        if self.secrets.contains_key(key)
+    /// Secret refs are refused by NAMESPACE, not presence — oauth
+    /// values live in the managed state (ADR-011 §9) and static ones
+    /// in the store (ADR-021 §4), never in this map, so a presence
+    /// check could not cover them; the map is the seeds fallback.
+    fn is_secret_key(&self, key: &str) -> bool {
+        self.secrets.contains_key(key)
             || key.starts_with(OAUTH_REF_PREFIX)
             || key.starts_with("connector.key.")
             || key.starts_with("llm.key.")
-        {
+    }
+
+    fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
+        let key = payload.get("key").and_then(|k| k.as_str()).unwrap_or("");
+        if self.is_secret_key(key) {
             return Err(EffectFailure {
                 type_: "ConfigError".into(),
                 message: format!("{key:?} is a secret — not readable from cells"),
             });
         }
-        match self.config.get(key) {
+        // read-through: the store row is the value (ADR-006 §3); the
+        // seeds map answers only when there is no store (`anyrt run`)
+        let found = match &self.config_store {
+            Some(store) => store.read(key).map_err(|e| EffectFailure {
+                type_: "ConfigError".into(),
+                message: format!("config store unreachable for {key:?}: {e}"),
+            })?,
+            None => self.config.get(key).cloned(),
+        };
+        match found {
             Some(v) => Ok(json!({"value": v})),
             None => Err(EffectFailure {
                 type_: "ConfigError".into(),
                 message: format!("no config value for {key:?}"),
             }),
         }
+    }
+
+    /// `runtime.get {key}` → `{value}`: runtime wiring (`any.base_url`,
+    /// `overlays.aliases`) — a different namespace from agent config,
+    /// served from the runtime config, never the space.
+    fn sys_runtime_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
+        let key = payload.get("key").and_then(|k| k.as_str()).unwrap_or("");
+        match self.runtime.get(key) {
+            Some(v) => Ok(json!({"value": v})),
+            None => Err(EffectFailure {
+                type_: "KeyError".into(),
+                message: format!("no runtime value for {key:?}"),
+            }),
+        }
+    }
+
+    /// `config.set {key, value}` (ADR-006 §3): upsert the store row.
+    /// Secret namespaces are refused (the credential flow owns them).
+    fn sys_config_set(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let key = payload
+            .get("key")
+            .and_then(|k| k.as_str())
+            .filter(|k| !k.is_empty())
+            .ok_or(EffectFailure {
+                type_: "TypeError".into(),
+                message: "config.set without key".into(),
+            })?;
+        let value = payload.get("value").cloned().ok_or(EffectFailure {
+            type_: "TypeError".into(),
+            message: "config.set without value".into(),
+        })?;
+        if self.is_secret_key(key) {
+            return Err(EffectFailure {
+                type_: "ConfigError".into(),
+                message: format!("{key:?} is a secret — set it through the credential flow"),
+            });
+        }
+        let Some(store) = &self.config_store else {
+            return Err(EffectFailure {
+                type_: "ConfigError".into(),
+                message: "no config store — config.set needs serve".into(),
+            });
+        };
+        store.set(key, &value).map_err(|e| EffectFailure {
+            type_: "ConfigError".into(),
+            message: format!("could not persist {key:?}: {e}"),
+        })?;
+        Ok(json!({"ok": true}))
     }
 
     fn sys_module_resolve(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
@@ -1954,6 +2041,98 @@ mod tests {
             .sys_config_get(&json!({"key": "llm.key.anthropic"}))
             .unwrap_err();
         assert_eq!(err.type_, "ConfigError");
+    }
+
+    struct MemConfigStore(Mutex<BTreeMap<String, Value>>);
+    impl ConfigStore for MemConfigStore {
+        fn read(&self, key: &str) -> Result<Option<Value>, String> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+        fn set(&self, key: &str, value: &Value) -> Result<(), String> {
+            self.0.lock().unwrap().insert(key.into(), value.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn config_set_persists_and_get_reads_through() {
+        let store = Arc::new(MemConfigStore(Mutex::new(BTreeMap::new())));
+        let mut b = make_broker("run_adr006_set");
+        b.config_store = Some(store.clone());
+        let v = json!({"provider": "gemini", "model": "gemini-x"});
+        b.sys_config_set(&json!({"key": "search.provider.websearch", "value": v}))
+            .unwrap();
+        assert_eq!(store.0.lock().unwrap()["search.provider.websearch"], v);
+        assert_eq!(
+            b.sys_config_get(&json!({"key": "search.provider.websearch"}))
+                .unwrap()["value"],
+            v
+        );
+        // classified as a mutation (ADR-002: a store write is a side effect)
+        assert_eq!(b.classify("config.set", &json!({})), "mutate");
+    }
+
+    #[test]
+    fn config_get_reads_the_store_not_a_snapshot() {
+        // a row written behind the broker's back (UI, another device)
+        // is visible on the next config.get — no host copy (ADR-006 §3)
+        let store = Arc::new(MemConfigStore(Mutex::new(BTreeMap::new())));
+        let mut b = make_broker("run_adr006_readthrough");
+        b.config
+            .insert("llm.tier.codegen".into(), json!("stale-seed"));
+        b.config_store = Some(store.clone());
+        assert_eq!(
+            b.sys_config_get(&json!({"key": "llm.tier.codegen"}))
+                .unwrap_err()
+                .type_,
+            "ConfigError"
+        );
+        store
+            .set("llm.tier.codegen", &json!({"model": "fresh"}))
+            .unwrap();
+        assert_eq!(
+            b.sys_config_get(&json!({"key": "llm.tier.codegen"}))
+                .unwrap()["value"]["model"],
+            "fresh"
+        );
+    }
+
+    #[test]
+    fn runtime_get_is_its_own_namespace() {
+        let mut b = make_broker("run_adr006_runtime");
+        b.runtime.insert("any.base_url".into(), json!("http://x"));
+        assert_eq!(
+            b.sys_runtime_get(&json!({"key": "any.base_url"})).unwrap()["value"],
+            "http://x"
+        );
+        assert_eq!(
+            b.sys_runtime_get(&json!({"key": "nope"}))
+                .unwrap_err()
+                .type_,
+            "KeyError"
+        );
+        // never reachable through config.get
+        assert!(b.sys_config_get(&json!({"key": "any.base_url"})).is_err());
+    }
+
+    #[test]
+    fn config_set_refuses_secrets_and_no_store() {
+        let mut b = make_broker("run_adr006_set_refuse");
+        let err = b
+            .sys_config_set(&json!({"key": "llm.tier.codegen", "value": {}}))
+            .unwrap_err();
+        assert_eq!(err.type_, "ConfigError"); // no store (anyrt run)
+        b.config_store = Some(Arc::new(MemConfigStore(Mutex::new(BTreeMap::new()))));
+        for key in ["llm.key.anthropic", "connector.key.github"] {
+            let err = b
+                .sys_config_set(&json!({"key": key, "value": "x"}))
+                .unwrap_err();
+            assert_eq!(err.type_, "ConfigError", "{key}");
+        }
+        let err = b
+            .sys_config_set(&json!({"key": "llm.tier.codegen"}))
+            .unwrap_err();
+        assert_eq!(err.type_, "TypeError");
     }
 
     #[test]

@@ -259,7 +259,7 @@ def _find(sid, name, version):
 
 def _overlay_aliases():
     try:
-        out = effect("config.get", {"key": "overlays.aliases"})  # noqa: F821
+        out = effect("runtime.get", {"key": "overlays.aliases"})  # noqa: F821
     except EffectError:  # noqa: F821 - guest global
         return {}   # no overlays configured (plain local runs)
     return out.get("value") or {}

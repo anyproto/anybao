@@ -1,7 +1,7 @@
 # ADR-013: Agent-authored programs — `create_program` in the working space
 
 Status: **Accepted** (2026-08-14), amended 2026-08-14 at implementation
-(§1 shadow-guard mechanism = the `overlays.aliases` guest config key;
+(§1 shadow-guard mechanism = the `overlays.aliases` `runtime.get` key;
 §3 syntax gate = `ast.parse`, adding `ast` to the tier-1 allowlist;
 §3 "every public method" = module-level public defs — the §3/ADR-010
 inventory surface)
@@ -76,7 +76,7 @@ record's `_addSeq` (ADR-004 §4) — so **an edit is live on the next
 shadow the overlay (ADR-004 §2) — the one real footgun here — and
 pipeline-owned assets stay pipeline-owned. *Mechanism (2026-08-14)*:
 the host run surfaces (serve, `run --from-space`) seed the guest
-config key `overlays.aliases` = the resolver's alias map
+`runtime.get` key `overlays.aliases` (ADR-006 §3) = the resolver's alias map
 (`{alias: spaceId}`); the guard queries each overlay space for the
 spec. An absent key (plain local runs) means no overlays joined;
 an alias bound to the working space itself (the degenerate

@@ -93,15 +93,12 @@ indexed.
 
 **`agent_config`** — dataset `agent_config`, `idRule: user` (record id
 = the dotted config key), `deleteBy: anyone`, **`dynamic: true`**.
-Declared fields: `key` (string, `mutableBy: any`), `secret` (boolean,
-`mutableBy: any`), `localValue` (string, `scope: local`, `mutableBy:
-any`); `value` is UNDECLARED — the HTTP declaration path requires a
-kind per declared field, and dynamic-keyspace fields are any-typed and
-freely mutable (the DefaultHandler semantics). Device-local values are
-strings in practice; a non-string local write rejects loudly. The
-ADR-006 §3 cascade (localValue ?? value ?? default) is unchanged;
-anyrt already reads/writes this store through the generic query/modify
-surface, including the `scope: "local"` route.
+Declared field: `key` (string, `mutableBy: any`); `value` is
+UNDECLARED — the HTTP declaration path requires a kind per declared
+field, and dynamic-keyspace fields are any-typed and freely mutable
+(the DefaultHandler semantics). Synced only, no device-local tier
+(ADR-006 §3); anyrt reads/writes this store through the generic
+query/modify surface.
 
 **`agent_secrets`** — dataset `agent_secrets`, `idRule: user` (record
 id = the secret ref), `deleteBy: anyone`. Fields: `key` (string),

@@ -141,10 +141,10 @@ class FakeAny:
 
 def kernel(fake, overlays=None):
     def eff(name, payload):
-        if name == "config.get":
+        if name == "runtime.get":
             if payload["key"] == "overlays.aliases" and overlays is not None:
                 return {"value": overlays}
-            raise KeyError(f"no config value for {payload['key']!r}")
+            raise KeyError(f"no runtime value for {payload['key']!r}")
         raise AssertionError(f"unexpected effect {name}")
 
     app = load_kernel(effect=eff, any_client=fake, module_source=fake.resolve)

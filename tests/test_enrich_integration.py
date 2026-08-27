@@ -41,7 +41,7 @@ def enrich_mod(any_server):
                 headers=payload.get("headers"),
                 json_body=payload.get("json"), body=payload.get("body"),
                 timeout=payload.get("timeout"))
-        if name == "config.get":
+        if name in ("config.get", "runtime.get"):
             return {"value": {"any.base_url": any_server}[payload["key"]]}
         if name == "time.now":
             return {"epoch": time.time()}

@@ -2566,7 +2566,7 @@ _instance = None
 def _c():
     global _instance
     if _instance is None:
-        base = effect("config.get", {"key": "any.base_url"})["value"]  # noqa: F821
+        base = effect("runtime.get", {"key": "any.base_url"})["value"]  # noqa: F821
         _instance = _Client(base)
     return _instance
 

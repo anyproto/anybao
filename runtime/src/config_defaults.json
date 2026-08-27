@@ -19,13 +19,13 @@
     },
     "search.provider.websearch": {
         "provider": "gemini",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.7-flash",
         "base_url": "https://generativelanguage.googleapis.com",
         "api_key_ref": "google.key.gemini"
     },
     "search.provider.deepresearch": {
         "provider": "gemini",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.7-flash",
         "base_url": "https://generativelanguage.googleapis.com",
         "api_key_ref": "google.key.gemini"
     }
