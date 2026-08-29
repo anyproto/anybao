@@ -1491,7 +1491,13 @@ impl RunCtx {
         broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        let summary = outcome.broker.writer.dump(self.traces.as_ref())?;
+        // ADR-023 §3: a run whose trace could not be landed is a failed
+        // run, named — never a silent gap
+        let summary = outcome
+            .broker
+            .writer
+            .dump(self.traces.as_ref())
+            .map_err(|e| anyhow::anyhow!("trace.unpersisted: run {run_id}: {e:#}"))?;
         self.publish_run(summary, trigger);
         Ok((
             run_id.clone(),
@@ -1535,7 +1541,11 @@ impl RunCtx {
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        let summary = outcome.broker.writer.dump(self.traces.as_ref())?;
+        let summary = outcome
+            .broker
+            .writer
+            .dump(self.traces.as_ref())
+            .map_err(|e| anyhow::anyhow!("trace.unpersisted: run {run_id}: {e:#}"))?;
         self.publish_run(summary, None);
         Ok(json!({
             "status": outcome.status,
