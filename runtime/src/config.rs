@@ -37,9 +37,10 @@ pub struct TracesSection {
     /// "any" (local-store collections of the bao space, ADR-023) or
     /// "file" (`paths.traces` jsonl, ADR-001 §8). Default: any.
     pub backend: Option<String>,
-    /// retention of chat-loop runs, e.g. "90d" (ADR-023 §6)
+    /// retention of chat-loop run bodies: "60d" (default), "never"
     pub retain_conversations: Option<String>,
-    /// retention of every other program's runs, e.g. "14d"
+    /// retention of every other program's run bodies: "30d" (default),
+    /// "never"
     pub retain_jobs: Option<String>,
 }
 
@@ -58,6 +59,14 @@ impl TraceBackend {
             other => anyhow::bail!("traces.backend must be \"any\" or \"file\", got {other:?}"),
         }
     }
+}
+
+/// A retention setting: a duration, or `"never"` = keep forever.
+pub fn parse_retention(s: &str) -> anyhow::Result<Option<u64>> {
+    if s.trim().eq_ignore_ascii_case("never") {
+        return Ok(None);
+    }
+    parse_duration_s(s).map(Some)
 }
 
 /// "90d" / "36h" / "15m" → seconds (ADR-023 §6 retention).
@@ -143,8 +152,9 @@ pub struct Config {
     pub traces_dir: PathBuf,
     /// trace storage backend (ADR-023 §1); file = `traces_dir`
     pub trace_backend: TraceBackend,
-    /// retention in seconds: chat-loop runs / every other program's
-    /// runs; None = keep forever (ADR-023 §6)
+    /// retention in seconds: chat-loop runs (default 60d) / every other
+    /// program's runs (default 30d); `"never"` in the toml = keep
+    /// forever (ADR-023 §6)
     pub retain_conversations_s: Option<u64>,
     pub retain_jobs_s: Option<u64>,
     /// explicit local kernel override (dev, ADR-009 §4);
@@ -184,8 +194,8 @@ impl Default for Config {
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
             trace_backend: TraceBackend::Any,
-            retain_conversations_s: None,
-            retain_jobs_s: None,
+            retain_conversations_s: Some(60 * 86_400),
+            retain_jobs_s: Some(30 * 86_400),
             kernel: None,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
@@ -377,10 +387,10 @@ impl Config {
             c.trace_backend = TraceBackend::parse(&b)?;
         }
         if let Some(d) = fc.traces.retain_conversations {
-            c.retain_conversations_s = Some(parse_duration_s(&d)?);
+            c.retain_conversations_s = parse_retention(&d)?;
         }
         if let Some(d) = fc.traces.retain_jobs {
-            c.retain_jobs_s = Some(parse_duration_s(&d)?);
+            c.retain_jobs_s = parse_retention(&d)?;
         }
         for (key, value) in fc.config {
             let value = toml_to_json(value)?;

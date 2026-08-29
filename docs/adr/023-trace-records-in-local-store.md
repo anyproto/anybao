@@ -164,8 +164,12 @@ the repetition.
 ### 6. Retention
 
 Host housekeeping in serve (a ticker, not a guest program — it writes
-the trace store): `[traces] retain_conversations = "90d"`,
-`retain_jobs = "14d"` (runs whose program is not the chat loop).
+the trace store): `[traces] retain_conversations` (chat-loop runs,
+**default 60d**) and `retain_jobs` (every other program, **default
+30d**); `"never"` keeps forever. Two classes, not per program — the
+summary carries `program`, so a per-program table is a later
+refinement if a need appears; "keep failed jobs longer" is the more
+likely first one.
 Expiry deletes `trace_records` by `runId` filter (200 runs per
 delete), then blobs no surviving record references (the live refs are
 collected with one `$exists` query — local↔local `$lookup` was not
@@ -195,13 +199,15 @@ of truth ends the drift class the e2e found (Issue 4 in `tracepeek`).
 `consecutiveFailures` stays runner-owned only as scheduling state.
 
 *Implementation phase (2026-08-29):* the host publishes every run's
-summary to `agent_runs`; the runner's `lastRun*` stamps **stay** until
-the readers (`any@v1` trigger listing, any-ui's Scheduled view) read
-`agent_runs` — switching writer and readers apart would leave a window
-with neither. Until then the summary is the truth and the stamps are
-a cache that any query can check (`effects.runs(filter={"triggerId":
-…})` once the runner stamps `triggerId` on the summary — the second
-half of this phase). Tracked as a task in the dev space, not here.
+summary to `agent_runs` **with `triggerId`** (the chat responder's id
+on conversation runs, null on control/embedder runs), and the guest
+reader has switched: the skill's "did it run?" is
+`effects.runs(filter={"triggerId": …})` (this device) / the synced
+`agent_runs` rows (other devices). The runner's `lastRun*` stamps
+**stay** as a cache until any-ui's Scheduled view reads `agent_runs`
+— removing them first would blank that view. That any-ui change, and
+then the stamp removal + `runCount` drop here, is the remaining step
+(a task in the dev space, not tracked here).
 
 ### 9. Isolation
 
