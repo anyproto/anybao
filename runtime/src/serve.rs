@@ -17,8 +17,8 @@ use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
     chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
-    standing_triggers, trigger_to_record, EventSource, RunResult, Scheduler, Trigger, WatchAction,
-    Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
+    standing_triggers, trigger_to_record, ChatInput, EventSource, RunResult, Scheduler, Trigger,
+    WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -794,7 +794,7 @@ struct Shared {
     /// User texts awaiting readiness (ADR-009 §8): snapshot backlog and
     /// live messages that arrived while overlays were pending. Drained
     /// by the trigger ticker once ensure_ready clears.
-    backlog: Mutex<Vec<String>>,
+    backlog: Mutex<Vec<ChatInput>>,
     /// Live event sources (ADR-018 §2): chat object id → the stop flag
     /// of the thread watching it. Converged on the registry every tick.
     event_sources: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
@@ -1674,18 +1674,19 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     posted
 }
 
-/// Start a run for `text` — or, when one is already live on this chat,
+/// Start a run for `input` — or, when one is already live on this chat,
 /// inject into its mailbox instead. Check-and-register happens under
 /// ONE watcher lock: the watch thread and the ticker's backlog drain
 /// may race to start.
-fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
+fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
     let mailbox: SharedMailbox = Default::default();
     {
         let mut w = shared.watcher.lock().unwrap();
         if let Some(live) = w.live.get(&ctx.chat) {
             live.lock()
                 .unwrap()
-                .push_back(json!({"kind": "inject", "text": text}));
+                .push_back(json!({"kind": "inject", "text": input.text,
+                                  "context": input.context}));
             return;
         }
         w.live.insert(ctx.chat.clone(), mailbox.clone());
@@ -1706,8 +1707,8 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
             .map(|(name, id)| (name.clone(), json!(id)))
             .collect();
         let args = json!({
-            "space": ctx.space, "chatId": ctx.chat, "userText": text,
-            "agentName": ctx.cfg.agent_name, "traceRef": run_id,
+            "space": ctx.space, "chatId": ctx.chat, "userText": input.text,
+            "uiContext": input.context, "agentName": ctx.cfg.agent_name, "traceRef": run_id,
             "codeSpace": ctx.code_space, "overlays": overlays});
         let result = ctx.run(
             "agent:toolcaller@v1",
@@ -1813,16 +1814,16 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
-                        let text = Watcher::attributed_text(&record);
+                        let input = Watcher::input(&record);
                         note_chat_start(shared, ctx);
                         if ready {
-                            info!("backlog conversation: {:?}", preview(&text));
-                            start_or_inject(shared, ctx, text);
+                            info!("backlog conversation: {:?}", preview(&input.text));
+                            start_or_inject(shared, ctx, input);
                         } else {
                             // no bubble for stale messages — a burst of
                             // "not ready" is noise; the ticker drains
                             // the queue once overlays sync
-                            shared.backlog.lock().unwrap().push(text);
+                            shared.backlog.lock().unwrap().push(input);
                         }
                     }
                 }
@@ -1835,7 +1836,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     if let WatchAction::Start = action {
-                        let text = Watcher::attributed_text(&record);
+                        let input = Watcher::input(&record);
                         note_chat_start(shared, ctx);
                         // deferred boot (ADR-009 §8): a message while
                         // overlays are pending gets a status bubble —
@@ -1843,8 +1844,8 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         // and queues for a real answer once synced
                         match ctx.ensure_ready() {
                             Ok(_) => {
-                                info!("conversation started: {:?}", preview(&text));
-                                start_or_inject(shared, ctx, text);
+                                info!("conversation started: {:?}", preview(&input.text));
+                                start_or_inject(shared, ctx, input);
                             }
                             Err(status) => {
                                 warn!("not ready: {status}");
@@ -1855,7 +1856,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                                     "text": format!("Not ready yet: {status}."),
                                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                                 );
-                                shared.backlog.lock().unwrap().push(text);
+                                shared.backlog.lock().unwrap().push(input);
                             }
                         }
                     }
@@ -1963,10 +1964,10 @@ fn trigger_ticker(
             let active = ctx.active.load(Ordering::Relaxed);
             if answers_chat(&shared) {
                 // answer user messages deferred while overlays were syncing
-                let deferred: Vec<String> = std::mem::take(&mut *shared.backlog.lock().unwrap());
-                for text in deferred {
-                    info!("deferred conversation: {:?}", preview(&text));
-                    start_or_inject(&shared, &ctx, text);
+                let deferred: Vec<ChatInput> = std::mem::take(&mut *shared.backlog.lock().unwrap());
+                for input in deferred {
+                    info!("deferred conversation: {:?}", preview(&input.text));
+                    start_or_inject(&shared, &ctx, input);
                 }
             }
             // the dataset is the source of truth (ADR-006 §4): converge

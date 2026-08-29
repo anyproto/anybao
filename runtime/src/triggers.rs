@@ -667,6 +667,13 @@ pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger
 
 // --- the watcher (trigger #1) -------------------------------------------------
 
+/// A chat message as the loop consumes it — see `Watcher::input`.
+#[derive(Clone, Debug)]
+pub struct ChatInput {
+    pub text: String,
+    pub context: Value,
+}
+
 /// Pure decision logic: dedup by message id, SELF-message skip, and
 /// mid-run routing (a message during a live conversation INJECTS into
 /// its mailbox instead of starting a new run).
@@ -712,6 +719,46 @@ impl Watcher {
                 name.is_empty() || name == self_name
             }
         }
+    }
+
+    /// One unanswered chat message as the loop receives it: the
+    /// attributed text plus the sender's view — the message's
+    /// `context` group (ADR-005 §5: `{spaceId, objectId?, view?}`,
+    /// stamped by the client at send time), or Null when the client
+    /// sent none. The view rides as an ARG, not folded into the text:
+    /// it is prompt-time locator data (the `[now: … | user's view …]`
+    /// line + the `currentUserSpace` cell global), and the persisted
+    /// turn keeps the raw text — the chat message itself is the
+    /// durable record of where the user was.
+    pub fn input(record: &Value) -> ChatInput {
+        ChatInput {
+            text: Self::attributed_text(record),
+            context: Self::view_context(record),
+        }
+    }
+
+    /// The message's `context` group, trimmed to the locator keys, or
+    /// Null — a context without a `spaceId` is no context.
+    pub fn view_context(record: &Value) -> Value {
+        let Some(ctx) = record.get("context").and_then(|c| c.as_object()) else {
+            return Value::Null;
+        };
+        let space = ctx.get("spaceId").and_then(|s| s.as_str()).unwrap_or("");
+        if space.is_empty() {
+            return Value::Null;
+        }
+        let mut out = serde_json::Map::new();
+        out.insert("spaceId".into(), json!(space));
+        for k in ["objectId", "view"] {
+            if let Some(v) = ctx
+                .get(k)
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+            {
+                out.insert(k.into(), json!(v));
+            }
+        }
+        Value::Object(out)
     }
 
     /// The record's text, attributed and attachment-aware: a
@@ -781,8 +828,9 @@ impl Watcher {
             return WatchAction::Skip; // own bubble — never self-trigger
         }
         if let Some(mailbox) = self.live.get(chat_id) {
+            let input = Self::input(record);
             mailbox.lock().unwrap().push_back(json!({
-                "kind": "inject", "text": Self::attributed_text(record)}));
+                "kind": "inject", "text": input.text, "context": input.context}));
             return WatchAction::Inject;
         }
         WatchAction::Start
@@ -1268,6 +1316,37 @@ mod tests {
         w.conversation_done("c1");
         let m4 = json!({"id": "m4", "text": "fresh"});
         assert!(matches!(w.on_message("c1", &m4), WatchAction::Start));
+    }
+
+    #[test]
+    fn view_context_rides_the_input_as_an_arg_not_the_text() {
+        // the client's `context` group → uiContext, trimmed to the
+        // locator keys; the text stays the text (ADR-005 §5)
+        let rec = json!({"id": "h1", "text": "do it here",
+            "context": {"spaceId": "sp1", "objectId": "ob1", "view": "object",
+                        "stray": "x"}});
+        let input = Watcher::input(&rec);
+        assert_eq!(input.text, "do it here");
+        assert_eq!(
+            input.context,
+            json!({"spaceId": "sp1", "objectId": "ob1", "view": "object"})
+        );
+        // empties drop; no spaceId = no context at all
+        let partial = json!({"text": "x", "context": {"spaceId": "sp1", "objectId": ""}});
+        assert_eq!(Watcher::view_context(&partial), json!({"spaceId": "sp1"}));
+        assert_eq!(Watcher::view_context(&json!({"text": "x"})), Value::Null);
+        assert_eq!(
+            Watcher::view_context(&json!({"text": "x", "context": {"objectId": "o"}})),
+            Value::Null
+        );
+        // …and it rides the inject next to the text
+        let mut w = Watcher::new("bao");
+        let mb: crate::broker::SharedMailbox = Default::default();
+        w.live.insert("c1".into(), mb.clone());
+        assert!(matches!(w.on_message("c1", &rec), WatchAction::Inject));
+        let item = mb.lock().unwrap().pop_front().unwrap();
+        assert_eq!(item["kind"], "inject");
+        assert_eq!(item["context"]["spaceId"], "sp1");
     }
 
     #[test]

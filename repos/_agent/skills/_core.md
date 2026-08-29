@@ -132,17 +132,17 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   call.** Pass a space NAME (`c.search("dev", …)` — resolved against
   the live space list; an unknown or ambiguous name errors listing
   every space), a space id, a `list_spaces()` row, or a bound cell
-  global: `currentUserSpace` (the user's live view — what "here" /
-  "this page" means; `{spaceId, objectId?, view?, updatedAt}`, or None
-  when the UI never reported) and `baoSpaceConfig` (`{spaceId, chatId}`
+  global: `currentUserSpace` (the user's view when they sent the
+  message — what "here" / "this page" means; `{spaceId, objectId?,
+  view?}`, or None when the message carried no view) and
+  `baoSpaceConfig` (`{spaceId, chatId}`
   of your home space). A wrong or omitted spaceConfig raises a
   TypeError naming these forms. Account-level calls (`list_spaces`,
   `create_space`) take none.
 - **Where the ids come from — never guess them.** Your space and chat
   ids: `baoSpaceConfig` (also spelled out in **Runtime context**). The
-  user's live view: `currentUserSpace` (the same pointer rides the
-  newest user message as a `[now: … | user's view — …]` line — check
-  its age). Everything else: `c.list_spaces()` (use rows with
+  user's view: `currentUserSpace` (the same view rides the user's
+  message as its `[now: … | user's view — …]` line). Everything else: `c.list_spaces()` (use rows with
   `status == "active"`). There is no space-id env var.
 - **Memory policy** lives in the `_memory` skill —
   `mem.save_with_dedup` is THE save path, never raw `create_memory`.

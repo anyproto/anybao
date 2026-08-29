@@ -128,12 +128,13 @@ Spaces:
   object the user asks for lands in a USER space — `currentUserSpace`
   by default, or the space they name; if neither is clear, ask which
   space, never fall back to home. The user's
-  current view: the bound `currentUserSpace` global (mirrored on the
-  newest user message as `[now: … | user's view — space: …, object:
-  …]`) — "here" / "this page" / "this space" means THAT: pass
-  `currentUserSpace` (and its `objectId`) to the calls that act on it,
-  checking its age for staleness. `c.get_ui_context(baoSpaceConfig)`
-  re-reads it live; `c.list_spaces()` enumerates everything else.
+  view: the bound `currentUserSpace` global — where the user was when
+  they sent the message (the same view rides that message as `[now: …
+  | user's view — space: …, object: …]`; a later message in the run
+  brings its own and rebinds the global) — "here" / "this page" /
+  "this space" means THAT: pass `currentUserSpace` (and its
+  `objectId`) to the calls that act on it. None when the message came
+  without a view; `c.list_spaces()` enumerates everything else.
 - The WRITE side of the view: `c.open_in_ui(space, object_id?)`
   navigates the user's any-ui window on this device to that space or
   object — use it when the user asks to "open"/"show" something, or

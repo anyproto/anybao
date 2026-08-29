@@ -25,8 +25,7 @@ def done_reply(text="done", usage=None):
 class World:
     """Every seam the toolcaller touches, recorded."""
 
-    def __init__(self, replies, cells=None, mailbox=None, hits=None,
-                 ui_ctx=None):
+    def __init__(self, replies, cells=None, mailbox=None, hits=None):
         self.replies = list(replies)
         self.cells = list(cells or [])
         self.mail = list(mailbox or [])
@@ -38,8 +37,6 @@ class World:
         self.span_ends = []
         self.preludes = []
         self.plan_hits = hits or {"messages": [], "injected": []}
-        self.ui_ctx = ui_ctx
-        self.pruned = []
 
     # --- guest globals -----------------------------------------------------
     def effect(self, name, payload=None):
@@ -77,13 +74,6 @@ class World:
             def append_turn(self, space, chat, body):
                 w.turns.append(body)
                 return {"seq": len(w.turns) - 1}
-
-            def get_ui_context(self, space):
-                raise AssertionError("the loop takes the pruning fetch")
-
-            def _prune_ui_contexts(self, space):
-                w.pruned.append(space)
-                return w.ui_ctx
 
             # compose_system reads the space (skills/tools/brain);
             # an empty space composes an empty prompt prefix
@@ -242,7 +232,8 @@ def test_mailbox_inject_and_soft_break_are_drained_effects():
     out = run(w)
     assert out["stop"] == "wrapup"
     first = w.llm_calls[0]["messages"]
-    assert any(p.get("text") == "also X"
+    # a mid-run message closes with its own [now: …] line (ADR-005 §5)
+    assert any(p.get("text", "").startswith("also X\n\n[now: ")
                for m in first for p in m["parts"] if p["type"] == "text")
 
 
@@ -319,44 +310,60 @@ def test_quiet_mode_ceiling_still_wraps_up():
 
 
 def test_user_message_carries_timestamp_and_view_context():
-    w = World([done_reply()],
-              ui_ctx={"spaceId": "sp9", "objectId": "ob3",
-                      "view": "object", "updatedAt": 1_200_000})
-    run(w)
+    # the view is the `context` any-ui stamped on the message, handed in
+    # by the host as uiContext — nothing is fetched from the space
+    w = World([done_reply()])
+    run(w, uiContext={"spaceId": "sp9", "objectId": "ob3", "view": "object"})
     call = w.llm_calls[0]
     user = call["messages"][-1]["parts"][0]["text"]
     assert user.startswith("go\n\n[now: ")
-    assert "user's view — space: sp9, object: ob3, view: object" in user
-    assert "34s ago" in user  # now()=1234s, pointer at 1200s
+    assert user.endswith("user's view — space: sp9, object: ob3, view: object]")
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
     assert "`s1`" in call["system"] and "`c1`" in call["system"]
     # the persisted turn keeps the raw userText — suffix is llm-only
     assert w.turns[0]["userText"] == "go"
-    # the same pointer is bound as cell globals before the loop (ADR-010 §8)
+    # the same view is bound as cell globals before the loop (ADR-010 §8)
     [prelude] = w.preludes
-    assert "currentUserSpace = {'spaceId': 'sp9'" in prelude
+    assert ("currentUserSpace = {'spaceId': 'sp9', 'objectId': 'ob3', "
+            "'view': 'object'}") in prelude
     assert "baoSpaceConfig = {'spaceId': 's1', 'chatId': 'c1'}" in prelude
     # and the prompt names both
     assert "currentUserSpace" in call["system"]
     assert "baoSpaceConfig" in call["system"]
 
 
-def test_context_suffix_degrades_to_timestamp_without_pointer():
-    w = World([done_reply()])  # ui_ctx None
-    run(w)
+def test_context_suffix_degrades_to_timestamp_without_view():
+    for absent in (None, {}, {"spaceId": ""}):
+        w = World([done_reply()])
+        run(w, uiContext=absent)
+        user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+        assert "[now: " in user and "user's view" not in user
+        assert "currentUserSpace = None" in w.preludes[0]
+
+
+def test_empty_view_fields_are_dropped_from_the_binding():
+    w = World([done_reply()])
+    run(w, uiContext={"spaceId": "sp9", "objectId": "", "view": "grid"})
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
-    assert "[now: " in user and "user's view" not in user
+    assert user.endswith("user's view — space: sp9, view: grid]")
+    assert "currentUserSpace = {'spaceId': 'sp9', 'view': 'grid'}" in w.preludes[0]
 
 
-def test_view_pointer_is_fetched_once_per_run_and_prunes_duplicates():
-    # TODO with the code: the ui-context protocol rework replaces the
-    # duplicate stopgap — the loop then goes back to a plain getter
-    w = World([done_reply()],
-              ui_ctx={"spaceId": "sp9", "objectId": "", "view": "grid",
-                      "updatedAt": 1_200_000})
-    run(w)
-    assert w.pruned == ["s1"]
+def test_injected_message_carries_its_own_view_and_rebinds_the_global():
+    w = World([tool_reply("x = 1"), done_reply()],
+              mailbox=[{"kind": "inject", "text": "also here",
+                        "context": {"spaceId": "sp2", "objectId": "ob7"}}])
+    run(w, uiContext={"spaceId": "sp9"})
+    injected = [m for c in w.llm_calls for m in c["messages"]
+                if m["role"] == "user"
+                and m["parts"][0].get("text", "").startswith("also here")]
+    assert injected
+    assert injected[0]["parts"][0]["text"].endswith(
+        "user's view — space: sp2, object: ob7]")
+    # opener bound sp9; the inject rebinds to where the user is NOW
+    assert "currentUserSpace = {'spaceId': 'sp9'}" in w.preludes[0]
+    assert "currentUserSpace = {'spaceId': 'sp2', 'objectId': 'ob7'}" in w.preludes[-1]
 
 
 # --- two-tier composition (ADR-009 §2/§3) -------------------------------------
