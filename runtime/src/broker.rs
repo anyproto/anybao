@@ -1023,6 +1023,43 @@ impl Broker {
                 return Err(forbidden("the secrets object"));
             }
         }
+        // ADR-023 §9: the trace collections are host-written. A guest may
+        // read them (query / aggregate / get) and never write — insert,
+        // upsert, update, delete, index or collection changes, and
+        // aggregate sinks ($out/$merge) that name a trace collection.
+        if let Some(rest) = url.split("/v1/local/").nth(1) {
+            let op = rest.split('?').next().unwrap_or("");
+            let coll = body
+                .and_then(|b| b.get("coll"))
+                .and_then(|c| c.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            let names_trace = coll.starts_with("trace_") || url.contains("name=trace_");
+            let write_op = matches!(
+                op,
+                "insert" | "upsert" | "update" | "delete" | "indexes" | "collections"
+            );
+            if names_trace && write_op {
+                return Err(EffectFailure {
+                    type_: "forbidden".into(),
+                    message: "the trace collections (trace_*) are host-written: read them \
+                              with effects.of/get/runs/query, never write them"
+                        .into(),
+                });
+            }
+            if op == "aggregate" {
+                if let Some(pipeline) = body.and_then(|b| b.get("pipeline")) {
+                    if crate::tracestore::find_sink_stage(pipeline).is_some()
+                        && pipeline.to_string().contains("_trace_")
+                    {
+                        return Err(EffectFailure {
+                            type_: "forbidden".into(),
+                            message: "aggregate sinks may not target a trace collection".into(),
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1521,6 +1558,47 @@ mod tests {
             })
             .count();
         assert_eq!(denials, 3);
+    }
+
+    #[test]
+    fn trace_collections_are_host_written() {
+        // ADR-023 §9: guest writes naming a trace_* local collection are refused
+        let mut b = make_broker("run_fence");
+        let coll = json!({"scope": "space", "spaceId": "sp", "name": "trace_records"});
+        for (op, body) in [
+            ("insert", json!({"coll": coll, "docs": [{"id": "x"}]})),
+            ("upsert", json!({"coll": coll, "docs": [{"id": "x"}]})),
+            ("delete", json!({"coll": coll, "filter": {}})),
+            (
+                "update",
+                json!({"coll": coll, "id": "x", "modifier": {"$set": {"a": 1}}}),
+            ),
+            ("indexes", json!({"coll": coll, "drop": ["name"]})),
+        ] {
+            let e = b
+                .call(
+                    "http.post",
+                    json!({"url": format!("http://any.local:8080/v1/local/{op}"), "json": body}),
+                )
+                .unwrap_err();
+            assert_eq!(e.type_, "forbidden", "{op}");
+        }
+        let e = b
+            .call(
+                "http.delete",
+                json!({"url": "http://any.local:8080/v1/local/collections?scope=space&spaceId=sp&name=trace_runs"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
+        let e = b
+            .call(
+                "http.post",
+                json!({"url": "http://any.local:8080/v1/local/aggregate",
+                       "json": {"coll": {"scope": "space", "spaceId": "sp", "name": "scratch"},
+                                "pipeline": [{"$match": {}}, {"$out": "l_s_sp_trace_runs"}]}}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
     }
 
     #[test]
