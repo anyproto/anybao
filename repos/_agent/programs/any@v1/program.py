@@ -262,21 +262,6 @@ def _trim_space_row(r):
             if r.get(k) not in (None, "", {})}
 
 
-def _ui_context_rank(rec):
-    group = rec.get("ui_context") or {}
-    return (group.get("updated_at") or 0, ts_s(rec.get("modifiedAt")) or 0)  # noqa: F821
-
-
-def _ui_context_pointer(rec):
-    if rec is None:
-        return None
-    group = rec.get("ui_context") or {}
-    return {"spaceId": group.get("space_id", ""),
-            "objectId": group.get("object_id", ""),
-            "view": group.get("view", ""),
-            "updatedAt": group.get("updated_at") or 0}
-
-
 # Builtin type namespaces whose group + property keys are already literal
 # handles (`any.name`, `any.types`, `nav.parentId`). They are never
 # reverse-mapped on read nor xKey-resolved on write — see the xKey
@@ -1606,8 +1591,9 @@ class _Client:
         changes only on the device this server runs on, never on the
         account's other machines. `subscribers: 0` simply means no UI
         window is connected right now — not an error, nothing is
-        queued. Use for "open it / show me" asks; get_ui_context is
-        the READ side (where the user already is)."""
+        queued. Use for "open it / show me" asks; the READ side (where
+        the user already is) is the `currentUserSpace` global — the
+        view stamped on the message they sent."""
         data = {"spaceId": space, "source": "bao"}
         etype = "ui.open_space"
         if object_id:
@@ -1615,98 +1601,6 @@ class _Client:
             etype = "ui.open_object"
         return self._call("post", "/v1/events",
                           {"type": etype, "scope": "device", "data": data})
-
-    def get_ui_context(self, space):
-        """The user's current view — the `ui_context` pointer any-ui keeps.
-
-        Maintained in the agent space (xKey contract with any-ui:
-        props space_id / object_id / view / updated_at). Returns
-        {spaceId, objectId, view, updatedAt} — updatedAt is client ms,
-        check freshness before trusting — or None when the UI has never
-        reported (type or pointer absent)."""
-        pairs = self._ui_context_pairs(space)
-        return _ui_context_pointer(pairs[0][1] if pairs else None)
-
-    # TODO: ui-context protocol rework pending — this last-modified-wins +
-    # delete-stale is a stopgap (user, 2026-08-12)
-    def _ui_context_type_ids(self, space):
-        """All `ui_context` type-definition ids, winner first.
-
-        The server's xKey-uniqueness guard is per-peer, so racing
-        clients on different peers mint duplicate `ui_context` TYPES
-        that sync into one space; every xKey→id resolution then picks
-        an arbitrary one and the other side's pointer turns invisible
-        (seen live on prod, 2026-08-12: reads missed the pointer, the
-        UI wrote into the void for two weeks). Winner rank:
-        (modifiedAt, id) over the type's own object row — type
-        definitions are ordinary object rows, which is also what makes
-        losers deletable via delete_object (Types.Delete is
-        unimplemented). any-ui applies the identical rank so both
-        ends converge on the same type."""
-        ids = [t["id"] for t in self.list_types(space)
-               if t.get("xKey") == "ui_context" and not t.get("builtIn")]
-        if len(ids) < 2:
-            return ids
-        rows = {r.get("id"): r for r in self.query_objects(
-            space, filter={"id": {"$in": ids}}, limit=len(ids))}
-        return sorted(ids, key=lambda i: (
-            ts_s((rows.get(i) or {}).get("modifiedAt")) or 0, i),  # noqa: F821
-            reverse=True)
-
-    def _ui_context_pairs(self, space, tids=None):
-        """(typeId, pointer-record) pairs, freshest pointer first.
-
-        Queried per type id — never through the xKey (ambiguous under
-        duplicates). Pointer rank: the protocol's own `updated_at`
-        (client ms), server `modifiedAt` breaking ties for pointers
-        written before the prop existed. An object carrying several of
-        the dup types pairs with the winner-most one."""
-        tids = self._ui_context_type_ids(space) if tids is None else tids
-        seen, pairs = set(), []
-        for tid in tids:
-            for r in self.query_objects(space, filter={"any.types": tid},
-                                        limit=50):
-                if r.get("id") not in seen:
-                    seen.add(r.get("id"))
-                    pairs.append((tid, r))
-        pairs.sort(key=lambda tr: _ui_context_rank(tr[1]), reverse=True)
-        return pairs
-
-    def _prune_ui_contexts(self, space):
-        """Converge on ONE ui_context type and ONE pointer; returns the
-        surviving pointer (get_ui_context shape) or None.
-
-        The duplicate stopgap above, as a mutation — kept out of
-        get_ui_context so that stays a pure getter (ADR-001 §7: a
-        declared getter whose span mutates is an inconsistency).
-        Keeps the freshest pointer that carries the WINNER type;
-        deletes every other pointer, then the loser type definitions
-        (pointers first, so no window with an object implementing a
-        deleted type). A pointer on a loser type only is stale by
-        definition — the UI re-creates one on the winner within
-        seconds. A delete that fails is not worth failing a run over."""
-        tids = self._ui_context_type_ids(space)
-        if not tids:
-            return None
-        winner = tids[0]
-        pairs = self._ui_context_pairs(space, tids=tids)
-        keep = next((r for t, r in pairs if t == winner), None)
-        keep_id = keep.get("id") if keep is not None else None
-        for _, r in pairs:
-            if r.get("id") == keep_id:
-                continue
-            try:  # noqa: SIM105 - contextlib is one more guest import for a stopgap
-                self.delete_object(space, r.get("id"))
-            except AnyError:
-                pass
-        for tid in tids[1:]:
-            try:  # noqa: SIM105
-                self.delete_object(space, tid)
-            except AnyError:
-                pass
-        if len(tids) > 1:
-            self._cat_invalidate(space)   # the loser just left the catalog
-        return _ui_context_pointer(keep)
 
     # --- types & properties (catalog source) ----------------------------------
     def list_types(self, space):
@@ -2818,23 +2712,9 @@ def create_space(name, description=None):
     return _c().create_space(name, description)
 
 
-@span(kind="getter")  # noqa: F821 - guest global
-def get_ui_context(spaceConfig):
-    return _c().get_ui_context(_space(spaceConfig))
-
-
 @span(kind="mutator")  # noqa: F821 - guest global
 def open_in_ui(spaceConfig, object_id=None):
     return _c().open_in_ui(_space(spaceConfig), object_id)
-
-
-# `_`-private: describe() hides it from the `## Tools` inventory — the
-# duplicate-pointer stopgap is the loop's business (toolcaller calls it
-# once per run), not a tool the model should reach for.
-@span("any.prune_ui_contexts", kind="mutator")  # noqa: F821 - guest global
-# explicit span name = display override (ADR-003 §4b): hidden def, public trace
-def _prune_ui_contexts(spaceConfig):
-    return _c()._prune_ui_contexts(_space(spaceConfig))
 
 
 @span(kind="getter")  # noqa: F821 - guest global
@@ -2961,7 +2841,7 @@ for _f in (create_object, update_object, delete_object, query_objects,
            get_markdown, put_markdown, edit_markdown, list_files, file_content,
            list_search_scopes,
            append_markdown, list_spaces, get_space, general_chat,
-           create_space, get_ui_context, open_in_ui, list_types,
+           create_space, open_in_ui, list_types,
            list_properties, patch_property, set_option, remove_option,
            reorder_property, archive_property, delete_property,
            attach_type, detach_type,

@@ -146,11 +146,26 @@ diagnosable from traces). The rest of the conversation prompt is
 assembled GUEST-SIDE: `history@v1` renders the boot window
 (hierarchical chunks message → raw turn window), `autorecall@v1`
 injects topical hits as a tool result (ADR-007 §5), and the current
-user message (timestamp + ui-context suffix — the `ui_context` pointer
-object any-ui keeps in the agent space, read via
-`any@v1.get_ui_context`; a missing pointer degrades the suffix to
-timestamp-only) closes it. The suffix rides the llm message only — the
-persisted turn keeps the raw `userText`.
+user message (timestamp + view suffix) closes it. The suffix rides the
+llm message only — the persisted turn keeps the raw `userText`.
+
+**The view rides the message (amendment 2026-08-29).** The user's
+location is a property of the message they sent, not of the space:
+any-ui stamps the chat message's `context` group
+(`{spaceId, objectId?, view?}` — the page visible when the user hit
+send; omitted when there is none) and the host hands it to the run
+unchanged as the `uiContext` arg (a mid-run message rides the mailbox
+inject as `context`). The toolcaller turns it into the
+`[now: … | user's view — space: …, object: …, view: …]` line on THAT
+message and binds it as the `currentUserSpace` cell global (ADR-010
+§8); a message without a view degrades to timestamp-only and binds
+`None`; an inject with a view rebinds the global, so "here" in code and
+in prose always mean the newest message's view. Nothing is read from
+the space and nothing is written to it: there is no pointer object, no
+staleness age, no live re-read — the message IS the record of where
+the user was, durable in the chat and self-describing in every trace.
+Cron/trigger runs carry no view. The write side (`any@v1.open_in_ui`)
+is unchanged.
 
 **Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
 cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,

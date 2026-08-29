@@ -224,8 +224,9 @@ every one but one restated exactly that pair as a string — a second
 copy of a fact the code already carries, and it drifted the first time
 an agent-authored tool landed (ADR-010's duplication argument, applied
 to ourselves). An explicit `name` stays legal and is now *signal*: a
-deliberate display override (`any.prune_ui_contexts` on the hidden
-`_prune_ui_contexts`). The positional form cannot be dropped — frozen
+deliberate display override (a hidden `_`-def that should still trace
+under its public name, or a name that differs from the def's). The
+positional form cannot be dropped — frozen
 published overlay versions call `span("name", kind=...)` forever
 (ADR-009 freeze) — and the call form stays required (`@span(kind=...)`,
 never bare `@span`): deploy's static scan and the ADR-013 write gate

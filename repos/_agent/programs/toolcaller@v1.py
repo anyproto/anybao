@@ -8,7 +8,7 @@ drained as a recorded effect, ceilings → wrap-up, replies and the turn
 record written through the any module. Everything nondeterministic is
 an effect, so a recorded conversation replays whole.
 
-args: {space, chatId, userText, system?, agentName?, traceRef?,
+args: {space, chatId, userText, uiContext?, system?, agentName?, traceRef?,
 maxTurns?, maxTokensTotal?, tier?, bootTokens?, quiet?}.
 
 quiet (ADR-008 §5): a delegated sub-run — no chat bubbles, no boot
@@ -80,49 +80,33 @@ def approx_tokens(text):
     return (len(text) + 3) // 4
 
 
-def _fmt_age(sec):
-    if sec < 120:
-        return f"{int(sec)}s"
-    if sec < 7200:
-        return f"{int(sec // 60)}m"
-    return f"{int(sec // 3600)}h"
-
-
-def _ui_context(c, space):
-    """The user's live view pointer, or None — fetched once per run;
-    feeds both the view line (_context_suffix) and the bound
-    `currentUserSpace` cell global (ADR-010 §8).
-
-    Racing any-ui clients leave several pointer objects behind, so the
-    fetch is the pruning one (freshest wins, the rest are deleted) —
-    a mutation, hence here in the loop and not inside the
-    `get_ui_context` getter.
-    TODO: ui-context protocol rework pending — this last-modified-wins
-    + delete-stale is a stopgap (user, 2026-08-12)"""
-    try:
-        return c._prune_ui_contexts(space)
-    except Exception:
-        return None
+def _view(ctx):
+    """The user's view when they SENT a message — the `context` group
+    any-ui stamps on the chat message (ADR-005 §5), handed in by the
+    host as the run's `uiContext` arg / an inject's `context`:
+    `{spaceId, objectId?, view?}` or None. Feeds both the view line
+    (_context_suffix) and the bound `currentUserSpace` cell global
+    (ADR-010 §8). Nothing is fetched: the message is the record of
+    where the user was."""
+    if isinstance(ctx, dict) and ctx.get("spaceId"):
+        return {k: ctx[k] for k in ("spaceId", "objectId", "view") if ctx.get(k)}
+    return None
 
 
 def _context_suffix(ctx):
-    """ADR-005 §5: the current user message closes the prompt with a
-    timestamp + ui-context suffix ('here'/'this page' resolve against
-    the view line). Best-effort — a missing or unreadable pointer
-    degrades to timestamp-only. The suffix rides the llm message only;
-    the persisted turn keeps the raw userText."""
+    """ADR-005 §5: a user message closes with a timestamp + view suffix
+    ('here'/'this page' resolve against the view line). A message the
+    client sent without a view degrades to timestamp-only. The suffix
+    rides the llm message only; the persisted turn keeps the raw
+    userText."""
     epoch = now()  # noqa: F821 - guest global
     # the host's local zone with its offset spelled out (ADR-019 §8)
     stamp = fmt_ts(epoch, "%a %Y-%m-%d %H:%M")  # noqa: F821 - guest global
     line = f"\n\n[now: {stamp}"
     if ctx and ctx.get("spaceId"):
-        upd = ctx.get("updatedAt")   # client ms today; tolerate an instant
-        upd_s = ts_s(upd) if isinstance(upd, dict) else (upd or 0) / 1000.0  # noqa: F821
-        age = _fmt_age(max(0, epoch - (upd_s or 0)))
         line += (f" | user's view — space: {ctx['spaceId']}"
                  + (f", object: {ctx['objectId']}" if ctx.get("objectId") else "")
-                 + (f", view: {ctx['view']}" if ctx.get("view") else "")
-                 + f", {age} ago")
+                 + (f", view: {ctx['view']}" if ctx.get("view") else ""))
     return line + "]"
 
 
@@ -459,8 +443,8 @@ def main(args):
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
         "- bound cell globals (valid spaceConfig args): `currentUserSpace` — "
-        "the user's live view (`{spaceId, objectId?, view?, updatedAt}` or "
-        "None; the same pointer rides the newest user message as a "
+        "the user's view when they sent the message (`{spaceId, objectId?, "
+        "view?}` or None; the same view rides the message as a "
         "`[now: … | user's view — …]` line) — and `baoSpaceConfig` "
         "(`{spaceId, chatId}` of this agent space)\n"
         "- other spaces: `list_spaces()` rows")
@@ -488,7 +472,7 @@ def main(args):
         boot_min_seq = tail[0].get("seq") if tail else None
         plan = ar.plan(c, space, user_text, boot_min_seq)
 
-    ui_ctx = _ui_context(c, space)
+    ui_ctx = _view(args.get("uiContext"))
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
     ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"
@@ -526,8 +510,15 @@ def main(args):
         # a quiet run must not consume the parent's inject/break stream
         for msg in ([] if quiet else effect("mailbox.drain", {})["items"]):  # noqa: F821
             if msg["kind"] == "inject":
+                # a mid-run message carries its own view: the suffix
+                # and the bound global follow it (ADR-005 §5)
+                inj_ctx = _view(msg.get("context"))
+                if inj_ctx:
+                    ui_ctx = inj_ctx
+                    subcell(f"currentUserSpace = {ui_ctx!r}", "_ctx")  # noqa: F821
                 messages.append({"role": "user",
-                                 "parts": [{"type": "text", "text": msg["text"]}]})
+                                 "parts": [{"type": "text",
+                                            "text": msg["text"] + _context_suffix(inj_ctx)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"
         if turn >= max_turns:

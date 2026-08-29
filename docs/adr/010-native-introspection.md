@@ -224,7 +224,7 @@ prevent, caused by the one place the renderer couldn't see.
   but an API meant for the standing prompt must not hide behind one.
 - **`spaceConfig` is the explicit per-call context.** Every
   space-scoped `any@v1` function takes it as the FIRST argument: a
-  space id string, or a mapping carrying `spaceId` (ui-context shape)
+  space id string, or a mapping carrying `spaceId` (the view shape)
   or `id` (a `list_spaces()` row) — both pass through unchanged, so
   query results and bound globals are directly usable. Account-level
   functions (`list_spaces`, `create_space`) take none.
@@ -246,8 +246,9 @@ prevent, caused by the one place the renderer couldn't see.
   implicit defaulting; "space always explicit" stands. Id SHAPE is
   server policy: a wrong single token still errors, server-side.
 - **Bound space globals.** The toolcaller binds, per run, cell globals
-  `currentUserSpace` (the user's live ui-context
-  `{spaceId, objectId?, view?, updatedAt}`, or `None` when unknown)
+  `currentUserSpace` (the view stamped on the user's message —
+  `{spaceId, objectId?, view?}`, or `None` when the message carried
+  none; rebound when a mid-run message brings a new one, ADR-005 §5)
   and `baoSpaceConfig` (`{spaceId, chatId}` of the agent's home
   space). "Here"/"this page" resolve against `currentUserSpace` in
   code the same way the prompt's view line resolves them in prose.
@@ -264,6 +265,7 @@ prevent, caused by the one place the renderer couldn't see.
 | 002 §4 | `inspect` added to tier 1 |
 | 004 | deploy format note: program objects carry source only |
 | 005 §5 | tool-discovery amendment (2026-07-18) superseded by §1–§3; kind-at-point-of-choice and hide-by-underscore survive, hide-by-omission does not |
+| 005 §5 | the view rides the message (2026-08-29): `currentUserSpace` is the message's `context`, `{spaceId, objectId?, view?}`, no `updatedAt` |
 | 006 | program data contract = `program_source` + `name`/`version`/`any_tool`/`summary` |
 | 008 | connector doc convention = docstrings (§1); folder layout loses `description.md`/`schema.md` |
 | 009 | deploy pipeline per §6; `## Repos` contract reaffirmed unchanged |
