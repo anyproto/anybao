@@ -35,6 +35,7 @@ class World:
         self.turns = []
         self.roi = []
         self.spans = []
+        self.span_ends = []
         self.preludes = []
         self.plan_hits = hits or {"messages": [], "injected": []}
         self.ui_ctx = ui_ctx
@@ -50,6 +51,7 @@ class World:
             return {"span": f"s{len(self.spans)}"}
         if name == "span.end":
             self.spans.append(("end", payload["ok"]))
+            self.span_ends.append(payload)
             return None
         if name == "trace.effects_of":
             return {"records": [{"seq": 9, "effect": "http.post",
@@ -187,6 +189,10 @@ def test_cell_error_marks_tool_result_is_error():
     part = w.llm_calls[1]["messages"][-1]["parts"][0]
     assert part["is_error"] is True and "ValueError: boom" in part["content"]
     assert ("end", False) in w.spans
+    # the failure rides the cell span-end record itself (ADR-003 §3):
+    # type + message, no traceback — a past-run reader sees WHY
+    failed = [e for e in w.span_ends if e["ok"] is False]
+    assert failed == [{"ok": False, "error": {"type": "ValueError", "message": "boom"}}]
 
 
 def test_turn_ceiling_wraps_up_not_cuts():

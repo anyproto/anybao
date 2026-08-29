@@ -131,7 +131,11 @@ digest.
   into the driver's own. Per-model-cell trace granularity comes from
   wrapping each `subcell` in a `cell`-named span (§4b): the span groups
   that cell's effects, and the driver reads them back with
-  `trace.effects_of(span=…)` for the digest.
+  `trace.effects_of(span=…)` for the digest. A failed cell ends its
+  span with `ok: false` **and** `error: {type, message}` (the `@span`
+  shape; the traceback stays digest text) — the record says why on
+  its own, so a past-run reader (§4 `run=`) never has to mine the next
+  llm request's tool_result for the exception.
 
 ### 4. Value store: `values` and `effects`
 
