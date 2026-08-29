@@ -1187,18 +1187,13 @@ impl Broker {
     /// come back blob-resolved; this run's records resolve per-record
     /// in `effect_get` (the writer's blobs live in `self.writer.blobs`).
     fn trace_records(&mut self, payload: &Value) -> Result<Arc<Vec<Value>>, EffectFailure> {
-        let Some(run) = payload.get("run").and_then(|r| r.as_str()) else {
+        let Some(run) = run_arg(payload)? else {
             return Ok(Arc::new(self.writer.records.clone()));
         };
         if run == self.writer.run_id() {
             return Ok(Arc::new(self.writer.records.clone()));
         }
-        if !valid_run_id(run) {
-            return Err(EffectFailure {
-                type_: "ValueError".into(),
-                message: format!("not a run id: {run:?} (expected run_<id>)"),
-            });
-        }
+        let run = run.as_str();
         if let Some(r) = self.run_cache.get(run) {
             return Ok(r.clone());
         }
@@ -1273,19 +1268,37 @@ impl Broker {
     /// program, model, status, durationMs, fuel, error}, turns: [...],
     /// total}`.
     fn sys_trace_stats(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
-        let run = payload
-            .get("run")
-            .and_then(|r| r.as_str())
-            .filter(|r| valid_run_id(r))
-            .ok_or_else(|| EffectFailure {
-                type_: "ValueError".into(),
-                message: "trace.stats needs run=run_<id>".into(),
-            })?;
+        let run = run_arg(payload)?.ok_or_else(|| EffectFailure {
+            type_: "ValueError".into(),
+            message: "trace.stats needs run=run_<id>".into(),
+        })?;
         let store = self.need_store()?;
-        crate::view::stats_data(store, run).map_err(|e| EffectFailure {
+        crate::view::stats_data(store, &run).map_err(|e| EffectFailure {
             type_: "KeyError".into(),
             message: format!("run {run}: {e:#}"),
         })
+    }
+}
+
+/// The `run` argument of a `trace.*` view: absent/null = this run
+/// (`None`); a valid run id = that run; anything else — a non-string,
+/// or a string that isn't `run_<id>` — is a typed error. "Present but
+/// wrong" must never fall through to the live log: the guest asked
+/// for a specific run and would read the wrong one without noticing.
+fn run_arg(payload: &Value) -> Result<Option<String>, EffectFailure> {
+    match payload.get("run") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if valid_run_id(s) => Ok(Some(s.clone())),
+        Some(Value::String(s)) => Err(EffectFailure {
+            type_: "ValueError".into(),
+            message: format!("not a run id: {s:?} (expected run_<id>)"),
+        }),
+        Some(other) => Err(EffectFailure {
+            type_: "ValueError".into(),
+            message: format!(
+                "run must be a run id string (run_<id>), got {other} — pass the `traceRef` / `lastRunRef` value itself"
+            ),
+        }),
     }
 }
 
@@ -1988,6 +2001,18 @@ mod tests {
         // guards: not-a-run-id, unknown run, no store
         let bad = b.call("trace.effects_of", json!({"run": "../etc"}));
         assert_eq!(bad.unwrap_err().type_, "ValueError");
+        // present-but-not-a-string must NOT fall through to the live run
+        for bad_run in [json!({"id": "run_past"}), json!(42), json!(["run_past"])] {
+            for view in ["trace.effects_of", "trace.effect_get", "trace.stats"] {
+                let e = b.call(view, json!({"run": bad_run, "seq": 1})).unwrap_err();
+                assert_eq!(e.type_, "ValueError", "{view} {bad_run}");
+            }
+        }
+        // null = this run, like absent
+        let live = b.call("trace.effects_of", json!({"run": null})).unwrap();
+        assert!(live["records"].as_array().is_some());
+        let missing = b.call("trace.effects_of", json!({"run": "run_nope"}));
+        assert_eq!(missing.unwrap_err().type_, "KeyError");
         let mut offline = make_broker("run_off");
         let off = offline.call("trace.effects_of", json!({"run": "run_past"}));
         assert_eq!(off.unwrap_err().type_, "unavailable");
