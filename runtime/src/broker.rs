@@ -1206,7 +1206,7 @@ impl Broker {
         };
         let records = store.load_resolved(run).map_err(|e| EffectFailure {
             type_: "KeyError".into(),
-            message: format!("run {run}: {e:#}"),
+            message: format!("{e:#}"),
         })?;
         let records = Arc::new(records);
         self.run_cache.insert(run.to_string(), records.clone());
@@ -1227,11 +1227,25 @@ impl Broker {
     /// nested one level down appears as a single row here, not its effects.
     /// With `run`, the same view over a past run: no cell/span = the run's
     /// root — its turns (`llm.chat` spans) and top-level effects.
+    /// The run ROOT (no cell, no span) is spans-first: the boot's
+    /// `kernel.boot` / `module.resolve` reads (~50 rows, 8 KB) are what
+    /// every forensic walk had to wade through — they are hidden unless
+    /// `all` is set; bare effects that mutated or failed stay visible.
     fn sys_effects_of(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let records = self.trace_records(payload)?;
         let cell = payload.get("cell").and_then(|c| c.as_str());
         let span = payload.get("span").and_then(|s| s.as_str());
-        Ok(json!({"records": immediate_children(&records, cell, span)}))
+        let all = payload
+            .get("all")
+            .and_then(|a| a.as_bool())
+            .unwrap_or(false);
+        let mut rows = immediate_children(&records, cell, span);
+        if cell.is_none() && span.is_none() && !all {
+            rows.retain(|r| {
+                r.get("effect").is_none() || r["class"] == "mutate" || !r["error"].is_null()
+            });
+        }
+        Ok(json!({"records": rows}))
     }
 
     fn sys_effect_get(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
@@ -1262,7 +1276,7 @@ impl Broker {
     fn sys_trace_runs(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let store = self.need_store()?;
         let program = payload.get("program").and_then(|p| p.as_str());
-        let limit = payload.get("limit").and_then(|l| l.as_u64()).unwrap_or(20) as usize;
+        let limit = payload.get("limit").and_then(|l| l.as_u64()).unwrap_or(50) as usize;
         let io = |e: anyhow::Error| EffectFailure {
             type_: "IOError".into(),
             message: format!("{e:#}"),
@@ -1315,7 +1329,7 @@ impl Broker {
         let store = self.need_store()?;
         crate::view::stats_data(store, &run).map_err(|e| EffectFailure {
             type_: "KeyError".into(),
-            message: format!("run {run}: {e:#}"),
+            message: format!("{e:#}"),
         })
     }
 }
@@ -2026,6 +2040,26 @@ mod tests {
         let rows = root["records"].as_array().unwrap();
         assert_eq!(rows.len(), 1, "{root}");
         assert_eq!(rows[0]["name"], "llm.chat");
+        // spans-first root: the bare boot read (kernel.boot at top level)
+        // is hidden unless all=true
+        let mut past2 = make_broker("run_past2");
+        past2.trace_store = Some(store.clone());
+        past2.call("kernel.boot", json!({"top": 1})).unwrap();
+        past2.try_span_begin("llm.chat", None, json!({})).unwrap();
+        past2.span_end(true, None, None).unwrap();
+        past2.writer.dump(store.as_ref()).unwrap();
+        let root2 = b
+            .call("trace.effects_of", json!({"run": "run_past2"}))
+            .unwrap();
+        assert_eq!(root2["records"].as_array().unwrap().len(), 1, "{root2}");
+        let root2_all = b
+            .call("trace.effects_of", json!({"run": "run_past2", "all": true}))
+            .unwrap();
+        assert_eq!(
+            root2_all["records"].as_array().unwrap().len(),
+            2,
+            "{root2_all}"
+        );
         assert_eq!(rows[0]["span"], turn);
         // drill: turn → cell span → the effect
         let cells = b
@@ -2044,7 +2078,11 @@ mod tests {
         assert_eq!(rec["input"], json!({"x": 1}));
         // runs + stats
         let runs = b.call("trace.runs", json!({})).unwrap();
-        assert_eq!(runs["runs"][0]["id"], "run_past");
+        assert!(runs["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "run_past"));
         let stats = b.call("trace.stats", json!({"run": "run_past"})).unwrap();
         assert_eq!(stats["run"]["id"], "run_past");
         assert_eq!(stats["turns"].as_array().unwrap().len(), 1);

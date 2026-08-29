@@ -439,7 +439,7 @@ class _Effects:
     walk them from the outline down (`inferSchema` a row, filter,
     slice); never `get` every record."""
 
-    def of(self, cell_id=None, *, span=None, run=None):
+    def of(self, cell_id=None, *, span=None, run=None, all=False):
         """A scope's IMMEDIATE children (ADR-001 §4d): pass a `cell_id`
         for the cell's top level, or `span=<id>` to expand one facade
         span into its inner effects + child span rows. Each span row
@@ -447,7 +447,9 @@ class _Effects:
         `run=` and no scope: the run's ROOT — `llm.chat` span rows (one
         per model turn: the reply is that record's output) interleaved
         with the `cell` span rows the model ran after each turn (drill
-        a cell for its tool calls), plus top-level effects. Rows:
+        a cell for its tool calls), plus top-level effects that MUTATED
+        or FAILED — the boot's ~50 read effects (kernel.boot,
+        module.resolve) are hidden at the root unless `all=True`. Rows:
         effects `{seq, effect, class, mocked, error, span}`; spans
         `{seq, span, name, kind, class, ok, mutations, effects, error}`."""
         q = {}
@@ -457,6 +459,8 @@ class _Effects:
             q["span"] = span
         if run is not None:
             q["run"] = run
+        if all:
+            q["all"] = True
         return _effect("trace.effects_of", q)["records"]
 
     def get(self, seq, *, run=None):
@@ -469,7 +473,7 @@ class _Effects:
             q["run"] = run
         return _effect("trace.effect_get", q)
 
-    def runs(self, program=None, limit=20, *, filter=None, sort=None):
+    def runs(self, program=None, limit=50, *, filter=None, sort=None):
         """The run finder over per-run summaries, newest first:
         `[{id, program, device, startedAt, endedAt, durationMs, status,
         errorType, turns, cells, effects, mutations, tokens{in, out,

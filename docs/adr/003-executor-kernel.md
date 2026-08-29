@@ -174,6 +174,11 @@ the loop runs after each turn; both are root-level siblings, ADR-005)
 and top-level effects — so the same recursion the digest teaches (span
 row → `effects.of(span=)`) walks a whole conversation: cell → tool
 spans → syscalls, with each turn's reply on its `llm.chat` record.
+The root is **spans-first** (amendment 2026-08-29): bare top-level
+effects appear only when they mutated or failed; the boot's ~50
+`kernel.boot`/`module.resolve` reads — which made every root outline
+an 8 KB stub — are behind `all=True`. Cell and span scopes are
+unfiltered (that is where the digest reads).
 Two finder/summary views complete it, both data twins of the CLI
 (`trace ls`, `trace show --stats`): `effects.runs` and
 `effects.stats`. With the trace store in `any` (ADR-023 §5, amendment
