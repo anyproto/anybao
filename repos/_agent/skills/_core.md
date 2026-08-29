@@ -66,7 +66,12 @@ each, every row with `seq`/`span`; drill a cell with
 `effects.get(seq, run=ref)` (an `llm.chat` row's output is what the
 model replied, its inner `http.post` input is what it was shown). Work
 from the outline down; never `get` every record. "Why did you do that?" about an earlier
-reply = this, on that reply's `traceRef`.
+reply = this, on that reply's `traceRef`. `effects.runs(program)` is
+the ground truth for whether and how often ANY program ran — cron jobs
+included; a trigger's `lastRun*` fields are a cache of it. When they
+read null or disagree, the store wins — and you only know by calling
+it: never assert a store-wide fact ("it ran once", "the trace agrees")
+from a record field.
 
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo
