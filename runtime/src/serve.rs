@@ -1402,10 +1402,11 @@ impl RunCtx {
     /// per run in the `bao/runs/v1` child — every device sees every
     /// device's runs. Best-effort: the trace itself is already landed;
     /// a failed publish is logged, never fails the run.
-    fn publish_run(&self, mut summary: Value) {
+    fn publish_run(&self, mut summary: Value, trigger: Option<&str>) {
         let Some(id) = summary["id"].as_str().map(str::to_string) else {
             return;
         };
+        summary["triggerId"] = json!(trigger);
         if summary["device"].is_null() {
             summary["device"] = json!(self.self_peer);
         }
@@ -1481,13 +1482,16 @@ impl RunCtx {
         // Some(id) ties this run's trace to an id already handed to the
         // guest (agent_turns.traceRef); None mints a fresh one
         run_id: Option<String>,
+        // the trigger that fired this run (ADR-023 §8: `triggerId` on
+        // the run summary); None = chat/control/embedder run
+        trigger: Option<&str>,
     ) -> Result<(String, RunResult)> {
         self.ensure_ready()?;
         let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         let run_id = broker.writer.run_id();
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         let summary = outcome.broker.writer.dump(self.traces.as_ref())?;
-        self.publish_run(summary);
+        self.publish_run(summary, trigger);
         Ok((
             run_id.clone(),
             RunResult {
@@ -1531,7 +1535,7 @@ impl RunCtx {
         let interrupt = Arc::new(AtomicBool::new(false));
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         let summary = outcome.broker.writer.dump(self.traces.as_ref())?;
-        self.publish_run(summary);
+        self.publish_run(summary, None);
         Ok(json!({
             "status": outcome.status,
             "value": outcome.value,
@@ -1700,6 +1704,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
             mailbox,
             interrupt,
             Some(run_id),
+            Some(&shared.chat_watch_id),
         );
         if let Ok((trace_ref, rr)) = &result {
             // ADR-021 §2: one request bubble per missing ref (the host
@@ -2033,7 +2038,7 @@ fn trigger_ticker(
                 out
             };
             for t in due {
-                let rr = run_trigger_program(&ctx, &t.program, &t.args);
+                let rr = run_trigger_program(&ctx, &t.id, &t.program, &t.args);
                 finish_run(&shared, &ctx, &t.id, &rr);
             }
         }
@@ -2042,10 +2047,10 @@ fn trigger_ticker(
 
 /// One trigger fire: the program run, folded into a RunResult (a run
 /// path failure is an error result, never a panic).
-fn run_trigger_program(ctx: &RunCtx, program: &str, args: &Value) -> RunResult {
+fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Value) -> RunResult {
     let mailbox: SharedMailbox = Default::default();
     let interrupt = Arc::new(AtomicBool::new(false));
-    ctx.run(program, args, mailbox, interrupt, None)
+    ctx.run(program, args, mailbox, interrupt, None, Some(trigger_id))
         .map(|(_, rr)| rr)
         .unwrap_or_else(|e| RunResult {
             status: "error".into(),
@@ -2202,7 +2207,7 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
             t.id,
             record.get("id").and_then(|v| v.as_str()).unwrap_or("")
         );
-        let rr = run_trigger_program(ctx, &t.program, &args);
+        let rr = run_trigger_program(ctx, &t.id, &t.program, &args);
         finish_run(shared, ctx, &t.id, &rr);
     }
 }

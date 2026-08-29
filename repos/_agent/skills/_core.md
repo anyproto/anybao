@@ -170,9 +170,15 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   reminders, a connector, or one you authored via
   `programs@v1.create_program` (watchers, periodic checks: a 40-line
   program on a cron beats scheduling yourself a reasoning turn).
-  "Did it run?" reads the record's own audit fields:
-  `lastStatus` / `lastRunAt` / `lastRunRef` (a trace ref),
-  `consecutiveFailures`.
+  "Did it run?" = the run summaries, never the record:
+  `effects.runs(filter={"triggerId": "<slug>"}, limit=1)` → newest
+  `{status, startedAt, errorType, durationMs, costUsd, id}` (`id` feeds
+  `run=`); `len(effects.runs(filter={"triggerId": "<slug>"}, limit=0))`
+  = how often. Other devices' fires are in the synced `agent_runs`
+  dataset (`bao/runs/v1` child, same `triggerId` filter). The record's
+  `lastStatus` / `lastRunAt` / `lastRunRef` are a cache of that; when
+  they disagree or read null, the runs win. `consecutiveFailures` on
+  the record is the breaker's own state (3 → auto-disabled).
 - **Progress bars** (any job long enough that the user would wonder):
   `p = use("agent:progress@v1")` — never hand-roll `agent-progress`
   objects, the module owns that transport. `p.start(space, job_slug,
