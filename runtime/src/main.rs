@@ -134,6 +134,13 @@ enum TraceCmd {
     Ls {
         #[arg(default_value = "traces")]
         dir: PathBuf,
+        /// read the any local store of this server instead of `dir`
+        /// (ADR-023) — the bao space's trace collections
+        #[arg(long)]
+        addr: Option<String>,
+        /// bao space name or id on --addr
+        #[arg(long, default_value = "bao")]
+        space: String,
         /// only runs whose program contains this (e.g. "toolcaller")
         #[arg(long)]
         program: Option<String>,
@@ -161,6 +168,12 @@ enum TraceCmd {
         /// dump one record by seq, blob-resolved, pretty-printed
         #[arg(long)]
         seq: Option<i64>,
+        /// read the any local store of this server (ADR-023); `file`
+        /// is then a bare run id
+        #[arg(long)]
+        addr: Option<String>,
+        #[arg(long, default_value = "bao")]
+        space: String,
     },
     /// live-render a run as records land (show's line format); exits
     /// when the run completes
@@ -173,16 +186,57 @@ enum TraceCmd {
         /// with no file: only runs whose program contains this
         #[arg(long)]
         program: Option<String>,
+        #[arg(long)]
+        addr: Option<String>,
+        #[arg(long, default_value = "bao")]
+        space: String,
     },
-    /// distributions + tuning suggestions over a traces directory
-    Stats { dir: PathBuf },
+    /// distributions + tuning suggestions over a traces directory (or
+    /// a server's local store with --addr)
+    Stats {
+        #[arg(default_value = "traces")]
+        dir: PathBuf,
+        #[arg(long)]
+        addr: Option<String>,
+        #[arg(long, default_value = "bao")]
+        space: String,
+    },
+}
+
+/// The trace store a `trace` subcommand reads (ADR-001 §8 / ADR-023):
+/// `--addr` = that server's local-store collections of `space`,
+/// otherwise the jsonl `dir`.
+fn trace_store(
+    addr: Option<&str>,
+    space: &str,
+    dir: &Path,
+) -> Result<Box<dyn anyrt::tracestore::TraceStore>> {
+    match addr {
+        Some(a) => {
+            let client = Arc::new(anyapi::Client::new(a));
+            let sid = serve::find_space(&client, space)?;
+            Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
+                client, &sid, None,
+            )?))
+        }
+        None => Ok(Box::new(FileTraceStore::new(dir))),
+    }
 }
 
 /// `trace show run_x` — a bare run id resolves against the default
 /// traces dir, so `trace ls` output feeds straight into `show`; a path
-/// names its own store.
-fn resolve_trace(file: PathBuf) -> (FileTraceStore, String) {
-    FileTraceStore::locate(&file, Path::new("traces"))
+/// names its own store; with `--addr` the argument is a run id.
+fn resolve_trace(
+    file: PathBuf,
+    addr: Option<&str>,
+    space: &str,
+) -> Result<(Box<dyn anyrt::tracestore::TraceStore>, String)> {
+    if addr.is_some() {
+        let id = file.to_string_lossy().into_owned();
+        return Ok((trace_store(addr, space, Path::new("traces"))?, id));
+    }
+    let (store, id) = FileTraceStore::locate(&file, Path::new("traces"));
+    Ok((Box::new(store), id))
 }
 
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
@@ -316,7 +370,7 @@ fn main() -> Result<()> {
             broker.runtime = runtime;
             broker.oauth = Some(oauth_state);
             broker.trace_store = Some(store.clone());
-            let out = runner::run_program(
+            let mut out = runner::run_program(
                 &cage,
                 broker,
                 &spec,
@@ -412,12 +466,12 @@ fn main() -> Result<()> {
                     dir,
                     program,
                     limit,
+                    addr,
+                    space,
                 },
         } => {
-            print!(
-                "{}",
-                view::list(&FileTraceStore::new(dir), program.as_deref(), limit)?
-            );
+            let store = trace_store(addr.as_deref(), &space, &dir)?;
+            print!("{}", view::list(store.as_ref(), program.as_deref(), limit)?);
             Ok(())
         }
         Cmd::Trace {
@@ -429,29 +483,39 @@ fn main() -> Result<()> {
                     stats,
                     boot,
                     seq,
+                    addr,
+                    space,
                 },
         } => {
-            let (store, id) = resolve_trace(file);
+            let (store, id) = resolve_trace(file, addr.as_deref(), &space)?;
+            let store = store.as_ref();
             match (seq, stats) {
-                (Some(n), _) => print!("{}", view::show_record(&store, &id, n)?),
-                (None, true) => print!("{}", view::stats(&store, &id)?),
+                (Some(n), _) => print!("{}", view::show_record(store, &id, n)?),
+                (None, true) => print!("{}", view::stats(store, &id)?),
                 (None, false) => print!(
                     "{}",
-                    view::render(&store, &id, &view::ShowOpts { full, system, boot })?
+                    view::render(store, &id, &view::ShowOpts { full, system, boot })?
                 ),
             }
             Ok(())
         }
         Cmd::Trace {
-            cmd: TraceCmd::Follow { file, dir, program },
+            cmd:
+                TraceCmd::Follow {
+                    file,
+                    dir,
+                    program,
+                    addr,
+                    space,
+                },
         } => {
             let (store, id) = match file {
-                Some(f) => resolve_trace(f),
+                Some(f) => resolve_trace(f, addr.as_deref(), &space)?,
                 None => {
-                    let store = FileTraceStore::new(&dir);
+                    let store = trace_store(addr.as_deref(), &space, &dir)?;
                     let mut waited = false;
                     loop {
-                        if let Some(p) = view::latest_run(&store, program.as_deref()) {
+                        if let Some(p) = view::latest_run(store.as_ref(), program.as_deref()) {
                             break (store, p);
                         }
                         if !waited {
@@ -462,12 +526,13 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            view::follow(&store, &id)
+            view::follow(store.as_ref(), &id)
         }
         Cmd::Trace {
-            cmd: TraceCmd::Stats { dir },
+            cmd: TraceCmd::Stats { dir, addr, space },
         } => {
-            print!("{}", stats::render(&FileTraceStore::new(dir))?);
+            let store = trace_store(addr.as_deref(), &space, &dir)?;
+            print!("{}", stats::render(store.as_ref())?);
             Ok(())
         }
         Cmd::Drift {

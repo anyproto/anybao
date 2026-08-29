@@ -639,6 +639,37 @@ impl LsRow {
     }
 }
 
+/// One run's summary from its (blob-resolved) records — the `trace_runs`
+/// / `agent_runs` row of ADR-023 §1: the `trace ls` row + the `--stats`
+/// totals. `started_at`/`ended_at` are the store's wall-clock (records
+/// are time-free, ADR-001 §2); `device` is the writer's peer id.
+pub fn run_summary(
+    records: &[Value],
+    started_at: Option<f64>,
+    ended_at: Option<f64>,
+    device: Option<&str>,
+) -> Value {
+    let row = ls_row(records, None);
+    let st = stats_of(records);
+    let program = row.program.clone();
+    json!({
+        "id": row.id, "runId": row.id, "program": program,
+        "device": device,
+        "startedAt": started_at, "endedAt": ended_at,
+        "durationMs": st["run"]["durationMs"],
+        "status": row.status,
+        "errorType": st["run"]["error"].get("type").cloned().unwrap_or(Value::Null),
+        "turns": row.turns, "title": row.title,
+        "cells": st["total"]["cells"], "effects": st["total"]["effects"],
+        "mutations": records.iter()
+            .filter(|r| r["kind"] == "effect" && r["meta"]["class"] == "mutate")
+            .count(),
+        "tokens": {"in": st["total"]["in"], "out": st["total"]["out"],
+                   "cacheRead": st["total"]["cacheRead"], "cacheWrite": st["total"]["cacheWrite"]},
+        "costUsd": st["total"]["costUsd"], "model": st["run"]["model"],
+    })
+}
+
 /// The run-finder as data — `trace ls` rows for the guest's
 /// `effects.runs()` (ADR-003 §4). Newest first; `program` is a
 /// substring filter; `limit` 0 = all.
@@ -1121,7 +1152,12 @@ impl TurnStats {
 /// up to the next turn's begin.
 pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value> {
     let records = store.load_resolved(run_id)?;
-    let turns: Vec<_> = spans_of(&records, "llm.chat")
+    Ok(stats_of(&records))
+}
+
+/// `stats_data` over an in-memory (blob-resolved) log.
+pub fn stats_of(records: &[Value]) -> Value {
+    let turns: Vec<_> = spans_of(records, "llm.chat")
         .into_iter()
         .filter(|(b, _)| b["parent"].is_null())
         .collect();
@@ -1133,7 +1169,7 @@ pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value>
         .first()
         .and_then(|(b, e)| {
             let (bs, es) = seq_range(b, *e);
-            llm_request(&between(&records, bs, es)).map(|req| s(&req["model"]))
+            llm_request(&between(records, bs, es)).map(|req| s(&req["model"]))
         })
         .unwrap_or_default();
 
@@ -1153,7 +1189,7 @@ pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value>
         }
         let from = starts[i];
         let to = starts.get(i + 1).copied().unwrap_or(i64::MAX);
-        for r in &records {
+        for r in records {
             let seq = r["seq"].as_i64().unwrap_or(-1);
             if seq < from || seq >= to {
                 continue;
@@ -1181,7 +1217,7 @@ pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value>
     let term = records
         .iter()
         .find(|r| r["kind"] == "cell" && r["cell"] == "main");
-    Ok(json!({
+    json!({
         "run": {
             "id": s(&records[0]["run"]["id"]),
             "program": s(&records[0]["run"]["program"]),
@@ -1194,7 +1230,7 @@ pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value>
         },
         "turns": rows.iter().map(|t| t.to_value(price.as_ref())).collect::<Vec<_>>(),
         "total": tot.to_value(price.as_ref()),
-    }))
+    })
 }
 
 /// `trace show --stats` — the per-turn metrics table (ADR-006 viewer

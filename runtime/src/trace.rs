@@ -199,13 +199,18 @@ impl TraceWriter {
     }
 
     /// Land the run in `store`. A healthy stream into the same store
-    /// already wrote every byte, so this is a no-op then; otherwise
-    /// (buffered, or a stream that degraded) the whole log is written.
-    pub fn dump(&self, store: &dyn TraceStore) -> anyhow::Result<()> {
-        if self.sink.is_some() && self.streamed {
-            return Ok(());
+    /// already wrote every record, so only the run's `finish` (flush +
+    /// summary, ADR-023 §3) runs then; otherwise (buffered, or a stream
+    /// that degraded) the whole log is written first.
+    pub fn dump(&mut self, store: &dyn TraceStore) -> anyhow::Result<()> {
+        let run = self.run_id();
+        if !(self.sink.is_some() && self.streamed) {
+            store.write_run(&run, &self.records, &self.blobs)?;
         }
-        store.write_run(&self.run_id(), &self.records, &self.blobs)
+        if let Some(mut sink) = self.sink.take() {
+            sink.close()?;
+        }
+        store.finish(&run, &self.records, &self.blobs)
     }
 }
 

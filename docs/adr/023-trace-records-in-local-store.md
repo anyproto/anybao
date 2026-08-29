@@ -1,6 +1,6 @@
 # ADR-023: Trace records in the `any` local store
 
-Status: **Proposed** (2026-08-29)
+Status: **Accepted** (2026-08-29; user go-ahead on the proposal — implementation follows the sketch below, one topic per commit)
 Date: 2026-08-29
 Builds on: ADR-001 §8 (`TraceStore` — storage is one trait, the file
 layout is one impl), ADR-003 §4 (guest trace views, `run=`), ADR-017

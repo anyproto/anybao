@@ -1120,17 +1120,31 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             pending.keys().collect::<Vec<_>>()
         );
     }
-    // trace storage (ADR-001 §8): the file store today; every writer
-    // and reader — serve, the guest's `trace.*` syscalls — goes
-    // through the trait so the backend is swappable
-    let traces: Arc<dyn TraceStore> = Arc::new(FileTraceStore::new(&cfg.traces_dir));
-    std::fs::create_dir_all(&cfg.traces_dir)?;
 
     // Single-active election (ADR-015): register this device in the
     // tech-space registry and take the gate's boot verdict. Standby ⇒
     // chat watch and ticker stay idle (and the standing-trigger records
     // below aren't stamped) until the election thread flips the gate.
     let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
+
+    // trace storage (ADR-001 §8 / ADR-023 §1): local-store collections
+    // of the bao space by default, the jsonl dir on `traces.backend =
+    // "file"`; every writer and reader — serve, the guest's `trace.*`
+    // syscalls — goes through the trait
+    let traces: Arc<dyn TraceStore> = match cfg.trace_backend {
+        crate::config::TraceBackend::Any => Arc::new(
+            crate::tracestore::AnyTraceStore::new(
+                client.clone(),
+                &space,
+                election.self_peer.clone(),
+            )
+            .context("trace store: ensuring the bao space's local collections")?,
+        ),
+        crate::config::TraceBackend::File => {
+            std::fs::create_dir_all(&cfg.traces_dir)?;
+            Arc::new(FileTraceStore::new(&cfg.traces_dir))
+        }
+    };
 
     // This device's trigger identity (ADR-006 §4): the registry peer
     // id — stable across restarts, so a pinned record survives them.
@@ -1390,7 +1404,7 @@ impl RunCtx {
         self.ensure_ready()?;
         let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         let run_id = broker.writer.run_id();
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         outcome.broker.writer.dump(self.traces.as_ref())?;
         Ok((
             run_id.clone(),
@@ -1433,7 +1447,7 @@ impl RunCtx {
         let run_id = broker.writer.run_id();
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         outcome.broker.writer.dump(self.traces.as_ref())?;
         Ok(json!({
             "status": outcome.status,

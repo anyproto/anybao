@@ -45,6 +45,10 @@ pub struct RunMeta {
 pub trait TraceSink: Send {
     fn append(&mut self, record: &Value) -> anyhow::Result<()>;
     fn append_blob(&mut self, hash: &str, data: &str) -> anyhow::Result<()>;
+    /// Flush whatever the sink still holds; called once at run end.
+    fn close(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub trait TraceStore: Send + Sync {
@@ -60,6 +64,17 @@ pub trait TraceStore: Send + Sync {
         records: &[Value],
         blobs: &[(String, String)],
     ) -> anyhow::Result<()>;
+    /// Run-end hook (ADR-023 §3): the whole log is landed (streamed or
+    /// via `write_run`); a store that keeps a per-run summary writes it
+    /// here. Default: nothing.
+    fn finish(
+        &self,
+        _run_id: &str,
+        _records: &[Value],
+        _blobs: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Every run in the store, newest first.
     fn list(&self) -> anyhow::Result<Vec<RunMeta>>;
     /// The intact log (blob refs unresolved). Errors when the run is
@@ -105,6 +120,11 @@ pub fn parse_records(text: &str, what: &str) -> anyhow::Result<Vec<Value>> {
             records.push(serde_json::from_str(line)?);
         }
     }
+    validate_records(records, what)
+}
+
+/// Header-first + schema pin (ADR-001) over an already-parsed log.
+pub fn validate_records(records: Vec<Value>, what: &str) -> anyhow::Result<Vec<Value>> {
     let has_header = records
         .first()
         .map(|r| r["kind"] == "header")
@@ -297,6 +317,313 @@ impl TraceStore for FileTraceStore {
     }
 }
 
+// --- the any local-store backend (ADR-023) -----------------------------------
+
+use crate::anyapi::Client;
+use std::sync::{Arc, Mutex};
+
+pub const RECORDS_COLL: &str = "trace_records";
+pub const BLOBS_COLL: &str = "trace_blobs";
+pub const RUNS_COLL: &str = "trace_runs";
+/// records buffered before a flush (ADR-023 §3)
+const FLUSH_EVERY: usize = 64;
+/// server cap is 1000 docs per insert/upsert
+const CHUNK: usize = 500;
+/// query cap
+const PAGE: usize = 1000;
+
+fn now_s() -> f64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Trace bodies in three device-local collections of the bao space
+/// (`l_s_<space>_trace_{records,blobs,runs}`, any PR #195): never
+/// synced, no DAG, the synced data's query language. Records are the
+/// ADR-001 shapes plus `runId` and `id = "<runId>:<seq:06>"`; blobs are
+/// content-addressed (`id` = hash) so the boot window a conversation
+/// re-sends every turn spills once; `trace_runs` holds one summary per
+/// run, written by `finish`, and is what `list` reads.
+pub struct AnyTraceStore {
+    client: Arc<Client>,
+    records: Value,
+    blobs: Value,
+    runs: Value,
+    device: Option<String>,
+    /// open_sink wall-clock per run — `finish` stamps it as startedAt
+    started: Mutex<BTreeMap<String, f64>>,
+}
+
+impl AnyTraceStore {
+    /// Ensure the three collections (idempotent) and hand back the store.
+    pub fn new(
+        client: Arc<Client>,
+        space_id: &str,
+        device: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let records = Client::local_coll(space_id, RECORDS_COLL);
+        let blobs = Client::local_coll(space_id, BLOBS_COLL);
+        let runs = Client::local_coll(space_id, RUNS_COLL);
+        client.local_ensure(
+            &records,
+            &[
+                json!({"fields": ["runId", "seq"], "unique": true}),
+                json!({"fields": ["name"]}),
+                json!({"fields": ["effect"]}),
+                json!({"fields": ["error.type"], "sparse": true}),
+                json!({"fields": ["meta.class"]}),
+            ],
+        )?;
+        client.local_ensure(&blobs, &[])?;
+        client.local_ensure(
+            &runs,
+            &[
+                json!({"fields": ["program"]}),
+                json!({"fields": ["startedAt"]}),
+                json!({"fields": ["status"]}),
+                json!({"fields": ["mutations"]}),
+            ],
+        )?;
+        Ok(AnyTraceStore {
+            client,
+            records,
+            blobs,
+            runs,
+            device,
+            started: Mutex::new(BTreeMap::new()),
+        })
+    }
+
+    /// The document a record becomes: the record itself + `runId` +
+    /// the sortable id. The header has no seq — it sorts first as 0.
+    fn doc_of(run_id: &str, rec: &Value) -> Value {
+        let mut d = rec.clone();
+        let seq = rec["seq"].as_i64().unwrap_or(0);
+        if let Some(o) = d.as_object_mut() {
+            o.insert("runId".into(), json!(run_id));
+            o.insert("seq".into(), json!(seq));
+            o.insert("id".into(), json!(format!("{run_id}:{seq:06}")));
+        }
+        d
+    }
+
+    /// Back from a document to the ADR-001 record (parity with the file
+    /// store: the same bytes a `.jsonl` line would hold).
+    fn record_of(mut doc: Value) -> Value {
+        if let Some(o) = doc.as_object_mut() {
+            o.remove("runId");
+            o.remove("id");
+            if o.get("kind") == Some(&json!("header")) {
+                o.remove("seq");
+            }
+        }
+        doc
+    }
+
+    fn blob_doc(hash: &str, data: &str) -> Value {
+        json!({"id": hash, "bytes": data.len(), "data": data})
+    }
+
+    fn query_all(&self, coll: &Value, filter: Value, sort: Value) -> anyhow::Result<Vec<Value>> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let reply = self.client.local_query(
+                coll,
+                &json!({"filter": filter, "sort": sort, "limit": PAGE, "offset": offset}),
+            )?;
+            let page = reply["records"].as_array().cloned().unwrap_or_default();
+            let n = page.len();
+            out.extend(page);
+            if n < PAGE {
+                return Ok(out);
+            }
+            offset += n;
+        }
+    }
+
+    /// Hashes of every blob ref in the log's input/output slots.
+    fn blob_refs(records: &[Value]) -> Vec<String> {
+        let mut out = Vec::new();
+        for r in records {
+            for key in ["input", "output"] {
+                if let Some(h) = r[key]["__blob"].as_str() {
+                    out.push(h.to_string());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Bulk-land docs (write_run / a degraded stream): upsert so a
+    /// partially-streamed run re-lands cleanly.
+    fn upsert_chunks(&self, coll: &Value, docs: &[Value]) -> anyhow::Result<()> {
+        for chunk in docs.chunks(CHUNK) {
+            self.client.local_upsert(coll, chunk)?;
+        }
+        Ok(())
+    }
+}
+
+struct AnySink {
+    client: Arc<Client>,
+    records: Value,
+    blobs: Value,
+    run_id: String,
+    batch: Vec<Value>,
+}
+
+impl AnySink {
+    fn flush(&mut self) -> anyhow::Result<()> {
+        if self.batch.is_empty() {
+            return Ok(());
+        }
+        let docs = std::mem::take(&mut self.batch);
+        self.client.local_insert(&self.records, &docs)?;
+        Ok(())
+    }
+}
+
+impl TraceSink for AnySink {
+    fn append(&mut self, record: &Value) -> anyhow::Result<()> {
+        self.batch.push(AnyTraceStore::doc_of(&self.run_id, record));
+        // boundaries the readers care about land immediately (ADR-023 §3)
+        let boundary = record["kind"] == "cell"
+            || (record["kind"] == "span" && record["phase"] == "end")
+            || record["kind"] == "header";
+        if boundary || self.batch.len() >= FLUSH_EVERY {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn append_blob(&mut self, hash: &str, data: &str) -> anyhow::Result<()> {
+        self.client
+            .local_upsert(&self.blobs, &[AnyTraceStore::blob_doc(hash, data)])?;
+        Ok(())
+    }
+
+    fn close(&mut self) -> anyhow::Result<()> {
+        self.flush()
+    }
+}
+
+impl TraceStore for AnyTraceStore {
+    fn open_sink(&self, run_id: &str) -> anyhow::Result<Box<dyn TraceSink>> {
+        self.started
+            .lock()
+            .unwrap()
+            .insert(run_id.to_string(), now_s());
+        Ok(Box::new(AnySink {
+            client: self.client.clone(),
+            records: self.records.clone(),
+            blobs: self.blobs.clone(),
+            run_id: run_id.to_string(),
+            batch: Vec::new(),
+        }))
+    }
+
+    fn write_run(
+        &self,
+        run_id: &str,
+        records: &[Value],
+        blobs: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        self.started
+            .lock()
+            .unwrap()
+            .entry(run_id.to_string())
+            .or_insert_with(now_s);
+        let docs: Vec<Value> = records.iter().map(|r| Self::doc_of(run_id, r)).collect();
+        self.upsert_chunks(&self.records, &docs)?;
+        let bdocs: Vec<Value> = blobs.iter().map(|(h, d)| Self::blob_doc(h, d)).collect();
+        self.upsert_chunks(&self.blobs, &bdocs)
+    }
+
+    fn finish(
+        &self,
+        run_id: &str,
+        records: &[Value],
+        blobs: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        let map: BTreeMap<String, String> = blobs.iter().cloned().collect();
+        let resolved: Vec<Value> = records
+            .iter()
+            .map(|r| {
+                let mut r = r.clone();
+                if let Some(o) = r.as_object_mut() {
+                    for key in ["input", "output"] {
+                        if let Some(v) = o.get(key) {
+                            o.insert(key.into(), resolve_blobs(v.clone(), &map));
+                        }
+                    }
+                }
+                r
+            })
+            .collect();
+        let started = self.started.lock().unwrap().remove(run_id);
+        let summary =
+            crate::view::run_summary(&resolved, started, Some(now_s()), self.device.as_deref());
+        self.client.local_upsert(&self.runs, &[summary])?;
+        Ok(())
+    }
+
+    fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
+        let rows = self.query_all(&self.runs, json!({}), json!(["-startedAt"]))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let id = r["id"].as_str()?.to_string();
+                let modified = r["endedAt"]
+                    .as_f64()
+                    .or(r["startedAt"].as_f64())
+                    .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(s));
+                Some(RunMeta { id, modified })
+            })
+            .collect())
+    }
+
+    fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
+        let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
+        anyhow::ensure!(!docs.is_empty(), "unknown run {run_id}");
+        validate_records(docs.into_iter().map(Self::record_of).collect(), run_id)
+    }
+
+    fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
+        let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
+        let hashes = Self::blob_refs(&docs);
+        if hashes.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let rows = self.query_all(&self.blobs, json!({"id": {"$in": hashes}}), json!(["id"]))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|b| {
+                Some((
+                    b["id"].as_str()?.to_string(),
+                    b["data"].as_str()?.to_string(),
+                ))
+            })
+            .collect())
+    }
+
+    fn header(&self, run_id: &str) -> anyhow::Result<Value> {
+        let reply = self.client.local_query(
+            &self.records,
+            &json!({"filter": {"runId": run_id, "kind": "header"}, "limit": 1}),
+        )?;
+        let h = reply["records"]
+            .as_array()
+            .and_then(|a| a.first().cloned())
+            .ok_or_else(|| anyhow::anyhow!("unknown run {run_id}"))?;
+        Ok(Self::record_of(h))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +670,106 @@ mod tests {
         let (store, id) = FileTraceStore::locate(Path::new("run_bare"), dir.path());
         assert_eq!(store.dir(), dir.path());
         assert_eq!(id, "run_bare");
+    }
+}
+
+/// Round-trip against a live any server with the local store (any PR
+/// #195). Gated: `ANYRT_TEST_ANY_ADDR=http://127.0.0.1:7137 cargo test
+/// any_trace_store_round_trip -- --ignored --nocapture`.
+#[cfg(test)]
+mod live {
+    use super::*;
+    use crate::anyapi::Client;
+
+    #[test]
+    #[ignore]
+    fn any_trace_store_round_trip() {
+        let Ok(addr) = std::env::var("ANYRT_TEST_ANY_ADDR") else {
+            eprintln!("ANYRT_TEST_ANY_ADDR unset — skipped");
+            return;
+        };
+        let client = Arc::new(Client::new(&addr));
+        let space = client
+            .create_space("tracestore-test")
+            .expect("create space")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let store = AnyTraceStore::new(client.clone(), &space, Some("dev-1".into())).unwrap();
+
+        // stream one run through a writer: header + a spilled effect + span + cell
+        let mut w = crate::trace::TraceWriter::new(json!({"id": "run_live1", "program": "p@v1"}));
+        w.stream_to(&store).unwrap();
+        let key = crate::trace::input_key("x.y", &json!({"a": 1}));
+        let big = json!({"data": "z".repeat(crate::trace::BLOB_THRESHOLD + 1)});
+        w.effect(
+            "x.y",
+            Some("main"),
+            json!({"a": 1}),
+            &key,
+            Some(big.clone()),
+            None,
+            json!({"class": "mutate", "durMs": 0}),
+            None,
+        );
+        w.cell(
+            "main",
+            true,
+            None,
+            false,
+            json!({"fuel_used": 1, "duration_ms": 5}),
+        );
+        w.dump(&store).unwrap();
+
+        // list → the summary row; load → the intact log; blobs resolve
+        let ids: Vec<_> = store.list().unwrap().into_iter().map(|m| m.id).collect();
+        assert!(ids.contains(&"run_live1".to_string()), "{ids:?}");
+        let records = store.load("run_live1").unwrap();
+        assert_eq!(records[0]["kind"], "header");
+        assert_eq!(records[0]["run"]["id"], "run_live1");
+        assert!(records[0].get("seq").is_none());
+        assert_eq!(records[1]["effect"], "x.y");
+        assert!(
+            records[1]["output"]["__blob"].is_string(),
+            "spilled: {}",
+            records[1]
+        );
+        let resolved = store.load_resolved("run_live1").unwrap();
+        assert_eq!(resolved[1]["output"], big);
+        assert_eq!(store.header("run_live1").unwrap()["run"]["program"], "p@v1");
+        assert!(store.load("run_nope").is_err());
+
+        // the summary row carries the ADR-023 fields
+        let runs = client
+            .local_query(
+                &Client::local_coll(&space, RUNS_COLL),
+                &json!({"filter": {"id": "run_live1"}}),
+            )
+            .unwrap();
+        let row = &runs["records"][0];
+        assert_eq!(row["program"], "p@v1");
+        assert_eq!(row["status"], "ok");
+        assert_eq!(row["mutations"], 1);
+        assert_eq!(row["device"], "dev-1");
+        assert!(row["startedAt"].as_f64().unwrap() > 0.0);
+
+        // buffered path (write_run) lands the same shape
+        let mut w2 = crate::trace::TraceWriter::new(json!({"id": "run_live2", "program": "p@v1"}));
+        w2.cell(
+            "main",
+            false,
+            Some(json!({"type": "Boom"})),
+            false,
+            json!({}),
+        );
+        w2.dump(&store).unwrap();
+        assert_eq!(store.load("run_live2").unwrap().len(), 2);
+        let runs = client
+            .local_query(
+                &Client::local_coll(&space, RUNS_COLL),
+                &json!({"filter": {"id": "run_live2"}}),
+            )
+            .unwrap();
+        assert_eq!(runs["records"][0]["status"], "FAILED");
     }
 }
