@@ -1,4 +1,6 @@
-# Upstream ticket draft — local store: what trace storage needs
+# Upstream ticket — local store: what trace storage needs
+
+Filed: [SYN-204](https://linear.app/anyorg/issue/SYN-204) (2026-08-29).
 
 Target: `~/any/any` (after PR #195 — local store — merges). Filed
 from anybao ADR-023 (trace records in the local store). Everything

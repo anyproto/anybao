@@ -11,7 +11,7 @@ ADR-006 §4 (`lastRun*` become a view over the run summary),
 ADR-003 §4 (`effects.query`)
 Upstream: `~/any/any` PR #195 — local store (`docs/26-local-store.md`,
 `/v1/local/*`); gated follow-ups in `docs/07-roadmap.md`; the asks this
-ADR adds are drafted in [`../localstore-traces-upstream-ticket.md`](../localstore-traces-upstream-ticket.md)
+ADR adds are filed as SYN-204 (text: [`../localstore-traces-upstream-ticket.md`](../localstore-traces-upstream-ticket.md))
 
 ## Context
 
