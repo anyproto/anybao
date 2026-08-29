@@ -49,7 +49,16 @@ The trace use is provenance in one pipeline — `trace_records` `$match
 object row — and audit joins to `<spaceId>_objects`. anybao ships a
 two-step without it; this is a vote for the gate, not a blocker.
 
-## 5. Collection stats
+## 5. Integers come back as floats
+
+A document inserted with `"fuel_used": 1986942113` reads back as
+`"fuel_used": 1.986942113e+09` (small integers stay integers —
+`"duration_ms": 6804`). Round-tripping a document through the local
+store should not change its number encoding: consumers that `as_i64()`
+their own fields silently miss them. anybao folds integral floats on
+load; the store should not need it.
+
+## 6. Collection stats
 
 `GET /v1/local/collections` returns names; retention and monitoring
 want `{docs, bytes}` per collection (any-store has the counts). One

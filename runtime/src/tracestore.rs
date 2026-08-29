@@ -332,6 +332,29 @@ const CHUNK: usize = 500;
 /// query cap
 const PAGE: usize = 1000;
 
+/// Integral f64 → i64 everywhere in a value (|x| < 2^53, exact).
+pub fn fold_integral_floats(v: Value) -> Value {
+    match v {
+        Value::Number(n) => match n.as_f64() {
+            Some(f)
+                if n.as_i64().is_none()
+                    && f.fract() == 0.0
+                    && f.abs() < 9.007_199_254_740_992e15 =>
+            {
+                json!(f as i64)
+            }
+            _ => Value::Number(n),
+        },
+        Value::Array(a) => Value::Array(a.into_iter().map(fold_integral_floats).collect()),
+        Value::Object(o) => Value::Object(
+            o.into_iter()
+                .map(|(k, v)| (k, fold_integral_floats(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 fn now_s() -> f64 {
     SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -410,7 +433,11 @@ impl AnyTraceStore {
     }
 
     /// Back from a document to the ADR-001 record (parity with the file
-    /// store: the same bytes a `.jsonl` line would hold).
+    /// store: the same bytes a `.jsonl` line would hold). any-store
+    /// hands integers back as floats (`1986942113.0`); traces carry no
+    /// meaningful `x.0` floats, so integral floats within i64's exact
+    /// range fold back to integers — `as_i64()` readers (fuel, seq,
+    /// tokens) keep working.
     fn record_of(mut doc: Value) -> Value {
         if let Some(o) = doc.as_object_mut() {
             o.remove("runId");
@@ -419,7 +446,7 @@ impl AnyTraceStore {
                 o.remove("seq");
             }
         }
-        doc
+        fold_integral_floats(doc)
     }
 
     fn blob_doc(hash: &str, data: &str) -> Value {
@@ -660,6 +687,17 @@ mod tests {
     }
 
     #[test]
+    fn integral_floats_fold_back_to_ints() {
+        let v = json!({"a": 1986942113.0, "b": 1.5, "c": [2.0, {"d": -3.0}], "e": "x", "f": 7});
+        let f = fold_integral_floats(v);
+        assert!(f["a"].is_i64() && f["a"] == 1986942113);
+        assert!(f["b"].is_f64());
+        assert!(f["c"][0].is_i64() && f["c"][1]["d"] == -3);
+        assert_eq!(f["e"], "x");
+        assert_eq!(f["f"], 7);
+    }
+
+    #[test]
     fn locate_splits_a_path_into_store_and_id() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("run_q.jsonl");
@@ -729,6 +767,12 @@ mod live {
         assert_eq!(records[0]["run"]["id"], "run_live1");
         assert!(records[0].get("seq").is_none());
         assert_eq!(records[1]["effect"], "x.y");
+        // integers survive the any-store round trip as integers
+        assert!(
+            records[2]["metrics"]["fuel_used"].is_i64(),
+            "{}",
+            records[2]
+        );
         assert!(
             records[1]["output"]["__blob"].is_string(),
             "spilled: {}",
