@@ -59,8 +59,10 @@ The whole user-message→reply exchange is ONE `toolcaller@v1` trace,
 titled by the message (cron jobs outnumber conversations, so filter):
 
 ```
-runtime/target/release/anyrt trace ls --program toolcaller   # newest first
-runtime/target/release/anyrt trace show run_<id> --full      # the whole story
+runtime/target/release/anyrt trace ls --addr http://127.0.0.1:7001 --program toolcaller   # newest first
+runtime/target/release/anyrt trace show --addr http://127.0.0.1:7001 run_<id> --full      # the whole story
+# (a serve keeps traces in its any server's local store, ADR-023 —
+# `--addr` is that server; a `backend = "file"` rig reads its dir instead)
 ```
 
 Verify the change in the trace: the cell that runs the new code + its

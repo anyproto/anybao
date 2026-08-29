@@ -8,6 +8,7 @@
 
 use crate::routes::Classifier;
 use crate::trace::{input_key, TraceWriter};
+use crate::tracestore::{valid_run_id, TraceStore};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -135,6 +136,13 @@ pub struct Broker {
     #[allow(dead_code)] // consulted by the serve wiring in main.rs (next round)
     pub interrupt: Arc<AtomicBool>,
     pub classifier: Classifier,
+    /// Trace storage (ADR-001 §8) for the guest's past-run reads
+    /// (`trace.effects_of(run=…)` & co., ADR-003 §4). None = offline
+    /// broker with no store: `run=` fails typed.
+    pub trace_store: Option<Arc<dyn TraceStore>>,
+    /// Past runs loaded this broker's lifetime (blob-resolved) — a run
+    /// is immutable once written, so one read per run suffices.
+    run_cache: BTreeMap<String, Arc<Vec<Value>>>,
     pub mode: Mode,
     pub cursor: Option<ReplayCursor>,
     pub mock_index: Option<MockIndex>,
@@ -193,6 +201,8 @@ impl Broker {
             fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
             classifier,
+            trace_store: None,
+            run_cache: BTreeMap::new(),
             mode: Mode::Record,
             cursor: None,
             mock_index: None,
@@ -629,6 +639,9 @@ impl Broker {
             "batch" => self.sys_batch(payload),
             "trace.effects_of" => self.sys_effects_of(payload),
             "trace.effect_get" => self.sys_effect_get(payload),
+            "trace.runs" => self.sys_trace_runs(payload),
+            "trace.stats" => self.sys_trace_stats(payload),
+            "trace.query" => self.sys_trace_query(payload),
             "kernel.boot" => Ok(payload.clone()), // pins echo into the record
             other => Err(EffectFailure {
                 type_: "unknown_effect".into(),
@@ -1010,6 +1023,43 @@ impl Broker {
                 return Err(forbidden("the secrets object"));
             }
         }
+        // ADR-023 §9: the trace collections are host-written. A guest may
+        // read them (query / aggregate / get) and never write — insert,
+        // upsert, update, delete, index or collection changes, and
+        // aggregate sinks ($out/$merge) that name a trace collection.
+        if let Some(rest) = url.split("/v1/local/").nth(1) {
+            let op = rest.split('?').next().unwrap_or("");
+            let coll = body
+                .and_then(|b| b.get("coll"))
+                .and_then(|c| c.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            let names_trace = coll.starts_with("trace_") || url.contains("name=trace_");
+            let write_op = matches!(
+                op,
+                "insert" | "upsert" | "update" | "delete" | "indexes" | "collections"
+            );
+            if names_trace && write_op {
+                return Err(EffectFailure {
+                    type_: "forbidden".into(),
+                    message: "the trace collections (trace_*) are host-written: read them \
+                              with effects.of/get/runs/query, never write them"
+                        .into(),
+                });
+            }
+            if op == "aggregate" {
+                if let Some(pipeline) = body.and_then(|b| b.get("pipeline")) {
+                    if crate::tracestore::find_sink_stage(pipeline).is_some()
+                        && pipeline.to_string().contains("_trace_")
+                    {
+                        return Err(EffectFailure {
+                            type_: "forbidden".into(),
+                            message: "aggregate sinks may not target a trace collection".into(),
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1169,57 +1219,76 @@ impl Broker {
         Ok(json!({"results": results}))
     }
 
+    /// The records a `trace.*` view reads: this run's live log, or —
+    /// with `run` — a past run from the trace store (ADR-003 §4:
+    /// `traceRef` / `lastRunRef` are guest-dereferenceable). Past runs
+    /// come back blob-resolved; this run's records resolve per-record
+    /// in `effect_get` (the writer's blobs live in `self.writer.blobs`).
+    fn trace_records(&mut self, payload: &Value) -> Result<Arc<Vec<Value>>, EffectFailure> {
+        let Some(run) = run_arg(payload)? else {
+            return Ok(Arc::new(self.writer.records.clone()));
+        };
+        if run == self.writer.run_id() {
+            return Ok(Arc::new(self.writer.records.clone()));
+        }
+        let run = run.as_str();
+        if let Some(r) = self.run_cache.get(run) {
+            return Ok(r.clone());
+        }
+        let Some(store) = self.trace_store.as_ref() else {
+            return Err(EffectFailure {
+                type_: "unavailable".into(),
+                message: "no trace store on this broker (offline run)".into(),
+            });
+        };
+        let records = store.load_resolved(run).map_err(|e| EffectFailure {
+            type_: "KeyError".into(),
+            message: format!("{e:#}"),
+        })?;
+        let records = Arc::new(records);
+        self.run_cache.insert(run.to_string(), records.clone());
+        Ok(records)
+    }
+
+    fn need_store(&self) -> Result<&dyn TraceStore, EffectFailure> {
+        self.trace_store.as_deref().ok_or_else(|| EffectFailure {
+            type_: "unavailable".into(),
+            message: "no trace store on this broker (offline run)".into(),
+        })
+    }
+
     /// A cell's (or span's) IMMEDIATE children (ADR-001 §4d): bare effect
     /// records directly in the scope, PLUS child span-end records whose
     /// parent is the scope — so a composite tool call renders as one line,
     /// its inner effects reachable by drilling into the child span. A span
     /// nested one level down appears as a single row here, not its effects.
-    fn sys_effects_of(&self, payload: &Value) -> Result<Value, EffectFailure> {
+    /// With `run`, the same view over a past run: no cell/span = the run's
+    /// root — its turns (`llm.chat` spans) and top-level effects.
+    /// The run ROOT (no cell, no span) is spans-first: the boot's
+    /// `kernel.boot` / `module.resolve` reads (~50 rows, 8 KB) are what
+    /// every forensic walk had to wade through — they are hidden unless
+    /// `all` is set; bare effects that mutated or failed stay visible.
+    fn sys_effects_of(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let records = self.trace_records(payload)?;
         let cell = payload.get("cell").and_then(|c| c.as_str());
         let span = payload.get("span").and_then(|s| s.as_str());
-        // "directly in the scope": for a span query, the record's own span
-        // (effects) / parent (spans) equals it; for a cell-only query, that
-        // link is null (top level of the cell).
-        let direct = |link: Option<&Value>| match span {
-            Some(s) => link.map(|v| v == s).unwrap_or(false),
-            None => link.is_none_or(|v| v.is_null()),
-        };
-        let out: Vec<Value> = self
-            .writer
-            .records
-            .iter()
-            .filter(|r| cell.is_none_or(|c| r["cell"] == c))
-            .filter_map(|r| match r["kind"].as_str() {
-                Some("effect") if direct(r.get("span")) => Some(json!({
-                    "seq": r["seq"], "effect": r["effect"],
-                    "class": r["meta"].get("class").cloned().unwrap_or(Value::Null),
-                    "mocked": r["meta"].get("mocked").cloned().unwrap_or(Value::Null),
-                    "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
-                    "span": r.get("span").cloned().unwrap_or(Value::Null),
-                })),
-                Some("span") if r["phase"] == "end" && direct(r.get("parent")) => {
-                    let muts = r["meta"]["mutations"].as_u64().unwrap_or(0);
-                    Some(json!({
-                        // a span row is a collapsed op: `name` (not `effect`),
-                        // narrative `kind`, and a boundary-backed `class` from
-                        // the inner mutate count so the digest marks mutations.
-                        "seq": r["seq"], "span": r["span"], "name": r["name"],
-                        "kind": r["meta"].get("kind").cloned().unwrap_or(Value::Null),
-                        "class": if muts > 0 { json!("mutate") } else { json!("read") },
-                        "ok": r["ok"], "mutations": muts,
-                        "effects": r["meta"].get("effects").cloned().unwrap_or(json!(0)),
-                        "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
-                    }))
-                }
-                _ => None,
-            })
-            .collect();
-        Ok(json!({"records": out}))
+        let all = payload
+            .get("all")
+            .and_then(|a| a.as_bool())
+            .unwrap_or(false);
+        let mut rows = immediate_children(&records, cell, span);
+        if cell.is_none() && span.is_none() && !all {
+            rows.retain(|r| {
+                r.get("effect").is_none() || r["class"] == "mutate" || !r["error"].is_null()
+            });
+        }
+        Ok(json!({"records": rows}))
     }
 
-    fn sys_effect_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
+    fn sys_effect_get(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let seq = payload.get("seq").and_then(|s| s.as_i64()).unwrap_or(-1);
-        for r in &self.writer.records {
+        let records = self.trace_records(payload)?;
+        for r in records.iter() {
             // effect OR span (a digest-cited #seq for a facade is a span
             // record) — so effects.get walks from a digest line to the span,
             // whose `span` id then feeds effects.of(span=…) (ADR-001 §4d).
@@ -1232,6 +1301,157 @@ impl Broker {
             message: format!("no effect or span record with seq {seq}"),
         })
     }
+
+    /// `trace ls` as data (ADR-003 §4): `{program?, limit?}` → rows
+    /// `{id, program, status, duration, turns, title, modifiedAt}`,
+    /// newest first.
+    /// With `filter`/`sort` (ADR-023 §5) the finder is an any-store
+    /// query over the per-run summaries; `program` is sugar for a
+    /// substring filter on the summary's program. A store without
+    /// summaries (file backend) derives the rows from the logs, and
+    /// then only `program`/`limit` apply.
+    fn sys_trace_runs(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let store = self.need_store()?;
+        let program = payload.get("program").and_then(|p| p.as_str());
+        let limit = payload.get("limit").and_then(|l| l.as_u64()).unwrap_or(50) as usize;
+        let io = |e: anyhow::Error| EffectFailure {
+            type_: "IOError".into(),
+            message: format!("{e:#}"),
+        };
+        let mut filter = payload
+            .get("filter")
+            .cloned()
+            .filter(|f| f.is_object())
+            .unwrap_or_else(|| json!({}));
+        if let Some(p) = program {
+            filter["program"] = json!({"$regex": regex_escape(p)});
+        }
+        let sort = payload.get("sort").cloned().unwrap_or(Value::Null);
+        let limit_q = if limit == 0 { 1000 } else { limit };
+        if let Some(rows) = store.find_runs(&filter, &sort, limit_q).map_err(io)? {
+            return Ok(json!({"runs": rows}));
+        }
+        if payload.get("filter").is_some() || !sort.is_null() {
+            return Err(EffectFailure {
+                type_: "unavailable".into(),
+                message: "trace.runs filter/sort need the any trace store (this bao keeps traces in files)".into(),
+            });
+        }
+        let rows = crate::view::list_data(store, program, limit).map_err(io)?;
+        Ok(json!({"runs": rows}))
+    }
+
+    /// Read-only aggregation over a trace collection (ADR-023 §5).
+    fn sys_trace_query(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let store = self.need_store()?;
+        let coll = payload
+            .get("coll")
+            .and_then(|c| c.as_str())
+            .unwrap_or("records");
+        let pipeline = payload.get("pipeline").cloned().unwrap_or(Value::Null);
+        store.query(coll, &pipeline).map_err(|e| EffectFailure {
+            type_: "ValueError".into(),
+            message: format!("{e:#}"),
+        })
+    }
+
+    /// `trace show --stats` as data (ADR-003 §4): `{run}` → `{run: {id,
+    /// program, model, status, durationMs, fuel, error}, turns: [...],
+    /// total}`.
+    fn sys_trace_stats(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let run = run_arg(payload)?.ok_or_else(|| EffectFailure {
+            type_: "ValueError".into(),
+            message: "trace.stats needs run=run_<id>".into(),
+        })?;
+        let store = self.need_store()?;
+        crate::view::stats_data(store, &run).map_err(|e| EffectFailure {
+            type_: "KeyError".into(),
+            message: format!("{e:#}"),
+        })
+    }
+}
+
+/// Escape a literal for an any-store `$regex` (substring match).
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if r"\.+*?()[]{}|^$".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The `run` argument of a `trace.*` view: absent/null = this run
+/// (`None`); a valid run id = that run; anything else — a non-string,
+/// or a string that isn't `run_<id>` — is a typed error. "Present but
+/// wrong" must never fall through to the live log: the guest asked
+/// for a specific run and would read the wrong one without noticing.
+fn run_arg(payload: &Value) -> Result<Option<String>, EffectFailure> {
+    match payload.get("run") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if valid_run_id(s) => Ok(Some(s.clone())),
+        Some(Value::String(s)) => Err(EffectFailure {
+            type_: "ValueError".into(),
+            message: format!("not a run id: {s:?} (expected run_<id>)"),
+        }),
+        Some(other) => Err(EffectFailure {
+            type_: "ValueError".into(),
+            message: format!(
+                "run must be a run id string (run_<id>), got {other} — pass the `traceRef` / `lastRunRef` value itself"
+            ),
+        }),
+    }
+}
+
+/// The immediate-children view (ADR-001 §4d) over any record log.
+/// "Directly in the scope": for a span query, the record's own span
+/// (effects) / parent (spans) equals it; for a cell-only (or root)
+/// query, that link is null. A span's parent lives on its BEGIN record
+/// only (the end record repeats none of the begin's links), so span
+/// rows — rendered from the end record — look their parent up by id.
+fn immediate_children(records: &[Value], cell: Option<&str>, span: Option<&str>) -> Vec<Value> {
+    let parents: BTreeMap<&str, &Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "span" && r["phase"] == "begin")
+        .filter_map(|r| Some((r["span"].as_str()?, &r["parent"])))
+        .collect();
+    let direct = |link: Option<&Value>| match span {
+        Some(s) => link.map(|v| v == s).unwrap_or(false),
+        None => link.is_none_or(|v| v.is_null()),
+    };
+    let parent_of = |r: &Value| -> Option<&Value> {
+        r["span"].as_str().and_then(|id| parents.get(id).copied())
+    };
+    records
+        .iter()
+        .filter(|r| cell.is_none_or(|c| r["cell"] == c))
+        .filter_map(|r| match r["kind"].as_str() {
+            Some("effect") if direct(r.get("span")) => Some(json!({
+                "seq": r["seq"], "effect": r["effect"],
+                "class": r["meta"].get("class").cloned().unwrap_or(Value::Null),
+                "mocked": r["meta"].get("mocked").cloned().unwrap_or(Value::Null),
+                "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
+                "span": r.get("span").cloned().unwrap_or(Value::Null),
+            })),
+            Some("span") if r["phase"] == "end" && direct(parent_of(r)) => {
+                let muts = r["meta"]["mutations"].as_u64().unwrap_or(0);
+                Some(json!({
+                    // a span row is a collapsed op: `name` (not `effect`),
+                    // narrative `kind`, and a boundary-backed `class` from
+                    // the inner mutate count so the digest marks mutations.
+                    "seq": r["seq"], "span": r["span"], "name": r["name"],
+                    "kind": r["meta"].get("kind").cloned().unwrap_or(Value::Null),
+                    "class": if muts > 0 { json!("mutate") } else { json!("read") },
+                    "ok": r["ok"], "mutations": muts,
+                    "effects": r["meta"].get("effects").cloned().unwrap_or(json!(0)),
+                    "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
+                }))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Resolve a redirect `location` against the current url, keeping it only
@@ -1338,6 +1558,47 @@ mod tests {
             })
             .count();
         assert_eq!(denials, 3);
+    }
+
+    #[test]
+    fn trace_collections_are_host_written() {
+        // ADR-023 §9: guest writes naming a trace_* local collection are refused
+        let mut b = make_broker("run_fence");
+        let coll = json!({"scope": "space", "spaceId": "sp", "name": "trace_records"});
+        for (op, body) in [
+            ("insert", json!({"coll": coll, "docs": [{"id": "x"}]})),
+            ("upsert", json!({"coll": coll, "docs": [{"id": "x"}]})),
+            ("delete", json!({"coll": coll, "filter": {}})),
+            (
+                "update",
+                json!({"coll": coll, "id": "x", "modifier": {"$set": {"a": 1}}}),
+            ),
+            ("indexes", json!({"coll": coll, "drop": ["name"]})),
+        ] {
+            let e = b
+                .call(
+                    "http.post",
+                    json!({"url": format!("http://any.local:8080/v1/local/{op}"), "json": body}),
+                )
+                .unwrap_err();
+            assert_eq!(e.type_, "forbidden", "{op}");
+        }
+        let e = b
+            .call(
+                "http.delete",
+                json!({"url": "http://any.local:8080/v1/local/collections?scope=space&spaceId=sp&name=trace_runs"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
+        let e = b
+            .call(
+                "http.post",
+                json!({"url": "http://any.local:8080/v1/local/aggregate",
+                       "json": {"coll": {"scope": "space", "spaceId": "sp", "name": "scratch"},
+                                "pipeline": [{"$match": {}}, {"$out": "l_s_sp_trace_runs"}]}}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
     }
 
     #[test]
@@ -1823,6 +2084,108 @@ mod tests {
             .try_span_begin("helper.sync", None, json!({"kwargs": {"n": 999}}))
             .unwrap_err();
         assert_eq!(err.type_, "DivergenceError");
+    }
+
+    #[test]
+    fn trace_views_read_a_past_run_through_the_store() {
+        // ADR-003 §4: `run=` dereferences a traceRef — the same three
+        // views over a persisted run, root-level = its turns.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::tracestore::FileTraceStore::new(dir.path()));
+        // write a run: one llm.chat turn wrapping one cell span with an effect
+        let mut past = make_broker("run_past");
+        past.trace_store = Some(store.clone());
+        let turn = past
+            .try_span_begin("llm.chat", None, json!({"turn": 1}))
+            .unwrap();
+        past.current_cell = Some("c1".into());
+        let cell = past
+            .try_span_begin("cell", None, json!({"cell": "c1"}))
+            .unwrap();
+        past.call("kernel.boot", json!({"x": 1})).unwrap();
+        past.span_end(true, None, None).unwrap();
+        past.current_cell = None;
+        past.span_end(true, Some(json!({"stop": "done"})), None)
+            .unwrap();
+        past.writer.dump(store.as_ref()).unwrap();
+
+        let mut b = make_broker("run_now");
+        b.trace_store = Some(store.clone());
+        // root of the past run: the turn span row only
+        let root = b
+            .call("trace.effects_of", json!({"run": "run_past"}))
+            .unwrap();
+        let rows = root["records"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{root}");
+        assert_eq!(rows[0]["name"], "llm.chat");
+        // spans-first root: the bare boot read (kernel.boot at top level)
+        // is hidden unless all=true
+        let mut past2 = make_broker("run_past2");
+        past2.trace_store = Some(store.clone());
+        past2.call("kernel.boot", json!({"top": 1})).unwrap();
+        past2.try_span_begin("llm.chat", None, json!({})).unwrap();
+        past2.span_end(true, None, None).unwrap();
+        past2.writer.dump(store.as_ref()).unwrap();
+        let root2 = b
+            .call("trace.effects_of", json!({"run": "run_past2"}))
+            .unwrap();
+        assert_eq!(root2["records"].as_array().unwrap().len(), 1, "{root2}");
+        let root2_all = b
+            .call("trace.effects_of", json!({"run": "run_past2", "all": true}))
+            .unwrap();
+        assert_eq!(
+            root2_all["records"].as_array().unwrap().len(),
+            2,
+            "{root2_all}"
+        );
+        assert_eq!(rows[0]["span"], turn);
+        // drill: turn → cell span → the effect
+        let cells = b
+            .call("trace.effects_of", json!({"run": "run_past", "span": turn}))
+            .unwrap();
+        assert_eq!(cells["records"][0]["name"], "cell");
+        assert_eq!(cells["records"][0]["span"], cell);
+        let effs = b
+            .call("trace.effects_of", json!({"run": "run_past", "span": cell}))
+            .unwrap();
+        assert_eq!(effs["records"][0]["effect"], "kernel.boot");
+        let seq = effs["records"][0]["seq"].as_i64().unwrap();
+        let rec = b
+            .call("trace.effect_get", json!({"run": "run_past", "seq": seq}))
+            .unwrap();
+        assert_eq!(rec["input"], json!({"x": 1}));
+        // runs + stats
+        let runs = b.call("trace.runs", json!({})).unwrap();
+        assert!(runs["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "run_past"));
+        let stats = b.call("trace.stats", json!({"run": "run_past"})).unwrap();
+        assert_eq!(stats["run"]["id"], "run_past");
+        assert_eq!(stats["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(stats["turns"][0]["stop"], "done");
+        assert_eq!(stats["turns"][0]["cells"], 1);
+        // guards: not-a-run-id, unknown run, no store
+        let bad = b.call("trace.effects_of", json!({"run": "../etc"}));
+        assert_eq!(bad.unwrap_err().type_, "ValueError");
+        // present-but-not-a-string must NOT fall through to the live run
+        for bad_run in [json!({"id": "run_past"}), json!(42), json!(["run_past"])] {
+            for view in ["trace.effects_of", "trace.effect_get", "trace.stats"] {
+                let e = b.call(view, json!({"run": bad_run, "seq": 1})).unwrap_err();
+                assert_eq!(e.type_, "ValueError", "{view} {bad_run}");
+            }
+        }
+        // null = this run, like absent
+        let live = b.call("trace.effects_of", json!({"run": null})).unwrap();
+        assert!(live["records"].as_array().is_some());
+        let missing = b.call("trace.effects_of", json!({"run": "run_nope"}));
+        assert_eq!(missing.unwrap_err().type_, "KeyError");
+        let mut offline = make_broker("run_off");
+        let off = offline.call("trace.effects_of", json!({"run": "run_past"}));
+        assert_eq!(off.unwrap_err().type_, "unavailable");
+        // and the reads themselves are recorded effects of THIS run
+        assert!(b.writer.records.iter().any(|r| r["effect"] == "trace.runs"));
     }
 
     #[test]

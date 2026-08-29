@@ -301,6 +301,13 @@ fn merged(base: &[(&str, Value)], opts: &Value) -> Value {
     Value::Object(m)
 }
 
+fn ids_of(reply: Value) -> Vec<String> {
+    records_of(reply, "ids")
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
 fn records_of(reply: Value, key: &str) -> Vec<Value> {
     reply
         .get(key)
@@ -704,6 +711,137 @@ impl Client {
             .unwrap_or_default())
     }
 
+    // --- local store (any PR #195, docs/26-local-store.md; ADR-023) ---
+    // Device-local any-store collections under /v1/local: never synced,
+    // no DAG, same filter/sort/pipeline language as the synced data.
+    // `coll` is the wire address `{scope, spaceId?, name}`.
+
+    /// The wire address of a space-scoped local collection.
+    pub fn local_coll(space_id: &str, name: &str) -> Value {
+        json!({"scope": "space", "spaceId": space_id, "name": name})
+    }
+
+    /// PUT /v1/local/collections — idempotent create + index ensure.
+    pub fn local_ensure(&self, coll: &Value, indexes: &[Value]) -> Result<Value, AnyError> {
+        let body = merged(&[("indexes", json!(indexes))], coll);
+        self.call("PUT", "/v1/local/collections", Some(&body))
+    }
+
+    /// GET /v1/local/collections?scope=&spaceId= — `[{scope, spaceId,
+    /// name, storageName, count, indexes}]`.
+    pub fn local_collections(
+        &self,
+        scope: Option<&str>,
+        space_id: Option<&str>,
+    ) -> Result<Vec<Value>, AnyError> {
+        let mut q = Vec::new();
+        if let Some(s) = scope {
+            q.push(format!("scope={s}"));
+        }
+        if let Some(sp) = space_id {
+            q.push(format!("spaceId={sp}"));
+        }
+        let path = if q.is_empty() {
+            "/v1/local/collections".to_string()
+        } else {
+            format!("/v1/local/collections?{}", q.join("&"))
+        };
+        Ok(records_of(self.call("GET", &path, None)?, "collections"))
+    }
+
+    /// DELETE /v1/local/collections — drop (the cleanup path; nothing
+    /// drops a space-scoped collection when its space goes away).
+    pub fn local_drop(&self, coll: &Value) -> Result<Value, AnyError> {
+        let space = coll["spaceId"].as_str().unwrap_or("");
+        let path = format!(
+            "/v1/local/collections?scope={}&spaceId={space}&name={}",
+            coll["scope"].as_str().unwrap_or("space"),
+            coll["name"].as_str().unwrap_or("")
+        );
+        self.call("DELETE", &path, None)
+    }
+
+    /// POST /v1/local/insert — ≤1000 docs, written 256 per tx; a
+    /// missing `id` is minted. Returns the ids in request order.
+    pub fn local_insert(&self, coll: &Value, docs: &[Value]) -> Result<Vec<String>, AnyError> {
+        let reply = self.call(
+            "POST",
+            "/v1/local/insert",
+            Some(&json!({"coll": coll, "docs": docs})),
+        )?;
+        Ok(ids_of(reply))
+    }
+
+    /// POST /v1/local/upsert — same shape as insert, replaces on id.
+    pub fn local_upsert(&self, coll: &Value, docs: &[Value]) -> Result<Vec<String>, AnyError> {
+        let reply = self.call(
+            "POST",
+            "/v1/local/upsert",
+            Some(&json!({"coll": coll, "docs": docs})),
+        )?;
+        Ok(ids_of(reply))
+    }
+
+    /// POST /v1/local/update — `$set {flag: true}` on one document.
+    pub fn local_update_flag(&self, coll: &Value, id: &str, flag: &str) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            "/v1/local/update",
+            Some(&json!({"coll": coll, "id": id, "modifier": {"$set": {flag: true}}})),
+        )
+    }
+
+    /// POST /v1/local/get — one document by id (404 local.doc_not_found).
+    pub fn local_get(&self, coll: &Value, id: &str) -> Result<Value, AnyError> {
+        let reply = self.call(
+            "POST",
+            "/v1/local/get",
+            Some(&json!({"coll": coll, "id": id})),
+        )?;
+        Ok(reply.get("record").cloned().unwrap_or(Value::Null))
+    }
+
+    /// POST /v1/local/query — `opts`: filter/sort/limit/offset/
+    /// includeTotal (limit default 100, cap 1000). Returns the whole
+    /// reply `{records, total?, hasNext?}` so callers can page.
+    pub fn local_query(&self, coll: &Value, opts: &Value) -> Result<Value, AnyError> {
+        let body = merged(&[("coll", coll.clone())], opts);
+        self.call("POST", "/v1/local/query", Some(&body))
+    }
+
+    /// POST /v1/local/aggregate — `{records}` | `{written}` | `{plan}`.
+    pub fn local_aggregate(
+        &self,
+        coll: &Value,
+        pipeline: &Value,
+        opts: &Value,
+    ) -> Result<Value, AnyError> {
+        let body = merged(
+            &[("coll", coll.clone()), ("pipeline", pipeline.clone())],
+            opts,
+        );
+        self.call("POST", "/v1/local/aggregate", Some(&body))
+    }
+
+    /// POST /v1/local/delete — by ids, or by filter (collected under
+    /// one read, removed 256 per tx — not atomic). Returns `deleted`.
+    pub fn local_delete(
+        &self,
+        coll: &Value,
+        ids: Option<&[String]>,
+        filter: Option<&Value>,
+    ) -> Result<u64, AnyError> {
+        let mut body = json!({"coll": coll});
+        if let Some(ids) = ids {
+            body["ids"] = json!(ids);
+        }
+        if let Some(f) = filter {
+            body["filter"] = f.clone();
+        }
+        let reply = self.call("POST", "/v1/local/delete", Some(&body))?;
+        Ok(reply["deleted"].as_u64().unwrap_or(0))
+    }
+
     pub fn create_type(&self, space_id: &str, body: &Value) -> Result<Value, AnyError> {
         self.call("POST", &format!("/v1/spaces/{space_id}/types"), Some(body))
     }
@@ -1045,6 +1183,56 @@ mod tests {
             Some(json!({"objectId": "obj", "dataset": "chat_messages",
                         "limit": 5, "sort": ["-createdAt"]}))
         );
+    }
+
+    #[test]
+    fn local_store_wire_shapes() {
+        // ADR-023: the local-store client speaks docs/26-local-store.md
+        let (c, log) = stub_client();
+        let coll = Client::local_coll("sp", "trace_records");
+        c.local_ensure(
+            &coll,
+            &[json!({"fields": ["runId", "seq"], "unique": true})],
+        )
+        .unwrap();
+        c.local_insert(&coll, &[json!({"id": "r:1", "seq": 1})])
+            .unwrap();
+        c.local_query(
+            &coll,
+            &json!({"filter": {"runId": "r"}, "sort": ["seq"], "limit": 1000}),
+        )
+        .unwrap();
+        c.local_aggregate(&coll, &json!([{"$match": {"runId": "r"}}]), &json!({}))
+            .unwrap();
+        c.local_delete(&coll, None, Some(&json!({"runId": "r"})))
+            .unwrap();
+        c.local_collections(Some("space"), Some("sp")).unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[0].0, "PUT");
+        assert_eq!(calls[0].1, "/v1/local/collections");
+        assert_eq!(
+            calls[0].2,
+            Some(
+                json!({"scope": "space", "spaceId": "sp", "name": "trace_records",
+                        "indexes": [{"fields": ["runId", "seq"], "unique": true}]})
+            )
+        );
+        assert_eq!(calls[1].1, "/v1/local/insert");
+        assert_eq!(
+            calls[1].2,
+            Some(json!({"coll": coll, "docs": [{"id": "r:1", "seq": 1}]}))
+        );
+        assert_eq!(calls[2].1, "/v1/local/query");
+        assert_eq!(calls[2].2.as_ref().unwrap()["coll"], coll);
+        assert_eq!(calls[2].2.as_ref().unwrap()["limit"], 1000);
+        assert_eq!(calls[3].1, "/v1/local/aggregate");
+        assert_eq!(calls[4].1, "/v1/local/delete");
+        assert_eq!(
+            calls[4].2,
+            Some(json!({"coll": coll, "filter": {"runId": "r"}}))
+        );
+        assert_eq!(calls[5].0, "GET");
+        assert_eq!(calls[5].1, "/v1/local/collections?scope=space&spaceId=sp");
     }
 
     #[test]

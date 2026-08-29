@@ -55,6 +55,40 @@ conversation, fetch ONE row and `print(inferSchema(row))` — every
 filter key must exist in the observed shape; a key the shape doesn't
 show silently matches nothing.
 
+**Past runs are readable.** A chat reply's `traceRef` (on its
+`agent_turns` record — `use("agent:history@v1").recent_turns(c,
+baoSpaceConfig, baoSpaceConfig["chatId"], n)` returns them newest
+first) and a trigger's `lastRunRef` name a run;
+`effects.runs("toolcaller")` lists recent conversations by title.
+`effects.stats(run=ref)` is the one-call summary (status, error, per-
+turn tokens/cost); `effects.of(run=ref)` outlines it — `llm.chat`
+rows (one per model turn) interleaved with the `cell` rows run after
+each, every row with `seq`/`span`; drill a cell with
+`effects.of(run=ref, span=s)` for its tool calls, read one record with
+`effects.get(seq, run=ref)` (an `llm.chat` row's output is what the
+model replied, its inner `http.post` input is what it was shown). Work
+from the outline down; never `get` every record. "Why did you do that?" about an earlier
+reply = this, on that reply's `traceRef`. `effects.runs(program)` is
+the ground truth for whether and how often ANY program ran — cron jobs
+included; a trigger's `lastRun*` fields are a cache of it. When they
+read null or disagree, the store wins — and you only know by calling
+it: never assert a store-wide fact ("it ran once", "the trace agrees")
+from a record field. Cross-run questions are ONE query, not a loop:
+`effects.runs(filter={"startedAt": {"$gte": ts}, "mutations": {"$gt":
+0}})` (summaries carry status/cost/tokens/mutations — a day summary
+needs no per-run reads) and `effects.query(pipeline)` over every
+record of every run (each record carries `runId` and `program` — the
+full spec, `{"program": {"$regex": "toolcaller"}}` — so a per-program
+question is one `$match`) — provenance (`$match {"name":
+"any.create_object", "output.objectId": X}`), audit (`$match
+{"meta.class": "mutate"}` → `$group` by `$runId`), failures (`$match
+{"error.type": {"$exists": true}}`); `help(effects.query)` has the
+recipes. Trace bodies are per device; the run summaries also sync as
+the `agent_runs` dataset on the bao space's `bao/runs/v1` bundle child
+(`c.bundle_child(baoSpaceConfig, "bao/v1", "bao/runs/v1")` →
+`c.query(..., "agent_runs", filter=...)`) — that is where another
+device's runs show up.
+
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo
 connector, a space program), `help(mod)` it in the same cell that
@@ -140,9 +174,15 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   reminders, a connector, or one you authored via
   `programs@v1.create_program` (watchers, periodic checks: a 40-line
   program on a cron beats scheduling yourself a reasoning turn).
-  "Did it run?" reads the record's own audit fields:
-  `lastStatus` / `lastRunAt` / `lastRunRef` (a trace ref),
-  `consecutiveFailures`.
+  "Did it run?" = the run summaries, never the record:
+  `effects.runs(filter={"triggerId": "<slug>"}, limit=1)` → newest
+  `{status, startedAt, errorType, durationMs, costUsd, id}` (`id` feeds
+  `run=`); `len(effects.runs(filter={"triggerId": "<slug>"}, limit=0))`
+  = how often. Other devices' fires are in the synced `agent_runs`
+  dataset (`bao/runs/v1` child, same `triggerId` filter). The record's
+  `lastStatus` / `lastRunAt` / `lastRunRef` are a cache of that; when
+  they disagree or read null, the runs win. `consecutiveFailures` on
+  the record is the breaker's own state (3 → auto-disabled).
 - **Progress bars** (any job long enough that the user would wonder):
   `p = use("agent:progress@v1")` — never hand-roll `agent-progress`
   objects, the module owns that transport. `p.start(space, job_slug,

@@ -1,18 +1,27 @@
 # Debugging runs — where the logs went
 
 There are no debug-log pages in the UI. The trace is the single source
-of truth for a run, and traces are **device-local** (ADR-006 §1): a
-trace is big and rarely read, so it lives as JSONL on the machine that
-ran it, never as synced objects. What syncs is the lean layer — every
-turn in `agent_turns` carries `userText`, `replies`, llm scalars, and a
-`traceRef` naming the local trace file.
+of truth for a run, and trace **bodies are device-local** (ADR-023): a
+serve writes them into the any server's local store — three
+never-synced collections of the bao space (`trace_records`,
+`trace_blobs`, `trace_runs`, `docs/adr/023-…`). What syncs is the lean
+layer: every turn in `agent_turns` carries `userText`, `replies`, llm
+scalars and a `traceRef` = the run id, and every run leaves one
+`agent_runs` summary (status, cost, mutations, `triggerId`) on the
+`bao/runs/v1` store child — the cross-device run finder.
 
-Traces land in `--traces-dir` (default `traces/` relative to where
-`anyrt` runs), one `run_<id>.jsonl` per run, plus a `.blobs` sidecar
-when values spill (ADR-001 §7). The file streams **in-flight**: the
-header lands at run start and every record appends as it commits, so
-`tail -f` works on a live run and a crashed run leaves a partial trace
-(`trace show` reports it as `status: incomplete`).
+Records stream **in-flight** (the header lands at run start, records
+flush at every span end / cell), so a crashed run leaves a partial
+trace (`trace show` reports `status: incomplete`). Bodies expire per
+`[traces] retain_conversations` (default 60d) / `retain_jobs` (30d);
+summaries stay. `anyrt run` and `[traces] backend = "file"` use the
+jsonl dir instead (`--traces-dir`, default `traces/`, one
+`run_<id>.jsonl` + `.blobs` sidecar) — the dev/offline store, no
+retention; `anyrt trace import <dir> --addr …` moves a dir into a
+server.
+
+Every `trace` subcommand takes `--addr <any url> [--space bao]` to
+read a server's store; without it, `dir`/`file` arguments read jsonl.
 
 ## The tools
 
@@ -20,9 +29,10 @@ header lands at run start and every record appends as it commits, so
 # the run finder: one row per run, newest first — time (file mtime),
 # run id, program, status, duration, turn count, and turn 1's user
 # text as the title. --program filters the cron noise out.
-anyrt trace ls                                # 30 newest, all programs
-anyrt trace ls --program toolcaller           # just conversations
-anyrt trace ls -n 0                           # everything
+anyrt trace ls --addr http://127.0.0.1:7134   # 30 newest, all programs (a server's store)
+anyrt trace ls --addr … --program toolcaller  # just conversations
+anyrt trace ls --addr … -n 0                  # everything
+anyrt trace ls traces-staging-7134            # a jsonl dir instead
 
 # human render, chronological — nothing in the trace is invisible:
 # status/fuel/wall-time header, a boot: line naming what turn 1 fed
@@ -34,7 +44,8 @@ anyrt trace ls -n 0                           # everything
 # (~ autorecall.plan, ~ memory.save_with_dedup) as a header line with
 # their effects + nested llm calls indented beneath. Errors are never
 # clipped.
-anyrt trace show run_<id>            # bare ids resolve against traces/
+anyrt trace show --addr … run_<id>   # (every show flag takes --addr; a
+                                     # bare id without it resolves against traces/)
 anyrt trace show run_<id> --full     # lift all clips (also inlines the
                                      # boot window at turn 1)
 anyrt trace show run_<id> --system   # + system prompt text
@@ -51,8 +62,15 @@ anyrt trace show run_<id> --stats
 
 # the metrics view over a DIRECTORY: fuel/duration/token
 # distributions (p50/p95), effect histogram, tuning suggestions
-anyrt trace stats traces/
+anyrt trace stats --addr …           # (or a jsonl dir)
 ```
+
+Cross-run questions are queries, not file sweeps — the same surface
+bao has (`effects.query`, ADR-023 §5): provenance (`$match {name:
+"any.create_object", "output.objectId": X}`), audit (`$match
+{"meta.class": "mutate"}` → `$group` by `$runId`), failures (`$match
+{"error.type": {$exists: true}}`) over `POST /v1/local/aggregate` on
+the bao space's `trace_records`; per-run rows on `trace_runs`.
 
 Clipped lines are locators, not the payload: content clips end
 `… (+N chars — --full)` so you know how much is hidden, every effect
@@ -60,8 +78,8 @@ line prints its `#seq`, and result blocks name the record they were
 mined from (`result (mined from #77):` — the provider request right
 after the cell). Drill into any of them with `--seq N` (or jq below).
 
-Raw access is just JSONL — one record per line (never pretty-print the
-file itself):
+Raw access to a jsonl-backed run is one record per line (never
+pretty-print the file itself):
 
 ```sh
 jq . traces/run_<id>.jsonl | less
@@ -83,9 +101,12 @@ trace file (serve minted two ids per run back then); for those, map a
 reply to its trace by time + title: `anyrt trace ls --program
 toolcaller` (turn 1's user text is the row title).
 
-The agent can introspect its own runs from inside a conversation too —
-`trace.effects_of` / `trace.effect_get` are syscalls — so asking bao
-"why did you do that?" in chat works.
+The agent reads runs from inside a conversation too — `effects.of` /
+`effects.get` / `effects.runs` / `effects.stats` are kernel globals
+over the `trace.*` syscalls (ADR-003 §4), and `run=<traceRef>` reads
+any run in this bao's trace store, not just the current one — so
+asking bao "why did you do that?" about an earlier reply works: it
+dereferences that reply's `traceRef`.
 
 ## Record kinds (ADR-001)
 

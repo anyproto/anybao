@@ -13,6 +13,7 @@ use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
+use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
     chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
@@ -26,6 +27,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
+
+/// The chat loop's program spec — the "conversation" class for
+/// retention (ADR-023 §6).
+pub const CHAT_PROGRAM: &str = "agent:toolcaller@v1";
 
 fn now_s() -> f64 {
     SystemTime::now()
@@ -139,6 +144,8 @@ pub struct AgentStores {
     pub config: String,
     pub secrets: String,
     pub triggers: String,
+    /// `bao/runs/v1` — the synced per-run summaries (ADR-023 §1)
+    pub runs: String,
 }
 
 fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
@@ -305,10 +312,20 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
+    ensure_dataset(
+        c,
+        space,
+        &trg_t,
+        &json!({
+            "name": "agent_runs", "displayName": "Agent Runs",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "dynamic": true, "fields": []}),
+    )?;
     let stores = AgentStores {
         config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
         secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
         triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
+        runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &[&trg_t])?,
     };
     // Display names only — every consumer resolves these anchors by
     // bundle seed, never by name (ADR-017 §0), but a derived object
@@ -319,6 +336,7 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         (&stores.config, "agent-config"),
         (&stores.secrets, "agent-secrets"),
         (&stores.triggers, "agent-triggers"),
+        (&stores.runs, "agent-runs"),
     ] {
         ensure_child_name(c, space, id, name)?;
     }
@@ -964,6 +982,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // child — deterministic, no name-scan.
     let stores = provision_agent_stores(&client, &space)?;
     let anchor = stores.triggers.clone();
+    let runs_anchor = stores.runs.clone();
 
     // Config store (ADR-006 §3): seed the config child (hard, then
     // soft), then read through to it — the host keeps no copy.
@@ -1119,13 +1138,31 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             pending.keys().collect::<Vec<_>>()
         );
     }
-    std::fs::create_dir_all(&cfg.traces_dir)?;
 
     // Single-active election (ADR-015): register this device in the
     // tech-space registry and take the gate's boot verdict. Standby ⇒
     // chat watch and ticker stay idle (and the standing-trigger records
     // below aren't stamped) until the election thread flips the gate.
     let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
+
+    // trace storage (ADR-001 §8 / ADR-023 §1): local-store collections
+    // of the bao space by default, the jsonl dir on `traces.backend =
+    // "file"`; every writer and reader — serve, the guest's `trace.*`
+    // syscalls — goes through the trait
+    let traces: Arc<dyn TraceStore> = match cfg.trace_backend {
+        crate::config::TraceBackend::Any => Arc::new(
+            crate::tracestore::AnyTraceStore::new(
+                client.clone(),
+                &space,
+                election.self_peer.clone(),
+            )
+            .context("trace store: ensuring the bao space's local collections")?,
+        ),
+        crate::config::TraceBackend::File => {
+            std::fs::create_dir_all(&cfg.traces_dir)?;
+            Arc::new(FileTraceStore::new(&cfg.traces_dir))
+        }
+    };
 
     // This device's trigger identity (ADR-006 §4): the registry peer
     // id — stable across restarts, so a pinned record survives them.
@@ -1180,9 +1217,11 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         pending_overlays: Mutex::new(pending),
         client: client.clone(),
         cfg,
+        traces,
         space: space.clone(),
         chat: chat.clone(),
         anchor: anchor.clone(),
+        runs_anchor,
         aliases,
         code_space,
         secrets_guard,
@@ -1198,6 +1237,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let mut threads = vec![
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
+        retention_thread(ctx.clone(), shutdown.clone()),
     ];
     if election.enabled {
         threads.push(election_thread(
@@ -1241,6 +1281,28 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     })
 }
 
+/// Trace retention (ADR-023 §6): host housekeeping, not a guest
+/// program — it writes the trace store. First pass a minute after
+/// boot, then hourly; a no-op unless `[traces] retain_*` is set.
+fn retention_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let configured =
+            ctx.cfg.retain_conversations_s.is_some() || ctx.cfg.retain_jobs_s.is_some();
+        if !configured {
+            return;
+        }
+        sliced_sleep(Duration::from_secs(60), &stop);
+        while !stop.load(Ordering::Relaxed) {
+            match ctx.expire_traces() {
+                Ok(0) => {}
+                Ok(n) => info!("trace retention: {n} run bodies expired"),
+                Err(e) => warn!("trace retention failed: {e:#}"),
+            }
+            sliced_sleep(Duration::from_secs(3600), &stop);
+        }
+    })
+}
+
 /// Sleep in 100ms slices so a shutdown flag is observed promptly.
 fn sliced_sleep(total: Duration, stop: &AtomicBool) {
     let mut left = total;
@@ -1258,9 +1320,15 @@ pub struct RunCtx {
     pub pending_overlays: Mutex<BTreeMap<String, String>>,
     pub client: Arc<Client>,
     pub cfg: Config,
+    /// trace storage (ADR-001 §8) — threaded into every Broker so the
+    /// guest reads past runs through the same store serve writes
+    pub traces: Arc<dyn TraceStore>,
     pub space: String,
     pub chat: String,
     pub anchor: String,
+    /// the `bao/runs/v1` child — one synced `agent_runs` summary per
+    /// run (ADR-023 §1), written by `publish_run`
+    pub runs_anchor: String,
     /// resolver alias namespace (ADR-009 §2) — overlays + the `agent`
     /// default
     pub aliases: BTreeMap<String, String>,
@@ -1330,11 +1398,47 @@ impl RunCtx {
         anyhow::bail!("{list} still joining/syncing — waiting for the publisher's approval")
     }
 
+    /// The synced per-run summary (ADR-023 §1): one `agent_runs` record
+    /// per run in the `bao/runs/v1` child — every device sees every
+    /// device's runs. Best-effort: the trace itself is already landed;
+    /// a failed publish is logged, never fails the run.
+    fn publish_run(&self, mut summary: Value, trigger: Option<&str>) {
+        let Some(id) = summary["id"].as_str().map(str::to_string) else {
+            return;
+        };
+        summary["triggerId"] = json!(trigger);
+        if summary["device"].is_null() {
+            summary["device"] = json!(self.self_peer);
+        }
+        // the record id is the run id; `id` inside a value is immutable
+        // to the dataset validator — `runId` carries it in the row
+        if let Some(o) = summary.as_object_mut() {
+            o.remove("id");
+        }
+        if let Err(e) =
+            self.client
+                .upsert_record(&self.space, &self.runs_anchor, "agent_runs", &id, &summary)
+        {
+            warn!("agent_runs {id}: summary not published: {e}");
+        }
+    }
+
+    /// Retention pass (ADR-023 §6): drop run bodies past the configured
+    /// ages; summaries stay. No-op when nothing is configured.
+    pub fn expire_traces(&self) -> Result<usize> {
+        let now = now_s();
+        let conv = self.cfg.retain_conversations_s.map(|s| now - s as f64);
+        let jobs = self.cfg.retain_jobs_s.map(|s| now - s as f64);
+        if conv.is_none() && jobs.is_none() {
+            return Ok(0);
+        }
+        self.traces.expire(CHAT_PROGRAM, conv, jobs)
+    }
+
     fn broker(&self, spec: &str, run_id: String) -> Broker {
         let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
-        let trace_path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
-        if let Err(e) = writer.stream_to(&trace_path) {
+        if let Err(e) = writer.stream_to(self.traces.as_ref()) {
             warn!("trace streaming unavailable ({e}); will write at run end");
         }
         // agent config is read through the store (ADR-006 §3): the
@@ -1350,6 +1454,7 @@ impl RunCtx {
         );
         b.secrets_guard = self.secrets_guard.clone();
         b.oauth = Some(self.oauth.clone());
+        b.trace_store = Some(self.traces.clone());
         b.secret_store = self
             .secret_store
             .clone()
@@ -1377,13 +1482,23 @@ impl RunCtx {
         // Some(id) ties this run's trace to an id already handed to the
         // guest (agent_turns.traceRef); None mints a fresh one
         run_id: Option<String>,
+        // the trigger that fired this run (ADR-023 §8: `triggerId` on
+        // the run summary); None = chat/control/embedder run
+        trigger: Option<&str>,
     ) -> Result<(String, RunResult)> {
         self.ensure_ready()?;
-        let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
+        let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
+        broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
-        outcome.broker.writer.dump(&path)?;
+        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        // ADR-023 §3: a run whose trace could not be landed is a failed
+        // run, named — never a silent gap
+        let summary = outcome
+            .broker
+            .writer
+            .dump(self.traces.as_ref())
+            .map_err(|e| anyhow::anyhow!("trace.unpersisted: run {run_id}: {e:#}"))?;
+        self.publish_run(summary, trigger);
         Ok((
             run_id.clone(),
             RunResult {
@@ -1425,9 +1540,13 @@ impl RunCtx {
         let run_id = broker.writer.run_id();
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
-        outcome.broker.writer.dump(&path)?;
+        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let summary = outcome
+            .broker
+            .writer
+            .dump(self.traces.as_ref())
+            .map_err(|e| anyhow::anyhow!("trace.unpersisted: run {run_id}: {e:#}"))?;
+        self.publish_run(summary, None);
         Ok(json!({
             "status": outcome.status,
             "value": outcome.value,
@@ -1596,6 +1715,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, text: String) {
             mailbox,
             interrupt,
             Some(run_id),
+            Some(&shared.chat_watch_id),
         );
         if let Ok((trace_ref, rr)) = &result {
             // ADR-021 §2: one request bubble per missing ref (the host
@@ -1929,7 +2049,7 @@ fn trigger_ticker(
                 out
             };
             for t in due {
-                let rr = run_trigger_program(&ctx, &t.program, &t.args);
+                let rr = run_trigger_program(&ctx, &t.id, &t.program, &t.args);
                 finish_run(&shared, &ctx, &t.id, &rr);
             }
         }
@@ -1938,10 +2058,10 @@ fn trigger_ticker(
 
 /// One trigger fire: the program run, folded into a RunResult (a run
 /// path failure is an error result, never a panic).
-fn run_trigger_program(ctx: &RunCtx, program: &str, args: &Value) -> RunResult {
+fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Value) -> RunResult {
     let mailbox: SharedMailbox = Default::default();
     let interrupt = Arc::new(AtomicBool::new(false));
-    ctx.run(program, args, mailbox, interrupt, None)
+    ctx.run(program, args, mailbox, interrupt, None, Some(trigger_id))
         .map(|(_, rr)| rr)
         .unwrap_or_else(|e| RunResult {
             status: "error".into(),
@@ -2098,7 +2218,7 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
             t.id,
             record.get("id").and_then(|v| v.as_str()).unwrap_or("")
         );
-        let rr = run_trigger_program(ctx, &t.program, &args);
+        let rr = run_trigger_program(ctx, &t.id, &t.program, &args);
         finish_run(shared, ctx, &t.id, &rr);
     }
 }

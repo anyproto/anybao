@@ -146,7 +146,8 @@ def _op_name(e):
 
 def _side_effects(entries):
     entries = [e for e in entries
-               if e.get("effect") not in ("trace.effects_of", "trace.effect_get")]
+               if e.get("effect") not in ("trace.effects_of", "trace.effect_get",
+                                          "trace.runs", "trace.stats", "trace.query")]
     if not entries:
         return ""
     counts = {}
@@ -240,7 +241,12 @@ def _run_model_cells(parts, results):
         sid = effect("span.begin",  # noqa: F821 - guest global
                      {"name": "cell", "input": {"cell": cid}})["span"]
         cr = subcell(part["args"].get("code", ""), cid)  # noqa: F821
-        effect("span.end", {"ok": cr["ok"]})  # noqa: F821
+        # the cell's failure rides its span-end record (ADR-003 §4b) —
+        # type + message like @span; the traceback stays digest text
+        err = cr["error"]
+        effect("span.end", {"ok": cr["ok"],  # noqa: F821
+                            "error": ({"type": err["type"], "message": err["message"]}
+                                      if err else None)})
         entries = effect("trace.effects_of",  # noqa: F821
                          {"span": sid})["records"]
         results.append({"type": "tool_result", "call_id": cid,

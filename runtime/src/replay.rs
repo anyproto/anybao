@@ -9,7 +9,6 @@
 //! when it lands.
 #![allow(dead_code)] // consumed by the main.rs replay wiring (next round); unit tests below
 
-use crate::trace::SCHEMA;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
@@ -59,50 +58,18 @@ impl std::error::Error for DivergenceError {}
 
 /// Load a trace: JSONL, header on line 1, schema pinned (ADR-001).
 pub fn load_trace(path: &Path) -> anyhow::Result<Vec<Value>> {
-    let text = fs::read_to_string(path)?;
-    let mut records: Vec<Value> = Vec::new();
-    for line in text.lines() {
-        if !line.trim().is_empty() {
-            records.push(serde_json::from_str(line)?);
-        }
-    }
-    let has_header = records
-        .first()
-        .map(|r| r["kind"] == "header")
-        .unwrap_or(false);
-    anyhow::ensure!(
-        has_header,
-        "not a trace file (missing header): {}",
-        path.display()
-    );
-    anyhow::ensure!(
-        records[0]["schema"] == SCHEMA,
-        "trace schema {} != {SCHEMA}",
-        records[0]["schema"]
-    );
-    Ok(records)
+    crate::tracestore::parse_records(&fs::read_to_string(path)?, &path.display().to_string())
 }
 
-/// Load the `.blobs` sidecar next to a trace ("t.jsonl" → "t.jsonl.blobs",
-/// the shape TraceWriter::dump writes). Missing sidecar = no blobs.
+/// The `.jsonl.blobs` sidecar of a trace path (empty when absent).
 pub fn load_blobs(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut os = path.as_os_str().to_os_string();
     os.push(".blobs");
     let side = PathBuf::from(os);
-    let mut out = BTreeMap::new();
     if !side.exists() {
-        return Ok(out);
+        return Ok(BTreeMap::new());
     }
-    for line in fs::read_to_string(&side)?.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let entry: Value = serde_json::from_str(line)?;
-        let hash = entry["hash"].as_str().unwrap_or("").to_string();
-        let data = entry["data"].as_str().unwrap_or("").to_string();
-        out.insert(hash, data);
-    }
-    Ok(out)
+    crate::tracestore::parse_blobs(&fs::read_to_string(&side)?)
 }
 
 /// Resolve a blob ref (`{"__blob": hash, "bytes": n}`, ADR-001 §7) back
@@ -469,8 +436,9 @@ mod tests {
     #[test]
     fn load_trace_roundtrip_with_sidecar() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.jsonl");
-        let mut w = TraceWriter::new(json!({"id": "b2"}));
+        let store = crate::tracestore::FileTraceStore::new(dir.path());
+        let path = store.path_of("run_b2");
+        let mut w = TraceWriter::new(json!({"id": "run_b2"}));
         let big = json!({"body": "y".repeat(100_000)});
         let k = input_key("big", &json!({}));
         w.effect(
@@ -483,11 +451,11 @@ mod tests {
             json!({}),
             None,
         );
-        w.dump(&path).unwrap();
+        w.dump(&store).unwrap();
 
         let records = load_trace(&path).unwrap();
         assert_eq!(records[0]["kind"], "header");
-        assert_eq!(records[0]["schema"], SCHEMA);
+        assert_eq!(records[0]["schema"], crate::trace::SCHEMA);
         let blobs = load_blobs(&path).unwrap();
         assert_eq!(resolve_blobs(records[1]["output"].clone(), &blobs), big);
     }

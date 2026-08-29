@@ -27,6 +27,7 @@ pub mod stats;
 #[cfg(test)]
 pub mod testutil;
 pub mod trace;
+pub mod tracestore;
 pub mod triggers;
 pub mod view;
 

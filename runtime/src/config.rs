@@ -25,8 +25,64 @@ pub struct FileConfig {
     /// join invite (§8): `agent = { space = "…", invite = "…" }`.
     pub overlays: BTreeMap<String, OverlayEntry>,
     pub paths: PathsSection,
+    /// trace storage (ADR-023): backend + retention
+    pub traces: TracesSection,
     /// guest-visible cascade layer: flat quoted dotted keys
     pub config: toml::Table,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct TracesSection {
+    /// "any" (local-store collections of the bao space, ADR-023) or
+    /// "file" (`paths.traces` jsonl, ADR-001 §8). Default: any.
+    pub backend: Option<String>,
+    /// retention of chat-loop run bodies: "60d" (default), "never"
+    pub retain_conversations: Option<String>,
+    /// retention of every other program's run bodies: "30d" (default),
+    /// "never"
+    pub retain_jobs: Option<String>,
+}
+
+/// Where serve lands traces (ADR-023 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceBackend {
+    Any,
+    File,
+}
+
+impl TraceBackend {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "any" => Ok(TraceBackend::Any),
+            "file" => Ok(TraceBackend::File),
+            other => anyhow::bail!("traces.backend must be \"any\" or \"file\", got {other:?}"),
+        }
+    }
+}
+
+/// A retention setting: a duration, or `"never"` = keep forever.
+pub fn parse_retention(s: &str) -> anyhow::Result<Option<u64>> {
+    if s.trim().eq_ignore_ascii_case("never") {
+        return Ok(None);
+    }
+    parse_duration_s(s).map(Some)
+}
+
+/// "90d" / "36h" / "15m" → seconds (ADR-023 §6 retention).
+pub fn parse_duration_s(s: &str) -> anyhow::Result<u64> {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.trim_end_matches(|c: char| c.is_ascii_alphabetic()).len());
+    let n: u64 = num
+        .parse()
+        .map_err(|_| anyhow::anyhow!("bad duration {s:?} (want e.g. 90d, 36h, 15m)"))?;
+    Ok(match unit {
+        "d" => n * 86_400,
+        "h" => n * 3_600,
+        "m" => n * 60,
+        "s" | "" => n,
+        _ => anyhow::bail!("bad duration unit in {s:?} (d/h/m/s)"),
+    })
 }
 
 /// TOML form of one overlay: bare space id or inline table.
@@ -94,6 +150,13 @@ pub struct Config {
     pub control_port: u16,
     pub overlays: BTreeMap<String, Overlay>,
     pub traces_dir: PathBuf,
+    /// trace storage backend (ADR-023 §1); file = `traces_dir`
+    pub trace_backend: TraceBackend,
+    /// retention in seconds: chat-loop runs (default 60d) / every other
+    /// program's runs (default 30d); `"never"` in the toml = keep
+    /// forever (ADR-023 §6)
+    pub retain_conversations_s: Option<u64>,
+    pub retain_jobs_s: Option<u64>,
     /// explicit local kernel override (dev, ADR-009 §4);
     /// None = the kernel embedded in the binary
     pub kernel: Option<PathBuf>,
@@ -130,6 +193,9 @@ impl Default for Config {
             control_port: 7010,
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
+            trace_backend: TraceBackend::Any,
+            retain_conversations_s: Some(60 * 86_400),
+            retain_jobs_s: Some(30 * 86_400),
             kernel: None,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
@@ -316,6 +382,15 @@ impl Config {
             .collect();
         if let Some(traces) = fc.paths.traces {
             c.traces_dir = traces;
+        }
+        if let Some(b) = fc.traces.backend {
+            c.trace_backend = TraceBackend::parse(&b)?;
+        }
+        if let Some(d) = fc.traces.retain_conversations {
+            c.retain_conversations_s = parse_retention(&d)?;
+        }
+        if let Some(d) = fc.traces.retain_jobs {
+            c.retain_jobs_s = parse_retention(&d)?;
         }
         for (key, value) in fc.config {
             let value = toml_to_json(value)?;

@@ -117,16 +117,21 @@ anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
 
 "Why did bao do that?" — the whole user-message→final-reply exchange
 is ONE `toolcaller@v1` trace (cron jobs — extraction/rollup/linkgen —
-outnumber conversations ~25:1 in `traces/`, so always filter):
+outnumber conversations ~25:1, so always filter). A serve keeps
+traces in its any server's local store (ADR-023): pass that server's
+`--addr` (staging `http://127.0.0.1:7134`); `anyrt run` and
+`backend = "file"` rigs keep a jsonl dir instead (positional dir/file,
+no `--addr`):
 
 ```
-anyrt trace ls --program toolcaller   # conversations, newest first,
+anyrt trace ls --addr http://127.0.0.1:7134 --program toolcaller
+                                      # conversations, newest first,
                                       # titled by the user message
-anyrt trace show run_<id>             # the whole story: turns, cells,
+anyrt trace show --addr … run_<id>    # the whole story: turns, cells,
                                       # effects (* = mutate), results
-anyrt trace show run_<id> --stats     # per-turn tokens/cache/cost table
-anyrt trace show run_<id> --seq 42    # drill into one record, full,
-                                      # blob-resolved
+anyrt trace show --addr … run_<id> --stats   # per-turn tokens/cache/cost
+anyrt trace show --addr … run_<id> --seq 42  # one record, full,
+                                             # blob-resolved
 ```
 
 `anyrt` = `runtime/target/release/anyrt` (`make runtime`). A chat

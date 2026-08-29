@@ -131,7 +131,11 @@ digest.
   into the driver's own. Per-model-cell trace granularity comes from
   wrapping each `subcell` in a `cell`-named span (§4b): the span groups
   that cell's effects, and the driver reads them back with
-  `trace.effects_of(span=…)` for the digest.
+  `trace.effects_of(span=…)` for the digest. A failed cell ends its
+  span with `ok: false` **and** `error: {type, message}` (the `@span`
+  shape; the traceback stays digest text) — the record says why on
+  its own, so a past-run reader (§4 `run=`) never has to mine the next
+  llm request's tool_result for the exception.
 
 ### 4. Value store: `values` and `effects`
 
@@ -149,7 +153,46 @@ effects.of(span="s3")         #   bare effects + child span rows, each row
                               #   carrying its own `span` id — recurse to
                               #   drill into a facade's inner effects
 effects.get(seq)              # one full record (effect OR span) incl. output
+effects.of(run=ref)           # a PAST run's root: llm.chat turn rows,
+effects.of(run=ref, span=s)   #   the model cells run after each, top-
+                              #   level effects; every view takes run=
+effects.get(seq, run=ref)
+effects.runs(program?, limit?)  # the run finder: [{id, program, status,
+                                #   duration, turns, title, modifiedAt}]
+effects.stats(run=ref)          # {run: {status, error, model, …},
+                                #   turns: [{stop, in, out, cache*, cells,
+                                #   effects, llmMs, costUsd}], total}
 ```
+
+**Past runs (amendment 2026-08-28).** A chat reply's `traceRef`
+(ADR-006 `agent_turns`) and a trigger's `lastRunRef` are handles the
+guest can dereference: every trace view takes `run=<ref>` and then
+reads that run from the trace store (ADR-001 §8) instead of the live
+log. No scope with `run=` is the run's root — its parentless spans
+(`llm.chat`, one row per model turn, interleaved with the `cell` spans
+the loop runs after each turn; both are root-level siblings, ADR-005)
+and top-level effects — so the same recursion the digest teaches (span
+row → `effects.of(span=)`) walks a whole conversation: cell → tool
+spans → syscalls, with each turn's reply on its `llm.chat` record.
+The root is **spans-first** (amendment 2026-08-29): bare top-level
+effects appear only when they mutated or failed; the boot's ~50
+`kernel.boot`/`module.resolve` reads — which made every root outline
+an 8 KB stub — are behind `all=True`. Cell and span scopes are
+unfiltered (that is where the digest reads).
+Two finder/summary views complete it, both data twins of the CLI
+(`trace ls`, `trace show --stats`): `effects.runs` and
+`effects.stats`. With the trace store in `any` (ADR-023 §5, amendment
+2026-08-29) `effects.runs` takes any-store `filter`/`sort` over the
+per-run summaries and `effects.query(pipeline, coll=)` runs a
+read-only aggregation over every record of every run — the cross-run
+half (provenance, audit, failures) the per-run walk cannot answer. Access is the store's: any run in this bao's trace
+store, any program — one store per anyrt instance, so there is no
+cross-bao read to gate; the only check is that `run` is a run id.
+Past-run records come back blob-resolved; they are plain data, and the
+digest's own stub/`inferSchema` disclosure is how the model handles
+their size — no separate rendering. The reads are recorded `trace.*`
+effects of the current run (class read) like the live views, and the
+digest excludes them from its side-effects line.
 
 **Span drill-down (amendment 2026-07-18).** The clean collapsed facade
 line is the default; the dig-in path is the same trace, on demand — the

@@ -432,23 +432,100 @@ values = _Values()
 
 
 class _Effects:
-    """Trace views (ADR-003 §4) — the effects half of the kernel API."""
+    """Trace views (ADR-003 §4) — the effects half of the kernel API.
+    Every method reads THIS run by default; `run=<ref>` reads a past
+    run instead — a chat reply's `traceRef` (on its `agent_turns`
+    record) or a trigger's `lastRunRef`. Past runs are plain data:
+    walk them from the outline down (`inferSchema` a row, filter,
+    slice); never `get` every record."""
 
-    def of(self, cell_id=None, *, span=None):
+    def of(self, cell_id=None, *, span=None, run=None, all=False):
         """A scope's IMMEDIATE children (ADR-001 §4d): pass a `cell_id`
         for the cell's top level, or `span=<id>` to expand one facade
         span into its inner effects + child span rows. Each span row
-        carries its own `span` id — recurse to drill deeper."""
+        carries its own `span` id — recurse to drill deeper. With
+        `run=` and no scope: the run's ROOT — `llm.chat` span rows (one
+        per model turn: the reply is that record's output) interleaved
+        with the `cell` span rows the model ran after each turn (drill
+        a cell for its tool calls), plus top-level effects that MUTATED
+        or FAILED — the boot's ~50 read effects (kernel.boot,
+        module.resolve) are hidden at the root unless `all=True`. Rows:
+        effects `{seq, effect, class, mocked, error, span}`; spans
+        `{seq, span, name, kind, class, ok, mutations, effects, error}`."""
         q = {}
         if cell_id is not None:
             q["cell"] = cell_id
         if span is not None:
             q["span"] = span
+        if run is not None:
+            q["run"] = run
+        if all:
+            q["all"] = True
         return _effect("trace.effects_of", q)["records"]
 
-    def get(self, seq):
-        """One full record by seq — an effect or a span (ADR-003 §4)."""
-        return _effect("trace.effect_get", {"seq": seq})
+    def get(self, seq, *, run=None):
+        """One full record by seq — an effect or a span (ADR-003 §4),
+        input + output + error included (an `llm.chat` span's output
+        is the model's reply; its inner `http.post` effect's input is
+        the whole request). Large — walk it, don't print it whole."""
+        q = {"seq": seq}
+        if run is not None:
+            q["run"] = run
+        return _effect("trace.effect_get", q)
+
+    def runs(self, program=None, limit=50, *, filter=None, sort=None):
+        """The run finder over per-run summaries, newest first:
+        `[{id, program, device, startedAt, endedAt, durationMs, status,
+        errorType, turns, cells, effects, mutations, tokens{in, out,
+        cacheRead, cacheWrite}, costUsd, model, title}]` — `title` is
+        turn 1's user text, `startedAt` an epoch instant. `program` is
+        a substring (`"toolcaller"` = chat conversations; cron programs
+        by name); `filter`/`sort` are the any query forms over those
+        fields (`{"startedAt": {"$gte": ts}, "mutations": {"$gt": 0}}`,
+        `["-costUsd"]`) — the same language as `any.query`. `limit=0`
+        = all (cap 1000). `id` feeds `run=`. This is the ground truth
+        for whether/how often ANY program ran."""
+        q = {"limit": limit}
+        if program is not None:
+            q["program"] = program
+        if filter is not None:
+            q["filter"] = filter
+        if sort is not None:
+            q["sort"] = sort
+        return _effect("trace.runs", q)["runs"]
+
+    def query(self, pipeline, coll="records"):
+        """Read-only aggregation over this bao's trace store (the any
+        local store's pipeline language: $match/$group/$project/$facet/
+        $lookup/$unwind/$sort/$limit…). `coll`: "records" (every trace
+        record of every run, + `runId` and `program` — the FULL spec,
+        e.g. "agent:toolcaller@v1", so scope a program with
+        `{"program": {"$regex": "toolcaller"}}` in the $match, no
+        runs() lookup; effects carry `effect`, `input`,
+        `output`, `meta.class`; spans carry `name`, `kind`, `ok`,
+        `error`), "runs" (the summaries `runs()` returns), "blobs".
+        Sinks ($out/$merge) are refused. Returns `[records]`; a $group
+        row's key comes back as `id` (any-store), not `_id`. Recipes:
+        provenance — which run created object X:
+          [{"$match": {"name": "any.create_object", "output.objectId": X}},
+           {"$project": {"runId": 1, "seq": 1}}]
+        audit — what wrote, per run (per program: $match on `program`,
+        $group by `$effect`):
+          [{"$match": {"meta.class": "mutate"}},
+           {"$group": {"_id": "$runId", "n": {"$sum": 1}}}]
+        failures by type:
+          [{"$match": {"error.type": {"$exists": true}}},
+           {"$group": {"_id": "$error.type", "n": {"$sum": 1}}}]
+        Records are time-free: scope by time via runs()/`runs` first,
+        then `$match {"runId": {"$in": [...]}}`."""
+        return _effect("trace.query", {"pipeline": pipeline, "coll": coll})["records"]
+
+    def stats(self, run):
+        """One run's cost/shape summary: `{run: {id, program, model,
+        status, durationMs, fuel, error}, turns: [{stop, in,
+        cacheRead, cacheWrite, out, cells, effects, llmMs, costUsd}],
+        total: {...}}`. The first call for "what happened in run X?"."""
+        return _effect("trace.stats", {"run": run})
 
 
 effects = _Effects()
