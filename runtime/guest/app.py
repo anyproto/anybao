@@ -498,7 +498,10 @@ class _Effects:
         """Read-only aggregation over this bao's trace store (the any
         local store's pipeline language: $match/$group/$project/$facet/
         $lookup/$unwind/$sort/$limit…). `coll`: "records" (every trace
-        record of every run, + `runId`; effects carry `effect`, `input`,
+        record of every run, + `runId` and `program` — the FULL spec,
+        e.g. "agent:toolcaller@v1", so scope a program with
+        `{"program": {"$regex": "toolcaller"}}` in the $match, no
+        runs() lookup; effects carry `effect`, `input`,
         `output`, `meta.class`; spans carry `name`, `kind`, `ok`,
         `error`), "runs" (the summaries `runs()` returns), "blobs".
         Sinks ($out/$merge) are refused. Returns `[records]`; a $group
@@ -506,7 +509,8 @@ class _Effects:
         provenance — which run created object X:
           [{"$match": {"name": "any.create_object", "output.objectId": X}},
            {"$project": {"runId": 1, "seq": 1}}]
-        audit — what wrote, per run:
+        audit — what wrote, per run (per program: $match on `program`,
+        $group by `$effect`):
           [{"$match": {"meta.class": "mutate"}},
            {"$group": {"_id": "$runId", "n": {"$sum": 1}}}]
         failures by type:

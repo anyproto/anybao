@@ -77,7 +77,9 @@ from a record field. Cross-run questions are ONE query, not a loop:
 `effects.runs(filter={"startedAt": {"$gte": ts}, "mutations": {"$gt":
 0}})` (summaries carry status/cost/tokens/mutations — a day summary
 needs no per-run reads) and `effects.query(pipeline)` over every
-record of every run — provenance (`$match {"name":
+record of every run (each record carries `runId` and `program` — the
+full spec, `{"program": {"$regex": "toolcaller"}}` — so a per-program
+question is one `$match`) — provenance (`$match {"name":
 "any.create_object", "output.objectId": X}`), audit (`$match
 {"meta.class": "mutate"}` → `$group` by `$runId`), failures (`$match
 {"error.type": {"$exists": true}}`); `help(effects.query)` has the
