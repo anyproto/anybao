@@ -20,7 +20,7 @@ spaces (so the overlay needs no guest-key invite, unlike prod):
 | serve control port | `7016` | `7010` |
 | overlay repo space | `_agentrepo` (programs + skills, ADR-009 §2) | `_agentrepo` |
 | working space | `bao` — chat/brain/memory only, created by serve | `bao` |
-| traces | `traces-staging-7134/` | `traces/` |
+| traces | the :7134 server's local store (`trace ls --addr http://127.0.0.1:7134`); `traces-staging-7134/` for `backend = "file"` | `traces/` |
 | config | `configs/anybao.staging.toml` (gitignored — holds the account + space ids) | `configs/anybao.toml` |
 
 The account is persistent — data dir + mnemonic backup live in
