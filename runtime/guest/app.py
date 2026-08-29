@@ -469,16 +469,48 @@ class _Effects:
             q["run"] = run
         return _effect("trace.effect_get", q)
 
-    def runs(self, program=None, limit=20):
-        """Past runs, newest first: `[{id, program, status, duration,
-        turns, title, modifiedAt}]` — `title` is turn 1's user text.
-        `program` is a substring filter (`"toolcaller"` = chat
-        conversations; cron programs by their name). `id` feeds
-        `run=`."""
+    def runs(self, program=None, limit=20, *, filter=None, sort=None):
+        """The run finder over per-run summaries, newest first:
+        `[{id, program, device, startedAt, endedAt, durationMs, status,
+        errorType, turns, cells, effects, mutations, tokens{in, out,
+        cacheRead, cacheWrite}, costUsd, model, title}]` — `title` is
+        turn 1's user text, `startedAt` an epoch instant. `program` is
+        a substring (`"toolcaller"` = chat conversations; cron programs
+        by name); `filter`/`sort` are the any query forms over those
+        fields (`{"startedAt": {"$gte": ts}, "mutations": {"$gt": 0}}`,
+        `["-costUsd"]`) — the same language as `any.query`. `limit=0`
+        = all (cap 1000). `id` feeds `run=`. This is the ground truth
+        for whether/how often ANY program ran."""
         q = {"limit": limit}
         if program is not None:
             q["program"] = program
+        if filter is not None:
+            q["filter"] = filter
+        if sort is not None:
+            q["sort"] = sort
         return _effect("trace.runs", q)["runs"]
+
+    def query(self, pipeline, coll="records"):
+        """Read-only aggregation over this bao's trace store (the any
+        local store's pipeline language: $match/$group/$project/$facet/
+        $lookup/$unwind/$sort/$limit…). `coll`: "records" (every trace
+        record of every run, + `runId`; effects carry `effect`, `input`,
+        `output`, `meta.class`; spans carry `name`, `kind`, `ok`,
+        `error`), "runs" (the summaries `runs()` returns), "blobs".
+        Sinks ($out/$merge) are refused. Returns `[records]`; a $group
+        row's key comes back as `id` (any-store), not `_id`. Recipes:
+        provenance — which run created object X:
+          [{"$match": {"name": "any.create_object", "output.objectId": X}},
+           {"$project": {"runId": 1, "seq": 1}}]
+        audit — what wrote, per run:
+          [{"$match": {"meta.class": "mutate"}},
+           {"$group": {"_id": "$runId", "n": {"$sum": 1}}}]
+        failures by type:
+          [{"$match": {"error.type": {"$exists": true}}},
+           {"$group": {"_id": "$error.type", "n": {"$sum": 1}}}]
+        Records are time-free: scope by time via runs()/`runs` first,
+        then `$match {"runId": {"$in": [...]}}`."""
+        return _effect("trace.query", {"pipeline": pipeline, "coll": coll})["records"]
 
     def stats(self, run):
         """One run's cost/shape summary: `{run: {id, program, model,

@@ -71,7 +71,15 @@ the ground truth for whether and how often ANY program ran — cron jobs
 included; a trigger's `lastRun*` fields are a cache of it. When they
 read null or disagree, the store wins — and you only know by calling
 it: never assert a store-wide fact ("it ran once", "the trace agrees")
-from a record field.
+from a record field. Cross-run questions are ONE query, not a loop:
+`effects.runs(filter={"startedAt": {"$gte": ts}, "mutations": {"$gt":
+0}})` (summaries carry status/cost/tokens/mutations — a day summary
+needs no per-run reads) and `effects.query(pipeline)` over every
+record of every run — provenance (`$match {"name":
+"any.create_object", "output.objectId": X}`), audit (`$match
+{"meta.class": "mutate"}` → `$group` by `$runId`), failures (`$match
+{"error.type": {"$exists": true}}`); `help(effects.query)` has the
+recipes.
 
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo

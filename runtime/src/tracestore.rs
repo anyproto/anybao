@@ -77,6 +77,26 @@ pub trait TraceStore: Send + Sync {
     }
     /// Every run in the store, newest first.
     fn list(&self) -> anyhow::Result<Vec<RunMeta>>;
+    /// The run finder over per-run summaries (ADR-023 §5): any-store
+    /// `filter`/`sort`/`limit` on `trace_runs` rows. `None` = this
+    /// store keeps no summaries (the file store) — callers fall back
+    /// to deriving rows from the logs.
+    fn find_runs(
+        &self,
+        _filter: &Value,
+        _sort: &Value,
+        _limit: usize,
+    ) -> anyhow::Result<Option<Vec<Value>>> {
+        Ok(None)
+    }
+    /// Read-only aggregation over one trace collection (ADR-023 §5):
+    /// `coll` ∈ records | runs | blobs. Stores without a query engine
+    /// answer a typed error.
+    fn query(&self, coll: &str, _pipeline: &Value) -> anyhow::Result<Value> {
+        anyhow::bail!(
+            "trace.query over {coll}: this trace store has no query engine (file backend)"
+        )
+    }
     /// The intact log (blob refs unresolved). Errors when the run is
     /// unknown or not a schema-2 trace.
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>>;
@@ -355,6 +375,24 @@ pub fn fold_integral_floats(v: Value) -> Value {
     }
 }
 
+/// The first `$out` / `$merge` anywhere in a pipeline — nested `$facet`
+/// branches included (ADR-023 §5: the guest's query surface is read-only).
+pub fn find_sink_stage(v: &Value) -> Option<&'static str> {
+    match v {
+        Value::Array(a) => a.iter().find_map(find_sink_stage),
+        Value::Object(o) => {
+            if o.contains_key("$out") {
+                return Some("$out");
+            }
+            if o.contains_key("$merge") {
+                return Some("$merge");
+            }
+            o.values().find_map(find_sink_stage)
+        }
+        _ => None,
+    }
+}
+
 fn now_s() -> f64 {
     SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -614,6 +652,45 @@ impl TraceStore for AnyTraceStore {
             .collect())
     }
 
+    fn find_runs(
+        &self,
+        filter: &Value,
+        sort: &Value,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<Value>>> {
+        let sort = if sort.is_null() {
+            json!(["-startedAt"])
+        } else {
+            sort.clone()
+        };
+        let reply = self.client.local_query(
+            &self.runs,
+            &json!({"filter": filter, "sort": sort, "limit": limit.clamp(1, PAGE)}),
+        )?;
+        let rows = reply["records"].as_array().cloned().unwrap_or_default();
+        Ok(Some(rows.into_iter().map(fold_integral_floats).collect()))
+    }
+
+    fn query(&self, coll: &str, pipeline: &Value) -> anyhow::Result<Value> {
+        let target = match coll {
+            "records" => &self.records,
+            "runs" => &self.runs,
+            "blobs" => &self.blobs,
+            other => {
+                anyhow::bail!("trace.query: coll must be records | runs | blobs, got {other:?}")
+            }
+        };
+        anyhow::ensure!(
+            pipeline.is_array(),
+            "trace.query: pipeline must be a list of stages"
+        );
+        if let Some(stage) = find_sink_stage(pipeline) {
+            anyhow::bail!("trace.query is read-only: {stage} is not allowed (the guest reads traces, it does not write them)");
+        }
+        let reply = self.client.local_aggregate(target, pipeline, &json!({}))?;
+        Ok(fold_integral_floats(json!({"records": reply["records"]})))
+    }
+
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
         let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
         anyhow::ensure!(!docs.is_empty(), "unknown run {run_id}");
@@ -695,6 +772,19 @@ mod tests {
         assert!(f["c"][0].is_i64() && f["c"][1]["d"] == -3);
         assert_eq!(f["e"], "x");
         assert_eq!(f["f"], 7);
+    }
+
+    #[test]
+    fn sink_stages_are_found_anywhere() {
+        assert_eq!(find_sink_stage(&json!([{"$match": {"a": 1}}])), None);
+        assert_eq!(
+            find_sink_stage(&json!([{"$match": {}}, {"$out": "x"}])),
+            Some("$out")
+        );
+        assert_eq!(
+            find_sink_stage(&json!([{"$facet": {"a": [{"$merge": {"into": "x"}}]}}])),
+            Some("$merge")
+        );
     }
 
     #[test]
@@ -796,6 +886,29 @@ mod live {
         assert_eq!(row["mutations"], 1);
         assert_eq!(row["device"], "dev-1");
         assert!(row["startedAt"].as_f64().unwrap() > 0.0);
+
+        // ADR-023 §5: finder over summaries + read-only aggregation
+        let found = store
+            .find_runs(
+                &json!({"program": "p@v1", "mutations": {"$gte": 1}}),
+                &Value::Null,
+                10,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(found.iter().any(|r| r["id"] == "run_live1"), "{found:?}");
+        let agg = store
+            .query(
+                "records",
+                &json!([{"$match": {"runId": "run_live1", "kind": "effect"}},
+                                      {"$group": {"_id": "$effect", "n": {"$sum": 1}}}]),
+            )
+            .unwrap();
+        // any-store names the group key `id`, not mongo's `_id`
+        assert_eq!(agg["records"][0]["id"], "x.y");
+        assert_eq!(agg["records"][0]["n"], 1);
+        assert!(store.query("records", &json!([{"$out": "x"}])).is_err());
+        assert!(store.query("nope", &json!([])).is_err());
 
         // buffered path (write_run) lands the same shape
         let mut w2 = crate::trace::TraceWriter::new(json!({"id": "run_live2", "program": "p@v1"}));

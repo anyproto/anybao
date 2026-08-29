@@ -176,7 +176,11 @@ row → `effects.of(span=)`) walks a whole conversation: cell → tool
 spans → syscalls, with each turn's reply on its `llm.chat` record.
 Two finder/summary views complete it, both data twins of the CLI
 (`trace ls`, `trace show --stats`): `effects.runs` and
-`effects.stats`. Access is the store's: any run in this bao's trace
+`effects.stats`. With the trace store in `any` (ADR-023 §5, amendment
+2026-08-29) `effects.runs` takes any-store `filter`/`sort` over the
+per-run summaries and `effects.query(pipeline, coll=)` runs a
+read-only aggregation over every record of every run — the cross-run
+half (provenance, audit, failures) the per-run walk cannot answer. Access is the store's: any run in this bao's trace
 store, any program — one store per anyrt instance, so there is no
 cross-bao read to gate; the only check is that `run` is a run id.
 Past-run records come back blob-resolved; they are plain data, and the

@@ -641,6 +641,7 @@ impl Broker {
             "trace.effect_get" => self.sys_effect_get(payload),
             "trace.runs" => self.sys_trace_runs(payload),
             "trace.stats" => self.sys_trace_stats(payload),
+            "trace.query" => self.sys_trace_query(payload),
             "kernel.boot" => Ok(payload.clone()), // pins echo into the record
             other => Err(EffectFailure {
                 type_: "unknown_effect".into(),
@@ -1253,15 +1254,54 @@ impl Broker {
     /// `trace ls` as data (ADR-003 §4): `{program?, limit?}` → rows
     /// `{id, program, status, duration, turns, title, modifiedAt}`,
     /// newest first.
+    /// With `filter`/`sort` (ADR-023 §5) the finder is an any-store
+    /// query over the per-run summaries; `program` is sugar for a
+    /// substring filter on the summary's program. A store without
+    /// summaries (file backend) derives the rows from the logs, and
+    /// then only `program`/`limit` apply.
     fn sys_trace_runs(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let store = self.need_store()?;
         let program = payload.get("program").and_then(|p| p.as_str());
         let limit = payload.get("limit").and_then(|l| l.as_u64()).unwrap_or(20) as usize;
-        let rows = crate::view::list_data(store, program, limit).map_err(|e| EffectFailure {
+        let io = |e: anyhow::Error| EffectFailure {
             type_: "IOError".into(),
             message: format!("{e:#}"),
-        })?;
+        };
+        let mut filter = payload
+            .get("filter")
+            .cloned()
+            .filter(|f| f.is_object())
+            .unwrap_or_else(|| json!({}));
+        if let Some(p) = program {
+            filter["program"] = json!({"$regex": regex_escape(p)});
+        }
+        let sort = payload.get("sort").cloned().unwrap_or(Value::Null);
+        let limit_q = if limit == 0 { 1000 } else { limit };
+        if let Some(rows) = store.find_runs(&filter, &sort, limit_q).map_err(io)? {
+            return Ok(json!({"runs": rows}));
+        }
+        if payload.get("filter").is_some() || !sort.is_null() {
+            return Err(EffectFailure {
+                type_: "unavailable".into(),
+                message: "trace.runs filter/sort need the any trace store (this bao keeps traces in files)".into(),
+            });
+        }
+        let rows = crate::view::list_data(store, program, limit).map_err(io)?;
         Ok(json!({"runs": rows}))
+    }
+
+    /// Read-only aggregation over a trace collection (ADR-023 §5).
+    fn sys_trace_query(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let store = self.need_store()?;
+        let coll = payload
+            .get("coll")
+            .and_then(|c| c.as_str())
+            .unwrap_or("records");
+        let pipeline = payload.get("pipeline").cloned().unwrap_or(Value::Null);
+        store.query(coll, &pipeline).map_err(|e| EffectFailure {
+            type_: "ValueError".into(),
+            message: format!("{e:#}"),
+        })
     }
 
     /// `trace show --stats` as data (ADR-003 §4): `{run}` → `{run: {id,
@@ -1278,6 +1318,18 @@ impl Broker {
             message: format!("run {run}: {e:#}"),
         })
     }
+}
+
+/// Escape a literal for an any-store `$regex` (substring match).
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if r"\.+*?()[]{}|^$".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The `run` argument of a `trace.*` view: absent/null = this run
