@@ -146,7 +146,8 @@ def _op_name(e):
 
 def _side_effects(entries):
     entries = [e for e in entries
-               if e.get("effect") not in ("trace.effects_of", "trace.effect_get")]
+               if e.get("effect") not in ("trace.effects_of", "trace.effect_get",
+                                          "trace.runs", "trace.stats")]
     if not entries:
         return ""
     counts = {}

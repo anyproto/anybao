@@ -55,6 +55,19 @@ conversation, fetch ONE row and `print(inferSchema(row))` — every
 filter key must exist in the observed shape; a key the shape doesn't
 show silently matches nothing.
 
+**Past runs are readable.** A chat reply's `traceRef` (on its
+`agent_turns` record) and a trigger's `lastRunRef` name a run;
+`effects.runs("toolcaller")` lists recent conversations by title.
+`effects.stats(run=ref)` is the one-call summary (status, error, per-
+turn tokens/cost); `effects.of(run=ref)` outlines it — `llm.chat`
+rows (one per model turn) interleaved with the `cell` rows run after
+each, every row with `seq`/`span`; drill a cell with
+`effects.of(run=ref, span=s)` for its tool calls, read one record with
+`effects.get(seq, run=ref)` (an `llm.chat` row's output is what the
+model replied, its inner `http.post` input is what it was shown). Work
+from the outline down; never `get` every record. "Why did you do that?" about an earlier
+reply = this, on that reply's `traceRef`.
+
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo
 connector, a space program), `help(mod)` it in the same cell that

@@ -75,8 +75,9 @@ Its consumers are everything that handles records *individually* or
 at its record), kernel lookups (`effects.get(seq)`, ADR-003), filtered
 views (`effects.of(cell)` — file order is gone, seq keeps subsets
 self-describing and gap-checkable), cross-artifact refs (turn
-`traceRef` + seq anchors, viewer "#turn_N"), and quotable divergence
-reports ("expected record #23").
+`traceRef` + seq anchors, viewer "#turn_N" — and the guest's own
+`run=` reads, ADR-003 §4: a `traceRef` is dereferenceable from inside
+a later run), and quotable divergence reports ("expected record #23").
 
 ### 3. Canonical inputs, per-effect normalizers, redaction
 
@@ -264,6 +265,26 @@ by `{"__blob": "sha256:...", "bytes": N}` and the bytes stored next to
 the trace (sidecar file / file attachment when the trace lives in a
 space object). Replay resolves refs transparently. Keeps JSONL lines
 bounded without truncating anything.
+
+### 8. Storage is one trait, the file layout is one impl (amendment 2026-08-28)
+
+Where a run persists is a **storage** decision, not a format one.
+`anyrt::tracestore::TraceStore` is the single seam: `open_sink(run)`
+(the streaming append of §1), `write_run` (the buffered fallback),
+`list` (newest first, with the store's modified time — the run's only
+wall-clock), `load` (the intact log), `blobs` (§7's spilled values),
+plus derived defaults `load_resolved` / `header` / `load_in_flight`.
+Every writer (`TraceWriter`) and every reader — `trace ls/show/
+follow/stats`, serve, the guest's `trace.*` syscalls — takes a
+`&dyn TraceStore`; nothing else opens a run. `FileTraceStore` is the
+only implementation: `<dir>/<run_id>.jsonl` + `.jsonl.blobs`, one
+store per anyrt instance (`paths.traces`). Traces in a space, or in a
+database, are a second impl behind the same trait — the readers and
+the record contract (§1–§7) don't move.
+
+Run ids are the store's keys and the guest's handles (`traceRef`,
+`lastRunRef`): `run_<[A-Za-z0-9_-]+>`, validated at the syscall
+boundary so a `run=` argument can name nothing but a run.
 
 ## Consequences
 

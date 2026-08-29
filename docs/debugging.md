@@ -83,9 +83,12 @@ trace file (serve minted two ids per run back then); for those, map a
 reply to its trace by time + title: `anyrt trace ls --program
 toolcaller` (turn 1's user text is the row title).
 
-The agent can introspect its own runs from inside a conversation too —
-`trace.effects_of` / `trace.effect_get` are syscalls — so asking bao
-"why did you do that?" in chat works.
+The agent reads runs from inside a conversation too — `effects.of` /
+`effects.get` / `effects.runs` / `effects.stats` are kernel globals
+over the `trace.*` syscalls (ADR-003 §4), and `run=<traceRef>` reads
+any run in this bao's trace store, not just the current one — so
+asking bao "why did you do that?" about an earlier reply works: it
+dereferences that reply's `traceRef`.
 
 ## Record kinds (ADR-001)
 

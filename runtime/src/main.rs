@@ -3,12 +3,13 @@
 //! live here; everything else is `anyrt::*`.
 
 use anyhow::{Context, Result};
+use anyrt::tracestore::FileTraceStore;
 use anyrt::{anyapi, config, deploy, drift, oauth, resolver, runner, serve, stats, trace, view};
 use anyrt::{broker, routes};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -178,17 +179,10 @@ enum TraceCmd {
 }
 
 /// `trace show run_x` — a bare run id resolves against the default
-/// traces dir, so `trace ls` output feeds straight into `show`.
-fn resolve_trace(file: PathBuf) -> PathBuf {
-    if file.exists() {
-        return file;
-    }
-    let candidate = PathBuf::from("traces").join(format!("{}.jsonl", file.display()));
-    if candidate.exists() {
-        candidate
-    } else {
-        file
-    }
+/// traces dir, so `trace ls` output feeds straight into `show`; a path
+/// names its own store.
+fn resolve_trace(file: PathBuf) -> (FileTraceStore, String) {
+    FileTraceStore::locate(&file, Path::new("traces"))
 }
 
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
@@ -307,8 +301,8 @@ fn main() -> Result<()> {
             let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
             let mut writer = trace::TraceWriter::new(json!({
                 "id": run_id, "program": spec, "host": "rust"}));
-            let trace_path = traces_dir.join(format!("{run_id}.jsonl"));
-            if let Err(e) = writer.stream_to(&trace_path) {
+            let store = std::sync::Arc::new(FileTraceStore::new(&traces_dir));
+            if let Err(e) = writer.stream_to(store.as_ref()) {
                 eprintln!("trace streaming unavailable ({e}); will write at run end");
             }
             let mut broker = broker::Broker::new(
@@ -321,6 +315,7 @@ fn main() -> Result<()> {
             broker.resolver = resolver;
             broker.runtime = runtime;
             broker.oauth = Some(oauth_state);
+            broker.trace_store = Some(store.clone());
             let out = runner::run_program(
                 &cage,
                 broker,
@@ -330,7 +325,7 @@ fn main() -> Result<()> {
                 Arc::new(AtomicBool::new(false)),
                 timeout_s,
             )?;
-            out.broker.writer.dump(&trace_path)?;
+            out.broker.writer.dump(store.as_ref())?;
             println!(
                 "{}",
                 json!({
@@ -419,7 +414,10 @@ fn main() -> Result<()> {
                     limit,
                 },
         } => {
-            print!("{}", view::list(&dir, program.as_deref(), limit)?);
+            print!(
+                "{}",
+                view::list(&FileTraceStore::new(dir), program.as_deref(), limit)?
+            );
             Ok(())
         }
         Cmd::Trace {
@@ -433,13 +431,13 @@ fn main() -> Result<()> {
                     seq,
                 },
         } => {
-            let file = resolve_trace(file);
+            let (store, id) = resolve_trace(file);
             match (seq, stats) {
-                (Some(n), _) => print!("{}", view::show_record(&file, n)?),
-                (None, true) => print!("{}", view::stats(&file)?),
+                (Some(n), _) => print!("{}", view::show_record(&store, &id, n)?),
+                (None, true) => print!("{}", view::stats(&store, &id)?),
                 (None, false) => print!(
                     "{}",
-                    view::render(&file, &view::ShowOpts { full, system, boot })?
+                    view::render(&store, &id, &view::ShowOpts { full, system, boot })?
                 ),
             }
             Ok(())
@@ -447,13 +445,14 @@ fn main() -> Result<()> {
         Cmd::Trace {
             cmd: TraceCmd::Follow { file, dir, program },
         } => {
-            let path = match file {
+            let (store, id) = match file {
                 Some(f) => resolve_trace(f),
                 None => {
+                    let store = FileTraceStore::new(&dir);
                     let mut waited = false;
                     loop {
-                        if let Some(p) = view::latest_run(&dir, program.as_deref()) {
-                            break p;
+                        if let Some(p) = view::latest_run(&store, program.as_deref()) {
+                            break (store, p);
                         }
                         if !waited {
                             eprintln!("waiting for a run in {}…", dir.display());
@@ -463,12 +462,12 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            view::follow(&path)
+            view::follow(&store, &id)
         }
         Cmd::Trace {
             cmd: TraceCmd::Stats { dir },
         } => {
-            print!("{}", stats::render(&dir)?);
+            print!("{}", stats::render(&FileTraceStore::new(dir))?);
             Ok(())
         }
         Cmd::Drift {

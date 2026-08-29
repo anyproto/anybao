@@ -3,9 +3,8 @@
 //! duration / token / effect distributions and p95-derived tuning
 //! suggestions. Lean by design — the trace is the database.
 
-use crate::replay::load_trace;
+use crate::tracestore::TraceStore;
 use serde_json::Value;
-use std::path::Path;
 
 fn percentile(sorted: &[i64], p: f64) -> i64 {
     if sorted.is_empty() {
@@ -27,7 +26,7 @@ fn dist(label: &str, values: &mut [i64]) -> String {
     )
 }
 
-pub fn render(dir: &Path) -> anyhow::Result<String> {
+pub fn render(store: &dyn TraceStore) -> anyhow::Result<String> {
     let mut runs = 0usize;
     let mut fuel: Vec<i64> = Vec::new();
     let mut duration: Vec<i64> = Vec::new();
@@ -35,13 +34,10 @@ pub fn render(dir: &Path) -> anyhow::Result<String> {
     let mut effects: std::collections::BTreeMap<String, u64> = Default::default();
     let mut mutations = 0u64;
 
-    let mut paths: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-        .collect();
-    paths.sort();
-    for path in &paths {
-        let Ok(records) = load_trace(path) else {
+    let mut ids: Vec<String> = store.list()?.into_iter().map(|m| m.id).collect();
+    ids.sort();
+    for id in &ids {
+        let Ok(records) = store.load(id) else {
             continue;
         };
         runs += 1;
@@ -75,7 +71,7 @@ pub fn render(dir: &Path) -> anyhow::Result<String> {
         }
     }
 
-    let mut out = format!("{} runs in {}\n", runs, dir.display());
+    let mut out = format!("{runs} runs\n");
     out.push_str(&dist("fuel/run", &mut fuel));
     out.push('\n');
     out.push_str(&dist("duration_ms/run", &mut duration));

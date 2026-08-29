@@ -432,23 +432,60 @@ values = _Values()
 
 
 class _Effects:
-    """Trace views (ADR-003 §4) — the effects half of the kernel API."""
+    """Trace views (ADR-003 §4) — the effects half of the kernel API.
+    Every method reads THIS run by default; `run=<ref>` reads a past
+    run instead — a chat reply's `traceRef` (on its `agent_turns`
+    record) or a trigger's `lastRunRef`. Past runs are plain data:
+    walk them from the outline down (`inferSchema` a row, filter,
+    slice); never `get` every record."""
 
-    def of(self, cell_id=None, *, span=None):
+    def of(self, cell_id=None, *, span=None, run=None):
         """A scope's IMMEDIATE children (ADR-001 §4d): pass a `cell_id`
         for the cell's top level, or `span=<id>` to expand one facade
         span into its inner effects + child span rows. Each span row
-        carries its own `span` id — recurse to drill deeper."""
+        carries its own `span` id — recurse to drill deeper. With
+        `run=` and no scope: the run's ROOT — `llm.chat` span rows (one
+        per model turn: the reply is that record's output) interleaved
+        with the `cell` span rows the model ran after each turn (drill
+        a cell for its tool calls), plus top-level effects. Rows:
+        effects `{seq, effect, class, mocked, error, span}`; spans
+        `{seq, span, name, kind, class, ok, mutations, effects, error}`."""
         q = {}
         if cell_id is not None:
             q["cell"] = cell_id
         if span is not None:
             q["span"] = span
+        if run is not None:
+            q["run"] = run
         return _effect("trace.effects_of", q)["records"]
 
-    def get(self, seq):
-        """One full record by seq — an effect or a span (ADR-003 §4)."""
-        return _effect("trace.effect_get", {"seq": seq})
+    def get(self, seq, *, run=None):
+        """One full record by seq — an effect or a span (ADR-003 §4),
+        input + output + error included (an `llm.chat` span's output
+        is the model's reply; its inner `http.post` effect's input is
+        the whole request). Large — walk it, don't print it whole."""
+        q = {"seq": seq}
+        if run is not None:
+            q["run"] = run
+        return _effect("trace.effect_get", q)
+
+    def runs(self, program=None, limit=20):
+        """Past runs, newest first: `[{id, program, status, duration,
+        turns, title, modifiedAt}]` — `title` is turn 1's user text.
+        `program` is a substring filter (`"toolcaller"` = chat
+        conversations; cron programs by their name). `id` feeds
+        `run=`."""
+        q = {"limit": limit}
+        if program is not None:
+            q["program"] = program
+        return _effect("trace.runs", q)["runs"]
+
+    def stats(self, run):
+        """One run's cost/shape summary: `{run: {id, program, model,
+        status, durationMs, fuel, error}, turns: [{stop, in,
+        cacheRead, cacheWrite, out, cells, effects, llmMs, costUsd}],
+        total: {...}}`. The first call for "what happened in run X?"."""
+        return _effect("trace.stats", {"run": run})
 
 
 effects = _Effects()

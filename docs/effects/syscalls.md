@@ -16,7 +16,8 @@ recall, history, the toolcaller loop) is guest modules in `programs/`.
 | `oauth.status(provider)` | read | oauth.status | `{connected, pending, scopes, account, expiresAt}` — state only, no network |
 | `oauth.disconnect(provider)` | mutate | oauth.disconnect | provider-side revoke (best-effort) + device-local delete → `{ok, provider, revoked}` |
 | `oauth.refresh(provider)` | mutate | oauth.refresh | **host-emitted only** (ADR-011 §6): the refresh-token exchange recorded before the http record it serves; a direct guest call fails typed `host_only` |
-| `trace.effects_of(cell?, span?)` / `trace.effect_get(seq)` | read | — | agent-side trace views |
+| `trace.effects_of(cell?, span?, run?)` / `trace.effect_get(seq, run?)` | read | — | agent-side trace views; `run` = a past run from the trace store (ADR-003 §4) |
+| `trace.runs(program?, limit?)` / `trace.stats(run)` | read | — | the run finder + per-run cost/shape summary, as data (`trace ls` / `show --stats` twins) |
 | `span.begin/end` | — | — | guest-declared grouping (broker machinery, not registry effects) |
 
 Route classification (`anybao.routes`, scoped to the any server's base

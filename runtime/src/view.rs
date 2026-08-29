@@ -7,10 +7,10 @@
 //! are never clipped — when a run went wrong, the error text is the
 //! payload. `--full` lifts every other clip.
 
-use crate::replay::{load_blobs, load_trace, resolve_blobs};
-use serde_json::Value;
+use crate::replay::resolve_blobs;
+use crate::tracestore::TraceStore;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::Path;
 
 #[derive(Default)]
 pub struct ShowOpts {
@@ -559,23 +559,6 @@ fn facade_block(
     }
 }
 
-fn load_resolved(path: &Path) -> anyhow::Result<Vec<Value>> {
-    let mut records = load_trace(path)?;
-    let blobs = load_blobs(path)?;
-    if !blobs.is_empty() {
-        for r in records.iter_mut() {
-            if let Some(obj) = r.as_object_mut() {
-                for key in ["input", "output"] {
-                    if let Some(v) = obj.get(key) {
-                        obj.insert(key.into(), resolve_blobs(v.clone(), &blobs));
-                    }
-                }
-            }
-        }
-    }
-    Ok(records)
-}
-
 /// One `trace ls` row, derived from the records alone. Wall-clock
 /// comes from file mtime — records are deliberately time-free.
 struct LsRow {
@@ -590,9 +573,9 @@ struct LsRow {
 /// Status/duration/turns mirror `render`; the title is turn 1's user
 /// text (the "title from chat"), mined from the llm request INPUT like
 /// `render` (a failed turn still recorded its input). Inputs over the
-/// spill threshold live in the `.jsonl.blobs` sidecar — resolved
-/// lazily via `path`, so only spilled traces pay the sidecar read.
-fn ls_row(records: &[Value], path: Option<&Path>) -> LsRow {
+/// spill threshold live in the store's blobs — resolved lazily via
+/// `store`, so only spilled traces pay the blob read.
+fn ls_row(records: &[Value], store: Option<(&dyn TraceStore, &str)>) -> LsRow {
     let (status, dur) = match records.iter().rev().find(|r| r["kind"] == "cell") {
         Some(r) => (
             if r["interrupted"] == true {
@@ -622,7 +605,8 @@ fn ls_row(records: &[Value], path: Option<&Path>) -> LsRow {
                 .iter()
                 .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
             let input = if post["input"]["__blob"].is_string() {
-                let blobs = load_blobs(path?).ok()?;
+                let (store, id) = store?;
+                let blobs = store.blobs(id).ok()?;
                 resolve_blobs(post["input"].clone(), &blobs)
             } else {
                 post["input"].clone()
@@ -644,30 +628,57 @@ fn ls_row(records: &[Value], path: Option<&Path>) -> LsRow {
     }
 }
 
-/// `trace ls` — the run finder: one line per run in `dir`, newest
-/// first (file mtime — the run's only wall-clock). Unreadable files
-/// render as a `?` row rather than sinking the listing.
-pub fn list(dir: &Path, program: Option<&str>, limit: usize) -> anyhow::Result<String> {
-    let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-        .filter_map(|p| {
-            let mtime = p.metadata().and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
+impl LsRow {
+    fn to_value(&self, modified: Option<std::time::SystemTime>) -> Value {
+        let ts = modified.and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok());
+        json!({
+            "id": self.id, "program": self.program, "status": self.status,
+            "duration": self.dur, "turns": self.turns, "title": self.title,
+            "modifiedAt": ts.map(|d| d.as_secs_f64()),
         })
-        .collect();
-    paths.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
+    }
+}
 
+/// The run-finder as data — `trace ls` rows for the guest's
+/// `effects.runs()` (ADR-003 §4). Newest first; `program` is a
+/// substring filter; `limit` 0 = all.
+pub fn list_data(
+    store: &dyn TraceStore,
+    program: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<Vec<Value>> {
+    let mut out = Vec::new();
+    for meta in store.list()? {
+        let Ok(records) = store.load(&meta.id) else {
+            continue;
+        };
+        if records.is_empty() {
+            continue;
+        }
+        let row = ls_row(&records, Some((store, &meta.id)));
+        if let Some(f) = program {
+            if !row.program.contains(f) {
+                continue;
+            }
+        }
+        out.push(row.to_value(meta.modified));
+        if limit > 0 && out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// `trace ls` — the run finder: one line per run in the store, newest
+/// first (the store's modified time — the run's only wall-clock).
+/// Unreadable runs render as a `?` row rather than sinking the listing.
+pub fn list(store: &dyn TraceStore, program: Option<&str>, limit: usize) -> anyhow::Result<String> {
     let mut rows = Vec::new();
-    for (mtime, path) in &paths {
-        let row = match load_trace(path) {
-            Ok(records) if !records.is_empty() => ls_row(&records, Some(path)),
+    for meta in store.list()? {
+        let row = match store.load(&meta.id) {
+            Ok(records) if !records.is_empty() => ls_row(&records, Some((store, &meta.id))),
             _ => LsRow {
-                id: path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                id: meta.id.clone(),
                 program: "?".into(),
                 status: "unreadable",
                 dur: "?".into(),
@@ -680,14 +691,20 @@ pub fn list(dir: &Path, program: Option<&str>, limit: usize) -> anyhow::Result<S
                 continue;
             }
         }
-        rows.push((*mtime, row));
+        rows.push((meta.modified, row));
     }
 
     let total = rows.len();
     let shown = if limit == 0 { total } else { total.min(limit) };
     let mut out = String::new();
     for (mtime, row) in rows.into_iter().take(shown) {
-        let when = chrono::DateTime::<chrono::Local>::from(mtime).format("%m-%d %H:%M");
+        let when = mtime
+            .map(|m| {
+                chrono::DateTime::<chrono::Local>::from(m)
+                    .format("%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "?".into());
         out.push_str(&format!(
             "{when}  {:<20}  {:<14}  {:<11}  {:>7}  {:>2}t  {}\n",
             row.id, row.program, row.status, row.dur, row.turns, row.title
@@ -701,31 +718,19 @@ pub fn list(dir: &Path, program: Option<&str>, limit: usize) -> anyhow::Result<S
 
 // --- trace follow — live view over a streaming run file (CLI output) --------
 
-/// Newest run file in `dir` whose header program contains `program`
+/// Newest run in the store whose header program contains `program`
 /// (None = any) — `trace follow`'s no-argument target.
-pub fn latest_run(dir: &Path, program: Option<&str>) -> Option<std::path::PathBuf> {
-    let mut rows: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .collect();
-    rows.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
-    for (_, path) in rows {
+pub fn latest_run(store: &dyn TraceStore, program: Option<&str>) -> Option<String> {
+    for meta in store.list().ok()? {
         let Some(want) = program else {
-            return Some(path);
+            return Some(meta.id);
         };
-        let header = std::fs::File::open(&path).ok().and_then(|f| {
-            use std::io::BufRead;
-            std::io::BufReader::new(f).lines().next()?.ok()
-        });
-        let is_match = header
-            .and_then(|l| serde_json::from_str::<Value>(&l).ok())
+        let is_match = store
+            .header(&meta.id)
             .map(|h| s(&h["run"]["program"]).contains(want))
             .unwrap_or(false);
         if is_match {
-            return Some(path);
+            return Some(meta.id);
         }
     }
     None
@@ -783,31 +788,25 @@ fn follow_line(r: &Value) -> Option<String> {
     }
 }
 
-/// Live-follow a streaming run file: render each complete JSONL line
-/// as it lands, return when the run's terminal `main` cell record
-/// arrives. Prints directly — this IS the CLI output. Blob-spilled
-/// values render as their stubs (drill in with `show --seq` after).
-pub fn follow(path: &Path) -> anyhow::Result<()> {
-    println!("following {}", path.display());
+/// Live-follow a streaming run: render each record as it lands,
+/// return when the run's terminal `main` cell record arrives. Prints
+/// directly — this IS the CLI output. Blob-spilled values render as
+/// their stubs (drill in with `show --seq` after).
+pub fn follow(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<()> {
+    println!("following {run_id}");
     let mut seen = 0usize;
     loop {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
-        // only complete lines — a partially-written tail waits for its \n
-        let complete = &text[..text.rfind('\n').map(|i| i + 1).unwrap_or(0)];
-        let lines: Vec<&str> = complete.lines().collect();
+        let records = store.load_in_flight(run_id).unwrap_or_default();
         let mut finished = false;
-        for line in lines.iter().skip(seen) {
-            let Ok(r) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            if let Some(l) = follow_line(&r) {
+        for r in records.iter().skip(seen) {
+            if let Some(l) = follow_line(r) {
                 println!("{l}");
             }
             if r["kind"] == "cell" && r["cell"] == "main" {
                 finished = true;
             }
         }
-        seen = lines.len();
+        seen = records.len();
         if finished {
             return Ok(());
         }
@@ -816,8 +815,8 @@ pub fn follow(path: &Path) -> anyhow::Result<()> {
 }
 
 /// `--seq N` drill-down: one record, blob-resolved, pretty.
-pub fn show_record(path: &Path, seq: i64) -> anyhow::Result<String> {
-    let records = load_resolved(path)?;
+pub fn show_record(store: &dyn TraceStore, run_id: &str, seq: i64) -> anyhow::Result<String> {
+    let records = store.load_resolved(run_id)?;
     let rec = records
         .iter()
         .find(|r| r["seq"].as_i64() == Some(seq))
@@ -825,8 +824,8 @@ pub fn show_record(path: &Path, seq: i64) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(rec)? + "\n")
 }
 
-pub fn render(path: &Path, opts: &ShowOpts) -> anyhow::Result<String> {
-    let records = load_resolved(path)?;
+pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::Result<String> {
+    let records = store.load_resolved(run_id)?;
     let lim = Limits::new(opts.full);
     let header = &records[0];
     let mut out = format!(
@@ -1103,13 +1102,25 @@ impl TurnStats {
     }
 }
 
-/// `trace show --stats` — the per-turn metrics table (ADR-006 viewer
-/// parity): stop / tokens / cache / cells / effects / llm time per
-/// parentless llm.chat span, totals, and costUsd priced from the model
-/// the trace recorded. A turn's cells and effects are everything from
-/// its llm.chat begin up to the next turn's begin.
-pub fn stats(path: &Path) -> anyhow::Result<String> {
-    let records = load_resolved(path)?;
+impl TurnStats {
+    fn to_value(&self, price: Option<&Price>) -> Value {
+        json!({
+            "stop": self.stop, "in": self.input, "cacheRead": self.cache_read,
+            "cacheWrite": self.cache_write, "out": self.output,
+            "cells": self.cells, "effects": self.effects, "llmMs": self.llm_ms,
+            "costUsd": price.map(|p| self.cost_usd(p)),
+        })
+    }
+}
+
+/// The per-turn metrics as data — `{run: {id, program, model, status,
+/// durationMs, fuel}, turns: [{stop, in, cacheRead, cacheWrite, out,
+/// cells, effects, llmMs, costUsd}], total: {…}}`. Backs both the
+/// `--stats` table and the guest's `effects.stats(run=…)` (ADR-003 §4).
+/// A turn's cells and effects are everything from its llm.chat begin
+/// up to the next turn's begin.
+pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value> {
+    let records = store.load_resolved(run_id)?;
     let turns: Vec<_> = spans_of(&records, "llm.chat")
         .into_iter()
         .filter(|(b, _)| b["parent"].is_null())
@@ -1156,53 +1167,9 @@ pub fn stats(path: &Path) -> anyhow::Result<String> {
         }
         rows.push(t);
     }
-
     let price = price_for(&model);
-    let mut out = format!(
-        "run {} — {} ({})\n",
-        s(&records[0]["run"]["id"]),
-        s(&records[0]["run"]["program"]),
-        if model.is_empty() {
-            "no llm calls"
-        } else {
-            &model
-        }
-    );
-    if let Some(term) = records
-        .iter()
-        .find(|r| r["kind"] == "cell" && r["cell"] == "main")
-    {
-        out.push_str(&format!(
-            "status: {} — {:.1}s wall, fuel {}\n",
-            if term["ok"] == true { "ok" } else { "FAILED" },
-            term["metrics"]["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0,
-            term["metrics"]["fuel_used"]
-        ));
-    }
-    out.push('\n');
-    out.push_str(&format!(
-        "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
-        "turn", "stop", "in", "cacheRd", "cacheWr", "out", "cells", "effects", "llm_ms", "costUsd"
-    ));
     let mut tot = TurnStats::default();
-    for (i, t) in rows.iter().enumerate() {
-        let cost = price
-            .as_ref()
-            .map(|p| format!("{:.4}", t.cost_usd(p)))
-            .unwrap_or_else(|| "-".into());
-        out.push_str(&format!(
-            "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
-            i + 1,
-            t.stop,
-            t.input,
-            t.cache_read,
-            t.cache_write,
-            t.output,
-            t.cells,
-            t.effects,
-            t.llm_ms,
-            cost
-        ));
+    for t in &rows {
         tot.input += t.input;
         tot.cache_read += t.cache_read;
         tot.cache_write += t.cache_write;
@@ -1211,24 +1178,86 @@ pub fn stats(path: &Path) -> anyhow::Result<String> {
         tot.effects += t.effects;
         tot.llm_ms += t.llm_ms;
     }
-    let total_cost = price
-        .as_ref()
-        .map(|p| format!("{:.4}", tot.cost_usd(p)))
-        .unwrap_or_else(|| "-".into());
+    let term = records
+        .iter()
+        .find(|r| r["kind"] == "cell" && r["cell"] == "main");
+    Ok(json!({
+        "run": {
+            "id": s(&records[0]["run"]["id"]),
+            "program": s(&records[0]["run"]["program"]),
+            "model": model,
+            "priced": price.is_some(),
+            "status": term.map(|t| if t["ok"] == true { "ok" } else { "FAILED" }),
+            "durationMs": term.and_then(|t| t["metrics"]["duration_ms"].as_f64()),
+            "fuel": term.map(|t| t["metrics"]["fuel_used"].clone()),
+            "error": term.map(|t| t["error"].clone()),
+        },
+        "turns": rows.iter().map(|t| t.to_value(price.as_ref())).collect::<Vec<_>>(),
+        "total": tot.to_value(price.as_ref()),
+    }))
+}
+
+/// `trace show --stats` — the per-turn metrics table (ADR-006 viewer
+/// parity): stop / tokens / cache / cells / effects / llm time per
+/// parentless llm.chat span, totals, and costUsd priced from the model
+/// the trace recorded.
+pub fn stats(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<String> {
+    let d = stats_data(store, run_id)?;
+    let model = s(&d["run"]["model"]);
+    let priced = d["run"]["priced"] == true;
+    let mut out = format!(
+        "run {} — {} ({})\n",
+        s(&d["run"]["id"]),
+        s(&d["run"]["program"]),
+        if model.is_empty() {
+            "no llm calls"
+        } else {
+            &model
+        }
+    );
+    if let Some(status) = d["run"]["status"].as_str() {
+        out.push_str(&format!(
+            "status: {} — {:.1}s wall, fuel {}\n",
+            status,
+            d["run"]["durationMs"].as_f64().unwrap_or(0.0) / 1000.0,
+            d["run"]["fuel"]
+        ));
+    }
+    out.push('\n');
+    let cost = |row: &Value| {
+        row["costUsd"]
+            .as_f64()
+            .map(|c| format!("{c:.4}"))
+            .unwrap_or_else(|| "-".into())
+    };
+    let line = |label: &str, row: &Value| {
+        // Value's Display ignores width — pad strings, not Values
+        let n = |k: &str| row[k].to_string();
+        format!(
+            "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
+            label,
+            s(&row["stop"]),
+            n("in"),
+            n("cacheRead"),
+            n("cacheWrite"),
+            n("out"),
+            n("cells"),
+            n("effects"),
+            n("llmMs"),
+            cost(row)
+        )
+    };
     out.push_str(&format!(
         "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
-        "tot",
-        "",
-        tot.input,
-        tot.cache_read,
-        tot.cache_write,
-        tot.output,
-        tot.cells,
-        tot.effects,
-        tot.llm_ms,
-        total_cost
+        "turn", "stop", "in", "cacheRd", "cacheWr", "out", "cells", "effects", "llm_ms", "costUsd"
     ));
-    if price.is_none() && !model.is_empty() {
+    for (i, t) in d["turns"].as_array().into_iter().flatten().enumerate() {
+        out.push_str(&line(&(i + 1).to_string(), t));
+    }
+    let mut total = d["total"].clone();
+    total["stop"] = json!("");
+    out.push_str(&line("tot", &total));
+    if !priced && !model.is_empty() {
         out.push_str(&format!(
             "\n(no pricing for {model} — add it to model_pricing.json)\n"
         ));
@@ -1239,6 +1268,7 @@ pub fn stats(path: &Path) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracestore::FileTraceStore;
 
     #[test]
     fn follow_lines_render_the_show_vocabulary() {
@@ -1381,10 +1411,9 @@ mod tests {
     #[test]
     fn stats_table_per_turn_attribution_and_pricing() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run_st.jsonl");
-        let lines: Vec<String> = two_turn_trace().iter().map(|r| r.to_string()).collect();
-        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-        let out = stats(&path).unwrap();
+        let store = FileTraceStore::new(dir.path());
+        store.write_run("run_st", &two_turn_trace(), &[]).unwrap();
+        let out = stats(&store, "run_st").unwrap();
         assert!(out.contains("claude-sonnet-5"), "{out}");
         // turn 1: the cell + its effect + the llm http effect belong to it
         let t1 = out
@@ -1413,10 +1442,9 @@ mod tests {
         let mut records = two_turn_trace();
         records[2]["input"]["json"]["model"] = json!("thinkingmachines/Inkling");
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run_x.jsonl");
-        let lines: Vec<String> = records.iter().map(|r| r.to_string()).collect();
-        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-        let out = stats(&path).unwrap();
+        let store = FileTraceStore::new(dir.path());
+        store.write_run("run_x", &records, &[]).unwrap();
+        let out = stats(&store, "run_x").unwrap();
         assert!(
             out.contains("no pricing for thinkingmachines/Inkling"),
             "{out}"
@@ -1462,15 +1490,11 @@ mod tests {
         let text = input.to_string();
         records[2]["input"] = json!({"__blob": "sha256:t1", "bytes": text.len()});
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run_abc.jsonl");
-        let lines: Vec<String> = records.iter().map(|r| r.to_string()).collect();
-        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-        std::fs::write(
-            path.with_extension("jsonl.blobs"),
-            json!({"hash": "sha256:t1", "data": text}).to_string() + "\n",
-        )
-        .unwrap();
-        let row = ls_row(&records, Some(&path));
+        let store = FileTraceStore::new(dir.path());
+        store
+            .write_run("run_abc", &records, &[("sha256:t1".into(), text)])
+            .unwrap();
+        let row = ls_row(&records, Some((&store, "run_abc")));
         assert_eq!(row.title, "what's the weather in Berlin?");
         // and without a sidecar the row still renders, just untitled
         assert_eq!(ls_row(&records, None).title, "");

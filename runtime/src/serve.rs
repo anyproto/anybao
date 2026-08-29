@@ -13,6 +13,7 @@ use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
+use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
     chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
@@ -1119,6 +1120,10 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             pending.keys().collect::<Vec<_>>()
         );
     }
+    // trace storage (ADR-001 §8): the file store today; every writer
+    // and reader — serve, the guest's `trace.*` syscalls — goes
+    // through the trait so the backend is swappable
+    let traces: Arc<dyn TraceStore> = Arc::new(FileTraceStore::new(&cfg.traces_dir));
     std::fs::create_dir_all(&cfg.traces_dir)?;
 
     // Single-active election (ADR-015): register this device in the
@@ -1180,6 +1185,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         pending_overlays: Mutex::new(pending),
         client: client.clone(),
         cfg,
+        traces,
         space: space.clone(),
         chat: chat.clone(),
         anchor: anchor.clone(),
@@ -1258,6 +1264,9 @@ pub struct RunCtx {
     pub pending_overlays: Mutex<BTreeMap<String, String>>,
     pub client: Arc<Client>,
     pub cfg: Config,
+    /// trace storage (ADR-001 §8) — threaded into every Broker so the
+    /// guest reads past runs through the same store serve writes
+    pub traces: Arc<dyn TraceStore>,
     pub space: String,
     pub chat: String,
     pub anchor: String,
@@ -1333,8 +1342,7 @@ impl RunCtx {
     fn broker(&self, spec: &str, run_id: String) -> Broker {
         let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
-        let trace_path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
-        if let Err(e) = writer.stream_to(&trace_path) {
+        if let Err(e) = writer.stream_to(self.traces.as_ref()) {
             warn!("trace streaming unavailable ({e}); will write at run end");
         }
         // agent config is read through the store (ADR-006 §3): the
@@ -1350,6 +1358,7 @@ impl RunCtx {
         );
         b.secrets_guard = self.secrets_guard.clone();
         b.oauth = Some(self.oauth.clone());
+        b.trace_store = Some(self.traces.clone());
         b.secret_store = self
             .secret_store
             .clone()
@@ -1382,8 +1391,7 @@ impl RunCtx {
         let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         let run_id = broker.writer.run_id();
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
-        outcome.broker.writer.dump(&path)?;
+        outcome.broker.writer.dump(self.traces.as_ref())?;
         Ok((
             run_id.clone(),
             RunResult {
@@ -1426,8 +1434,7 @@ impl RunCtx {
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        let path = self.cfg.traces_dir.join(format!("{run_id}.jsonl"));
-        outcome.broker.writer.dump(&path)?;
+        outcome.broker.writer.dump(self.traces.as_ref())?;
         Ok(json!({
             "status": outcome.status,
             "value": outcome.value,

@@ -4,11 +4,9 @@
 //! separators — serde_json's default Map is a BTreeMap, matching
 //! Python's sort_keys=True), same input_key hash domain.
 
+use crate::tracestore::{TraceSink, TraceStore};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 
 pub const SCHEMA: i64 = 2;
 pub const BLOB_THRESHOLD: usize = 64 * 1024;
@@ -30,11 +28,13 @@ pub struct TraceWriter {
     pub blobs: Vec<(String, String)>,
     seq: i64,
     /// Streaming sink (ADR-001 §1 revision 2026-07-08): records append
-    /// to the trace file at commit time so the file is tail-able
-    /// in-flight and survives a crashed run. `None` = buffered (tests,
-    /// replay fixtures) or a degraded stream — `dump()` then rewrites.
-    sink: Option<fs::File>,
-    path: Option<PathBuf>,
+    /// to the store at commit time so the run is readable in-flight
+    /// and survives a crash. `None` = buffered (tests, replay
+    /// fixtures) or a degraded stream — `dump()` then writes it whole.
+    /// The sink is whatever the [`TraceStore`] opened (ADR-001 §8);
+    /// the writer never touches storage directly.
+    sink: Option<Box<dyn TraceSink>>,
+    streamed: bool,
 }
 
 impl TraceWriter {
@@ -44,34 +44,29 @@ impl TraceWriter {
             blobs: Vec::new(),
             seq: 0,
             sink: None,
-            path: None,
+            streamed: false,
         };
         w.push(json!({"kind": "header", "schema": SCHEMA, "run": run}));
         w
     }
 
-    /// Start streaming to `path`: everything committed so far (the
+    /// Start streaming into `store`: everything committed so far (the
     /// header) is written immediately, every later record appends. A
     /// write failure degrades back to buffered mode — `dump()` at run
     /// end is the fallback rewrite, so no records are ever lost.
-    pub fn stream_to(&mut self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let mut f = fs::File::create(path)?;
+    pub fn stream_to(&mut self, store: &dyn TraceStore) -> anyhow::Result<()> {
+        let mut sink = store.open_sink(&self.run_id())?;
         for r in &self.records {
-            writeln!(f, "{}", canonical_json(r))?;
+            sink.append(r)?;
         }
-        f.flush()?;
-        self.sink = Some(f);
-        self.path = Some(path.to_path_buf());
+        self.sink = Some(sink);
+        self.streamed = true;
         Ok(())
     }
 
     fn push(&mut self, rec: Value) {
-        if let Some(f) = self.sink.as_mut() {
-            let line = canonical_json(&rec);
-            if writeln!(f, "{line}").and_then(|_| f.flush()).is_err() {
+        if let Some(sink) = self.sink.as_mut() {
+            if sink.append(&rec).is_err() {
                 tracing::warn!("trace stream write failed; buffering until dump");
                 self.sink = None;
             }
@@ -100,23 +95,14 @@ impl TraceWriter {
         h.update(text.as_bytes());
         let hash = format!("sha256:{}", hex::encode(h.finalize()));
         let bytes = text.len();
-        if self.sink.is_some() {
-            // sidecar appends in spill order — consumers key by hash
-            if let Some(p) = self.blob_path() {
-                let line = canonical_json(&json!({"hash": hash, "data": text})) + "\n";
-                let _ = fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)
-                    .and_then(|mut f| f.write_all(line.as_bytes()));
+        if let Some(sink) = self.sink.as_mut() {
+            if sink.append_blob(&hash, &text).is_err() {
+                tracing::warn!("trace blob write failed; buffering until dump");
+                self.sink = None;
             }
         }
         self.blobs.push((hash.clone(), text));
         json!({"__blob": hash, "bytes": bytes})
-    }
-
-    fn blob_path(&self) -> Option<PathBuf> {
-        self.path.as_ref().map(|p| p.with_extension("jsonl.blobs"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -212,33 +198,22 @@ impl TraceWriter {
         }));
     }
 
-    pub fn dump(&self, path: &Path) -> anyhow::Result<()> {
-        // healthy stream to the same path already wrote every byte
-        if self.sink.is_some() && self.path.as_deref() == Some(path) {
+    /// Land the run in `store`. A healthy stream into the same store
+    /// already wrote every byte, so this is a no-op then; otherwise
+    /// (buffered, or a stream that degraded) the whole log is written.
+    pub fn dump(&self, store: &dyn TraceStore) -> anyhow::Result<()> {
+        if self.sink.is_some() && self.streamed {
             return Ok(());
         }
-        let mut text = String::new();
-        for r in &self.records {
-            text.push_str(&canonical_json(r));
-            text.push('\n');
-        }
-        fs::write(path, text)?;
-        if !self.blobs.is_empty() {
-            let mut sorted = self.blobs.clone();
-            sorted.sort();
-            let side: String = sorted
-                .iter()
-                .map(|(h, t)| canonical_json(&json!({"hash": h, "data": t})) + "\n")
-                .collect();
-            fs::write(path.with_extension("jsonl.blobs"), side)?;
-        }
-        Ok(())
+        store.write_run(&self.run_id(), &self.records, &self.blobs)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracestore::FileTraceStore;
+    use std::fs;
 
     fn effect_rec(w: &mut TraceWriter, out: Value) {
         let key = input_key("x.y", &json!({"a": 1}));
@@ -257,9 +232,10 @@ mod tests {
     #[test]
     fn streaming_appends_per_record_and_matches_dump() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.jsonl");
+        let store = FileTraceStore::new(dir.path());
+        let path = store.path_of("run_s");
         let mut w = TraceWriter::new(json!({"id": "run_s", "program": "p"}));
-        w.stream_to(&path).unwrap();
+        w.stream_to(&store).unwrap();
         // header lands before any effect — the file exists at run start
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
         effect_rec(&mut w, json!({"ok": 1}));
@@ -268,26 +244,28 @@ mod tests {
         effect_rec(&mut w, json!({"ok": 2}));
         w.cell("main", true, None, false, json!({"fuel_used": 1}));
 
-        // dump on the streamed path is a no-op; bytes equal a buffered twin
-        w.dump(&path).unwrap();
-        let mut twin = TraceWriter::new(json!({"id": "run_s", "program": "p"}));
+        // dump on the streamed store is a no-op; bytes equal a buffered twin
+        w.dump(&store).unwrap();
+        let mut twin = TraceWriter::new(json!({"id": "run_twin", "program": "p"}));
         effect_rec(&mut twin, json!({"ok": 1}));
         effect_rec(&mut twin, json!({"ok": 2}));
         twin.cell("main", true, None, false, json!({"fuel_used": 1}));
-        let twin_path = dir.path().join("twin.jsonl");
-        twin.dump(&twin_path).unwrap();
+        twin.dump(&store).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            fs::read_to_string(&twin_path).unwrap()
+            fs::read_to_string(store.path_of("run_twin"))
+                .unwrap()
+                .replace("run_twin", "run_s")
         );
     }
 
     #[test]
     fn streaming_writes_blob_sidecar_at_spill_time() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.jsonl");
+        let store = FileTraceStore::new(dir.path());
+        let path = store.path_of("run_b");
         let mut w = TraceWriter::new(json!({"id": "run_b", "program": "p"}));
-        w.stream_to(&path).unwrap();
+        w.stream_to(&store).unwrap();
         let big = json!({"data": "z".repeat(BLOB_THRESHOLD + 1)});
         effect_rec(&mut w, big);
         let side = fs::read_to_string(path.with_extension("jsonl.blobs")).unwrap();
