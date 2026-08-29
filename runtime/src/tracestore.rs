@@ -65,15 +65,31 @@ pub trait TraceStore: Send + Sync {
         blobs: &[(String, String)],
     ) -> anyhow::Result<()>;
     /// Run-end hook (ADR-023 §3): the whole log is landed (streamed or
-    /// via `write_run`); a store that keeps a per-run summary writes it
-    /// here. Default: nothing.
+    /// via `write_run`); returns the run summary (§1) — computed from
+    /// the blob-resolved log — and a store that keeps summaries stores
+    /// it. `started_at` = the writer's wall-clock.
     fn finish(
         &self,
-        _run_id: &str,
-        _records: &[Value],
-        _blobs: &[(String, String)],
-    ) -> anyhow::Result<()> {
-        Ok(())
+        run_id: &str,
+        records: &[Value],
+        blobs: &[(String, String)],
+        started_at: f64,
+    ) -> anyhow::Result<Value> {
+        let _ = run_id;
+        Ok(summary_of(records, blobs, started_at, None))
+    }
+    /// Retention (ADR-023 §6): drop the bodies of runs older than the
+    /// cutoffs — `conversations_before` for runs of `chat_program`,
+    /// `jobs_before` for every other program (None = keep). Summaries
+    /// stay. Returns the number of runs expired. Default: no-op (the
+    /// file store keeps everything).
+    fn expire(
+        &self,
+        _chat_program: &str,
+        _conversations_before: Option<f64>,
+        _jobs_before: Option<f64>,
+    ) -> anyhow::Result<usize> {
+        Ok(0)
     }
     /// Every run in the store, newest first.
     fn list(&self) -> anyhow::Result<Vec<RunMeta>>;
@@ -340,7 +356,7 @@ impl TraceStore for FileTraceStore {
 // --- the any local-store backend (ADR-023) -----------------------------------
 
 use crate::anyapi::Client;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub const RECORDS_COLL: &str = "trace_records";
 pub const BLOBS_COLL: &str = "trace_blobs";
@@ -351,6 +367,31 @@ const FLUSH_EVERY: usize = 64;
 const CHUNK: usize = 500;
 /// query cap
 const PAGE: usize = 1000;
+
+/// The run summary (ADR-023 §1) from an in-memory log + its blobs.
+pub fn summary_of(
+    records: &[Value],
+    blobs: &[(String, String)],
+    started_at: f64,
+    device: Option<&str>,
+) -> Value {
+    let map: BTreeMap<String, String> = blobs.iter().cloned().collect();
+    let resolved: Vec<Value> = records
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            if let Some(o) = r.as_object_mut() {
+                for key in ["input", "output"] {
+                    if let Some(v) = o.get(key) {
+                        o.insert(key.into(), resolve_blobs(v.clone(), &map));
+                    }
+                }
+            }
+            r
+        })
+        .collect();
+    crate::view::run_summary(&resolved, Some(started_at), Some(now_s()), device)
+}
 
 /// Integral f64 → i64 everywhere in a value (|x| < 2^53, exact).
 pub fn fold_integral_floats(v: Value) -> Value {
@@ -413,8 +454,6 @@ pub struct AnyTraceStore {
     blobs: Value,
     runs: Value,
     device: Option<String>,
-    /// open_sink wall-clock per run — `finish` stamps it as startedAt
-    started: Mutex<BTreeMap<String, f64>>,
 }
 
 impl AnyTraceStore {
@@ -453,7 +492,6 @@ impl AnyTraceStore {
             blobs,
             runs,
             device,
-            started: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -579,10 +617,6 @@ impl TraceSink for AnySink {
 
 impl TraceStore for AnyTraceStore {
     fn open_sink(&self, run_id: &str) -> anyhow::Result<Box<dyn TraceSink>> {
-        self.started
-            .lock()
-            .unwrap()
-            .insert(run_id.to_string(), now_s());
         Ok(Box::new(AnySink {
             client: self.client.clone(),
             records: self.records.clone(),
@@ -598,11 +632,6 @@ impl TraceStore for AnyTraceStore {
         records: &[Value],
         blobs: &[(String, String)],
     ) -> anyhow::Result<()> {
-        self.started
-            .lock()
-            .unwrap()
-            .entry(run_id.to_string())
-            .or_insert_with(now_s);
         let docs: Vec<Value> = records.iter().map(|r| Self::doc_of(run_id, r)).collect();
         self.upsert_chunks(&self.records, &docs)?;
         let bdocs: Vec<Value> = blobs.iter().map(|(h, d)| Self::blob_doc(h, d)).collect();
@@ -614,27 +643,71 @@ impl TraceStore for AnyTraceStore {
         run_id: &str,
         records: &[Value],
         blobs: &[(String, String)],
-    ) -> anyhow::Result<()> {
-        let map: BTreeMap<String, String> = blobs.iter().cloned().collect();
-        let resolved: Vec<Value> = records
+        started_at: f64,
+    ) -> anyhow::Result<Value> {
+        let _ = run_id;
+        let summary = summary_of(records, blobs, started_at, self.device.as_deref());
+        self.client
+            .local_upsert(&self.runs, std::slice::from_ref(&summary))?;
+        Ok(summary)
+    }
+
+    fn expire(
+        &self,
+        chat_program: &str,
+        conversations_before: Option<f64>,
+        jobs_before: Option<f64>,
+    ) -> anyhow::Result<usize> {
+        let mut victims: Vec<String> = Vec::new();
+        for (before, is_chat) in [(conversations_before, true), (jobs_before, false)] {
+            let Some(before) = before else { continue };
+            let prog = if is_chat {
+                json!(chat_program)
+            } else {
+                json!({"$ne": chat_program})
+            };
+            let rows = self.query_all(
+                &self.runs,
+                json!({"startedAt": {"$lt": before}, "program": prog, "expired": {"$ne": true}}),
+                json!(["startedAt"]),
+            )?;
+            victims.extend(
+                rows.iter()
+                    .filter_map(|r| r["id"].as_str().map(str::to_string)),
+            );
+        }
+        if victims.is_empty() {
+            return Ok(0);
+        }
+        for chunk in victims.chunks(200) {
+            self.client.local_delete(
+                &self.records,
+                None,
+                Some(&json!({"runId": {"$in": chunk}})),
+            )?;
+            // the summary stays (ADR-023 §6) — marked so `load` can say why
+            for id in chunk {
+                self.client.local_update_flag(&self.runs, id, "expired")?;
+            }
+        }
+        // blobs no surviving record references
+        let live = self.query_all(
+            &self.records,
+            json!({"$or": [{"input.__blob": {"$exists": true}}, {"output.__blob": {"$exists": true}}]}),
+            json!(["seq"]),
+        )?;
+        let keep: std::collections::BTreeSet<String> = Self::blob_refs(&live).into_iter().collect();
+        let all = self.query_all(&self.blobs, json!({}), json!(["id"]))?;
+        let dead: Vec<String> = all
             .iter()
-            .map(|r| {
-                let mut r = r.clone();
-                if let Some(o) = r.as_object_mut() {
-                    for key in ["input", "output"] {
-                        if let Some(v) = o.get(key) {
-                            o.insert(key.into(), resolve_blobs(v.clone(), &map));
-                        }
-                    }
-                }
-                r
-            })
+            .filter_map(|b| b["id"].as_str())
+            .filter(|h| !keep.contains(*h))
+            .map(str::to_string)
             .collect();
-        let started = self.started.lock().unwrap().remove(run_id);
-        let summary =
-            crate::view::run_summary(&resolved, started, Some(now_s()), self.device.as_deref());
-        self.client.local_upsert(&self.runs, &[summary])?;
-        Ok(())
+        for chunk in dead.chunks(500) {
+            self.client.local_delete(&self.blobs, Some(chunk), None)?;
+        }
+        Ok(victims.len())
     }
 
     fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
@@ -685,7 +758,9 @@ impl TraceStore for AnyTraceStore {
             "trace.query: pipeline must be a list of stages"
         );
         if let Some(stage) = find_sink_stage(pipeline) {
-            anyhow::bail!("trace.query is read-only: {stage} is not allowed (the guest reads traces, it does not write them)");
+            anyhow::bail!(
+                "trace.query is read-only: {stage} is not allowed (the guest reads traces, it does not write them)"
+            );
         }
         let reply = self.client.local_aggregate(target, pipeline, &json!({}))?;
         Ok(fold_integral_floats(json!({"records": reply["records"]})))
@@ -693,7 +768,20 @@ impl TraceStore for AnyTraceStore {
 
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
         let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
-        anyhow::ensure!(!docs.is_empty(), "unknown run {run_id}");
+        if docs.is_empty() {
+            // expired (retention, ADR-023 §6) vs never existed
+            let known = self
+                .client
+                .local_get(&self.runs, run_id)
+                .ok()
+                .filter(|r| !r.is_null());
+            match known {
+                Some(row) if row["expired"] == true => anyhow::bail!(
+                    "run {run_id}: expired — body dropped by retention, summary only (effects.runs)"
+                ),
+                _ => anyhow::bail!("unknown run {run_id}"),
+            }
+        }
         validate_records(docs.into_iter().map(Self::record_of).collect(), run_id)
     }
 
@@ -847,7 +935,9 @@ mod live {
             false,
             json!({"fuel_used": 1, "duration_ms": 5}),
         );
-        w.dump(&store).unwrap();
+        let summary = w.dump(&store).unwrap();
+        assert_eq!(summary["id"], "run_live1");
+        assert_eq!(summary["device"], "dev-1");
 
         // list → the summary row; load → the intact log; blobs resolve
         let ids: Vec<_> = store.list().unwrap().into_iter().map(|m| m.id).collect();
@@ -928,5 +1018,21 @@ mod live {
             )
             .unwrap();
         assert_eq!(runs["records"][0]["status"], "FAILED");
+
+        // retention (ADR-023 §6): jobs older than "now" expire — bodies
+        // + orphan blobs go, the summary stays and load says why
+        let n = store.expire("chat@v1", None, Some(now_s() + 1.0)).unwrap();
+        assert!(n >= 2, "expired {n}");
+        let err = store.load("run_live1").unwrap_err().to_string();
+        assert!(err.contains("expired"), "{err}");
+        assert!(store.list().unwrap().iter().any(|m| m.id == "run_live1"));
+        let blobs = client
+            .local_query(&Client::local_coll(&space, BLOBS_COLL), &json!({}))
+            .unwrap();
+        assert_eq!(blobs["records"].as_array().unwrap().len(), 0, "{blobs}");
+        assert_eq!(
+            store.expire("chat@v1", None, Some(now_s() + 1.0)).unwrap(),
+            0
+        );
     }
 }

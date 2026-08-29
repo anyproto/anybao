@@ -26,6 +26,9 @@ pub fn input_key(effect: &str, canonical_input: &Value) -> String {
 pub struct TraceWriter {
     pub records: Vec<Value>,
     pub blobs: Vec<(String, String)>,
+    /// host wall-clock at construction — the run summary's
+    /// `startedAt` (records themselves stay time-free, ADR-001 §2)
+    pub started_at: f64,
     seq: i64,
     /// Streaming sink (ADR-001 §1 revision 2026-07-08): records append
     /// to the store at commit time so the run is readable in-flight
@@ -42,6 +45,10 @@ impl TraceWriter {
         let mut w = TraceWriter {
             records: Vec::new(),
             blobs: Vec::new(),
+            started_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0),
             seq: 0,
             sink: None,
             streamed: false,
@@ -201,8 +208,9 @@ impl TraceWriter {
     /// Land the run in `store`. A healthy stream into the same store
     /// already wrote every record, so only the run's `finish` (flush +
     /// summary, ADR-023 §3) runs then; otherwise (buffered, or a stream
-    /// that degraded) the whole log is written first.
-    pub fn dump(&mut self, store: &dyn TraceStore) -> anyhow::Result<()> {
+    /// that degraded) the whole log is written first. Returns the run
+    /// summary (ADR-023 §1) for the host to publish.
+    pub fn dump(&mut self, store: &dyn TraceStore) -> anyhow::Result<Value> {
         let run = self.run_id();
         if !(self.sink.is_some() && self.streamed) {
             store.write_run(&run, &self.records, &self.blobs)?;
@@ -210,7 +218,7 @@ impl TraceWriter {
         if let Some(mut sink) = self.sink.take() {
             sink.close()?;
         }
-        store.finish(&run, &self.records, &self.blobs)
+        store.finish(&run, &self.records, &self.blobs, self.started_at)
     }
 }
 

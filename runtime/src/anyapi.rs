@@ -782,6 +782,15 @@ impl Client {
         Ok(ids_of(reply))
     }
 
+    /// POST /v1/local/update — `$set {flag: true}` on one document.
+    pub fn local_update_flag(&self, coll: &Value, id: &str, flag: &str) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            "/v1/local/update",
+            Some(&json!({"coll": coll, "id": id, "modifier": {"$set": {flag: true}}})),
+        )
+    }
+
     /// POST /v1/local/get — one document by id (404 local.doc_not_found).
     pub fn local_get(&self, coll: &Value, id: &str) -> Result<Value, AnyError> {
         let reply = self.call(

@@ -92,7 +92,7 @@ depend on it is not a new dependency.
 |---|---|---|
 | `trace_records` | one trace record (ADR-001 §2 shape, unchanged) + `runId`; `id = "<runId>:<seq zero-padded 6>"` | `(runId, seq)` unique; `name`; `effect`; `error.type` sparse; `meta.class` |
 | `trace_blobs` | `{id: <sha256 hash>, bytes, data}` (§7 spill) | primary key only |
-| `trace_runs` | the `agent_runs` summary, local mirror, `id = runId` | `program`; `startedAt`; `status`; `mutations` |
+| `trace_runs` | the `agent_runs` summary, local mirror, `id = runId`; `expired: true` once retention dropped the body | `program`; `startedAt`; `status`; `mutations` |
 
 Records stay **time-free** (ADR-001 §2): wall-clock lives on the run
 summary (`startedAt/endedAt`), and every time-scoped question is a
@@ -149,8 +149,10 @@ the repetition.
   → `/v1/local/aggregate` on the named trace collection. The syscall
   (`trace.query`, class read) pins `coll` to the three trace
   collections; the guest never names a storage collection. Sinks
-  (`$out/$merge`) are refused — the guest reads traces, it does not
-  write them.
+  (`$out/$merge`) are refused anywhere in the pipeline, `$facet`
+  branches included — the guest reads traces, it does not write them.
+  any-store names a `$group` row's key `id` (not `_id`); the docstring
+  says so.
 - Skill guidance (`_core.md`, past-runs paragraph) gains the three
   recipes the e2e asked for: provenance (`$match {name:
   "any.create_object", "output.objectId": X}`), audit (`$match
@@ -164,12 +166,15 @@ the repetition.
 Host housekeeping in serve (a ticker, not a guest program — it writes
 the trace store): `[traces] retain_conversations = "90d"`,
 `retain_jobs = "14d"` (runs whose program is not the chat loop).
-Expiry deletes `trace_records` by `runId` filter in 256-doc chunks,
-then blobs no surviving record references (`$lookup` local↔local),
-then the `trace_runs` mirror row. The **synced summary is kept
-forever** — it is small, and it is what "did it run" questions and
-`traceRef` links resolve against after the body is gone (`effects.of`
-on an expired run answers a typed `trace.expired` with the summary).
+Expiry deletes `trace_records` by `runId` filter (200 runs per
+delete), then blobs no surviving record references (the live refs are
+collected with one `$exists` query — local↔local `$lookup` was not
+needed), and marks the `trace_runs` mirror row `expired`. **Summaries
+are kept forever**, synced and mirrored — small, and what "did it run"
+questions and `traceRef` links resolve against after the body is gone
+(`effects.of/get/stats` on an expired run answer a typed error naming
+retention and pointing at `effects.runs`). The file backend has no
+retention (the jsonl dir is a dev/offline store).
 
 ### 7. CLI and tooling
 
@@ -188,6 +193,15 @@ trigger id) at read time in `any@v1`'s trigger reads and in the UI;
 the runner no longer stamps them and `runCount` is dropped. One source
 of truth ends the drift class the e2e found (Issue 4 in `tracepeek`).
 `consecutiveFailures` stays runner-owned only as scheduling state.
+
+*Implementation phase (2026-08-29):* the host publishes every run's
+summary to `agent_runs`; the runner's `lastRun*` stamps **stay** until
+the readers (`any@v1` trigger listing, any-ui's Scheduled view) read
+`agent_runs` — switching writer and readers apart would leave a window
+with neither. Until then the summary is the truth and the stamps are
+a cache that any query can check (`effects.runs(filter={"triggerId":
+…})` once the runner stamps `triggerId` on the summary — the second
+half of this phase). Tracked as a task in the dev space, not here.
 
 ### 9. Isolation
 

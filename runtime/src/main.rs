@@ -191,6 +191,16 @@ enum TraceCmd {
         #[arg(long, default_value = "bao")]
         space: String,
     },
+    /// copy a jsonl traces directory into a server's local store
+    /// (ADR-023 §7) — records, blobs, and a summary per run; idempotent
+    Import {
+        #[arg(default_value = "traces")]
+        dir: PathBuf,
+        #[arg(long)]
+        addr: String,
+        #[arg(long, default_value = "bao")]
+        space: String,
+    },
     /// distributions + tuning suggestions over a traces directory (or
     /// a server's local store with --addr)
     Stats {
@@ -379,7 +389,7 @@ fn main() -> Result<()> {
                 Arc::new(AtomicBool::new(false)),
                 timeout_s,
             )?;
-            out.broker.writer.dump(store.as_ref())?;
+            let _summary = out.broker.writer.dump(store.as_ref())?;
             println!(
                 "{}",
                 json!({
@@ -527,6 +537,47 @@ fn main() -> Result<()> {
                 }
             };
             view::follow(store.as_ref(), &id)
+        }
+        Cmd::Trace {
+            cmd: TraceCmd::Import { dir, addr, space },
+        } => {
+            use anyrt::tracestore::TraceStore;
+            let src = FileTraceStore::new(&dir);
+            let dst = trace_store(Some(&addr), &space, &dir)?;
+            let runs = src.list()?;
+            let total = runs.len();
+            let mut done = 0usize;
+            let mut failed = 0usize;
+            for meta in runs.into_iter().rev() {
+                let (records, blobs) = match (src.load(&meta.id), src.blobs(&meta.id)) {
+                    (Ok(r), Ok(b)) => (r, b),
+                    (Err(e), _) | (_, Err(e)) => {
+                        eprintln!("{}: skipped ({e:#})", meta.id);
+                        failed += 1;
+                        continue;
+                    }
+                };
+                let blobs: Vec<(String, String)> = blobs.into_iter().collect();
+                let started = meta
+                    .modified
+                    .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                if let Err(e) = dst
+                    .write_run(&meta.id, &records, &blobs)
+                    .and_then(|_| dst.finish(&meta.id, &records, &blobs, started))
+                {
+                    eprintln!("{}: not imported ({e:#})", meta.id);
+                    failed += 1;
+                    continue;
+                }
+                done += 1;
+                if done.is_multiple_of(50) {
+                    eprintln!("{done}/{total}…");
+                }
+            }
+            println!("imported {done} of {total} runs ({failed} failed) into {addr} space {space}");
+            Ok(())
         }
         Cmd::Trace {
             cmd: TraceCmd::Stats { dir, addr, space },

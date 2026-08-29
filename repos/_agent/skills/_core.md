@@ -79,7 +79,11 @@ record of every run — provenance (`$match {"name":
 "any.create_object", "output.objectId": X}`), audit (`$match
 {"meta.class": "mutate"}` → `$group` by `$runId`), failures (`$match
 {"error.type": {"$exists": true}}`); `help(effects.query)` has the
-recipes.
+recipes. Trace bodies are per device; the run summaries also sync as
+the `agent_runs` dataset on the bao space's `bao/runs/v1` bundle child
+(`c.bundle_child(baoSpaceConfig, "bao/v1", "bao/runs/v1")` →
+`c.query(..., "agent_runs", filter=...)`) — that is where another
+device's runs show up.
 
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo

@@ -28,6 +28,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
+/// The chat loop's program spec — the "conversation" class for
+/// retention (ADR-023 §6).
+pub const CHAT_PROGRAM: &str = "agent:toolcaller@v1";
+
 fn now_s() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -140,6 +144,8 @@ pub struct AgentStores {
     pub config: String,
     pub secrets: String,
     pub triggers: String,
+    /// `bao/runs/v1` — the synced per-run summaries (ADR-023 §1)
+    pub runs: String,
 }
 
 fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
@@ -306,10 +312,20 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
+    ensure_dataset(
+        c,
+        space,
+        &trg_t,
+        &json!({
+            "name": "agent_runs", "displayName": "Agent Runs",
+            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
+            "dynamic": true, "fields": []}),
+    )?;
     let stores = AgentStores {
         config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
         secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
         triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
+        runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &[&trg_t])?,
     };
     // Display names only — every consumer resolves these anchors by
     // bundle seed, never by name (ADR-017 §0), but a derived object
@@ -320,6 +336,7 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         (&stores.config, "agent-config"),
         (&stores.secrets, "agent-secrets"),
         (&stores.triggers, "agent-triggers"),
+        (&stores.runs, "agent-runs"),
     ] {
         ensure_child_name(c, space, id, name)?;
     }
@@ -965,6 +982,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // child — deterministic, no name-scan.
     let stores = provision_agent_stores(&client, &space)?;
     let anchor = stores.triggers.clone();
+    let runs_anchor = stores.runs.clone();
 
     // Config store (ADR-006 §3): seed the config child (hard, then
     // soft), then read through to it — the host keeps no copy.
@@ -1203,6 +1221,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         space: space.clone(),
         chat: chat.clone(),
         anchor: anchor.clone(),
+        runs_anchor,
         aliases,
         code_space,
         secrets_guard,
@@ -1218,6 +1237,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let mut threads = vec![
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
+        retention_thread(ctx.clone(), shutdown.clone()),
     ];
     if election.enabled {
         threads.push(election_thread(
@@ -1261,6 +1281,28 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     })
 }
 
+/// Trace retention (ADR-023 §6): host housekeeping, not a guest
+/// program — it writes the trace store. First pass a minute after
+/// boot, then hourly; a no-op unless `[traces] retain_*` is set.
+fn retention_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let configured =
+            ctx.cfg.retain_conversations_s.is_some() || ctx.cfg.retain_jobs_s.is_some();
+        if !configured {
+            return;
+        }
+        sliced_sleep(Duration::from_secs(60), &stop);
+        while !stop.load(Ordering::Relaxed) {
+            match ctx.expire_traces() {
+                Ok(0) => {}
+                Ok(n) => info!("trace retention: {n} run bodies expired"),
+                Err(e) => warn!("trace retention failed: {e:#}"),
+            }
+            sliced_sleep(Duration::from_secs(3600), &stop);
+        }
+    })
+}
+
 /// Sleep in 100ms slices so a shutdown flag is observed promptly.
 fn sliced_sleep(total: Duration, stop: &AtomicBool) {
     let mut left = total;
@@ -1284,6 +1326,9 @@ pub struct RunCtx {
     pub space: String,
     pub chat: String,
     pub anchor: String,
+    /// the `bao/runs/v1` child — one synced `agent_runs` summary per
+    /// run (ADR-023 §1), written by `publish_run`
+    pub runs_anchor: String,
     /// resolver alias namespace (ADR-009 §2) — overlays + the `agent`
     /// default
     pub aliases: BTreeMap<String, String>,
@@ -1353,6 +1398,42 @@ impl RunCtx {
         anyhow::bail!("{list} still joining/syncing — waiting for the publisher's approval")
     }
 
+    /// The synced per-run summary (ADR-023 §1): one `agent_runs` record
+    /// per run in the `bao/runs/v1` child — every device sees every
+    /// device's runs. Best-effort: the trace itself is already landed;
+    /// a failed publish is logged, never fails the run.
+    fn publish_run(&self, mut summary: Value) {
+        let Some(id) = summary["id"].as_str().map(str::to_string) else {
+            return;
+        };
+        if summary["device"].is_null() {
+            summary["device"] = json!(self.self_peer);
+        }
+        // the record id is the run id; `id` inside a value is immutable
+        // to the dataset validator — `runId` carries it in the row
+        if let Some(o) = summary.as_object_mut() {
+            o.remove("id");
+        }
+        if let Err(e) =
+            self.client
+                .upsert_record(&self.space, &self.runs_anchor, "agent_runs", &id, &summary)
+        {
+            warn!("agent_runs {id}: summary not published: {e}");
+        }
+    }
+
+    /// Retention pass (ADR-023 §6): drop run bodies past the configured
+    /// ages; summaries stay. No-op when nothing is configured.
+    pub fn expire_traces(&self) -> Result<usize> {
+        let now = now_s();
+        let conv = self.cfg.retain_conversations_s.map(|s| now - s as f64);
+        let jobs = self.cfg.retain_jobs_s.map(|s| now - s as f64);
+        if conv.is_none() && jobs.is_none() {
+            return Ok(0);
+        }
+        self.traces.expire(CHAT_PROGRAM, conv, jobs)
+    }
+
     fn broker(&self, spec: &str, run_id: String) -> Broker {
         let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
@@ -1405,7 +1486,8 @@ impl RunCtx {
         let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         let run_id = broker.writer.run_id();
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        outcome.broker.writer.dump(self.traces.as_ref())?;
+        let summary = outcome.broker.writer.dump(self.traces.as_ref())?;
+        self.publish_run(summary);
         Ok((
             run_id.clone(),
             RunResult {
@@ -1448,7 +1530,8 @@ impl RunCtx {
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
-        outcome.broker.writer.dump(self.traces.as_ref())?;
+        let summary = outcome.broker.writer.dump(self.traces.as_ref())?;
+        self.publish_run(summary);
         Ok(json!({
             "status": outcome.status,
             "value": outcome.value,
