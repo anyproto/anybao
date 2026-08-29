@@ -363,8 +363,33 @@ pub const BLOBS_COLL: &str = "trace_blobs";
 pub const RUNS_COLL: &str = "trace_runs";
 /// records buffered before a flush (ADR-023 §3)
 const FLUSH_EVERY: usize = 64;
-/// server cap is 1000 docs per insert/upsert
+/// server cap is 1000 docs per insert/upsert — and 1 MiB per body,
+/// which a few unspilled ~60 KB records or one spilled blob chunk hit
+/// long before the count does: chunks are size-aware
 const CHUNK: usize = 500;
+const CHUNK_BYTES: usize = 700 * 1024;
+
+/// Split docs into request-sized chunks: ≤ `CHUNK` docs and ≤
+/// `CHUNK_BYTES` of JSON each (a single oversized doc goes alone —
+/// the server's 1 MiB cap is then its own error).
+fn size_chunks(docs: &[Value]) -> Vec<&[Value]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (i, d) in docs.iter().enumerate() {
+        let n = canonical_json(d).len();
+        if i > start && (bytes + n > CHUNK_BYTES || i - start >= CHUNK) {
+            out.push(&docs[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += n;
+    }
+    if start < docs.len() {
+        out.push(&docs[start..]);
+    }
+    out
+}
 /// query cap
 const PAGE: usize = 1000;
 
@@ -565,7 +590,7 @@ impl AnyTraceStore {
     /// Bulk-land docs (write_run / a degraded stream): upsert so a
     /// partially-streamed run re-lands cleanly.
     fn upsert_chunks(&self, coll: &Value, docs: &[Value]) -> anyhow::Result<()> {
-        for chunk in docs.chunks(CHUNK) {
+        for chunk in size_chunks(docs) {
             self.client.local_upsert(coll, chunk)?;
         }
         Ok(())
@@ -586,7 +611,9 @@ impl AnySink {
             return Ok(());
         }
         let docs = std::mem::take(&mut self.batch);
-        self.client.local_insert(&self.records, &docs)?;
+        for chunk in size_chunks(&docs) {
+            self.client.local_insert(&self.records, chunk)?;
+        }
         Ok(())
     }
 }
@@ -598,7 +625,10 @@ impl TraceSink for AnySink {
         let boundary = record["kind"] == "cell"
             || (record["kind"] == "span" && record["phase"] == "end")
             || record["kind"] == "header";
-        if boundary || self.batch.len() >= FLUSH_EVERY {
+        // a big unspilled record (just under the 64 KB threshold) flushes
+        // early so the batch never nears the 1 MiB body cap
+        let big = canonical_json(record).len() > 32 * 1024;
+        if boundary || big || self.batch.len() >= FLUSH_EVERY {
             self.flush()?;
         }
         Ok(())
@@ -860,6 +890,30 @@ mod tests {
         assert!(f["c"][0].is_i64() && f["c"][1]["d"] == -3);
         assert_eq!(f["e"], "x");
         assert_eq!(f["f"], 7);
+    }
+
+    #[test]
+    fn chunks_respect_count_and_bytes() {
+        let small: Vec<Value> = (0..1200).map(|i| json!({"i": i})).collect();
+        let c = size_chunks(&small);
+        assert_eq!(c.len(), 3);
+        assert!(c.iter().all(|x| x.len() <= CHUNK));
+        let big: Vec<Value> = (0..5)
+            .map(|i| json!({"i": i, "d": "x".repeat(300 * 1024)}))
+            .collect();
+        let c = size_chunks(&big);
+        assert_eq!(
+            c.len(),
+            3,
+            "{:?}",
+            c.iter().map(|x| x.len()).collect::<Vec<_>>()
+        );
+        assert!(c
+            .iter()
+            .all(|x| x.iter().map(|d| canonical_json(d).len()).sum::<usize>() <= CHUNK_BYTES));
+        let huge = vec![json!({"d": "x".repeat(2 * 1024 * 1024)})];
+        assert_eq!(size_chunks(&huge).len(), 1);
+        assert_eq!(size_chunks(&[]).len(), 0);
     }
 
     #[test]

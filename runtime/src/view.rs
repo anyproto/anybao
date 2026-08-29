@@ -678,6 +678,15 @@ pub fn list_data(
     program: Option<&str>,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
+    // a store with summaries (ADR-023) answers from them — no per-run loads
+    if let Some(rows) = store.find_runs(&json!({}), &Value::Null, 1000)? {
+        let rows: Vec<Value> = rows
+            .into_iter()
+            .filter(|r| program.is_none_or(|p| r["program"].as_str().unwrap_or("").contains(p)))
+            .take(if limit == 0 { usize::MAX } else { limit })
+            .collect();
+        return Ok(rows);
+    }
     let mut out = Vec::new();
     for meta in store.list()? {
         let Ok(records) = store.load(&meta.id) else {
@@ -705,6 +714,39 @@ pub fn list_data(
 /// Unreadable runs render as a `?` row rather than sinking the listing.
 pub fn list(store: &dyn TraceStore, program: Option<&str>, limit: usize) -> anyhow::Result<String> {
     let mut rows = Vec::new();
+    if let Some(summaries) = store.find_runs(&json!({}), &Value::Null, 1000)? {
+        // summaries carry the row (ADR-023 §1); `expired` bodies still list
+        for r in summaries {
+            let row = LsRow {
+                id: s(&r["id"]),
+                program: s(&r["program"]),
+                status: match r["status"].as_str() {
+                    Some("ok") => "ok",
+                    Some("FAILED") => "FAILED",
+                    Some("interrupted") => "interrupted",
+                    Some("incomplete") => "incomplete",
+                    _ => "?",
+                },
+                dur: r["durationMs"]
+                    .as_f64()
+                    .map(|d| format!("{:.1}s", d / 1000.0))
+                    .unwrap_or_else(|| "?".into()),
+                turns: r["turns"].as_u64().unwrap_or(0) as usize,
+                title: s(&r["title"]),
+            };
+            if let Some(f) = program {
+                if !row.program.contains(f) {
+                    continue;
+                }
+            }
+            let mtime = r["endedAt"]
+                .as_f64()
+                .or(r["startedAt"].as_f64())
+                .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(t));
+            rows.push((mtime, row));
+        }
+        return Ok(render_ls(rows, limit));
+    }
     for meta in store.list()? {
         let row = match store.load(&meta.id) {
             Ok(records) if !records.is_empty() => ls_row(&records, Some((store, &meta.id))),
@@ -725,6 +767,10 @@ pub fn list(store: &dyn TraceStore, program: Option<&str>, limit: usize) -> anyh
         rows.push((meta.modified, row));
     }
 
+    Ok(render_ls(rows, limit))
+}
+
+fn render_ls(rows: Vec<(Option<std::time::SystemTime>, LsRow)>, limit: usize) -> String {
     let total = rows.len();
     let shown = if limit == 0 { total } else { total.min(limit) };
     let mut out = String::new();
@@ -744,7 +790,7 @@ pub fn list(store: &dyn TraceStore, program: Option<&str>, limit: usize) -> anyh
     if total > shown {
         out.push_str(&format!("… {} more (-n 0 shows all)\n", total - shown));
     }
-    Ok(out)
+    out
 }
 
 // --- trace follow — live view over a streaming run file (CLI output) --------
