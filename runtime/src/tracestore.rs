@@ -74,9 +74,12 @@ pub trait TraceStore: Send + Sync {
         records: &[Value],
         blobs: &[(String, String)],
         started_at: f64,
+        trigger: Option<&str>,
     ) -> anyhow::Result<Value> {
         let _ = run_id;
-        Ok(summary_of(records, blobs, started_at, None))
+        let mut s = summary_of(records, blobs, started_at, None);
+        s["triggerId"] = json!(trigger);
+        Ok(s)
     }
     /// Retention (ADR-023 §6): drop the bodies of runs older than the
     /// cutoffs — `conversations_before` for runs of `chat_program`,
@@ -674,9 +677,11 @@ impl TraceStore for AnyTraceStore {
         records: &[Value],
         blobs: &[(String, String)],
         started_at: f64,
+        trigger: Option<&str>,
     ) -> anyhow::Result<Value> {
         let _ = run_id;
-        let summary = summary_of(records, blobs, started_at, self.device.as_deref());
+        let mut summary = summary_of(records, blobs, started_at, self.device.as_deref());
+        summary["triggerId"] = json!(trigger);
         self.client
             .local_upsert(&self.runs, std::slice::from_ref(&summary))?;
         Ok(summary)

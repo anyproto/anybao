@@ -1487,7 +1487,8 @@ impl RunCtx {
         trigger: Option<&str>,
     ) -> Result<(String, RunResult)> {
         self.ensure_ready()?;
-        let broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
+        let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
+        broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
         let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
         let summary = outcome.broker.writer.dump(self.traces.as_ref())?;

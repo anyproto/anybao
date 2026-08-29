@@ -565,7 +565,7 @@ fn main() -> Result<()> {
                     .unwrap_or(0.0);
                 if let Err(e) = dst
                     .write_run(&meta.id, &records, &blobs)
-                    .and_then(|_| dst.finish(&meta.id, &records, &blobs, started))
+                    .and_then(|_| dst.finish(&meta.id, &records, &blobs, started, None))
                 {
                     eprintln!("{}: not imported ({e:#})", meta.id);
                     failed += 1;

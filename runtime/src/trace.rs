@@ -29,6 +29,9 @@ pub struct TraceWriter {
     /// host wall-clock at construction — the run summary's
     /// `startedAt` (records themselves stay time-free, ADR-001 §2)
     pub started_at: f64,
+    /// the trigger that fired this run — the summary's `triggerId`
+    /// (ADR-023 §8); None = chat/control/embedder run
+    pub trigger: Option<String>,
     seq: i64,
     /// Streaming sink (ADR-001 §1 revision 2026-07-08): records append
     /// to the store at commit time so the run is readable in-flight
@@ -49,6 +52,7 @@ impl TraceWriter {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0),
+            trigger: None,
             seq: 0,
             sink: None,
             streamed: false,
@@ -218,7 +222,13 @@ impl TraceWriter {
         if let Some(mut sink) = self.sink.take() {
             sink.close()?;
         }
-        store.finish(&run, &self.records, &self.blobs, self.started_at)
+        store.finish(
+            &run,
+            &self.records,
+            &self.blobs,
+            self.started_at,
+            self.trigger.as_deref(),
+        )
     }
 }
 
