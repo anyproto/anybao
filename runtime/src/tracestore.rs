@@ -319,9 +319,12 @@ impl TraceStore for FileTraceStore {
 
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
         let path = self.path_of(run_id);
-        let text = fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("run {run_id}: {e} ({})", path.display()))?;
-        parse_records(&text, &path.display().to_string())
+        // the guest sees this text: name the run, not the store's layout
+        let text = fs::read_to_string(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => anyhow::anyhow!("unknown run {run_id}"),
+            _ => anyhow::anyhow!("run {run_id}: {e}"),
+        })?;
+        parse_records(&text, run_id)
     }
 
     fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
@@ -883,7 +886,8 @@ mod tests {
         assert_eq!(resolved[1]["output"], json!([1]));
         let ids: Vec<_> = store.list().unwrap().into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec!["run_a"]);
-        assert!(store.load("run_zzz").is_err());
+        let e = store.load("run_zzz").unwrap_err().to_string();
+        assert_eq!(e, "unknown run run_zzz"); // no path, no doubled prefix
     }
 
     #[test]

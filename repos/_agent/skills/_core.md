@@ -56,7 +56,9 @@ filter key must exist in the observed shape; a key the shape doesn't
 show silently matches nothing.
 
 **Past runs are readable.** A chat reply's `traceRef` (on its
-`agent_turns` record) and a trigger's `lastRunRef` name a run;
+`agent_turns` record — `use("agent:history@v1").recent_turns(c,
+baoSpaceConfig, baoSpaceConfig["chatId"], n)` returns them newest
+first) and a trigger's `lastRunRef` name a run;
 `effects.runs("toolcaller")` lists recent conversations by title.
 `effects.stats(run=ref)` is the one-call summary (status, error, per-
 turn tokens/cost); `effects.of(run=ref)` outlines it — `llm.chat`
