@@ -308,15 +308,6 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         space,
         &trg_t,
         &json!({
-            "name": "agent_trigger_runs", "displayName": "Agent Trigger Runs",
-            "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
-            "dynamic": true, "fields": []}),
-    )?;
-    ensure_dataset(
-        c,
-        space,
-        &trg_t,
-        &json!({
             "name": "agent_runs", "displayName": "Agent Runs",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
@@ -2074,25 +2065,17 @@ fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Val
         })
 }
 
-/// Run bookkeeping (ADR-006 §4): the breaker + rollup on the registry
-/// entry, one `agent_trigger_runs` record, the trigger record
-/// rewritten. A no-op if the trigger was evicted mid-run.
+/// Run bookkeeping (ADR-006 §4): the breaker + scheduler state on the
+/// registry entry, the trigger record rewritten. Run history is the
+/// `agent_runs` summary the run itself published (ADR-023 §8). A no-op
+/// if the trigger was evicted mid-run.
 fn finish_run(shared: &Shared, ctx: &RunCtx, trigger_id: &str, rr: &RunResult) {
     let mut reg = shared.triggers.lock().unwrap();
     let Some(live) = reg.get_mut(trigger_id) else {
         return;
     };
     let sched = shared.scheduler.lock().unwrap();
-    let run_rec = sched.record_run(live, rr);
-    let ts_ms = (now_s() * 1000.0) as i64;
-    let rid = format!("{trigger_id}:{ts_ms:020}");
-    let _ = ctx.client.upsert_record(
-        &ctx.space,
-        &ctx.anchor,
-        "agent_trigger_runs",
-        &rid,
-        &run_rec,
-    );
+    sched.record_run(live, rr);
     let _ = ctx.client.upsert_record(
         &ctx.space,
         &ctx.anchor,
@@ -2369,7 +2352,6 @@ fn note_chat_start(shared: &Shared, ctx: &RunCtx) {
     let Some(t) = reg.get_mut(&shared.chat_watch_id) else {
         return;
     };
-    t.run_count += 1;
     t.last_run_at = Some(now_s());
     t.last_status = Some("ok".into());
     t.consecutive_failures = 0;
@@ -2528,12 +2510,14 @@ fn handle_control(
                 })
                 .unwrap())
         }
+        // run history = the run summaries (ADR-023 §8): every run this
+        // trigger fired, newest first, on the bao/runs/v1 child
         ("GET", ["triggers", id, "runs"]) => {
             let rows = ctx.client.query(
                 &ctx.space,
-                &ctx.anchor,
-                "agent_trigger_runs",
-                &json!({"filter": {"triggerId": id}, "sort": ["-ts"],
+                &ctx.runs_anchor,
+                "agent_runs",
+                &json!({"filter": {"triggerId": id}, "sort": ["-startedAt"],
                         "limit": 20}),
             )?;
             Ok(Value::Array(rows))

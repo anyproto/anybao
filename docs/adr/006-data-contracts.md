@@ -391,6 +391,9 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
   and self-limiting — background programs stay in sane order by
   construction: budgeted per run (fuel/cost), observable per list
   query, and self-quarantining on repeated failure.
+  *(ADR-023 §8, 2026-08-29: of these only `lastRunAt` and
+  `lastStatus` remain on the record — scheduler state and the runner's
+  verdict; run history is the `agent_runs` summary per run.)*
 
 ### 5. `any`-side work list (upstream, sequenced before parity)
 

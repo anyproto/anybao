@@ -198,16 +198,20 @@ the runner no longer stamps them and `runCount` is dropped. One source
 of truth ends the drift class the e2e found (Issue 4 in `tracepeek`).
 `consecutiveFailures` stays runner-owned only as scheduling state.
 
-*Implementation phase (2026-08-29):* the host publishes every run's
-summary to `agent_runs` **with `triggerId`** (the chat responder's id
-on conversation runs, null on control/embedder runs), and the guest
-reader has switched: the skill's "did it run?" is
-`effects.runs(filter={"triggerId": …})` (this device) / the synced
-`agent_runs` rows (other devices). The runner's `lastRun*` stamps
-**stay** as a cache until any-ui's Scheduled view reads `agent_runs`
-— removing them first would blank that view. That any-ui change, and
-then the stamp removal + `runCount` drop here, is the remaining step
-(a task in the dev space, not tracked here).
+*As implemented (2026-08-29, any-ui #680 merged the same day):* the
+host publishes every run's summary to `agent_runs` with `triggerId`
+(the chat responder's id on conversation runs, null on control/
+embedder runs); the guest reads `effects.runs(filter={"triggerId":
+…})` / the synced rows, any-ui's Scheduled view and the control API's
+`GET /triggers/{id}/runs` read `agent_runs`. The trigger record keeps
+exactly two runner-owned fields besides the breaker: **`lastRunAt`**
+(scheduler state — the `once` fired-guard and the cron anchor) and
+**`lastStatus`** (the runner's verdict channel: ok / error /
+auto_disabled / invalid_spec …). `lastRunRef`, `lastDurationMs`,
+`lastFuel`, `lastCostUsd`, `runCount` are gone from the record, and
+the per-trigger `agent_trigger_runs` dataset is no longer written or
+declared (existing rows are inert). Readers that still find the old
+fields on pre-cutover records treat them as stale.
 
 ### 9. Isolation
 

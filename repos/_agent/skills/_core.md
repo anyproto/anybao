@@ -58,7 +58,8 @@ show silently matches nothing.
 **Past runs are readable.** A chat reply's `traceRef` (on its
 `agent_turns` record — `use("agent:history@v1").recent_turns(c,
 baoSpaceConfig, baoSpaceConfig["chatId"], n)` returns them newest
-first) and a trigger's `lastRunRef` name a run;
+first) names a run, and `effects.runs(filter={"triggerId": slug})`
+lists a trigger's runs;
 `effects.runs("toolcaller")` lists recent conversations by title.
 `effects.stats(run=ref)` is the one-call summary (status, error, per-
 turn tokens/cost); `effects.of(run=ref)` outlines it — `llm.chat`
@@ -70,10 +71,9 @@ model replied, its inner `http.post` input is what it was shown). Work
 from the outline down; never `get` every record. "Why did you do that?" about an earlier
 reply = this, on that reply's `traceRef`. `effects.runs(program)` is
 the ground truth for whether and how often ANY program ran — cron jobs
-included; a trigger's `lastRun*` fields are a cache of it. When they
-read null or disagree, the store wins — and you only know by calling
-it: never assert a store-wide fact ("it ran once", "the trace agrees")
-from a record field. Cross-run questions are ONE query, not a loop:
+included; a trigger record carries no run history (only `lastRunAt`
+/ `lastStatus` scheduler state) — never assert a store-wide fact ("it
+ran once", "the trace agrees") from a record field. Cross-run questions are ONE query, not a loop:
 `effects.runs(filter={"startedAt": {"$gte": ts}, "mutations": {"$gt":
 0}})` (summaries carry status/cost/tokens/mutations — a day summary
 needs no per-run reads) and `effects.query(pipeline)` over every
@@ -179,10 +179,11 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   `{status, startedAt, errorType, durationMs, costUsd, id}` (`id` feeds
   `run=`); `len(effects.runs(filter={"triggerId": "<slug>"}, limit=0))`
   = how often. Other devices' fires are in the synced `agent_runs`
-  dataset (`bao/runs/v1` child, same `triggerId` filter). The record's
-  `lastStatus` / `lastRunAt` / `lastRunRef` are a cache of that; when
-  they disagree or read null, the runs win. `consecutiveFailures` on
-  the record is the breaker's own state (3 → auto-disabled).
+  dataset (`bao/runs/v1` child, same `triggerId` filter). The record
+  itself carries only scheduler state: `lastRunAt` (when the runner
+  last fired it), `lastStatus` (the runner's verdict — ok / error /
+  auto_disabled / invalid_spec), `consecutiveFailures` (the breaker,
+  3 → auto-disabled). There is no `lastRunRef`/`runCount` on it.
 - **Progress bars** (any job long enough that the user would wonder):
   `p = use("agent:progress@v1")` — never hand-roll `agent-progress`
   objects, the module owns that transport. `p.start(space, job_slug,

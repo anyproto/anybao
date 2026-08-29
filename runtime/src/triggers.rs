@@ -24,12 +24,7 @@ pub struct Trigger {
     // observability rollup
     pub last_run_at: Option<f64>,
     pub last_status: Option<String>,
-    pub last_duration_ms: Option<i64>,
-    pub last_fuel: Option<i64>,
-    pub last_cost_usd: Option<f64>,
-    pub run_count: i64,
     pub consecutive_failures: i64,
-    pub last_run_ref: Option<String>,
     pub next_due: Option<f64>,
 }
 
@@ -56,12 +51,7 @@ impl Trigger {
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             last_run_at: None,
             last_status: None,
-            last_duration_ms: None,
-            last_fuel: None,
-            last_cost_usd: None,
-            run_count: 0,
             consecutive_failures: 0,
-            last_run_ref: None,
             next_due: None,
         }
     }
@@ -162,15 +152,16 @@ impl Scheduler {
             .is_some_and(|at| (self.now)() >= at)
     }
 
-    /// Run bookkeeping + the circuit breaker.
-    pub fn record_run(&self, t: &mut Trigger, r: &RunResult) -> Value {
+    /// Run bookkeeping + the circuit breaker. Only SCHEDULER state is
+    /// stamped (ADR-023 §8): `lastRunAt` (the `once` fired-guard and
+    /// the cron cadence anchor) and `lastStatus` (the runner's verdict
+    /// channel — ok/error/auto_disabled/invalid_spec…). Run history —
+    /// ref, duration, fuel, cost, count — is the run summary in
+    /// `agent_runs`, never a record field.
+    pub fn record_run(&self, t: &mut Trigger, r: &RunResult) {
         let ts = (self.now)();
         t.last_run_at = Some(ts);
         t.last_status = Some(r.status.clone());
-        t.last_duration_ms = Some(r.duration_ms);
-        t.last_fuel = r.fuel;
-        t.last_run_ref = r.trace_ref.clone();
-        t.run_count += 1;
         if r.status == "ok" {
             t.consecutive_failures = 0;
         } else {
@@ -180,9 +171,6 @@ impl Scheduler {
                 t.last_status = Some("auto_disabled".into());
             }
         }
-        json!({"triggerId": t.id, "ts": ts, "status": r.status,
-               "durationMs": r.duration_ms, "error": r.error,
-               "traceRef": r.trace_ref, "fuel": r.fuel, "costUsd": Value::Null})
     }
 }
 
@@ -558,18 +546,10 @@ pub fn record_to_trigger(id: &str, rec: &Value) -> Option<Trigger> {
             .get("lastStatus")
             .and_then(|v| v.as_str())
             .map(String::from),
-        last_duration_ms: rec.get("lastDurationMs").and_then(|v| v.as_i64()),
-        last_fuel: rec.get("lastFuel").and_then(|v| v.as_i64()),
-        last_cost_usd: rec.get("lastCostUsd").and_then(|v| v.as_f64()),
-        run_count: rec.get("runCount").and_then(|v| v.as_i64()).unwrap_or(0),
         consecutive_failures: rec
             .get("consecutiveFailures")
             .and_then(|v| v.as_i64())
             .unwrap_or(0),
-        last_run_ref: rec
-            .get("lastRunRef")
-            .and_then(|v| v.as_str())
-            .map(String::from),
         next_due: None,
     })
 }
@@ -580,26 +560,16 @@ pub fn trigger_to_record(t: &Trigger) -> Value {
         "args": t.args, "owner": t.owner, "enabled": t.enabled,
         "limits": t.limits, "maxConsecutiveFailures": t.max_consecutive_failures,
         "lastRunAt": t.last_run_at, "lastStatus": t.last_status,
-        "lastDurationMs": t.last_duration_ms, "lastFuel": t.last_fuel,
-        "lastCostUsd": t.last_cost_usd, "runCount": t.run_count,
         "consecutiveFailures": t.consecutive_failures,
-        "lastRunRef": t.last_run_ref,
     })
 }
 
 pub fn rollup(t: &Trigger) -> Value {
-    let fail_rate = if t.run_count > 0 {
-        t.consecutive_failures as f64 / t.run_count as f64
-    } else {
-        0.0
-    };
     json!({
         "id": t.id, "name": t.name, "kind": t.kind, "owner": t.owner,
         "enabled": t.enabled, "lastRunAt": t.last_run_at,
-        "lastStatus": t.last_status, "lastDurationMs": t.last_duration_ms,
-        "lastFuel": t.last_fuel, "lastCostUsd": t.last_cost_usd,
-        "runCount": t.run_count, "consecutiveFailures": t.consecutive_failures,
-        "failureRate": fail_rate, "lastRunRef": t.last_run_ref,
+        "lastStatus": t.last_status,
+        "consecutiveFailures": t.consecutive_failures,
         "limits": t.limits,
     })
 }
