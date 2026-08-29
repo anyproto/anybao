@@ -90,7 +90,7 @@ depend on it is not a new dependency.
 
 | collection (name; `l_s_<bao>_` prefix applied by the server) | document | indexes |
 |---|---|---|
-| `trace_records` | one trace record (ADR-001 §2 shape, unchanged) + `runId`; `id = "<runId>:<seq zero-padded 6>"` | `(runId, seq)` unique; `name`; `effect`; `error.type` sparse; `meta.class` |
+| `trace_records` | one trace record (ADR-001 §2 shape, unchanged) + `runId` + `program` (from the header — a one-step `$match`); `id = "<runId>:<seq zero-padded 6>"`; both extras stripped on load | `(runId, seq)` unique; `program`; `name`; `effect`; `error.type` sparse; `meta.class` |
 | `trace_blobs` | `{id: <sha256 hash>, bytes, data}` (§7 spill) | primary key only |
 | `trace_runs` | the `agent_runs` summary, local mirror, `id = runId`; `expired: true` once retention dropped the body | `program`; `startedAt`; `status`; `mutations` |
 
@@ -249,8 +249,8 @@ property, not a capability grant.
 3. **Per-device summary volume** — a bao with several devices writes
    several summaries per cron tick into one synced dataset; fine at
    today's cadence, check before prod cutover.
-4. Whether `trace_records` should carry `program` denormalized (saves
-   the join for the most common `$match`) — leaning yes, one string.
+4. ~~Whether `trace_records` should carry `program` denormalized~~ —
+   done (§2), one string per document.
 
 ## Implementation sketch (after acceptance)
 
