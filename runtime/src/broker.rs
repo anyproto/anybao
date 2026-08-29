@@ -97,8 +97,9 @@ pub trait SecretSource: Send + Sync {
     /// guest passed (`about`), so the run wrapper can post ONE request
     /// bubble and the dashboard can render it (ADR-021 §2).
     fn mark_missing(&self, key: &str, about: &Value, run_id: &str);
-    /// The destination answered 401 to a request carrying this ref:
-    /// the stored value is wrong. Stamp `status: "rejected"` so the
+    /// The destination rejected the credential on a request carrying
+    /// this ref (401, or Google's 400 `API_KEY_INVALID`): the stored
+    /// value is wrong. Stamp `status: "rejected"` so the
     /// same request bubble asks for a replacement (ADR-021 §2).
     fn mark_rejected(&self, key: &str, about: &Value, run_id: &str, http_status: u16);
 }
@@ -930,20 +931,6 @@ impl Broker {
             cur_url = next;
         };
         let status = resp.status();
-        // ADR-021 §2: a 401 to a static-ref request means the stored
-        // value is wrong — the host asks for a replacement, the same
-        // way it asks for a missing one. 403 is left alone (scopes,
-        // not the key); managed refs have their own reconsent path.
-        if status == 401 {
-            if let Some((r, about)) = &static_ref {
-                if !self.missing_secrets.iter().any(|m| m == r) {
-                    self.missing_secrets.push(r.clone());
-                    if let Some(store) = &self.secret_store {
-                        store.mark_rejected(r, about, &self.writer.run_id(), status);
-                    }
-                }
-            }
-        }
         let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
         let headers: Map<String, Value> = resp
             .headers_names()
@@ -971,6 +958,20 @@ impl Broker {
                 type_: "URLError".into(),
                 message: e.to_string(),
             })?);
+        }
+        // ADR-021 §2: a rejection of a static-ref request means the
+        // stored value is wrong — the host asks for a replacement, the
+        // same way it asks for a missing one. 403 is left alone (scopes,
+        // not the key); managed refs have their own reconsent path.
+        if let Some((r, about)) = &static_ref {
+            if credential_rejected(status, out["body"].as_str().unwrap_or(""))
+                && !self.missing_secrets.iter().any(|m| m == r)
+            {
+                self.missing_secrets.push(r.clone());
+                if let Some(store) = &self.secret_store {
+                    store.mark_rejected(r, about, &self.writer.run_id(), status);
+                }
+            }
         }
         Ok(out)
     }
@@ -1265,6 +1266,15 @@ pub(crate) fn getrandom(buf: &mut [u8]) {
         let bytes = *uuid::Uuid::new_v4().as_bytes();
         chunk.copy_from_slice(&bytes[..chunk.len()]);
     }
+}
+
+/// Did the destination reject the credential itself (ADR-021 §2)?
+/// 401 is the HTTP convention; Google APIs answer a bad key with
+/// `400 {"error": {"status": "INVALID_ARGUMENT", "details": [{"reason":
+/// "API_KEY_INVALID"}]}}`, so a 400 whose body names that reason counts
+/// too. Anything else (403 scopes, 400 bad request) is not the key.
+fn credential_rejected(status: u16, body: &str) -> bool {
+    status == 401 || (status == 400 && body.contains("API_KEY_INVALID"))
 }
 
 #[cfg(test)]
@@ -1972,6 +1982,42 @@ mod tests {
         assert_eq!(out["status"], json!(401));
         assert_eq!(b.missing_secrets, vec!["connector.key.x".to_string()]);
         assert_eq!(store.missing.lock().unwrap()[0].0, "connector.key.x#401");
+    }
+
+    #[test]
+    fn a_google_400_api_key_invalid_marks_it_rejected() {
+        let base = fake_server(1, move |req| {
+            let body = r#"{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}"#;
+            let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(400));
+        });
+        let mut b = make_broker("run_adr021_400");
+        let store = Arc::new(MemStore {
+            rows: [("connector.key.x".to_string(), "sk-wrong".to_string())].into(),
+            missing: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        let out = b
+            .call("http.get", cred_payload(format!("{base}/a")))
+            .unwrap();
+        assert_eq!(out["status"], json!(400));
+        assert_eq!(store.missing.lock().unwrap()[0].0, "connector.key.x#400");
+    }
+
+    #[test]
+    fn a_plain_400_is_not_a_rejection() {
+        let base = fake_server(1, move |req| {
+            let _ = req.respond(tiny_http::Response::from_string("bad json").with_status_code(400));
+        });
+        let mut b = make_broker("run_adr021_400_plain");
+        let store = Arc::new(MemStore {
+            rows: [("connector.key.x".to_string(), "sk-ok".to_string())].into(),
+            missing: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        b.call("http.get", cred_payload(format!("{base}/a")))
+            .unwrap();
+        assert!(b.missing_secrets.is_empty());
+        assert!(store.missing.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -42,8 +42,17 @@ def _request(prov, query):
             "generation_config": {"thinking_config": {"thinking_level": "low"}},
         },
         "timeout": _TIMEOUT_S,
-        "credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key"},
+        # `about` (ADR-021 §1): what the Credentials card shows when the
+        # key is missing — label, the only host it goes to, where to get it
+        "credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key",
+                       "about": {"label": "Gemini API key",
+                                 "hosts": [_host(prov["base_url"])],
+                                 "help": "https://aistudio.google.com/apikey"}},
     }
+
+
+def _host(base_url):
+    return base_url.split("//", 1)[-1].split("/", 1)[0]
 
 
 def _parse(raw):

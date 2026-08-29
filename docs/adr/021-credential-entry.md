@@ -99,9 +99,11 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
    pre-existing datasets (no backward compatibility: recreate).
    `status ∈ {missing, rejected, set}`; `set` is stamped by §4 and by
    `bootstrap_secrets` for every stored/seeded value at boot.
-   **`rejected`**: the destination answered **401** to a request
-   carrying the ref — the stored value is wrong. The broker stamps it
-   (`rejectedAt`, `rejectedWith: 401`) and queues the ref exactly like
+   **`rejected`**: the destination rejected the credential on a request
+   carrying the ref — **401**, or Google's **400** whose body names
+   `API_KEY_INVALID` (Gemini answers a bad key that way, never 401) —
+   the stored value is wrong. The broker stamps it (`rejectedAt`,
+   `rejectedWith: <status>`) and queues the ref exactly like
    a miss, so a wrong key gets the same card ("…was rejected — enter a
    new one") with no connector involvement and no model-callable
    "ask for a secret" surface. 403 is not a rejection (usually scopes);

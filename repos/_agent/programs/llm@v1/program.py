@@ -299,6 +299,11 @@ _TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
                   # the conversation thread (live-caught with urlopen)
 
 _EXCERPT = 400
+# where a human gets the key, per provider (ADR-021 §1 `about.help`)
+_KEY_HELP = {
+    "gemini": "https://aistudio.google.com/apikey",
+    "openai": "https://platform.openai.com/api-keys",
+}
 
 
 @span(kind="getter")  # noqa: F821 - guest global
@@ -340,7 +345,8 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
         credential = {"ref": prov["api_key_ref"], "header": "Authorization",
                       "prefix": "Bearer ",
                       "about": {"label": prov["provider"] + " API key",
-                                "hosts": [host]}}
+                                "hosts": [host],
+                                "help": _KEY_HELP.get(prov["provider"])}}
     resp = effect("http.post", {  # noqa: F821 - guest global
         "url": url, "headers": headers, "json": req,
         "timeout": _TIMEOUT_S, "credential": credential})
