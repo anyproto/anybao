@@ -668,8 +668,8 @@ pub struct Watcher {
 
 /// A conversation with a run in flight: its mailbox (inject / soft
 /// break, drained by the guest between turns) and its interrupt flag
-/// (hard break — the runner's epoch callback traps on it, a blocked
-/// `sh.run` kills its child on it; ADR-005 §3, ADR-003 §2).
+/// (hard break — the runner's epoch callback traps on it; ADR-005 §3,
+/// ADR-003 §2).
 #[derive(Clone, Default)]
 pub struct LiveRun {
     pub mailbox: crate::broker::SharedMailbox,

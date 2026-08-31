@@ -1669,8 +1669,8 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
 }
 
 /// Soft-break grace (ADR-005 §3): the guest only drains its mailbox
-/// between turns, so a run inside a long cell (a 120 s `sh.run`, a
-/// slow model call) cannot honor "stop" by itself. After this long
+/// between turns, so a run inside a long cell (a slow model call, a
+/// long HTTP call) cannot honor "stop" by itself. After this long
 /// the flag goes up and the epoch callback / the blocked syscall end
 /// it. Long enough for the wrap-up turn a run between cells does.
 const BREAK_GRACE: Duration = Duration::from_secs(20);
@@ -1784,8 +1784,9 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     &ctx.space,
                     &ctx.chat,
                     &json!({
-                    "text": format!("Stopped (trace {trace_ref})."),
-                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                    "text": "Stopped.",
+                    "agent": {"name": ctx.cfg.agent_name, "done": true,
+                              "outcome": "interrupted", "debugLink": trace_ref}}),
                 );
             } else if rr.status != "ok" && !died_on_miss {
                 // The typed error goes INTO the chat: the next turn
