@@ -146,6 +146,23 @@ def test_openai_tool_only_assistant_turn_carries_null_content():
     assert m["content"] is None and m["tool_calls"][0]["function"]["arguments"] == '{"code": "x"}'
 
 
+def test_openai_text_after_tool_results_survives_as_a_user_message():
+    # the wrap-up shape (ADR-005 §2): synthetic error results for the
+    # dangling calls, then the summarize instruction — one neutral message
+    msgs = [{"role": "user", "parts": [
+        {"type": "tool_result", "call_id": "c1", "content": "not executed: length",
+         "is_error": True},
+        {"type": "text", "text": "[length] No more cells. Summarize."}]}]
+    wire = LLM["OpenAICompatAdapter"]().build_request(msgs, "", [], "m", T())["messages"]
+    assert [m["role"] for m in wire] == ["tool", "user"]
+    assert wire[0]["tool_call_id"] == "c1"
+    assert wire[1]["content"] == "[length] No more cells. Summarize."
+    # results alone stay results alone
+    only = [{"role": "user", "parts": [msgs[0]["parts"][0]]}]
+    wire = LLM["OpenAICompatAdapter"]().build_request(only, "", [], "m", T())["messages"]
+    assert [m["role"] for m in wire] == ["tool"]
+
+
 def test_openai_malformed_tool_args_are_flagged_not_fatal():
     resp = {"choices": [{"message": {"content": None, "tool_calls": [
         {"id": "c1", "type": "function",

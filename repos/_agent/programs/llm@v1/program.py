@@ -307,12 +307,16 @@ class OpenAICompatAdapter:
         calls = [p for p in m["parts"] if p["type"] == "tool_call"]
         results = [p for p in m["parts"] if p["type"] == "tool_result"]
         out = []
+        files = [p for p in m["parts"] if p["type"] == "file"]
         if results:  # tool results are their own role in openai
             for r in results:
                 out.append({"role": "tool", "tool_call_id": r["call_id"],
                             "content": r["content"]})
-            return out
-        files = [p for p in m["parts"] if p["type"] == "file"]
+            # text riding the same neutral message (the wrap-up
+            # instruction after synthetic results, ADR-005 §2) is a
+            # user message of its own, after the results
+            if not (texts or files or calls):
+                return out
         if files:
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
@@ -344,7 +348,8 @@ class OpenAICompatAdapter:
                     msg["reasoning_details"] = state["reasoning_details"]
                 elif p.get("text"):
                     msg["reasoning_content"] = p["text"]
-        return [msg]
+        out.append(msg)
+        return out
 
     def parse_response(self, raw):
         """OpenAI-compatible response JSON → the neutral Reply."""
