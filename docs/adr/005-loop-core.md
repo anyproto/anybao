@@ -266,8 +266,7 @@ with the error digest — the model self-corrects; no fix-loop (settled).
      the message, never a word: the client posts a chat message with
      an empty text and a `control` group (any `chat_messages-v5`):
      `{kind: "break", hard?: bool}`. The watcher reads the group, not
-     the text — no stop words, ever; "stop" typed as text is content
-     like any other message. `hard: false` (default) = **soft** — the
+     the text. `hard: false` (default) = **soft** — the
      `break` item goes in the mailbox (the wrap-up turn at the next
      cell boundary) AND a grace timer (20 s) sets the flag if the
      same run is still going, because a run inside a long cell (a
