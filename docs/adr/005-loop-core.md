@@ -53,7 +53,7 @@ and response are in the trace (ADR-001). Tiers: `codegen`, `classify`,
  "model": "…",                                # sent verbatim
  "base_url": "https://…",
  "api_key_ref": "llm.key.<name>" | None,      # None = no credential (local servers)
- "backend": "<name>" | absent,                # where it is served; default per provider
+ "backend": "<name>" | absent,                # where it is served; default: well-known host, else per provider
  "profile": "<name>" | absent,                # which model family; default: matched on `model`
  "options": {…} | absent}                     # raw request fields, merged last
 ```
@@ -130,8 +130,9 @@ cache the next one reads). `openai-compat` — one adapter for every
 SGLang, ollama, Together, DeepSeek, Groq …); an assistant turn that
 carries tool calls sends `content: null`, never `""`; tool-call
 arguments that fail to parse become a `ToolCall` with `args: None`
-that `profile.lift` turns into an `is_error` ToolResult for the model
-(the run never dies on a malformed call). Reasoning text
+carrying `error`; the loop answers it with an `is_error` ToolResult
+instead of a cell, up to `malformed_retries`, then wraps up (the run
+never dies on a malformed call). Reasoning text
 (`reasoning_content`/`reasoning`, unified by the backend) is captured
 as a Thinking part; whether it is resent is the profile's `reasoning`
 trait, and the backend carries the provider's resend field
@@ -206,7 +207,10 @@ with the error digest — the model self-corrects; no fix-loop (settled).
 ### 3. Ceilings and loop control
 
 - **Ceilings, passed in `args`**: `max_turns`, `max_tokens_total` per
-  invocation (defaults in resolved-Q1). Hitting one triggers a
+  invocation (defaults in resolved-Q1); plus two from the profile
+  (§1.3): the boot window is capped at a quarter of `context_window`,
+  and a call whose input reached 85% of it is the last — the next
+  turn is the wrap-up. Hitting one triggers a
   **wrap-up turn** — a final constrained call ("no more cells;
   summarize state, what's done, what's pending") — never a silent hard
   stop (the no-lossy-truncation doctrine: caps produce a wrap-up, not a

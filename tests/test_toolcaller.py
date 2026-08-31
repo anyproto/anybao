@@ -25,8 +25,14 @@ def done_reply(text="done", usage=None):
 class World:
     """Every seam the toolcaller touches, recorded."""
 
-    def __init__(self, replies, cells=None, mailbox=None, hits=None):
+    def __init__(self, replies, cells=None, mailbox=None, hits=None, traits=None):
         self.replies = list(replies)
+        self.traits = {"system_role": "native", "tool_mode": "native",
+                       "reasoning": "advisory", "thinking": "default", "cache": "auto",
+                       "context_window": 128000, "max_output": 8192, "sampling": {},
+                       "prompt_style": "full", "instructions_at": "system",
+                       "malformed_retries": 2, **(traits or {})}
+        self.boot_budgets = []
         self.cells = list(cells or [])
         self.mail = list(mailbox or [])
         self.llm_calls = []
@@ -96,6 +102,11 @@ class World:
                                     "system": system, "tier": tier, "tools": tools})
                 return w.replies.pop(0)
 
+            @staticmethod
+            def profile(tier="codegen"):
+                return {"profile": "test", "backend": "generic", "model": "m",
+                        "traits": dict(w.traits)}
+
         class Hist:
             @staticmethod
             def recent_turns(c, s, ch, n):
@@ -107,6 +118,7 @@ class World:
 
             @staticmethod
             def render_boot_window(turns, chunks, total_tokens=40000):
+                w.boot_budgets.append(total_tokens)
                 return [{"role": "user", "parts": [{"type": "text",
                                                     "text": "[earlier context]"}]}] \
                     if turns else []
@@ -569,3 +581,62 @@ def test_reply_without_links_posts_no_attachments_key():
     w = World([done_reply("plain words only")])
     run(w)
     assert "attachments" not in w.chat_posts[-1]
+
+
+# --- model profile traits (ADR-005 §1.3) -------------------------------------
+
+def test_malformed_tool_call_gets_error_result_then_retries():
+    bad = {"parts": [{"type": "tool_call", "id": "c_bad", "name": "run_cell",
+                      "args": {}, "error": "unparseable tool arguments: {oops"}],
+           "stop": "tool", "usage": {"in": 10, "out": 5}}
+    w = World([bad, tool_reply(), done_reply("ok")])
+    out = run(w)
+    assert out["stop"] == "done" and out["turns"] == 3
+    # no cell ran for the malformed call; the model saw an is_error result
+    assert w.spans.count(("begin", "cell")) == 1
+    err = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert err["type"] == "tool_result" and err["is_error"]
+    assert err["call_id"] == "c_bad" and "unparseable" in err["content"]
+
+
+def test_malformed_calls_over_budget_wrap_up():
+    bad = {"parts": [{"type": "tool_call", "id": "c", "name": "run_cell",
+                      "args": {}, "error": "garbage"}],
+           "stop": "tool", "usage": {"in": 10, "out": 5}}
+    w = World([bad, bad, done_reply("summary")], traits={"malformed_retries": 1})
+    out = run(w)
+    assert out["stop"] == "wrapup"
+    text = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+    assert "malformed tool calls" in text
+
+
+def test_context_window_nearly_full_wraps_up():
+    big = tool_reply(usage={"in": 30000, "out": 5})
+    w = World([big, done_reply("summary")], traits={"context_window": 32768})
+    out = run(w)
+    assert out["stop"] == "wrapup"
+    text = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+    assert "context window nearly full" in text
+    # the boot window budget scaled to the window too (a quarter of it)
+    assert w.boot_budgets == [8192]
+
+
+def test_compact_style_and_last_user_instructions():
+    w = World([done_reply()], traits={"prompt_style": "compact",
+                                      "instructions_at": "last_user"})
+    run(w)
+    call = w.llm_calls[0]
+    assert "Run a Python cell." in call["tools"][0]["description"]
+    assert "## Runtime context" not in call["system"]
+    user = call["messages"][-1]["parts"][0]["text"]
+    assert user.startswith("go") and "## Runtime context" in user
+    assert "chat object: `c1`" in user
+
+
+def test_full_style_keeps_instructions_in_system():
+    w = World([done_reply()])
+    run(w)
+    call = w.llm_calls[0]
+    assert call["tools"][0]["description"].startswith("Execute a Python cell")
+    assert "## Runtime context" in call["system"]
+    assert "## Runtime context" not in call["messages"][-1]["parts"][0]["text"]

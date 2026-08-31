@@ -1,9 +1,11 @@
 # Seeding LLM fixtures (the "one real call" step)
 
-Adapter translation is tested purely offline (test_llm_adapters.py):
-recorded provider response → neutral parts, and neutral → request. The
-*wire mapping* is locked by fixtures recorded from ONE real call per
-provider; after that CI needs no API key.
+Adapter, backend and profile transforms are tested purely offline
+(`tests/test_llm_module.py`): recorded provider response → neutral
+parts, and neutral → request. The *wire mapping* is locked by fixtures
+recorded from ONE real call per backend; after that CI needs no API
+key. The per-model *conversation* is locked by the parity golden traces
+(`docs/llm-models.md`).
 
 ## To (re)seed a provider fixture
 

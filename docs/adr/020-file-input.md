@@ -81,7 +81,8 @@ providers differ:
 
 Unsupported raises `UnsupportedMedia(media_type, provider)` in
 `build_request` — *before* any http call, so the trace names the
-reason instead of a provider 400. The fenced adapter takes no files.
+reason instead of a provider 400. `tool_mode: "fenced"` (ADR-005 §1.3)
+changes nothing here — file parts still route by the tier's adapter.
 Files a provider cannot read natively (docx, …) are the guest's job:
 convert to text and send a `text/plain` File part — the neutral shape
 needs no change for that (an ADR-013 agent-authored program is the
