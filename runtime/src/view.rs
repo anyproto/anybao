@@ -1054,12 +1054,9 @@ pub fn follow(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<()> {
 
 /// `--seq N` drill-down: one record, blob-resolved, pretty.
 pub fn show_record(store: &dyn TraceStore, run_id: &str, seq: i64) -> anyhow::Result<String> {
-    let records = store.load_resolved(run_id)?;
-    let rec = records
-        .iter()
-        .find(|r| r["seq"].as_i64() == Some(seq))
-        .ok_or_else(|| anyhow::anyhow!("no record with seq {seq}"))?;
-    Ok(serde_json::to_string_pretty(rec)? + "\n")
+    // one document + its blobs, never the run (ADR-023 §5)
+    let rec = store.record(run_id, seq)?;
+    Ok(serde_json::to_string_pretty(&rec)? + "\n")
 }
 
 pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::Result<String> {
@@ -1308,7 +1305,14 @@ struct Price {
 fn price_for(model: &str) -> Option<Price> {
     let table: BTreeMap<String, BTreeMap<String, f64>> =
         serde_json::from_str(MODEL_PRICING).expect("model_pricing.json is valid JSON");
-    let (_, p) = table.iter().find(|(k, _)| model.starts_with(k.as_str()))?;
+    // the full id first (`z-ai/glm-5.3`, an OpenRouter row), then the
+    // bare model behind a provider prefix (`anthropic/claude-sonnet-5`
+    // → the claude row); rows match as prefixes (dated variants)
+    let bare = model.rsplit('/').next().unwrap_or(model);
+    let (_, p) = table
+        .iter()
+        .find(|(k, _)| model.starts_with(k.as_str()))
+        .or_else(|| table.iter().find(|(k, _)| bare.starts_with(k.as_str())))?;
     let get = |k: &str| p.get(k).copied().unwrap_or(0.0);
     Some(Price {
         input: get("in"),
@@ -1358,12 +1362,46 @@ impl TurnStats {
 /// A turn's cells and effects are everything from its llm.chat begin
 /// up to the next turn's begin.
 pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value> {
-    let records = store.load_resolved(run_id)?;
-    Ok(stats_of(&records))
+    // the log WITHOUT its blobs: usage/stop/timing live on the span
+    // records, the model on turn 1's request — that one blob is read
+    // alone when the request spilled
+    let records = store.load(run_id)?;
+    let model = first_turn_request(&records)
+        .map(|post| -> anyhow::Result<Value> {
+            match post["input"]["__blob"].as_str() {
+                Some(h) => {
+                    let mut blobs = BTreeMap::new();
+                    if let Some(data) = store.blob(run_id, h)? {
+                        blobs.insert(h.to_string(), data);
+                    }
+                    Ok(resolve_blobs(post["input"].clone(), &blobs))
+                }
+                None => Ok(post["input"].clone()),
+            }
+        })
+        .transpose()?
+        .map(|input| s(&view_request_of(&input)["model"]))
+        .filter(|m| !m.is_empty());
+    Ok(stats_with_model(&records, model))
+}
+
+/// Turn 1's provider request effect (its `input` may be a blob ref).
+fn first_turn_request(records: &[Value]) -> Option<&Value> {
+    let (begin, end) = spans_of(records, "llm.chat")
+        .into_iter()
+        .find(|(b, _)| b["parent"].is_null())?;
+    let (bs, es) = seq_range(begin, end);
+    between(records, bs, es)
+        .into_iter()
+        .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))
 }
 
 /// `stats_data` over an in-memory (blob-resolved) log.
 pub fn stats_of(records: &[Value]) -> Value {
+    stats_with_model(records, None)
+}
+
+fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
     let turns: Vec<_> = spans_of(records, "llm.chat")
         .into_iter()
         .filter(|(b, _)| b["parent"].is_null())
@@ -1372,11 +1410,12 @@ pub fn stats_of(records: &[Value]) -> Value {
         .iter()
         .map(|(b, _)| b["seq"].as_i64().unwrap_or(0))
         .collect();
-    let model = turns
-        .first()
-        .and_then(|(b, e)| {
-            let (bs, es) = seq_range(b, *e);
-            llm_request(&between(records, bs, es)).map(|req| s(&req["model"]))
+    let model = model
+        .or_else(|| {
+            turns.first().and_then(|(b, e)| {
+                let (bs, es) = seq_range(b, *e);
+                llm_request(&between(records, bs, es)).map(|req| s(&req["model"]))
+            })
         })
         .unwrap_or_default();
 

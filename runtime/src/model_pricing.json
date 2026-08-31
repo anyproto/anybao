@@ -1,5 +1,8 @@
 {
     "claude-sonnet-5": {"in": 3.0, "out": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "claude-opus-4-8": {"in": 5.0, "out": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
-    "claude-haiku-4-5": {"in": 1.0, "out": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25}
+    "claude-haiku-4-5": {"in": 1.0, "out": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
+    "z-ai/glm-5.3": {"in": 1.4, "out": 4.4, "cacheRead": 0.26, "cacheWrite": 0.0},
+    "moonshotai/kimi-k3": {"in": 3.0, "out": 15.0, "cacheRead": 0.3, "cacheWrite": 0.0},
+    "deepseek/deepseek-v4-pro-0813": {"in": 1.32, "out": 3.96, "cacheRead": 0.044, "cacheWrite": 0.0}
 }

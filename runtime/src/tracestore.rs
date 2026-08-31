@@ -121,6 +121,22 @@ pub trait TraceStore: Send + Sync {
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>>;
     /// The run's spilled blobs, hash → canonical text (§7).
     fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>>;
+    /// ONE blob by hash. Default = the whole sidecar; the any store
+    /// reads the one document (ADR-023 §4) — a `--seq` or `--stats`
+    /// read must not pull every blob of a 50-turn run.
+    fn blob(&self, run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.blobs(run_id)?.get(hash).cloned())
+    }
+    /// ONE record by seq, blob-resolved. Default = load + find; the any
+    /// store reads the one document (`{run}:{seq:06}`).
+    fn record(&self, run_id: &str, seq: i64) -> anyhow::Result<Value> {
+        let rec = self
+            .load(run_id)?
+            .into_iter()
+            .find(|r| r["seq"].as_i64() == Some(seq))
+            .ok_or_else(|| anyhow::anyhow!("no record with seq {seq}"))?;
+        resolve_record(self, run_id, rec)
+    }
     /// The log of a run that may still be streaming: whatever is
     /// complete so far (a half-written tail is dropped, not an error).
     /// Default = `load`; stores that stream partial writes override.
@@ -823,6 +839,27 @@ impl TraceStore for AnyTraceStore {
         validate_records(docs.into_iter().map(Self::record_of).collect(), run_id)
     }
 
+    fn blob(&self, _run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
+        match self.client.local_get(&self.blobs, hash) {
+            Ok(doc) => Ok(doc["data"].as_str().map(str::to_string)),
+            Err(e) if e.status == 404 => Ok(None), // local.doc_not_found
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn record(&self, run_id: &str, seq: i64) -> anyhow::Result<Value> {
+        let doc = match self
+            .client
+            .local_get(&self.records, &format!("{run_id}:{seq:06}"))
+        {
+            Ok(doc) if !doc.is_null() => doc,
+            Ok(_) => anyhow::bail!("no record with seq {seq}"),
+            Err(e) if e.status == 404 => anyhow::bail!("no record with seq {seq}"),
+            Err(e) => return Err(e.into()),
+        };
+        resolve_record(self, run_id, Self::record_of(doc))
+    }
+
     fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
         let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
         let hashes = Self::blob_refs(&docs);
@@ -852,6 +889,34 @@ impl TraceStore for AnyTraceStore {
             .ok_or_else(|| anyhow::anyhow!("unknown run {run_id}"))?;
         Ok(Self::record_of(h))
     }
+}
+
+/// Re-hydrate one record's `input`/`output` blob refs through single
+/// blob reads.
+fn resolve_record(
+    store: &(impl TraceStore + ?Sized),
+    run_id: &str,
+    rec: Value,
+) -> anyhow::Result<Value> {
+    let mut blobs = BTreeMap::new();
+    for key in ["input", "output"] {
+        if let Some(h) = rec[key]["__blob"].as_str() {
+            if let Some(data) = store.blob(run_id, h)? {
+                blobs.insert(h.to_string(), data);
+            }
+        }
+    }
+    if blobs.is_empty() {
+        return Ok(rec);
+    }
+    let mut rec = rec;
+    for key in ["input", "output"] {
+        if let Some(slot) = rec.get_mut(key) {
+            let v = slot.take();
+            *slot = crate::replay::resolve_blobs(v, &blobs);
+        }
+    }
+    Ok(rec)
 }
 
 #[cfg(test)]
@@ -888,6 +953,15 @@ mod tests {
         assert_eq!(ids, vec!["run_a"]);
         let e = store.load("run_zzz").unwrap_err().to_string();
         assert_eq!(e, "unknown run run_zzz"); // no path, no doubled prefix
+                                              // single reads (the defaults): one record, blob-resolved; one blob
+        assert_eq!(store.record("run_a", 1).unwrap()["output"], json!([1]));
+        assert_eq!(
+            store.blob("run_a", "sha256:h").unwrap().as_deref(),
+            Some("[1]")
+        );
+        assert_eq!(store.blob("run_a", "sha256:nope").unwrap(), None);
+        let e = store.record("run_a", 9).unwrap_err().to_string();
+        assert_eq!(e, "no record with seq 9");
     }
 
     #[test]
@@ -1008,6 +1082,14 @@ mod live {
         let records = store.load("run_live1").unwrap();
         assert_eq!(records[0]["kind"], "header");
         assert_eq!(records[0]["run"]["id"], "run_live1");
+        // single reads: one document each, no whole-run download
+        let one = store.record("run_live1", 1).unwrap();
+        assert_eq!(one["effect"], "x.y");
+        assert_eq!(one["output"], big);
+        let hash = records[1]["output"]["__blob"].as_str().unwrap().to_string();
+        assert!(store.blob("run_live1", &hash).unwrap().is_some());
+        assert!(store.blob("run_live1", "sha256:nope").unwrap().is_none());
+        assert!(store.record("run_live1", 99).is_err());
         assert!(records[0].get("seq").is_none());
         assert_eq!(records[1]["effect"], "x.y");
         // integers survive the any-store round trip as integers
