@@ -81,9 +81,16 @@ values and defaults in the source, meaning in ADR-005 §1.3.
 | `anthropic-claude` | claude | anthropic | 2026-08-31 | markers: 5214 tokens written on call 1, read on call 2 |
 | `anthropic-openai-compat` | claude | generic | 2026-08-31 | Anthropic's `/v1/chat/completions`: no cache reporting → effective `cache: auto` |
 | `gemini-openai-compat` | gemini | gemini | 2026-08-31 | `thought_signature` rides the tool call's `provider_state` — required by Gemini 3.x |
+| `openrouter-claude` (`anthropic/claude-sonnet-5`) | claude | openrouter | 2026-08-31 | markers through OpenRouter: `cache_write_tokens` 5214 → `cached_tokens` 5214; `reasoning_details` (signed) resent |
+| `openrouter-kimi-k3` (`moonshotai/kimi-k3`) | kimi-k3 | openrouter | 2026-08-31 | vision ok; implicit cache 3712 on call 2; a `length` stop can carry reasoning only |
+| `openrouter-glm-5.3` (`z-ai/glm-5.3`) | glm-5 | openrouter | 2026-08-31 | **text-only** (`vision: false`; `glm-5v-*` is the vision line); implicit cache 3706 |
+| `openrouter-deepseek-v4` (`deepseek/deepseek-v4-pro-0813`) | deepseek-v4 | openrouter | 2026-08-31 | **text-only** (`vision: false`; `deepseek-v4-flash-vision-*` sees); implicit cache 3840 |
+
+All reasoning models on OpenRouter answer with `reasoning` +
+`reasoning_details`; the `reasoning: "roundtrip"` trait resends the
+details on the tool-result turn and every backend above accepted them.
 
 Declared, not yet verified (no golden trace; needs a key / a host):
-`openrouter-claude` (cache markers through OpenRouter),
 `openrouter-deepseek-r1` (no system role, reasoning round-trip),
 `openrouter-qwen3`, `openrouter-gpt` (`max_completion_tokens`,
 `reasoning_effort`), `openrouter-gemma-fenced` (```cell tool

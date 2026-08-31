@@ -48,6 +48,15 @@ TARGETS = {
     "openrouter-claude": {  # cache markers through OpenRouter
         "provider": "openai-compat", "model": "anthropic/claude-sonnet-5",
         "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
+    "openrouter-glm-5.3": {
+        "provider": "openai-compat", "model": "z-ai/glm-5.3",
+        "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
+    "openrouter-kimi-k3": {
+        "provider": "openai-compat", "model": "moonshotai/kimi-k3",
+        "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
+    "openrouter-deepseek-v4": {
+        "provider": "openai-compat", "model": "deepseek/deepseek-v4-pro-0813",
+        "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
     "openrouter-deepseek-r1": {
         "provider": "openai-compat", "model": "deepseek/deepseek-r1-0528",
         "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
@@ -130,13 +139,21 @@ def drive(chat, traits, report):
     report["final_stop"] = reply["stop"]
     report["final_text"] = _texts(reply)
 
-    # an image part on the same wire
+    # an image part on the same wire — a text-only profile must refuse it
+    # BEFORE any call (ADR-020 §3), so the golden trace holds no 404
     png = base64.b64encode(_png_2x2_red()).decode()
-    reply = chat([{"role": "user", "parts": [
+    image_msg = [{"role": "user", "parts": [
         {"type": "file", "media_type": "image/png", "data": png},
-        {"type": "text", "text": "What color is this image? Answer with one word."}]}],
-        system="", tools=[])
-    report["image_text"] = _texts(reply)
+        {"type": "text", "text": "What color is this image? Answer with one word."}]}]
+    if traits["vision"]:
+        reply = chat(image_msg, system="", tools=[])
+        report["image_text"] = _texts(reply)
+    else:
+        try:
+            chat(image_msg, system="", tools=[])
+            report["image_text"] = "ACCEPTED (profile says text-only)"
+        except Exception as e:  # UnsupportedMedia, raised in the guest
+            report["image_text"] = f"refused: {type(e).__name__}"
 
     # a truncated reply normalizes to `length`
     reply = chat([{"role": "user", "parts": [{"type": "text", "text":
@@ -229,7 +246,10 @@ def test_parity(target):
     assert report["tool_calls"] >= 1, "the model never called run_cell"
     assert report["final_stop"] == "done"
     assert "639" in report["final_text"], report["final_text"]
-    assert report["image_text"].strip(), "no answer for the image part"
+    if traits["vision"]:
+        assert report["image_text"].strip(), "no answer for the image part"
+    else:
+        assert report["image_text"] == "refused: UnsupportedMedia", report["image_text"]
     assert report["length_stop"] == "length"
     if traits["cache"] == "markers":
         assert report["cacheRead_second_call"] > 0, "no cache read on the second call"

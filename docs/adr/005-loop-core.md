@@ -111,6 +111,7 @@ traits = {
   "prompt_style":    "full" | "compact",              # which system-prompt/tool-description variant toolcaller assembles (§5)
   "instructions_at": "system" | "last_user",          # where the per-turn instructions ride
   "malformed_retries": int,                           # re-ask budget for unparseable tool calls before wrap-up
+  "vision":          bool,                            # false = text-only: a File part raises UnsupportedMedia before any call
 }
 ```
 

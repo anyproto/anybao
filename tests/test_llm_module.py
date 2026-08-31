@@ -246,6 +246,10 @@ def test_openai_cached_tokens_surface_as_cache_read():
     # `in` is the uncached prompt: prompt_tokens minus the cached part
     assert r["usage"] == {"in": 20, "out": 5, "cacheRead": 80,
                          "cacheWrite": 0}
+    # OpenRouter's explicit-marker write shows up as cacheWrite
+    resp["usage"]["prompt_tokens_details"] = {"cached_tokens": 0, "cache_write_tokens": 95}
+    r = LLM["OpenAICompatAdapter"]().parse_response(resp)
+    assert r["usage"] == {"in": 5, "out": 5, "cacheRead": 0, "cacheWrite": 95}
 
 
 def test_openai_reasoning_advisory_vs_roundtrip():
@@ -273,6 +277,17 @@ def test_openai_reasoning_details_roundtrip_opaque():
 
 
 # --- profile hooks: prepare / lift (ADR-005 §1.2) ---------------------------
+
+def test_prepare_text_only_model_refuses_files_before_any_call():
+    msgs = [{"role": "user", "parts": [{"type": "file", "media_type": "image/png", "data": "x"},
+                                       {"type": "text", "text": "?"}]}]
+    with pytest.raises(LLM["UnsupportedMedia"]) as e:
+        LLM["_prepare"](msgs, "", [], T(vision=False))
+    assert "text-only" in str(e.value)
+    LLM["_prepare"](msgs, "", [], T())  # a vision model passes them through
+    with pytest.raises(LLM["ConfigError"]):
+        LLM["_check_traits"]({"vision": "yes"}, "x")
+
 
 def test_prepare_fenced_carries_the_tool_as_an_instruction():
     msgs, system, tools = LLM["_prepare"](
@@ -350,7 +365,10 @@ def test_unknown_trait_or_value_is_a_config_error():
     ("gemini-3.7-flash", "gemini"), ("deepseek-reasoner", "deepseek-r1"),
     ("deepseek-chat", "deepseek"), ("Qwen/Qwen3-32B", "qwen3"),
     ("meta-llama/llama-4-maverick", "llama"), ("gemma-3-27b-it", "gemma"),
-    ("mistral-large", "mistral"), ("z-ai/glm-5.1", "glm"), ("mystery-7b", "generic"),
+    ("mistral-large", "mistral"), ("z-ai/glm-4.7", "glm"), ("z-ai/glm-5.3", "glm-5"),
+    ("moonshotai/kimi-k3", "kimi-k3"), ("moonshotai/kimi-k2.6", "kimi"),
+    ("deepseek/deepseek-v4-pro-0813", "deepseek-v4"), ("mystery-7b", "generic"),
+    ("z-ai/glm-5v-turbo", "glm"), ("deepseek/deepseek-v4-flash-vision-exp", "deepseek"),
 ])
 def test_profile_matches_on_model_name(model, profile):
     assert LLM["_profile_name"]({"model": model}) == profile

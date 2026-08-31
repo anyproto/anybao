@@ -29,9 +29,8 @@ class UnsupportedMedia(Exception):
     def __init__(self, media_type, provider):
         self.media_type = media_type
         self.provider = provider
-        super().__init__(
-            f"{provider} cannot read {media_type!r} files; supported: "
-            + ", ".join(_MEDIA[provider]))
+        supported = ", ".join(_MEDIA.get(provider, ())) or "none"
+        super().__init__(f"{provider} cannot read {media_type!r} files; supported: {supported}")
 
 
 # provider -> media classes carried natively (ADR-020 §3)
@@ -77,13 +76,14 @@ TRAITS = {
     "prompt_style": ("full", "compact"),
     "instructions_at": ("system", "last_user"),
     "malformed_retries": int,
+    "vision": bool,
 }
 
 GENERIC_TRAITS = {
     "system_role": "native", "tool_mode": "native", "reasoning": "advisory",
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
-    "instructions_at": "system", "malformed_retries": 2,
+    "instructions_at": "system", "malformed_retries": 2, "vision": True,
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -100,6 +100,10 @@ PROFILES = {
         "context_window": 128000, "max_output": 16384}},
     "gemini": {"match": r"gemini", "traits": {
         "context_window": 1000000, "max_output": 65536}},
+    # order matters: a family's newest generation lists before the family
+    "deepseek-v4": {"match": r"deepseek-v4(?!-flash-vision)", "traits": {
+        "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536,
+        "vision": False}},
     "deepseek-r1": {"match": r"deepseek-(r1|reasoner)", "traits": {
         "system_role": "first_user", "instructions_at": "last_user",
         "reasoning": "roundtrip", "sampling": {"temperature": 0.6},
@@ -115,6 +119,13 @@ PROFILES = {
         "prompt_style": "compact", "context_window": 128000}},
     "mistral": {"match": r"mistral|mixtral|devstral|magistral", "traits": {
         "context_window": 128000}},
+    "kimi-k3": {"match": r"kimi-k3", "traits": {
+        "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536}},
+    "kimi": {"match": r"kimi|moonshot", "traits": {
+        "reasoning": "roundtrip", "context_window": 262144, "max_output": 32768}},
+    "glm-5": {"match": r"glm-5(?!v)", "traits": {  # glm-5v-* are the vision line
+        "reasoning": "roundtrip", "context_window": 1310720, "max_output": 65536,
+        "vision": False}},
     "glm": {"match": r"glm", "traits": {"context_window": 128000}},
     # explicit-only profiles (no match): the tool-carriage fallbacks
     "fenced": {"match": None, "traits": {"tool_mode": "fenced"}},
@@ -136,6 +147,9 @@ def _check_traits(traits, where):
         if isinstance(allowed, tuple):
             if v not in allowed:
                 raise ConfigError(f"{where}: {k}={v!r} not in {allowed}")
+        elif allowed is bool:
+            if not isinstance(v, bool):
+                raise ConfigError(f"{where}: {k} must be bool")
         elif not isinstance(v, allowed) or isinstance(v, bool):
             raise ConfigError(f"{where}: {k} must be {allowed.__name__}")
 
@@ -386,14 +400,15 @@ class OpenAICompatAdapter:
         u = raw.get("usage", {})
         det = u.get("prompt_tokens_details") or {}
         cached = det.get("cached_tokens", 0)
+        written = det.get("cache_write_tokens", 0)  # OpenRouter, explicit markers
         # `in` is the UNCACHED prompt on every wire (Anthropic's
         # input_tokens semantics; prompt_tokens here includes the cached
-        # part) — the context in use is in + cacheRead + cacheWrite
+        # and written parts) — the context in use is in + cacheRead + cacheWrite
         return {"parts": parts, "stop": stop,
-                "usage": {"in": max(0, u.get("prompt_tokens", 0) - cached),
+                "usage": {"in": max(0, u.get("prompt_tokens", 0) - cached - written),
                           "out": u.get("completion_tokens", 0),
                           "cacheRead": cached,
-                          "cacheWrite": 0}}
+                          "cacheWrite": written}}
 
 
 ADAPTERS = {
@@ -413,7 +428,13 @@ _FENCED_INSTR = (
 def _prepare(messages, system, tools, traits):
     """Prompt-level shaping before the wire: no-system-role models get
     the system text ahead of the first user turn; `fenced` carries the
-    tool as a ```cell instruction with no tool API on the wire."""
+    tool as a ```cell instruction with no tool API on the wire; a
+    text-only model refuses file parts before any call (ADR-020 §3)."""
+    if not traits["vision"]:
+        for m in messages:
+            for p in m["parts"]:
+                if p["type"] == "file":
+                    raise UnsupportedMedia(p["media_type"], "this model (text-only)")
     if traits["tool_mode"] == "fenced" and tools:
         system = (system or "") + _FENCED_INSTR
         tools = []
