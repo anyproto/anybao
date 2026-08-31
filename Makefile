@@ -1,4 +1,4 @@
-.PHONY: api-drift kernel runtime runtime-check test test-integration lint
+.PHONY: api-drift kernel runtime runtime-shell runtime-check test test-integration lint
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
@@ -14,18 +14,25 @@ bin/kernel.wasm: runtime/guest/app.py runtime/wit/kernel.wit
 runtime: kernel
 	cargo build --release --manifest-path runtime/Cargo.toml
 
+# Same binary WITH shell effects (`sh.*`/`fs.*` syscalls + the `bash`
+# tool, ADR-024 §6). Off by default so any-ui's path dependency never
+# ships a shell; this is the build a coding bao runs.
+runtime-shell: kernel
+	cargo build --release --features shell --manifest-path runtime/Cargo.toml
+
 api-drift: runtime      ## vendored openapi vs coverage manifest (nonzero on drift)
 	./runtime/target/release/anyrt drift
 
-runtime-check: kernel     ## clippy + fmt gate for runtime/
+runtime-check: kernel     ## clippy + fmt gate for runtime/ (both feature sets)
 	cargo clippy --manifest-path runtime/Cargo.toml -- -D warnings
+	cargo clippy --features shell --manifest-path runtime/Cargo.toml -- -D warnings
 	cargo fmt --manifest-path runtime/Cargo.toml --check
 
 # Full offline suite: build the kernel, cargo unit tests, then the
 # guest-module + wire pytest (rt_e2e needs the release binary — build it
 # with `make runtime` first).
 test: kernel
-	cargo test --manifest-path runtime/Cargo.toml
+	cargo test --features shell --manifest-path runtime/Cargo.toml
 	uv run pytest
 
 # Integration tests against a real any server (skipped without one).

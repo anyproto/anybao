@@ -222,14 +222,33 @@ drain mailbox (mailbox.drain syscall) → use("llm@v1").chat → stop?
   done   → finalize: replies = assistant text, c.chat_send(done=True),
            append the turn via any@v1 (ADR-006 shapes — the write lands
            in the trace), return
-  length → ask the model to wrap up text-only (a final constrained
-           call), chat_send the summary (v1's max_tokens handling,
-           kept). A truncated reply can carry a tool_call that never
+  length → ask the model to wrap up text-only (a final call with the
+           SAME tool list — the tools are part of the cached prompt
+           prefix; dropping them made the run's largest prompt a
+           full cache miss. Text-only is asked, not enforced: a reply
+           that still calls a tool gets its dangling result answered
+           and one more, tool-less call — amendment 2026-08-31),
+           chat_send the summary (v1's max_tokens handling, kept). A truncated reply can carry a tool_call that never
            ran; the wrap-up user message MUST lead with a synthetic
            is_error ToolResult per dangling call ("not executed:
            <reason>") before the summarize text — the provider rejects
            a tool_use with no tool_result in the next message.
 ```
+
+**A second tool under the `shell` feature (amendment 2026-08-31,
+ADR-024 §4).** When the runtime is built with shell effects, the tool
+set is `run_cell(code)` + `bash(command, as=None)`. `bash` is not a
+second executor: the toolcaller runs it as a subcell in the SAME
+kernel — `sh(command)` (ADR-024 §1) inside a `bash` span — and
+renders the result raw (stdout, stderr, an `exit N` line only when
+non-zero, head/tail truncation) instead of as a Python value. The
+result object is bound in the kernel namespace as `sh.last` (and as
+`<as>` when given) so the next `run_cell` processes the output
+without re-running or re-pasting it; the tool-result footer names the
+binding. Everything else in this section — spans, digests, the
+`values` store keyed by tool-use id, ceilings, wrap-up handling of
+dangling calls — applies to `bash` calls unchanged. Without the
+feature the tool set is `run_cell` alone and nothing here changes.
 
 Interim assistant text before tool calls surfaces as `done: false`
 progress bubbles (v1 behavior, kept). Errors: `is_error` ToolResult

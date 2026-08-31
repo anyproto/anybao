@@ -176,6 +176,10 @@ pub fn run_program(
     timeout_s: f64,
 ) -> Result<RunOutcome> {
     broker.mailbox = mailbox;
+    // the run's interrupt flag is the broker's too: a host call that
+    // blocks (sh.run, ADR-024 §1) polls it and kills its child, where
+    // the epoch bump alone could not reach (ADR-003 §2 amendment)
+    broker.interrupt = interrupt.clone();
     let wasi = WasiCtxBuilder::new()
         .inherit_stderr() // guest tracebacks; no fs/net granted
         .env("PYTHONHASHSEED", "0") // determinism pin
@@ -197,6 +201,7 @@ pub fn run_program(
     gauge.store(FUEL_PER_CELL, Ordering::Relaxed);
     store.set_epoch_deadline(1);
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
+    store.data_mut().broker.deadline = Some(deadline); // sh.run clamps to it (ADR-024 §1)
     let flag = interrupt.clone();
     store.epoch_deadline_callback(move |ctx| {
         if let Ok(fuel) = ctx.get_fuel() {
@@ -299,4 +304,59 @@ pub fn run_program(
         error,
         broker: host.broker,
     })
+}
+
+#[cfg(all(test, feature = "shell"))]
+mod tests {
+    use super::*;
+    use crate::broker::Broker;
+    use crate::routes::Classifier;
+    use crate::trace::TraceWriter;
+    use std::collections::BTreeMap;
+
+    /// ADR-005 §3 / ADR-003 §2 amendment: the run's interrupt flag ends
+    /// a run that is blocked inside `sh.run` — the syscall kills its
+    /// child on the flag, the epoch callback traps the guest after,
+    /// and the outcome is `interrupted`, long before the command's own
+    /// timeout.
+    #[test]
+    fn interrupt_flag_ends_a_run_blocked_in_sh_run() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("slow@v1.py"),
+            "def main(args):\n    r = effect(\"sh.run\", {\"cmd\": \"sleep 30\", \"timeout_s\": 25})\n    return r\n",
+        )
+        .unwrap();
+        let cage = Cage::embedded().unwrap();
+        let broker = Broker::new(
+            TraceWriter::new(json!({"id": "brk"})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Some(dir.path().to_path_buf()),
+            Classifier::new(None),
+        );
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let flag = interrupt.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(700));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let t0 = Instant::now();
+        let out = run_program(
+            &cage,
+            broker,
+            "slow@v1",
+            &json!({}),
+            Default::default(),
+            interrupt,
+            60.0,
+        )
+        .unwrap();
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(out.status, "interrupted");
+    }
 }

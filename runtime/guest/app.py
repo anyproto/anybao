@@ -201,6 +201,189 @@ class _Http:
 
 http = _Http()
 
+# ---- shell facades (ADR-024 §4): sh / fs, bound only when the binary
+# has the `shell` feature (runtime.get("shell") resolves, §6) ---------------
+
+class ShellError(EffectError):
+    """`sh(cmd, check=True)` on a non-zero exit; `.result` is the
+    ShellResult."""
+    def __init__(self, result):
+        self.result = result
+        super().__init__(f"exit {result.code}: {result.err.strip() or result.out.strip()}"[:400])
+
+
+class ShellResult:
+    """One command's outcome. `.out` / `.err` are the captured streams
+    (up to 1 MiB each — `.truncated` says head+tail were kept), `.code`
+    the exit status (None when it timed out or was interrupted), `.ok`
+    is `code == 0`, `.lines()` splits stdout. Its repr prints stdout
+    raw, then stderr, then an `[exit N]` line only when non-zero — so a
+    cell ending in `sh("git status")` reads like a terminal."""
+    def __init__(self, cmd, raw):
+        self.cmd = cmd
+        self.out = raw.get("stdout") or ""
+        self.err = raw.get("stderr") or ""
+        self.code = raw.get("exit")
+        self.pid = raw.get("pid")
+        self.duration_ms = raw.get("durationMs")
+        self.timed_out = bool(raw.get("timedOut"))
+        self.interrupted = bool(raw.get("interrupted"))
+        self.truncated = bool(raw.get("truncated"))
+
+    @property
+    def ok(self):
+        return self.code == 0
+
+    def lines(self):
+        """stdout split into lines (no trailing empty line)."""
+        return self.out.splitlines()
+
+    def __repr__(self):
+        parts = []
+        if self.out:
+            parts.append(self.out.rstrip("\n"))
+        if self.err:
+            parts.append("[stderr]\n" + self.err.rstrip("\n"))
+        if self.timed_out:
+            parts.append(f"[timed out after {self.duration_ms} ms — partial output above]")
+        elif self.interrupted:
+            parts.append("[interrupted — partial output above]")
+        elif self.code != 0:
+            parts.append(f"[exit {self.code}]")
+        if self.truncated:
+            parts.append("[output over the capture cap — head and tail kept]")
+        return "\n".join(parts) or "(no output)"
+
+    __str__ = __repr__
+
+
+class _Shell:
+    """Run shell commands on the device bao runs on (ADR-024 §1).
+
+    `sh("cmd", cwd=None, timeout_s=120, stdin=None, env=None,
+    check=False)` runs ONE command line through the user's shell
+    (bash, in your login environment) and returns a ShellResult; the
+    command's own exit code and a timeout are DATA on the result, not
+    exceptions (`check=True` raises ShellError on non-zero instead).
+    Nothing the command leaves running survives the call — long-running
+    or interactive work (dev servers, REPLs, ssh) belongs in a tmux
+    session driven through here. Output is captured to 1 MiB per
+    stream; pipe through `head`/`tail`/`rg` rather than dumping files.
+    `sh.last` is the most recent result (also what the `bash` tool
+    ran); `sh.cwd`/`sh.home`/`sh.os` say where you are. Use ABSOLUTE
+    paths — there is no ambient working directory between calls."""
+    def __init__(self, info):
+        self.cwd = info.get("cwd")
+        self.home = info.get("home")
+        self.shell = info.get("shell")
+        self.os = info.get("os")
+        self.last = None
+
+    def __call__(self, cmd, cwd=None, timeout_s=None, stdin=None, env=None, check=False):
+        res = ShellResult(cmd, self.run(cmd, cwd=cwd, timeout_s=timeout_s, stdin=stdin, env=env))
+        self.last = res
+        if check and not res.ok:
+            raise ShellError(res)
+        return res
+
+    def run(self, cmd, **kw):
+        """The raw `sh.run` effect: `{pid, exit, stdout, stderr,
+        durationMs, truncated, timedOut}` as a dict (programs that want
+        the wire shape; cells prefer `sh(cmd)`)."""
+        payload = {"cmd": cmd}
+        payload.update({k: v for k, v in kw.items() if v is not None})
+        return _effect("sh.run", payload)
+
+    def lines(self, cmd, **kw):
+        """`sh(cmd, **kw).lines()` — stdout as a list of lines."""
+        return self(cmd, **kw).lines()
+
+
+class Text(str):
+    """A file's text (`fs.read`) — a plain str carrying `.path`,
+    `.size` (bytes on disk), `.lines` (total line count) and
+    `.truncated` (over the 1 MiB read cap — use offset/limit)."""
+    def __new__(cls, raw):
+        t = super().__new__(cls, raw.get("text") or "")
+        t.path = raw.get("path")
+        t.size = raw.get("size")
+        t.lines = raw.get("lines")
+        t.offset = raw.get("offset")
+        t.truncated = bool(raw.get("truncated"))
+        return t
+
+
+class _Fs:
+    """Files on the device bao runs on (ADR-024 §2). Absolute paths.
+    `read` for a region of a file, `edit` for an exact-match
+    replacement (the trace records old → new: the diff), `write` for a
+    whole file; `list` for a directory. Searching (`rg`), diffs and git
+    stay in `sh`."""
+
+    def read(self, path, offset=None, limit=None):
+        """Text of `path` (utf-8) as a str with `.size`/`.lines`/
+        `.truncated`; `offset` (1-based line) + `limit` (lines) read a
+        region — do that for big files. Binary → `read_bytes`."""
+        payload = {"path": path}
+        if offset is not None:
+            payload["offset"] = offset
+        if limit is not None:
+            payload["limit"] = limit
+        return Text(_effect("fs.read", payload))
+
+    def read_bytes(self, path):
+        """Raw bytes of `path` (files up to 1 MiB)."""
+        return base64.b64decode(_effect("fs.read", {"path": path, "encoding": "base64"})["data"])
+
+    def write(self, path, content, mkdirs=True):
+        """Write `content` (str) as the whole file; creates parent dirs
+        by default. Returns `{path, bytes, created}`. Prefer `edit` for
+        a change inside an existing file."""
+        return _effect("fs.write", {"path": path, "content": content, "mkdirs": bool(mkdirs)})
+
+    def write_bytes(self, path, data, mkdirs=True):
+        """Write raw bytes as the whole file."""
+        return _effect("fs.write", {"path": path, "content": base64.b64encode(data).decode(),
+                                    "encoding": "base64", "mkdirs": bool(mkdirs)})
+
+    def edit(self, path, old, new, all=False):
+        """Replace `old` with `new` in `path`. `old` must occur EXACTLY
+        once (else `fs.edit_ambiguous` — widen it, or pass `all=True` to
+        replace every occurrence; `fs.edit_not_found` — re-read and copy
+        the exact text). Nothing is written on failure. Returns the
+        replacement count."""
+        out = _effect("fs.edit", {"path": path, "old": old, "new": new, "all": bool(all)})
+        return out["replacements"]
+
+    def list(self, path, glob=None, depth=1):
+        """Entries of a directory: `[{path, kind: file|dir|symlink,
+        size}]`, sorted; `glob` filters names (`*.rs`), `depth` recurses.
+        For a whole tree use `sh("rg --files …")`."""
+        payload = {"path": path, "depth": depth}
+        if glob:
+            payload["glob"] = glob
+        return _effect("fs.list", payload)["entries"]
+
+
+_shell_info = None      # None = not probed; False = binary lacks the feature
+
+
+def _bind_shell(ns):
+    """Bind `sh`/`fs` iff the runtime has the shell feature — probed
+    ONCE per kernel (one runtime.get record per run); absent, the names
+    are simply not in the namespace (ADR-024 §6)."""
+    global _shell_info
+    if _shell_info is None:
+        try:
+            _shell_info = _effect("runtime.get", {"key": "shell"})["value"] or {}
+        except EffectError:
+            _shell_info = False
+    if _shell_info is not False:
+        ns["sh"] = _Shell(_shell_info)
+        ns["fs"] = _Fs()
+        ns["ShellError"] = ShellError
+
+
 # ---- proxied stdlib (tier 2: ambient authority -> effects) -----------------
 
 _proxy_cache: dict = {}
@@ -702,6 +885,7 @@ def _run_cell(code: str, cell_id: str) -> dict:
     global _ns
     if not _ns:
         _ns = _fresh_ns()
+        _bind_shell(_ns)   # cell namespace only; use() modules go without
     store = _values.setdefault(cell_id, {"prints": []})
     prints: list[dict] = []
 
@@ -758,8 +942,9 @@ class WitWorld:
         return json.dumps(_run_cell(code, cell_id))
 
     def reset_ns(self) -> None:
-        global _ns
+        global _ns, _shell_info
         _ns = {}
+        _shell_info = None
         _values.clear()
         _proxy_cache.clear()
         _module_cache.clear()

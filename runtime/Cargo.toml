@@ -34,6 +34,15 @@ chrono = "0.4"           # cron's time source
 tiny_http = "0.12"       # the localhost trigger control API
 tracing = "0.1"          # runtime logs (embedders subscribe or get silence)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # bin-side fmt
+libc = { version = "0.2", optional = true }  # `shell`: killpg on timeout/break (ADR-024 §1)
+
+# ADR-024 §6: shell effects (`sh.*`/`fs.*`, the `bash` tool) are a
+# compile-time feature, OFF by default — any-ui's path dependency
+# never enables it, so desktop builds carry no shell code at all.
+# `make runtime-shell` / `cargo build --features shell` turns it on.
+[features]
+default = []
+shell = ["dep:libc"]
 
 [dev-dependencies]
 tempfile = "3"

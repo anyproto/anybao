@@ -73,7 +73,7 @@ def local_source(spec, programs_dir=None):
 
 
 def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
-                module_source=None):
+                module_source=None, shell=None):
     """A fresh kernel app module wired to test fakes. `effect(name,
     payload) -> output` serves pass-through effects; `any_client` /
     `llm_chat`, when given, shadow the real any@v1 / llm@v1 modules.
@@ -82,7 +82,12 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     `module_source(spec)`, when given, is consulted first for other
     specs: return source text, `{"source", "marker"?}` (marker drives
     the guest probe cache — bump it to model an edited program,
-    ADR-004 §4), or None to fall through to programs_dir."""
+    ADR-004 §4), or None to fall through to programs_dir.
+    `shell`, when given, is what `runtime.get("shell")` returns (the
+    binary has the feature → `sh`/`fs` bound in cells, ADR-024 §6);
+    the default models a binary without it — the probe fails typed
+    and the names stay out of the namespace — unless `effect` chooses
+    to serve the key itself."""
     def host_effect(name, payload_json):
         payload = json.loads(payload_json)
         try:
@@ -127,6 +132,13 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                         out["__code__"] = e.code
             elif name == "test.llm":
                 out = llm_chat(**payload)
+            elif name == "runtime.get" and payload.get("key") == "shell":
+                if shell is not None:
+                    out = {"value": shell}
+                elif effect is not None:
+                    out = effect(name, payload)
+                else:
+                    raise KeyError("no runtime value for \"shell\"")
             elif effect is not None:
                 out = effect(name, payload)
             else:

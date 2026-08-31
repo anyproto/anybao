@@ -95,6 +95,19 @@ fn indent_block(text: &str, pad: &str, max_lines: usize) -> String {
 }
 
 /// Pair span begin/end records by id (end may be missing on a trap).
+/// A model tool call's span: `cell` (run_cell) or `bash` (the bash
+/// tool, ADR-024 §4) — both carry the tool-use id in `input.cell`.
+fn is_cell_span(r: &Value) -> bool {
+    r["name"] == "cell" || r["name"] == "bash"
+}
+
+fn cell_spans(records: &[Value]) -> Vec<(&Value, Option<&Value>)> {
+    let mut out = spans_of(records, "cell");
+    out.extend(spans_of(records, "bash"));
+    out.sort_by_key(|(b, _)| b["seq"].as_i64().unwrap_or(0));
+    out
+}
+
 fn spans_of<'a>(records: &'a [Value], name: &str) -> Vec<(&'a Value, Option<&'a Value>)> {
     let mut out = Vec::new();
     for r in records {
@@ -593,11 +606,17 @@ fn llm_body(
                 let executed = cells
                     .iter()
                     .any(|(cb, _)| cb["input"]["cell"].as_str() == Some(id.as_str()));
+                let is_bash = block["name"] == "bash";
                 out.push_str(&format!(
-                    "{pad}cell {id}{}:\n",
+                    "{pad}{} {id}{}:\n",
+                    if is_bash { "bash" } else { "cell" },
                     if executed { "" } else { " — never executed" }
                 ));
-                let code = block["input"]["code"].as_str().unwrap_or("");
+                let code = if is_bash {
+                    block["input"]["command"].as_str().unwrap_or("")
+                } else {
+                    block["input"]["code"].as_str().unwrap_or("")
+                };
                 out.push_str(&indent_block(code, &format!("{pad}|   "), lim.code_lines));
                 out.push('\n');
             }
@@ -1096,7 +1115,7 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
         .iter()
         .filter(|(b, _)| b["parent"].is_null())
         .count();
-    let cells = spans_of(&records, "cell");
+    let cells = cell_spans(&records);
     let effects: Vec<&Value> = records.iter().filter(|r| r["kind"] == "effect").collect();
     let mutations = effects
         .iter()
@@ -1270,7 +1289,7 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
                     None => llm_error(&mut out, &inner, end, "  "),
                 }
             }
-            "cell" => {
+            "cell" | "bash" => {
                 let id = s(&rec["input"]["cell"]);
                 let (verdict, dur, neff) = match end {
                     Some(e) => (
@@ -1280,7 +1299,10 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
                     ),
                     None => ("NO END (trap?)", "?".into(), "?".into()),
                 };
-                out.push_str(&format!("  cell {id} {verdict} ({dur}, {neff})\n"));
+                out.push_str(&format!(
+                    "  {} {id} {verdict} ({dur}, {neff})\n",
+                    s(&rec["name"])
+                ));
                 if let Some(e) = end {
                     if !e["error"].is_null() {
                         out.push_str(&format!("    error: {}\n", e["error"]));
@@ -1463,7 +1485,7 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
             if r["kind"] == "effect" {
                 t.effects += 1;
             }
-            if r["kind"] == "span" && r["phase"] == "begin" && r["name"] == "cell" {
+            if r["kind"] == "span" && r["phase"] == "begin" && is_cell_span(r) {
                 t.cells += 1;
             }
         }

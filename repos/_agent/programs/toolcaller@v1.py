@@ -74,6 +74,36 @@ RUN_CELL_TOOL_COMPACT = {
         "cells. Returns printed output, the last expression, and a "
         "side-effects summary. Reply with text only (no tool call) to end."),
 }
+# The second tool, offered only when the runtime has shell effects
+# (ADR-024 §4, ADR-005 §2 amendment): one command, raw output, the
+# result bound in the kernel for run_cell.
+BASH_TOOL = {
+    "name": "bash",
+    "description": (
+        "Run ONE bash command line on the machine bao runs on (bash -c, in "
+        "the user's login environment) and read its output raw: stdout, then stderr, "
+        "then an [exit N] line only when non-zero (a timeout is reported, "
+        "not raised). The result is also bound in the kernel as `sh.last` "
+        "(and as `as`, when given) so a following run_cell can process it — "
+        "never paste output back into a cell. Absolute paths: no working "
+        "directory carries over between calls. Keep output bounded (`| head "
+        "-100`, `rg` rather than `cat`); default timeout 120 s. Long-running "
+        "or interactive work belongs in a tmux session driven from here."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string",
+                        "description": "The command line, exactly as typed in a terminal."},
+            "cwd": {"type": "string",
+                    "description": "Absolute working directory for this command."},
+            "timeout_s": {"type": "number",
+                          "description": "Seconds before the command is killed (default 120)."},
+            "as": {"type": "string",
+                   "description": "Also bind the result to this variable name for run_cell."},
+        },
+        "required": ["command"],
+    },
+}
 MAX_TURNS = 300
 MAX_TOKENS_TOTAL = 1_000_000
 TIER = "codegen"
@@ -82,10 +112,27 @@ TIER = "codegen"
 CONTEXT_FULL_SHARE = 0.85
 INLINE_TOKEN_BUDGET = 1000
 MAX_SIDE_EFFECT_LINES = 12
+# bash tool results are raw text, not values: a wider inline budget,
+# head + tail past it (the whole text stays on sh.last.out)
+BASH_HEAD_CHARS = 12000
+BASH_TAIL_CHARS = 4000
+BASH_STDERR_CHARS = 3000
 # Fixed order of the built-in system skills in the prompt; unknown _-skills
-# sort after these.
-SYSTEM_SKILL_ORDER = ["_soul", "_core", "_any", "_memory", "_space_context",
-                      "_meta_skill"]
+# sort after these. `_coding` is composed only with the shell feature.
+SYSTEM_SKILL_ORDER = ["_soul", "_core", "_any", "_coding", "_memory",
+                      "_space_context", "_meta_skill"]
+_RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
+                   "effect", "subcell", "span", "help"}
+
+
+def _shell_info():
+    """`runtime.get("shell")` → `{cwd, home, shell, os}` when the binary
+    has shell effects (ADR-024 §6), else None: decides the tool set and
+    whether `_coding` is composed. One recorded read per run."""
+    try:
+        return effect("runtime.get", {"key": "shell"}).get("value") or None  # noqa: F821
+    except Exception:
+        return None
 
 
 def approx_tokens(text):
@@ -178,6 +225,57 @@ def _hints(entries):
             for name, n in counts.items() if n >= 4]
 
 
+def _clip(text, head, tail, where):
+    if len(text) <= head + tail:
+        return text
+    gone = len(text) - head - tail
+    return (text[:head] + f"\n[… {gone} chars elided — the full text is on {where} …]\n"
+            + text[-tail:])
+
+
+def _bash_code(a):
+    """The cell a bash tool call runs: `sh(command, cwd=, timeout_s=)`,
+    optionally bound to `as` (an identifier that isn't a kernel name);
+    the result is the cell's last value either way."""
+    kw = "".join(f", {k}={a[k]!r}" for k in ("cwd", "timeout_s") if a.get(k) is not None)
+    call = f"sh({a.get('command', '')!r}{kw})"
+    name = (a.get("as") or "").strip()
+    if name.isidentifier() and name not in _RESERVED_NAMES:
+        return f"{name} = {call}\n{name}", name
+    return call, None
+
+
+def render_bash(cr, res, bound):
+    """A bash tool result reads like a terminal (ADR-024 §4): stdout,
+    then stderr, an exit/timeout line only when there is one, and the
+    footer naming the kernel binding so the model reaches for
+    `sh.last` instead of re-pasting."""
+    if cr["error"]:
+        tb = "\n" + cr["error"].get("traceback", "") if cr["error"].get("traceback") else ""
+        return f"Error: {cr['error']['type']}: {cr['error']['message']}{tb}"
+    parts = []
+    out = (getattr(res, "out", "") or "").rstrip("\n")
+    err = (getattr(res, "err", "") or "").rstrip("\n")
+    if out:
+        parts.append(_clip(out, BASH_HEAD_CHARS, BASH_TAIL_CHARS, "sh.last.out"))
+    if err:
+        parts.append("[stderr]\n" + _clip(err, BASH_STDERR_CHARS, BASH_STDERR_CHARS,
+                                          "sh.last.err"))
+    if getattr(res, "timed_out", False):
+        parts.append(f"[timed out after {getattr(res, 'duration_ms', '?')} ms — "
+                     "partial output above]")
+    elif getattr(res, "interrupted", False):
+        parts.append("[interrupted — partial output above]")
+    elif getattr(res, "code", 0) != 0:
+        parts.append(f"[exit {getattr(res, 'code', None)}]")
+    if getattr(res, "truncated", False):
+        parts.append("[output over the 1 MiB capture cap — head and tail kept]")
+    if not parts:
+        parts.append("(no output)")
+    parts.append("→ sh.last" + (f" (also `{bound}`)" if bound else ""))
+    return "\n".join(parts)
+
+
 def render_digest(cell_id, cr, entries):
     parts = []
     if cr["prints"]:
@@ -208,25 +306,43 @@ def _tally(stats, usage):
         stats[dst] += usage.get(src, 0)
 
 
-def _wrapup(messages, llm, system, tier, reason, stats):
-    # A length-truncated assistant reply can carry a tool_call that
-    # never ran; the provider rejects a tool_use with no tool_result at
-    # the head of the next message (ADR-005 §2), so answer each
-    # dangling call with a synthetic error result first.
-    parts = []
+def _dangling(messages, reason):
+    """Synthetic error results for tool calls in the last assistant
+    message that never ran — the provider rejects a tool_use with no
+    tool_result at the head of the next message (ADR-005 §2)."""
     last = messages[-1] if messages else {}
-    if last.get("role") == "assistant":
-        parts = [{"type": "tool_result", "call_id": p["id"],
-                  "content": f"not executed: {reason}", "is_error": True}
-                 for p in last["parts"] if p["type"] == "tool_call"]
+    if last.get("role") != "assistant":
+        return []
+    return [{"type": "tool_result", "call_id": p["id"],
+             "content": f"not executed: {reason}", "is_error": True}
+            for p in last["parts"] if p["type"] == "tool_call"]
+
+
+def _wrapup(messages, llm, system, tier, reason, stats, tools):
+    # The wrap-up call keeps the SAME tool list as every other turn:
+    # the tools are part of the cached prompt prefix, and dropping them
+    # here made the biggest prompt of the run — the last one — a full
+    # cache miss (105k uncached tokens, 7% of a 109-turn run's cost).
+    # Text-only is asked for, not enforced by the wire; a model that
+    # answers with a tool call anyway gets one more, tool-less call.
+    parts = _dangling(messages, reason)
     parts.append({"type": "text", "text":
         f"[{reason}] No more cells. Summarize what you did, what is done, "
         f"and what is still pending."})
     messages.append({"role": "user", "parts": parts})
-    reply = llm.chat(messages, system=system, tier=tier, tools=[])
+    reply = llm.chat(messages, system=system, tier=tier, tools=tools)
     _tally(stats, reply.get("usage", {}))
     messages.append({"role": "assistant", "parts": reply["parts"]})
-    return _texts(reply["parts"])
+    texts = _texts(reply["parts"])
+    if not texts and any(p["type"] == "tool_call" for p in reply["parts"]):
+        parts = _dangling(messages, reason)
+        parts.append({"type": "text", "text": "Text only — no tool calls. Summarize."})
+        messages.append({"role": "user", "parts": parts})
+        reply = llm.chat(messages, system=system, tier=tier, tools=[])
+        _tally(stats, reply.get("usage", {}))
+        messages.append({"role": "assistant", "parts": reply["parts"]})
+        texts = _texts(reply["parts"])
+    return texts
 
 
 def _run_model_cells(parts, results):
@@ -244,6 +360,24 @@ def _run_model_cells(parts, results):
             results.append({"type": "tool_result", "call_id": cid,
                             "content": f"Error: {part['error']}",
                             "is_error": True})
+            continue
+        if part.get("name") == "bash":
+            # a subcell in the same kernel (ADR-005 §2 amendment): the
+            # result lands in the namespace as sh.last / `as`; rendered
+            # raw from the stored object, not as a value digest
+            code, bound = _bash_code(part["args"])
+            effect("span.begin",  # noqa: F821 - guest global
+                   {"name": "bash", "input": {"cell": cid,
+                                              "command": part["args"].get("command", "")}})
+            cr = subcell(code, cid)  # noqa: F821
+            err = cr["error"]
+            effect("span.end", {"ok": cr["ok"],  # noqa: F821
+                                "error": ({"type": err["type"], "message": err["message"]}
+                                          if err else None)})
+            res = values.get(cid, "last") if cr["ok"] and cr["last"] is not None else None  # noqa: F821
+            results.append({"type": "tool_result", "call_id": cid,
+                            "content": render_bash(cr, res, bound),
+                            "is_error": not cr["ok"]})
             continue
         sid = effect("span.begin",  # noqa: F821 - guest global
                      {"name": "cell", "input": {"cell": cid}})["span"]
@@ -294,9 +428,13 @@ def _load_system_skills(c, space, code_space=None):
     return out
 
 
-def _compose_skills(skills):
+def _compose_skills(skills, has_shell=False):
     """Fixed order (SYSTEM_SKILL_ORDER first, unknown _-skills sorted
-    after), each trimmed, joined by blank lines."""
+    after), each trimmed, joined by blank lines. `_coding` rides only
+    with the shell feature (ADR-024 §4) — no prompt tax for tools the
+    binary lacks."""
+    if not has_shell:
+        skills = {n: s for n, s in skills.items() if n != "_coding"}
     known = [n for n in SYSTEM_SKILL_ORDER if n in skills]
     rest = sorted(n for n in skills if n not in SYSTEM_SKILL_ORDER)
     return "\n\n".join(skills[n].strip() for n in known + rest)
@@ -442,12 +580,13 @@ def _repo_inventory(c, overlays, code_space=None):
             + "\n".join(lines))
 
 
-def compose_system(c, space, code_space=None, overlays=None, style="full"):
+def compose_system(c, space, code_space=None, overlays=None, style="full",
+                   has_shell=False):
     """The full system prompt loaded from the space(s): skills + tool
     docs (both two-tier: agent code overlay + working space, working
     wins) + repo inventory + memory categories. Guest-side — the host
     injects nothing. `style` is the profile's `prompt_style`."""
-    parts = [_compose_skills(_load_system_skills(c, space, code_space)),
+    parts = [_compose_skills(_load_system_skills(c, space, code_space), has_shell),
              _user_skills(c, space),
              _tool_docs(c, space, code_space, style),
              _repo_inventory(c, overlays,
@@ -475,7 +614,11 @@ def main(args):
     # the tier's model profile (ADR-005 §1.3): the loop budgets from its
     # loop-facing traits and never sees provider or wire
     traits = llm.profile(tier)["traits"]
-    tool = RUN_CELL_TOOL_COMPACT if traits["prompt_style"] == "compact" else RUN_CELL_TOOL
+    run_cell = RUN_CELL_TOOL_COMPACT if traits["prompt_style"] == "compact" else RUN_CELL_TOOL
+    # shell effects (ADR-024): the second tool + the _coding skill + a
+    # runtime-context line exist only when the binary has them
+    shell = _shell_info()
+    tools = [run_cell] + ([BASH_TOOL] if shell else [])
     context_window = traits["context_window"]
     boot_tokens = min(args.get("bootTokens", 40000), context_window // 4)
 
@@ -483,7 +626,8 @@ def main(args):
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    system = compose_system(c, space, code_space, overlays, traits["prompt_style"])
+    system = compose_system(c, space, code_space, overlays,
+                            traits["prompt_style"], bool(shell))
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
@@ -502,6 +646,11 @@ def main(args):
         user_suffix = ""
     else:
         user_suffix = runtime_ctx
+    if shell:
+        system += (
+            f"\n- shell: this device (`{shell.get('os')}`), serve cwd "
+            f"`{shell.get('cwd')}`, home `{shell.get('home')}` — the `bash` tool "
+            "and the `sh`/`fs` cell globals run here")
     if quiet:
         system += (
             "\n\n## Subagent\n\nYou are running as a subagent on a delegated "
@@ -586,13 +735,13 @@ def main(args):
         if malformed > traits["malformed_retries"]:
             wrapup_reason = wrapup_reason or f"{malformed} malformed tool calls"
         if wrapup_reason:
-            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats)
+            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats, tools)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break
 
         turn += 1
-        reply = llm.chat(messages, system=system, tier=tier, tools=[tool])
+        reply = llm.chat(messages, system=system, tier=tier, tools=tools)
         _tally(stats, reply.get("usage", {}))
         tokens = stats["inTokens"] + stats["outTokens"]
         # usage.in is the UNCACHED prompt; the context the model holds is
@@ -607,7 +756,7 @@ def main(args):
             break
         if reply["stop"] == "length":
             replies = _wrapup(messages, llm, system, tier,
-                              "response length limit", stats)
+                              "response length limit", stats, tools)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break

@@ -23,6 +23,8 @@ pub mod resolver;
 pub mod routes;
 pub mod runner;
 pub mod serve;
+#[cfg(feature = "shell")]
+pub mod shell;
 pub mod stats;
 #[cfg(test)]
 pub mod testutil;
