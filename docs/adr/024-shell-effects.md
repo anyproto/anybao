@@ -7,7 +7,8 @@ deny-by-default namespace), ADR-001 §7 (blob spill), ADR-003 §2
 (cell cancellation: epoch deadline, fuel, hard break), ADR-010
 (docstrings as the doc surface)
 Amends when accepted: ADR-002 §3 (two new namespace globals), ADR-003
-§2 (cancellation reaches child processes)
+§2 (cancellation reaches child processes), ADR-005 §2 (a second tool,
+`bash`, under the feature)
 Deferred, not decided here: restrictions of any kind — capability
 grants, consent, path confinement, sandboxing (see §5)
 
@@ -169,30 +170,88 @@ permitted — exactly as for every other effect today. Nothing named
 "host": in this repo *host* is the runtime side of the boundary
 (ADR-002 §1), and these effects are guest-facing tools like `http`.
 
-### 4. Guest surface and prompt
+### 4. Guest surface, the `bash` tool, and the prompt
 
-- Two namespace globals, `sh` and `fs` (amends ADR-002 §3), added in
-  `runtime/guest/app.py` beside `http`. Docstrings are the doc
-  (ADR-010): `help(sh)` / `help(fs.edit)` show signatures, return
-  shapes, and the timeout/truncation contract. `sh.run` is the only
-  thing most cells need; the docstring says so.
+**Two tools, one effect (amends ADR-005 §2).** With the feature built
+in, the toolcaller offers `run_cell(code)` and `bash(command,
+as=None)`. The split is about generation, not architecture:
+
+- The model is trained on a tool shaped `bash(command)` more heavily
+  than on anything this repo could invent, and shell inside a Python
+  string pays a second quoting layer (`"sed 's/\\t/ /'"`) whose
+  every miss is a wasted turn. `bash` is the primary way to *run one
+  command and read it*.
+- `run_cell` stays the way to *process* output and to do several
+  steps in one round-trip — the turn count is the dominant cost
+  (every model turn re-reads the context), and `out = sh("rg -n TODO
+  src").out; files = {…}` is one turn where a bash-only agent needs
+  three. Python keeps the data role.
+
+`bash` is **not a second executor**: the toolcaller runs it as a
+subcell in the same kernel — `sh(command)` inside a `bash` span, so
+the trace shows the command verbatim with its one `sh.run` effect —
+and renders the result **raw**: stdout, then stderr, an `exit N` line
+only when non-zero, head/tail truncation past the digest budget. No
+JSON-escaped newlines (≈1.3× the tokens and harder to read).
+
+**The output is already in the kernel.** Because `bash` runs in the
+kernel namespace, its result is bound where the next `run_cell` can
+reach it:
+
+- `sh.last` — always rebound to the most recent `bash` result:
+  `.out`, `.err`, `.code`, `.ok`, `.lines()`. Namespaced on the `sh`
+  facade so it never collides with a name the model chose itself.
+- `bash(command, as="tests")` — optional explicit binding, IPython's
+  `x = !cmd`.
+- The tool-result footer names the binding (`→ sh.last (also
+  `tests`)`) so the model does not paste 200 lines of test output
+  back into a cell. The bound object holds the **untruncated** output
+  (up to §1's 1 MiB cap) even when the tool result showed head/tail —
+  Python sees what the model did not.
+- `values.get(<tool-use-id>)` keeps working as the durable route
+  (ADR-005 §4); it is the fallback, not the pattern.
+
+Typical flow: `bash("cargo test 2>&1 | tail -80")` → read → `run_cell`:
+`fails = [l for l in sh.last.lines() if l.startswith("test ") and
+"FAILED" in l]` — no re-run, no re-paste.
+
+**In-cell surface, deliberately small.** Two namespace globals, `sh`
+and `fs` (amends ADR-002 §3), added in `runtime/guest/app.py` beside
+`http`; bound only when `runtime.get("shell")` resolves (§6). `sh` is
+callable — `sh("cmd", cwd=None, timeout_s=None, stdin=None, env=None,
+check=False)` returns the result object above (`check=True` raises on
+non-zero exit); `sh.lines("cmd")` is the one-liner for
+split-and-strip; `sh.run(...)` is the raw dict for programs that want
+it; `sh.spawn/poll/kill` per §1. The result's `__repr__` prints stdout
+raw with an exit line, so a cell ending in `sh("git status")` reads
+like a terminal. No shell DSL (`sh.git("status")`-style argv builders
+or a plumbum-like pipe algebra): models write orders of magnitude
+less of it than raw bash, pipes get awkward, and every command
+becomes a translation step. Docstrings are the doc (ADR-010):
+`help(sh)` / `help(fs.edit)`.
+
 - `runtime.get("shell")` (ADR-006 §3 surface) → `{cwd, home, shell,
   os}` — where bao is, so the first cell doesn't have to probe with
   `pwd`. Absent (KeyError) in a binary without the feature (§6).
 - **`_coding.md`, a new space-resident skill**, deployed like any
   other (`anyrt deploy`), composed in when the binary has the
-  feature (§6). It carries the
-  workflow, not the API: absolute paths; read before you edit;
-  `fs.edit` over rewriting a file; run the project's tests after a
-  change and read the failure; bounded output (`| head`, `rg` before
-  `cat`); stage by explicit path, never `git add -A`; never push,
-  force, reset, or delete outside the project without the user
-  asking in that conversation; report a failing test as failing.
-  A bao that should not code drops the skill from its space —
-  prompt-side, no runtime switch.
-- The `_core` reply/cell discipline is unchanged: shell output lands
-  in the digest like any value, large values stub to `values.get`,
-  `print()` stays the model-facing channel.
+  feature (§6). It carries the workflow, not the API: `bash` to run
+  and read one command, `run_cell` when you will process the output
+  or need several steps, `sh.last` instead of re-pasting; absolute
+  paths; read before you edit; `fs.edit` over rewriting a file; run
+  the project's tests after a change and read the failure; bounded
+  output (`| head`, `rg` before `cat`); stage by explicit path, never
+  `git add -A`; never push, force, reset, or delete outside the
+  project without the user asking in that conversation; report a
+  failing test as failing. One nudge for later tooling: long-running
+  or interactive work (dev servers, REPLs, ssh) belongs in a `tmux`
+  session the user can attach to, driven through `bash` — tmux
+  itself is not an effect (a connector over `~/code/tmux-http` is a
+  possible follow-up, not this ADR). A bao that should not code
+  drops the skill from its space — prompt-side, no runtime switch.
+- The `_core` reply/cell discipline is unchanged: cell values land in
+  the digest, large values stub to `values.get`, `print()` stays the
+  model-facing channel.
 - Model tier is config as always: `llm.tier.codegen` is an
   `agent_config` row (`claude-sonnet-5` from `config_defaults.json`);
   a coding bao flips the row in its space.
@@ -272,6 +331,8 @@ upload to `any` (ADR-020 covers download only).
 - Trace volume grows: shell output is bulkier than JSON. The 1 MiB
   caps + blob spill + ADR-023 retention bound it; the `_coding`
   skill pushes the model toward bounded commands.
+- The toolcaller has two tools for the first time; the skill text
+  carries the when-which rule (§4). Prompt tax ≈ one tool schema.
 - Two new failure classes for the digest to render well:
   `timedOut` runs with partial output, and non-zero exits — both
   data, both shown, neither an exception (§1).
@@ -309,8 +370,10 @@ One topic per commit, on `feat/adr-024-shell-effects`:
 3. `runtime/guest/app.py`: `sh`, `fs` globals with docstrings,
    bound only when `runtime.get("shell")` resolves; guest-module
    tests with the fake `effect`.
-4. `repos/_agent/skills/_coding.md` + toolcaller composing it only
-   when the shell feature is present.
+4. `toolcaller@v1`: the `bash` tool (subcell + raw rendering +
+   `sh.last`/`as=` binding, ADR-005 §2 amendment), offered only when
+   `runtime.get("shell")` resolves; `repos/_agent/skills/_coding.md`
+   composed in under the same condition.
 5. `sh.spawn/poll/kill` (if Q4 says yes).
 6. Rig e2e on the prod-test serve: a conversation that clones or
    opens a repo, reads, edits, runs tests, and commits; trace review

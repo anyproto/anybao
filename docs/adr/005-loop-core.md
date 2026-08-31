@@ -231,6 +231,21 @@ drain mailbox (mailbox.drain syscall) → use("llm@v1").chat → stop?
            a tool_use with no tool_result in the next message.
 ```
 
+**A second tool under the `shell` feature (amendment 2026-08-31,
+ADR-024 §4).** When the runtime is built with shell effects, the tool
+set is `run_cell(code)` + `bash(command, as=None)`. `bash` is not a
+second executor: the toolcaller runs it as a subcell in the SAME
+kernel — `sh(command)` (ADR-024 §1) inside a `bash` span — and
+renders the result raw (stdout, stderr, an `exit N` line only when
+non-zero, head/tail truncation) instead of as a Python value. The
+result object is bound in the kernel namespace as `sh.last` (and as
+`<as>` when given) so the next `run_cell` processes the output
+without re-running or re-pasting it; the tool-result footer names the
+binding. Everything else in this section — spans, digests, the
+`values` store keyed by tool-use id, ceilings, wrap-up handling of
+dangling calls — applies to `bash` calls unchanged. Without the
+feature the tool set is `run_cell` alone and nothing here changes.
+
 Interim assistant text before tool calls surfaces as `done: false`
 progress bubbles (v1 behavior, kept). Errors: `is_error` ToolResult
 with the error digest — the model self-corrects; no fix-loop (settled).
