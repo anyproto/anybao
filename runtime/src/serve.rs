@@ -1493,10 +1493,13 @@ impl RunCtx {
         Ok((
             run_id.clone(),
             RunResult {
-                status: if outcome.status == "ok" {
-                    "ok".into()
-                } else {
-                    "error".into()
+                // ok | error | interrupted — a hard break (ADR-005 §3)
+                // must reach the chat wrapper as what it is, not as a
+                // generic error
+                status: match outcome.status.as_str() {
+                    "ok" => "ok".into(),
+                    "interrupted" => "interrupted".into(),
+                    _ => "error".into(),
                 },
                 duration_ms: outcome.duration_ms,
                 trace_ref: Some(run_id),

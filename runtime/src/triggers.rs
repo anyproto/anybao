@@ -61,7 +61,7 @@ impl Trigger {
 
 #[derive(Clone, Debug)]
 pub struct RunResult {
-    pub status: String, // ok | error
+    pub status: String, // ok | error | interrupted
     pub duration_ms: i64,
     pub trace_ref: Option<String>,
     pub fuel: Option<i64>,
