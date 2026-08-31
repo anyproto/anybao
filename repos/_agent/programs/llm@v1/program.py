@@ -462,8 +462,8 @@ def _lift(reply, traits):
         elif traits["tool_mode"] == "xml":
             calls = _XML_CALL_RE.findall(text)
             if calls:
-                for j, body in enumerate(calls):
-                    part = {"type": "tool_call", "id": f"xml_{len(lifted) + j}",
+                for body in calls:
+                    part = {"type": "tool_call", "id": f"xml_{len(lifted)}",
                             "name": "run_cell", "args": {}}
                     try:
                         call = json.loads(body)

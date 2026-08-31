@@ -312,6 +312,11 @@ def test_lift_xml_tool_calls_and_think_tags():
     assert r["parts"][0]["text"] == "plan it"
     assert r["parts"][1]["text"] == "Running."
     assert r["parts"][2]["args"] == {"code": "2*2"}
+    two = LLM["_lift"](LLM["OpenAICompatAdapter"]().parse_response(_openai_text(
+        '<tool_call>{"name": "run_cell", "arguments": {"code": "a"}}</tool_call>\n'
+        '<tool_call>{"name": "run_cell", "arguments": {"code": "b"}}</tool_call>')),
+        T(tool_mode="xml"))
+    assert [p["id"] for p in two["parts"]] == ["xml_0", "xml_1"]  # sequential, unique
     bad = LLM["_lift"](LLM["OpenAICompatAdapter"]().parse_response(
         _openai_text("<tool_call>{not json}</tool_call>")), T(tool_mode="xml"))
     assert bad["stop"] == "tool" and "unparseable" in bad["parts"][0]["error"]
