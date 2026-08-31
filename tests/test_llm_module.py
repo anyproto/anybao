@@ -118,6 +118,13 @@ def test_anthropic_thinking_roundtrip_verbatim():
     back = LLM["AnthropicAdapter"]().build_request(
         [{"role": "assistant", "parts": [think]}], "", [], "m", CLAUDE)
     assert back["messages"][0]["content"][0] == signed
+    # an UNSIGNED thinking part (another provider's, or lifted from
+    # <think>) never reaches the wire — Anthropic requires the signature
+    back = LLM["AnthropicAdapter"]().build_request(
+        [{"role": "assistant", "parts": [{"type": "thinking", "text": "kimi's"},
+                                          {"type": "text", "text": "ok"}]}],
+        "", [], "m", CLAUDE)
+    assert [b["type"] for b in back["messages"][0]["content"]] == ["text"]
     # an advisory profile drops it from the wire
     back = LLM["AnthropicAdapter"]().build_request(
         [{"role": "assistant", "parts": [think, {"type": "text", "text": "ok"}]}],

@@ -218,14 +218,15 @@ class AnthropicAdapter:
             elif t == "thinking":
                 if traits["reasoning"] != "roundtrip":
                     continue
-                # round-trip the signed block verbatim (provider_state)
+                # round-trip the SIGNED block verbatim (provider_state);
+                # an unsigned thinking part (another provider's, or one
+                # lifted from <think> tags) has no valid wire form here —
+                # Anthropic requires the signature — so it stays out
                 state = p.get("provider_state")
                 signed = isinstance(state, dict) and state.get("type") in (
                     "thinking", "redacted_thinking")
                 if signed:
                     blocks.append(state)
-                elif p.get("text"):
-                    blocks.append({"type": "thinking", "thinking": p["text"]})
             elif t == "file":
                 blocks.append(self._file_block(p))
         return {"role": m["role"], "content": blocks}
