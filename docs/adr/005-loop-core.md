@@ -1,6 +1,7 @@
 # ADR-005: Loop core
 
-Status: **Accepted** (2026-07-07)
+Status: **Accepted** (2026-07-07); §1 amended 2026-08-31 (backends,
+model profiles, traits — BOB-74)
 Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
@@ -23,7 +24,7 @@ orientation summaries. This ADR fixes the shapes.
 
 ## Decision
 
-### 1. Neutral message model (provider adapters live in `llm@v1`)
+### 1. Neutral message model; adapters, backends and model profiles live in `llm@v1`
 
 ```python
 Message   = {role: "user"|"assistant", parts: [Part]}
@@ -37,29 +38,146 @@ Usage     = {in, out, cacheRead, cacheWrite}    # tokens; cache* may be 0
 ```
 
 `use("llm@v1").chat(messages, *, system, tier, tools)` lives in the
-guest: it translates the neutral
-messages to a provider wire and issues ONE `http.post` syscall (route-
-classified `read`/`llm.chat`), wrapped in an `llm.chat` span so the
-trace and the digest read it as one call. Because the crossing is a
-recorded effect, the full request and response are in the trace
-(ADR-001). The api key never enters the guest: the request names a
-`credential` (config `ref` + header); the host resolves the secret and
-sets the header AFTER the payload records (ADR-002). Adapters:
-`anthropic` (native; thinking `provider_state` round-tripped byte-exact;
-`cache_control` breakpoints set automatically at end of system and end
-of conversation — no caller hint needed, the loop's prefix is
-append-only, so each call writes the cache the next one reads; amended
-2026-07-17, was a never-implemented `prefix_stable_upto` param),
-`openai-compat` (one adapter = vLLM/llama.cpp/SGLang/ollama/OpenRouter —
-their caching is automatic, `cached_tokens` surfaces as `usage.cacheRead`; reasoning models' `reasoning_content`/
-`reasoning` is captured as a Thinking part so the trace keeps it, but
-never resent — the DeepSeek convention treats it as advisory output),
-`fenced` (fallback for tool-weak models:
-parses a ```cell block out of plain text into a ToolCall — the codeAct
-heritage makes the tool interface emulatable on any completion
-endpoint). Tier→provider/model resolution comes from the `config.get`
-syscall. Tiers: `codegen`, `classify`, `vision` (file reads —
-`llm.read`, ADR-020 §4).
+guest: it translates the neutral messages to a provider wire and
+issues ONE `http.post` syscall (route-classified `read`/`llm.chat`),
+wrapped in an `llm.chat` span so the trace and the digest read it as
+one call. Because the crossing is a recorded effect, the full request
+and response are in the trace (ADR-001). Tiers: `codegen`, `classify`,
+`vision` (file reads — `llm.read`, ADR-020 §4).
+
+**1.1 Tier config** (`config.get("llm.tier.<tier>")`, rows in
+`agent_config`, ADR-006 §3):
+
+```python
+{"provider": "anthropic" | "openai-compat",   # wire family = adapter
+ "model": "…",                                # sent verbatim
+ "base_url": "https://…",
+ "api_key_ref": "llm.key.<name>" | None,      # None = no credential (local servers)
+ "backend": "<name>" | absent,                # where it is served; default per provider
+ "profile": "<name>" | absent,                # which model family; default: matched on `model`
+ "options": {…} | absent}                     # raw request fields, merged last
+```
+
+Three things vary independently and are kept in three tables, each a
+pure, offline-testable transform in `llm@v1`:
+
+| varies with | table | owns |
+|---|---|---|
+| the **wire family** | adapter (`ADAPTERS`) | neutral ↔ message/tool/file/thinking block shapes; stop-reason normalization |
+| **where** the model is served | backend (`BACKENDS`) | URL path, credential header + `about`, parameter spelling (`max_tokens` vs `max_completion_tokens`, `reasoning`/`thinking`/`chat_template_kwargs`/`think`), cache markers, usage field names (`cached_tokens`, `prompt_cache_hit_tokens`), response field names (`reasoning_content` vs `reasoning`) |
+| **which model** | profile (`PROFILES`) | traits (1.3) + prompt-level shaping: system placement, tool-call carriage, lifting tool calls out of text, malformed-call handling |
+
+The rule for placing a trick: depends on the URL → backend; depends on
+the model wherever it is served → profile; depends on both → the
+profile states the *intent* as a trait, the backend translates it to
+the wire. Neither table ever imports the other: they meet only through
+the traits dict and the request dict.
+
+**1.2 The call pipeline** — every stage is a pure function of its
+inputs; only `http.post` is an effect:
+
+```
+traits   = PROFILES[profile].traits            # resolved once per call
+messages, system, tools
+  → profile.prepare(messages, system, tools, traits)   # system→first user turn, tool docs
+  → adapter.build_request(…, model)                    # wire family
+  → backend.finish_request(req, traits, options)       # param spelling, extras, cache markers
+  → effect("http.post", {url: backend.url(base_url), credential: backend.credential(prov), json: req})
+  → backend.normalize_response(raw)                    # field-name unification
+  → adapter.parse_response(raw)                        # → LLMReply
+  → profile.lift(reply, traits)                        # ```cell / <tool_call> → ToolCall; bad args → error part
+```
+
+A profile hook that does nothing is the identity; the `generic`
+profile and `generic` backend are all-identity, so a tier with only
+`{provider, model, base_url, api_key_ref}` is the plain adapter path.
+
+**1.3 Traits** — the neutral vocabulary a profile declares and the
+backend + toolcaller act on. The set is closed by code: a profile
+naming a trait no hook implements fails the unit suite, so a trait is
+never silently decorative.
+
+```python
+traits = {
+  "system_role":     "native" | "first_user",         # no system role → prepend to the first user turn
+  "tool_mode":       "native" | "fenced" | "xml",     # how ToolCalls travel: tool API / ```cell block / <tool_call> text
+  "reasoning":       "none" | "advisory" | "roundtrip",  # Thinking parts: absent / kept in trace only / must be resent
+  "thinking":        "default" | "on" | "off",       # intent; the backend spells it (or drops it)
+  "cache":           "auto" | "markers" | "none",     # prefix caching: implicit / explicit breakpoints / unavailable
+  "context_window":  int,                             # tokens — toolcaller budgets ceilings and compaction from it
+  "max_output":      int,                             # default output cap when the caller passes none
+  "sampling":        {"temperature": …, "top_p": …},  # the model card's recommendation; `options` overrides
+  "prompt_style":    "full" | "compact",              # which system-prompt/tool-description variant toolcaller assembles (§5)
+  "instructions_at": "system" | "last_user",          # where the per-turn instructions ride
+  "malformed_retries": int,                           # re-ask budget for unparseable tool calls before wrap-up
+}
+```
+
+toolcaller reads the resolved traits through `llm.profile(tier)` and
+uses only the loop-facing ones (`context_window`, `max_output`,
+`prompt_style`, `instructions_at`, `tool_mode` for the tool
+instructions, `malformed_retries`); it never sees provider, backend or
+wire. The wire-facing ones are consumed inside `chat()`. A model trick
+that no trait can express is new code in exactly one hook plus the
+trait that gates it — the config selects behavior, it never defines it.
+
+**1.4 Provider adapters.** `anthropic` — native; Thinking
+`provider_state` round-trips byte-exact; `cache_control` breakpoints at
+end of system and end of conversation, set by the adapter with no
+caller hint (the loop's prefix is append-only, so each call writes the
+cache the next one reads). `openai-compat` — one adapter for every
+`/chat/completions` server (OpenAI, OpenRouter, vLLM, llama.cpp,
+SGLang, ollama, Together, DeepSeek, Groq …); an assistant turn that
+carries tool calls sends `content: null`, never `""`; tool-call
+arguments that fail to parse become a `ToolCall` with `args: None`
+that `profile.lift` turns into an `is_error` ToolResult for the model
+(the run never dies on a malformed call). Reasoning text
+(`reasoning_content`/`reasoning`, unified by the backend) is captured
+as a Thinking part; whether it is resent is the profile's `reasoning`
+trait, and the backend carries the provider's resend field
+(`reasoning_details` on OpenRouter). `fenced` is the `tool_mode:
+"fenced"` trait (the codeAct heritage: a ```cell block parsed out of
+plain text emulates the tool interface on any completion endpoint);
+`xml` covers the Hermes `<tool_call>` convention when a server template
+does not lift it.
+
+**1.5 Caching.** Every OpenAI-compatible server caches an identical
+prefix implicitly (`cache: "auto"`), so the contract is prefix
+stability: the system block, tool list and every `prepare` output are
+byte-stable across the turns of one conversation, and the per-turn
+context suffix rides the user message, never the system. `cache:
+"markers"` (Anthropic direct; Claude/Gemini through OpenRouter) adds
+explicit breakpoints — the backend writes them, at the same two
+positions. Whatever a server reports lands in `usage.cacheRead`/
+`cacheWrite` after `normalize_response`, so `trace show --stats` reads
+the same for every backend.
+
+**1.6 Credentials.** The api key never enters the guest: the request
+names a `credential` (`api_key_ref` + the backend's header/prefix +
+`about` label/help, ADR-021 §1) and the host resolves the secret and
+sets the header AFTER the payload records (ADR-002). `api_key_ref:
+None` sends no credential — a local server needs none, and a null ref
+raises no `SecretMissing` and no credential request (ADR-021 §2).
+
+**1.7 Adding a model or a backend** is one table entry plus its
+evidence, isolated from the loop:
+
+1. `PROFILES["<name>"] = {"match": r"…", "traits": {…deviations from generic…}}`
+   (or `BACKENDS["<name>"]` with its url/credential/param spelling).
+   A new trick = one new trait + its implementation in the one hook
+   that owns it.
+2. Unit: the pure transforms for the entry (`tests/test_llm_module.py`).
+3. Wire pin: one recorded real reply per backend
+   (`tests/fixtures/llm_<backend>.json`, `docs/llm-fixtures.md`).
+4. Parity: the live, key-gated suite (`tests/test_llm_parity.py`) runs
+   the reference conversation — multi-turn `run_cell` loop, an image
+   part, a wrap-up on `length`, a malformed call — against the entry
+   and saves the golden trace; from then on it replays offline. An
+   entry is *supported* when its golden trace is in the tree.
+
+`docs/llm-models.md` carries the step-by-step (which file, which
+tests, how to run parity against a rig) and the table of supported
+entries with the date of their last parity run.
 
 ### 2. One tool; the turn cycle
 
@@ -149,6 +267,14 @@ injects topical hits as a tool result (ADR-007 §5), and the current
 user message (timestamp + view suffix) closes it. The suffix rides the
 llm message only — the persisted turn keeps the raw `userText`.
 
+The tier's profile picks the variant (§1.3): `prompt_style: "full"`
+is the block above; `"compact"` is the same skills with the shorter
+tool description and instructions, for models that follow a short
+prompt better than a long one; `instructions_at: "last_user"` moves
+the per-turn instructions from the system block to the tail of the
+user message. Both variants are fingerprinted and byte-stable per
+conversation (§1.5).
+
 **The view rides the message (amendment 2026-08-29).** The user's
 location is a property of the message they sent, not of the space:
 any-ui stamps the chat message's `context` group
@@ -223,8 +349,8 @@ decisions — the loop is guest code, and guest code sees only the trace.
 
 ## Consequences
 
-- Provider-neutral by construction; local-cluster = the openai-compat
-  adapter + config.
+- Provider-neutral by construction; a new model or server is a
+  profile/backend table entry + config, never a loop change (§1.7).
 - Runaway loops impossible: every invocation ends via done, wrap-up, or
   break — all three recorded and user-visible.
 - The digest keeps v1's proven progressive-disclosure architecture,

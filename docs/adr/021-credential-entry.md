@@ -83,6 +83,9 @@ The broker's miss becomes typed: `EffectFailure {type_:
 "SecretMissing", message: "no secret for credential ref \"…\""}` —
 the message stays byte-identical (the string-matching connectors and
 ADR-011 §7 keep working), the type is what the runtime acts on.
+A request whose credential ref is `null` names no secret at all (an
+LLM tier on a keyless local server, ADR-005 §1.6): nothing is
+resolved, nothing is marked missing, no request is posted.
 
 On a miss the **host**, not the guest, raises the request — the LLM
 key case has no guest that could, and a host-only emitter means the
