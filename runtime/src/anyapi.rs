@@ -185,7 +185,14 @@ impl HttpTransport {
 /// Decode a response body as the (status, JSON) pair `send` promises.
 fn json_response(resp: ureq::Response) -> Result<(u16, Value), AnyError> {
     let status = resp.status();
-    let raw = resp.into_string().map_err(transport_err)?;
+    // read the body ourselves: ureq's `into_string` refuses anything
+    // over 10 MB, and a trace-store page of a long run (blob rows up
+    // to 1 MiB each, ADR-024 §1) legitimately is — the server is
+    // local and the sizes are bounded by what this runtime wrote
+    let mut raw = String::new();
+    resp.into_reader()
+        .read_to_string(&mut raw)
+        .map_err(transport_err)?;
     let data = if raw.is_empty() {
         json!({})
     } else {
