@@ -132,9 +132,13 @@ pub struct Broker {
     /// ≤EPOCH_TICK_MS stale — a checkpoint signal, not an exact meter.
     pub fuel_gauge: Arc<std::sync::atomic::AtomicU64>,
     /// Shared interrupt flag for the serve loop (exposed for wiring;
-    /// not yet consulted by the pipeline).
+    /// not yet consulted by the pipeline — except by `sh.run`, which
+    /// kills its child on it, ADR-024 §1).
     #[allow(dead_code)] // consulted by the serve wiring in main.rs (next round)
     pub interrupt: Arc<AtomicBool>,
+    /// The running cell's wall deadline, set by the runner; `sh.run`
+    /// clamps its timeout to it (ADR-024 §1). None = no cell budget.
+    pub deadline: Option<Instant>,
     pub classifier: Classifier,
     /// Trace storage (ADR-001 §8) for the guest's past-run reads
     /// (`trace.effects_of(run=…)` & co., ADR-003 §4). None = offline
@@ -200,6 +204,7 @@ impl Broker {
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
             fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
+            deadline: None,
             classifier,
             trace_store: None,
             run_cache: BTreeMap::new(),
@@ -398,6 +403,11 @@ impl Broker {
     pub fn call(&mut self, name: &str, payload: Value) -> Result<Value, EffectFailure> {
         let class = self.classify(name, &payload);
         let cap = self.cap_of(name, &payload);
+        // ADR-024 §1: credential-looking `env` values on sh.* are masked
+        // before recording (deterministic → the replay key matches)
+        #[cfg(feature = "shell")]
+        let canonical = crate::shell::redact_input(name, &payload);
+        #[cfg(not(feature = "shell"))]
         let canonical = payload.clone();
         let key = input_key(name, &canonical);
         let span = self.span_stack.last().map(|s| s.id.clone());
@@ -559,6 +569,10 @@ impl Broker {
             let url = payload.get("url").and_then(|u| u.as_str()).unwrap_or("");
             return self.classifier.kind(&verb.to_uppercase(), url);
         }
+        #[cfg(feature = "shell")]
+        if crate::shell::owns(name) {
+            return crate::shell::classify(name);
+        }
         match name {
             // ADR-011 §5: the token lifecycle mutates device state
             "oauth.connect" | "oauth.disconnect" | "oauth.refresh" => "mutate",
@@ -643,6 +657,13 @@ impl Broker {
             "trace.stats" => self.sys_trace_stats(payload),
             "trace.query" => self.sys_trace_query(payload),
             "kernel.boot" => Ok(payload.clone()), // pins echo into the record
+            // ADR-024: shell effects, only in a `--features shell` build
+            #[cfg(feature = "shell")]
+            n if crate::shell::owns(n) => crate::shell::execute(
+                &crate::shell::Ctx::from_env(self.interrupt.clone(), self.deadline),
+                n,
+                payload,
+            ),
             other => Err(EffectFailure {
                 type_: "unknown_effect".into(),
                 message: format!("no such effect: {other}"),
@@ -1973,6 +1994,51 @@ mod tests {
         b.try_cell_done("main", true, None, false, json!({}))
             .unwrap();
         assert!(b.cursor.as_ref().unwrap().exhausted());
+    }
+
+    /// ADR-024 §1: every sh.* is mutate and replay never re-runs a
+    /// command — the recorded result comes back even when the command
+    /// would produce something else now.
+    #[cfg(feature = "shell")]
+    #[test]
+    fn shell_effects_classify_and_replay_from_trace() {
+        let mut rec = make_broker("sh1");
+        rec.current_cell = Some("main".into());
+        let out = rec
+            .call(
+                "sh.run",
+                json!({"cmd": "echo recorded", "env": {"MY_TOKEN": "s3cret"}}),
+            )
+            .unwrap();
+        assert_eq!(out["stdout"], "recorded\n");
+        let r = &rec.writer.records[1]; // [0] = run header
+        assert_eq!(r["effect"], "sh.run");
+        assert_eq!(r["meta"]["class"], "mutate");
+        assert_eq!(r["input"]["env"]["MY_TOKEN"], "***"); // masked before recording
+        assert!(!crate::trace::canonical_json(r).contains("s3cret"));
+        rec.call("fs.list", json!({"path": "."})).unwrap();
+        assert_eq!(rec.writer.records[2]["meta"]["class"], "read");
+        rec.try_cell_done("main", true, None, false, json!({}))
+            .unwrap();
+
+        let mut rb = make_broker("sh2");
+        rb.mode = Mode::Replay;
+        rb.cursor = Some(ReplayCursor::new(&rec.writer.records));
+        rb.current_cell = Some("main".into());
+        // same guest payload (raw secret) → same masked key → served
+        // from the trace; `exit 7` would fail if it actually ran
+        let out = rb
+            .call(
+                "sh.run",
+                json!({"cmd": "echo recorded", "env": {"MY_TOKEN": "s3cret"}}),
+            )
+            .unwrap();
+        assert_eq!(out["stdout"], "recorded\n");
+        assert_eq!(out["exit"], 0);
+        assert_eq!(rb.writer.records[1]["meta"]["mocked"], true);
+        rb.call("fs.list", json!({"path": "."})).unwrap();
+        let err = rb.call("sh.run", json!({"cmd": "exit 7"})).unwrap_err();
+        assert_eq!(err.type_, "DivergenceError"); // not in the trace → never executed
     }
 
     #[test]

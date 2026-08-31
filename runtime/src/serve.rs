@@ -1119,6 +1119,10 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let mut runtime: BTreeMap<String, Value> = BTreeMap::new();
     runtime.insert("any.base_url".into(), Value::String(cfg.addr.clone()));
     runtime.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
+    // `runtime.get("shell")` exists only in a `--features shell` build
+    // (ADR-024 §4/§6); the guest binds `sh`/`fs` on it
+    #[cfg(feature = "shell")]
+    runtime.insert("shell".into(), crate::shell::runtime_value());
 
     // kernel is embedded (ADR-009 §4) — the cage always boots eagerly;
     // pending overlays only gate program resolution

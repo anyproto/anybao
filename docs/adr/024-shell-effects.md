@@ -77,13 +77,20 @@ global `sh` beside `http` (ADR-002 §3):
   change — so replay serves every result from the trace and never
   re-runs a command (ADR-001 §5). `poll` is `mutate` too: it consumes
   output, and consuming twice is not the same read.
-- **`cmd` is one string, run by the user's shell**: `$SHELL -lc
-  <cmd>` from the serve's environment, `/bin/sh -c` when `SHELL` is
-  unset. Login shell because the serve may be launched by the
-  desktop app with a bare PATH, and the project's toolchain (nix,
-  uv, cargo) lives in the profile. No argv form: the model writes
-  pipelines and quoting exactly as it would in a terminal, and the
-  trace shows the literal line the user would have typed.
+- **`cmd` is one string, run by the user's shell**: `$SHELL -c
+  <cmd>` (`/bin/sh` when `SHELL` is unset) **in the login
+  environment, snapshotted once per process** — the first `sh.run`
+  runs `$SHELL -lc 'env -0'` behind a marker and caches the result;
+  every command then runs `-c` with that environment (`env_clear` +
+  snapshot + the call's `env`). The serve may be launched by the
+  desktop app with a bare PATH while the toolchain (nix, uv, cargo)
+  lives in the profile, so the login shell is needed — but once, not
+  per call: per-call `-lc` pays the profile every time and leaks
+  whatever it prints (the first smoke showed an xterm-title escape
+  in every stdout). If the snapshot fails the child inherits the
+  serve's environment. No argv form: the model writes pipelines and
+  quoting exactly as it would in a terminal, and the trace shows the
+  literal line the user would have typed.
 - **`cwd`** defaults to the serve process's working directory; the
   model passes `cwd` explicitly (the `_coding` skill says: absolute
   paths, always). There is no ambient cwd across calls — a cell that
@@ -113,14 +120,17 @@ global `sh` beside `http` (ADR-002 §3):
   break, a cell timeout, or fuel exhaustion kills every child of the
   cell's process group before the cell is reported interrupted. No
   orphaned `cargo build` after the user hits break.
-- **Environment: the serve's, plus the call's `env` map.** The child
-  inherits the serve process environment (that is what makes the
-  login shell and the toolchain work) with the call's `env` merged
-  on top. Secrets are store rows (ADR-021 §4), never env, so there
+- **Environment: the login snapshot, plus the call's `env` map.** The
+  child gets the snapshotted login environment (above) with the
+  call's `env` merged on top. Secrets are store rows (ADR-021 §4), never env, so there
   is nothing of bao's to leak; whatever the user's own shell profile
   exports is the user's. Per-call `env` values are recorded in the
-  trace like any payload; the standard `redact` paths apply
-  (`env.*TOKEN*`, `env.*KEY*`, `env.*SECRET*`).
+  trace like any payload, except that values whose NAME looks like a
+  credential (`TOKEN`, `KEY`, `SECRET`, `PASSWORD`, `PASSWD`,
+  `CREDENTIAL`) are masked to `***` before recording — the Rust
+  broker has no general redact mechanism (secrets are structurally
+  absent, ADR-021 §4), so this is the one masking rule, deterministic
+  so the replay key matches.
 
 ### 2. `fs.*` — files without a shell
 
@@ -342,10 +352,11 @@ upload to `any` (ADR-020 covers download only).
 
 ## Resolved questions (acceptance 2026-08-31)
 
-1. **Login shell.** `$SHELL -lc <cmd>` (fallback `/bin/sh -c`). The
-   profile cost per call is accepted for v1; `durationMs` is in every
-   record, so the cost is measurable from traces and a PATH snapshot
-   at serve start is the fallback if it shows.
+1. **Login shell.** Decided as per-call `$SHELL -lc` with an
+   environment snapshot as the fallback "if it shows" — it showed in
+   the first smoke (profile output in stdout), so the fallback IS
+   the implementation: one login shell per process, `env -0`
+   snapshot, commands run `$SHELL -c` in it (§1).
 2. **`fs.edit` is exact-match only.** Zero or several occurrences is
    a typed failure with no write; the model re-reads and retries.
 3. **Per-stream cap starts at 1 MiB**, explicitly unmeasured; the

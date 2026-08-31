@@ -197,6 +197,7 @@ pub fn run_program(
     gauge.store(FUEL_PER_CELL, Ordering::Relaxed);
     store.set_epoch_deadline(1);
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
+    store.data_mut().broker.deadline = Some(deadline); // sh.run clamps to it (ADR-024 §1)
     let flag = interrupt.clone();
     store.epoch_deadline_callback(move |ctx| {
         if let Ok(fuel) = ctx.get_fuel() {
