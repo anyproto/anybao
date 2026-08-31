@@ -117,9 +117,8 @@ reported interrupted/timed out as before. A command's group is
 killed when the command exits (nothing survives the call), the
 serve's `stop()` sweeps every live group, and on Linux the child
 carries `PR_SET_PDEATHSIG` for a serve that dies without `stop()`.
-Note: the host-side hard-break watchdog ADR-005 §3 describes is not
-implemented yet — nothing sets a run's flag today; the wiring here is
-what makes a future `break(hard)` reach the child for free.
+The setters (stop words in the chat, the control API's `POST
+/break/<chat>`, the soft-break grace escalation) are ADR-005 §3's.
 
 ### 3. Kernel semantics: the persistent namespace
 

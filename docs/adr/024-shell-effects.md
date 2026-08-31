@@ -119,10 +119,10 @@ global `sh` beside `http` (ADR-002 §3):
 - **Cancellation reaches children (amends ADR-003 §2).** The run's
   interrupt flag is the broker's; `sh.run` polls it and its own
   deadline while blocked and kills the child's process group on
-  either. No orphaned `cargo build` after a break. (Today nothing
-  sets the flag — the ADR-005 §3 hard-break watchdog is unimplemented
-  — but the child side is wired, so it reaches the child when it
-  lands.)
+  either. No orphaned `cargo build` after a break. The setters are
+  ADR-005 §3's: a stop word in the chat (`stop` = soft with a 20 s
+  grace, `stop now` / `/kill` = hard) or `POST /break/<chat>` on the
+  control API.
 - **Nothing survives the call.** When the command exits, its process
   group is killed: `cmd &` inside a command dies with the call; a
   process that must outlive it belongs in tmux (§4). The serve's
