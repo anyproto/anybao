@@ -124,6 +124,15 @@ pinned by `header.schema` per run, as on disk.
   `ls_row` logic already in `view.rs`) and written twice: the synced
   `agent_runs` record and the local `trace_runs` mirror. The trigger
   runner (ADR-006 §4) stops stamping `lastRun*` itself — see §8.
+- **Runs in flight are listed (amendment 2026-08-31).** A run exists
+  from its header, not from its summary: the header document carries
+  a store-side `startedAt` (stripped on read, like `runId`), and
+  `list`/`trace ls`/`trace follow` show headers of the last 7 days
+  that have no `trace_runs` row yet as `in-flight` rows built from
+  the streamed log (program, turns so far, title). A summary-less
+  header older than that is a crash's leftover, not a run. The file
+  store never had the gap (a `.jsonl` lists as soon as it exists);
+  the local store had it from the migration until this amendment.
 
 ### 4. Blobs
 

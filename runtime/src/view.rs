@@ -765,9 +765,10 @@ fn ls_row(records: &[Value], store: Option<(&dyn TraceStore, &str)>) -> LsRow {
             let post = inner
                 .iter()
                 .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
-            let input = if post["input"]["__blob"].is_string() {
+            let input = if let Some(h) = post["input"]["__blob"].as_str() {
                 let (store, id) = store?;
-                let blobs = store.blobs(id).ok()?;
+                let mut blobs = BTreeMap::new();
+                blobs.insert(h.to_string(), store.blob(id, h).ok()??);
                 resolve_blobs(post["input"].clone(), &blobs)
             } else {
                 post["input"].clone()
@@ -906,6 +907,25 @@ pub fn list(store: &dyn TraceStore, program: Option<&str>, limit: usize) -> anyh
                 .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(t));
             rows.push((mtime, row));
         }
+        // runs still in flight have no summary yet: row from the streamed
+        // log (program, turns so far, title), status says so
+        for meta in store.in_flight()? {
+            let Ok(records) = store.load_in_flight(&meta.id) else {
+                continue;
+            };
+            if records.is_empty() {
+                continue;
+            }
+            let mut row = ls_row(&records, Some((store, &meta.id)));
+            row.status = "in-flight";
+            if let Some(f) = program {
+                if !row.program.contains(f) {
+                    continue;
+                }
+            }
+            rows.push((meta.modified, row));
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.0));
         return Ok(render_ls(rows, limit));
     }
     for meta in store.list()? {

@@ -94,8 +94,16 @@ pub trait TraceStore: Send + Sync {
     ) -> anyhow::Result<usize> {
         Ok(0)
     }
-    /// Every run in the store, newest first.
+    /// Every run in the store, newest first — runs still in flight
+    /// included (ADR-023 §3 amendment: a header lands at `open_sink`,
+    /// the summary at run end; the list must not wait for the end).
     fn list(&self) -> anyhow::Result<Vec<RunMeta>>;
+    /// Runs with a header but no summary yet: started, not ended (or
+    /// never landed their end — a serve killed mid-run). Newest first.
+    /// The file store's `list` already shows every file; nothing to add.
+    fn in_flight(&self) -> anyhow::Result<Vec<RunMeta>> {
+        Ok(Vec::new())
+    }
     /// The run finder over per-run summaries (ADR-023 §5): any-store
     /// `filter`/`sort`/`limit` on `trace_runs` rows. `None` = this
     /// store keeps no summaries (the file store) — callers fall back
@@ -414,6 +422,9 @@ fn size_chunks(docs: &[Value]) -> Vec<&[Value]> {
 }
 /// query cap
 const PAGE: usize = 1000;
+/// How far back `in_flight` looks for summary-less headers (7 days —
+/// a conversation never runs that long; a crash's leftover ages out).
+const IN_FLIGHT_WINDOW_S: f64 = 7.0 * 86400.0;
 
 /// The run summary (ADR-023 §1) from an in-memory log + its blobs.
 pub fn summary_of(
@@ -551,6 +562,12 @@ impl AnyTraceStore {
             o.insert("runId".into(), json!(run_id));
             o.insert("seq".into(), json!(seq));
             o.insert("id".into(), json!(format!("{run_id}:{seq:06}")));
+            // store-side metadata on the header only (stripped by
+            // record_of): lets `in_flight` find recent starts without
+            // scanning every header ever landed
+            if rec["kind"] == "header" {
+                o.insert("startedAt".into(), json!(now_s()));
+            }
         }
         d
     }
@@ -567,6 +584,7 @@ impl AnyTraceStore {
             o.remove("id");
             if o.get("kind") == Some(&json!("header")) {
                 o.remove("seq");
+                o.remove("startedAt");
             }
         }
         fold_integral_floats(doc)
@@ -766,13 +784,57 @@ impl TraceStore for AnyTraceStore {
 
     fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
         let rows = self.query_all(&self.runs, json!({}), json!(["-startedAt"]))?;
-        Ok(rows
+        let mut out: Vec<RunMeta> = rows
             .into_iter()
             .filter_map(|r| {
                 let id = r["id"].as_str()?.to_string();
                 let modified = r["endedAt"]
                     .as_f64()
                     .or(r["startedAt"].as_f64())
+                    .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(s));
+                Some(RunMeta { id, modified })
+            })
+            .collect();
+        out.extend(self.in_flight()?);
+        out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.id.cmp(&a.id)));
+        Ok(out)
+    }
+
+    fn in_flight(&self) -> anyhow::Result<Vec<RunMeta>> {
+        // headers landed in the last IN_FLIGHT_WINDOW_S without a
+        // summary row; a run older than that with no summary is a
+        // crash's leftover, not in flight
+        let since = now_s() - IN_FLIGHT_WINDOW_S;
+        let heads = self.query_all(
+            &self.records,
+            json!({"kind": "header", "startedAt": {"$gte": since}}),
+            json!(["-startedAt"]),
+        )?;
+        if heads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = heads
+            .iter()
+            .filter_map(|h| h["runId"].as_str().map(str::to_string))
+            .collect();
+        let ended: std::collections::BTreeSet<String> = self
+            .query_all(
+                &self.runs,
+                json!({"id": {"$in": ids}}),
+                json!(["-startedAt"]),
+            )?
+            .into_iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        Ok(heads
+            .into_iter()
+            .filter_map(|h| {
+                let id = h["runId"].as_str()?.to_string();
+                if ended.contains(&id) {
+                    return None;
+                }
+                let modified = h["startedAt"]
+                    .as_f64()
                     .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(s));
                 Some(RunMeta { id, modified })
             })
@@ -1053,6 +1115,25 @@ mod live {
         // stream one run through a writer: header + a spilled effect + span + cell
         let mut w = crate::trace::TraceWriter::new(json!({"id": "run_live1", "program": "p@v1"}));
         w.stream_to(&store).unwrap();
+        // the header is landed: the run is in flight — listed before it ends
+        let flying: Vec<_> = store
+            .in_flight()
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            flying,
+            vec!["run_live1"],
+            "header-only run must list as in flight"
+        );
+        assert!(store.list().unwrap().iter().any(|m| m.id == "run_live1"));
+        assert_eq!(store.header("run_live1").unwrap()["kind"], "header");
+        assert!(store
+            .header("run_live1")
+            .unwrap()
+            .get("startedAt")
+            .is_none()); // store-side only
         let key = crate::trace::input_key("x.y", &json!({"a": 1}));
         let big = json!({"data": "z".repeat(crate::trace::BLOB_THRESHOLD + 1)});
         w.effect(
@@ -1079,6 +1160,8 @@ mod live {
         // list → the summary row; load → the intact log; blobs resolve
         let ids: Vec<_> = store.list().unwrap().into_iter().map(|m| m.id).collect();
         assert!(ids.contains(&"run_live1".to_string()), "{ids:?}");
+        assert_eq!(ids.iter().filter(|i| *i == "run_live1").count(), 1); // once: ended, not in flight
+        assert!(store.in_flight().unwrap().is_empty());
         let records = store.load("run_live1").unwrap();
         assert_eq!(records[0]["kind"], "header");
         assert_eq!(records[0]["run"]["id"], "run_live1");
