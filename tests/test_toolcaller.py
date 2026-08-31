@@ -144,7 +144,7 @@ class World:
 
 def run(world, **args):
     g = {"effect": world.effect, "use": world.use, "subcell": world.subcell,
-         **kernel_globals(now=1234)}
+         "values": getattr(world, "values", None), **kernel_globals(now=1234)}
     exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
     return g["main"]({"space": "s1", "chatId": "c1", "userText": "go",
                       "traceRef": "run_x", **args})
@@ -651,3 +651,130 @@ def test_full_style_keeps_instructions_in_system():
     assert call["tools"][0]["description"].startswith("Execute a Python cell")
     assert "## Runtime context" in call["system"]
     assert "## Runtime context" not in call["messages"][-1]["parts"][0]["text"]
+
+# --- the bash tool (ADR-024 §4, ADR-005 §2 amendment) -------------------------
+
+SHELL_INFO = {"cwd": "/home/u/proj", "home": "/home/u", "shell": "/bin/zsh", "os": "linux"}
+
+
+class Result:
+    def __init__(self, out="", err="", code=0, **kw):
+        self.out, self.err, self.code = out, err, code
+        self.timed_out = kw.get("timed_out", False)
+        self.interrupted = kw.get("interrupted", False)
+        self.truncated = kw.get("truncated", False)
+        self.duration_ms = kw.get("duration_ms", 7)
+
+
+class ShellWorld(World):
+    """A binary WITH shell effects: runtime.get("shell") resolves, and
+    the kernel's value store hands back the ShellResult a bash cell
+    left as its last value."""
+
+    def __init__(self, replies, cells=None, results=None, **kw):
+        super().__init__(replies, cells=cells, **kw)
+        self.results = results or {}
+        self.codes = []
+        w = self
+
+        class Values:
+            @staticmethod
+            def get(cid, i="last"):
+                return w.results[cid]
+
+        self.values = Values()
+
+    def effect(self, name, payload=None):
+        if name == "runtime.get" and payload == {"key": "shell"}:
+            return {"value": SHELL_INFO}
+        return super().effect(name, payload)
+
+    def subcell(self, code, cell_id):
+        if cell_id != "_ctx":
+            self.codes.append((cell_id, code))
+        return super().subcell(code, cell_id)
+
+
+def bash_reply(command, cid="b1", **extra):
+    return {"parts": [{"type": "tool_call", "id": cid, "name": "bash",
+                       "args": {"command": command, **extra}}],
+            "stop": "tool", "usage": {"in": 10, "out": 5}}
+
+
+def test_without_shell_only_run_cell_and_no_coding_skill():
+    w = World([done_reply("hi")])
+    run(w)
+    assert [t["name"] for t in w.llm_calls[0]["tools"]] == ["run_cell"]
+    assert "- shell:" not in w.llm_calls[0]["system"]
+    g = {"effect": w.effect, "use": w.use, "subcell": w.subcell, **kernel_globals()}
+    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
+    skills = {"_core": "core", "_coding": "coding", "_any": "any"}
+    assert g["_compose_skills"](skills) == "core\n\nany"
+    assert g["_compose_skills"](skills, has_shell=True) == "core\n\nany\n\ncoding"
+
+
+def test_bash_tool_runs_a_subcell_and_renders_raw():
+    cell = {"ok": True, "prints": [],
+            "last": {"repr": "…", "size": 1, "schema": "ShellResult"}, "error": None}
+    w = ShellWorld([bash_reply("cargo test 2>&1 | tail -3", cwd="/home/u/proj",
+                               timeout_s=30, **{"as": "tests"}),
+                    done_reply("ok")],
+                   cells=[cell],
+                   results={"b1": Result("test a ... ok\ntest b ... FAILED\n",
+                                         err="warning: unused\n", code=101)})
+    run(w)
+    assert [t["name"] for t in w.llm_calls[0]["tools"]] == ["run_cell", "bash"]
+    assert "- shell: this device (`linux`), serve cwd `/home/u/proj`" in w.llm_calls[0]["system"]
+    assert w.codes == [("b1", "tests = sh('cargo test 2>&1 | tail -3', cwd='/home/u/proj', "
+                              "timeout_s=30)\ntests")]
+    assert ("begin", "bash") in w.spans and ("end", True) in w.spans
+    part = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert part["type"] == "tool_result" and part["call_id"] == "b1"
+    assert part["is_error"] is False
+    assert part["content"] == ("test a ... ok\ntest b ... FAILED\n"
+                               "[stderr]\nwarning: unused\n"
+                               "[exit 101]\n"
+                               "→ sh.last (also `tests`)")
+
+
+def test_bash_as_name_is_validated_and_footer_degrades():
+    cell = {"ok": True, "prints": [], "last": {"repr": "", "size": 0, "schema": "x"},
+            "error": None}
+    w = ShellWorld([bash_reply("true", **{"as": "sh"}), done_reply("ok")],
+                   cells=[cell], results={"b1": Result("")})
+    run(w)
+    assert w.codes == [("b1", "sh('true')")]   # a kernel name is never rebound
+    part = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert part["content"] == "(no output)\n→ sh.last"
+
+
+def test_bash_timeout_and_cell_error():
+    cells = [{"ok": True, "prints": [], "last": {"repr": "", "size": 0, "schema": "x"},
+              "error": None},
+             {"ok": False, "prints": [], "last": None,
+              "error": {"type": "EffectError", "message": "OSError: spawn /bin/zsh: nope",
+                        "traceback": "tb"}}]
+    w = ShellWorld([bash_reply("sleep 9", cid="b1"), bash_reply("x", cid="b2"),
+                    done_reply("ok")],
+                   cells=cells,
+                   results={"b1": Result("partial\n", code=None, timed_out=True,
+                                         duration_ms=1200)})
+    run(w)
+    p1 = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert p1["content"] == "partial\n[timed out after 1200 ms — partial output above]\n→ sh.last"
+    p2 = w.llm_calls[2]["messages"][-1]["parts"][0]
+    assert p2["is_error"] is True
+    assert p2["content"].startswith("Error: EffectError: OSError: spawn")
+    assert ("end", False) in w.spans
+
+
+def test_bash_output_is_clipped_head_and_tail():
+    g = {"effect": lambda *a: None, "use": None, "subcell": None, **kernel_globals()}
+    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
+    big = "A" * 12000 + "M" * 5000 + "Z" * 4000
+    cr = {"ok": True, "prints": [], "last": {}, "error": None}
+    text = g["render_bash"](cr, Result(big), None)
+    marker = "\n[… 5000 chars elided — the full text is on sh.last.out …]\n"
+    assert text.startswith("A" * 12000 + marker)
+    assert text.endswith("Z" * 4000 + "\n→ sh.last")
+    assert "M" not in text

@@ -253,8 +253,9 @@ as a `str` subclass carrying `.size`/`.lines`/`.truncated`;
 `bytes`; `fs.edit` returns the replacement count; `fs.list` the
 entries. The `sh`/`fs` globals are bound in the CELL namespace only —
 `use()` modules go without (programs reach the shell through cells:
-the `bash` tool is a subcell) — and the feature probe is one
-`runtime.get` record per run, not per cell or module. No shell DSL (`sh.git("status")`-style argv builders
+the `bash` tool is a subcell) — and the feature probe is two
+`runtime.get` records per run (the kernel's bind at the first cell,
+the toolcaller's tool-set decision), never per cell or module. No shell DSL (`sh.git("status")`-style argv builders
 or a plumbum-like pipe algebra): models write orders of magnitude
 less of it than raw bash, pipes get awkward, and every command
 becomes a translation step. Docstrings are the doc (ADR-010):

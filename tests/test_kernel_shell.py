@@ -155,3 +155,16 @@ def test_use_modules_do_not_carry_sh():
     mod = app.use("thing@v1")
     assert mod.X == 1 and "sh" not in mod.__dict__
     assert probes == []
+
+
+def test_bash_tool_cell_code_runs_and_binds_in_the_kernel():
+    """The exact cell the toolcaller's bash tool emits (`_bash_code`):
+    the result is the cell's last value (what the toolcaller renders
+    via values.get) and lands as both `sh.last` and the `as` name."""
+    app = load_kernel(effect=lambda n, p: _run_ok("ok\n", code=0), shell=INFO)
+    out = app._run_cell("tests = sh('cargo test', cwd='/p', timeout_s=30)\ntests", "b1")
+    assert out["ok"], out["error"]
+    res = app.values.get("b1", "last")
+    assert res.out == "ok\n" and res.code == 0 and res.cmd == "cargo test"
+    out = app._run_cell("print(tests is sh.last, tests is values.get('b1'))", "c2")
+    assert out["prints"][0]["repr"] == "True True"
