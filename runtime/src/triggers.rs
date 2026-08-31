@@ -680,7 +680,7 @@ pub enum WatchAction {
     Dup,
     Skip,
     Inject,
-    /// A stop word landed on a live run: the soft break is already in
+    /// A `break` control record landed on a live run: the soft break is already in
     /// the mailbox; `hard` means the flag is already set too. For a
     /// soft one the caller arms the grace escalation (ADR-005 §3).
     Break {
@@ -690,18 +690,29 @@ pub enum WatchAction {
     Start,
 }
 
-/// The user's stop words, matched on the whole trimmed message (case-
-/// insensitive) — only consulted while a run is live on that chat, so
-/// a message that IS one of these is a command, not content. Soft =
-/// "wrap up at the next turn boundary, hard after the grace"; hard =
-/// "now".
-pub fn stop_word(text: &str) -> Option<bool> {
-    let t = text.trim().to_ascii_lowercase();
-    match t.as_str() {
-        "stop" | "/stop" | "stop!" | "stop." => Some(false),
-        "/kill" | "stop now" | "/stop now" => Some(true),
-        _ => None,
+/// A `break` on the record's `control` group (any `chat_messages-v5`,
+/// ADR-005 §3): `Some(hard)`. The stop is DATA on the message — the
+/// client's Stop button posts `{control: {kind: "break", hard?}}` with
+/// no text — never a word the watcher would have to read out of prose.
+/// A control record is a signal, not content: whatever its kind, it
+/// neither injects nor starts a run.
+pub fn control_break(record: &Value) -> Option<bool> {
+    let ctl = record.get("control")?.as_object()?;
+    if ctl.get("kind").and_then(|k| k.as_str()) != Some("break") {
+        return None;
     }
+    Some(ctl.get("hard").and_then(|h| h.as_bool()).unwrap_or(false))
+}
+
+/// Is this record a control signal (any kind)? Such a record never
+/// reaches the model.
+pub fn is_control(record: &Value) -> bool {
+    record
+        .get("control")
+        .and_then(|c| c.as_object())
+        .and_then(|c| c.get("kind"))
+        .and_then(|k| k.as_str())
+        .is_some_and(|k| !k.is_empty())
 }
 
 impl Watcher {
@@ -830,11 +841,17 @@ impl Watcher {
         if Self::is_self_message(record, &self.self_name) {
             return WatchAction::Skip; // own bubble — never self-trigger
         }
+        if is_control(record) {
+            // a break lands on the live run; any other control kind,
+            // or a break with nothing running, is a no-op — a control
+            // record is never content and never starts a run
+            return match (control_break(record), self.live.get(chat_id)) {
+                (Some(hard), Some(live)) => self.break_live(live.clone(), hard),
+                _ => WatchAction::Skip,
+            };
+        }
         if let Some(live) = self.live.get(chat_id) {
             let input = Self::input(record);
-            if let Some(hard) = stop_word(&input.text) {
-                return self.break_live(live.clone(), hard);
-            }
             live.mailbox.lock().unwrap().push_back(json!({
                 "kind": "inject", "text": input.text, "context": input.context}));
             return WatchAction::Inject;
@@ -1441,25 +1458,36 @@ mod tests {
     }
 
     #[test]
-    fn stop_words_break_a_live_run_soft_then_hard() {
-        assert_eq!(stop_word(" Stop "), Some(false));
-        assert_eq!(stop_word("/stop"), Some(false));
-        assert_eq!(stop_word("stop now"), Some(true));
-        assert_eq!(stop_word("/kill"), Some(true));
-        assert_eq!(stop_word("stop the presses"), None);
-        assert_eq!(stop_word("please stop"), None);
+    fn control_break_records_break_a_live_run_soft_then_hard() {
+        let brk = |id: &str, hard: bool| json!({"id": id, "text": "", "control": {"kind": "break", "hard": hard}});
+        assert_eq!(control_break(&brk("x", false)), Some(false));
+        assert_eq!(control_break(&brk("x", true)), Some(true));
+        assert_eq!(
+            control_break(&json!({"id": "x", "text": "", "control": {"kind": "break"}})),
+            Some(false)
+        );
+        assert_eq!(control_break(&json!({"id": "x", "text": "stop"})), None);
+        assert_eq!(
+            control_break(&json!({"id": "x", "control": {"kind": "ping"}})),
+            None
+        );
 
         let mut w = Watcher::new("bao");
-        // not live: "stop" is just a message that starts a run
+        // not live: a break is a no-op — never a run, never content
         assert!(matches!(
-            w.on_message("c1", &json!({"id": "m0", "text": "stop"})),
+            w.on_message("c1", &brk("m0", false)),
+            WatchAction::Skip
+        ));
+        // …and the word "stop" is just a message that starts a run
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m0b", "text": "stop"})),
             WatchAction::Start
         ));
 
         let live = LiveRun::default();
         w.live.insert("c1".into(), live.clone());
         // soft: break item queued, flag untouched, caller arms the grace
-        match w.on_message("c1", &json!({"id": "m1", "text": "Stop"})) {
+        match w.on_message("c1", &brk("m1", false)) {
             WatchAction::Break { interrupt, hard } => {
                 assert!(!hard);
                 assert!(!interrupt.load(Ordering::Relaxed));
@@ -1469,17 +1497,23 @@ mod tests {
         }
         let item = live.mailbox.lock().unwrap().pop_front().unwrap();
         assert_eq!(item, json!({"kind": "break", "hard": false}));
-        // a normal message still injects
+        // a normal message still injects — and so does the WORD "stop"
         assert!(matches!(
-            w.on_message("c1", &json!({"id": "m2", "text": "and also x"})),
+            w.on_message("c1", &json!({"id": "m2", "text": "stop"})),
             WatchAction::Inject
         ));
         assert_eq!(
             live.mailbox.lock().unwrap().pop_front().unwrap()["kind"],
             "inject"
         );
+        // an unknown control kind on a live run: skipped, nothing queued
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m2b", "control": {"kind": "ping"}})),
+            WatchAction::Skip
+        ));
+        assert!(live.mailbox.lock().unwrap().is_empty());
         // hard: flag set now
-        match w.on_message("c1", &json!({"id": "m3", "text": "stop now"})) {
+        match w.on_message("c1", &brk("m3", true)) {
             WatchAction::Break { hard, .. } => assert!(hard),
             _ => panic!("expected Break"),
         }

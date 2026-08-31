@@ -262,18 +262,22 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   longer say for itself.
 - **Who sets the flag (amendment 2026-08-31).** Two setters, both
   through the watcher's `LiveRun {mailbox, interrupt}` for the chat:
-  1. **Stop words in the chat**, consulted only while a run is live
-     on that chat (so the message is a command, not content), whole
-     trimmed message, case-insensitive: `stop` / `/stop` / `stop!` /
-     `stop.` = **soft** — the `break` item goes in the mailbox (the
-     wrap-up turn at the next cell boundary) AND a grace timer
-     (20 s) sets the flag if the same run is still going, because a
-     run inside a long cell (a slow model call, a long HTTP call) cannot
-     drain the mailbox; `stop now` / `/stop now` / `/kill` = **hard**
-     — the flag goes up immediately (the `break` item still goes in,
-     so a run between cells wraps up cleanly). Any other message
-     injects as before. A stop word on a chat with no live run is an
-     ordinary message that starts a run.
+  1. **A `break` control record in the chat.** The stop is data on
+     the message, never a word: the client posts a chat message with
+     an empty text and a `control` group (any `chat_messages-v5`):
+     `{kind: "break", hard?: bool}`. The watcher reads the group, not
+     the text — no stop words, ever; "stop" typed as text is content
+     like any other message. `hard: false` (default) = **soft** — the
+     `break` item goes in the mailbox (the wrap-up turn at the next
+     cell boundary) AND a grace timer (20 s) sets the flag if the
+     same run is still going, because a run inside a long cell (a
+     slow model call, a long HTTP call) cannot drain the mailbox;
+     `hard: true` = **hard** — the flag goes up immediately (the
+     `break` item still goes in, so a run between cells wraps up
+     cleanly). A control record is never content: whatever its
+     `kind`, it neither injects into a live run nor starts one — a
+     break with nothing running is a no-op. Clients render it as a
+     marker in the thread, not a bubble.
   2. **The control API**: `POST /break/<chat>` with `{"hard": bool}`
      (default soft, same grace); 400 when nothing runs there.
   The flag is the run's identity: the watcher hands out the run's own
