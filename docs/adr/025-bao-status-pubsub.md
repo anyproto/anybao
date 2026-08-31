@@ -45,7 +45,11 @@ Both ride one envelope:
   "data": {
     "identity":  "<peer id>",
     "state":     "boot" | "idle" | "working" | "shutdown",
-    "run":       { "id": "…", "title": "…", "startedAt": 123.0 },  // iff working
+    "run": {                             // iff working
+      "id": "…", "title": "…", "startedAt": 123.0,
+      "cells": 12,                       // tool calls so far (cell+bash spans)
+      "cell": "c.query(space, …"         // newest cell's preview; absent before the first
+    },
     "line":      "…",                    // bao-authored; absent when unset/stale
     "lineAt":    123.0                   // when bao last set it
   }
@@ -66,11 +70,24 @@ else the program spec); the freshest stamp is the beat's `run`. One
 source of truth for "what's running" serves `/break`, presence and
 the control API's `GET /status` alike — never a parallel counter.
 
+`cells`/`cell` come from the same entry's `RunActivity` (an Arc the
+run's Broker shares with its `LiveRun`): every tool call already
+crosses the host as a `cell` span begin (`bash` spans carry their
+command; the toolcaller adds a collapsed ≤96-char `preview` to cell
+span inputs), so the broker counts spans and keeps the newest
+preview. Deterministic host observation of what the model is doing —
+no model in the loop, same rule as the rest of layer 1.
+
 ### 2. Cadence & staleness
 
-Serve beats every 10s from a dedicated presence thread (1s poll, so
-a set line republishes within a second); the UI marks offline
-after 3 missed beats (30s). A graceful shutdown publishes
+Serve beats every 10s from a dedicated presence thread, and
+republishes within its 1s poll on ANY change in what the beat would
+say — a line set, a run starting or ending, a new tool call (the
+change signature). Working/idle flips and the call counter are
+therefore ~1s behind reality, never a full beat; the cadence beat is
+the liveness floor. Budget: one event per tool call ≈ one per few
+seconds on a busy run — far under the bus's 30 msg/s cap. The UI
+marks offline after 3 missed beats (30s). A graceful shutdown publishes
 `state: "shutdown"` once for instant offline; a crash is covered by
 the TTL. No fresh beats at all ⇒ offline — the pre-BOB-73 default.
 
@@ -114,14 +131,20 @@ A `baoStatus` atom fed by the ONE existing bus subscription
 plus a staleness clock. Two consumers:
 
 - **Status bar** (the BOB-73 deliverable): a shell-mounted source in
-  the activity region — presence dot + bao's line, falling back to
-  `run.title` while working; nothing rendered when offline. Cold
-  start: no replay on the bus, so a fresh window is "unknown" for up
-  to one beat (≤10s) — render nothing until the first beat.
+  the activity region — a BaoFace as the item's icon (happy when
+  idle; typing mood with a slow breathe-pulse while working — the
+  identity + the established "alive" animation, chosen over an
+  anonymous pulsing dot). Label while working: the line, else the
+  newest cell's preview, else `run.title`; the tool-call count rides
+  the tooltip so the bar stays quiet. Nothing rendered when offline.
+  Cold start: no replay on the bus, so a fresh window is "unknown"
+  for up to one beat (≤10s) — render nothing until the first beat.
 - **Chat typing row**: keeps its trailing-`done:false` trigger (which
   chat is waiting) but presence replaces the 10-minute crashed-run
   heuristic — bao offline/idle with no live run kills the row in
-  ~30s instead. The verb pool yields to the real line when present.
+  ~30s instead. The bounce gives way to the same breathe-pulse; the
+  text becomes real work — the line, else the cell preview, else the
+  verb pool — with the live tool-call counter beside the name.
 
 ADR-005 `done:false` progress bubbles are NOT migrated here —
 presence/status only; the narration migration stays a separate

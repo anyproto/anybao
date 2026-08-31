@@ -82,6 +82,67 @@ impl PresenceState {
     }
 }
 
+/// One run's live activity for presence beats (ADR-025 §1: `run.cells`
+/// / `run.cell`): tool calls counted and previewed as their spans cross
+/// the boundary. Created per run, shared between the run's Broker
+/// (writer) and its `LiveRun` entry (the presence thread's reader) —
+/// dropped with both, no cleanup path.
+pub type SharedActivity = Arc<RunActivity>;
+
+/// Preview budget for `run.cell` — one glanceable line, not the code.
+const CELL_PREVIEW_CHARS: usize = 96;
+
+#[derive(Default)]
+pub struct RunActivity {
+    /// Tool calls so far: `cell` + `bash` spans begun this run.
+    cells: std::sync::atomic::AtomicUsize,
+    /// Whitespace-collapsed head of the newest cell's code (bash: the
+    /// command) — what bao is doing RIGHT NOW, truncated to a glance.
+    preview: Mutex<Option<String>>,
+}
+
+impl RunActivity {
+    /// A tool-call span began: count it and keep its preview.
+    pub fn note_cell(&self, preview: Option<&str>) {
+        self.cells.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut slot = self.preview.lock().expect("activity preview lock poisoned");
+        *slot = preview.map(collapse_preview).filter(|p| !p.is_empty());
+    }
+
+    pub fn cells(&self) -> usize {
+        self.cells.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn preview(&self) -> Option<String> {
+        self.preview
+            .lock()
+            .expect("activity preview lock poisoned")
+            .clone()
+    }
+}
+
+/// Collapse runs of whitespace and cut at the preview budget (on a char
+/// boundary) — code arrives multi-line, the beat wants one short line.
+fn collapse_preview(text: &str) -> String {
+    let mut out = String::with_capacity(CELL_PREVIEW_CHARS + 1);
+    let mut chars = 0usize;
+    for word in text.split_whitespace() {
+        if chars > 0 {
+            out.push(' ');
+            chars += 1;
+        }
+        for ch in word.chars() {
+            if chars >= CELL_PREVIEW_CHARS {
+                out.push('…');
+                return out;
+            }
+            out.push(ch);
+            chars += 1;
+        }
+    }
+    out
+}
+
 #[derive(Debug)]
 pub struct EffectFailure {
     pub type_: String,
@@ -186,6 +247,10 @@ pub struct Broker {
     /// presence (`anyrt run`, tests): the syscall fails typed
     /// `not_configured`, never a silent no-op.
     pub presence: Option<SharedPresence>,
+    /// THIS run's live activity (ADR-025 §1: `run.cells`/`run.cell`) —
+    /// tool-call spans note themselves here; the presence thread reads
+    /// the same Arc off the run's `LiveRun`. None outside serve.
+    pub activity: Option<SharedActivity>,
     /// Remaining fuel, refreshed by the runner's epoch callback every
     /// tick (host fns can't reach the store). Read by `fuel.state`;
     /// ≤EPOCH_TICK_MS stale — a checkpoint signal, not an exact meter.
@@ -262,6 +327,7 @@ impl Broker {
             programs_dir,
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
             presence: None,
+            activity: None,
             fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
             deadline: None,
@@ -302,6 +368,18 @@ impl Broker {
                 .as_mut()
                 .expect("replay mode requires a cursor")
                 .expect_span_begin(name, &key)?;
+        }
+        // A tool call is starting (the toolcaller wraps each in a `cell`
+        // span; `bash` carries its command) — note it for presence beats
+        // (ADR-025 §1: `run.cells`/`run.cell`).
+        if name == "cell" || name == "bash" {
+            if let Some(activity) = &self.activity {
+                let preview = input
+                    .get("preview")
+                    .or_else(|| input.get("command"))
+                    .and_then(|v| v.as_str());
+                activity.note_cell(preview);
+            }
         }
         let parent = self.span_stack.last().map(|s| s.id.clone());
         let cell = self.current_cell.clone();
@@ -1697,6 +1775,44 @@ mod tests {
         b.presence = Some(Default::default());
         let err = b.call("bao.status", json!({"line": 3})).unwrap_err();
         assert_eq!(err.type_, "ValueError");
+    }
+
+    // --- run activity for presence beats (ADR-025 §1 run.cells/run.cell) ------
+
+    #[test]
+    fn tool_call_spans_note_run_activity() {
+        let mut b = make_broker("run_act");
+        let act: SharedActivity = Default::default();
+        b.activity = Some(act.clone());
+        b.try_span_begin("cell", None, json!({"cell": "c1", "preview": "x = 1"}))
+            .unwrap();
+        b.span_end(true, None, None).unwrap();
+        // bash tool calls count too — their preview is the command
+        b.try_span_begin(
+            "bash",
+            None,
+            json!({"cell": "c2", "command": "ls   -la\n /tmp"}),
+        )
+        .unwrap();
+        b.span_end(true, None, None).unwrap();
+        // a non-tool span (an @span facade, llm.chat) is not a tool call
+        b.try_span_begin("llm.chat", None, json!({"turn": 1}))
+            .unwrap();
+        assert_eq!(act.cells(), 2);
+        assert_eq!(act.preview().unwrap(), "ls -la /tmp");
+    }
+
+    #[test]
+    fn activity_preview_collapses_and_truncates() {
+        let a = RunActivity::default();
+        a.note_cell(Some(&"word ".repeat(40)));
+        let p = a.preview().unwrap();
+        assert!(p.chars().count() <= 97, "96 chars + ellipsis at most");
+        assert!(p.ends_with('…'));
+        // a whitespace-only cell counts but shows no preview
+        a.note_cell(Some("   "));
+        assert_eq!(a.preview(), None);
+        assert_eq!(a.cells(), 2);
     }
 
     #[test]
