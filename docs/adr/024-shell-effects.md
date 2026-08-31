@@ -1,6 +1,6 @@
 # ADR-024: Shell effects — `sh.*` and `fs.*` on the serve's device
 
-Status: **Proposed**
+Status: **Accepted** (2026-08-31; user go-ahead — implementation follows the sketch below, one topic per commit)
 Date: 2026-08-31
 Builds on: ADR-002 (effect boundary: declaration, broker pipeline,
 deny-by-default namespace), ADR-001 §7 (blob spill), ADR-003 §2
@@ -340,21 +340,22 @@ upload to `any` (ADR-020 covers download only).
   run-end reaping) — the first non-request/response syscall.
   Cancellation (ADR-003 §2) gets a second thing to clean up.
 
-## Open questions (to settle before Accepted)
+## Resolved questions (acceptance 2026-08-31)
 
-1. **Login-shell cost.** `$SHELL -lc` sources the profile on every
-   call (tens of ms for zsh, more for a heavy fish config). Accept,
-   or snapshot the login PATH once at serve start and run `$SHELL
-   -c` with it? Leaning: `-lc`, measure, revisit if it shows in the
-   digest timings.
-2. **`fs.edit` whitespace tolerance.** Exact match only (simple,
-   trace-honest) vs. a normalized fallback when the exact match
-   fails. Leaning: exact only; the model re-reads and retries — the
-   digest makes that cheap.
-3. **Per-stream cap** — 1 MiB is a guess. Measure a `cargo test` and
-   a `pytest -v` on this repo before the constant lands.
-4. **Is `sh.spawn/poll/kill` v1?** `sh.run` with a long `timeout_s`
-   may be enough to test with; spawn/poll can be the second commit.
+1. **Login shell.** `$SHELL -lc <cmd>` (fallback `/bin/sh -c`). The
+   profile cost per call is accepted for v1; `durationMs` is in every
+   record, so the cost is measurable from traces and a PATH snapshot
+   at serve start is the fallback if it shows.
+2. **`fs.edit` is exact-match only.** Zero or several occurrences is
+   a typed failure with no write; the model re-reads and retries.
+3. **Per-stream cap starts at 1 MiB**, explicitly unmeasured; the
+   constant is one line and `truncated` in the record tells us when
+   it bites.
+4. **`sh.spawn/poll/kill` are not v1.** `sh.run` with `timeout_s`
+   ships first; long-running and interactive work goes through tmux
+   driven from `bash` (§4 nudge). The three syscalls stay specified
+   in §1 and land as a later commit if traces show `run` is not
+   enough — nothing else in this ADR depends on them.
 
 ## Implementation sketch (after acceptance)
 
