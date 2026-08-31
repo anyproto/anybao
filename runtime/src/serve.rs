@@ -1481,7 +1481,7 @@ impl RunCtx {
         let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
-        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0)?;
         // ADR-023 §3: a run whose trace could not be landed is a failed
         // run, named — never a silent gap
         let summary = outcome
@@ -1534,7 +1534,7 @@ impl RunCtx {
         let run_id = broker.writer.run_id();
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
-        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0)?;
         let summary = outcome
             .broker
             .writer
