@@ -178,7 +178,8 @@ cap names are the only trace this ADR leaves for §5.
   shell, os}` — where bao is, so the first cell doesn't have to
   probe with `pwd`.
 - **`_coding.md`, a new space-resident skill**, deployed like any
-  other (`anyrt deploy`), always composed in. It carries the
+  other (`anyrt deploy`), composed in when the binary has the
+  feature (§6). It carries the
   workflow, not the API: absolute paths; read before you edit;
   `fs.edit` over rewriting a file; run the project's tests after a
   change and read the failure; bounded output (`| head`, `rg` before
@@ -211,7 +212,40 @@ and diff is recorded, `anyrt trace show` reads a coding session as it
 reads a connector run, and the `_coding` skill states the etiquette
 (§4) to a model that has so far followed etiquette well.
 
-### 6. Out of scope
+### 6. Build variants: a cargo feature, one kernel
+
+Host effects are a **compile-time feature of the runtime crate**, off
+by default:
+
+- `runtime/Cargo.toml`: `[features] host = []`. The `sh.*`/`fs.*`
+  syscalls, process management (§1), and the `runtime.get("host")`
+  value are `#[cfg(feature = "host")]`. Compiled out, the broker
+  answers `unknown effect` — the code is not in the binary, so the
+  raw `effect` global (ADR-002 §4 plumbing) cannot reach it either.
+- `make runtime` builds without the feature (unchanged); `make
+  runtime-host` builds with it. `cargo test` and `runtime-check`
+  run with `--features host` so the syscalls are tested and linted.
+- **any-ui is untouched.** `src-tauri` depends on `anyrt = { path =
+  "../../anybao/runtime" }` with default features and builds the
+  kernel with the plain componentize command; desktop builds never
+  contain a shell unless that dependency opts in explicitly.
+- **One kernel.** The guest (`app.py`) binds the `sh` and `fs`
+  globals only when `runtime.get("host")` resolves at boot; in a
+  binary without the feature the names are absent from the
+  namespace, `help()` does not list them, and the toolcaller leaves
+  `_coding.md` out of `compose_system` (the skill is space-resident
+  either way; composing it in without the tools would be pure prompt
+  tax). Two kernel artifacts were considered and rejected: the
+  cargo feature would still have to select the file, so it is the
+  root switch regardless, and any-ui's CI would need a second build
+  command for nothing.
+
+Why the kernel is not the switch: the kernel holds two-line wrappers
+around `_effect("sh.run", …)`; the capability is the syscall in the
+binary. A kernel without the wrappers hides the tool from the prompt,
+not from the machine.
+
+### 7. Out of scope
 
 UI (diff/terminal rendering — chat stays as is), PTY/interactive
 commands, background services outliving a run, parallel subagents,
@@ -223,9 +257,10 @@ upload to `any` (ADR-020 covers download only).
 - bao can read, edit, and run code on the machine its serve runs on
   through recorded, replayable effects. A coding conversation
   replays exactly like any other run.
-- **Every serve gets shell the moment it runs this binary** — prod
-  included. There is no opt-in; the earlier draft's `[host]`-block
-  gate was exactly that opt-in and is dropped on purpose. What
+- **Every serve built with `--features host` has shell**, with no
+  runtime opt-in (the earlier draft's `[host]`-block gate was that
+  opt-in and is dropped on purpose); the opt-in is the build (§6).
+  Desktop builds via any-ui never have it. What
   stands between a prod bao and `rm -rf` is the model's judgement
   and the skill text, and that is the accepted v1 posture (§5).
   Deploy order matters accordingly: the skill lands in the space
@@ -262,15 +297,18 @@ upload to `any` (ADR-020 covers download only).
 
 One topic per commit, on `feat/adr-024-host-effects`:
 
-1. `broker.rs`: `sh.run` + `fs.read/list/write/edit` syscalls,
-   output caps, process-group kill on timeout; unit tests against a
+1. `runtime/Cargo.toml` `host` feature + Makefile `runtime-host`;
+   `broker.rs`: `sh.run` + `fs.read/list/write/edit` syscalls under
+   the feature, output caps, process-group kill on timeout; unit tests against a
    temp dir; replay test (a `sh.run` record replays without
    executing).
 2. `runner.rs`/`serve.rs`: child reaping on hard break, cell
    timeout, and run end (ADR-003 §2 amendment lands here).
-3. `runtime/guest/app.py`: `sh`, `fs` globals with docstrings;
-   `runtime.get().host`; guest-module tests with the fake `effect`.
-4. `repos/_agent/skills/_coding.md`.
+3. `runtime/guest/app.py`: `sh`, `fs` globals with docstrings,
+   bound only when `runtime.get("host")` resolves; guest-module
+   tests with the fake `effect`.
+4. `repos/_agent/skills/_coding.md` + toolcaller composing it only
+   when the host feature is present.
 5. `sh.spawn/poll/kill` (if Q4 says yes).
 6. Rig e2e on the prod-test serve: a conversation that clones or
    opens a repo, reads, edits, runs tests, and commits; trace review
