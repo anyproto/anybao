@@ -226,7 +226,8 @@ def test_openai_cached_tokens_surface_as_cache_read():
             "usage": {"prompt_tokens": 100, "completion_tokens": 5,
                       "prompt_tokens_details": {"cached_tokens": 80}}}
     r = LLM["OpenAICompatAdapter"]().parse_response(resp)
-    assert r["usage"] == {"in": 100, "out": 5, "cacheRead": 80,
+    # `in` is the uncached prompt: prompt_tokens minus the cached part
+    assert r["usage"] == {"in": 20, "out": 5, "cacheRead": 80,
                          "cacheWrite": 0}
 
 

@@ -558,7 +558,7 @@ def main(args):
     turn = 0
     stop = "done"
     replies = []
-    last_in = 0        # input tokens of the latest call — the context in use
+    last_in = 0        # prompt tokens of the latest call — the context in use
     malformed = 0      # unparseable tool calls so far (traits.malformed_retries)
     while True:
         wrapup_reason = None
@@ -595,7 +595,10 @@ def main(args):
         reply = llm.chat(messages, system=system, tier=tier, tools=[tool])
         _tally(stats, reply.get("usage", {}))
         tokens = stats["inTokens"] + stats["outTokens"]
-        last_in = reply.get("usage", {}).get("in", 0)
+        # usage.in is the UNCACHED prompt; the context the model holds is
+        # the whole prompt — cached reads/writes included (ADR-005 §1)
+        u = reply.get("usage", {})
+        last_in = u.get("in", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0)
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":

@@ -610,6 +610,17 @@ def test_malformed_calls_over_budget_wrap_up():
     assert "malformed tool calls" in text
 
 
+def test_context_ceiling_counts_cached_prompt_tokens():
+    # native anthropic with markers: nearly the whole prompt is a cache
+    # hit, usage.in stays tiny — the ceiling must see the cached part
+    cached = tool_reply(usage={"in": 2, "out": 5, "cacheRead": 30000, "cacheWrite": 100})
+    w = World([cached, done_reply("summary")], traits={"context_window": 32768})
+    out = run(w)
+    assert out["stop"] == "wrapup"
+    text = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+    assert "context window nearly full (30102/32768)" in text
+
+
 def test_context_window_nearly_full_wraps_up():
     big = tool_reply(usage={"in": 30000, "out": 5})
     w = World([big, done_reply("summary")], traits={"context_window": 32768})

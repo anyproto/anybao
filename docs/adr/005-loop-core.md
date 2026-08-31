@@ -34,7 +34,8 @@ Part      = Text{text}
           | Thinking{text?, provider_state?}    # opaque blob, round-tripped
           | File{media_type, data, name?}       # base64; adapter routes by media type (ADR-020 §3)
 LLMReply  = {parts: [Part], stop: "done"|"tool"|"length", usage: Usage}
-Usage     = {in, out, cacheRead, cacheWrite}    # tokens; cache* may be 0
+Usage     = {in, out, cacheRead, cacheWrite}    # tokens; `in` = the UNCACHED prompt on every wire,
+                                                # cache* the cached part (may be 0); context in use = in + cacheRead + cacheWrite
 ```
 
 `use("llm@v1").chat(messages, *, system, tier, tools)` lives in the

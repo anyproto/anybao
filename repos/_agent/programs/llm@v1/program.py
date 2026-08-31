@@ -380,10 +380,14 @@ class OpenAICompatAdapter:
         stop = "tool" if fr == "tool_calls" else ("length" if fr == "length" else "done")
         u = raw.get("usage", {})
         det = u.get("prompt_tokens_details") or {}
+        cached = det.get("cached_tokens", 0)
+        # `in` is the UNCACHED prompt on every wire (Anthropic's
+        # input_tokens semantics; prompt_tokens here includes the cached
+        # part) — the context in use is in + cacheRead + cacheWrite
         return {"parts": parts, "stop": stop,
-                "usage": {"in": u.get("prompt_tokens", 0),
+                "usage": {"in": max(0, u.get("prompt_tokens", 0) - cached),
                           "out": u.get("completion_tokens", 0),
-                          "cacheRead": det.get("cached_tokens", 0),
+                          "cacheRead": cached,
                           "cacheWrite": 0}}
 
 
