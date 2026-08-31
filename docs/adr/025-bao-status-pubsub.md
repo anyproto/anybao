@@ -141,13 +141,13 @@ plus a staleness clock. Two consumers:
   rendered when offline. Cold start: no replay on the bus, so a fresh
   window is "unknown" for up to one beat (≤10s) — render nothing
   until the first beat.
-- **Chat typing row**: keeps its trailing-`done:false` trigger (which
-  chat is waiting) and its verb pool — deliberately NO line / cell
-  preview / counter in chat (owner call: the bar is enough; the row
-  only says a reply is coming). Presence still replaces the
-  10-minute crashed-run heuristic — bao offline/idle with no live
-  run kills the row in ~30s — and the bounce gives way to the same
-  breathe-pulse.
+- **Chat**: NO typing indicator at all (owner call after rig
+  testing) — the row is deleted; a run's liveness in chat is the
+  `done:false` bubble stream itself plus the bar. The working label
+  in the bar carries the `. → .. → ...` ticker (500ms) as the alive
+  cue. The `deriveAgentTyping` pending-send derivation remains (the
+  credential cards arm it; it stays the canonical resolution) with
+  no rendering consumer.
 
 ADR-005 `done:false` progress bubbles are NOT migrated here —
 presence/status only; the narration migration stays a separate
