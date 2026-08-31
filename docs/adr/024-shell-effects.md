@@ -82,7 +82,10 @@ global `sh` beside `http` (ADR-002 §3):
   environment, snapshotted once per process** — the first `sh.run`
   runs `$SHELL -lc 'env -0'` behind a marker and caches the result;
   every command then runs `-c` with that environment (`env_clear` +
-  snapshot + the call's `env`). The serve may be launched by the
+  snapshot + the call's `env`). The snapshot itself is bounded (10 s,
+  process group killed on expiry) — a profile that hangs or leaves a
+  daemon on stdout falls through to inheriting the serve's
+  environment instead of parking every later call. The serve may be launched by the
   desktop app with a bare PATH while the toolchain (nix, uv, cargo)
   lives in the profile, so the login shell is needed — but once, not
   per call: per-call `-lc` pays the profile every time and leaks
@@ -105,7 +108,13 @@ global `sh` beside `http` (ADR-002 §3):
   `EffectError` is reserved for the boundary refusing the call
   (malformed payload, unknown handle, spawn failure).
 - **Output capture is bounded**: 1 MiB per stream, head + tail with
-  a `[… N bytes elided …]` marker and `truncated: true`. Anything
+  a `[… N bytes elided …]` marker and `truncated: true`. The pipe
+  pumps and the stdin feeder run on their own threads, paced by
+  `poll(2)` — stdin is fed *after* the output pumps exist (a child
+  that emits while it reads would otherwise deadlock against an
+  unread pipe), and a pipe a grandchild keeps open past the 2 s
+  post-exit grace is abandoned (thread stops, fd dropped, warning
+  logged) rather than parked on. Anything
   over ADR-001's 64 KiB record threshold spills to the blob store as
   today; guest-side the digest stub + `values.get` walk apply
   unchanged (`_core.md`). The model is told to pipe through `head`/
@@ -160,10 +169,16 @@ record can never show *what changed*. Four syscalls, guest global
   (or `all: true`); zero or several occurrences is a typed failure
   (`fs.edit_ambiguous` / `fs.edit_not_found`) with no write. The
   record carries `old`/`new` verbatim — the trace *is* the diff.
-- **`fs.read` is bounded** like `sh` output (1 MiB, `truncated`);
-  `offset`/`limit` are line-based for text so the model reads a
-  region, not a file. `encoding: "base64"` mirrors ADR-020 §1 for
-  binary.
+- **`fs.read` is bounded** like `sh` output (1 MiB, `truncated`) —
+  in memory too: the size comes from metadata before any allocation,
+  text is streamed line by line (every line counted, only the
+  selected region kept, never more than the cap), base64 refuses a
+  file over the cap (`fs.too_large`) before reading it. `offset`/
+  `limit` are line-based for text so the model reads a region, not a
+  file — a region deep in a 100 MB log reads fine. `encoding:
+  "base64"` mirrors ADR-020 §1 for binary. `fs.edit` rewrites the
+  whole file and refuses one over 16 MiB (`fs.too_large` — use the
+  shell).
 - **Paths** are taken as given: absolute, or relative to the serve's
   working directory. No resolution rules, no roots (§5).
 - **Read effects are safe to re-execute in loose replay** (ADR-002

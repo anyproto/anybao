@@ -12,7 +12,8 @@ use crate::broker::EffectFailure;
 use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,14 +29,25 @@ compile_error!("the `shell` feature needs a unix host (process groups, SIGKILL)"
 pub const STREAM_CAP: usize = 1 << 20;
 /// `fs.read` / `fs.write` payload cap — same number, same reason.
 pub const FILE_CAP: usize = STREAM_CAP;
+/// `fs.edit` rewrites the whole file: refuse anything a text edit has
+/// no business touching (16 MiB) before allocating it.
+pub const EDIT_CAP: usize = 16 << 20;
 /// `fs.list` entry cap.
 pub const LIST_CAP: usize = 5000;
 const DEFAULT_TIMEOUT_S: f64 = 120.0;
 const POLL_MS: u64 = 20;
-/// Grace for the pipe readers after the process exited: a grandchild
+/// The pipe pumps wait on poll(2) this long per tick so they can
+/// observe their stop flag instead of parking in read(2) forever.
+const PUMP_POLL_MS: i32 = 100;
+/// Grace for the pipe pumps after the process exited: a grandchild
 /// that kept the pipe open (a daemon the command left behind) must not
-/// wedge the cell — we return what was captured so far.
+/// wedge the cell — we return what was captured so far and the pumps
+/// stop on their next tick (they hold no fd after that).
 const READER_GRACE: Duration = Duration::from_secs(2);
+/// The one login shell per process (`login_env`) gets this long; a
+/// profile that hangs or leaves a daemon on stdout falls through to
+/// the inherit-env path instead of parking every later `sh.run`.
+const LOGIN_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the broker hands over per call: the run's interrupt flag (a
 /// hard break kills the child too — ADR-003 §2 amendment) and the
@@ -88,16 +100,49 @@ const ENV_MARK: &str = "__ANYRT_ENV_SNAPSHOT__";
 pub fn login_env(shell: &str) -> Option<&'static BTreeMap<String, String>> {
     LOGIN_ENV
         .get_or_init(|| {
-            let out = Command::new(shell)
-                .arg("-lc")
-                .arg(format!("printf '{ENV_MARK}'; env -0"))
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()?;
-            parse_env_snapshot(&out.stdout)
+            let out = run_capture(
+                shell,
+                &["-lc", &format!("printf '{ENV_MARK}'; env -0")],
+                LOGIN_SNAPSHOT_TIMEOUT,
+            )?;
+            parse_env_snapshot(&out)
         })
         .as_ref()
+}
+
+/// Run `program args` with no stdin and capture stdout, bounded by
+/// `timeout` (the process group is killed on expiry → None). The
+/// snapshot's runner; never used for guest commands (those need the
+/// full `sh_run` contract).
+fn run_capture(program: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    use std::os::unix::process::CommandExt;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let out = pump(child.stdout.take()?);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(POLL_MS))
+            }
+            _ => {
+                kill_group(pid);
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    kill_group(pid);
+    let bytes = out.finish_bytes(Instant::now() + READER_GRACE);
+    status.filter(|s| s.success()).map(|_| bytes)
 }
 
 fn parse_env_snapshot(bytes: &[u8]) -> Option<BTreeMap<String, String>> {
@@ -245,6 +290,13 @@ impl Capture {
         self.head.len() + self.tail.len() + self.dropped
     }
 
+    /// Everything captured, in order — only meaningful under the cap.
+    fn bytes(&self) -> Vec<u8> {
+        let mut b = self.head.clone();
+        b.extend(self.tail.iter());
+        b
+    }
+
     fn render(&self) -> (String, bool) {
         let mut bytes = self.head.clone();
         if self.dropped > 0 {
@@ -258,21 +310,117 @@ impl Capture {
     }
 }
 
-fn pump(mut reader: impl Read + Send + 'static) -> (Arc<Mutex<Capture>>, mpsc::Receiver<()>) {
+/// A pipe reader on its own thread. It waits in poll(2), not read(2),
+/// so `stop` ends it even when the far end never closes (a setsid'd
+/// grandchild the group kill cannot reach): the thread exits, the fd
+/// is dropped, nothing leaks.
+struct Pump {
+    cap: Arc<Mutex<Capture>>,
+    done: mpsc::Receiver<()>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Pump {
+    /// Wait until `deadline` (shared by every pump of one command) for
+    /// EOF; a pump still open after that is told to stop — the command
+    /// left something holding its pipe — and what was captured is
+    /// returned either way.
+    fn drain(&self, deadline: Instant) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if self.done.recv_timeout(left).is_err() {
+            self.stop.store(true, Ordering::Relaxed);
+            tracing::warn!(
+                "sh.run: a pipe stayed open past the post-exit grace (a daemon the command left behind?) — capture closed"
+            );
+        }
+    }
+
+    fn finish(self, deadline: Instant) -> (String, bool) {
+        self.drain(deadline);
+        let out = self.cap.lock().unwrap().render();
+        out
+    }
+
+    fn finish_bytes(self, deadline: Instant) -> Vec<u8> {
+        self.drain(deadline);
+        let out = self.cap.lock().unwrap().bytes();
+        out
+    }
+}
+
+/// poll(2) one fd for `events`; Some(true) = ready (or hung up),
+/// Some(false) = timed out, None = poll failed (not EINTR).
+fn poll_fd(fd: i32, events: i16) -> Option<bool> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: one valid pollfd, count 1.
+        let r = unsafe { libc::poll(&mut pfd, 1, PUMP_POLL_MS) };
+        if r < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return None;
+        }
+        return Some(r > 0);
+    }
+}
+
+fn pump(mut reader: impl Read + AsRawFd + Send + 'static) -> Pump {
     let cap = Arc::new(Mutex::new(Capture::new(STREAM_CAP)));
     let (tx, rx) = mpsc::channel();
-    let sink = cap.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (sink, flag) = (cap.clone(), stop.clone());
     std::thread::spawn(move || {
+        let fd = reader.as_raw_fd();
         let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => sink.lock().unwrap().push(&buf[..n]),
+        while !flag.load(Ordering::Relaxed) {
+            match poll_fd(fd, libc::POLLIN) {
+                Some(true) => match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => sink.lock().unwrap().push(&buf[..n]),
+                },
+                Some(false) => continue,
+                None => break,
             }
         }
         let _ = tx.send(());
     });
-    (cap, rx)
+    Pump {
+        cap,
+        done: rx,
+        stop,
+    }
+}
+
+/// Feed the child's stdin on its own thread, poll(2)-paced like the
+/// readers: a child that emits while it reads (cat, sort, jq) fills
+/// its stdout pipe and stops reading — a blocking write_all here would
+/// deadlock against our own unread pipe. The output pumps exist before
+/// this starts; `stop` ends it if the pipe never drains.
+fn feed_stdin(mut stdin: std::process::ChildStdin, text: String) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    std::thread::spawn(move || {
+        let fd = stdin.as_raw_fd();
+        let bytes = text.as_bytes();
+        let mut at = 0;
+        while at < bytes.len() && !flag.load(Ordering::Relaxed) {
+            match poll_fd(fd, libc::POLLOUT) {
+                Some(true) => match stdin.write(&bytes[at..(at + 65536).min(bytes.len())]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => at += n,
+                },
+                Some(false) => continue,
+                None => break,
+            }
+        }
+        drop(stdin); // EOF — a command reading stdin must never wait on us
+    });
+    stop
 }
 
 // --- sh.run ------------------------------------------------------------------
@@ -368,17 +516,15 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
     let pid = child.id();
     LIVE.lock().unwrap().insert(pid);
 
-    // stdin: write it all, then close (EOF) — a command reading stdin
-    // must never wait on us
-    let stdin_text = payload.get("stdin").and_then(|s| s.as_str());
-    if let Some(mut si) = child.stdin.take() {
-        if let Some(text) = stdin_text {
-            let _ = si.write_all(text.as_bytes());
-        }
-        drop(si);
-    }
-    let (out_cap, out_done) = pump(child.stdout.take().expect("piped stdout"));
-    let (err_cap, err_done) = pump(child.stderr.take().expect("piped stderr"));
+    // output pumps FIRST, then stdin on its own thread (see feed_stdin)
+    let out = pump(child.stdout.take().expect("piped stdout"));
+    let err = pump(child.stderr.take().expect("piped stderr"));
+    let stdin_text = payload
+        .get("stdin")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let feeder = child.stdin.take().map(|si| feed_stdin(si, stdin_text));
 
     let limit = t0 + Duration::from_secs_f64(timeout);
     let mut timed_out = false;
@@ -402,15 +548,15 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
         std::thread::sleep(Duration::from_millis(POLL_MS));
     };
     // the command is over: nothing it left behind survives the call
-    // (ADR-024 §1) — sweep the group, then let the readers drain
+    // (ADR-024 §1) — sweep the group, then let the pumps drain
     kill_group(pid);
     LIVE.lock().unwrap().remove(&pid);
-    // readers finish when the pipes close; a leftover grandchild
-    // holding them open gets READER_GRACE, then we take what we have
-    let _ = out_done.recv_timeout(READER_GRACE);
-    let _ = err_done.recv_timeout(READER_GRACE);
-    let (stdout, out_trunc) = out_cap.lock().unwrap().render();
-    let (stderr, err_trunc) = err_cap.lock().unwrap().render();
+    if let Some(stop) = feeder {
+        stop.store(true, Ordering::Relaxed);
+    }
+    let grace_until = Instant::now() + READER_GRACE;
+    let (stdout, out_trunc) = out.finish(grace_until);
+    let (stderr, err_trunc) = err.finish(grace_until);
 
     let mut out = Map::new();
     out.insert("pid".into(), json!(pid));
@@ -450,8 +596,9 @@ fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
         .get("encoding")
         .and_then(|e| e.as_str())
         .unwrap_or("text");
-    let bytes = std::fs::read(path).map_err(|e| io_fail(path, e))?;
-    let size = bytes.len();
+    // size from metadata BEFORE any allocation: the caps bound memory,
+    // not just the reply (ADR-024 §2)
+    let size = std::fs::metadata(path).map_err(|e| io_fail(path, e))?.len() as usize;
     match encoding {
         "base64" => {
             if size > FILE_CAP {
@@ -460,20 +607,13 @@ fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
                     format!("{path}: {size} bytes exceeds the {FILE_CAP}-byte base64 read cap"),
                 ));
             }
+            let bytes = std::fs::read(path).map_err(|e| io_fail(path, e))?;
             Ok(json!({
                 "path": path, "size": size, "truncated": false,
                 "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
             }))
         }
         "text" => {
-            let text = String::from_utf8(bytes).map_err(|_| {
-                fail(
-                    "UnicodeDecodeError",
-                    format!("{path}: not utf-8 — read it with encoding=\"base64\""),
-                )
-            })?;
-            let lines: Vec<&str> = text.split_inclusive('\n').collect();
-            let total_lines = lines.len();
             let offset = payload
                 .get("offset")
                 .and_then(|o| o.as_u64())
@@ -483,21 +623,53 @@ fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
                 .get("limit")
                 .and_then(|l| l.as_u64())
                 .map(|l| l as usize);
-            let start = (offset - 1).min(total_lines);
-            let end = match limit {
-                Some(l) => (start + l).min(total_lines),
-                None => total_lines,
-            };
-            let mut selected: String = lines[start..end].concat();
+            let start = offset - 1;
+            let end = limit.map_or(usize::MAX, |l| start.saturating_add(l));
+            // one streamed pass: count every line, keep only the
+            // selected region, and never hold more than FILE_CAP of it
+            let file = std::fs::File::open(path).map_err(|e| io_fail(path, e))?;
+            let mut reader = std::io::BufReader::new(file);
+            let mut line = Vec::new();
+            let mut selected: Vec<u8> = Vec::new();
+            let mut total_lines = 0usize;
             let mut truncated = false;
-            if selected.len() > FILE_CAP {
-                let mut cut = FILE_CAP;
-                while !selected.is_char_boundary(cut) {
-                    cut -= 1;
+            loop {
+                line.clear();
+                let n = reader
+                    .read_until(b'\n', &mut line)
+                    .map_err(|e| io_fail(path, e))?;
+                if n == 0 {
+                    break;
                 }
-                selected.truncate(cut);
-                truncated = true;
+                if total_lines >= start && total_lines < end {
+                    let room = FILE_CAP.saturating_sub(selected.len());
+                    if line.len() > room {
+                        selected.extend_from_slice(&line[..room]);
+                        truncated = true;
+                    } else {
+                        selected.extend_from_slice(&line);
+                    }
+                }
+                total_lines += 1;
             }
+            let selected = match String::from_utf8(selected) {
+                Ok(s) => s,
+                Err(e) => {
+                    // a cut inside a multi-byte char at the cap is ours;
+                    // anything else means the file isn't text
+                    let valid = e.utf8_error().valid_up_to();
+                    let mut bytes = e.into_bytes();
+                    if truncated && valid + 4 >= bytes.len() {
+                        bytes.truncate(valid);
+                        String::from_utf8(bytes).unwrap_or_default()
+                    } else {
+                        return Err(fail(
+                            "UnicodeDecodeError",
+                            format!("{path}: not utf-8 — read it with encoding=\"base64\""),
+                        ));
+                    }
+                }
+            };
             Ok(json!({
                 "path": path, "size": size, "lines": total_lines,
                 "offset": offset, "text": selected, "truncated": truncated,
@@ -623,6 +795,13 @@ fn fs_edit(payload: &Value) -> Result<Value, EffectFailure> {
         .get("all")
         .and_then(|a| a.as_bool())
         .unwrap_or(false);
+    let size = std::fs::metadata(path).map_err(|e| io_fail(path, e))?.len() as usize;
+    if size > EDIT_CAP {
+        return Err(fail(
+            "fs.too_large",
+            format!("{path}: {size} bytes exceeds the {EDIT_CAP}-byte edit cap — use the shell"),
+        ));
+    }
     let text = std::fs::read_to_string(path).map_err(|e| io_fail(path, e))?;
     let count = text.matches(old).count();
     if count == 0 {
@@ -747,6 +926,107 @@ mod tests {
         assert!(!alive(pid), "backgrounded sleep {pid} survived the call");
         let shell_pid = out["pid"].as_u64().unwrap() as u32;
         assert!(!LIVE.lock().unwrap().contains(&shell_pid)); // registry entry released
+    }
+
+    #[test]
+    fn run_large_stdin_through_a_chatty_child_does_not_deadlock() {
+        // cat emits while it reads: > 64 KiB each way fills both pipes
+        // unless stdin is fed concurrently with the output pumps
+        let big: String = (0..8000)
+            .map(|i| format!("line {i:05} xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"))
+            .collect();
+        assert!(big.len() > 300_000);
+        let t0 = Instant::now();
+        let out = run(json!({"cmd": "cat", "stdin": big, "timeout_s": 20}));
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "stdin/stdout deadlock"
+        );
+        assert_eq!(out["exit"], 0);
+        assert_eq!(out["stdout"].as_str().unwrap().len(), big.len());
+        assert_eq!(out["truncated"], false);
+    }
+
+    #[test]
+    fn run_capture_is_bounded() {
+        let t0 = Instant::now();
+        assert!(run_capture("/bin/sh", &["-c", "sleep 30"], Duration::from_millis(300)).is_none());
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        let ok = run_capture("/bin/sh", &["-c", "printf hi"], Duration::from_secs(5)).unwrap();
+        assert_eq!(ok, b"hi");
+        assert!(run_capture("/bin/sh", &["-c", "exit 1"], Duration::from_secs(5)).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pumps_stop_when_an_escaped_grandchild_holds_the_pipe() {
+        // setsid puts sleep in its own session/group: killpg can't reach
+        // it and it keeps our stdout pipe open — the call must still
+        // return after the grace, with what was captured
+        let t0 = Instant::now();
+        let out = run(json!({"cmd": "setsid sleep 4 & echo hi"}));
+        let took = t0.elapsed();
+        assert!(
+            took >= READER_GRACE && took < READER_GRACE + Duration::from_secs(1),
+            "{took:?}"
+        );
+        assert_eq!(out["stdout"], "hi\n");
+        assert_eq!(out["exit"], 0);
+    }
+
+    #[test]
+    fn fs_read_streams_big_files_and_gates_by_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.txt");
+        let ps = p.to_string_lossy().into_owned();
+        let f = std::fs::File::create(&p).unwrap();
+        let mut w = std::io::BufWriter::new(f);
+        for i in 0..100_000 {
+            writeln!(w, "row {i:06} ééé").unwrap(); // ~18 bytes → ~1.8 MiB
+        }
+        drop(w);
+        let size = std::fs::metadata(&p).unwrap().len();
+        assert!(size as usize > FILE_CAP);
+        // a region past the cap reads fine and counts every line
+        let out = execute(
+            &ctx(),
+            "fs.read",
+            &json!({"path": ps, "offset": 99_999, "limit": 5}),
+        )
+        .unwrap();
+        assert_eq!(out["text"], "row 099998 ééé\nrow 099999 ééé\n");
+        assert_eq!(out["lines"], 100_000);
+        assert_eq!(out["size"], size);
+        assert_eq!(out["truncated"], false);
+        // the whole file: capped, cut on a char boundary, flagged
+        let out = execute(&ctx(), "fs.read", &json!({"path": ps})).unwrap();
+        assert_eq!(out["truncated"], true);
+        assert!(out["text"].as_str().unwrap().len() <= FILE_CAP);
+        assert!(out["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("row 000000 ééé\n"));
+        // base64 is refused before reading
+        let err = execute(
+            &ctx(),
+            "fs.read",
+            &json!({"path": ps, "encoding": "base64"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.type_, "fs.too_large");
+        // edit refuses past its own cap (sparse file, no bytes written)
+        let huge = dir.path().join("huge.bin");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(EDIT_CAP as u64 + 1)
+            .unwrap();
+        let err = execute(
+            &ctx(),
+            "fs.edit",
+            &json!({"path": huge.to_string_lossy(), "old": "a", "new": "b"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.type_, "fs.too_large");
     }
 
     #[test]
