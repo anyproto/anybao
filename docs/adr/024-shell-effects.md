@@ -1,4 +1,4 @@
-# ADR-024: Host effects — `sh.*` and `fs.*` on the serve's device
+# ADR-024: Shell effects — `sh.*` and `fs.*` on the serve's device
 
 Status: **Proposed**
 Date: 2026-08-31
@@ -29,7 +29,7 @@ The user's constraints for the first cut:
 - **Chat stays the same.** No UI work; the tooling is the whole
   change.
 - **Python stays the data-manipulation language.** Cells keep doing
-  the parsing, filtering, and shaping; the host machine is reached
+  the parsing, filtering, and shaping; the machine is reached
   for files, processes, and the project's own toolchain.
 - **Shell is non-negotiable.** A coding agent lives on `git`,
   `cargo`, `pytest`, `make`, `rg` — the project's tools, not a
@@ -66,10 +66,10 @@ global `sh` beside `http` (ADR-002 §3):
 
 | effect | kind | cap | in → out |
 |---|---|---|---|
-| `sh.run` | mutate | `host.shell` | `{cmd, cwd?, timeout_s?, stdin?, env?}` → `{exit, stdout, stderr, durationMs, truncated, timedOut}` |
-| `sh.spawn` | mutate | `host.shell` | `{cmd, cwd?, env?}` → `{handle}` |
-| `sh.poll` | mutate | `host.shell` | `{handle, wait_s?}` → `{running, exit?, stdout, stderr, truncated}` (output since the previous poll) |
-| `sh.kill` | mutate | `host.shell` | `{handle}` → `{killed}` |
+| `sh.run` | mutate | `sh.run` | `{cmd, cwd?, timeout_s?, stdin?, env?}` → `{exit, stdout, stderr, durationMs, truncated, timedOut}` |
+| `sh.spawn` | mutate | `sh.spawn` | `{cmd, cwd?, env?}` → `{handle}` |
+| `sh.poll` | mutate | `sh.poll` | `{handle, wait_s?}` → `{running, exit?, stdout, stderr, truncated}` (output since the previous poll) |
+| `sh.kill` | mutate | `sh.kill` | `{handle}` → `{killed}` |
 
 - **Every `sh.*` call is `mutate`.** A shell is never safely
   re-executable — even `ls` observes state that the next command may
@@ -87,11 +87,11 @@ global `sh` beside `http` (ADR-002 §3):
   model passes `cwd` explicitly (the `_coding` skill says: absolute
   paths, always). There is no ambient cwd across calls — a cell that
   wants "the current directory" keeps its own variable (nothing
-  ambient, ADR-002). `runtime.get().host` (§4) tells the model where
+  ambient, ADR-002). `runtime.get("shell")` (§4) tells the model where
   it is.
 - **Timeout is data, not an error.** `timeout_s` defaults to 120 and
   is clamped to the cell's remaining wall budget (ADR-003 §2). On
-  expiry the host kills the process *group*, returns whatever was
+  expiry the runtime kills the process *group*, returns whatever was
   captured, and sets `timedOut: true`, `exit: null`. A non-zero exit
   is likewise data (`exit: 1`, stderr present) — the cell decides;
   `EffectError` is reserved for the boundary refusing the call
@@ -130,10 +130,10 @@ record can never show *what changed*. Four syscalls, guest global
 
 | effect | kind | cap | in → out |
 |---|---|---|---|
-| `fs.read` | read | `host.fs.read` | `{path, encoding?: "text"\|"base64", offset?, limit?}` → `{text\|data, size, lines?, truncated}` |
-| `fs.list` | read | `host.fs.read` | `{path, glob?, depth?}` → `{entries: [{path, kind, size}]}` |
-| `fs.write` | mutate | `host.fs.write` | `{path, content, encoding?, mkdirs?}` → `{bytes, created}` |
-| `fs.edit` | mutate | `host.fs.write` | `{path, old, new, all?}` → `{replacements}` |
+| `fs.read` | read | `fs.read` | `{path, encoding?: "text"\|"base64", offset?, limit?}` → `{text\|data, size, lines?, truncated}` |
+| `fs.list` | read | `fs.list` | `{path, glob?, depth?}` → `{entries: [{path, kind, size}]}` |
+| `fs.write` | mutate | `fs.write` | `{path, content, encoding?, mkdirs?}` → `{bytes, created}` |
+| `fs.edit` | mutate | `fs.edit` | `{path, old, new, all?}` → `{replacements}` |
 
 - **`fs.edit` is exact-replace**: `old` must occur exactly once
   (or `all: true`); zero or several occurrences is a typed failure
@@ -156,16 +156,18 @@ record can never show *what changed*. Four syscalls, guest global
 `re`/`json`/`ast` (all tier-1 imports, ADR-002 §4, ADR-013) on it and
 hands the result to `fs.write`/`fs.edit`. Anything needing the
 project's real interpreter — C extensions, its venv, its test runner
-— goes through `sh.run("uv run …")` on the host. The wasm guest
+— goes through `sh.run("uv run …")` on the machine. The wasm guest
 never grows a package manager.
 
-### 3. Caps names fixed, nothing enforced
+### 3. Caps: the default naming, nothing enforced
 
-`cap_of` returns `host.shell` / `host.fs.read` / `host.fs.write` so
-the names exist in every record from day one and a future grant
-ledger has something to key on. With no grant policy wired, every
-cap is permitted — exactly as for every other effect today. The
-cap names are the only trace this ADR leaves for §5.
+No custom cap names: each syscall's cap is its own name, the
+reference-host default (`broker.rs::cap_of`), so a future grant
+ledger keys on `sh.*` / `fs.*` wildcards (`GrantSet` prefix entries)
+or on `fs.read` alone. With no grant policy wired, every cap is
+permitted — exactly as for every other effect today. Nothing named
+"host": in this repo *host* is the runtime side of the boundary
+(ADR-002 §1), and these effects are guest-facing tools like `http`.
 
 ### 4. Guest surface and prompt
 
@@ -174,9 +176,9 @@ cap names are the only trace this ADR leaves for §5.
   (ADR-010): `help(sh)` / `help(fs.edit)` show signatures, return
   shapes, and the timeout/truncation contract. `sh.run` is the only
   thing most cells need; the docstring says so.
-- `runtime.get()` (ADR-006 §3 surface) gains `host: {cwd, home,
-  shell, os}` — where bao is, so the first cell doesn't have to
-  probe with `pwd`.
+- `runtime.get("shell")` (ADR-006 §3 surface) → `{cwd, home, shell,
+  os}` — where bao is, so the first cell doesn't have to probe with
+  `pwd`. Absent (KeyError) in a binary without the feature (§6).
 - **`_coding.md`, a new space-resident skill**, deployed like any
   other (`anyrt deploy`), composed in when the binary has the
   feature (§6). It carries the
@@ -214,23 +216,23 @@ reads a connector run, and the `_coding` skill states the etiquette
 
 ### 6. Build variants: a cargo feature, one kernel
 
-Host effects are a **compile-time feature of the runtime crate**, off
-by default:
+Shell effects are a **compile-time feature of the runtime crate**,
+off by default:
 
-- `runtime/Cargo.toml`: `[features] host = []`. The `sh.*`/`fs.*`
-  syscalls, process management (§1), and the `runtime.get("host")`
-  value are `#[cfg(feature = "host")]`. Compiled out, the broker
+- `runtime/Cargo.toml`: `[features] shell = []`. The `sh.*`/`fs.*`
+  syscalls, process management (§1), and the `runtime.get("shell")`
+  value are `#[cfg(feature = "shell")]`. Compiled out, the broker
   answers `unknown effect` — the code is not in the binary, so the
   raw `effect` global (ADR-002 §4 plumbing) cannot reach it either.
 - `make runtime` builds without the feature (unchanged); `make
-  runtime-host` builds with it. `cargo test` and `runtime-check`
-  run with `--features host` so the syscalls are tested and linted.
+  runtime-shell` builds with it. `cargo test` and `runtime-check`
+  run with `--features shell` so the syscalls are tested and linted.
 - **any-ui is untouched.** `src-tauri` depends on `anyrt = { path =
   "../../anybao/runtime" }` with default features and builds the
   kernel with the plain componentize command; desktop builds never
   contain a shell unless that dependency opts in explicitly.
 - **One kernel.** The guest (`app.py`) binds the `sh` and `fs`
-  globals only when `runtime.get("host")` resolves at boot; in a
+  globals only when `runtime.get("shell")` resolves at boot; in a
   binary without the feature the names are absent from the
   namespace, `help()` does not list them, and the toolcaller leaves
   `_coding.md` out of `compose_system` (the skill is space-resident
@@ -257,7 +259,7 @@ upload to `any` (ADR-020 covers download only).
 - bao can read, edit, and run code on the machine its serve runs on
   through recorded, replayable effects. A coding conversation
   replays exactly like any other run.
-- **Every serve built with `--features host` has shell**, with no
+- **Every serve built with `--features shell` has shell**, with no
   runtime opt-in (the earlier draft's `[host]`-block gate was that
   opt-in and is dropped on purpose); the opt-in is the build (§6).
   Desktop builds via any-ui never have it. What
@@ -295,9 +297,9 @@ upload to `any` (ADR-020 covers download only).
 
 ## Implementation sketch (after acceptance)
 
-One topic per commit, on `feat/adr-024-host-effects`:
+One topic per commit, on `feat/adr-024-shell-effects`:
 
-1. `runtime/Cargo.toml` `host` feature + Makefile `runtime-host`;
+1. `runtime/Cargo.toml` `shell` feature + Makefile `runtime-shell`;
    `broker.rs`: `sh.run` + `fs.read/list/write/edit` syscalls under
    the feature, output caps, process-group kill on timeout; unit tests against a
    temp dir; replay test (a `sh.run` record replays without
@@ -305,10 +307,10 @@ One topic per commit, on `feat/adr-024-host-effects`:
 2. `runner.rs`/`serve.rs`: child reaping on hard break, cell
    timeout, and run end (ADR-003 §2 amendment lands here).
 3. `runtime/guest/app.py`: `sh`, `fs` globals with docstrings,
-   bound only when `runtime.get("host")` resolves; guest-module
+   bound only when `runtime.get("shell")` resolves; guest-module
    tests with the fake `effect`.
 4. `repos/_agent/skills/_coding.md` + toolcaller composing it only
-   when the host feature is present.
+   when the shell feature is present.
 5. `sh.spawn/poll/kill` (if Q4 says yes).
 6. Rig e2e on the prod-test serve: a conversation that clones or
    opens a repo, reads, edits, runs tests, and commits; trace review
