@@ -161,6 +161,35 @@ def test_openai_malformed_tool_args_are_flagged_not_fatal():
     assert back["messages"][0]["tool_calls"][0]["function"]["arguments"] == "{}"
 
 
+def test_openai_tool_call_provider_state_roundtrips_verbatim():
+    extra = {"google": {"thought_signature": "SIG"}}
+    resp = {"choices": [{"message": {"content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "extra_content": extra,
+         "function": {"name": "run_cell", "arguments": "{}"}}]},
+        "finish_reason": "tool_calls"}], "usage": {}}
+    r = LLM["OpenAICompatAdapter"]().parse_response(resp)
+    assert r["parts"][0]["provider_state"] == {"extra_content": extra}
+    back = LLM["OpenAICompatAdapter"]().build_request(
+        [{"role": "assistant", "parts": r["parts"]}], "", [], "m", T())
+    assert back["messages"][0]["tool_calls"][0]["extra_content"] == extra
+    # a call the server sent without state carries none back
+    plain = LLM["OpenAICompatAdapter"]().parse_response(OPENAI_TOOL_RESP)
+    back = LLM["OpenAICompatAdapter"]().build_request(
+        [{"role": "assistant", "parts": plain["parts"]}], "", [], "m", T())
+    assert "extra_content" not in back["messages"][0]["tool_calls"][0]
+
+
+def test_markers_degrade_to_auto_off_marker_backends():
+    eff = LLM["_effective"]
+    assert eff(T(cache="markers"), "anthropic")["cache"] == "markers"
+    assert eff(T(cache="markers"), "openrouter")["cache"] == "markers"
+    assert eff(T(cache="markers"), "generic")["cache"] == "auto"
+    assert eff(T(cache="auto"), "anthropic")["cache"] == "auto"
+    host = FakeHost({"provider": "openai-compat", "model": "claude-sonnet-5",
+                     "base_url": "https://api.anthropic.com/v1", "api_key_ref": "k"})
+    assert load(host)["profile"]()["traits"]["cache"] == "auto"
+
+
 def test_anthropic_cache_breakpoint_on_conversation_end():
     msgs = [
         {"role": "user", "parts": [{"type": "text", "text": "hi"}]},

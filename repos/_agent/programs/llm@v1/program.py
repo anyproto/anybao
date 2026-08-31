@@ -327,11 +327,14 @@ class OpenAICompatAdapter:
             if msg["content"] is None and not calls:
                 msg["content"] = ""
         if calls:
-            msg["tool_calls"] = [
-                {"id": c["id"], "type": "function",
-                 "function": {"name": c["name"], "arguments": json.dumps(c["args"] or {})}}
-                for c in calls
-            ]
+            msg["tool_calls"] = []
+            for c in calls:
+                tc = {"id": c["id"], "type": "function",
+                      "function": {"name": c["name"], "arguments": json.dumps(c["args"] or {})}}
+                # opaque server state on the call (Gemini's thought
+                # signature rides `extra_content`) — round-tripped verbatim
+                tc.update(c.get("provider_state") or {})
+                msg["tool_calls"].append(tc)
         if traits["reasoning"] == "roundtrip" and m["role"] == "assistant":
             for p in m["parts"]:
                 if p["type"] != "thinking":
@@ -361,6 +364,8 @@ class OpenAICompatAdapter:
             raw_args = tc["function"].get("arguments") or "{}"
             part = {"type": "tool_call", "id": tc["id"],
                     "name": tc["function"]["name"], "args": {}}
+            if tc.get("extra_content"):
+                part["provider_state"] = {"extra_content": tc["extra_content"]}
             try:
                 args = json.loads(raw_args)
                 if not isinstance(args, dict):
@@ -567,6 +572,10 @@ def _normalize_openai_compat(raw):
 
 _BEARER = {"header": "Authorization", "prefix": "Bearer "}
 
+# backends that can write explicit cache breakpoints; elsewhere a
+# profile's `cache: "markers"` resolves to "auto" (§1.5)
+_MARKER_BACKENDS = ("anthropic", "openrouter")
+
 BACKENDS = {
     "anthropic": {"path": "/v1/messages", "headers": {"anthropic-version": "2023-06-01"},
                   "credential": {"header": "x-api-key", "label": "Anthropic API key",
@@ -651,12 +660,22 @@ def _credential(prov, backend):
     return cred
 
 
+def _effective(traits, backend):
+    """Traits as this backend can honor them: `cache: "markers"` needs a
+    backend that writes breakpoints, else it is the implicit prefix
+    cache (`auto`)."""
+    if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
+        traits = {**traits, "cache": "auto"}
+    return traits
+
+
 def _resolve(tier):
     prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
     if prov.get("provider") not in ADAPTERS:
         raise ConfigError(f"llm.tier.{tier}: unknown provider {prov.get('provider')!r}")
     name, traits = _resolve_traits(prov)
-    return prov, name, _backend_name(prov), traits
+    backend = _backend_name(prov)
+    return prov, name, backend, _effective(traits, backend)
 
 
 _TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang

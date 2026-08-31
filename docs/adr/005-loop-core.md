@@ -29,7 +29,7 @@ orientation summaries. This ADR fixes the shapes.
 ```python
 Message   = {role: "user"|"assistant", parts: [Part]}
 Part      = Text{text}
-          | ToolCall{id, name, args}            # name == "run_cell"
+          | ToolCall{id, name, args, provider_state?}  # name == "run_cell"; opaque, round-tripped
           | ToolResult{call_id, content, is_error}
           | Thinking{text?, provider_state?}    # opaque blob, round-tripped
           | File{media_type, data, name?}       # base64; adapter routes by media type (ADR-020 §3)
@@ -149,7 +149,11 @@ byte-stable across the turns of one conversation, and the per-turn
 context suffix rides the user message, never the system. `cache:
 "markers"` (Anthropic direct; Claude/Gemini through OpenRouter) adds
 explicit breakpoints — the backend writes them, at the same two
-positions. Whatever a server reports lands in `usage.cacheRead`/
+positions; on a backend that cannot (`_MARKER_BACKENDS`) the
+effective trait is `auto`, and `llm.profile(tier)` reports the
+effective value. Server state that must ride a tool call back (Gemini's
+`thought_signature`) is the call's `provider_state`, opaque to the
+loop like Thinking's. Whatever a server reports lands in `usage.cacheRead`/
 `cacheWrite` after `normalize_response`, so `trace show --stats` reads
 the same for every backend.
 

@@ -1,0 +1,91 @@
+# LLM models: profiles, backends, and how to add one
+
+The contract is ADR-005 §1; this is the step-by-step. Everything
+model-specific lives in `repos/_agent/programs/llm@v1/program.py` as
+three pure tables — the loop (`toolcaller@v1`) reads only the resolved
+traits through `llm.profile(tier)` and never sees a wire.
+
+| table | keyed by | owns |
+|---|---|---|
+| `ADAPTERS` | the wire family (`anthropic`, `openai-compat`) | message / tool / file / thinking block shapes, stop-reason normalization |
+| `BACKENDS` | where the model is served (`anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `groq`, `together`, `vllm`, `llamacpp`, `ollama`, `generic`) | URL path, credential header + `about` label/help, parameter spelling, cache markers, response/usage field unification |
+| `PROFILES` | the model family (`claude`, `gpt`, `gemini`, `deepseek-r1`, `deepseek`, `qwen3`, `llama`, `gemma`, `mistral`, `glm`; explicit-only `fenced`, `xml`, `generic`) | `traits` — deviations from `GENERIC_TRAITS` |
+
+A tier row (`agent_config` `llm.tier.<tier>`) picks them:
+
+```json
+{"provider": "openai-compat", "model": "deepseek/deepseek-r1-0528",
+ "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter",
+ "backend": "openrouter",        // optional: inferred from a well-known host, else generic
+ "profile": "deepseek-r1",       // optional: matched on `model`, else generic
+ "options": {"top_p": 0.95}}     // optional: raw request fields, merged last
+```
+
+`api_key_ref: null` = a keyless local server: no credential on the
+request, no credential card in the chat.
+
+## Where a trick goes
+
+- Depends on the **URL** you call → a backend hook (`finish` for the
+  request, `normalize` for the response).
+- Depends on the **model** wherever it is served → a profile trait.
+- Depends on **both** → the profile states the intent as a trait
+  (`thinking: "off"`), the backend spells it (`reasoning_effort`,
+  `reasoning.enabled`, `chat_template_kwargs.enable_thinking`, …).
+- Needs **new code** (a text format to lift, a new prompt placement) →
+  one new trait in `TRAITS` + its implementation in the one hook that
+  owns it (`_prepare`, `_lift`, or a backend). A trait no hook reads
+  is caught by `test_every_profile_declares_only_known_traits`.
+
+The traits vocabulary (`TRAITS`): `system_role`, `tool_mode`,
+`reasoning`, `thinking`, `cache`, `context_window`, `max_output`,
+`sampling`, `prompt_style`, `instructions_at`, `malformed_retries` —
+values and defaults in the source, meaning in ADR-005 §1.3.
+
+## Adding a model (or a backend)
+
+1. **Entry.** `PROFILES["<name>"] = {"match": r"<model regex>",
+   "traits": {…}}` — only the deviations. For a new host:
+   `BACKENDS["<name>"] = {"path", "credential", "finish"?, "normalize"?}`
+   and, if it is a well-known host, a `_HOST_BACKENDS` row.
+2. **Unit.** The pure transforms, in `tests/test_llm_module.py`
+   (parametrize `test_profile_matches_on_model_name`; a `finish` /
+   `normalize` test per backend hook).
+3. **Wire pin.** One recorded real reply per backend
+   (`tests/fixtures/llm_<backend>.json`, `docs/llm-fixtures.md`).
+4. **Parity.** Add the target to `TARGETS` in
+   `tests/test_llm_parity.py` and record its golden trace:
+
+   ```
+   export ANYBAO_SECRET_LLM_KEY_OPENROUTER=<key>      # ANYBAO_SECRET_<ref, upper, dots→_>
+   ANYBAO_LLM_PARITY=record uv run pytest tests/test_llm_parity.py -k <target> -s
+   ```
+
+   The conversation: a `run_cell` tool loop with canned results, an
+   image part, a `length` stop, and a cache read on the second call
+   for `cache: "markers"` entries. It writes
+   `tests/fixtures/parity/<target>.json` (requests + responses, no key
+   material — the credential is a ref + header). From then on the
+   default `uv run pytest tests/test_llm_parity.py` replays it
+   offline and fails on any request drift. **Supported = the golden
+   trace is in the tree.**
+5. **Loop check.** Point a rig's tier at the model
+   (`cfg.set("llm.tier.codegen", {...})` from a cell, or the toml
+   `[config]` table), deploy, text bao, read the trace
+   (`docs/testing-agent-changes.md`).
+
+## Supported entries
+
+| target | profile | backend | parity recorded | notes |
+|---|---|---|---|---|
+| `anthropic-claude` | claude | anthropic | 2026-08-31 | markers: 5214 tokens written on call 1, read on call 2 |
+| `anthropic-openai-compat` | claude | generic | 2026-08-31 | Anthropic's `/v1/chat/completions`: no cache reporting → effective `cache: auto` |
+| `gemini-openai-compat` | gemini | gemini | 2026-08-31 | `thought_signature` rides the tool call's `provider_state` — required by Gemini 3.x |
+
+Declared, not yet verified (no golden trace; needs a key / a host):
+`openrouter-claude` (cache markers through OpenRouter),
+`openrouter-deepseek-r1` (no system role, reasoning round-trip),
+`openrouter-qwen3`, `openrouter-gpt` (`max_completion_tokens`,
+`reasoning_effort`), `openrouter-gemma-fenced` (```cell tool
+carriage), `ollama-qwen3` (keyless local). Their profile traits are
+model-card reads until the parity run says otherwise.
