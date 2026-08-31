@@ -11,8 +11,7 @@
 use crate::broker::EffectFailure;
 use base64::Engine;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -278,6 +277,22 @@ fn pump(mut reader: impl Read + Send + 'static) -> (Arc<Mutex<Capture>>, mpsc::R
 
 // --- sh.run ------------------------------------------------------------------
 
+/// Process groups with a live `sh.run` in this process. A command's
+/// group is killed when the command exits (call-scoped — a `cmd &`
+/// left behind dies with the call, ADR-024 §1); this set exists for
+/// the serve's own exit: `kill_all` on `AgentHandle::stop()` so a run
+/// mid-command leaves nothing behind. On Linux the child additionally
+/// carries PDEATHSIG for the case the serve dies without `stop()`.
+static LIVE: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::new());
+
+/// Kill every live command's process group (serve shutdown).
+pub fn kill_all() {
+    let pids: Vec<u32> = LIVE.lock().unwrap().iter().copied().collect();
+    for pid in pids {
+        kill_group(pid);
+    }
+}
+
 fn kill_group(pid: u32) {
     // SAFETY: plain libc call on a pid we spawned as a group leader
     // (`process_group(0)` → pgid == pid). ESRCH on an already-gone
@@ -324,6 +339,15 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
             command.env_clear().envs(env);
         }
     }
+    #[cfg(target_os = "linux")]
+    // SAFETY: prctl in the forked child before exec — async-signal-safe,
+    // touches nothing of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
     if let Some(cwd) = payload.get("cwd").and_then(|c| c.as_str()) {
         command.current_dir(cwd);
     }
@@ -342,6 +366,7 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
         .spawn()
         .map_err(|e| fail("OSError", format!("spawn {program}: {e}")))?;
     let pid = child.id();
+    LIVE.lock().unwrap().insert(pid);
 
     // stdin: write it all, then close (EOF) — a command reading stdin
     // must never wait on us
@@ -376,6 +401,10 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
         }
         std::thread::sleep(Duration::from_millis(POLL_MS));
     };
+    // the command is over: nothing it left behind survives the call
+    // (ADR-024 §1) — sweep the group, then let the readers drain
+    kill_group(pid);
+    LIVE.lock().unwrap().remove(&pid);
     // readers finish when the pipes close; a leftover grandchild
     // holding them open gets READER_GRACE, then we take what we have
     let _ = out_done.recv_timeout(READER_GRACE);
@@ -384,6 +413,7 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
     let (stderr, err_trunc) = err_cap.lock().unwrap().render();
 
     let mut out = Map::new();
+    out.insert("pid".into(), json!(pid));
     out.insert("exit".into(), json!(status.and_then(|s| s.code())));
     if let Some(sig) = status.and_then(|s| s.signal()) {
         out.insert("signal".into(), json!(sig));
@@ -696,6 +726,27 @@ mod tests {
         assert_eq!(out["timedOut"], true);
         assert_eq!(out["exit"], Value::Null);
         assert_eq!(out["stdout"], "before\n");
+    }
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 probes existence only
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn run_leaves_no_background_process_behind() {
+        let t0 = Instant::now();
+        let out = run(json!({"cmd": "sleep 30 & echo $!"}));
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "shell exit must not wait on the &-child"
+        );
+        let pid: i32 = out["stdout"].as_str().unwrap().trim().parse().unwrap();
+        assert_eq!(out["exit"], 0);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!alive(pid), "backgrounded sleep {pid} survived the call");
+        let shell_pid = out["pid"].as_u64().unwrap() as u32;
+        assert!(!LIVE.lock().unwrap().contains(&shell_pid)); // registry entry released
     }
 
     #[test]

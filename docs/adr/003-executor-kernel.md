@@ -107,6 +107,20 @@ the trace (ADR-001), attributed via `meta.cell = cell_id`; the guest
 loop reads trace views (`trace.effects_of`) to build the Side Effects
 digest.
 
+**Cancellation reaches child processes (amendment 2026-08-31,
+ADR-024 §1).** The epoch bump lands in guest code; it cannot reach a
+host call that is blocked on a child process (`sh.run`). So the run's
+interrupt flag is also the broker's, and a blocking host call polls
+it alongside its own deadline: on either it kills the child's process
+group, returns what was captured, and the cell proceeds to be
+reported interrupted/timed out as before. A command's group is
+killed when the command exits (nothing survives the call), the
+serve's `stop()` sweeps every live group, and on Linux the child
+carries `PR_SET_PDEATHSIG` for a serve that dies without `stop()`.
+Note: the host-side hard-break watchdog ADR-005 §3 describes is not
+implemented yet — nothing sets a run's flag today; the wiring here is
+what makes a future `break(hard)` reach the child for free.
+
 ### 3. Kernel semantics: the persistent namespace
 
 - Top-level assignments, `def`/`class`, and imports **persist across

@@ -67,7 +67,7 @@ global `sh` beside `http` (ADR-002 §3):
 
 | effect | kind | cap | in → out |
 |---|---|---|---|
-| `sh.run` | mutate | `sh.run` | `{cmd, cwd?, timeout_s?, stdin?, env?}` → `{exit, stdout, stderr, durationMs, truncated, timedOut}` |
+| `sh.run` | mutate | `sh.run` | `{cmd, cwd?, timeout_s?, stdin?, env?}` → `{pid, exit, stdout, stderr, durationMs, truncated, timedOut}` |
 | `sh.spawn` | mutate | `sh.spawn` | `{cmd, cwd?, env?}` → `{handle}` |
 | `sh.poll` | mutate | `sh.poll` | `{handle, wait_s?}` → `{running, exit?, stdout, stderr, truncated}` (output since the previous poll) |
 | `sh.kill` | mutate | `sh.kill` | `{handle}` → `{killed}` |
@@ -116,10 +116,20 @@ global `sh` beside `http` (ADR-002 §3):
   child still alive when the run ends is killed** — a run leaves no
   processes behind. A dev server that should outlive the
   conversation is a different feature (services), out of scope.
-- **Cancellation reaches children (amends ADR-003 §2).** A hard
-  break, a cell timeout, or fuel exhaustion kills every child of the
-  cell's process group before the cell is reported interrupted. No
-  orphaned `cargo build` after the user hits break.
+- **Cancellation reaches children (amends ADR-003 §2).** The run's
+  interrupt flag is the broker's; `sh.run` polls it and its own
+  deadline while blocked and kills the child's process group on
+  either. No orphaned `cargo build` after a break. (Today nothing
+  sets the flag — the ADR-005 §3 hard-break watchdog is unimplemented
+  — but the child side is wired, so it reaches the child when it
+  lands.)
+- **Nothing survives the call.** When the command exits, its process
+  group is killed: `cmd &` inside a command dies with the call; a
+  process that must outlive it belongs in tmux (§4). The serve's
+  `stop()` sweeps every live group; on Linux the child also carries
+  `PR_SET_PDEATHSIG` for a serve that dies without `stop()`. macOS
+  has no equivalent — a serve `kill -9`'d mid-command can orphan a
+  silent child there (a chatty one dies on `SIGPIPE`).
 - **Environment: the login snapshot, plus the call's `env` map.** The
   child gets the snapshotted login environment (above) with the
   call's `env` merged on top. Secrets are store rows (ADR-021 §4), never env, so there

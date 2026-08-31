@@ -176,6 +176,10 @@ pub fn run_program(
     timeout_s: f64,
 ) -> Result<RunOutcome> {
     broker.mailbox = mailbox;
+    // the run's interrupt flag is the broker's too: a host call that
+    // blocks (sh.run, ADR-024 §1) polls it and kills its child, where
+    // the epoch bump alone could not reach (ADR-003 §2 amendment)
+    broker.interrupt = interrupt.clone();
     let wasi = WasiCtxBuilder::new()
         .inherit_stderr() // guest tracebacks; no fs/net granted
         .env("PYTHONHASHSEED", "0") // determinism pin

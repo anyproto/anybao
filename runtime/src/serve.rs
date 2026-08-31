@@ -852,7 +852,14 @@ impl AgentHandle {
     /// on the next frame/heartbeat (or the sliced reconnect sleep).
     pub fn stop(mut self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
-        self.join_all()
+        let joined = self.join_all();
+        // runs are detached and finish on their own; a run mid-command
+        // must not leave its child behind when the process goes
+        // (ADR-024 §1). A child spawned after this sweep is the
+        // PDEATHSIG/SIGPIPE case, not ours.
+        #[cfg(feature = "shell")]
+        crate::shell::kill_all();
+        joined
     }
 
     /// Block until the service threads exit (the CLI path — they only
