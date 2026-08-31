@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,60 @@ use crate::oauth::{OauthState, OAUTH_REF_PREFIX};
 use crate::replay::{resolve_blobs, DivergenceError, MockIndex, ReplayCursor};
 
 pub type SharedMailbox = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Value>>>;
+
+/// Serve-shared presence state (ADR-025 §3): bao's authored status
+/// line crosses the effect boundary (`bao.status`) into THIS slot —
+/// serve is the sole publisher, folding the line into every beat and
+/// republishing immediately on set. One per serve (threaded into
+/// every Broker + the presence thread), like the mailbox.
+pub type SharedPresence = Arc<PresenceState>;
+
+/// The line drops out of beats this long after `set` (ADR-025 §3:
+/// a forgotten update degrades to machine truth instead of lying).
+pub const STATUS_LINE_TTL_S: f64 = 90.0;
+
+/// Only the LINE lives here — `working`/`run` derive from
+/// `RunCtx::live_runs`, the same registry `/break` resolves against
+/// (one source of truth for what's running, never a parallel counter).
+#[derive(Default)]
+pub struct PresenceState {
+    /// (line, unix seconds at set) — None = never set or cleared
+    line: Mutex<Option<(String, f64)>>,
+    /// bumped on every set/clear — the presence thread's wake signal
+    line_gen: AtomicU64,
+}
+
+impl PresenceState {
+    /// Store/clear the line (`""` clears) at `now` (unix seconds —
+    /// passed in so decay is testable against a fake clock) and bump
+    /// the generation so the presence thread republishes immediately.
+    pub fn set_line(&self, line: &str, now: f64) {
+        let mut slot = self.line.lock().expect("presence line lock poisoned");
+        *slot = if line.is_empty() {
+            None
+        } else {
+            Some((line.to_string(), now))
+        };
+        drop(slot);
+        self.line_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The line while fresh (ADR-025 §3 decay): None once older than
+    /// `STATUS_LINE_TTL_S` or never set/cleared.
+    pub fn line(&self, now: f64) -> Option<(String, f64)> {
+        self.line
+            .lock()
+            .expect("presence line lock poisoned")
+            .clone()
+            .filter(|(_, at)| now - *at <= STATUS_LINE_TTL_S)
+    }
+
+    /// The generation counter — the presence thread's set-signal.
+    pub fn line_gen(&self) -> u64 {
+        self.line_gen.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 
 #[derive(Debug)]
 pub struct EffectFailure {
@@ -127,6 +181,11 @@ pub struct Broker {
     /// Shared: the serve watcher pushes cross-thread; drained by the
     /// mailbox.drain syscall.
     pub mailbox: Arc<Mutex<VecDeque<Value>>>,
+    /// Serve-shared presence state (ADR-025 §3) — the `bao.status`
+    /// syscall's write target. None = this runtime does not publish
+    /// presence (`anyrt run`, tests): the syscall fails typed
+    /// `not_configured`, never a silent no-op.
+    pub presence: Option<SharedPresence>,
     /// Remaining fuel, refreshed by the runner's epoch callback every
     /// tick (host fns can't reach the store). Read by `fuel.state`;
     /// ≤EPOCH_TICK_MS stale — a checkpoint signal, not an exact meter.
@@ -202,6 +261,7 @@ impl Broker {
             env: BTreeMap::new(),
             programs_dir,
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
+            presence: None,
             fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
             deadline: None,
@@ -578,6 +638,8 @@ impl Broker {
             "oauth.connect" | "oauth.disconnect" | "oauth.refresh" => "mutate",
             // ADR-006 §3: a store row + the live map
             "config.set" => "mutate",
+            // ADR-025 §3: a serve-state write folded into the next beat
+            "bao.status" => "mutate",
             _ => "read",
         }
     }
@@ -650,6 +712,10 @@ impl Broker {
             "oauth.disconnect" => self.sys_oauth_disconnect(payload),
             "oauth.refresh" => self.sys_oauth_refresh(payload),
             "module.resolve" => self.sys_module_resolve(payload),
+            // ADR-025 §3: the status line crosses the effect boundary
+            // into serve state — serve (sole publisher) folds it into
+            // every beat and republishes immediately on set
+            "bao.status" => self.sys_bao_status(payload),
             "batch" => self.sys_batch(payload),
             "trace.effects_of" => self.sys_effects_of(payload),
             "trace.effect_get" => self.sys_effect_get(payload),
@@ -1219,6 +1285,32 @@ impl Broker {
         Ok(out)
     }
 
+    /// `bao.status` (ADR-025 §3): store/clear bao's status line in the
+    /// serve-shared presence slot. The guest never publishes events —
+    /// this side of the effect boundary is a plain state write; the
+    /// presence thread is the sole publisher.
+    fn sys_bao_status(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let presence = self.presence.clone().ok_or_else(|| EffectFailure {
+            type_: "not_configured".into(),
+            message: "bao status publishing is not wired into this runtime                       (serve only — `anyrt run` has no presence)"
+                .into(),
+        })?;
+        let line = payload
+            .get("line")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| EffectFailure {
+                type_: "ValueError".into(),
+                message: "line must be a string".into(),
+            })?;
+        let line = line.trim();
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        presence.set_line(line, at);
+        Ok(json!({"ok": true, "line": line, "at": at}))
+    }
+
     fn sys_batch(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let name = payload
             .get("name")
@@ -1538,6 +1630,73 @@ mod tests {
             Some(PathBuf::from("programs")),
             Classifier::new(None),
         )
+    }
+
+    // --- bao.status syscall + PresenceState (ADR-025 §3) -----------------------
+
+    #[test]
+    fn presence_line_set_clear_and_gen() {
+        let p = PresenceState::default();
+        assert_eq!(p.line_gen(), 0);
+        assert_eq!(p.line(0.0), None);
+        p.set_line("migrating the mail dataset", 100.0);
+        assert_eq!(p.line_gen(), 1);
+        assert_eq!(
+            p.line(100.0).unwrap(),
+            ("migrating the mail dataset".into(), 100.0)
+        );
+        // "" clears — the beat drops the line again
+        p.set_line("", 101.0);
+        assert_eq!(p.line_gen(), 2);
+        assert_eq!(p.line(101.0), None);
+    }
+
+    #[test]
+    fn presence_line_decays_after_ttl() {
+        let p = PresenceState::default();
+        p.set_line("working on BOB-73", 100.0);
+        let at = 100.0;
+        // fresh at the TTL edge, gone past it (ADR-025 §3: 90s decay)
+        assert!(p.line(at + STATUS_LINE_TTL_S).is_some());
+        assert_eq!(p.line(at + STATUS_LINE_TTL_S + 0.001), None);
+    }
+
+    #[test]
+    fn bao_status_writes_the_shared_slot() {
+        let mut b = make_broker("run_status");
+        let slot: SharedPresence = Default::default();
+        b.presence = Some(slot.clone());
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let out = b
+            .call("bao.status", json!({"line": "  wiring serve beats  "}))
+            .unwrap();
+        assert_eq!(out["ok"], json!(true));
+        assert_eq!(out["line"], "wiring serve beats");
+        let at = out["at"].as_f64().unwrap();
+        assert!(at >= before && at <= before + 5.0);
+        assert_eq!(slot.line(at).unwrap().0, "wiring serve beats");
+        // the syscall classifies mutate — the trace records it as one
+        assert!(b.call("bao.status", json!({"line": "x"})).is_ok());
+    }
+
+    #[test]
+    fn bao_status_fails_typed_without_presence() {
+        // no-backward-compat rule: `anyrt run` (no presence wiring)
+        // fails loudly, never a silent no-op
+        let mut b = make_broker("run_no_status");
+        let err = b.call("bao.status", json!({"line": "x"})).unwrap_err();
+        assert_eq!(err.type_, "not_configured");
+    }
+
+    #[test]
+    fn bao_status_rejects_non_string_line() {
+        let mut b = make_broker("run_bad_status");
+        b.presence = Some(Default::default());
+        let err = b.call("bao.status", json!({"line": 3})).unwrap_err();
+        assert_eq!(err.type_, "ValueError");
     }
 
     #[test]
@@ -2441,7 +2600,10 @@ mod tests {
         assert_eq!(out["status"], json!(400));
         assert_eq!(store.missing.lock().unwrap()[0].0, "connector.key.x#400");
         // an ordinary 400 is not the key
-        assert!(!credential_rejected(400, r#"{"error":"max_tokens too large"}"#));
+        assert!(!credential_rejected(
+            400,
+            r#"{"error":"max_tokens too large"}"#
+        ));
     }
 
     #[test]

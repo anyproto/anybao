@@ -1,0 +1,142 @@
+# ADR-025: Bao presence & status line over the event bus
+
+Status: **Proposed** (2026-08-31)
+Date: 2026-08-31
+Builds on: ADR-005 (progress bubbles — related family, NOT migrated
+here), ADR-014 (progress: a module owning its transport), ADR-015
+(election identity), ADR-023 (run summaries — the fallback text
+source), any doc 21 (event bus envelope), api-parity.md's 2026-07-08
+pub/sub note
+Task: BOB-73
+
+## Context
+
+The UI fakes bao's online/activity status client-side (local timing
+heuristics over chat messages); the truth — a serve process with a
+live run — never reaches the UI (BOB-73). The event bus (any doc 21)
+has since landed: an account-scoped ephemeral envelope with an open
+type set, no server change needed for new kinds. The api-parity note
+(2026-07-08) earmarked exactly this family for pub/sub.
+
+Review raised the authoring question for the human-readable line: a
+cheap model summarizing the run, or bao itself sending status via a
+tool. Decision below: the tool, with decay and a deterministic
+fallback — an LLM never sits in the presence path.
+
+## Decision
+
+### 1. Two layers, one event type
+
+**Layer 1 — machine presence.** Deterministic, serve-published,
+never model-generated. "Is bao alive" is a heartbeat question; it
+must not depend on a model having a good day.
+
+**Layer 2 — status line.** Bao-authored prose ("migrating the mail
+dataset, ~60% through the backlog") via a tool (§3), TTL-decaying,
+with a serve-side fallback.
+
+Both ride one envelope:
+
+```jsonc
+{
+  "type":    "bao.status",
+  "scope":   "account",
+  "target":  "<serving peer id>",       // ADR-015 identity, filterable
+  "data": {
+    "identity":  "<peer id>",
+    "state":     "boot" | "idle" | "working" | "shutdown",
+    "run":       { "id": "…", "title": "…", "startedAt": 123.0 },  // iff working
+    "line":      "…",                    // bao-authored; absent when unset/stale
+    "lineAt":    123.0                   // when bao last set it
+  }
+}
+```
+
+Timestamps are unix seconds — staleness math is the consumer's job.
+At-most-once bus ⇒ the payload is an idempotent full-state write
+(last-write-wins), same rule as task-status. `run` is joinable to
+`process.*` progress bars (ADR-014) by id — status references, it
+does not duplicate them.
+
+`working`/`run` derive from `RunCtx::live_runs` — the registry the
+hard-break control path (ADR-005 §3) already keeps, entries living
+exactly as long as `run_program`. Each entry carries an `{id, title,
+startedAt}` stamp (title = the user's message preview on chat runs,
+else the program spec); the freshest stamp is the beat's `run`. One
+source of truth for "what's running" serves `/break`, presence and
+the control API's `GET /status` alike — never a parallel counter.
+
+### 2. Cadence & staleness
+
+Serve beats every 10s from a dedicated presence thread (1s poll, so
+a set line republishes within a second); the UI marks offline
+after 3 missed beats (30s). A graceful shutdown publishes
+`state: "shutdown"` once for instant offline; a crash is covered by
+the TTL. No fresh beats at all ⇒ offline — the pre-BOB-73 default.
+
+### 3. The status tool — `status@v1`
+
+A small agent-tool module owning its transport, the `progress@v1`
+pattern (ADR-014): `set(line)` only. The guest does NOT publish
+events directly — the line crosses the effect boundary (ADR-002)
+into serve state; serve folds it into every beat and republishes
+immediately on set. One publisher, one envelope, TTL in one place.
+
+- **Decay:** the line drops out of the payload 90s after `lineAt` —
+  a forgotten update degrades to machine truth instead of lying.
+- **Fallback:** when the line is absent/stale while `working`, the
+  UI's display slot falls back to the beat's `run.title` — the live
+  stamp (§1), deterministic and always present on working beats.
+  Bao's line is an upgrade, not a single point of failure. (The
+  ADR-023 summary title exists only at dump, too late for a live
+  beat.)
+- **Nudge, not enforcement:** one line in the agent guidance ("on
+  long runs, update your status line"); the decay makes silence
+  safe.
+
+### 4. Rejected: a cheap-model summarizer
+
+- Its best input — bao's narration, the run record — already
+  exists verbatim; it would be a lossy paid copy.
+- Status wants freshness; a model call adds latency and per-update
+  cost to a line glanced at for two seconds.
+- A confident "fixing the database" while bao does nothing of the
+  sort is worse than a terse title. Status lies are worse than
+  terse status.
+
+Revisit only with evidence bao writes bad lines — the expectation
+is it never earns the revisit.
+
+### 5. UI
+
+A `baoStatus` atom fed by the ONE existing bus subscription
+(`ui.*`/`process.*` stream) with `bao.status` as a third filter,
+plus a staleness clock. Two consumers:
+
+- **Status bar** (the BOB-73 deliverable): a shell-mounted source in
+  the activity region — presence dot + bao's line, falling back to
+  `run.title` while working; nothing rendered when offline. Cold
+  start: no replay on the bus, so a fresh window is "unknown" for up
+  to one beat (≤10s) — render nothing until the first beat.
+- **Chat typing row**: keeps its trailing-`done:false` trigger (which
+  chat is waiting) but presence replaces the 10-minute crashed-run
+  heuristic — bao offline/idle with no live run kills the row in
+  ~30s instead. The verb pool yields to the real line when present.
+
+ADR-005 `done:false` progress bubbles are NOT migrated here —
+presence/status only; the narration migration stays a separate
+revisit (api-parity note).
+
+### 6. Trust & multi-device
+
+`sender` is server-stamped (self: true, own account only) — no
+client-supplied identity on the wire. Pre-election overlap and the
+remote-runner future mean two serves may beat at once: the UI
+dedups by `identity`, shows online if ANY fresh beat exists, and
+working-state from whichever identity is freshest.
+
+### 7. Testing
+
+Serve: `StubTransport` assertions on the publish sequence (boot →
+idle → working + run title → idle → shutdown; line set + decay;
+set republishes immediately). UI: atom + staleness tests.

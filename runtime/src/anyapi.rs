@@ -599,6 +599,14 @@ impl Client {
             .read_raw(&format!("/v1/spaces/{space_id}/files/{file_id}/content"))
     }
 
+    /// Publish one event on the account-wide bus (any docs/21 —
+    /// POST /v1/events): ephemeral, at-most-once, no replay. `sender`
+    /// is server-stamped. A lost publish is a dropped beat by nature —
+    /// callers treat failure as noise to log, never a run failure.
+    pub fn publish_event(&self, body: &Value) -> Result<Value, AnyError> {
+        self.call("POST", "/v1/events", Some(body))
+    }
+
     // --- devices (tech-space registry, ADR-015 / SYN-165) ---
     /// GET /v1/devices — the account's device rows + the server-computed
     /// `active: {<slug>: <peerId>}` winner map (the ONE implementation

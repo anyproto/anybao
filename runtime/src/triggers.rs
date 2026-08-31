@@ -674,6 +674,10 @@ pub struct Watcher {
 pub struct LiveRun {
     pub mailbox: crate::broker::SharedMailbox,
     pub interrupt: Arc<AtomicBool>,
+    /// `{id, title, startedAt}` for presence beats (ADR-025 §1) —
+    /// stamped on `RunCtx::live_runs` entries; Null on the watcher's
+    /// chat-keyed overlay, which presence never reads.
+    pub stamp: Value,
 }
 
 pub enum WatchAction {
