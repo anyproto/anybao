@@ -24,6 +24,22 @@ A tier row (`agent_config` `llm.tier.<tier>`) picks them:
 `api_key_ref: null` = a keyless local server: no credential on the
 request, no credential card in the chat.
 
+**Which Anthropic key.** One **scoped to a single workspace** (Console
+→ Settings → API keys → Create key → choose a workspace). A personal /
+service-account key created *without* a workspace is identity-linked:
+the API wants an `anthropic-workspace-id` header on every request and
+answers 400 `anthropic-workspace-id is required when authenticating
+with an identity-linked API key` without it. bao does not send that
+header — the id would have to live apart from the key and go stale on
+every rotation — so it asks for a workspace-scoped key instead: the
+credential card's note says so up front, the `LlmError` hint says so
+after the fact (it is not a credit/billing error), and the host treats
+that 400 as a rejected credential, so the replacement-key card
+follows. The genuinely-billing 400 — `Your credit balance is too low
+to access the Anthropic API` — gets its own hint (Console → Plans &
+Billing; a Claude subscription does not fund API use) and no card: the
+key is fine.
+
 ## Where a trick goes
 
 - Depends on the **URL** you call → a backend hook (`finish` for the

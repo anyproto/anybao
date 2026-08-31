@@ -171,6 +171,25 @@ names a `credential` (`api_key_ref` + the backend's header/prefix +
 sets the header AFTER the payload records (ADR-002). `api_key_ref:
 None` sends no credential — a local server needs none, and a null ref
 raises no `SecretMissing` and no credential request (ADR-021 §2).
+A ≥400 status raises `LlmError(status, body_excerpt)`; when the body
+is a known *account* error rather than a transient one, the error
+also carries a `hint` naming the fix (`_error_hint`), so the chat's
+"Something broke" line tells the user what to change instead of
+echoing the provider verbatim. Two cases today, both Anthropic 400s
+that read alike and need opposite fixes:
+
+- `anthropic-workspace-id is required when authenticating with an
+  identity-linked API key` — a personal / service-account key
+  created without a single workspace wants a workspace id on every
+  request. bao sends none by design: the fix is a key **scoped to
+  one workspace**, and the credential's `about.note` says so on the
+  entry card before anyone hits it. The host treats this 400 as a
+  credential rejection (ADR-021 §2), so the replacement-key card
+  follows.
+- `Your credit balance is too low to access the Anthropic API` —
+  the key is fine, the prepaid API balance is empty (a Claude
+  subscription does not fund it). Hint only: no card, nothing to
+  replace.
 
 **1.7 Adding a model or a backend** is one table entry plus its
 evidence, isolated from the loop:

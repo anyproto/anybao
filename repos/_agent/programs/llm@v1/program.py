@@ -51,12 +51,48 @@ def _media_class(media_type):
 
 class LlmError(Exception):
     """Provider answered with an error status; carries the status and a
-    body excerpt (never the request — that may quote the conversation)."""
+    body excerpt (never the request — that may quote the conversation).
+    `hint` names the fix when the body is a known configuration
+    mistake rather than a transient failure (ADR-005 §1.6)."""
 
     def __init__(self, status, body):
         self.status = status
         self.body = body
-        super().__init__(f"llm provider returned {status}: {body}")
+        self.hint = _error_hint(status, body)
+        msg = f"llm provider returned {status}: {body}"
+        if self.hint:
+            msg += f" — {self.hint}"
+        super().__init__(msg)
+
+
+_ANTHROPIC_KEY_NOTE = (
+    "Create the key scoped to a single workspace: Console → Settings → API keys "
+    "→ Create key → choose a workspace. A key linked to your account with no "
+    "workspace is rejected — the API then wants a workspace id on every request, "
+    "which bao does not send.")
+
+
+def _error_hint(status, body):
+    """A known provider error → what to change. Anthropic's 400
+    `anthropic-workspace-id is required …` is a key-type problem, not
+    a billing one: a personal / service-account key created without a
+    single workspace needs a workspace id per request; bao asks for a
+    workspace-scoped key instead (the host also raises the credential
+    card for it, ADR-021 §2)."""
+    if status == 400 and "anthropic-workspace-id" in body:
+        return ("this is not a credit/billing error — the Anthropic key is not "
+                "scoped to a workspace. " + _ANTHROPIC_KEY_NOTE +
+                " Then enter the new key in the credential card (or Help → Import "
+                "connector keys). Details: " + _ANTHROPIC_KEY_HELP)
+    # Anthropic bills API use from prepaid credits, apart from any
+    # Claude subscription; an empty balance is a 400 too. The key is
+    # fine — no credential card, just the fix.
+    if status == 400 and "credit balance is too low" in body:
+        return ("the Anthropic account behind this key has no API credits — the key "
+                "itself is fine. Add credits at Console → Plans & Billing "
+                "(https://console.anthropic.com/settings/billing); a Claude "
+                "subscription (Pro/Max) does not cover API use")
+    return None
 
 
 # --- Traits (ADR-005 §1.3): the closed vocabulary ---------------------------
@@ -621,10 +657,13 @@ _BEARER = {"header": "Authorization", "prefix": "Bearer "}
 # profile's `cache: "markers"` resolves to "auto" (§1.5)
 _MARKER_BACKENDS = ("anthropic", "openrouter")
 
+_ANTHROPIC_KEY_HELP = ("https://platform.claude.com/docs/en/manage-claude/"
+                       "authentication#select-a-workspace")
+
 BACKENDS = {
     "anthropic": {"path": "/v1/messages", "headers": {"anthropic-version": "2023-06-01"},
                   "credential": {"header": "x-api-key", "label": "Anthropic API key",
-                                 "help": "https://console.anthropic.com/settings/keys"},
+                                 "help": _ANTHROPIC_KEY_HELP, "note": _ANTHROPIC_KEY_NOTE},
                   "finish": _finish_anthropic},
     "openai": {"path": "/chat/completions",
                "credential": {**_BEARER, "label": "OpenAI API key",
@@ -700,6 +739,8 @@ def _credential(prov, backend):
     label = spec["label"] if spec["label"] != "API key" else f"{host} API key"
     cred = {"ref": ref, "header": spec["header"],
             "about": {"label": label, "hosts": [host], "help": spec.get("help")}}
+    if spec.get("note"):  # shown on the credential card at entry (ADR-021 §2)
+        cred["about"]["note"] = spec["note"]
     if spec.get("prefix"):
         cred["prefix"] = spec["prefix"]
     return cred

@@ -103,9 +103,14 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
    `status ∈ {missing, rejected, set}`; `set` is stamped by §4 and by
    `bootstrap_secrets` for every stored/seeded value at boot.
    **`rejected`**: the destination rejected the credential on a request
-   carrying the ref — **401**, or Google's **400** whose body names
-   `API_KEY_INVALID` (Gemini answers a bad key that way, never 401) —
-   the stored value is wrong. The broker stamps it (`rejectedAt`,
+   carrying the ref — **401**, Google's **400** whose body names
+   `API_KEY_INVALID` (Gemini answers a bad key that way, never 401),
+   or Anthropic's **400** `anthropic-workspace-id is required when
+   authenticating with an identity-linked API key` (a key created
+   without a single workspace; bao never sends that header, so the
+   key is the wrong kind — the card's `note` asks for a
+   workspace-scoped one, ADR-005 §1.6) — the stored value is wrong.
+   The broker stamps it (`rejectedAt`,
    `rejectedWith: <status>`) and queues the ref exactly like
    a miss, so a wrong key gets the same card ("…was rejected — enter a
    new one") with no connector involvement and no model-callable

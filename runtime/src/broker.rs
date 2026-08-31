@@ -1492,9 +1492,17 @@ pub(crate) fn getrandom(buf: &mut [u8]) {
 /// 401 is the HTTP convention; Google APIs answer a bad key with
 /// `400 {"error": {"status": "INVALID_ARGUMENT", "details": [{"reason":
 /// "API_KEY_INVALID"}]}}`, so a 400 whose body names that reason counts
-/// too. Anything else (403 scopes, 400 bad request) is not the key.
+/// too; Anthropic answers a key that is not scoped to one workspace
+/// with `400 … anthropic-workspace-id is required when authenticating
+/// with an identity-linked API key` — bao never sends that header, so
+/// the key itself is the wrong kind and the card asks for a
+/// workspace-scoped one. Anything else (403 scopes, 400 bad request)
+/// is not the key.
 fn credential_rejected(status: u16, body: &str) -> bool {
-    status == 401 || (status == 400 && body.contains("API_KEY_INVALID"))
+    status == 401
+        || (status == 400
+            && (body.contains("API_KEY_INVALID")
+                || body.contains("anthropic-workspace-id is required")))
 }
 
 #[cfg(test)]
@@ -2345,6 +2353,29 @@ mod tests {
         assert_eq!(out["status"], json!(401));
         assert_eq!(b.missing_secrets, vec!["connector.key.x".to_string()]);
         assert_eq!(store.missing.lock().unwrap()[0].0, "connector.key.x#401");
+    }
+
+    #[test]
+    fn anthropic_identity_linked_key_400_marks_it_rejected() {
+        // a personal key created without a workspace: the API wants a
+        // header bao never sends, so the stored key is the wrong kind
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-workspace-id is required when authenticating with an identity-linked API key; send the id of the workspace this request acts in."}}"#;
+        let base = fake_server(1, move |req| {
+            let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(400));
+        });
+        let mut b = make_broker("run_adr021_wrkspc");
+        let store = Arc::new(MemStore {
+            rows: [("connector.key.x".to_string(), "sk-ant-unscoped".to_string())].into(),
+            missing: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        let out = b
+            .call("http.get", cred_payload(format!("{base}/a")))
+            .unwrap();
+        assert_eq!(out["status"], json!(400));
+        assert_eq!(store.missing.lock().unwrap()[0].0, "connector.key.x#400");
+        // an ordinary 400 is not the key
+        assert!(!credential_rejected(400, r#"{"error":"max_tokens too large"}"#));
     }
 
     #[test]

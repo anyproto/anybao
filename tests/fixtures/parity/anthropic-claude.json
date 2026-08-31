@@ -66,7 +66,8 @@
       "hosts": [
        "api.anthropic.com"
       ],
-      "help": "https://console.anthropic.com/settings/keys"
+      "help": "https://platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace",
+      "note": "Create the key scoped to a single workspace: Console → Settings → API keys → Create key → choose a workspace. A key linked to your account with no workspace is rejected — the API then wants a workspace id on every request, which bao does not send."
      }
     }
    },
@@ -159,7 +160,8 @@
       "hosts": [
        "api.anthropic.com"
       ],
-      "help": "https://console.anthropic.com/settings/keys"
+      "help": "https://platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace",
+      "note": "Create the key scoped to a single workspace: Console → Settings → API keys → Create key → choose a workspace. A key linked to your account with no workspace is rejected — the API then wants a workspace id on every request, which bao does not send."
      }
     }
    },
@@ -210,7 +212,8 @@
       "hosts": [
        "api.anthropic.com"
       ],
-      "help": "https://console.anthropic.com/settings/keys"
+      "help": "https://platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace",
+      "note": "Create the key scoped to a single workspace: Console → Settings → API keys → Create key → choose a workspace. A key linked to your account with no workspace is rejected — the API then wants a workspace id on every request, which bao does not send."
      }
     }
    },
@@ -253,7 +256,8 @@
       "hosts": [
        "api.anthropic.com"
       ],
-      "help": "https://console.anthropic.com/settings/keys"
+      "help": "https://platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace",
+      "note": "Create the key scoped to a single workspace: Console → Settings → API keys → Create key → choose a workspace. A key linked to your account with no workspace is rejected — the API then wants a workspace id on every request, which bao does not send."
      }
     }
    },

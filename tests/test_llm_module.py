@@ -515,6 +515,10 @@ def test_chat_anthropic_url_credential_and_parse():
     # ADR-021 §1: the descriptor the host shows when the key is missing
     assert cred["about"]["label"] == "Anthropic API key"
     assert cred["about"]["hosts"] == ["api.example"]
+    # the card tells people which key type to create before they hit
+    # the identity-linked 400
+    assert "single workspace" in cred["about"]["note"]
+    assert cred["about"]["help"].startswith("https://platform.claude.com/")
     assert post["json"]["model"] == "claude-x"
     # the claude profile matched: markers + its output cap
     assert post["json"]["system"][0] == {"type": "text", "text": "SYS",
@@ -603,6 +607,41 @@ def test_chat_error_status_raises_llm_error_with_excerpt():
     assert e.value.status == 500
     assert "upstream exploded" in str(e.value)
     assert len(e.value.body) <= 400  # excerpt, not the whole body
+    assert e.value.hint is None  # a transient failure carries no fix
+
+
+def test_chat_identity_linked_key_400_names_the_fix_not_billing():
+    body = json.dumps({"type": "error", "error": {
+        "type": "invalid_request_error",
+        "message": "anthropic-workspace-id is required when authenticating with "
+                   "an identity-linked API key; send the id of the workspace "
+                   "this request acts in."}})
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "k"},
+                    status=400, body=body)
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == 400
+    assert "single workspace" in e.value.hint and "not a credit" in e.value.hint
+    assert "identity-linked" in str(e.value) and e.value.hint in str(e.value)
+    # bao never sends the header the API asks for — the fix is the key type
+    assert "anthropic-workspace-id" not in host.posts[0]["headers"]
+
+
+def test_chat_low_credit_400_names_billing_not_the_key():
+    body = json.dumps({"type": "error", "error": {
+        "type": "invalid_request_error",
+        "message": "Your credit balance is too low to access the Anthropic API. "
+                   "Please go to Plans & Billing to upgrade or purchase credits."}})
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "k"},
+                    status=400, body=body)
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert "settings/billing" in e.value.hint and "key itself is fine" in e.value.hint
+    assert "subscription" in e.value.hint
 
 
 # --- File parts (ADR-020 §3/§4) ----------------------------------------------
