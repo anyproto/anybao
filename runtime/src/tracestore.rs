@@ -1179,5 +1179,7 @@ mod live {
             store.expire("chat@v1", None, Some(now_s() + 1.0)).unwrap(),
             0
         );
+        // leave nothing behind on the account the test borrowed
+        client.delete_space(&space).expect("delete test space");
     }
 }

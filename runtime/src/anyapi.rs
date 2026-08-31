@@ -402,6 +402,12 @@ impl Client {
         self.call("POST", "/v1/spaces", Some(&json!({"name": name})))
     }
 
+    /// DELETE /v1/spaces/:id — a space this account owns (409
+    /// `space.derived_undeletable` on a derived one). Test cleanup.
+    pub fn delete_space(&self, id: &str) -> Result<Value, AnyError> {
+        self.call("DELETE", &format!("/v1/spaces/{id}"), None)
+    }
+
     /// GET /v1/spaces/derived — the server's compiled-in derived-space
     /// registry (SYN-164), boot-resolved: one row per well-known name,
     /// `{name, spaceId, created, status?}`. Resolving never creates.
