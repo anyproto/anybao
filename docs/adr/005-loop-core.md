@@ -13,7 +13,7 @@ The conversation loop — the successor of `toolcall_core@v1.js` — is a
 `main(args)` driving the whole turn cycle inside the cage. The host
 contributes only the syscall surface (ADR-002): the engine runs the
 program, the broker records every crossing, and a Runner-side mailbox +
-hard-break watchdog let an operator steer a live run. Everything the
+hard-break flag let an operator steer a live run. Everything the
 loop is made of — the llm adapters, the digest, boot-window and
 auto-recall composition, turn persistence — is guest Python composed
 from `programs/` modules, so a recorded conversation replays the entire
@@ -255,11 +255,13 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   conversation are routed to the mailbox by the watcher (injected by
   default) instead of queueing a new invocation.
 - **Hard break stays host-side.** A wedged cell cannot drain the
-  mailbox itself, so `break(hard)` sets a flag the Runner's watchdog
-  thread polls; the watchdog interrupts the engine (epoch bump,
-  ADR-003) and the HOST posts the terminal bubble (`done: true`) and
-  records the run as interrupted — the one thing the guest can no
-  longer say for itself.
+  mailbox itself, so `break(hard)` sets a flag the engine's epoch
+  callback checks on its next tick (ADR-003 — there is no separate
+  watchdog thread); the guest traps, and the HOST posts the terminal
+  bubble (`done: true`) and records the run as interrupted — the one
+  thing the guest can no longer say for itself. The trap lands in
+  guest code: a host call already in flight (an LLM or HTTP request)
+  returns first — the broker does not yet check the flag mid-call.
 - **Who sets the flag (amendment 2026-08-31).** Two setters, both
   through the watcher's `LiveRun {mailbox, interrupt}` for the chat:
   1. **A `break` control record in the chat.** The stop is data on
@@ -267,25 +269,31 @@ with the error digest — the model self-corrects; no fix-loop (settled).
      an empty text and a `control` group (any `chat_messages-v5`):
      `{kind: "break", hard?: bool}`. The watcher reads the group, not
      the text. `hard: false` (default) = **soft** — the
-     `break` item goes in the mailbox (the wrap-up turn at the next
-     cell boundary) AND a grace timer (20 s) sets the flag if the
-     same run is still going, because a run inside a long cell (a
-     slow model call, a long HTTP call) cannot drain the mailbox;
-     `hard: true` = **hard** — the flag goes up immediately (the
-     `break` item still goes in, so a run between cells wraps up
-     cleanly). A control record is never content: whatever its
+     `break` item goes in the mailbox (the guest sees it at its next
+     drain, between turns, and wraps up) AND a grace timer (20 s)
+     sets the flag only if the item is still UNDRAINED then — a run
+     stuck inside a long cell never saw it; a guest that drained it
+     is wrapping up, and the escalation stands down (the run's wall
+     deadline is the backstop). `hard: true` = **hard** — the flag
+     goes up immediately and NO mailbox item is queued (a trapped
+     run could never use it; it would only buy one billed, discarded
+     wrap-up call). A control record is never content: whatever its
      `kind`, it neither injects into a live run nor starts one — a
-     break with nothing running is a no-op. Clients render it as a
-     marker in the thread, not a bubble.
+     break with nothing running cancels any deferred (not-yet-
+     started) messages for that chat and is otherwise a no-op.
+     Clients render it as a marker in the thread, not a bubble.
   2. **The control API**: `POST /break/<chat>` with `{"hard": bool}`
      (default soft, same grace); 400 when nothing runs there.
   The flag is the run's identity: the watcher hands out the run's own
   `Arc`, a timer that fires after the run ended sets a dead letter.
   On the flag the runner's epoch callback traps the guest at the next
   tick; the run reports `interrupted` and the host posts `Stopped.`
-  with `done: true` — no "Something broke". A hard-broken run skips
-  the guest's `append_turn`: that turn is not in history (the chat
-  has the messages; the trace has the run).
+  with `done: true` — no "Something broke". The guest's own
+  `append_turn` never ran, so the HOST writes the minimal turn —
+  `{userText, replies: [], interrupted: true, traceRef}` — at the
+  data layer: the next boot window and the log-reading crons see the
+  stopped exchange, and the model's view of the conversation matches
+  the chat on screen (the trace has the full run).
 - **How a run ended is data on the bubble, not text.** The host's
   terminal bubbles carry it in the message's `agent` group (any
   `chat_messages-v4`): `outcome` = `error` (the run died — the text

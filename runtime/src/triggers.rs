@@ -680,13 +680,19 @@ pub enum WatchAction {
     Dup,
     Skip,
     Inject,
-    /// A `break` control record landed on a live run: the soft break is already in
-    /// the mailbox; `hard` means the flag is already set too. For a
-    /// soft one the caller arms the grace escalation (ADR-005 §3).
+    /// A `break` control record landed on a live run. Soft: the break
+    /// item is in the mailbox and the caller arms the grace escalation
+    /// (ADR-005 §3). Hard: the flag is already set — no mailbox item,
+    /// a trapped run cannot use it. The run's `LiveRun` rides along so
+    /// the caller can watch the mailbox for the guest's acknowledgment.
     Break {
-        interrupt: Arc<AtomicBool>,
+        live: LiveRun,
         hard: bool,
     },
+    /// A `break` with no live run: nothing to stop, but any deferred
+    /// (not-yet-started) messages for the chat are cancelled by it —
+    /// the caller drops its backlog (ADR-005 §3).
+    BreakIdle,
     Start,
 }
 
@@ -842,11 +848,13 @@ impl Watcher {
             return WatchAction::Skip; // own bubble — never self-trigger
         }
         if is_control(record) {
-            // a break lands on the live run; any other control kind,
-            // or a break with nothing running, is a no-op — a control
-            // record is never content and never starts a run
+            // a break lands on the live run; with nothing running it
+            // cancels the chat's deferred backlog (BreakIdle); any
+            // other control kind is a no-op — a control record is
+            // never content and never starts a run
             return match (control_break(record), self.live.get(chat_id)) {
                 (Some(hard), Some(live)) => self.break_live(live.clone(), hard),
+                (Some(_), None) => WatchAction::BreakIdle,
                 _ => WatchAction::Skip,
             };
         }
@@ -867,19 +875,18 @@ impl Watcher {
     }
 
     fn break_live(&mut self, live: LiveRun, hard: bool) -> WatchAction {
-        // the soft break always goes in: a run between cells wraps up
-        // cleanly even when the hard flag lands a moment later
-        live.mailbox
-            .lock()
-            .unwrap()
-            .push_back(json!({"kind": "break", "hard": hard}));
         if hard {
+            // flag only: the guest traps at the next tick, so a mailbox
+            // item could at most buy one billed-and-discarded wrap-up
+            // call (ADR-005 §3)
             live.interrupt.store(true, Ordering::Relaxed);
+        } else {
+            live.mailbox
+                .lock()
+                .unwrap()
+                .push_back(json!({"kind": "break", "hard": false}));
         }
-        WatchAction::Break {
-            interrupt: live.interrupt,
-            hard,
-        }
+        WatchAction::Break { live, hard }
     }
 
     pub fn conversation_done(&mut self, chat_id: &str) {
@@ -1473,9 +1480,15 @@ mod tests {
         );
 
         let mut w = Watcher::new("bao");
-        // not live: a break is a no-op — never a run, never content
+        // not live: a break never runs or injects — it cancels the
+        // chat's deferred backlog (BreakIdle, ADR-005 §3)
         assert!(matches!(
             w.on_message("c1", &brk("m0", false)),
+            WatchAction::BreakIdle
+        ));
+        // …an unknown control kind with nothing live is a plain no-op
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m0c", "control": {"kind": "ping"}})),
             WatchAction::Skip
         ));
         // …and the word "stop" is just a message that starts a run
@@ -1488,10 +1501,10 @@ mod tests {
         w.live.insert("c1".into(), live.clone());
         // soft: break item queued, flag untouched, caller arms the grace
         match w.on_message("c1", &brk("m1", false)) {
-            WatchAction::Break { interrupt, hard } => {
+            WatchAction::Break { live: l, hard } => {
                 assert!(!hard);
-                assert!(!interrupt.load(Ordering::Relaxed));
-                assert!(Arc::ptr_eq(&interrupt, &live.interrupt));
+                assert!(!l.interrupt.load(Ordering::Relaxed));
+                assert!(Arc::ptr_eq(&l.interrupt, &live.interrupt));
             }
             _ => panic!("expected Break"),
         }
@@ -1512,16 +1525,14 @@ mod tests {
             WatchAction::Skip
         ));
         assert!(live.mailbox.lock().unwrap().is_empty());
-        // hard: flag set now
+        // hard: flag set now, and NO mailbox item — a trapped run can
+        // never use it, it would only buy one billed wrap-up call
         match w.on_message("c1", &brk("m3", true)) {
             WatchAction::Break { hard, .. } => assert!(hard),
             _ => panic!("expected Break"),
         }
         assert!(live.interrupt.load(Ordering::Relaxed));
-        assert_eq!(
-            live.mailbox.lock().unwrap().pop_front().unwrap()["hard"],
-            true
-        );
+        assert!(live.mailbox.lock().unwrap().is_empty());
         // the control API path: same mechanics, None when nothing runs
         assert!(w.break_chat("nope", false).is_none());
         assert!(matches!(

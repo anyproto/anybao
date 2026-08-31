@@ -100,7 +100,7 @@ One executor instance per conversation. The host runs ONE `run_cell` —
 the program's `main` (a conversation is `toolcaller@v1`); the model's
 per-turn cells run inside it through the guest-global `subcell` (§3).
 `run_cell` is synchronous from the host's view; `interrupt()` is
-callable from another thread (the hard-break watchdog in the Runner)
+callable from another thread (the serve's break path)
 and maps to epoch-bump — it lands in the guest loop or a wedged subcell
 alike. Effect records don't appear in CellResult — they are already in
 the trace (ADR-001), attributed via `meta.cell = cell_id`; the guest
