@@ -1,0 +1,230 @@
+{
+ "target": "gemini-openai-compat",
+ "tier": {
+  "provider": "openai-compat",
+  "model": "gemini-3.7-flash",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "api_key_ref": "google.key.gemini"
+ },
+ "steps": [
+  {
+   "request": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "gemini-3.7-flash",
+     "messages": [
+      {
+       "role": "system",
+       "content": "You are a coding agent with exactly one tool, run_cell(code), which runs Python and returns the output. Use it for every computation. When you have the final answer, reply with plain text only — no tool call.\n\n1. Guideline 1: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n2. Guideline 2: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n3. Guideline 3: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n4. Guideline 4: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n5. Guideline 5: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n6. Guideline 6: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n7. Guideline 7: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n8. Guideline 8: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n9. Guideline 9: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n10. Guideline 10: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n11. Guideline 11: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n12. Guideline 12: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n13. Guideline 13: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n14. Guideline 14: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n15. Guideline 15: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n16. Guideline 16: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n17. Guideline 17: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n18. Guideline 18: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n19. Guideline 19: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n20. Guideline 20: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n21. Guideline 21: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n22. Guideline 22: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n23. Guideline 23: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n24. Guideline 24: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n25. Guideline 25: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n26. Guideline 26: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n27. Guideline 27: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n28. Guideline 28: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n29. Guideline 29: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n30. Guideline 30: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n31. Guideline 31: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n32. Guideline 32: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n33. Guideline 33: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n34. Guideline 34: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n35. Guideline 35: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n36. Guideline 36: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n37. Guideline 37: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n38. Guideline 38: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n39. Guideline 39: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n40. Guideline 40: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n41. Guideline 41: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n42. Guideline 42: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n43. Guideline 43: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n44. Guideline 44: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n45. Guideline 45: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n46. Guideline 46: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n47. Guideline 47: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n48. Guideline 48: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n49. Guideline 49: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n50. Guideline 50: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n51. Guideline 51: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n52. Guideline 52: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n53. Guideline 53: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n54. Guideline 54: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n55. Guideline 55: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n56. Guideline 56: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n57. Guideline 57: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n58. Guideline 58: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n59. Guideline 59: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n60. Guideline 60: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n61. Guideline 61: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n62. Guideline 62: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n63. Guideline 63: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n64. Guideline 64: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n65. Guideline 65: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n66. Guideline 66: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n67. Guideline 67: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n68. Guideline 68: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n69. Guideline 69: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n70. Guideline 70: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n71. Guideline 71: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n72. Guideline 72: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n73. Guideline 73: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n74. Guideline 74: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n75. Guideline 75: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n76. Guideline 76: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n77. Guideline 77: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n78. Guideline 78: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n79. Guideline 79: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n80. Guideline 80: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n81. Guideline 81: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n82. Guideline 82: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n83. Guideline 83: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n84. Guideline 84: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n85. Guideline 85: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n86. Guideline 86: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n87. Guideline 87: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n88. Guideline 88: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n89. Guideline 89: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n90. Guideline 90: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n91. Guideline 91: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n92. Guideline 92: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n93. Guideline 93: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n94. Guideline 94: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n95. Guideline 95: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n96. Guideline 96: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n97. Guideline 97: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n98. Guideline 98: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n99. Guideline 99: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n100. Guideline 100: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n101. Guideline 101: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n102. Guideline 102: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n103. Guideline 103: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n104. Guideline 104: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n105. Guideline 105: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n106. Guideline 106: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n107. Guideline 107: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n108. Guideline 108: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n109. Guideline 109: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n110. Guideline 110: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n111. Guideline 111: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n112. Guideline 112: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n113. Guideline 113: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n114. Guideline 114: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n115. Guideline 115: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n116. Guideline 116: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n117. Guideline 117: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n118. Guideline 118: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n119. Guideline 119: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n120. Guideline 120: keep answers short, verify with a cell before stating a number, and never guess a value you could compute."
+      },
+      {
+       "role": "user",
+       "content": "Compute the sum of the first 20 prime numbers with run_cell, then tell me the number."
+      }
+     ],
+     "max_tokens": 65536,
+     "tools": [
+      {
+       "type": "function",
+       "function": {
+        "name": "run_cell",
+        "description": "Execute a Python cell in a persistent kernel and return its output.",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "code": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "code"
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "google.key.gemini",
+     "header": "Authorization",
+     "about": {
+      "label": "Google AI Studio API key",
+      "hosts": [
+       "generativelanguage.googleapis.com"
+      ],
+      "help": "https://aistudio.google.com/apikey"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EpwDCpkDARFNMg81BkpXQ5sAVRyi3fUe5eJr8cCSwNpRUEo4FHMzFQxy6NH2hBG0m+UZ5ykwv55Zaewy1uC1xXUCSib7Y8C8PRsY9tqI5I+61uQv5kfB4O7dsaMNZpq7fP6mUyjgPxhkQ9AAOF8Dtol4Nqfh+lqiOsOsE9/kBG96x/fULbSVMNFruVXnGw4V3rE1NHU9G3mCMC0geJOdg5HYXJIAF6kGgVnt3r9GaUZqb+Pj3svVNLJEH6cmBtRxwWUhqmH/aktJ6W0MM8fqnR2BcqulBTWI190/sFp0D2fFOiPhSFH3X96+bEX77C2kqxNInwUCFlQG3APL4gFxuOfp0YqUbXaj5zu4jc293EYymyPRmW0v20Br9Qq9600C7MCrBEfb8Dpyaruko+sCpLdBFD1oRy30BJLRpBfXCMdFprTXFdIPuS01RIyy4RtIeT9e+hGOLD3wysx39P94Kp2C9A4zjBwVjvDBTzymYPojaoMynay/QBG/2IptRYtX61P6ATezkYJJaJ2ZcAy0N0iE1vYPKUExjWn7vN9pQw==\"}},\"function\":{\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n \\\\u003c 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\ncandidate = 2\\\\nwhile len(primes) \\\\u003c 20:\\\\n    if is_prime(candidate):\\\\n        primes.append(candidate)\\\\n    candidate += 1\\\\n\\\\nprint(primes)\\\\nprint(sum(primes))\\\\n\\\"}\",\"name\":\"run_cell\"},\"id\":\"call_2123064\",\"type\":\"function\"}]}}],\"created\":1788154882,\"id\":\"ARSVasChIbXpkdUP_oTA2AI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":129,\"prompt_tokens\":3985,\"total_tokens\":4190}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "gemini-3.7-flash",
+     "messages": [
+      {
+       "role": "system",
+       "content": "You are a coding agent with exactly one tool, run_cell(code), which runs Python and returns the output. Use it for every computation. When you have the final answer, reply with plain text only — no tool call.\n\n1. Guideline 1: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n2. Guideline 2: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n3. Guideline 3: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n4. Guideline 4: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n5. Guideline 5: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n6. Guideline 6: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n7. Guideline 7: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n8. Guideline 8: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n9. Guideline 9: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n10. Guideline 10: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n11. Guideline 11: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n12. Guideline 12: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n13. Guideline 13: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n14. Guideline 14: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n15. Guideline 15: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n16. Guideline 16: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n17. Guideline 17: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n18. Guideline 18: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n19. Guideline 19: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n20. Guideline 20: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n21. Guideline 21: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n22. Guideline 22: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n23. Guideline 23: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n24. Guideline 24: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n25. Guideline 25: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n26. Guideline 26: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n27. Guideline 27: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n28. Guideline 28: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n29. Guideline 29: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n30. Guideline 30: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n31. Guideline 31: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n32. Guideline 32: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n33. Guideline 33: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n34. Guideline 34: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n35. Guideline 35: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n36. Guideline 36: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n37. Guideline 37: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n38. Guideline 38: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n39. Guideline 39: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n40. Guideline 40: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n41. Guideline 41: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n42. Guideline 42: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n43. Guideline 43: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n44. Guideline 44: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n45. Guideline 45: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n46. Guideline 46: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n47. Guideline 47: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n48. Guideline 48: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n49. Guideline 49: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n50. Guideline 50: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n51. Guideline 51: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n52. Guideline 52: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n53. Guideline 53: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n54. Guideline 54: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n55. Guideline 55: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n56. Guideline 56: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n57. Guideline 57: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n58. Guideline 58: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n59. Guideline 59: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n60. Guideline 60: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n61. Guideline 61: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n62. Guideline 62: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n63. Guideline 63: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n64. Guideline 64: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n65. Guideline 65: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n66. Guideline 66: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n67. Guideline 67: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n68. Guideline 68: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n69. Guideline 69: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n70. Guideline 70: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n71. Guideline 71: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n72. Guideline 72: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n73. Guideline 73: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n74. Guideline 74: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n75. Guideline 75: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n76. Guideline 76: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n77. Guideline 77: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n78. Guideline 78: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n79. Guideline 79: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n80. Guideline 80: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n81. Guideline 81: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n82. Guideline 82: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n83. Guideline 83: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n84. Guideline 84: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n85. Guideline 85: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n86. Guideline 86: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n87. Guideline 87: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n88. Guideline 88: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n89. Guideline 89: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n90. Guideline 90: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n91. Guideline 91: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n92. Guideline 92: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n93. Guideline 93: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n94. Guideline 94: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n95. Guideline 95: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n96. Guideline 96: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n97. Guideline 97: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n98. Guideline 98: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n99. Guideline 99: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n100. Guideline 100: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n101. Guideline 101: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n102. Guideline 102: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n103. Guideline 103: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n104. Guideline 104: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n105. Guideline 105: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n106. Guideline 106: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n107. Guideline 107: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n108. Guideline 108: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n109. Guideline 109: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n110. Guideline 110: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n111. Guideline 111: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n112. Guideline 112: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n113. Guideline 113: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n114. Guideline 114: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n115. Guideline 115: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n116. Guideline 116: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n117. Guideline 117: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n118. Guideline 118: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n119. Guideline 119: keep answers short, verify with a cell before stating a number, and never guess a value you could compute.\n120. Guideline 120: keep answers short, verify with a cell before stating a number, and never guess a value you could compute."
+      },
+      {
+       "role": "user",
+       "content": "Compute the sum of the first 20 prime numbers with run_cell, then tell me the number."
+      },
+      {
+       "role": "assistant",
+       "content": null,
+       "tool_calls": [
+        {
+         "id": "call_2123064",
+         "type": "function",
+         "function": {
+          "name": "run_cell",
+          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\ncandidate = 2\\nwhile len(primes) < 20:\\n    if is_prime(candidate):\\n        primes.append(candidate)\\n    candidate += 1\\n\\nprint(primes)\\nprint(sum(primes))\\n\"}"
+         },
+         "extra_content": {
+          "google": {
+           "thought_signature": "EpwDCpkDARFNMg81BkpXQ5sAVRyi3fUe5eJr8cCSwNpRUEo4FHMzFQxy6NH2hBG0m+UZ5ykwv55Zaewy1uC1xXUCSib7Y8C8PRsY9tqI5I+61uQv5kfB4O7dsaMNZpq7fP6mUyjgPxhkQ9AAOF8Dtol4Nqfh+lqiOsOsE9/kBG96x/fULbSVMNFruVXnGw4V3rE1NHU9G3mCMC0geJOdg5HYXJIAF6kGgVnt3r9GaUZqb+Pj3svVNLJEH6cmBtRxwWUhqmH/aktJ6W0MM8fqnR2BcqulBTWI190/sFp0D2fFOiPhSFH3X96+bEX77C2kqxNInwUCFlQG3APL4gFxuOfp0YqUbXaj5zu4jc293EYymyPRmW0v20Br9Qq9600C7MCrBEfb8Dpyaruko+sCpLdBFD1oRy30BJLRpBfXCMdFprTXFdIPuS01RIyy4RtIeT9e+hGOLD3wysx39P94Kp2C9A4zjBwVjvDBTzymYPojaoMynay/QBG/2IptRYtX61P6ATezkYJJaJ2ZcAy0N0iE1vYPKUExjWn7vN9pQw=="
+          }
+         }
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "tool_call_id": "call_2123064",
+       "content": "Last value: 639"
+      }
+     ],
+     "max_tokens": 65536,
+     "tools": [
+      {
+       "type": "function",
+       "function": {
+        "name": "run_cell",
+        "description": "Execute a Python cell in a persistent kernel and return its output.",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "code": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "code"
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "google.key.gemini",
+     "header": "Authorization",
+     "about": {
+      "label": "Google AI Studio API key",
+      "hosts": [
+       "generativelanguage.googleapis.com"
+      ],
+      "help": "https://aistudio.google.com/apikey"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"The sum of the first 20 prime numbers is 639.\",\"extra_content\":{\"google\":{\"thought_signature\":\"EoUBCoIBARFNMg9R+VYWKp05kC4EDZJqvcssh23mRyWUIWhirXODcT0s75E+VL6Z/aaLuJnCztTCQ2yJEyiOZBA57umV3J4kG/I5dQGeir9x368aPBM0zXamVjzbCU8pFFKPU8s1hfe1UUB/w0ADVafq4Swn5l1bYMe2MlA2wKvcTVpqmUYZJA==\"}},\"role\":\"assistant\"}}],\"created\":1788154883,\"id\":\"AhSVarqUOOqFxs0P7sjM-Ao\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4210,\"total_tokens\":4238}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "gemini-3.7-flash",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What color is this image? Answer with one word."
+        },
+        {
+         "type": "image_url",
+         "image_url": {
+          "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg=="
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 65536
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "google.key.gemini",
+     "header": "Authorization",
+     "about": {
+      "label": "Google AI Studio API key",
+      "hosts": [
+       "generativelanguage.googleapis.com"
+      ],
+      "help": "https://aistudio.google.com/apikey"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvcBCvQBARFNMg9+bNWpkgifKrr1wvLcpRtQys1+q2ni98xU6w/fPFIM9ICzynd12aXoOxkFK1v2o1j7lHCjnzlA21f6usphrv7kZnY47VdVZj58GkUEv9SXLdOxnvPIg8CABRnQ1JxsLZ5syqBReN/NnoAX+xVJ7HvoSj9vK66BhTeULPySK8U+jZGfrSFnoxsGYoGRF2xKozRL26Uk1V4zIoS+TjQ6XAVAidHuQ3AMXp4DYxofz02losxUHwrcPzirWSqibgN+AbaQsl+52ZbIrQxvucyOdfQMsdkSRvgGk5wePcuuaC3LD9XjS8wFbmoXUEJMQ3b6MQ==\"}},\"role\":\"assistant\"}}],\"created\":1788154884,\"id\":\"AxSVaqjFM7CBvdIPldWB6QI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":1101,\"total_tokens\":1142}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "gemini-3.7-flash",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Write a 500-word essay about rivers."
+      }
+     ],
+     "max_tokens": 24
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "google.key.gemini",
+     "header": "Authorization",
+     "about": {
+      "label": "Google AI Studio API key",
+      "hosts": [
+       "generativelanguage.googleapis.com"
+      ],
+      "help": "https://aistudio.google.com/apikey"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"message\":{\"role\":\"assistant\"}}],\"created\":1788154885,\"id\":\"BRSVar_jAbSJvdIPgbzJyAQ\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":13,\"total_tokens\":34}}"
+   }
+  }
+ ]
+}

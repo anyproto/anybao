@@ -60,7 +60,12 @@ pub fn render(store: &dyn TraceStore) -> anyhow::Result<String> {
                     // provider replies carry usage — tokens per llm call
                     if let Some(body) = r["output"]["body"].as_str() {
                         if let Ok(v) = serde_json::from_str::<Value>(body) {
-                            if let Some(t) = v["usage"]["input_tokens"].as_i64() {
+                            // anthropic / openai-compatible wire
+                            let u = &v["usage"];
+                            if let Some(t) = u["input_tokens"]
+                                .as_i64()
+                                .or_else(|| u["prompt_tokens"].as_i64())
+                            {
                                 tokens_in.push(t);
                             }
                         }

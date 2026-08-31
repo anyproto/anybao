@@ -65,9 +65,21 @@ RUN_CELL_TOOL = {
         "required": ["code"],
     },
 }
+# `prompt_style: "compact"` (ADR-005 §1.3 / §5): the same tool, said
+# shorter — for models that follow a short instruction better
+RUN_CELL_TOOL_COMPACT = {
+    **RUN_CELL_TOOL,
+    "description": (
+        "Run a Python cell. Variables and use() modules persist across "
+        "cells. Returns printed output, the last expression, and a "
+        "side-effects summary. Reply with text only (no tool call) to end."),
+}
 MAX_TURNS = 108
 MAX_TOKENS_TOTAL = 1_000_000
 TIER = "codegen"
+# a call whose input exceeds this share of the profile's context window
+# ends the run with a wrap-up — before the next call fails (§1.3)
+CONTEXT_FULL_SHARE = 0.85
 INLINE_TOKEN_BUDGET = 1000
 MAX_SIDE_EFFECT_LINES = 12
 # Fixed order of the built-in system skills in the prompt; unknown _-skills
@@ -218,10 +230,21 @@ def _wrapup(messages, llm, system, tier, reason, stats):
 
 
 def _run_model_cells(parts, results):
+    """Run each tool_call part as a cell; a call llm@v1 flagged as
+    malformed (`error`: unparseable arguments) is answered with an
+    is_error result instead of a cell — the model gets to retry.
+    Returns the number of malformed calls."""
+    malformed = 0
     for part in parts:
         if part["type"] != "tool_call":
             continue
         cid = part["id"]
+        if part.get("error"):
+            malformed += 1
+            results.append({"type": "tool_result", "call_id": cid,
+                            "content": f"Error: {part['error']}",
+                            "is_error": True})
+            continue
         sid = effect("span.begin",  # noqa: F821 - guest global
                      {"name": "cell", "input": {"cell": cid}})["span"]
         cr = subcell(part["args"].get("code", ""), cid)  # noqa: F821
@@ -236,6 +259,7 @@ def _run_model_cells(parts, results):
         results.append({"type": "tool_result", "call_id": cid,
                         "content": render_digest(cid, cr, entries),
                         "is_error": not cr["ok"]})
+    return malformed
 
 
 # --- system prompt: composed guest-side from the space ----------------------
@@ -289,7 +313,15 @@ _TOOLS_INTRO = (
     "`help(mod.method)`; describe before you call, don't guess shapes.")
 
 
-def _tool_docs(c, space, code_space=None):
+_TOOLS_INTRO_COMPACT = (
+    "## Tools\n\n"
+    "Programs reached with `use(...)` (spec on each `Import:` line). Per "
+    "tool: description, then `name(signature) [kind] — summary` per method "
+    "(`[getter]` reads, `[mutator]` writes, `[setup]` returns a handle). "
+    "`help(mod.method)` shows the full doc — check before calling.")
+
+
+def _tool_docs(c, space, code_space=None, style="full"):
     """`## Tools` — each any_tool program rendered by `describe()` from
     its code (ADR-010 §3): module docstring + one `name(sig) [kind] —
     summary` line per public method. ONE renderer with `help()` — the
@@ -332,7 +364,8 @@ def _tool_docs(c, space, code_space=None):
     if not tools:
         return ""
     rows = sorted(tools.values(), key=lambda t: (t[0], t[1]))
-    return _TOOLS_INTRO + "\n\n" + "\n\n".join(b for _, _, b in rows)
+    intro = _TOOLS_INTRO_COMPACT if style == "compact" else _TOOLS_INTRO
+    return intro + "\n\n" + "\n\n".join(b for _, _, b in rows)
 
 
 def _user_skills(c, space):
@@ -409,14 +442,14 @@ def _repo_inventory(c, overlays, code_space=None):
             + "\n".join(lines))
 
 
-def compose_system(c, space, code_space=None, overlays=None):
+def compose_system(c, space, code_space=None, overlays=None, style="full"):
     """The full system prompt loaded from the space(s): skills + tool
     docs (both two-tier: agent code overlay + working space, working
     wins) + repo inventory + memory categories. Guest-side — the host
-    injects nothing."""
+    injects nothing. `style` is the profile's `prompt_style`."""
     parts = [_compose_skills(_load_system_skills(c, space, code_space)),
              _user_skills(c, space),
-             _tool_docs(c, space, code_space),
+             _tool_docs(c, space, code_space, style),
              _repo_inventory(c, overlays,
                              code_space if code_space != space else None),
              _memory_categories(c, space)]
@@ -439,11 +472,19 @@ def main(args):
     hist = use("history@v1")  # noqa: F821
     ar = use("autorecall@v1")  # noqa: F821
 
+    # the tier's model profile (ADR-005 §1.3): the loop budgets from its
+    # loop-facing traits and never sees provider or wire
+    traits = llm.profile(tier)["traits"]
+    tool = RUN_CELL_TOOL_COMPACT if traits["prompt_style"] == "compact" else RUN_CELL_TOOL
+    context_window = traits["context_window"]
+    boot_tokens = min(args.get("bootTokens", 40000), context_window // 4)
+
     # System prompt: composed guest-side from the space (skills + tool docs
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    system = compose_system(c, space, code_space, overlays) + (
+    system = compose_system(c, space, code_space, overlays, traits["prompt_style"])
+    runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
@@ -454,6 +495,13 @@ def main(args):
         "`[now: … | user's view — …]` line) — and `baoSpaceConfig` "
         "(`{spaceId, chatId}` of this agent space)\n"
         "- other spaces: `list_spaces()` rows")
+    # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
+    # user message for models that weight recency over the system block
+    if traits["instructions_at"] == "system":
+        system += runtime_ctx
+        user_suffix = ""
+    else:
+        user_suffix = runtime_ctx
     if quiet:
         system += (
             "\n\n## Subagent\n\nYou are running as a subagent on a delegated "
@@ -472,9 +520,8 @@ def main(args):
             got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
             if got:
                 chunks[lvl] = got
-        boot = hist.render_boot_window(turns, chunks,
-                                       total_tokens=args.get("bootTokens", 40000))
-        tail = hist.raw_tail(turns, total_tokens=args.get("bootTokens", 40000))
+        boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens)
+        tail = hist.raw_tail(turns, total_tokens=boot_tokens)
         boot_min_seq = tail[0].get("seq") if tail else None
         plan = ar.plan(c, space, user_text, boot_min_seq)
 
@@ -493,7 +540,7 @@ def main(args):
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + _context_suffix(ui_ctx)}]},
+                            "text": user_text + _context_suffix(ui_ctx) + user_suffix}]},
                 *plan["messages"]]
 
     def bubble(text, done):
@@ -511,6 +558,8 @@ def main(args):
     turn = 0
     stop = "done"
     replies = []
+    last_in = 0        # prompt tokens of the latest call — the context in use
+    malformed = 0      # unparseable tool calls so far (traits.malformed_retries)
     while True:
         wrapup_reason = None
         # a quiet run must not consume the parent's inject/break stream
@@ -531,6 +580,11 @@ def main(args):
             wrapup_reason = wrapup_reason or f"turn ceiling ({max_turns})"
         if tokens >= max_tokens:
             wrapup_reason = wrapup_reason or f"token ceiling ({max_tokens})"
+        if last_in >= CONTEXT_FULL_SHARE * context_window:
+            wrapup_reason = wrapup_reason or (
+                f"context window nearly full ({last_in}/{context_window})")
+        if malformed > traits["malformed_retries"]:
+            wrapup_reason = wrapup_reason or f"{malformed} malformed tool calls"
         if wrapup_reason:
             replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats)
             stop = "wrapup"
@@ -538,9 +592,13 @@ def main(args):
             break
 
         turn += 1
-        reply = llm.chat(messages, system=system, tier=tier, tools=[RUN_CELL_TOOL])
+        reply = llm.chat(messages, system=system, tier=tier, tools=[tool])
         _tally(stats, reply.get("usage", {}))
         tokens = stats["inTokens"] + stats["outTokens"]
+        # usage.in is the UNCACHED prompt; the context the model holds is
+        # the whole prompt — cached reads/writes included (ADR-005 §1)
+        u = reply.get("usage", {})
+        last_in = u.get("in", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0)
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":
@@ -559,7 +617,7 @@ def main(args):
         for t in _texts(reply["parts"]):  # interim text = progress bubble
             bubble(t, False)
         results = []
-        _run_model_cells(reply["parts"], results)
+        malformed += _run_model_cells(reply["parts"], results)
         stats["cells"] += len(results)
         messages.append({"role": "user", "parts": results})
 

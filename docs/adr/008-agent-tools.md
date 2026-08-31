@@ -26,7 +26,8 @@ secret (`llm.key.anthropic` from `ANTHROPIC_API_KEY`).
 ### 1. Credentials generalize past the LLM key
 
 - New config namespace `search.provider.<tool>`, same value shape as
-  `llm.tier.*`: `{provider, model, base_url, api_key_ref}`. Rows in
+  `llm.tier.*`: `{provider, model, base_url, api_key_ref}` (ADR-005
+  §1.1 adds `backend`/`profile`/`options` for LLM tiers). Rows in
   the space's `agent_config` (ADR-006 §3), soft-seeded from
   `config_defaults.json` for a fresh space: `search.provider.websearch` and
   `search.provider.deepresearch`, both `gemini` /

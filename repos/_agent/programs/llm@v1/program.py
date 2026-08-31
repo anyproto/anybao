@@ -6,17 +6,20 @@ scoring) inside a cell — a sub-call, not a way to talk to the user.
 text|tool_call|tool_result|thinking|file, …}`, the reply `{parts, stop:
 done|tool|length, usage: {in, out}}`. `read(file, prompt)` puts one
 `any` file (image / pdf / text — an `any://f/…` attachment) in front
-of the model and returns its answer (ADR-020)."""
+of the model and returns its answer (ADR-020). `profile(tier)` is the
+resolved model profile (backend + traits) the loop budgets from."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
-# ADR-005 §1: adapters translate neutral <-> provider wire, PURE and
-# offline-testable; the single http.post syscall is the effect
-# boundary. The api key never enters the guest — the request names a
-# `credential` (config ref + header), the HOST injects the header.
+# ADR-005 §1: three pure tables — adapter (wire family), backend (where
+# the model is served), profile (which model, as TRAITS) — and the
+# single http.post syscall as the effect boundary. The api key never
+# enters the guest — the request names a `credential` (config ref +
+# header), the HOST injects the header.
 
 import base64
 import json
+import re
 
 
 class UnsupportedMedia(Exception):
@@ -26,9 +29,8 @@ class UnsupportedMedia(Exception):
     def __init__(self, media_type, provider):
         self.media_type = media_type
         self.provider = provider
-        super().__init__(
-            f"{provider} cannot read {media_type!r} files; supported: "
-            + ", ".join(_MEDIA[provider]))
+        supported = ", ".join(_MEDIA.get(provider, ())) or "none"
+        super().__init__(f"{provider} cannot read {media_type!r} files; supported: {supported}")
 
 
 # provider -> media classes carried natively (ADR-020 §3)
@@ -57,22 +59,142 @@ class LlmError(Exception):
         super().__init__(f"llm provider returned {status}: {body}")
 
 
-# --- Anthropic (native) -----------------------------------------------------
+# --- Traits (ADR-005 §1.3): the closed vocabulary ---------------------------
+# A profile declares intent in these terms; the backend spells the wire
+# form, the loop budgets from the loop-facing ones. Unknown keys or
+# values are a ConfigError at resolve time — never decorative.
+
+TRAITS = {
+    "system_role": ("native", "first_user"),
+    "tool_mode": ("native", "fenced", "xml"),
+    "reasoning": ("none", "advisory", "roundtrip"),
+    "thinking": ("default", "on", "off"),
+    "cache": ("auto", "markers", "none"),
+    "context_window": int,
+    "max_output": int,
+    "sampling": dict,
+    "prompt_style": ("full", "compact"),
+    "instructions_at": ("system", "last_user"),
+    "malformed_retries": int,
+    "vision": bool,
+}
+
+GENERIC_TRAITS = {
+    "system_role": "native", "tool_mode": "native", "reasoning": "advisory",
+    "thinking": "default", "cache": "auto", "context_window": 128000,
+    "max_output": 8192, "sampling": {}, "prompt_style": "full",
+    "instructions_at": "system", "malformed_retries": 2, "vision": True,
+}
+
+# --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
+# `match` is tried against the tier's `model` (first hit, in order)
+# when the tier names no `profile`; `traits` are deviations from
+# GENERIC_TRAITS. Supported = a golden parity trace in the tree
+# (docs/llm-models.md lists the verified entries).
+
+PROFILES = {
+    "claude": {"match": r"claude", "traits": {
+        "reasoning": "roundtrip", "cache": "markers",
+        "context_window": 200000, "max_output": 32768}},
+    "gpt": {"match": r"^(gpt-|o[1-9]|chatgpt)", "traits": {
+        "context_window": 128000, "max_output": 16384}},
+    "gemini": {"match": r"gemini", "traits": {
+        "context_window": 1000000, "max_output": 65536}},
+    # order matters: a family's newest generation lists before the family
+    "deepseek-v4": {"match": r"deepseek-v4(?!-flash-vision)", "traits": {
+        "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536,
+        "vision": False}},
+    "deepseek-r1": {"match": r"deepseek-(r1|reasoner)", "traits": {
+        "system_role": "first_user", "instructions_at": "last_user",
+        "reasoning": "roundtrip", "sampling": {"temperature": 0.6},
+        "context_window": 64000}},
+    "deepseek": {"match": r"deepseek", "traits": {
+        "sampling": {"temperature": 0.0}, "context_window": 128000}},
+    "qwen3": {"match": r"qwen3", "traits": {
+        "context_window": 32768}},
+    "llama": {"match": r"llama", "traits": {
+        "prompt_style": "compact", "context_window": 128000}},
+    "gemma": {"match": r"gemma", "traits": {
+        "system_role": "first_user", "tool_mode": "fenced",
+        "prompt_style": "compact", "context_window": 128000}},
+    "mistral": {"match": r"mistral|mixtral|devstral|magistral", "traits": {
+        "context_window": 128000}},
+    "kimi-k3": {"match": r"kimi-k3", "traits": {
+        "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536}},
+    "kimi": {"match": r"kimi|moonshot", "traits": {
+        "reasoning": "roundtrip", "context_window": 262144, "max_output": 32768}},
+    "glm-5": {"match": r"glm-5(?!v)", "traits": {  # glm-5v-* are the vision line
+        "reasoning": "roundtrip", "context_window": 1310720, "max_output": 65536,
+        "vision": False}},
+    "glm": {"match": r"glm", "traits": {"context_window": 128000}},
+    # explicit-only profiles (no match): the tool-carriage fallbacks
+    "fenced": {"match": None, "traits": {"tool_mode": "fenced"}},
+    "xml": {"match": None, "traits": {"tool_mode": "xml"}},
+    "generic": {"match": None, "traits": {}},
+}
+
+
+class ConfigError(Exception):
+    """A tier names an unknown profile/backend, or a profile declares a
+    trait outside the closed vocabulary."""
+
+
+def _check_traits(traits, where):
+    for k, v in traits.items():
+        allowed = TRAITS.get(k)
+        if allowed is None:
+            raise ConfigError(f"{where}: unknown trait {k!r}")
+        if isinstance(allowed, tuple):
+            if v not in allowed:
+                raise ConfigError(f"{where}: {k}={v!r} not in {allowed}")
+        elif allowed is bool:
+            if not isinstance(v, bool):
+                raise ConfigError(f"{where}: {k} must be bool")
+        elif not isinstance(v, allowed) or isinstance(v, bool):
+            raise ConfigError(f"{where}: {k} must be {allowed.__name__}")
+
+
+def _profile_name(prov):
+    name = prov.get("profile")
+    if name:
+        if name not in PROFILES:
+            raise ConfigError(f"unknown profile {name!r}")
+        return name
+    model = (prov.get("model") or "").lower()
+    for name, entry in PROFILES.items():
+        if entry["match"] and re.search(entry["match"], model):
+            return name
+    return "generic"
+
+
+def _resolve_traits(prov):
+    name = _profile_name(prov)
+    traits = dict(GENERIC_TRAITS)
+    traits.update(PROFILES[name]["traits"])
+    _check_traits(traits, f"profile {name!r}")
+    return name, traits
+
+
+# --- Provider adapters (ADR-005 §1.4): neutral <-> wire family ---------------
 
 class AnthropicAdapter:
     """Native: thinking blocks round-trip via opaque provider_state.
-    Caching (ADR-005 §1): breakpoints at end of system and end of the
-    conversation — the loop's prefix is append-only, so each call
-    writes the cache the next call reads."""
+    Caching: breakpoints at end of system and end of the conversation
+    — the loop's prefix is append-only, so each call writes the cache
+    the next call reads."""
 
-    def build_request(self, messages, system, tools, model):
+    def build_request(self, messages, system, tools, model, traits):
         """Neutral messages → the Anthropic wire request dict."""
-        api_msgs = [self._to_anthropic_msg(m) for m in messages]
-        self._mark_cache(api_msgs)
-        req = {"model": model, "messages": api_msgs, "max_tokens": 32768}
+        api_msgs = [self._to_anthropic_msg(m, traits) for m in messages]
+        req = {"model": model, "messages": api_msgs,
+               "max_tokens": traits["max_output"]}
+        if traits["cache"] == "markers":
+            self._mark_cache(api_msgs)
         if system:
-            req["system"] = [{"type": "text", "text": system,
-                              "cache_control": {"type": "ephemeral"}}]
+            block = {"type": "text", "text": system}
+            if traits["cache"] == "markers":
+                block["cache_control"] = {"type": "ephemeral"}
+            req["system"] = [block]
         if tools:
             req["tools"] = [
                 {"name": t["name"], "description": t.get("description", ""),
@@ -81,7 +203,7 @@ class AnthropicAdapter:
             ]
         return req
 
-    def _to_anthropic_msg(self, m):
+    def _to_anthropic_msg(self, m, traits):
         blocks = []
         for p in m["parts"]:
             t = p["type"]
@@ -89,16 +211,22 @@ class AnthropicAdapter:
                 blocks.append({"type": "text", "text": p["text"]})
             elif t == "tool_call":
                 blocks.append({"type": "tool_use", "id": p["id"],
-                               "name": p["name"], "input": p["args"]})
+                               "name": p["name"], "input": p["args"] or {}})
             elif t == "tool_result":
                 blocks.append({"type": "tool_result", "tool_use_id": p["call_id"],
                                "content": p["content"], "is_error": p.get("is_error", False)})
             elif t == "thinking":
-                # round-trip the signed block verbatim (provider_state)
-                blocks.append(
-                    p.get("provider_state")
-                    or {"type": "thinking", "thinking": p.get("text", "")}
-                )
+                if traits["reasoning"] != "roundtrip":
+                    continue
+                # round-trip the SIGNED block verbatim (provider_state);
+                # an unsigned thinking part (another provider's, or one
+                # lifted from <think> tags) has no valid wire form here —
+                # Anthropic requires the signature — so it stays out
+                state = p.get("provider_state")
+                signed = isinstance(state, dict) and state.get("type") in (
+                    "thinking", "redacted_thinking")
+                if signed:
+                    blocks.append(state)
             elif t == "file":
                 blocks.append(self._file_block(p))
         return {"role": m["role"], "content": blocks}
@@ -163,22 +291,23 @@ _NORM_STOP = {"end_turn": "done", "stop_sequence": "done",
               "tool_use": "tool", "max_tokens": "length"}
 
 
-# --- OpenAI-compatible (vLLM/llama.cpp/ollama/OpenRouter) --------------------
-
 class OpenAICompatAdapter:
-    """Reasoning models on this wire (DeepSeek convention, Together/
-    OpenRouter) return thinking as `reasoning_content`/`reasoning` on the
-    message — captured as a thinking part so it lands in the trace, but
-    advisory: the wire has no slot to resend it, the model re-reasons."""
+    """One adapter for every `/chat/completions` server. Reasoning text
+    (`reasoning_content` after the backend's normalize) is captured as
+    a Thinking part; the `reasoning` trait says whether it is resent
+    (`roundtrip`: DeepSeek thinking mode / OpenRouter
+    `reasoning_details` need it for tool-call continuity) or kept for
+    the trace only (`advisory`)."""
 
-    def build_request(self, messages, system, tools, model):
+    def build_request(self, messages, system, tools, model, traits):
         """Neutral messages → the OpenAI-compatible wire request dict."""
         api_msgs = []
         if system:
             api_msgs.append({"role": "system", "content": system})
         for m in messages:
-            api_msgs.extend(self._to_openai_msgs(m))
-        req = {"model": model, "messages": api_msgs}
+            api_msgs.extend(self._to_openai_msgs(m, traits))
+        req = {"model": model, "messages": api_msgs,
+               "max_tokens": traits["max_output"]}
         if tools:
             req["tools"] = [
                 {"type": "function",
@@ -188,17 +317,21 @@ class OpenAICompatAdapter:
             ]
         return req
 
-    def _to_openai_msgs(self, m):
+    def _to_openai_msgs(self, m, traits):
         texts = [p["text"] for p in m["parts"] if p["type"] == "text"]
         calls = [p for p in m["parts"] if p["type"] == "tool_call"]
         results = [p for p in m["parts"] if p["type"] == "tool_result"]
         out = []
+        files = [p for p in m["parts"] if p["type"] == "file"]
         if results:  # tool results are their own role in openai
             for r in results:
                 out.append({"role": "tool", "tool_call_id": r["call_id"],
                             "content": r["content"]})
-            return out
-        files = [p for p in m["parts"] if p["type"] == "file"]
+            # text riding the same neutral message (the wrap-up
+            # instruction after synthetic results, ADR-005 §2) is a
+            # user message of its own, after the results
+            if not (texts or files or calls):
+                return out
         if files:
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
@@ -208,68 +341,180 @@ class OpenAICompatAdapter:
                     "url": f"data:{f['media_type']};base64,{f['data']}"}})
             msg = {"role": m["role"], "content": content}
         else:
-            msg = {"role": m["role"], "content": " ".join(texts)}
+            # an assistant turn that only calls tools carries null, never ""
+            msg = {"role": m["role"], "content": " ".join(texts) or None}
+            if msg["content"] is None and not calls:
+                msg["content"] = ""
         if calls:
-            msg["tool_calls"] = [
-                {"id": c["id"], "type": "function",
-                 "function": {"name": c["name"], "arguments": json.dumps(c["args"])}}
-                for c in calls
-            ]
-        return [msg]
+            msg["tool_calls"] = []
+            for c in calls:
+                tc = {"id": c["id"], "type": "function",
+                      "function": {"name": c["name"], "arguments": json.dumps(c["args"] or {})}}
+                # opaque server state on the call (Gemini's thought
+                # signature rides `extra_content`) — round-tripped verbatim
+                tc.update(c.get("provider_state") or {})
+                msg["tool_calls"].append(tc)
+        if traits["reasoning"] == "roundtrip" and m["role"] == "assistant":
+            for p in m["parts"]:
+                if p["type"] != "thinking":
+                    continue
+                state = p.get("provider_state") or {}
+                if state.get("reasoning_details"):
+                    msg["reasoning_details"] = state["reasoning_details"]
+                elif p.get("text"):
+                    msg["reasoning_content"] = p["text"]
+        out.append(msg)
+        return out
 
     def parse_response(self, raw):
         """OpenAI-compatible response JSON → the neutral Reply."""
         choice = raw["choices"][0]
         msg = choice["message"]
         parts = []
-        think = msg.get("reasoning_content") or msg.get("reasoning")
-        if think:
-            parts.append({"type": "thinking", "text": think})
+        think = msg.get("reasoning_content")
+        details = msg.get("reasoning_details")
+        if think or details:
+            part = {"type": "thinking", "text": think or ""}
+            if details:
+                part["provider_state"] = {"reasoning_details": details}
+            parts.append(part)
         if msg.get("content"):
             parts.append({"type": "text", "text": msg["content"]})
         for tc in msg.get("tool_calls", []) or []:
-            parts.append({"type": "tool_call", "id": tc["id"],
-                          "name": tc["function"]["name"],
-                          "args": json.loads(tc["function"]["arguments"])})
+            raw_args = tc["function"].get("arguments") or "{}"
+            part = {"type": "tool_call", "id": tc["id"],
+                    "name": tc["function"]["name"], "args": {}}
+            if tc.get("extra_content"):
+                part["provider_state"] = {"extra_content": tc["extra_content"]}
+            try:
+                args = json.loads(raw_args)
+                if not isinstance(args, dict):
+                    raise ValueError("arguments must be a JSON object")
+                part["args"] = args
+            except ValueError as e:
+                # the run never dies on a malformed call: the loop
+                # answers the flagged call with an is_error result
+                part["error"] = f"unparseable tool arguments ({e}): {raw_args[:200]}"
+            parts.append(part)
         fr = choice.get("finish_reason", "stop")
         stop = "tool" if fr == "tool_calls" else ("length" if fr == "length" else "done")
         u = raw.get("usage", {})
         det = u.get("prompt_tokens_details") or {}
+        cached = det.get("cached_tokens", 0)
+        written = det.get("cache_write_tokens", 0)  # OpenRouter, explicit markers
+        # `in` is the UNCACHED prompt on every wire (Anthropic's
+        # input_tokens semantics; prompt_tokens here includes the cached
+        # and written parts) — the context in use is in + cacheRead + cacheWrite
         return {"parts": parts, "stop": stop,
-                "usage": {"in": u.get("prompt_tokens", 0),
+                "usage": {"in": max(0, u.get("prompt_tokens", 0) - cached - written),
                           "out": u.get("completion_tokens", 0),
-                          "cacheRead": det.get("cached_tokens", 0),
-                          "cacheWrite": 0}}
+                          "cacheRead": cached,
+                          "cacheWrite": written}}
 
 
-# --- Fenced fallback (tool-weak / bare completion models) -------------------
+ADAPTERS = {
+    "anthropic": AnthropicAdapter,
+    "openai-compat": OpenAICompatAdapter,
+}
 
-class FencedAdapter:
-    """codeAct heritage: no tool API — the model replies with a ```cell
-    block in plain text, parsed into a tool_call. Emulates the tool
-    interface on any completion endpoint (ADR-005 §1)."""
 
-    def __init__(self, inner):
-        self._inner = inner  # a text-only provider adapter builds the request
+# --- Profile hooks (ADR-005 §1.2): prepare / lift, driven by traits ---------
 
-    def build_request(self, messages, system, tools, model):
-        """Delegate to the base adapter with the ```cell emulation applied."""
-        instr = (
-            "\n\nTo run Python, reply with a fenced block:\n```cell\n<code>\n```\n"
-            "Reply with plain text (no block) when done."
-        )
-        return self._inner.build_request(messages, (system or "") + instr, [], model)
+_FENCED_INSTR = (
+    "\n\nTo run Python, reply with a fenced block:\n```cell\n<code>\n```\n"
+    "Reply with plain text (no block) when done."
+)
 
-    def parse_response(self, raw):
-        """Base parse, then lift fenced ```cell blocks to tool calls."""
-        reply = self._inner.parse_response(raw)
-        text = " ".join(p["text"] for p in reply["parts"] if p["type"] == "text")
-        code = _extract_fenced(text)
-        if code is not None:
-            return {"parts": [{"type": "tool_call", "id": "fenced_0",
-                               "name": "run_cell", "args": {"code": code}}],
-                    "stop": "tool", "usage": reply["usage"]}
-        return reply
+
+def _prepare(messages, system, tools, traits):
+    """Prompt-level shaping before the wire: no-system-role models get
+    the system text ahead of the first user turn; `fenced` carries the
+    tool as a ```cell instruction with no tool API on the wire; a
+    text-only model refuses file parts before any call (ADR-020 §3)."""
+    if not traits["vision"]:
+        for m in messages:
+            for p in m["parts"]:
+                if p["type"] == "file":
+                    raise UnsupportedMedia(p["media_type"], "this model (text-only)")
+    if traits["tool_mode"] == "fenced" and tools:
+        system = (system or "") + _FENCED_INSTR
+        tools = []
+    if traits["system_role"] == "first_user" and system:
+        messages = [dict(m) for m in messages]
+        for m in messages:
+            if m["role"] == "user":
+                parts = list(m["parts"])
+                i = next((i for i, p in enumerate(parts) if p["type"] == "text"), None)
+                if i is None:
+                    parts.insert(0, {"type": "text", "text": system})
+                else:
+                    parts[i] = {**parts[i], "text": system + "\n\n---\n\n" + parts[i]["text"]}
+                m["parts"] = parts
+                break
+        system = ""
+    return messages, system, tools
+
+
+_THINK_RE = re.compile(r"<think>(.*?)</think>\s*", re.S)
+# a leaked chat-template trailer: a run of <|token|> markers (with the
+# template's own words between them) at the very end of the text
+_TEMPLATE_TOKEN_RE = re.compile(r"(?:\s*<\|[^|<>]*\|>\w*)+\s*$")
+_XML_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def _lift(reply, traits):
+    """Lift what the server left in plain text: `<think>` blocks →
+    Thinking parts (kept for the trace); ```cell (fenced) or
+    `<tool_call>` JSON (xml) → ToolCall parts, stop → tool."""
+    parts = []
+    lifted = []
+    for p in reply["parts"]:
+        if p["type"] != "text":
+            parts.append(p)
+            continue
+        text = p["text"]
+        if traits["reasoning"] != "none":
+            for m in _THINK_RE.finditer(text):
+                if m.group(1).strip():
+                    parts.append({"type": "thinking", "text": m.group(1).strip()})
+            text = _THINK_RE.sub("", text)
+        if traits["tool_mode"] == "fenced":
+            code = _extract_fenced(text)
+            if code is not None:
+                lifted.append({"type": "tool_call", "id": f"fenced_{len(lifted)}",
+                               "name": "run_cell", "args": {"code": code}})
+                continue
+        elif traits["tool_mode"] == "xml":
+            calls = _XML_CALL_RE.findall(text)
+            if calls:
+                for body in calls:
+                    part = {"type": "tool_call", "id": f"xml_{len(lifted)}",
+                            "name": "run_cell", "args": {}}
+                    try:
+                        call = json.loads(body)
+                        part["name"] = call.get("name") or "run_cell"
+                        part["args"] = call.get("arguments") or call.get("args") or {}
+                    except ValueError as e:
+                        part["error"] = f"unparseable <tool_call> ({e}): {body[:200]}"
+                    lifted.append(part)
+                text = _XML_CALL_RE.sub("", text).strip()
+                if text:
+                    parts.append({"type": "text", "text": text})
+                continue
+        if text.strip():
+            parts.append({**p, "text": text})
+    if lifted:
+        return {"parts": parts + lifted, "stop": "tool", "usage": reply["usage"]}
+    if reply["stop"] == "done" and not any(p["type"] in ("text", "tool_call") for p in parts):
+        # a finished reply that carries only reasoning IS the answer —
+        # the server's template failed to split it (Kimi K3 on OpenRouter
+        # returns the final text under `reasoning` with leaked
+        # `<|close|>…` markers); silence would be worse than the text
+        think = " ".join(p["text"] for p in parts if p["type"] == "thinking" and p.get("text"))
+        think = _TEMPLATE_TOKEN_RE.sub("", think).strip()
+        if think:
+            parts = parts + [{"type": "text", "text": think}]
+    return {**reply, "parts": parts}
 
 
 def _extract_fenced(text):
@@ -282,28 +527,217 @@ def _extract_fenced(text):
     return rest[:end].strip("\n") if end != -1 else rest.strip("\n")
 
 
-ADAPTERS = {
-    "anthropic": AnthropicAdapter,
-    "openai-compat": OpenAICompatAdapter,
+# --- Backends (ADR-005 §1.1): where the model is served ----------------------
+# Each entry: `path` (appended to base_url), `credential` (header +
+# prefix + the ADR-021 `about` label/help), `finish` (request dict →
+# request dict: parameter spelling, extras, cache markers), `normalize`
+# (raw response → raw response: field-name unification). Missing hooks
+# are identity.
+
+def _thinking_reasoning_effort(req, traits):
+    if traits["thinking"] == "on":
+        req["reasoning_effort"] = "high"
+    elif traits["thinking"] == "off":
+        req["reasoning_effort"] = "none"
+    return req
+
+
+def _finish_anthropic(req, traits):
+    # budget_tokens must be ≥ 1024 and < max_tokens: a small output cap
+    # (a classify-style call) leaves no room — send no thinking block
+    budget = min(16000, req["max_tokens"] - 1)
+    if traits["thinking"] == "on" and budget >= 1024:
+        req["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    return req
+
+
+def _finish_openai(req, traits):
+    req["max_completion_tokens"] = req.pop("max_tokens")
+    return _thinking_reasoning_effort(req, traits)
+
+
+def _mark_openrouter_cache(req):
+    """Anthropic/Gemini through OpenRouter: explicit `cache_control` on
+    the system text and on the last user/assistant text part — the
+    same two breakpoints the native adapter sets."""
+    msgs = req["messages"]
+    for m in msgs:
+        if m["role"] == "system" and isinstance(m.get("content"), str):
+            m["content"] = [{"type": "text", "text": m["content"],
+                             "cache_control": {"type": "ephemeral"}}]
+            break
+    for m in reversed(msgs):
+        if m["role"] not in ("user", "assistant") or m.get("content") in (None, ""):
+            continue
+        if isinstance(m["content"], str):
+            m["content"] = [{"type": "text", "text": m["content"],
+                             "cache_control": {"type": "ephemeral"}}]
+        else:
+            last = m["content"][-1]
+            m["content"][-1] = {**last, "cache_control": {"type": "ephemeral"}}
+        break
+    return req
+
+
+def _finish_openrouter(req, traits):
+    if traits["thinking"] == "on":
+        req["reasoning"] = {"enabled": True}
+    elif traits["thinking"] == "off":
+        req["reasoning"] = {"enabled": False}
+    if traits["cache"] == "markers":
+        _mark_openrouter_cache(req)
+    return req
+
+
+def _finish_chat_template(req, traits):
+    """vLLM / llama.cpp: thinking is a chat-template switch."""
+    if traits["thinking"] != "default":
+        req["chat_template_kwargs"] = {"enable_thinking": traits["thinking"] == "on"}
+    return req
+
+
+def _finish_llamacpp(req, traits):
+    req["cache_prompt"] = True
+    return _finish_chat_template(req, traits)
+
+
+def _normalize_openai_compat(raw):
+    """`reasoning` (OpenRouter/Together) → `reasoning_content`;
+    DeepSeek's `prompt_cache_hit_tokens` → `cached_tokens`."""
+    for ch in raw.get("choices", []) or []:
+        msg = ch.get("message") or {}
+        if msg.get("reasoning") and not msg.get("reasoning_content"):
+            msg["reasoning_content"] = msg["reasoning"]
+    u = raw.get("usage") or {}
+    details = u.get("prompt_tokens_details") or {}
+    if "prompt_cache_hit_tokens" in u and not details.get("cached_tokens"):
+        u["prompt_tokens_details"] = {**details, "cached_tokens": u["prompt_cache_hit_tokens"]}
+    return raw
+
+
+_BEARER = {"header": "Authorization", "prefix": "Bearer "}
+
+# backends that can write explicit cache breakpoints; elsewhere a
+# profile's `cache: "markers"` resolves to "auto" (§1.5)
+_MARKER_BACKENDS = ("anthropic", "openrouter")
+
+BACKENDS = {
+    "anthropic": {"path": "/v1/messages", "headers": {"anthropic-version": "2023-06-01"},
+                  "credential": {"header": "x-api-key", "label": "Anthropic API key",
+                                 "help": "https://console.anthropic.com/settings/keys"},
+                  "finish": _finish_anthropic},
+    "openai": {"path": "/chat/completions",
+               "credential": {**_BEARER, "label": "OpenAI API key",
+                              "help": "https://platform.openai.com/api-keys"},
+               "finish": _finish_openai, "normalize": _normalize_openai_compat},
+    "openrouter": {"path": "/chat/completions",
+                   "credential": {**_BEARER, "label": "OpenRouter API key",
+                                  "help": "https://openrouter.ai/settings/keys"},
+                   "finish": _finish_openrouter, "normalize": _normalize_openai_compat},
+    "gemini": {"path": "/chat/completions",
+               "credential": {**_BEARER, "label": "Google AI Studio API key",
+                              "help": "https://aistudio.google.com/apikey"},
+               "finish": _thinking_reasoning_effort, "normalize": _normalize_openai_compat},
+    "deepseek": {"path": "/chat/completions",
+                 "credential": {**_BEARER, "label": "DeepSeek API key",
+                                "help": "https://platform.deepseek.com/api_keys"},
+                 "normalize": _normalize_openai_compat},
+    "groq": {"path": "/chat/completions",
+             "credential": {**_BEARER, "label": "Groq API key",
+                            "help": "https://console.groq.com/keys"},
+             "normalize": _normalize_openai_compat},
+    "together": {"path": "/chat/completions",
+                 "credential": {**_BEARER, "label": "Together API key",
+                                "help": "https://api.together.ai/settings/api-keys"},
+                 "normalize": _normalize_openai_compat},
+    "vllm": {"path": "/chat/completions", "credential": {**_BEARER, "label": "vLLM API key"},
+             "finish": _finish_chat_template, "normalize": _normalize_openai_compat},
+    "llamacpp": {"path": "/chat/completions",
+                 "credential": {**_BEARER, "label": "llama.cpp API key"},
+                 "finish": _finish_llamacpp, "normalize": _normalize_openai_compat},
+    "ollama": {"path": "/chat/completions", "credential": {**_BEARER, "label": "Ollama API key"},
+               "normalize": _normalize_openai_compat},
+    "generic": {"path": "/chat/completions", "credential": {**_BEARER, "label": "API key"},
+                "normalize": _normalize_openai_compat},
 }
 
+# well-known hosts → backend, when the tier names none
+_HOST_BACKENDS = (
+    ("api.anthropic.com", "anthropic"), ("openrouter.ai", "openrouter"),
+    ("api.openai.com", "openai"), ("generativelanguage.googleapis.com", "gemini"),
+    ("api.deepseek.com", "deepseek"), ("api.groq.com", "groq"),
+    ("api.together.xyz", "together"),
+)
 
-def _build_adapter(provider, fenced):
-    """Adapter for a tier's provider; `fenced` wraps it in the ```cell
-    emulation."""
-    base = ADAPTERS[provider]()
-    return FencedAdapter(base) if fenced else base
+
+def _host(base_url):
+    return base_url.split("//", 1)[-1].split("/", 1)[0]
+
+
+def _backend_name(prov):
+    name = prov.get("backend")
+    if name:
+        if name not in BACKENDS:
+            raise ConfigError(f"unknown backend {name!r}")
+        return name
+    if prov["provider"] == "anthropic":
+        return "anthropic"
+    host = _host(prov.get("base_url", ""))
+    for h, b in _HOST_BACKENDS:
+        if host == h and b != "anthropic":
+            return b
+    return "generic"
+
+
+def _credential(prov, backend):
+    """The ADR-021 §1 credential: ref + header + `about` — or None when
+    the tier names no key (`api_key_ref: null`, a local server)."""
+    ref = prov.get("api_key_ref")
+    if not ref:
+        return None
+    spec = BACKENDS[backend]["credential"]
+    host = _host(prov["base_url"])
+    label = spec["label"] if spec["label"] != "API key" else f"{host} API key"
+    cred = {"ref": ref, "header": spec["header"],
+            "about": {"label": label, "hosts": [host], "help": spec.get("help")}}
+    if spec.get("prefix"):
+        cred["prefix"] = spec["prefix"]
+    return cred
+
+
+def _effective(traits, backend):
+    """Traits as this backend can honor them: `cache: "markers"` needs a
+    backend that writes breakpoints, else it is the implicit prefix
+    cache (`auto`)."""
+    if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
+        traits = {**traits, "cache": "auto"}
+    return traits
+
+
+def _resolve(tier):
+    prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
+    if prov.get("provider") not in ADAPTERS:
+        raise ConfigError(f"llm.tier.{tier}: unknown provider {prov.get('provider')!r}")
+    name, traits = _resolve_traits(prov)
+    backend = _backend_name(prov)
+    return prov, name, backend, _effective(traits, backend)
 
 
 _TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
                   # the conversation thread (live-caught with urlopen)
 
 _EXCERPT = 400
-# where a human gets the key, per provider (ADR-021 §1 `about.help`)
-_KEY_HELP = {
-    "gemini": "https://aistudio.google.com/apikey",
-    "openai": "https://platform.openai.com/api-keys",
-}
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def profile(tier="codegen"):
+    """The resolved profile of a tier: `{profile, backend, model,
+    traits}` — traits are the loop's budget inputs (`context_window`,
+    `max_output`, `prompt_style`, `instructions_at`, `tool_mode`,
+    `malformed_retries`; ADR-005 §1.3)."""
+    prov, name, backend, traits = _resolve(tier)
+    return {"profile": name, "backend": backend, "model": prov["model"],
+            "traits": traits}
 
 
 @span(kind="getter")  # noqa: F821 - guest global
@@ -320,39 +754,31 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     "classify" (fast/cheap — one-off judgments) or "vision" (file
     reads). `tools`: `[{name,
     description, input_schema?}]`, empty for plain completions.
-    `max_tokens` overrides the default 32768 output cap (lower it for
+    `max_tokens` overrides the profile's output cap (lower it for
     small classify-style calls). Returns `{parts, stop:
     "done"|"tool"|"length", usage: {in, out}}`; a ≥400 provider
     status raises `LlmError(status, body_excerpt)`."""
-    prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
-    adapter = _build_adapter(prov["provider"], prov.get("fenced", False))
-    req = adapter.build_request(messages, system, tools or [], prov["model"])
+    prov, _name, backend, traits = _resolve(tier)
     if max_tokens:
-        req["max_tokens"] = max_tokens
-    # `about` (ADR-021 §1): the descriptor the host shows the human
-    # when the key is missing — the one credential the agent cannot
-    # ask for itself.
-    host = prov["base_url"].split("//", 1)[-1].split("/", 1)[0]
-    if prov["provider"] == "anthropic":
-        url = prov["base_url"].rstrip("/") + "/v1/messages"
-        headers = {"anthropic-version": "2023-06-01"}
-        credential = {"ref": prov["api_key_ref"], "header": "x-api-key",
-                      "about": {"label": "Anthropic API key", "hosts": [host],
-                                "help": "https://console.anthropic.com/settings/keys"}}
-    else:
-        url = prov["base_url"].rstrip("/") + "/chat/completions"
-        headers = {}
-        credential = {"ref": prov["api_key_ref"], "header": "Authorization",
-                      "prefix": "Bearer ",
-                      "about": {"label": prov["provider"] + " API key",
-                                "hosts": [host],
-                                "help": _KEY_HELP.get(prov["provider"])}}
-    resp = effect("http.post", {  # noqa: F821 - guest global
-        "url": url, "headers": headers, "json": req,
-        "timeout": _TIMEOUT_S, "credential": credential})
+        traits = {**traits, "max_output": max_tokens}
+    adapter = ADAPTERS[prov["provider"]]()
+    messages, system, tools = _prepare(messages, system, tools or [], traits)
+    req = adapter.build_request(messages, system, tools, prov["model"], traits)
+    req.update(traits["sampling"])
+    be = BACKENDS[backend]
+    req = be.get("finish", lambda r, _t: r)(req, traits)
+    req.update(prov.get("options") or {})
+    payload = {"url": prov["base_url"].rstrip("/") + be["path"],
+               "headers": dict(be.get("headers", {})), "json": req,
+               "timeout": _TIMEOUT_S}
+    cred = _credential(prov, backend)
+    if cred:
+        payload["credential"] = cred
+    resp = effect("http.post", payload)  # noqa: F821 - guest global
     if resp["status"] >= 400:
         raise LlmError(resp["status"], resp["body"][:_EXCERPT])
-    return adapter.parse_response(json.loads(resp["body"]))
+    raw = be.get("normalize", lambda r: r)(json.loads(resp["body"]))
+    return _lift(adapter.parse_response(raw), traits)
 
 
 @span(kind="getter")  # noqa: F821 - guest global

@@ -7,7 +7,8 @@ cell — a change never needs a restart or a file edit. `cfg.list(
 baoSpaceConfig)` shows everything; `cfg.get(key)`; `cfg.set(key,
 value)`; `cfg.set_model("search.provider.websearch",
 "gemini-3.7-flash")` swaps only the model. Provider values are
-`{provider, model, base_url, api_key_ref}`. API keys are NOT config
+`{provider, model, base_url, api_key_ref}` (+ `backend`/`profile`/
+`options` on LLM tiers). API keys are NOT config
 (the Credentials flow); there is no unset — set a value to null."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
@@ -17,7 +18,8 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # fresh space from the runtime's defaults. `config.get`/`config.set`
 # read and write that row through the host; `list` reads the dataset
 # itself through any@v1 (the config child of the bao/v1 bundle).
-# Provider values are `{provider, model, base_url, api_key_ref}`.
+# Provider values are `{provider, model, base_url, api_key_ref}` (+
+# `backend`/`profile`/`options` on LLM tiers, ADR-005 §1.1).
 
 _BUNDLE = "bao/v1"
 _CONFIG_SEED = "bao/config/v1"
@@ -48,7 +50,9 @@ def set(key, value):  # noqa: A001
     """Persist `value` under `key`; live for the next cell.
 
     Provider keys take the whole `{provider, model, base_url,
-    api_key_ref}` object — `set_model` changes only the model.
+    api_key_ref, backend?, profile?, options?}` object — `set_model`
+    changes only the model. `api_key_ref: null` = a keyless local
+    server.
     Refused for secret refs."""
     effect("config.set", {"key": key, "value": value})  # noqa: F821
     return {"key": key, "value": value}
