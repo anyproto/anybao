@@ -282,8 +282,12 @@ with the error digest — the model self-corrects; no fix-loop (settled).
      break with nothing running cancels any deferred (not-yet-
      started) messages for that chat and is otherwise a no-op.
      Clients render it as a marker in the thread, not a bubble.
-  2. **The control API**: `POST /break/<chat>` with `{"hard": bool}`
-     (default soft, same grace); 400 when nothing runs there.
+  2. **The control API**: `POST /break/<runId>` with `{"hard":
+     bool}` (default soft, same grace) — the operator's tool, keyed
+     by the id every trace, log line and Stopped-bubble `debugLink`
+     shows, and reaching ANY run in flight (chat, trigger, control),
+     not just conversations; 400 for an id not in flight. It writes
+     nothing to the chat — the chat record is the client's wire.
   The flag is the run's identity: the watcher hands out the run's own
   `Arc`, a timer that fires after the run ended sets a dead letter.
   On the flag the runner's epoch callback traps the guest at the next

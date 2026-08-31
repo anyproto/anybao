@@ -1223,6 +1223,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
+        live_runs: Mutex::new(BTreeMap::new()),
     });
 
     let mut threads = vec![
@@ -1353,6 +1354,11 @@ pub struct RunCtx {
     /// tombstoned device (ADR-015 §4): unlike standby, a pruned device
     /// fires NOTHING — not even its pins
     pub pruned: bool,
+    /// every run in flight on this serve, by run id — chat, trigger
+    /// and control runs alike. The control API's `POST /break/<runId>`
+    /// resolves here (ADR-005 §3); entries live exactly as long as
+    /// `run_program` does.
+    pub live_runs: Mutex<BTreeMap<String, crate::triggers::LiveRun>>,
 }
 
 impl RunCtx {
@@ -1481,7 +1487,16 @@ impl RunCtx {
         let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
-        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0)?;
+        self.live_runs.lock().unwrap().insert(
+            run_id.clone(),
+            crate::triggers::LiveRun {
+                mailbox: mailbox.clone(),
+                interrupt: interrupt.clone(),
+            },
+        );
+        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
+        self.live_runs.lock().unwrap().remove(&run_id);
+        let mut outcome = outcome?;
         // ADR-023 §3: a run whose trace could not be landed is a failed
         // run, named — never a silent gap
         let summary = outcome
@@ -1534,7 +1549,16 @@ impl RunCtx {
         let run_id = broker.writer.run_id();
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
-        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0)?;
+        self.live_runs.lock().unwrap().insert(
+            run_id.clone(),
+            crate::triggers::LiveRun {
+                mailbox: mailbox.clone(),
+                interrupt: interrupt.clone(),
+            },
+        );
+        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
+        self.live_runs.lock().unwrap().remove(&run_id);
+        let mut outcome = outcome?;
         let summary = outcome
             .broker
             .writer
@@ -2693,22 +2717,24 @@ fn handle_control(
                 "winner": winner,
             }))
         }
-        // break the live run on a chat (ADR-005 §3): body `{"hard": bool}`
-        ("POST", ["break", chat]) => {
+        // break a run in flight — ANY run: chat, trigger, control
+        // (ADR-005 §3). The id is what every trace, log line and
+        // Stopped-bubble debugLink shows. Body `{"hard": bool}`.
+        ("POST", ["break", run_id]) => {
             let hard = serde_json::from_str::<Value>(body)
                 .ok()
                 .and_then(|b| b.get("hard").and_then(|h| h.as_bool()))
                 .unwrap_or(false);
-            let action = shared
-                .watcher
+            let live = ctx
+                .live_runs
                 .lock()
                 .unwrap()
-                .break_chat(chat, hard)
-                .context("no live run on that chat")?;
-            if let WatchAction::Break { live, hard } = &action {
-                on_break(chat, live, *hard);
-            }
-            Ok(json!({"chat": chat, "hard": hard}))
+                .get(*run_id)
+                .cloned()
+                .context("no run in flight with that id")?;
+            crate::triggers::break_live_run(&live, hard);
+            on_break(run_id, &live, hard);
+            Ok(json!({"run": run_id, "hard": hard}))
         }
         ("GET", ["triggers"]) => Ok(Value::Array(reg.values().map(rollup).collect())),
         ("GET", ["triggers", id]) => {

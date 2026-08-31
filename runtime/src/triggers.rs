@@ -721,6 +721,22 @@ pub fn is_control(record: &Value) -> bool {
         .is_some_and(|k| !k.is_empty())
 }
 
+/// Break one live run — the shared mechanics behind both setters
+/// (ADR-005 §3): soft queues the mailbox `break` item (the caller arms
+/// the grace escalation); hard sets the flag only — a trapped run
+/// could never use a mailbox item, it would just buy one billed,
+/// discarded wrap-up call.
+pub fn break_live_run(live: &LiveRun, hard: bool) {
+    if hard {
+        live.interrupt.store(true, Ordering::Relaxed);
+    } else {
+        live.mailbox
+            .lock()
+            .unwrap()
+            .push_back(json!({"kind": "break", "hard": false}));
+    }
+}
+
 impl Watcher {
     pub fn new(self_name: impl Into<String>) -> Self {
         Watcher {
@@ -867,25 +883,8 @@ impl Watcher {
         WatchAction::Start
     }
 
-    /// Break the live run on `chat_id` (the control API's `POST
-    /// /break/<chat>`): None when nothing is running there.
-    pub fn break_chat(&mut self, chat_id: &str, hard: bool) -> Option<WatchAction> {
-        let live = self.live.get(chat_id)?.clone();
-        Some(self.break_live(live, hard))
-    }
-
     fn break_live(&mut self, live: LiveRun, hard: bool) -> WatchAction {
-        if hard {
-            // flag only: the guest traps at the next tick, so a mailbox
-            // item could at most buy one billed-and-discarded wrap-up
-            // call (ADR-005 §3)
-            live.interrupt.store(true, Ordering::Relaxed);
-        } else {
-            live.mailbox
-                .lock()
-                .unwrap()
-                .push_back(json!({"kind": "break", "hard": false}));
-        }
+        break_live_run(&live, hard);
         WatchAction::Break { live, hard }
     }
 
@@ -1533,13 +1532,17 @@ mod tests {
         }
         assert!(live.interrupt.load(Ordering::Relaxed));
         assert!(live.mailbox.lock().unwrap().is_empty());
-        // the control API path: same mechanics, None when nothing runs
-        assert!(w.break_chat("nope", false).is_none());
-        assert!(matches!(
-            w.break_chat("c1", false),
-            Some(WatchAction::Break { hard: false, .. })
-        ));
-        w.conversation_done("c1");
-        assert!(w.break_chat("c1", true).is_none());
+        // the control API path shares the mechanics as a free fn,
+        // keyed by run id in the serve's live_runs registry
+        let l2 = LiveRun::default();
+        break_live_run(&l2, false);
+        assert_eq!(
+            l2.mailbox.lock().unwrap().pop_front().unwrap()["kind"],
+            "break"
+        );
+        assert!(!l2.interrupt.load(Ordering::Relaxed));
+        break_live_run(&l2, true);
+        assert!(l2.interrupt.load(Ordering::Relaxed));
+        assert!(l2.mailbox.lock().unwrap().is_empty());
     }
 }
