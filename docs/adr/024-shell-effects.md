@@ -218,8 +218,9 @@ JSON-escaped newlines (≈1.3× the tokens and harder to read).
 kernel namespace, its result is bound where the next `run_cell` can
 reach it:
 
-- `sh.last` — always rebound to the most recent `bash` result:
-  `.out`, `.err`, `.code`, `.ok`, `.lines()`. Namespaced on the `sh`
+- `sh.last` — always rebound to the most recent result, from `bash`
+  or from `sh()` in a cell: `.out`, `.err`, `.code`, `.ok`,
+  `.lines()`, `.timed_out`, `.truncated`. Namespaced on the `sh`
   facade so it never collides with a name the model chose itself.
 - `bash(command, as="tests")` — optional explicit binding, IPython's
   `x = !cmd`.
@@ -242,9 +243,18 @@ callable — `sh("cmd", cwd=None, timeout_s=None, stdin=None, env=None,
 check=False)` returns the result object above (`check=True` raises on
 non-zero exit); `sh.lines("cmd")` is the one-liner for
 split-and-strip; `sh.run(...)` is the raw dict for programs that want
-it; `sh.spawn/poll/kill` per §1. The result's `__repr__` prints stdout
-raw with an exit line, so a cell ending in `sh("git status")` reads
-like a terminal. No shell DSL (`sh.git("status")`-style argv builders
+it; `sh.spawn/poll/kill` per §1. `ShellError` (the `check=True`
+exception, `.result` attached) is bound beside them. The result's
+`__repr__` prints stdout raw, then stderr, then an `[exit N]` /
+`[timed out …]` line only when there is one, so a cell ending in
+`sh("git status")` reads like a terminal. `fs.read` returns the text
+as a `str` subclass carrying `.size`/`.lines`/`.truncated`;
+`fs.read_bytes`/`fs.write_bytes` carry the base64 leg so cells see
+`bytes`; `fs.edit` returns the replacement count; `fs.list` the
+entries. The `sh`/`fs` globals are bound in the CELL namespace only —
+`use()` modules go without (programs reach the shell through cells:
+the `bash` tool is a subcell) — and the feature probe is one
+`runtime.get` record per run, not per cell or module. No shell DSL (`sh.git("status")`-style argv builders
 or a plumbum-like pipe algebra): models write orders of magnitude
 less of it than raw bash, pipes get awkward, and every command
 becomes a translation step. Docstrings are the doc (ADR-010):
