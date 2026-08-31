@@ -509,9 +509,11 @@ def _thinking_reasoning_effort(req, traits):
 
 
 def _finish_anthropic(req, traits):
-    if traits["thinking"] == "on":
-        req["thinking"] = {"type": "enabled",
-                           "budget_tokens": max(1024, min(16000, req["max_tokens"] - 1))}
+    # budget_tokens must be ≥ 1024 and < max_tokens: a small output cap
+    # (a classify-style call) leaves no room — send no thinking block
+    budget = min(16000, req["max_tokens"] - 1)
+    if traits["thinking"] == "on" and budget >= 1024:
+        req["thinking"] = {"type": "enabled", "budget_tokens": budget}
     return req
 
 

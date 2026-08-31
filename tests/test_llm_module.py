@@ -404,6 +404,12 @@ def test_backend_openrouter_cache_markers_and_thinking():
 def test_backend_anthropic_thinking_budget():
     r = LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": 4000}, T(thinking="on"))
     assert r["thinking"] == {"type": "enabled", "budget_tokens": 3999}
+    r = LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": 40000}, T(thinking="on"))
+    assert r["thinking"]["budget_tokens"] == 16000
+    # a cap too small for the 1024 floor: no thinking block rather than a 400
+    for cap in (512, 1024, 1025):
+        r = LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": cap}, T(thinking="on"))
+        assert ("thinking" in r) == (cap - 1 >= 1024), cap
     assert "thinking" not in LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": 4000}, T())
 
 
