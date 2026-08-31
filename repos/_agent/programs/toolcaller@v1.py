@@ -385,7 +385,7 @@ def _run_model_cells(parts, results):
         sid = effect("span.begin",  # noqa: F821 - guest global
                      {"name": "cell",
                       "input": {"cell": cid,
-                                "preview": " ".join(code.split())[:96]}})["span"]
+                                "preview": " ".join(code.split())[:48]}})["span"]
         cr = subcell(code, cid)  # noqa: F821
         # the cell's failure rides its span-end record (ADR-003 §4b) —
         # type + message like @span; the traceback stays digest text

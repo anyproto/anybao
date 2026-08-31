@@ -73,7 +73,7 @@ the control API's `GET /status` alike — never a parallel counter.
 `cells`/`cell` come from the same entry's `RunActivity` (an Arc the
 run's Broker shares with its `LiveRun`): every tool call already
 crosses the host as a `cell` span begin (`bash` spans carry their
-command; the toolcaller adds a collapsed ≤96-char `preview` to cell
+command; the toolcaller adds a collapsed ≤48-char `preview` to cell
 span inputs), so the broker counts spans and keeps the newest
 preview. Deterministic host observation of what the model is doing —
 no model in the loop, same rule as the rest of layer 1.
@@ -130,21 +130,24 @@ A `baoStatus` atom fed by the ONE existing bus subscription
 (`ui.*`/`process.*` stream) with `bao.status` as a third filter,
 plus a staleness clock. Two consumers:
 
-- **Status bar** (the BOB-73 deliverable): a shell-mounted source in
-  the activity region — a BaoFace as the item's icon (happy when
-  idle; typing mood with a slow breathe-pulse while working — the
-  identity + the established "alive" animation, chosen over an
-  anonymous pulsing dot). Label while working: the line, else the
-  newest cell's preview, else `run.title`; the tool-call count rides
-  the tooltip so the bar stays quiet. Nothing rendered when offline.
-  Cold start: no replay on the bus, so a fresh window is "unknown"
-  for up to one beat (≤10s) — render nothing until the first beat.
+- **Status bar** (the BOB-73 deliverable, and the ONE place activity
+  detail renders): a shell-mounted source LEADING the whole cluster
+  (leftmost, before the view facts — owner call) — a BaoFace as the
+  item's icon (happy when idle; typing mood with a slow breathe-pulse
+  while working — the identity + the established "alive" animation,
+  chosen over an anonymous pulsing dot). Label while working: the
+  line, else the newest cell's preview, else `run.title`; the
+  tool-call count rides the tooltip so the bar stays quiet. Nothing
+  rendered when offline. Cold start: no replay on the bus, so a fresh
+  window is "unknown" for up to one beat (≤10s) — render nothing
+  until the first beat.
 - **Chat typing row**: keeps its trailing-`done:false` trigger (which
-  chat is waiting) but presence replaces the 10-minute crashed-run
-  heuristic — bao offline/idle with no live run kills the row in
-  ~30s instead. The bounce gives way to the same breathe-pulse; the
-  text becomes real work — the line, else the cell preview, else the
-  verb pool — with the live tool-call counter beside the name.
+  chat is waiting) and its verb pool — deliberately NO line / cell
+  preview / counter in chat (owner call: the bar is enough; the row
+  only says a reply is coming). Presence still replaces the
+  10-minute crashed-run heuristic — bao offline/idle with no live
+  run kills the row in ~30s — and the bounce gives way to the same
+  breathe-pulse.
 
 ADR-005 `done:false` progress bubbles are NOT migrated here —
 presence/status only; the narration migration stays a separate

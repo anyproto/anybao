@@ -90,7 +90,7 @@ impl PresenceState {
 pub type SharedActivity = Arc<RunActivity>;
 
 /// Preview budget for `run.cell` — one glanceable line, not the code.
-const CELL_PREVIEW_CHARS: usize = 96;
+const CELL_PREVIEW_CHARS: usize = 48;
 
 #[derive(Default)]
 pub struct RunActivity {
@@ -1807,7 +1807,7 @@ mod tests {
         let a = RunActivity::default();
         a.note_cell(Some(&"word ".repeat(40)));
         let p = a.preview().unwrap();
-        assert!(p.chars().count() <= 97, "96 chars + ellipsis at most");
+        assert!(p.chars().count() <= 49, "48 chars + ellipsis at most");
         assert!(p.ends_with('…'));
         // a whitespace-only cell counts but shows no preview
         a.note_cell(Some("   "));
