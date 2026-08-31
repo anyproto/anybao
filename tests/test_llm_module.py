@@ -337,6 +337,19 @@ def test_lift_xml_tool_calls_and_think_tags():
     assert bad["stop"] == "tool" and "unparseable" in bad["parts"][0]["error"]
 
 
+def test_lift_reasoning_only_done_reply_becomes_the_answer():
+    resp = _openai_text(None, reasoning_content=(
+        "The sum is **639**<|close|>response<|sep|><|close|>message<|sep|>"))
+    r = LLM["_lift"](LLM["OpenAICompatAdapter"]().parse_response(resp), T())
+    assert r["stop"] == "done"
+    assert [p["type"] for p in r["parts"]] == ["thinking", "text"]
+    assert r["parts"][1]["text"] == "The sum is **639**"
+    # a reasoning-only LENGTH stop is a truncation, not an answer
+    cut = {**resp, "choices": [{**resp["choices"][0], "finish_reason": "length"}]}
+    r = LLM["_lift"](LLM["OpenAICompatAdapter"]().parse_response(cut), T())
+    assert [p["type"] for p in r["parts"]] == ["thinking"] and r["stop"] == "length"
+
+
 def test_lift_native_leaves_text_alone():
     r = LLM["_lift"](LLM["OpenAICompatAdapter"]().parse_response(
         _openai_text("```cell\nx\n```")), T())

@@ -142,7 +142,11 @@ trait, and the backend carries the provider's resend field
 "fenced"` trait (the codeAct heritage: a ```cell block parsed out of
 plain text emulates the tool interface on any completion endpoint);
 `xml` covers the Hermes `<tool_call>` convention when a server template
-does not lift it.
+does not lift it. A `done` reply that carries only reasoning IS the
+answer (a template that failed to split thinking from text — Kimi K3
+through OpenRouter, with leaked `<|close|>…` markers): `lift` adds the
+reasoning text as the Text part, trailer stripped; a `length` stop is
+left as the truncation it is.
 
 **1.5 Caching.** Every OpenAI-compatible server caches an identical
 prefix implicitly (`cache: "auto"`), so the contract is prefix

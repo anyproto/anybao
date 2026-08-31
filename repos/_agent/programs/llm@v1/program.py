@@ -455,6 +455,9 @@ def _prepare(messages, system, tools, traits):
 
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>\s*", re.S)
+# a leaked chat-template trailer: a run of <|token|> markers (with the
+# template's own words between them) at the very end of the text
+_TEMPLATE_TOKEN_RE = re.compile(r"(?:\s*<\|[^|<>]*\|>\w*)+\s*$")
 _XML_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
 
@@ -501,6 +504,15 @@ def _lift(reply, traits):
             parts.append({**p, "text": text})
     if lifted:
         return {"parts": parts + lifted, "stop": "tool", "usage": reply["usage"]}
+    if reply["stop"] == "done" and not any(p["type"] in ("text", "tool_call") for p in parts):
+        # a finished reply that carries only reasoning IS the answer —
+        # the server's template failed to split it (Kimi K3 on OpenRouter
+        # returns the final text under `reasoning` with leaked
+        # `<|close|>…` markers); silence would be worse than the text
+        think = " ".join(p["text"] for p in parts if p["type"] == "thinking" and p.get("text"))
+        think = _TEMPLATE_TOKEN_RE.sub("", think).strip()
+        if think:
+            parts = parts + [{"type": "text", "text": think}]
     return {**reply, "parts": parts}
 
 
