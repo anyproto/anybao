@@ -306,25 +306,43 @@ def _tally(stats, usage):
         stats[dst] += usage.get(src, 0)
 
 
-def _wrapup(messages, llm, system, tier, reason, stats):
-    # A length-truncated assistant reply can carry a tool_call that
-    # never ran; the provider rejects a tool_use with no tool_result at
-    # the head of the next message (ADR-005 §2), so answer each
-    # dangling call with a synthetic error result first.
-    parts = []
+def _dangling(messages, reason):
+    """Synthetic error results for tool calls in the last assistant
+    message that never ran — the provider rejects a tool_use with no
+    tool_result at the head of the next message (ADR-005 §2)."""
     last = messages[-1] if messages else {}
-    if last.get("role") == "assistant":
-        parts = [{"type": "tool_result", "call_id": p["id"],
-                  "content": f"not executed: {reason}", "is_error": True}
-                 for p in last["parts"] if p["type"] == "tool_call"]
+    if last.get("role") != "assistant":
+        return []
+    return [{"type": "tool_result", "call_id": p["id"],
+             "content": f"not executed: {reason}", "is_error": True}
+            for p in last["parts"] if p["type"] == "tool_call"]
+
+
+def _wrapup(messages, llm, system, tier, reason, stats, tools):
+    # The wrap-up call keeps the SAME tool list as every other turn:
+    # the tools are part of the cached prompt prefix, and dropping them
+    # here made the biggest prompt of the run — the last one — a full
+    # cache miss (105k uncached tokens, 7% of a 109-turn run's cost).
+    # Text-only is asked for, not enforced by the wire; a model that
+    # answers with a tool call anyway gets one more, tool-less call.
+    parts = _dangling(messages, reason)
     parts.append({"type": "text", "text":
         f"[{reason}] No more cells. Summarize what you did, what is done, "
         f"and what is still pending."})
     messages.append({"role": "user", "parts": parts})
-    reply = llm.chat(messages, system=system, tier=tier, tools=[])
+    reply = llm.chat(messages, system=system, tier=tier, tools=tools)
     _tally(stats, reply.get("usage", {}))
     messages.append({"role": "assistant", "parts": reply["parts"]})
-    return _texts(reply["parts"])
+    texts = _texts(reply["parts"])
+    if not texts and any(p["type"] == "tool_call" for p in reply["parts"]):
+        parts = _dangling(messages, reason)
+        parts.append({"type": "text", "text": "Text only — no tool calls. Summarize."})
+        messages.append({"role": "user", "parts": parts})
+        reply = llm.chat(messages, system=system, tier=tier, tools=[])
+        _tally(stats, reply.get("usage", {}))
+        messages.append({"role": "assistant", "parts": reply["parts"]})
+        texts = _texts(reply["parts"])
+    return texts
 
 
 def _run_model_cells(parts, results):
@@ -717,7 +735,7 @@ def main(args):
         if malformed > traits["malformed_retries"]:
             wrapup_reason = wrapup_reason or f"{malformed} malformed tool calls"
         if wrapup_reason:
-            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats)
+            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats, tools)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break
@@ -738,7 +756,7 @@ def main(args):
             break
         if reply["stop"] == "length":
             replies = _wrapup(messages, llm, system, tier,
-                              "response length limit", stats)
+                              "response length limit", stats, tools)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break

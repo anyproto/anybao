@@ -222,9 +222,13 @@ drain mailbox (mailbox.drain syscall) → use("llm@v1").chat → stop?
   done   → finalize: replies = assistant text, c.chat_send(done=True),
            append the turn via any@v1 (ADR-006 shapes — the write lands
            in the trace), return
-  length → ask the model to wrap up text-only (a final constrained
-           call), chat_send the summary (v1's max_tokens handling,
-           kept). A truncated reply can carry a tool_call that never
+  length → ask the model to wrap up text-only (a final call with the
+           SAME tool list — the tools are part of the cached prompt
+           prefix; dropping them made the run's largest prompt a
+           full cache miss. Text-only is asked, not enforced: a reply
+           that still calls a tool gets its dangling result answered
+           and one more, tool-less call — amendment 2026-08-31),
+           chat_send the summary (v1's max_tokens handling, kept). A truncated reply can carry a tool_call that never
            ran; the wrap-up user message MUST lead with a synthetic
            is_error ToolResult per dangling call ("not executed:
            <reason>") before the summarize text — the provider rejects

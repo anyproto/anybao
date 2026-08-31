@@ -204,7 +204,28 @@ def test_turn_ceiling_wraps_up_not_cuts():
     assert out["stop"] == "wrapup" and out["replies"] == ["summary"]
     wrap_msg = w.llm_calls[-1]["messages"][-1]
     assert "turn ceiling" in wrap_msg["parts"][0]["text"]
-    assert w.llm_calls[-1]["tools"] == []                        # no more cells
+    # the tool list stays: it is part of the cached prompt prefix
+    assert [t["name"] for t in w.llm_calls[-1]["tools"]] == ["run_cell"]
+
+
+def test_wrapup_that_answers_with_a_tool_call_gets_one_toolless_retry():
+    # the wrap-up asks for text; a model that calls a tool anyway is
+    # answered (dangling call) and asked once more without tools
+    stubborn = {"parts": [{"type": "tool_call", "id": "cell_late", "name": "run_cell",
+                           "args": {"code": "x"}}],
+                "stop": "tool", "usage": {"in": 1, "out": 1}}
+    w = World([tool_reply(), stubborn, done_reply("summary")],
+              cells=[{"ok": True, "prints": [], "last": None, "error": None}])
+    out = run(w, maxTurns=1)
+    assert out["stop"] == "wrapup" and out["replies"] == ["summary"]
+    assert len(w.llm_calls) == 3
+    assert [t["name"] for t in w.llm_calls[1]["tools"]] == ["run_cell"]
+    assert w.llm_calls[2]["tools"] == []
+    retry = w.llm_calls[2]["messages"][-1]
+    assert retry["parts"][0] == {"type": "tool_result", "call_id": "cell_late",
+                                 "content": "not executed: turn ceiling (1)",
+                                 "is_error": True}
+    assert "Text only" in retry["parts"][-1]["text"]
 
 
 def test_length_stop_with_dangling_tool_call_gets_synthetic_result():
