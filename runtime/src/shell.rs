@@ -55,9 +55,14 @@ const LOGIN_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Ctx {
     pub interrupt: Arc<AtomicBool>,
     pub deadline: Option<Instant>,
-    /// The shell program: `$SHELL` from the serve's environment,
-    /// `/bin/sh` when unset. Always invoked `-c <cmd>`.
+    /// The program that runs commands: bash, resolved on the login
+    /// PATH (the tool is called `bash` and the model writes bash —
+    /// heredocs, `$(...)`, arrays — whatever the user's own shell is);
+    /// `/bin/sh` only when no bash exists. Always invoked `-c <cmd>`.
     pub shell: String,
+    /// The user's login shell (`$SHELL`): the environment snapshot
+    /// comes from it, commands do not run in it.
+    pub login_shell: String,
     /// Run commands in the environment snapshotted once from a login
     /// shell (ADR-024 resolved Q1) instead of the serve's own. Tests
     /// turn it off for determinism.
@@ -66,20 +71,43 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn from_env(interrupt: Arc<AtomicBool>, deadline: Option<Instant>) -> Self {
+        let login_shell = login_shell_from_env();
         Ctx {
             interrupt,
             deadline,
-            shell: shell_from_env(),
+            shell: command_shell(login_env(&login_shell).and_then(|e| e.get("PATH").cloned())),
+            login_shell,
             login_env: true,
         }
     }
 }
 
-pub fn shell_from_env() -> String {
+/// `$SHELL`, `/bin/sh` when unset — the LOGIN shell (env snapshot).
+pub fn login_shell_from_env() -> String {
     match std::env::var("SHELL") {
         Ok(s) if !s.is_empty() => s,
         _ => "/bin/sh".into(),
     }
+}
+
+/// The bash that runs commands: first `bash` on `path` (the login
+/// PATH — nix/homebrew bash before the system one), then the usual
+/// system locations, else `/bin/sh` (and the model's bashisms fail
+/// loudly with the shell's own message).
+pub fn command_shell(path: Option<String>) -> String {
+    let env_path = path.unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    let dirs = env_path
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .chain(["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"].map(PathBuf::from));
+    for dir in dirs {
+        let p = dir.join("bash");
+        if p.is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    "/bin/sh".into()
 }
 
 // --- login environment snapshot ----------------------------------------------
@@ -170,7 +198,8 @@ fn parse_env_snapshot(bytes: &[u8]) -> Option<BTreeMap<String, String>> {
 /// `runtime.get("shell")` (ADR-024 §4): where bao is, so the first
 /// cell doesn't probe with `pwd`.
 pub fn runtime_value() -> Value {
-    let shell = shell_from_env();
+    let login = login_shell_from_env();
+    let shell = command_shell(login_env(&login).and_then(|e| e.get("PATH").cloned()));
     json!({
         "cwd": std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         "home": std::env::var("HOME").ok(),
@@ -483,7 +512,7 @@ fn sh_run(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
         .stderr(Stdio::piped())
         .process_group(0);
     if ctx.login_env {
-        if let Some(env) = login_env(program) {
+        if let Some(env) = login_env(&ctx.login_shell) {
             command.env_clear().envs(env);
         }
     }
@@ -834,8 +863,38 @@ mod tests {
             interrupt: Arc::new(AtomicBool::new(false)),
             deadline: None,
             shell: "/bin/sh".into(),
+            login_shell: "/bin/sh".into(),
             login_env: false,
         }
+    }
+
+    #[test]
+    fn commands_run_in_bash_whatever_the_login_shell_is() {
+        // the tool is `bash`: heredocs, $(...), [[ ]] must work even when
+        // the serve was launched from fish/zsh
+        let bash = command_shell(None);
+        assert!(bash.ends_with("/bash"), "{bash}");
+        // an empty login PATH falls back to the system dirs (NixOS has no
+        // /bin/bash: /bin/sh is the honest last resort there)
+        let fallback = command_shell(Some("/nonexistent".into()));
+        assert!(
+            fallback.ends_with("/bash") || fallback == "/bin/sh",
+            "{fallback}"
+        );
+        let c = Ctx {
+            shell: bash,
+            login_shell: "/usr/bin/fish".into(),
+            ..ctx()
+        };
+        let out = execute(
+            &c,
+            "sh.run",
+            &json!({"cmd": "cat <<'EOF'\nhi $BASH_VERSION\nEOF\n[[ -n $BASH_VERSION ]] && echo bashism-ok"}),
+        )
+        .unwrap();
+        assert_eq!(out["exit"], 0, "{out}");
+        let s = out["stdout"].as_str().unwrap();
+        assert!(s.starts_with("hi ") && s.ends_with("bashism-ok\n"), "{s:?}");
     }
 
     #[test]
@@ -964,10 +1023,15 @@ mod tests {
         // it and it keeps our stdout pipe open — the call must still
         // return after the grace, with what was captured
         let t0 = Instant::now();
-        let out = run(json!({"cmd": "setsid sleep 4 & echo hi"}));
+        // the 0.3 s lets the background child call setsid() before the
+        // shell exits — otherwise the group kill takes it too (which is
+        // the ADR's intent, but not what this test is about)
+        let out = run(json!({"cmd": "setsid sleep 8 & sleep 0.3; echo hi"}));
         let took = t0.elapsed();
         assert!(
-            took >= READER_GRACE && took < READER_GRACE + Duration::from_secs(1),
+            // stops at the grace, well before the escaped sleep exits (8 s);
+            // the upper bound is loose — the parallel test run loads the box
+            took + Duration::from_millis(100) >= READER_GRACE && took < Duration::from_secs(6),
             "{took:?}"
         );
         assert_eq!(out["stdout"], "hi\n");

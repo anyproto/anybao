@@ -77,12 +77,16 @@ global `sh` beside `http` (ADR-002 §3):
   change — so replay serves every result from the trace and never
   re-runs a command (ADR-001 §5). `poll` is `mutate` too: it consumes
   output, and consuming twice is not the same read.
-- **`cmd` is one string, run by the user's shell**: `$SHELL -c
-  <cmd>` (`/bin/sh` when `SHELL` is unset) **in the login
-  environment, snapshotted once per process** — the first `sh.run`
-  runs `$SHELL -lc 'env -0'` behind a marker and caches the result;
-  every command then runs `-c` with that environment (`env_clear` +
-  snapshot + the call's `env`). The snapshot itself is bounded (10 s,
+- **`cmd` is one string, run by bash**: `bash -c <cmd>` — bash
+  resolved on the login PATH, `/bin/sh` only when there is none —
+  **in the user's login environment, snapshotted once per process**:
+  the first `sh.run` runs `$SHELL -lc 'env -0'` behind a marker and
+  caches the result; every command then runs `bash -c` with that
+  environment (`env_clear` + snapshot + the call's `env`). The tool
+  is called `bash` and the model writes bash (heredocs, `$(…)`,
+  `[[ ]]`); the user's own shell may be fish or zsh — that shell
+  supplies the environment, never the syntax (a fish login shell
+  rejected the model's heredocs on the first rig run). The snapshot itself is bounded (10 s,
   process group killed on expiry) — a profile that hangs or leaves a
   daemon on stdout falls through to inheriting the serve's
   environment instead of parking every later call. The serve may be launched by the
@@ -392,7 +396,7 @@ upload to `any` (ADR-020 covers download only).
    environment snapshot as the fallback "if it shows" — it showed in
    the first smoke (profile output in stdout), so the fallback IS
    the implementation: one login shell per process, `env -0`
-   snapshot, commands run `$SHELL -c` in it (§1).
+   snapshot, commands run `bash -c` in it (§1).
 2. **`fs.edit` is exact-match only.** Zero or several occurrences is
    a typed failure with no write; the model re-reads and retries.
 3. **Per-stream cap starts at 1 MiB**, explicitly unmeasured; the

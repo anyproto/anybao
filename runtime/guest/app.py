@@ -262,7 +262,7 @@ class _Shell:
 
     `sh("cmd", cwd=None, timeout_s=120, stdin=None, env=None,
     check=False)` runs ONE command line through the user's shell
-    (`$SHELL -c`, login environment) and returns a ShellResult; the
+    (bash, in your login environment) and returns a ShellResult; the
     command's own exit code and a timeout are DATA on the result, not
     exceptions (`check=True` raises ShellError on non-zero instead).
     Nothing the command leaves running survives the call — long-running

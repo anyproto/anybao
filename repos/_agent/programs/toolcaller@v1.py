@@ -80,8 +80,8 @@ RUN_CELL_TOOL_COMPACT = {
 BASH_TOOL = {
     "name": "bash",
     "description": (
-        "Run ONE shell command line on the machine bao runs on ($SHELL -c, "
-        "login environment) and read its output raw: stdout, then stderr, "
+        "Run ONE bash command line on the machine bao runs on (bash -c, in "
+        "the user's login environment) and read its output raw: stdout, then stderr, "
         "then an [exit N] line only when non-zero (a timeout is reported, "
         "not raised). The result is also bound in the kernel as `sh.last` "
         "(and as `as`, when given) so a following run_cell can process it — "
