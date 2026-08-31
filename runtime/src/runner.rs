@@ -235,7 +235,10 @@ pub fn run_program(
     let duration_ms = t0.elapsed().as_millis() as i64;
     let fuel_used = fuel_before.saturating_sub(store.get_fuel().unwrap_or(0));
 
-    let interrupted = interrupt.load(Ordering::Relaxed);
+    // interrupted = the trap actually landed. A flag raised after the
+    // guest already returned Ok (the soft-break timer racing the final
+    // syscalls) must not rewrite a completed run (review).
+    let interrupted = raw.is_err() && interrupt.load(Ordering::Relaxed);
     let (ok, reply): (bool, Value) = match &raw {
         Ok(text) => {
             let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);

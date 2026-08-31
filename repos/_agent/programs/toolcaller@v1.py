@@ -74,7 +74,7 @@ RUN_CELL_TOOL_COMPACT = {
         "cells. Returns printed output, the last expression, and a "
         "side-effects summary. Reply with text only (no tool call) to end."),
 }
-MAX_TURNS = 108
+MAX_TURNS = 300
 MAX_TOKENS_TOTAL = 1_000_000
 TIER = "codegen"
 # a call whose input exceeds this share of the profile's context window

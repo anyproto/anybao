@@ -6,6 +6,8 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 
@@ -59,7 +61,7 @@ impl Trigger {
 
 #[derive(Clone, Debug)]
 pub struct RunResult {
-    pub status: String, // ok | error
+    pub status: String, // ok | error | interrupted
     pub duration_ms: i64,
     pub trace_ref: Option<String>,
     pub fuel: Option<i64>,
@@ -659,16 +661,80 @@ pub struct ChatInput {
 #[derive(Default)]
 pub struct Watcher {
     seen: std::collections::BTreeSet<String>,
-    pub live: BTreeMap<String, crate::broker::SharedMailbox>,
+    pub live: BTreeMap<String, LiveRun>,
     /// This agent's chat identity (`agent.name` on its own bubbles).
     pub self_name: String,
+}
+
+/// A conversation with a run in flight: its mailbox (inject / soft
+/// break, drained by the guest between turns) and its interrupt flag
+/// (hard break — the runner's epoch callback traps on it; ADR-005 §3,
+/// ADR-003 §2).
+#[derive(Clone, Default)]
+pub struct LiveRun {
+    pub mailbox: crate::broker::SharedMailbox,
+    pub interrupt: Arc<AtomicBool>,
 }
 
 pub enum WatchAction {
     Dup,
     Skip,
     Inject,
+    /// A `break` control record landed on a live run. Soft: the break
+    /// item is in the mailbox and the caller arms the grace escalation
+    /// (ADR-005 §3). Hard: the flag is already set — no mailbox item,
+    /// a trapped run cannot use it. The run's `LiveRun` rides along so
+    /// the caller can watch the mailbox for the guest's acknowledgment.
+    Break {
+        live: LiveRun,
+        hard: bool,
+    },
+    /// A `break` with no live run: nothing to stop, but any deferred
+    /// (not-yet-started) messages for the chat are cancelled by it —
+    /// the caller drops its backlog (ADR-005 §3).
+    BreakIdle,
     Start,
+}
+
+/// A `break` on the record's `control` group (any `chat_messages-v5`,
+/// ADR-005 §3): `Some(hard)`. The stop is DATA on the message — the
+/// client's Stop button posts `{control: {kind: "break", hard?}}` with
+/// no text — never a word the watcher would have to read out of prose.
+/// A control record is a signal, not content: whatever its kind, it
+/// neither injects nor starts a run.
+pub fn control_break(record: &Value) -> Option<bool> {
+    let ctl = record.get("control")?.as_object()?;
+    if ctl.get("kind").and_then(|k| k.as_str()) != Some("break") {
+        return None;
+    }
+    Some(ctl.get("hard").and_then(|h| h.as_bool()).unwrap_or(false))
+}
+
+/// Is this record a control signal (any kind)? Such a record never
+/// reaches the model.
+pub fn is_control(record: &Value) -> bool {
+    record
+        .get("control")
+        .and_then(|c| c.as_object())
+        .and_then(|c| c.get("kind"))
+        .and_then(|k| k.as_str())
+        .is_some_and(|k| !k.is_empty())
+}
+
+/// Break one live run — the shared mechanics behind both setters
+/// (ADR-005 §3): soft queues the mailbox `break` item (the caller arms
+/// the grace escalation); hard sets the flag only — a trapped run
+/// could never use a mailbox item, it would just buy one billed,
+/// discarded wrap-up call.
+pub fn break_live_run(live: &LiveRun, hard: bool) {
+    if hard {
+        live.interrupt.store(true, Ordering::Relaxed);
+    } else {
+        live.mailbox
+            .lock()
+            .unwrap()
+            .push_back(json!({"kind": "break", "hard": false}));
+    }
 }
 
 impl Watcher {
@@ -797,13 +863,29 @@ impl Watcher {
         if Self::is_self_message(record, &self.self_name) {
             return WatchAction::Skip; // own bubble — never self-trigger
         }
-        if let Some(mailbox) = self.live.get(chat_id) {
+        if is_control(record) {
+            // a break lands on the live run; with nothing running it
+            // cancels the chat's deferred backlog (BreakIdle); any
+            // other control kind is a no-op — a control record is
+            // never content and never starts a run
+            return match (control_break(record), self.live.get(chat_id)) {
+                (Some(hard), Some(live)) => self.break_live(live.clone(), hard),
+                (Some(_), None) => WatchAction::BreakIdle,
+                _ => WatchAction::Skip,
+            };
+        }
+        if let Some(live) = self.live.get(chat_id) {
             let input = Self::input(record);
-            mailbox.lock().unwrap().push_back(json!({
+            live.mailbox.lock().unwrap().push_back(json!({
                 "kind": "inject", "text": input.text, "context": input.context}));
             return WatchAction::Inject;
         }
         WatchAction::Start
+    }
+
+    fn break_live(&mut self, live: LiveRun, hard: bool) -> WatchAction {
+        break_live_run(&live, hard);
+        WatchAction::Break { live, hard }
     }
 
     pub fn conversation_done(&mut self, chat_id: &str) {
@@ -1279,7 +1361,13 @@ mod tests {
         assert!(matches!(w.on_message("c1", &nudge), WatchAction::Start));
         w.conversation_done("c1");
         let mb: crate::broker::SharedMailbox = Default::default();
-        w.live.insert("c1".into(), mb.clone());
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
         let m3 = json!({"id": "m3", "text": "also"});
         assert!(matches!(w.on_message("c1", &m3), WatchAction::Inject));
         assert_eq!(mb.lock().unwrap().len(), 1);
@@ -1312,7 +1400,13 @@ mod tests {
         // …and it rides the inject next to the text
         let mut w = Watcher::new("bao");
         let mb: crate::broker::SharedMailbox = Default::default();
-        w.live.insert("c1".into(), mb.clone());
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
         assert!(matches!(w.on_message("c1", &rec), WatchAction::Inject));
         let item = mb.lock().unwrap().pop_front().unwrap();
         assert_eq!(item["kind"], "inject");
@@ -1352,7 +1446,13 @@ mod tests {
 
         let mut w = Watcher::new("bao");
         let mb: crate::broker::SharedMailbox = Default::default();
-        w.live.insert("c1".into(), mb.clone());
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
         let m = json!({"id": "m9", "text": "done",
                        "agent": {"name": "trigger:x"}});
         assert!(matches!(w.on_message("c1", &m), WatchAction::Inject));
@@ -1361,5 +1461,88 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("[from agent \"trigger:x\""));
+    }
+
+    #[test]
+    fn control_break_records_break_a_live_run_soft_then_hard() {
+        let brk = |id: &str, hard: bool| json!({"id": id, "text": "", "control": {"kind": "break", "hard": hard}});
+        assert_eq!(control_break(&brk("x", false)), Some(false));
+        assert_eq!(control_break(&brk("x", true)), Some(true));
+        assert_eq!(
+            control_break(&json!({"id": "x", "text": "", "control": {"kind": "break"}})),
+            Some(false)
+        );
+        assert_eq!(control_break(&json!({"id": "x", "text": "stop"})), None);
+        assert_eq!(
+            control_break(&json!({"id": "x", "control": {"kind": "ping"}})),
+            None
+        );
+
+        let mut w = Watcher::new("bao");
+        // not live: a break never runs or injects — it cancels the
+        // chat's deferred backlog (BreakIdle, ADR-005 §3)
+        assert!(matches!(
+            w.on_message("c1", &brk("m0", false)),
+            WatchAction::BreakIdle
+        ));
+        // …an unknown control kind with nothing live is a plain no-op
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m0c", "control": {"kind": "ping"}})),
+            WatchAction::Skip
+        ));
+        // …and the word "stop" is just a message that starts a run
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m0b", "text": "stop"})),
+            WatchAction::Start
+        ));
+
+        let live = LiveRun::default();
+        w.live.insert("c1".into(), live.clone());
+        // soft: break item queued, flag untouched, caller arms the grace
+        match w.on_message("c1", &brk("m1", false)) {
+            WatchAction::Break { live: l, hard } => {
+                assert!(!hard);
+                assert!(!l.interrupt.load(Ordering::Relaxed));
+                assert!(Arc::ptr_eq(&l.interrupt, &live.interrupt));
+            }
+            _ => panic!("expected Break"),
+        }
+        let item = live.mailbox.lock().unwrap().pop_front().unwrap();
+        assert_eq!(item, json!({"kind": "break", "hard": false}));
+        // a normal message still injects — and so does the WORD "stop"
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m2", "text": "stop"})),
+            WatchAction::Inject
+        ));
+        assert_eq!(
+            live.mailbox.lock().unwrap().pop_front().unwrap()["kind"],
+            "inject"
+        );
+        // an unknown control kind on a live run: skipped, nothing queued
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m2b", "control": {"kind": "ping"}})),
+            WatchAction::Skip
+        ));
+        assert!(live.mailbox.lock().unwrap().is_empty());
+        // hard: flag set now, and NO mailbox item — a trapped run can
+        // never use it, it would only buy one billed wrap-up call
+        match w.on_message("c1", &brk("m3", true)) {
+            WatchAction::Break { hard, .. } => assert!(hard),
+            _ => panic!("expected Break"),
+        }
+        assert!(live.interrupt.load(Ordering::Relaxed));
+        assert!(live.mailbox.lock().unwrap().is_empty());
+        // the control API path shares the mechanics as a free fn,
+        // keyed by run id in the serve's live_runs registry
+        let l2 = LiveRun::default();
+        break_live_run(&l2, false);
+        assert_eq!(
+            l2.mailbox.lock().unwrap().pop_front().unwrap()["kind"],
+            "break"
+        );
+        assert!(!l2.interrupt.load(Ordering::Relaxed));
+        break_live_run(&l2, true);
+        assert!(l2.interrupt.load(Ordering::Relaxed));
+        assert!(l2.mailbox.lock().unwrap().is_empty());
     }
 }

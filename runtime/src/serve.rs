@@ -17,8 +17,8 @@ use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
     chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
-    standing_triggers, trigger_to_record, ChatInput, EventSource, RunResult, Scheduler, Trigger,
-    WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
+    standing_triggers, trigger_to_record, ChatInput, EventSource, LiveRun, RunResult, Scheduler,
+    Trigger, WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -1223,6 +1223,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
+        live_runs: Mutex::new(BTreeMap::new()),
     });
 
     let mut threads = vec![
@@ -1353,6 +1354,11 @@ pub struct RunCtx {
     /// tombstoned device (ADR-015 §4): unlike standby, a pruned device
     /// fires NOTHING — not even its pins
     pub pruned: bool,
+    /// every run in flight on this serve, by run id — chat, trigger
+    /// and control runs alike. The control API's `POST /break/<runId>`
+    /// resolves here (ADR-005 §3); entries live exactly as long as
+    /// `run_program` does.
+    pub live_runs: Mutex<BTreeMap<String, crate::triggers::LiveRun>>,
 }
 
 impl RunCtx {
@@ -1481,7 +1487,16 @@ impl RunCtx {
         let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
-        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        self.live_runs.lock().unwrap().insert(
+            run_id.clone(),
+            crate::triggers::LiveRun {
+                mailbox: mailbox.clone(),
+                interrupt: interrupt.clone(),
+            },
+        );
+        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
+        self.live_runs.lock().unwrap().remove(&run_id);
+        let mut outcome = outcome?;
         // ADR-023 §3: a run whose trace could not be landed is a failed
         // run, named — never a silent gap
         let summary = outcome
@@ -1493,10 +1508,13 @@ impl RunCtx {
         Ok((
             run_id.clone(),
             RunResult {
-                status: if outcome.status == "ok" {
-                    "ok".into()
-                } else {
-                    "error".into()
+                // ok | error | interrupted — a hard break (ADR-005 §3)
+                // must reach the chat wrapper as what it is, not as a
+                // generic error
+                status: match outcome.status.as_str() {
+                    "ok" => "ok".into(),
+                    "interrupted" => "interrupted".into(),
+                    _ => "error".into(),
                 },
                 duration_ms: outcome.duration_ms,
                 trace_ref: Some(run_id),
@@ -1531,7 +1549,16 @@ impl RunCtx {
         let run_id = broker.writer.run_id();
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
-        let mut outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 600.0)?;
+        self.live_runs.lock().unwrap().insert(
+            run_id.clone(),
+            crate::triggers::LiveRun {
+                mailbox: mailbox.clone(),
+                interrupt: interrupt.clone(),
+            },
+        );
+        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
+        self.live_runs.lock().unwrap().remove(&run_id);
+        let mut outcome = outcome?;
         let summary = outcome
             .broker
             .writer
@@ -1665,24 +1692,135 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     posted
 }
 
+/// Soft-break grace (ADR-005 §3): the guest only drains its mailbox
+/// between turns, so a run stuck inside a long cell cannot honor
+/// "stop" by itself. If the break item is still UNDRAINED after this
+/// long, the flag goes up and the epoch callback traps the guest at
+/// its next tick (a blocked host call — an LLM or HTTP request —
+/// returns first; the broker does not yet check the flag mid-call).
+/// A guest that HAS drained the item is wrapping up: the escalation
+/// stands down and the run's wall deadline is the backstop.
+const BREAK_GRACE: Duration = Duration::from_secs(20);
+
+/// A stop landed on a live run. Hard: the watcher already set the
+/// flag. Soft: arm the escalation — after BREAK_GRACE, if the break
+/// item still sits in the mailbox (the guest never drained it), set
+/// the flag (the Arc is the run's identity; a finished run's flag is
+/// a dead letter).
+fn on_break(chat: &str, live: &crate::triggers::LiveRun, hard: bool) {
+    if hard {
+        info!("hard break on chat {chat}");
+        return;
+    }
+    info!(
+        "soft break on chat {chat} (hard in {}s unless acknowledged)",
+        BREAK_GRACE.as_secs()
+    );
+    let live = live.clone();
+    let chat = chat.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(BREAK_GRACE);
+        let undrained = live
+            .mailbox
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m["kind"] == "break");
+        if !undrained {
+            return; // acknowledged: the guest is wrapping up
+        }
+        if !live.interrupt.swap(true, Ordering::Relaxed) && Arc::strong_count(&live.interrupt) > 1 {
+            info!("soft break on chat {chat} escalated to hard");
+        }
+    });
+}
+
+/// The minimal `agent_turns` record for a hard-broken run — the guest
+/// skipped its own `append_turn`, so the host writes `{userText,
+/// replies: [], interrupted: true, traceRef}` at the data layer
+/// (ADR-005 §3): the next boot window and the log-reading crons see
+/// the stopped exchange. Mirrors the guest's `_append_log` (log child
+/// = the chat bundle's `bao/log/v1`, client-assigned seq). Skipped
+/// with a warning when the agent_log type was never provisioned —
+/// only possible when the chat's very first turn is the broken one.
+fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Result<()> {
+    let bundles = ctx.client.list_bundles(&ctx.space)?;
+    let root = bundles["bundles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|b| b["rootId"] == json!(ctx.chat.as_str()))
+        .and_then(|b| b["id"].as_str())
+        .context("chat is not a bundle root")?
+        .to_string();
+    let tid = ctx
+        .client
+        .list_types(&ctx.space)?
+        .into_iter()
+        .find(|t| t["xKey"] == json!("agent_log"))
+        .and_then(|t| t["id"].as_str().map(str::to_string))
+        .context("agent_log type not provisioned yet (no turn ever logged)")?;
+    let child = ctx
+        .client
+        .bundle_child(&ctx.space, &root, "bao/log/v1", &[tid.as_str()])?;
+    let log = child["objectId"]
+        .as_str()
+        .context("bundle_child returned no objectId")?
+        .to_string();
+    let rows = ctx.client.query(
+        &ctx.space,
+        &log,
+        "agent_turns",
+        &json!({"sort": ["-seq"], "limit": 1}),
+    )?;
+    let seq = rows
+        .first()
+        .and_then(|r| {
+            r["seq"]
+                .as_i64()
+                .or_else(|| r["seq"].as_f64().map(|f| f as i64))
+        })
+        .unwrap_or(0)
+        + 1;
+    ctx.client.upsert_record(
+        &ctx.space,
+        &log,
+        "agent_turns",
+        &format!("{seq:08}"),
+        &json!({
+            "seq": seq, "fromAgent": ctx.cfg.agent_name,
+            "userText": user_text, "replies": [], "interrupted": true,
+            "traceRef": trace_ref, "searchText": user_text,
+            "llm": {"stopReason": "break_hard"}}),
+    )?;
+    Ok(())
+}
+
 /// Start a run for `input` — or, when one is already live on this chat,
 /// inject into its mailbox instead. Check-and-register happens under
 /// ONE watcher lock: the watch thread and the ticker's backlog drain
 /// may race to start.
 fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
     let mailbox: SharedMailbox = Default::default();
+    let interrupt = Arc::new(AtomicBool::new(false));
     {
         let mut w = shared.watcher.lock().unwrap();
         if let Some(live) = w.live.get(&ctx.chat) {
-            live.lock()
+            live.mailbox
+                .lock()
                 .unwrap()
                 .push_back(json!({"kind": "inject", "text": input.text,
                                   "context": input.context}));
             return;
         }
-        w.live.insert(ctx.chat.clone(), mailbox.clone());
+        w.live.insert(
+            ctx.chat.clone(),
+            LiveRun {
+                mailbox: mailbox.clone(),
+                interrupt: interrupt.clone(),
+            },
+        );
     }
-    let interrupt = Arc::new(AtomicBool::new(false));
     let shared = shared.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
@@ -1704,18 +1842,30 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
         let result = ctx.run(
             "agent:toolcaller@v1",
             &args,
-            mailbox,
+            mailbox.clone(),
             interrupt,
             Some(run_id),
             Some(&shared.chat_watch_id),
         );
+        // Take the run down FIRST: a message typed while the terminal
+        // bubbles post must start a fresh run, not inject into this
+        // dead mailbox (its id would enter `seen` and the message
+        // would be lost for good — review). Whatever was injected
+        // after the end is re-dispatched below.
+        let leftovers: Vec<Value> = {
+            let mut w = shared.watcher.lock().unwrap();
+            w.conversation_done(&ctx.chat);
+            mailbox.lock().unwrap().drain(..).collect()
+        };
         if let Ok((trace_ref, rr)) = &result {
             // ADR-021 §2: one request bubble per missing ref (the host
             // is the only emitter). A run that died ON the miss — the
             // LLM key — gets the request instead of "Something broke".
             // …or on the destination's 401 (LlmError) — either way the
             // request bubble (or the "still waiting" line) IS the reply
-            let died_on_miss = rr.status != "ok" && !rr.missing_secrets.is_empty();
+            // "error" only: an interrupted run's reply is "Stopped.",
+            // never the "Still waiting for the credential" line (review)
+            let died_on_miss = rr.status == "error" && !rr.missing_secrets.is_empty();
             let posted = post_credential_requests(&ctx, &rr.missing_secrets);
             if died_on_miss && posted == 0 {
                 // the bubble for this ref already sits in the chat
@@ -1737,7 +1887,25 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                 );
             }
-            if rr.status != "ok" && !died_on_miss {
+            if rr.status == "interrupted" {
+                // a hard break (ADR-005 §3): the host says the one thing
+                // the guest no longer can — the run is over
+                let _ = ctx.client.chat_send(
+                    &ctx.space,
+                    &ctx.chat,
+                    &json!({
+                    "text": "Stopped.",
+                    "agent": {"name": ctx.cfg.agent_name, "done": true,
+                              "outcome": "interrupted", "debugLink": trace_ref}}),
+                );
+                // …and writes the turn the guest could not (ADR-005 §3):
+                // without it the next boot window has no trace of the
+                // stopped request and the model's view of the
+                // conversation diverges from the chat on screen
+                if let Err(e) = append_interrupted_turn(&ctx, &input.text, trace_ref) {
+                    warn!("interrupted turn not logged (trace {trace_ref}): {e}");
+                }
+            } else if rr.status != "ok" && !died_on_miss {
                 // The typed error goes INTO the chat: the next turn
                 // boots with this message in its window, so the model
                 // can act on it (FuelExhausted's text says to redo the
@@ -1755,20 +1923,35 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                         })
                         .unwrap_or_else(|| raw.to_string())
                 });
+                // How the run ended rides the `agent` group (`outcome`,
+                // the run id as `debugLink`), not the text (ADR-005 §3):
+                // the client renders the mark, the text stays human
                 let text = match detail {
-                    Some(d) => format!("Something broke mid-run (trace {trace_ref}): {d}"),
-                    None => format!("Something broke mid-run (trace {trace_ref})."),
+                    Some(d) => format!("Something broke mid-run: {d}"),
+                    None => "Something broke mid-run.".to_string(),
                 };
                 let _ = ctx.client.chat_send(
                     &ctx.space,
                     &ctx.chat,
                     &json!({
                     "text": text,
-                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                    "agent": {"name": ctx.cfg.agent_name, "done": true,
+                              "outcome": "error", "debugLink": trace_ref}}),
                 );
             }
         }
-        shared.watcher.lock().unwrap().conversation_done(&ctx.chat);
+        for item in leftovers {
+            if item["kind"] == "inject" {
+                start_or_inject(
+                    &shared,
+                    &ctx,
+                    ChatInput {
+                        text: item["text"].as_str().unwrap_or_default().to_string(),
+                        context: item["context"].clone(),
+                    },
+                );
+            }
+        }
     });
 }
 
@@ -1804,6 +1987,21 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .lock()
                         .unwrap()
                         .on_message(&ctx.chat, &record);
+                    match &action {
+                        WatchAction::Break { live, hard } => on_break(&ctx.chat, live, *hard),
+                        WatchAction::BreakIdle => {
+                            // the stop cancels messages still deferred on
+                            // overlay sync — nothing must start for them
+                            let dropped = std::mem::take(&mut *shared.backlog.lock().unwrap());
+                            if !dropped.is_empty() {
+                                info!(
+                                    "break with no live run: dropped {} deferred message(s)",
+                                    dropped.len()
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                     if let WatchAction::Start = action {
                         let input = Watcher::input(&record);
                         note_chat_start(shared, ctx);
@@ -1826,6 +2024,21 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .lock()
                         .unwrap()
                         .on_message(&ctx.chat, &record);
+                    match &action {
+                        WatchAction::Break { live, hard } => on_break(&ctx.chat, live, *hard),
+                        WatchAction::BreakIdle => {
+                            // the stop cancels messages still deferred on
+                            // overlay sync — nothing must start for them
+                            let dropped = std::mem::take(&mut *shared.backlog.lock().unwrap());
+                            if !dropped.is_empty() {
+                                info!(
+                                    "break with no live run: dropped {} deferred message(s)",
+                                    dropped.len()
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                     if let WatchAction::Start = action {
                         let input = Watcher::input(&record);
                         note_chat_start(shared, ctx);
@@ -1871,7 +2084,18 @@ fn snapshot_backlog(data: &Value, self_name: &str) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for rec in data["records"].as_array().unwrap_or(&Vec::new()) {
         if Watcher::is_self_message(rec, self_name) {
-            break;
+            // a done:false progress bubble is not an answer — keep
+            // scanning; the cut is the last TERMINAL self reply
+            if rec["agent"]["done"].as_bool().unwrap_or(true) {
+                break;
+            }
+            continue;
+        }
+        // a control record (a Stop pressed during a feed gap) must
+        // reach on_message — it is text-less by contract
+        if crate::triggers::is_control(rec) {
+            out.push(rec.clone());
+            continue;
         }
         // content = text OR attachments (the server enforces at least
         // one); an attachment-only message is real input, not noise
@@ -2493,6 +2717,25 @@ fn handle_control(
                 "winner": winner,
             }))
         }
+        // break a run in flight — ANY run: chat, trigger, control
+        // (ADR-005 §3). The id is what every trace, log line and
+        // Stopped-bubble debugLink shows. Body `{"hard": bool}`.
+        ("POST", ["break", run_id]) => {
+            let hard = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|b| b.get("hard").and_then(|h| h.as_bool()))
+                .unwrap_or(false);
+            let live = ctx
+                .live_runs
+                .lock()
+                .unwrap()
+                .get(*run_id)
+                .cloned()
+                .context("no run in flight with that id")?;
+            crate::triggers::break_live_run(&live, hard);
+            on_break(run_id, &live, hard);
+            Ok(json!({"run": run_id, "hard": hard}))
+        }
         ("GET", ["triggers"]) => Ok(Value::Array(reg.values().map(rollup).collect())),
         ("GET", ["triggers", id]) => {
             let t = reg.get(*id).context("trigger not found")?;
@@ -2984,6 +3227,29 @@ mod tests {
             msg("u1", "answered", false),
         ]});
         assert!(snapshot_backlog(&data, "bao").is_empty());
+    }
+
+    #[test]
+    fn snapshot_backlog_keeps_control_records_and_scans_past_progress_bubbles() {
+        // a Stop pressed during a feed gap arrives text-less in the
+        // snapshot; a done:false progress bubble posted by the live
+        // run must not cut the scan before it (review)
+        let brk = json!({"id": "b1", "text": "",
+            "control": {"kind": "break", "hard": true},
+            "createdAt": {"$date": "2026-08-25T16:00:01.000Z"}});
+        let mut progress = msg("a2", "working on it…", true);
+        progress["agent"]["done"] = json!(false);
+        let data = json!({"records": [
+            progress,
+            brk,
+            msg("u2", "do the thing", false),
+            msg("a1", "reply", true),
+        ]});
+        let out = snapshot_backlog(&data, "bao");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["id"], "u2"); // oldest first
+        assert_eq!(out[1]["id"], "b1");
+        assert!(crate::triggers::is_control(&out[1]));
     }
 
     #[test]

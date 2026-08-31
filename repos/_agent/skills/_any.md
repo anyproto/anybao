@@ -190,6 +190,18 @@ Chat:
   chat_id, "chat_messages", sort=["-createdAt"], limit=n)` (its
   `createdAt`/`modifiedAt` are instants — `ts_s`/`fmt_ts`) — NOT
   `history.recent_turns` (that's the agentlog, not the conversation).
+- **Record shape — the signals on a message.** Besides `text`:
+  `agent {name, done, outcome?, debugLink?}` marks an agent-authored
+  message; `done: false` = a progress bubble of a run still going;
+  `outcome` on the terminal bubble says the run did NOT end normally
+  — `"interrupted"` (the user stopped it; text is just "Stopped.") or
+  `"error"` (it died); `debugLink` is that run's trace id (`run_…`).
+  `control {kind, hard?}` on a USER message with an EMPTY text is a
+  control signal, not content: `kind: "break"` = the user pressed Stop
+  on the run in flight (`hard: true` = stop now, else wrap up at the
+  next turn). A blank message carrying `control` is exactly what it
+  looks like from the client — never call it an empty message, a
+  glitch, or a double-send; read it as "the user stopped me here".
   NEVER create a chat object or pick one from a query — name-matched
   "general" chats are peer-made impostors that split the conversation
   (the real derived chat carries no name/nav, so the obvious-looking
