@@ -7,9 +7,8 @@ cell — a change never needs a restart or a file edit. `cfg.list(
 baoSpaceConfig)` shows everything; `cfg.get(key)`; `cfg.set(key,
 value)`; `cfg.set_model("search.provider.websearch",
 "gemini-3.7-flash")` swaps only the model. Provider values are
-`{provider, model, base_url, api_key_ref}`; LLM tiers may add
-`backend`, `profile`, `options` (`use("agent:llm@v1").profile(tier)`
-shows what resolved). API keys are NOT config
+`{provider, model, base_url, api_key_ref}` (+ `backend`/`profile`/
+`options` on LLM tiers). API keys are NOT config
 (the Credentials flow); there is no unset — set a value to null."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)

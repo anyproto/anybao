@@ -154,7 +154,9 @@ effective trait is `auto`, and `llm.profile(tier)` reports the
 effective value. Server state that must ride a tool call back (Gemini's
 `thought_signature`) is the call's `provider_state`, opaque to the
 loop like Thinking's. Whatever a server reports lands in `usage.cacheRead`/
-`cacheWrite` after `normalize_response`, so `trace show --stats` reads
+`cacheWrite` after `normalize_response`, and the trace view maps an
+OpenAI-compatible exchange onto the block shape it renders
+(`view.rs` wire normalization), so `trace ls`/`show`/`--stats` read
 the same for every backend.
 
 **1.6 Credentials.** The api key never enters the guest: the request

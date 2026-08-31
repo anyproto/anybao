@@ -256,25 +256,185 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
     )
 }
 
+// --- wire normalization (ADR-005 §1.5) ---------------------------------------
+// The view renders ONE shape — content blocks (text / tool_use /
+// tool_result / thinking), `stop_reason`, `usage.input_tokens…`. An
+// OpenAI-compatible exchange (`…/chat/completions`) is mapped onto it at
+// the three access points below, so every renderer, `trace ls` title
+// and `--stats` read the same for every backend.
+
+fn is_openai_wire(input: &Value) -> bool {
+    input["url"]
+        .as_str()
+        .map(|u| u.ends_with("/chat/completions"))
+        .unwrap_or(false)
+}
+
+/// A provider request (an http effect's `input`) in the view's shape.
+fn view_request_of(input: &Value) -> Value {
+    if is_openai_wire(input) {
+        openai_request_to_blocks(&input["json"])
+    } else {
+        input["json"].clone()
+    }
+}
+
+/// A provider response body in the view's shape.
+fn view_response_of(input: &Value, body: Value) -> Value {
+    if is_openai_wire(input) {
+        openai_response_to_blocks(&body)
+    } else {
+        body
+    }
+}
+
+fn openai_tool_use(tc: &Value) -> Value {
+    let raw = tc["function"]["arguments"].as_str().unwrap_or("");
+    let input = serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({"raw": raw}));
+    json!({"type": "tool_use", "id": tc["id"], "name": tc["function"]["name"], "input": input})
+}
+
+fn openai_content_blocks(content: &Value) -> Vec<Value> {
+    match content {
+        Value::String(t) if !t.is_empty() => vec![json!({"type": "text", "text": t})],
+        Value::Array(parts) => parts
+            .iter()
+            .map(|p| match p["type"].as_str() {
+                Some("text") => json!({"type": "text", "text": p["text"]}),
+                Some("image_url") => json!({"type": "image"}),
+                Some(other) => json!({"type": other}),
+                None => json!({"type": "text", "text": s(p)}),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn openai_request_to_blocks(req: &Value) -> Value {
+    let mut out = json!({"model": req["model"]});
+    let mut msgs: Vec<Value> = Vec::new();
+    let empty = Vec::new();
+    for m in req["messages"].as_array().unwrap_or(&empty) {
+        match m["role"].as_str().unwrap_or("") {
+            "system" => {
+                let text = openai_content_blocks(&m["content"])
+                    .iter()
+                    .filter_map(|b| b["text"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                out["system"] = Value::String(text);
+            }
+            "tool" => {
+                // consecutive tool messages are ONE neutral user message
+                // holding N tool_result blocks — restore that count
+                let block = json!({"type": "tool_result", "tool_use_id": m["tool_call_id"],
+                                   "content": m["content"]});
+                match msgs.last_mut() {
+                    Some(last) if last["role"] == "user" && last["_tool"] == true => {
+                        last["content"].as_array_mut().unwrap().push(block);
+                    }
+                    _ => msgs.push(json!({"role": "user", "content": [block], "_tool": true})),
+                }
+            }
+            role => {
+                let mut blocks = Vec::new();
+                if let Some(t) = m["reasoning_content"].as_str() {
+                    if !t.is_empty() {
+                        blocks.push(json!({"type": "thinking", "thinking": t}));
+                    }
+                }
+                blocks.extend(openai_content_blocks(&m["content"]));
+                for tc in m["tool_calls"].as_array().unwrap_or(&empty) {
+                    blocks.push(openai_tool_use(tc));
+                }
+                msgs.push(json!({"role": role, "content": blocks}));
+            }
+        }
+    }
+    for m in &mut msgs {
+        if let Some(o) = m.as_object_mut() {
+            o.remove("_tool");
+        }
+    }
+    out["messages"] = Value::Array(msgs);
+    if let Some(tools) = req["tools"].as_array() {
+        out["tools"] = Value::Array(
+            tools
+                .iter()
+                .map(|t| {
+                    json!({"name": t["function"]["name"],
+                           "description": t["function"]["description"],
+                           "input_schema": t["function"]["parameters"]})
+                })
+                .collect(),
+        );
+    }
+    out
+}
+
+fn openai_response_to_blocks(resp: &Value) -> Value {
+    let choice = &resp["choices"][0];
+    let msg = &choice["message"];
+    let mut blocks = Vec::new();
+    let think = msg["reasoning_content"]
+        .as_str()
+        .or_else(|| msg["reasoning"].as_str())
+        .unwrap_or("");
+    if !think.is_empty() {
+        blocks.push(json!({"type": "thinking", "thinking": think}));
+    }
+    blocks.extend(openai_content_blocks(&msg["content"]));
+    let empty = Vec::new();
+    for tc in msg["tool_calls"].as_array().unwrap_or(&empty) {
+        blocks.push(openai_tool_use(tc));
+    }
+    let stop = match choice["finish_reason"].as_str() {
+        Some("tool_calls") => "tool_use",
+        Some("length") => "max_tokens",
+        Some(_) => "end_turn",
+        None => "?",
+    };
+    let u = &resp["usage"];
+    let cached = u["prompt_tokens_details"]["cached_tokens"]
+        .as_i64()
+        .or_else(|| u["prompt_cache_hit_tokens"].as_i64())
+        .unwrap_or(0);
+    json!({
+        "model": resp["model"],
+        "content": blocks,
+        "stop_reason": stop,
+        "usage": {
+            "input_tokens": u["prompt_tokens"].as_i64().unwrap_or(0),
+            "output_tokens": u["completion_tokens"].as_i64().unwrap_or(0),
+            "cache_read_input_tokens": cached,
+            "cache_creation_input_tokens": 0,
+        },
+    })
+}
+
 /// The llm exchange inside an llm.chat span: (request messages,
-/// response body) from its inner provider http call.
-fn llm_exchange<'a>(inner: &[&'a Value]) -> Option<(&'a Value, Value)> {
+/// response body) from its inner provider http call, in the view's
+/// shape whatever the wire.
+fn llm_exchange(inner: &[&Value]) -> Option<(Value, Value)> {
     let post = inner
         .iter()
         .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
-    let req = &post["input"]["json"];
     let body = post["output"]["body"].as_str()?;
-    Some((req, serde_json::from_str(body).ok()?))
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    Some((
+        view_request_of(&post["input"]),
+        view_response_of(&post["input"], parsed),
+    ))
 }
 
 /// The llm turn's request (the http.* effect's INPUT), independent of
 /// whether the call succeeded — a failed turn still recorded its input,
 /// so we can show what the user said even when there's no response.
-fn llm_request<'a>(inner: &[&'a Value]) -> Option<&'a Value> {
+fn llm_request(inner: &[&Value]) -> Option<Value> {
     inner
         .iter()
         .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))
-        .map(|post| &post["input"]["json"])
+        .map(|post| view_request_of(&post["input"]))
 }
 
 /// Render the boot window — the messages the loop assembled BEFORE the
@@ -378,7 +538,8 @@ fn tool_results(records: &[Value]) -> BTreeMap<String, (String, bool, i64)> {
         }
         let seq = r["seq"].as_i64().unwrap_or(0);
         let empty = Vec::new();
-        for m in r["input"]["json"]["messages"].as_array().unwrap_or(&empty) {
+        let req = view_request_of(&r["input"]);
+        for m in req["messages"].as_array().unwrap_or(&empty) {
             for block in m["content"].as_array().unwrap_or(&empty) {
                 if block["type"] == "tool_result" {
                     if let Some(id) = block["tool_use_id"].as_str() {
@@ -611,8 +772,8 @@ fn ls_row(records: &[Value], store: Option<(&dyn TraceStore, &str)>) -> LsRow {
             } else {
                 post["input"].clone()
             };
-            let req = &input["json"];
-            user_delta(req, last_text_user_index(req))
+            let req = view_request_of(&input);
+            user_delta(&req, last_text_user_index(&req))
                 .into_iter()
                 .next()
         })
@@ -927,7 +1088,7 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
     let results = tool_results(&records);
 
     // every llm exchange (nested included — their tokens are real spend)
-    let exchanges: Vec<Option<(&Value, Value)>> = all_llm
+    let exchanges: Vec<Option<(Value, Value)>> = all_llm
         .iter()
         .map(|(begin, end)| {
             let (b, e) = seq_range(begin, *end);
@@ -1067,7 +1228,7 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
                 // said and the ui-context locator that led there.
                 if let Some(req) = llm_request(&inner) {
                     let skip = if turn_no == 1 {
-                        last_text_user_index(req)
+                        last_text_user_index(&req)
                     } else {
                         prev_msgs
                     };
@@ -1075,9 +1236,9 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
                     // history the loop fed) so "what went to the model" is
                     // visible, not just the current user delta.
                     if turn_no == 1 && lim.user == usize::MAX {
-                        boot_window(&mut out, req, skip, "  ");
+                        boot_window(&mut out, &req, skip, "  ");
                     }
-                    for text in user_delta(req, skip) {
+                    for text in user_delta(&req, skip) {
                         let (msg, ui) = split_ui_context(&text);
                         out.push_str(&format!("  user: {}\n", clip_loc(msg, lim.user)));
                         if let Some(ui) = ui {
@@ -1545,6 +1706,75 @@ mod tests {
         assert_eq!(row.dur, "5.2s");
         assert_eq!(row.turns, 1);
         assert_eq!(row.title, "what's the weather in Berlin?");
+    }
+
+    /// The same one-turn run over the OpenAI-compatible wire: a system
+    /// message, a tool call with JSON arguments, reasoning text, and
+    /// usage in the `prompt_tokens` family.
+    fn one_turn_openai_trace() -> Vec<Value> {
+        let body = json!({"model": "gemini-x", "choices": [{"message": {
+            "role": "assistant", "content": null, "reasoning_content": "hmm",
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "run_cell",
+                                         "arguments": "{\"code\": \"1+1\"}"}}]},
+            "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 90, "completion_tokens": 20,
+                      "prompt_tokens_details": {"cached_tokens": 80}}});
+        let mut records = one_turn_trace(true);
+        records[2]["input"] = json!({
+            "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "json": {"model": "gemini-x", "messages": [
+                {"role": "system", "content": "SYS"},
+                {"role": "user", "content": "what's the weather in Berlin?"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_0", "type": "function",
+                     "function": {"name": "run_cell", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_0", "content": "42"},
+                {"role": "user", "content": "and now?"}],
+              "tools": [{"type": "function", "function": {
+                  "name": "run_cell", "description": "d", "parameters": {}}}]}});
+        records[2]["output"] = json!({"status": 200, "body": body.to_string()});
+        records
+    }
+
+    #[test]
+    fn openai_wire_normalizes_to_the_view_shape() {
+        let input = &one_turn_openai_trace()[2]["input"];
+        let req = view_request_of(input);
+        assert_eq!(req["system"], "SYS");
+        assert_eq!(req["tools"][0]["name"], "run_cell");
+        let roles: Vec<_> = req["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap().to_string())
+            .collect();
+        // the tool message became a user message holding a tool_result
+        assert_eq!(roles, ["user", "assistant", "user", "user"]);
+        assert_eq!(req["messages"][1]["content"][0]["type"], "tool_use");
+        assert_eq!(req["messages"][2]["content"][0]["tool_use_id"], "call_0");
+        // mined like an anthropic request
+        let results = tool_results(&one_turn_openai_trace());
+        assert_eq!(results["call_0"].0, "42");
+        // title = turn 1's real user text, past the boot window
+        assert_eq!(ls_row(&one_turn_openai_trace(), None).title, "and now?");
+    }
+
+    #[test]
+    fn openai_response_renders_tokens_cell_and_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileTraceStore::new(dir.path());
+        store
+            .write_run("run_abc", &one_turn_openai_trace(), &[])
+            .unwrap();
+        let out = render(&store, "run_abc", &ShowOpts::default()).unwrap();
+        assert!(
+            out.contains("llm: gemini-x — tokens in=90 out=20 cacheRead=80 cacheWrite=0"),
+            "{out}"
+        );
+        assert!(out.contains("cell call_1"), "{out}");
+        assert!(out.contains("1+1"), "{out}");
+        assert!(out.contains("stop=tool_use"), "{out}");
     }
 
     #[test]
