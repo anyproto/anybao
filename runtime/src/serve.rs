@@ -1755,16 +1755,20 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                         })
                         .unwrap_or_else(|| raw.to_string())
                 });
+                // How the run ended rides the `agent` group (`outcome`,
+                // the run id as `debugLink`), not the text (ADR-005 §3):
+                // the client renders the mark, the text stays human
                 let text = match detail {
-                    Some(d) => format!("Something broke mid-run (trace {trace_ref}): {d}"),
-                    None => format!("Something broke mid-run (trace {trace_ref})."),
+                    Some(d) => format!("Something broke mid-run: {d}"),
+                    None => "Something broke mid-run.".to_string(),
                 };
                 let _ = ctx.client.chat_send(
                     &ctx.space,
                     &ctx.chat,
                     &json!({
                     "text": text,
-                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                    "agent": {"name": ctx.cfg.agent_name, "done": true,
+                              "outcome": "error", "debugLink": trace_ref}}),
                 );
             }
         }

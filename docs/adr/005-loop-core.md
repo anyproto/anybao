@@ -260,6 +260,16 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   ADR-003) and the HOST posts the terminal bubble (`done: true`) and
   records the run as interrupted — the one thing the guest can no
   longer say for itself.
+- **How a run ended is data on the bubble, not text.** The host's
+  terminal bubbles carry it in the message's `agent` group (any
+  `chat_messages-v4`): `outcome` = `error` (the run died — the text
+  is "Something broke mid-run: <type>: <msg>") or `interrupted` (a
+  hard break — "Stopped."), and `debugLink` = the run id (`run_…`,
+  what `anyrt trace show` takes). A normal reply carries neither.
+  Clients key their rendering on `outcome` (a warning, a stop mark)
+  and the trace lookup on `debugLink`; the text is for the human and
+  never carries a trace ref. The vocabulary is the host's — the
+  server stores `outcome` opaquely.
 
 ### 4. Digest policy (guest-side, in the toolcaller)
 
@@ -397,7 +407,7 @@ decisions — the loop is guest code, and guest code sees only the trace.
 
 ## Resolved questions (review 2026-07-07)
 
-1. **Ceiling defaults**: `max_turns=108`, `max_tokens_total=1M`,
+1. **Ceiling defaults**: `max_turns=300` (a long agentic run is hundreds of short cells — 108 cut real runs short), `max_tokens_total=1M`,
    `max_cost_total` unset — starting values, tuned from metrics later.
 2. **Progress bubbles**: keep v1 behavior — every interim text posts as
    a `done: false` bubble; revisit from usage metrics if ever noisy.
