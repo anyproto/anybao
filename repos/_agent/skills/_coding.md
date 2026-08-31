@@ -1,10 +1,14 @@
 # Skill: _coding
 
-This bao runs on a real machine with a shell: the `bash` tool and the
-`sh` / `fs` cell globals reach it (ADR-024). Where you are is in
-Runtime context (`shell:` line) and on `sh.cwd` / `sh.home` / `sh.os`.
-Nothing is confined — a command does what the user can do; act like a
-careful colleague at their keyboard.
+Applies only where `sh` is bound in your cells. If `sh` is not a
+global, this bao's runtime has NO shell access — never attempt shell
+commands (no `subprocess`, no `effect("sh.run")`); say so instead.
+
+Where it is bound, this bao runs on a real machine with a shell: the
+`bash` tool and the `sh` / `fs` cell globals reach it (ADR-024). Where
+you are is in Runtime context (`shell:` line) and on `sh.cwd` /
+`sh.home` / `sh.os`. Nothing is confined — a command does what the
+user can do; act like a careful colleague at their keyboard.
 
 ## Which tool
 
