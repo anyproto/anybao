@@ -17,8 +17,8 @@ use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
     chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
-    standing_triggers, trigger_to_record, ChatInput, EventSource, RunResult, Scheduler, Trigger,
-    WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
+    standing_triggers, trigger_to_record, ChatInput, EventSource, LiveRun, RunResult, Scheduler,
+    Trigger, WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -1665,24 +1665,61 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     posted
 }
 
+/// Soft-break grace (ADR-005 §3): the guest only drains its mailbox
+/// between turns, so a run inside a long cell (a 120 s `sh.run`, a
+/// slow model call) cannot honor "stop" by itself. After this long
+/// the flag goes up and the epoch callback / the blocked syscall end
+/// it. Long enough for the wrap-up turn a run between cells does.
+const BREAK_GRACE: Duration = Duration::from_secs(20);
+
+/// A stop landed on a live run. Hard: the watcher already set the
+/// flag. Soft: arm the escalation — set the flag after BREAK_GRACE if
+/// the same run is still going (the Arc is the run's identity; a
+/// finished run's flag is a dead letter).
+fn on_break(chat: &str, interrupt: &Arc<AtomicBool>, hard: bool) {
+    if hard {
+        info!("hard break on chat {chat}");
+        return;
+    }
+    info!(
+        "soft break on chat {chat} (hard in {}s)",
+        BREAK_GRACE.as_secs()
+    );
+    let flag = interrupt.clone();
+    let chat = chat.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(BREAK_GRACE);
+        if !flag.swap(true, Ordering::Relaxed) && Arc::strong_count(&flag) > 1 {
+            info!("soft break on chat {chat} escalated to hard");
+        }
+    });
+}
+
 /// Start a run for `input` — or, when one is already live on this chat,
 /// inject into its mailbox instead. Check-and-register happens under
 /// ONE watcher lock: the watch thread and the ticker's backlog drain
 /// may race to start.
 fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
     let mailbox: SharedMailbox = Default::default();
+    let interrupt = Arc::new(AtomicBool::new(false));
     {
         let mut w = shared.watcher.lock().unwrap();
         if let Some(live) = w.live.get(&ctx.chat) {
-            live.lock()
+            live.mailbox
+                .lock()
                 .unwrap()
                 .push_back(json!({"kind": "inject", "text": input.text,
                                   "context": input.context}));
             return;
         }
-        w.live.insert(ctx.chat.clone(), mailbox.clone());
+        w.live.insert(
+            ctx.chat.clone(),
+            LiveRun {
+                mailbox: mailbox.clone(),
+                interrupt: interrupt.clone(),
+            },
+        );
     }
-    let interrupt = Arc::new(AtomicBool::new(false));
     let shared = shared.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
@@ -1737,7 +1774,17 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                 );
             }
-            if rr.status != "ok" && !died_on_miss {
+            if rr.status == "interrupted" {
+                // a hard break (ADR-005 §3): the host says the one thing
+                // the guest no longer can — the run is over
+                let _ = ctx.client.chat_send(
+                    &ctx.space,
+                    &ctx.chat,
+                    &json!({
+                    "text": format!("Stopped (trace {trace_ref})."),
+                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                );
+            } else if rr.status != "ok" && !died_on_miss {
                 // The typed error goes INTO the chat: the next turn
                 // boots with this message in its window, so the model
                 // can act on it (FuelExhausted's text says to redo the
@@ -1808,6 +1855,9 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .lock()
                         .unwrap()
                         .on_message(&ctx.chat, &record);
+                    if let WatchAction::Break { interrupt, hard } = &action {
+                        on_break(&ctx.chat, interrupt, *hard);
+                    }
                     if let WatchAction::Start = action {
                         let input = Watcher::input(&record);
                         note_chat_start(shared, ctx);
@@ -1830,6 +1880,9 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .lock()
                         .unwrap()
                         .on_message(&ctx.chat, &record);
+                    if let WatchAction::Break { interrupt, hard } = &action {
+                        on_break(&ctx.chat, interrupt, *hard);
+                    }
                     if let WatchAction::Start = action {
                         let input = Watcher::input(&record);
                         note_chat_start(shared, ctx);
@@ -2496,6 +2549,23 @@ fn handle_control(
                 "peerId": ctx.self_peer,
                 "winner": winner,
             }))
+        }
+        // break the live run on a chat (ADR-005 §3): body `{"hard": bool}`
+        ("POST", ["break", chat]) => {
+            let hard = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|b| b.get("hard").and_then(|h| h.as_bool()))
+                .unwrap_or(false);
+            let action = shared
+                .watcher
+                .lock()
+                .unwrap()
+                .break_chat(chat, hard)
+                .context("no live run on that chat")?;
+            if let WatchAction::Break { interrupt, hard } = &action {
+                on_break(chat, interrupt, *hard);
+            }
+            Ok(json!({"chat": chat, "hard": hard}))
         }
         ("GET", ["triggers"]) => Ok(Value::Array(reg.values().map(rollup).collect())),
         ("GET", ["triggers", id]) => {

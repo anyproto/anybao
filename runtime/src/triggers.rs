@@ -6,6 +6,8 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 
@@ -659,16 +661,47 @@ pub struct ChatInput {
 #[derive(Default)]
 pub struct Watcher {
     seen: std::collections::BTreeSet<String>,
-    pub live: BTreeMap<String, crate::broker::SharedMailbox>,
+    pub live: BTreeMap<String, LiveRun>,
     /// This agent's chat identity (`agent.name` on its own bubbles).
     pub self_name: String,
+}
+
+/// A conversation with a run in flight: its mailbox (inject / soft
+/// break, drained by the guest between turns) and its interrupt flag
+/// (hard break — the runner's epoch callback traps on it, a blocked
+/// `sh.run` kills its child on it; ADR-005 §3, ADR-003 §2).
+#[derive(Clone, Default)]
+pub struct LiveRun {
+    pub mailbox: crate::broker::SharedMailbox,
+    pub interrupt: Arc<AtomicBool>,
 }
 
 pub enum WatchAction {
     Dup,
     Skip,
     Inject,
+    /// A stop word landed on a live run: the soft break is already in
+    /// the mailbox; `hard` means the flag is already set too. For a
+    /// soft one the caller arms the grace escalation (ADR-005 §3).
+    Break {
+        interrupt: Arc<AtomicBool>,
+        hard: bool,
+    },
     Start,
+}
+
+/// The user's stop words, matched on the whole trimmed message (case-
+/// insensitive) — only consulted while a run is live on that chat, so
+/// a message that IS one of these is a command, not content. Soft =
+/// "wrap up at the next turn boundary, hard after the grace"; hard =
+/// "now".
+pub fn stop_word(text: &str) -> Option<bool> {
+    let t = text.trim().to_ascii_lowercase();
+    match t.as_str() {
+        "stop" | "/stop" | "stop!" | "stop." => Some(false),
+        "/kill" | "stop now" | "/stop now" => Some(true),
+        _ => None,
+    }
 }
 
 impl Watcher {
@@ -797,13 +830,39 @@ impl Watcher {
         if Self::is_self_message(record, &self.self_name) {
             return WatchAction::Skip; // own bubble — never self-trigger
         }
-        if let Some(mailbox) = self.live.get(chat_id) {
+        if let Some(live) = self.live.get(chat_id) {
             let input = Self::input(record);
-            mailbox.lock().unwrap().push_back(json!({
+            if let Some(hard) = stop_word(&input.text) {
+                return self.break_live(live.clone(), hard);
+            }
+            live.mailbox.lock().unwrap().push_back(json!({
                 "kind": "inject", "text": input.text, "context": input.context}));
             return WatchAction::Inject;
         }
         WatchAction::Start
+    }
+
+    /// Break the live run on `chat_id` (the control API's `POST
+    /// /break/<chat>`): None when nothing is running there.
+    pub fn break_chat(&mut self, chat_id: &str, hard: bool) -> Option<WatchAction> {
+        let live = self.live.get(chat_id)?.clone();
+        Some(self.break_live(live, hard))
+    }
+
+    fn break_live(&mut self, live: LiveRun, hard: bool) -> WatchAction {
+        // the soft break always goes in: a run between cells wraps up
+        // cleanly even when the hard flag lands a moment later
+        live.mailbox
+            .lock()
+            .unwrap()
+            .push_back(json!({"kind": "break", "hard": hard}));
+        if hard {
+            live.interrupt.store(true, Ordering::Relaxed);
+        }
+        WatchAction::Break {
+            interrupt: live.interrupt,
+            hard,
+        }
     }
 
     pub fn conversation_done(&mut self, chat_id: &str) {
@@ -1279,7 +1338,13 @@ mod tests {
         assert!(matches!(w.on_message("c1", &nudge), WatchAction::Start));
         w.conversation_done("c1");
         let mb: crate::broker::SharedMailbox = Default::default();
-        w.live.insert("c1".into(), mb.clone());
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
         let m3 = json!({"id": "m3", "text": "also"});
         assert!(matches!(w.on_message("c1", &m3), WatchAction::Inject));
         assert_eq!(mb.lock().unwrap().len(), 1);
@@ -1312,7 +1377,13 @@ mod tests {
         // …and it rides the inject next to the text
         let mut w = Watcher::new("bao");
         let mb: crate::broker::SharedMailbox = Default::default();
-        w.live.insert("c1".into(), mb.clone());
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
         assert!(matches!(w.on_message("c1", &rec), WatchAction::Inject));
         let item = mb.lock().unwrap().pop_front().unwrap();
         assert_eq!(item["kind"], "inject");
@@ -1352,7 +1423,13 @@ mod tests {
 
         let mut w = Watcher::new("bao");
         let mb: crate::broker::SharedMailbox = Default::default();
-        w.live.insert("c1".into(), mb.clone());
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
         let m = json!({"id": "m9", "text": "done",
                        "agent": {"name": "trigger:x"}});
         assert!(matches!(w.on_message("c1", &m), WatchAction::Inject));
@@ -1361,5 +1438,63 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("[from agent \"trigger:x\""));
+    }
+
+    #[test]
+    fn stop_words_break_a_live_run_soft_then_hard() {
+        assert_eq!(stop_word(" Stop "), Some(false));
+        assert_eq!(stop_word("/stop"), Some(false));
+        assert_eq!(stop_word("stop now"), Some(true));
+        assert_eq!(stop_word("/kill"), Some(true));
+        assert_eq!(stop_word("stop the presses"), None);
+        assert_eq!(stop_word("please stop"), None);
+
+        let mut w = Watcher::new("bao");
+        // not live: "stop" is just a message that starts a run
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m0", "text": "stop"})),
+            WatchAction::Start
+        ));
+
+        let live = LiveRun::default();
+        w.live.insert("c1".into(), live.clone());
+        // soft: break item queued, flag untouched, caller arms the grace
+        match w.on_message("c1", &json!({"id": "m1", "text": "Stop"})) {
+            WatchAction::Break { interrupt, hard } => {
+                assert!(!hard);
+                assert!(!interrupt.load(Ordering::Relaxed));
+                assert!(Arc::ptr_eq(&interrupt, &live.interrupt));
+            }
+            _ => panic!("expected Break"),
+        }
+        let item = live.mailbox.lock().unwrap().pop_front().unwrap();
+        assert_eq!(item, json!({"kind": "break", "hard": false}));
+        // a normal message still injects
+        assert!(matches!(
+            w.on_message("c1", &json!({"id": "m2", "text": "and also x"})),
+            WatchAction::Inject
+        ));
+        assert_eq!(
+            live.mailbox.lock().unwrap().pop_front().unwrap()["kind"],
+            "inject"
+        );
+        // hard: flag set now
+        match w.on_message("c1", &json!({"id": "m3", "text": "stop now"})) {
+            WatchAction::Break { hard, .. } => assert!(hard),
+            _ => panic!("expected Break"),
+        }
+        assert!(live.interrupt.load(Ordering::Relaxed));
+        assert_eq!(
+            live.mailbox.lock().unwrap().pop_front().unwrap()["hard"],
+            true
+        );
+        // the control API path: same mechanics, None when nothing runs
+        assert!(w.break_chat("nope", false).is_none());
+        assert!(matches!(
+            w.break_chat("c1", false),
+            Some(WatchAction::Break { hard: false, .. })
+        ));
+        w.conversation_done("c1");
+        assert!(w.break_chat("c1", true).is_none());
     }
 }

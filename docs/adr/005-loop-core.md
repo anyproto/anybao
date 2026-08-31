@@ -260,6 +260,29 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   ADR-003) and the HOST posts the terminal bubble (`done: true`) and
   records the run as interrupted — the one thing the guest can no
   longer say for itself.
+- **Who sets the flag (amendment 2026-08-31).** Two setters, both
+  through the watcher's `LiveRun {mailbox, interrupt}` for the chat:
+  1. **Stop words in the chat**, consulted only while a run is live
+     on that chat (so the message is a command, not content), whole
+     trimmed message, case-insensitive: `stop` / `/stop` / `stop!` /
+     `stop.` = **soft** — the `break` item goes in the mailbox (the
+     wrap-up turn at the next cell boundary) AND a grace timer
+     (20 s) sets the flag if the same run is still going, because a
+     run inside a long cell (a slow model call, a long HTTP call) cannot
+     drain the mailbox; `stop now` / `/stop now` / `/kill` = **hard**
+     — the flag goes up immediately (the `break` item still goes in,
+     so a run between cells wraps up cleanly). Any other message
+     injects as before. A stop word on a chat with no live run is an
+     ordinary message that starts a run.
+  2. **The control API**: `POST /break/<chat>` with `{"hard": bool}`
+     (default soft, same grace); 400 when nothing runs there.
+  The flag is the run's identity: the watcher hands out the run's own
+  `Arc`, a timer that fires after the run ended sets a dead letter.
+  On the flag the runner's epoch callback traps the guest at the next
+  tick; the run reports `interrupted` and the host posts `Stopped.`
+  with `done: true` — no "Something broke". A hard-broken run skips
+  the guest's `append_turn`: that turn is not in history (the chat
+  has the messages; the trace has the run).
 - **How a run ended is data on the bubble, not text.** The host's
   terminal bubbles carry it in the message's `agent` group (any
   `chat_messages-v4`): `outcome` = `error` (the run died — the text
