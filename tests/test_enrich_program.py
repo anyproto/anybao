@@ -58,7 +58,7 @@ class FakeGuest:
         return {"typeId": f"t-{body['xKey']}", "xKey": body["xKey"],
                 "created": True, "addedProps": {}}
 
-    def create_dataset(self, space, type_key, draft):
+    def _create_dataset(self, space, type_key, draft):
         self.datasets.append({"type": type_key, "name": draft["name"]})
         return {"datasetDefId": f"d-{draft['name']}", "created": True}
 

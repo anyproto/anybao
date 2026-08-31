@@ -60,7 +60,7 @@ def _ensure_store(c, space):
     if space in _ensured:
         return
     c.create_type(space, _TYPE_DECL)
-    c.create_dataset(space, _TYPE, _DATASET_DECL)
+    c._create_dataset(space, _TYPE, _DATASET_DECL)
     _ensured.add(space)
 
 

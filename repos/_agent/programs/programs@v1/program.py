@@ -239,7 +239,7 @@ def _ensure_store(sid):
     a = _any()
     a.create_type(sid, _PROGRAM_TYPE)
     for d in _PROGRAM_DATASETS:
-        a.create_dataset(sid, "program", d)
+        a._create_dataset(sid, "program", d)
     _ensured.add(sid)
 
 

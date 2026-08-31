@@ -79,7 +79,7 @@ class FakeAny:
         self.ensured = getattr(self, "ensured", []) + [(sid, "type")]
         return {"typeId": "progT", "xKey": "program", "created": False}
 
-    def create_dataset(self, sid, type_key, draft):
+    def _create_dataset(self, sid, type_key, draft):
         assert type_key == "program"
         self.ensured = getattr(self, "ensured", []) + [(sid, draft["name"])]
         return {"ok": True}

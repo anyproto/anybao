@@ -134,15 +134,20 @@ change).
 
 ### 4. any@v1 surface (ADR-010 §8)
 
-The dataset machinery is generic agent surface, not gmail plumbing —
-emails are merely the first corpus. New flat methods, 1:1 over the
-server endpoints: `create_dataset` (ensure-by-name composite, the
+The dataset machinery is generic program surface, not gmail plumbing —
+emails are merely the first corpus. Flat methods, 1:1 over the server
+endpoints. Declaration is `_`-private (hidden from `## Tools` and
+`help()`, ADR-010 §1; amended 2026-08-31): a program that owns a store
+declares its datasets (ADR-017 §1), the chat agent is never offered
+the ability — it only reads and writes records through the public
+`query` / `upsert_record(s)` / `delete_records`. `_create_dataset`
+(ensure-by-name composite, the
 `create_type` pattern; since 2026-08-20 the draft stays authoritative
 for the mutable `search.*` leaves — a drifted title/text/scope on an
 existing def is PATCHed back, so scope changes roll out by deploy;
 `text` drift-compares as a normalized list since the server stores a
 single-element array as the bare string, SYN-179),
-`list_datasets`, `remove_dataset`,
+`_list_datasets`, `_remove_dataset`; public
 `upsert_records`, `delete_records`; `aggregate` gains
 `object_id`/`dataset` params for the per-object variant (dataset field
 refs are raw keys — no xKey resolution, no dexify). Dataset field

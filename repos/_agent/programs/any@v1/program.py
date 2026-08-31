@@ -1342,8 +1342,8 @@ class _Client:
         """Write one dataset record (whole-value $set, upsert).
 
         Writable datasets: server-registered ones (agent_triggers,
-        agent_memory_items, …) and runtime datasets declared via
-        create_dataset (ADR-016) — in both cases the host object must
+        agent_memory_items, …) and runtime datasets declared by their
+        owning program (ADR-016) — in both cases the host object must
         carry the dataset's owning type in `any.types`. An UNDECLARED
         dataset name 500s on write and reads as [] — store ad-hoc
         state as object properties instead (seen live 2026-08-12,
@@ -1367,7 +1367,7 @@ class _Client:
         Returns {created, updated, skipped, rejections: [{index, id,
         code, reason}], pages} — 200 even with rejections, so CHECK
         rejections. One CRDT change per page (page_size default 500).
-        Declare the dataset first (create_dataset) and put the owning
+        The owning program declares the dataset; put the owning
         type on the host object at create ({"types": [...]})."""
         body = {"objectId": object_id, "dataset": dataset,
                 "records": records}
@@ -2582,18 +2582,19 @@ def delete_records(spaceConfig, object_id, dataset, record_ids):
                                record_ids)
 
 
-@span(kind="getter")  # noqa: F821 - guest global
-def list_datasets(spaceConfig, type_key):
+# `_`-private (hidden from the tool inventory, ADR-010 §1): dataset
+# DECLARATION is program plumbing — a program that owns a store ensures
+# its type + datasets (ADR-017 §1); the chat agent only reads/writes
+# records. Records stay public: query / upsert_record(s) / delete_records.
+def _list_datasets(spaceConfig, type_key):
     return _c().list_datasets(_space(spaceConfig), type_key)
 
 
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_dataset(spaceConfig, type_key, draft):
+def _create_dataset(spaceConfig, type_key, draft):
     return _c().create_dataset(_space(spaceConfig), type_key, draft)
 
 
-@span(kind="mutator")  # noqa: F821 - guest global
-def remove_dataset(spaceConfig, type_key, dataset_def_id):
+def _remove_dataset(spaceConfig, type_key, dataset_def_id):
     return _c().remove_dataset(_space(spaceConfig), type_key, dataset_def_id)
 
 
@@ -2836,7 +2837,7 @@ def delete_memory(spaceConfig, item_id):
 # copy (on _Client), rendered by describe()/help() from here
 for _f in (create_object, update_object, delete_object, query_objects,
            list_programs, query, modify, upsert_record, upsert_records,
-           delete_records, list_datasets, create_dataset, remove_dataset,
+           delete_records, _list_datasets, _create_dataset, _remove_dataset,
            aggregate, list_processes, cancel_process,
            get_markdown, put_markdown, edit_markdown, list_files, file_content,
            list_search_scopes,
@@ -2848,5 +2849,5 @@ for _f in (create_object, update_object, delete_object, query_objects,
            create_type, add_property, append_turn, create_chunk,
            chat_send, search, backlinks, get_brain, create_memory,
            evolve_memory, delete_memory):
-    _f.__doc__ = getattr(_Client, _f.__name__).__doc__
+    _f.__doc__ = getattr(_Client, _f.__name__.lstrip("_")).__doc__
 del _f

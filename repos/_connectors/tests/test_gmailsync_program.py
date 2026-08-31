@@ -42,7 +42,7 @@ class FakeAny:
         self.mailboxes = list(mailboxes or [])  # mailbox object rows
         self.types_created = []
         self.datasets_created = []
-        self.dataset_drafts = []               # every create_dataset draft
+        self.dataset_drafts = []               # every _create_dataset draft
         self.deleted = []
         self.deleted_records = []
         self.upserts = []                      # every upsert_records call
@@ -102,7 +102,7 @@ class FakeAny:
         return {"typeId": "T_" + body["xKey"], "xKey": body["xKey"],
                 "created": False, "addedProps": {}}
 
-    def create_dataset(self, space, type_key, draft):
+    def _create_dataset(self, space, type_key, draft):
         self.datasets_created.append((type_key, draft["name"]))
         self.dataset_drafts.append(draft)
         return {"datasetDefId": "ds1", "created": True}

@@ -605,7 +605,7 @@ def _tick(space, q=None, cap=None):
                         "small max_messages"}
     _any.create_type(space, MAILBOX_TYPE)   # ADR-016 §1 provisioning:
     _any.create_type(space, STATE_TYPE)     # idempotent ensure-resolve
-    _any.create_dataset(space, "mailbox", EMAIL_DATASET)
+    _any._create_dataset(space, "mailbox", EMAIL_DATASET)
     state_id, state = _ensure_state(space)
     mailbox_id = _ensure_mailbox(space, state_id, state)
     if not mailbox_id:
@@ -806,7 +806,7 @@ def start_backfill(space, agent_space, q=None):
     q = q or _DEFAULT_Q
     _any.create_type(space, MAILBOX_TYPE)
     _any.create_type(space, STATE_TYPE)
-    _any.create_dataset(space, "mailbox", EMAIL_DATASET)
+    _any._create_dataset(space, "mailbox", EMAIL_DATASET)
     state_id, state = _ensure_state(space)
     gen = int(state.get("chain_gen") or 0) + 1
     updates = {"chain_failures": 0, "chain_gen": gen, "last_q": q,

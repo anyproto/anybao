@@ -248,7 +248,7 @@ def _type_catalog(c, space):
 def _ensure_store(c, space):
     """Ensure the userspace enrichment store — both types, their
     datasets, and the per-space hub object — and return the hub's
-    object id. Idempotent (create_type/create_dataset are ensures);
+    object id. Idempotent (create_type/_create_dataset are ensures);
     an existing hub wins and duplicates are never auto-deleted (their
     records live on them)."""
     hub_type = c.create_type(space, {
@@ -256,13 +256,13 @@ def _ensure_store(c, space):
         "description": "Per-space enrichment store: sourced facts in "
                        "the enriched_data dataset, joined to enriched "
                        "objects by targetObjectId."})
-    c.create_dataset(space, HUB_TYPE_XKEY, ENRICHED_DATA_DATASET)
+    c._create_dataset(space, HUB_TYPE_XKEY, ENRICHED_DATA_DATASET)
     c.create_type(space, {
         "name": "Enrich Proposal", "xKey": PROPOSAL_TYPE_XKEY,
         "description": "Ephemeral, reviewable enrichment plan: one "
                        "enrich_proposal_items record per proposed "
                        "item; deleted on apply."})
-    c.create_dataset(space, PROPOSAL_TYPE_XKEY,
+    c._create_dataset(space, PROPOSAL_TYPE_XKEY,
                      ENRICH_PROPOSAL_ITEMS_DATASET)
     hubs = c.query_objects(space,
                            filter={"any.types": hub_type["typeId"]},
