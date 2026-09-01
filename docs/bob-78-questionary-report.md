@@ -135,7 +135,9 @@ setup has rolled through").
    sniffing); an octet-stream upload of a real PNG poisons the file
    for llm input. llm@v1's UnsupportedMedia error text is excellent
    (named the mime and the supported list) and enabled sonnet's
-   self-recovery.
+   self-recovery. Resolved server-side: `any` sniffs the first 512
+   bytes when the header is absent or octet-stream and stores the
+   detected mime (anyproto/any#206); an explicit header still wins.
 8. **Wrong-space "verification"** (v1 round, contaminated context):
    a model resolved its target space to the `_agentrepo` overlay,
    "verified" against it, and reported success with fabricated links.
