@@ -1,18 +1,21 @@
 {
- "target": "gemini-openai-compat",
+ "target": "openai-terra",
  "tier": {
   "provider": "openai-compat",
-  "model": "gemini-3.7-flash",
-  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-  "api_key_ref": "google.key.gemini"
+  "model": "gpt-5.6-terra",
+  "base_url": "https://api.openai.com/v1",
+  "api_key_ref": "llm.key.openai",
+  "options": {
+   "reasoning_effort": "none"
+  }
  },
  "steps": [
   {
    "request": {
-    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "url": "https://api.openai.com/v1/chat/completions",
     "headers": {},
     "json": {
-     "model": "gemini-3.7-flash",
+     "model": "gpt-5.6-terra",
      "messages": [
       {
        "role": "system",
@@ -23,7 +26,6 @@
        "content": "Compute the sum of the first 20 prime numbers with run_cell, then tell me the number."
       }
      ],
-     "max_tokens": 65536,
      "tools": [
       {
        "type": "function",
@@ -43,18 +45,20 @@
         }
        }
       }
-     ]
+     ],
+     "max_completion_tokens": 16384,
+     "reasoning_effort": "none"
     },
     "timeout": 180,
     "credential": {
-     "ref": "google.key.gemini",
+     "ref": "llm.key.openai",
      "header": "Authorization",
      "about": {
-      "label": "Google AI Studio API key",
+      "label": "OpenAI API key",
       "hosts": [
-       "generativelanguage.googleapis.com"
+       "api.openai.com"
       ],
-      "help": "https://aistudio.google.com/apikey"
+      "help": "https://platform.openai.com/api-keys"
      },
      "prefix": "Bearer "
     }
@@ -62,15 +66,15 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EvsBCvgBARFNMg/HtaVCOauJ9iEmVvD29ed2mVc85A0EKq82iRj5gfToYMQkRuS3KaLwqRs5QmrXUIpy97UUXiZss3yV0Vx8VvKAyCKXho0Emf2/orlV5MCbdhKJiuFrrVnR3/6f4F6QxrAGC/1t9Kn4Ib7BUxTPmKSVq4MX25KndNDC3RO3N1FapmcWf7LxQ4W8eIoRUp+2zks6Z8nOmH8VVLWEFpYOWB1wJX/fWVA5GcztOU0hUPKFOjaqa7gLoQbDDy7UCx1wbpuiMwEOfkk5uU27/tVF/SxtClU8EVmt3Yiu/iHsn2PIVo/hesUelNRc5qgfgDPS8ujBB/A=\"}},\"function\":{\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n \\\\u003c 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nnum = 2\\\\nwhile len(primes) \\\\u003c 20:\\\\n    if is_prime(num):\\\\n        primes.append(num)\\\\n    num += 1\\\\n\\\\nprint(primes)\\\\nprint(\\\\\\\"Sum:\\\\\\\", sum(primes))\\\\n\\\"}\",\"name\":\"run_cell\"},\"id\":\"call_1497322\",\"type\":\"function\"}]}}],\"created\":1788270553,\"id\":\"z9eWarnUAeu_nsEP9Jr2uA4\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":131,\"prompt_tokens\":3985,\"total_tokens\":4153}}"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0IjzABMrHZ8Xy1Rq7VAvAYXtNH\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269990,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": null,\n        \"tool_calls\": [\n          {\n            \"id\": \"call_Su7IZvJDmuJB8OYxli8LRjWl\",\n            \"type\": \"function\",\n            \"function\": {\n              \"name\": \"run_cell\",\n              \"arguments\": \"{\\\"code\\\":\\\"import sympy as sp\\\\nprimes = list(sp.primerange(1, 100))[:20]\\\\n(sum(primes), primes)\\\"}\"\n            }\n          }\n        ],\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"tool_calls\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 3679,\n    \"completion_tokens\": 46,\n    \"total_tokens\": 3725,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 3676,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
    "request": {
-    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "url": "https://api.openai.com/v1/chat/completions",
     "headers": {},
     "json": {
-     "model": "gemini-3.7-flash",
+     "model": "gpt-5.6-terra",
      "messages": [
       {
        "role": "system",
@@ -85,27 +89,21 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "call_1497322",
+         "id": "call_Su7IZvJDmuJB8OYxli8LRjWl",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nnum = 2\\nwhile len(primes) < 20:\\n    if is_prime(num):\\n        primes.append(num)\\n    num += 1\\n\\nprint(primes)\\nprint(\\\"Sum:\\\", sum(primes))\\n\"}"
-         },
-         "extra_content": {
-          "google": {
-           "thought_signature": "EvsBCvgBARFNMg/HtaVCOauJ9iEmVvD29ed2mVc85A0EKq82iRj5gfToYMQkRuS3KaLwqRs5QmrXUIpy97UUXiZss3yV0Vx8VvKAyCKXho0Emf2/orlV5MCbdhKJiuFrrVnR3/6f4F6QxrAGC/1t9Kn4Ib7BUxTPmKSVq4MX25KndNDC3RO3N1FapmcWf7LxQ4W8eIoRUp+2zks6Z8nOmH8VVLWEFpYOWB1wJX/fWVA5GcztOU0hUPKFOjaqa7gLoQbDDy7UCx1wbpuiMwEOfkk5uU27/tVF/SxtClU8EVmt3Yiu/iHsn2PIVo/hesUelNRc5qgfgDPS8ujBB/A="
-          }
+          "arguments": "{\"code\": \"import sympy as sp\\nprimes = list(sp.primerange(1, 100))[:20]\\n(sum(primes), primes)\"}"
          }
         }
        ]
       },
       {
        "role": "tool",
-       "tool_call_id": "call_1497322",
+       "tool_call_id": "call_Su7IZvJDmuJB8OYxli8LRjWl",
        "content": "Last value: 639"
       }
      ],
-     "max_tokens": 65536,
      "tools": [
       {
        "type": "function",
@@ -125,18 +123,20 @@
         }
        }
       }
-     ]
+     ],
+     "max_completion_tokens": 16384,
+     "reasoning_effort": "none"
     },
     "timeout": 180,
     "credential": {
-     "ref": "google.key.gemini",
+     "ref": "llm.key.openai",
      "header": "Authorization",
      "about": {
-      "label": "Google AI Studio API key",
+      "label": "OpenAI API key",
       "hosts": [
-       "generativelanguage.googleapis.com"
+       "api.openai.com"
       ],
-      "help": "https://aistudio.google.com/apikey"
+      "help": "https://platform.openai.com/api-keys"
      },
      "prefix": "Bearer "
     }
@@ -144,15 +144,15 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"The sum of the first 20 prime numbers is 639.\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvgBCvUBARFNMg9cTpyEx8wJttf62LzN51Zy/9wn7QOQ8fsZ0AG19FUqKNZ02d+IdC1C6+Zo50SUkR0b1iZ0bhCHBPSGs2UcNKHZ10DsnTDMkjSVBnCwmouZQzNGKw697YO6pR0f/jPUh5Q9ZT1m9BTwUbyiHouEplabUmUDXmWGw6gXkZEDCJ32TXOj3zj5JkQJ2CFuNXNm267sboiNEe2VL5hOSbbUCijRolJf1jiA3NW1FhPMHwC2xvKG2MdY+qhF0zkdvGS4QMmNCqcRo7FypPnZK2TTB7WBLr7Xw5XdcWeH35WP3TanN8QFH/BgHW5gTXGF8MqMBJc=\"}},\"role\":\"assistant\"}}],\"created\":1788270557,\"id\":\"2deWap6JHJG1xN8P8s7O0A8\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4173,\"total_tokens\":4290}}"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0KpD2Q10uc7ovu1mnEZsZDIYR5\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269992,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"639\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 3741,\n    \"completion_tokens\": 4,\n    \"total_tokens\": 3745,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 3676,\n      \"cache_write_tokens\": 62,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
    "request": {
-    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "url": "https://api.openai.com/v1/chat/completions",
     "headers": {},
     "json": {
-     "model": "gemini-3.7-flash",
+     "model": "gpt-5.6-terra",
      "messages": [
       {
        "role": "user",
@@ -170,18 +170,19 @@
        ]
       }
      ],
-     "max_tokens": 65536
+     "max_completion_tokens": 16384,
+     "reasoning_effort": "none"
     },
     "timeout": 180,
     "credential": {
-     "ref": "google.key.gemini",
+     "ref": "llm.key.openai",
      "header": "Authorization",
      "about": {
-      "label": "Google AI Studio API key",
+      "label": "OpenAI API key",
       "hosts": [
-       "generativelanguage.googleapis.com"
+       "api.openai.com"
       ],
-      "help": "https://aistudio.google.com/apikey"
+      "help": "https://platform.openai.com/api-keys"
      },
      "prefix": "Bearer "
     }
@@ -189,15 +190,15 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvMBCvABARFNMg+0ufKnsFRgeTbAvkixeRfSSvW7+KJaKSwZeybDkC7jt/RSIcVZX5NbmiQ0gFB1Klc8l0SmmyUjiE4bSCoVEwBYJtZPBW37+UOz26S38acwy5UjVj5m4BymEwj4++EQMSSVblg0UzVyxklSlDbzUrY2nIPiO3UfESnoEyqbraJUXPE6i/o5KDG0GF/kMJNxbR5Hc6Szp+qanbepSWxhkjTV3kUw84naLwhNeVYbZ2Wk33yHC+z2MLZtF7UtmD23Go+VJgr9NImXy2CMUISCNUu3BQjg/fIpVd+pZ1J3Zr0Uxdi8hY38g/krbfFz\"}},\"role\":\"assistant\"}}],\"created\":1788270564,\"id\":\"3deWaqL3EtiNvdIPxdiO-A8\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":1101,\"total_tokens\":1141}}"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0MnaAsPXMtRKPuOhY2ewMFfqjC\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269994,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"Orange\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 18,\n    \"completion_tokens\": 4,\n    \"total_tokens\": 22,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
    "request": {
-    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "url": "https://api.openai.com/v1/chat/completions",
     "headers": {},
     "json": {
-     "model": "gemini-3.7-flash",
+     "model": "gpt-5.6-terra",
      "messages": [
       {
        "role": "user",
@@ -207,26 +208,28 @@
          "text": "What single word is written in this PDF? Answer with that word only."
         },
         {
-         "type": "image_url",
-         "image_url": {
-          "url": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         "type": "file",
+         "file": {
+          "filename": "word.pdf",
+          "file_data": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
          }
         }
        ]
       }
      ],
-     "max_tokens": 65536
+     "max_completion_tokens": 16384,
+     "reasoning_effort": "none"
     },
     "timeout": 180,
     "credential": {
-     "ref": "google.key.gemini",
+     "ref": "llm.key.openai",
      "header": "Authorization",
      "about": {
-      "label": "Google AI Studio API key",
+      "label": "OpenAI API key",
       "hosts": [
-       "generativelanguage.googleapis.com"
+       "api.openai.com"
       ],
-      "help": "https://aistudio.google.com/apikey"
+      "help": "https://platform.openai.com/api-keys"
      },
      "prefix": "Bearer "
     }
@@ -234,33 +237,34 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"VIOLET\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvYBCvMBARFNMg8VJfn86EYWUUO34ztMoJQenM+uZUACuzo1pFPShnUJy9IjWKal/0KNmrsWn30U/J6SwLMQrEoi3BXEKYGpRvOPo4v3wR6AhQ9PXMFY5Ra+pkYrmmxSFzBAYSPO5Lu9jB0L3ECV0t96JAl7C1oDGDC5APfIJAXGIr7Ns6U7Ki7zvz8LN0eZ9adG51P8czA8455AaS2RBgEM8ReXSkE3YfWefy2OXATrY41VXxlZQR7M9OMkj3LsJJMgOFo6cPlA3cezXGMro1fr2Khh7K+TUfu9NijkPb6ko+ongvfAh1/6xO49cu5sSEdc3PSrdCBh\"}},\"role\":\"assistant\"}}],\"created\":1788270572,\"id\":\"5NeWapjfKtKDxN8P3dSf6Ak\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":548,\"total_tokens\":585}}"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0NCW3rtlq47k3CmKHWDluGoWDs\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269995,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"VIOLET\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 239,\n    \"completion_tokens\": 6,\n    \"total_tokens\": 245,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
    "request": {
-    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "url": "https://api.openai.com/v1/chat/completions",
     "headers": {},
     "json": {
-     "model": "gemini-3.7-flash",
+     "model": "gpt-5.6-terra",
      "messages": [
       {
        "role": "user",
        "content": "Write a 500-word essay about rivers."
       }
      ],
-     "max_tokens": 24
+     "max_completion_tokens": 24,
+     "reasoning_effort": "none"
     },
     "timeout": 180,
     "credential": {
-     "ref": "google.key.gemini",
+     "ref": "llm.key.openai",
      "header": "Authorization",
      "about": {
-      "label": "Google AI Studio API key",
+      "label": "OpenAI API key",
       "hosts": [
-       "generativelanguage.googleapis.com"
+       "api.openai.com"
       ],
-      "help": "https://aistudio.google.com/apikey"
+      "help": "https://platform.openai.com/api-keys"
      },
      "prefix": "Bearer "
     }
@@ -268,7 +272,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"message\":{\"role\":\"assistant\"}}],\"created\":1788270580,\"id\":\"7NeWaomLNrzdvdIPzfy7-QE\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":13,\"total_tokens\":34}}"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0PuYq84azCbuuY56XfPdwSV9aO\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269997,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"Rivers are among the most influential features of Earth’s landscape. Flowing from mountains, springs, lakes\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"length\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 15,\n    \"completion_tokens\": 24,\n    \"total_tokens\": 39,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   }
  ]

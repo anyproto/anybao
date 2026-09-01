@@ -112,6 +112,12 @@ traits = {
   "instructions_at": "system" | "last_user",          # where the per-turn instructions ride
   "malformed_retries": int,                           # re-ask budget for unparseable tool calls before wrap-up
   "vision":          bool,                            # false = text-only: a File part raises UnsupportedMedia before any call
+  "signed_tool_calls": bool,                          # provider rejects unsigned functionCall parts (Gemini 3+ thought
+                                                      # signatures): real signatures round-trip via provider_state;
+                                                      # client-constructed calls get the documented skip sentinel
+  "pdf_input":       "none" | "file" | "image_url",    # the PDF carriage on the wire — granted by the BACKEND, not the
+                                                      # profile (ADR-020 §3): file part (openai/openrouter/anthropic),
+                                                      # PDF data URI under image_url (gemini's OpenAI layer), none
 }
 ```
 
@@ -317,6 +323,16 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   data layer: the next boot window and the log-reading crons see the
   stopped exchange, and the model's view of the conversation matches
   the chat on screen (the trace has the full run).
+- **The trailing log append is bookkeeping, never the verdict.** The
+  guest writes its `agent_turns` row after the final bubble has
+  landed. If that write fails (a tombstoned seq, an unreachable
+  store) the run stays `ok` — the reply is on screen, the failed
+  effect is in the trace — and the result carries `logError` naming
+  it. Failing the run there meant a second "Something broke" bubble
+  and an `error` outcome for work that succeeded, which the user
+  could not act on. The lost row is still real damage (the next boot
+  window lacks the exchange), so the allocator itself must not lose
+  rows to tombstones — ADR-017 §2 owns that.
 - **How a run ended is data on the bubble, not text.** The host's
   terminal bubbles carry it in the message's `agent` group (any
   `chat_messages-v4`): `outcome` = `error` (the run died — the text

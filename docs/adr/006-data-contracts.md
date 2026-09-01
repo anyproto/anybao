@@ -94,6 +94,15 @@ installs the derived root; the derived bao space itself is
 undeletable) or use a fresh account. Same shape as any-ui
 (`docs/general-chat-bundle.md`).
 
+**Space create is a this-side-installs case.** Whoever creates a space
+installs its general chat in the same breath: any@v1 `create_space`
+follows `POST /v1/spaces` with the derived ensure above and returns
+the row plus `generalChatId` (any-ui's space create does the same).
+A derived install on a fresh owned space needs no locked read — the
+id is computed, nothing can be demoted. No chat id rides a space row
+(`generalChatObjectId` is not on the wire); `general_chat(space)`
+reads the registry.
+
 ### 1. Turns v2 (`agent_turns`, server changes in `internal/agentlog`)
 
 - **Server-assigned `seq`**: append returns the allocated seq (single
@@ -285,7 +294,7 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
 - Trigger object properties: `name`, `kind` (`cron | event | once`),
-  `spec` (cron expression | `{dataset, objectId, filter?}` — event
+  `spec` (cron expression | `{dataset, objectId, spaceId?, filter?}` — event
   delivery per ADR-018 §2 | `{at: <epoch seconds>}`), `program`
   (ADR-004 spec string), `args`, `owner` (the DEVICE PIN — see below),
   `enabled`, `logRuns`, and the observability rollup `lastRunAt /

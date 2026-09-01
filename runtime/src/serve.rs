@@ -15,7 +15,7 @@ use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
-    chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
+    chat_watch_trigger, desired_event_sources, event_args, event_source, event_space, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
     standing_triggers, trigger_to_record, ChatInput, EventSource, LiveRun, RunResult, Scheduler,
     Trigger, WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
@@ -439,6 +439,16 @@ pub struct ServeConfigStore {
     obj: String,
 }
 
+impl ServeConfigStore {
+    pub fn new(client: Arc<Client>, space: &str, obj: &str) -> Self {
+        Self {
+            client,
+            space: space.to_string(),
+            obj: obj.to_string(),
+        }
+    }
+}
+
 impl crate::broker::ConfigStore for ServeConfigStore {
     fn read(&self, key: &str) -> Result<Option<Value>, String> {
         let rows = self
@@ -459,6 +469,62 @@ impl crate::broker::ConfigStore for ServeConfigStore {
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
         upsert_config_row(&self.client, &self.space, &self.obj, key, value)
             .map_err(|e| e.to_string())
+    }
+}
+
+/// The `anyrt run --from-space` store binding (ADR-004 §6 parity):
+/// the space's `agent_config` rows read through and written exactly
+/// like serve, so a one-shot run reads the tiers the serve reads and
+/// `config.set` lands where the serve will see it. The run's own
+/// `--config` keys shadow READS only — an explicit per-run override
+/// never rewrites the space's rows (a scratch run is not a serve).
+///
+/// `None` = the space carries no `bao/v1` bundle (locked registry
+/// read: not a bao space, or one never served) — nothing is
+/// provisioned from a run; the broker's seeds map stands in and
+/// `config.set` is refused. With the row present, store resolution is
+/// serve's own `provision_agent_stores` (adopt-or-install is a local
+/// read on a provisioned space).
+pub fn run_config_store(
+    client: &Arc<Client>,
+    space: &str,
+    overrides: BTreeMap<String, Value>,
+) -> Result<Option<Arc<dyn crate::broker::ConfigStore>>> {
+    let reg = client
+        .list_bundles(space)
+        .context("bundles registry (run --from-space config store)")?;
+    let has_bao = reg["bundles"]
+        .as_array()
+        .map(|rows| rows.iter().any(|b| b["id"] == json!("bao/v1")))
+        .unwrap_or(false);
+    if !has_bao {
+        return Ok(None);
+    }
+    let stores = provision_agent_stores(client, space)?;
+    Ok(Some(Arc::new(ShadowedConfigStore {
+        inner: ServeConfigStore::new(client.clone(), space, &stores.config),
+        overrides,
+    })))
+}
+
+/// A config store with a read-only shadow in front: keys in
+/// `overrides` answer from the map, everything else reads through;
+/// every write goes to the inner store.
+pub struct ShadowedConfigStore {
+    inner: ServeConfigStore,
+    overrides: BTreeMap<String, Value>,
+}
+
+impl crate::broker::ConfigStore for ShadowedConfigStore {
+    fn read(&self, key: &str) -> Result<Option<Value>, String> {
+        if let Some(v) = self.overrides.get(key) {
+            return Ok(Some(v.clone()));
+        }
+        crate::broker::ConfigStore::read(&self.inner, key)
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Result<(), String> {
+        crate::broker::ConfigStore::set(&self.inner, key, value)
     }
 }
 
@@ -786,9 +852,10 @@ struct Shared {
     /// live messages that arrived while overlays were pending. Drained
     /// by the trigger ticker once ensure_ready clears.
     backlog: Mutex<Vec<ChatInput>>,
-    /// Live event sources (ADR-018 §2): chat object id → the stop flag
-    /// of the thread watching it. Converged on the registry every tick.
-    event_sources: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+    /// Live event sources (ADR-018 §2): `(space, chat object id)` → the
+    /// stop flag of the thread watching it. Converged on the registry
+    /// every tick.
+    event_sources: Mutex<BTreeMap<(String, String), Arc<AtomicBool>>>,
     /// The chat-responder record id (ADR-018 §3) — `chat-watch`, or a
     /// generation-suffixed reseed when the bare id was tombstoned.
     chat_watch_id: String,
@@ -1717,6 +1784,12 @@ impl RunCtx {
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
         self.live_runs.lock().unwrap().remove(&run_id);
         let mut outcome = outcome?;
+        // ADR-005 §3: a failed trailing log append leaves the run ok
+        // and names itself in the result — surface it here, since the
+        // chat wrapper never reads the value
+        if let Some(e) = outcome.value.get("logError").and_then(|v| v.as_str()) {
+            warn!("run {run_id}: agent_turns append failed after the reply landed — {e}");
+        }
         // ADR-023 §3: a run whose trace could not be landed is a failed
         // run, named — never a silent gap
         let summary = outcome
@@ -1825,6 +1898,44 @@ fn short_error(raw: &str) -> String {
 /// request sits (`requestedIn`; cleared by the write that sets the
 /// value) — ADR-021 §2. Everything the UI renders comes off the row;
 /// the message only links it.
+/// The onboarding marker (BOB-78, ADR-021 §2): a missing model key on a
+/// space that has never chosen a provider — the client renders the
+/// provider chooser instead of the plain key card. Derived from state,
+/// never tracked: the missing ref is the codegen tier's `api_key_ref` AND
+/// every `llm.tier.*` row still equals the embedded seed
+/// (`config_defaults.json`). A row seeded by a toml `[config]` table or
+/// written by a previous choice differs, and the plain card is posted.
+/// No config store (or an unreadable one) = no marker.
+fn is_model_setup(missing_ref: &str, tier: impl Fn(&str) -> Option<Value>) -> bool {
+    let defaults = crate::config::config_defaults();
+    let tiers: Vec<(&String, &Value)> = defaults
+        .iter()
+        .filter(|(k, _)| k.starts_with("llm.tier."))
+        .collect();
+    let Some(codegen) = tier("llm.tier.codegen") else {
+        return false;
+    };
+    if codegen.get("api_key_ref").and_then(|v| v.as_str()) != Some(missing_ref) {
+        return false;
+    }
+    tiers.iter().all(|(key, seed)| {
+        tier(key)
+            .as_ref()
+            .map(|row| tier_identity(row) == tier_identity(seed))
+            == Some(true)
+    })
+}
+
+/// The four fields that make a tier row THIS provider — what the seed and a
+/// stored row are compared on (extra inferred keys never break equality).
+fn tier_identity(row: &Value) -> [Option<String>; 4] {
+    ["provider", "model", "base_url", "api_key_ref"].map(|k| {
+        row.get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim_end_matches('/').to_string())
+    })
+}
+
 fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     let Some(store) = &ctx.secret_store else {
         return 0;
@@ -1867,6 +1978,19 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
         } else {
             format!(", used for {}", hosts.join(", "))
         };
+        // BOB-78: a never-chosen space asking for its model key gets the
+        // provider chooser — a `&setup=model` marker on the row LINK (the
+        // server's strict body rejects extra attachment fields; the link
+        // is stored opaquely and an old client reads only `key`, so it
+        // renders today's plain card) and provider-neutral text.
+        let setup_model = status != "rejected"
+            && ctx.config_store.as_ref().is_some_and(|cs| {
+                is_model_setup(r, |key| {
+                    crate::broker::ConfigStore::read(cs.as_ref(), key)
+                        .ok()
+                        .flatten()
+                })
+            });
         let text = if status == "rejected" {
             let code = row
                 .and_then(|row| row.get("rejectedWith"))
@@ -1878,9 +2002,14 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
                 hosts.join(", ")
             };
             format!("The {label} was rejected by {by} ({code}) — please enter a new one (`{r}`).")
+        } else if setup_model {
+            "Before I can think, I need a language model. Choose a provider and paste its \
+             API key — you can change this later in Model settings."
+                .to_string()
         } else {
             format!("I need a credential to continue: {label} (`{r}`{used_for}).")
         };
+        let marker = if setup_model { "&setup=model" } else { "" };
         let sent = ctx.client.chat_send(
             &ctx.space,
             &ctx.chat,
@@ -1889,7 +2018,7 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
                 "agent": {"name": ctx.cfg.agent_name, "done": true},
                 "attachments": {"credreq": {
                     "type": "credential_request",
-                    "link": format!("any://o/{}?key={r}", store.obj)}}}),
+                    "link": format!("any://o/{}?key={r}{marker}", store.obj)}}}),
         );
         match sent {
             Ok(_) => {
@@ -1991,19 +2120,19 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
         .as_str()
         .context("bundle_child returned no objectId")?
         .to_string();
+    // ADR-017 §2: one past the highest id ever written, tombstones
+    // included (a deleted id never reuses; tombstones carry no `seq`,
+    // so the probe sorts on the record id = the zero-padded seq)
     let rows = ctx.client.query(
         &ctx.space,
         &log,
         "agent_turns",
-        &json!({"sort": ["-seq"], "limit": 1}),
+        &json!({"includeDeleted": true, "sort": ["-id"], "limit": 1}),
     )?;
     let seq = rows
         .first()
-        .and_then(|r| {
-            r["seq"]
-                .as_i64()
-                .or_else(|| r["seq"].as_f64().map(|f| f as i64))
-        })
+        .and_then(|r| r["id"].as_str())
+        .and_then(|id| id.parse::<i64>().ok())
         .unwrap_or(0)
         + 1;
     ctx.client.upsert_record(
@@ -2537,47 +2666,50 @@ fn finish_run(shared: &Shared, ctx: &RunCtx, trigger_id: &str, rr: &RunResult) {
 // --- event sources (ADR-018 §2) ------------------------------------------------
 
 /// Converge the live source threads on the registry: one watch per
-/// distinct chat object across this device's enabled `chat_messages`
-/// event triggers. New objects get a thread; objects no trigger needs
-/// any more (disabled, repinned away, deleted, breaker-tripped) get
-/// their thread stopped.
+/// distinct `(space, chat object)` across this device's enabled
+/// `chat_messages` event triggers — a record's `spec.spaceId`, else
+/// the agent space. New sources get a thread; sources no trigger
+/// needs any more (disabled, repinned away, deleted, breaker-tripped)
+/// get their thread stopped.
 fn reconcile_event_sources(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &Arc<AtomicBool>) {
     let desired = {
         let reg = shared.triggers.lock().unwrap();
         let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
-        desired_event_sources(&reg, &instance)
+        desired_event_sources(&reg, &instance, &ctx.space)
     };
     let mut live = shared.event_sources.lock().unwrap();
-    let stale: Vec<String> = live
+    let stale: Vec<(String, String)> = live
         .keys()
         .filter(|k| !desired.contains_key(*k))
         .cloned()
         .collect();
-    for object_id in stale {
-        if let Some(flag) = live.remove(&object_id) {
+    for key in stale {
+        if let Some(flag) = live.remove(&key) {
             flag.store(true, Ordering::Relaxed);
-            info!("event source stopped: chat {object_id}");
+            info!("event source stopped: chat {} in space {}", key.1, key.0);
         }
     }
-    for (object_id, trigger_ids) in desired {
-        if live.contains_key(&object_id) {
+    for ((space, object_id), trigger_ids) in desired {
+        if live.contains_key(&(space.clone(), object_id.clone())) {
             continue;
         }
         let flag = Arc::new(AtomicBool::new(false));
-        live.insert(object_id.clone(), flag.clone());
-        info!("event source started: chat {object_id} → {trigger_ids:?}");
+        live.insert((space.clone(), object_id.clone()), flag.clone());
+        info!("event source started: chat {object_id} in space {space} → {trigger_ids:?}");
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), stop.clone());
-        std::thread::spawn(move || event_source_thread(shared, ctx, object_id, flag, stop));
+        std::thread::spawn(move || event_source_thread(shared, ctx, space, object_id, flag, stop));
     }
 }
 
 /// One chat object's watch (ADR-018 §2, live-only): reconnect loop
-/// around the SSE feed; a snapshot only seeds the seen-set, `changes`
-/// fire the triggers that name this object. Exits when its own flag
-/// (source no longer desired) or the serve-wide stop is raised.
+/// around the SSE feed in the source's own space; a snapshot only
+/// seeds the seen-set, `changes` fire the triggers that name this
+/// source. Exits when its own flag (source no longer desired) or the
+/// serve-wide stop is raised.
 fn event_source_thread(
     shared: Arc<Shared>,
     ctx: Arc<RunCtx>,
+    space: String,
     object_id: String,
     own_stop: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -2586,13 +2718,15 @@ fn event_source_thread(
     let mut state = EventSource::default();
     while !halted() {
         let feed = ctx.client.subscribe_dataset(
-            &ctx.space,
+            &space,
             &object_id,
             CHAT_MESSAGES,
             &json!({"sort": ["-createdAt"], "limit": 64}),
         );
         match feed {
-            Err(e) => warn!("event source {object_id}: subscribe failed ({e}); retrying in 2s"),
+            Err(e) => warn!(
+                "event source {object_id} in space {space}: subscribe failed ({e}); retrying in 2s"
+            ),
             Ok(frames) => {
                 for frame in frames {
                     if halted() {
@@ -2611,7 +2745,7 @@ fn event_source_thread(
                         "changes" => {
                             for record in state.fresh(records_in(&frame.data), &ctx.cfg.agent_name)
                             {
-                                fire_event(&shared, &ctx, &object_id, &record);
+                                fire_event(&shared, &ctx, &space, &object_id, &record);
                             }
                         }
                         other => {
@@ -2626,11 +2760,11 @@ fn event_source_thread(
     }
 }
 
-/// Fire every enabled trigger of this device that names `object_id`,
-/// sequentially in the source thread, with full run bookkeeping.
-/// Deferred boot (ADR-009 §8) drops the event rather than queueing it —
-/// live-only means live-only.
-fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
+/// Fire every enabled trigger of this device that names the
+/// `(space, object_id)` source, sequentially in the source thread,
+/// with full run bookkeeping. Deferred boot (ADR-009 §8) drops the
+/// event rather than queueing it — live-only means live-only.
+fn fire_event(shared: &Shared, ctx: &RunCtx, space: &str, object_id: &str, record: &Value) {
     if let Err(status) = ctx.ensure_ready() {
         warn!("event on chat {object_id} dropped — not ready: {status}");
         return;
@@ -2641,11 +2775,12 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
         reg.values()
             .filter(|t| t.owner == instance && t.enabled && !is_chat_watch(&t.id))
             .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
+            .filter(|t| event_space(t, &ctx.space) == space)
             .cloned()
             .collect()
     };
     for t in targets {
-        let args = event_args(&t, &ctx.space, object_id, record);
+        let args = event_args(&t, space, object_id, record);
         info!(
             "event trigger {:?} fired by message {:?} on chat {object_id}",
             t.id,
@@ -3781,6 +3916,86 @@ mod tests {
         let (c, log) = scripted(&[(500, json!({"error": "boom"}))]);
         bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
         assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn model_setup_marker_needs_the_codegen_key_and_untouched_seed_rows() {
+        let defaults = crate::config::config_defaults();
+        let seeded = |key: &str| defaults.get(key).cloned();
+        // a fresh space asking for the seeded model key → chooser
+        assert!(is_model_setup("llm.key.anthropic", seeded));
+        // extra inferred keys / a trailing slash on a row keep equality
+        let decorated = |key: &str| {
+            defaults.get(key).cloned().map(|mut v| {
+                v["backend"] = json!("anthropic");
+                v["base_url"] = json!("https://api.anthropic.com/");
+                v
+            })
+        };
+        assert!(is_model_setup("llm.key.anthropic", decorated));
+        // a different missing ref (a connector key) → plain card
+        assert!(!is_model_setup("connector.key.github", seeded));
+        // a chosen provider (rows differ from the seed) → plain card
+        let chosen = |key: &str| {
+            defaults.get(key).cloned().map(|mut v| {
+                v["model"] = json!("z-ai/glm-5.3");
+                v["api_key_ref"] = json!("llm.key.openrouter");
+                v
+            })
+        };
+        assert!(!is_model_setup("llm.key.openrouter", chosen));
+        // no store rows at all → plain card
+        assert!(!is_model_setup("llm.key.anthropic", |_| None));
+    }
+
+    #[test]
+    fn run_config_store_binds_nothing_without_a_bao_bundle() {
+        // a space that is not a bao space (or was never served): a
+        // one-shot run provisions nothing — locked read, no writes
+        let (c, log) = scripted(&[(200, json!({"bundles": [], "synced": true}))]);
+        let store = run_config_store(&Arc::new(c), "s1", BTreeMap::new()).unwrap();
+        assert!(store.is_none());
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "GET");
+        assert!(calls[0].1.ends_with("/spaces/s1/bundles"));
+    }
+
+    #[test]
+    fn shadowed_config_store_reads_overrides_first_and_writes_through() {
+        use crate::broker::ConfigStore as _;
+        let (c, log) = scripted(&[
+            (
+                200,
+                json!({"records": [{"id": "llm.tier.codegen", "key": "llm.tier.codegen",
+                                      "value": {"model": "space"}}]}),
+            ),
+            (200, json!({"ok": true})),
+        ]);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("llm.tier.classify".to_string(), json!({"model": "shadow"}));
+        let store = ShadowedConfigStore {
+            inner: ServeConfigStore::new(Arc::new(c), "s1", "cfgobj"),
+            overrides,
+        };
+        // shadowed key: answered locally, no wire call
+        assert_eq!(
+            store.read("llm.tier.classify").unwrap(),
+            Some(json!({"model": "shadow"}))
+        );
+        assert_eq!(log.lock().unwrap().len(), 0);
+        // other keys read through to the space
+        assert_eq!(
+            store.read("llm.tier.codegen").unwrap(),
+            Some(json!({"model": "space"}))
+        );
+        // writes always land in the space — even for a shadowed key
+        store
+            .set("llm.tier.classify", &json!({"model": "m2"}))
+            .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].0, "POST");
     }
 
     #[test]

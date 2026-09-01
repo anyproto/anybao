@@ -63,6 +63,10 @@ TARGETS = {
     "openrouter-qwen3": {
         "provider": "openai-compat", "model": "qwen/qwen3-235b-a22b-2507",
         "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
+    "openai-terra": {  # gpt-5.6 chat/completions allows tools only with reasoning_effort none
+        "provider": "openai-compat", "model": "gpt-5.6-terra",
+        "base_url": "https://api.openai.com/v1", "api_key_ref": "llm.key.openai",
+        "options": {"reasoning_effort": "none"}},
     "openrouter-gpt": {
         "provider": "openai-compat", "model": "openai/gpt-5-mini",
         "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
@@ -105,6 +109,32 @@ def _png_2x2_red():
                 + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def _pdf_one_word(word):
+    """A minimal valid one-page PDF whose only content is `word` in
+    Helvetica — uncompressed stream, real xref offsets."""
+    content = f"BT /F1 36 Tf 72 400 Td ({word}) Tj ET".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 595] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n"
+            "%%EOF\n").encode()
+    return bytes(out)
 
 
 def _texts(reply):
@@ -154,6 +184,23 @@ def drive(chat, traits, report):
             report["image_text"] = "ACCEPTED (profile says text-only)"
         except Exception as e:  # UnsupportedMedia, raised in the guest
             report["image_text"] = f"refused: {type(e).__name__}"
+
+    # a PDF part (ADR-020 §3): a backend whose wire carries documents
+    # answers; any other refuses BEFORE any call — no request recorded
+    pdf = base64.b64encode(_pdf_one_word("VIOLET")).decode()
+    pdf_msg = [{"role": "user", "parts": [
+        {"type": "file", "media_type": "application/pdf", "data": pdf, "name": "word.pdf"},
+        {"type": "text", "text": "What single word is written in this PDF? "
+                                 "Answer with that word only."}]}]
+    if traits["pdf_input"] != "none":
+        reply = chat(pdf_msg, system="", tools=[])
+        report["pdf_text"] = _texts(reply)
+    else:
+        try:
+            chat(pdf_msg, system="", tools=[])
+            report["pdf_text"] = "ACCEPTED (backend does not carry documents)"
+        except Exception as e:
+            report["pdf_text"] = f"refused: {type(e).__name__}"
 
     # a truncated reply normalizes to `length`
     reply = chat([{"role": "user", "parts": [{"type": "text", "text":
@@ -250,6 +297,10 @@ def test_parity(target):
         assert report["image_text"].strip(), "no answer for the image part"
     else:
         assert report["image_text"] == "refused: UnsupportedMedia", report["image_text"]
+    if traits["pdf_input"] != "none":
+        assert "violet" in report["pdf_text"].lower(), report["pdf_text"]
+    else:
+        assert report["pdf_text"] == "refused: UnsupportedMedia", report["pdf_text"]
     assert report["length_stop"] == "length"
     if traits["cache"] == "markers":
         assert report["cacheRead_second_call"] > 0, "no cache read on the second call"

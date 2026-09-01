@@ -135,7 +135,13 @@ it differently, and the difference is the contract:
   space (`ensure_space`'s create belongs to serve/deploy). For parity,
   `--from-space` also runs serve's config bootstrap (defaults + env API
   keys), so llm-using programs work one-shot without a hand-built
-  `--config`. Parity extends to the gaps: like serve it wires no
+  `--config`, and binds the space's `agent_config` store when the
+  space carries a `bao/v1` bundle (ADR-006 §3): `config.get` reads the
+  rows the serve reads, `config.set` writes them, and the run's own
+  `--config` keys shadow reads only — a per-run override never
+  rewrites the space. A space without the bundle binds nothing (the
+  seeds answer `config.get`; `config.set` is refused, loudly, on every
+  run surface without a store). Parity extends to the gaps: like serve it wires no
   private space and no aliases, so `private:`/overlay specs error
   identically on both surfaces until those land.
 

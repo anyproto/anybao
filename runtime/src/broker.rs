@@ -1303,7 +1303,9 @@ impl Broker {
         let Some(store) = &self.config_store else {
             return Err(EffectFailure {
                 type_: "ConfigError".into(),
-                message: "no config store — config.set needs serve".into(),
+                message: "no config store — config.set needs serve or `run --from-space \
+                          <bao space>`; a plain run reads its seeds only"
+                    .into(),
             });
         };
         store.set(key, &value).map_err(|e| EffectFailure {

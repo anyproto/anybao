@@ -150,12 +150,22 @@ unchanged for every consumer.
 
 ### 2. Client-side seq
 
-`seq` allocation moves to the writer: read the dataset's max seq
-(one sorted query, cached per serve session), assign max+1, write
-with the zero-padded id. Safe under the single-active-writer contract
-(ADR-015 election); a duplicate id upsert is the collision signal
-(rejected on the write-once fields), same role the built-in's
-"append_only" rejection played.
+`seq` allocation moves to the writer: read the highest record id
+ever written — `POST …/query {objectId, dataset, "includeDeleted":
+true, "sort": ["-id"], "limit": 1}` (any `docs/09-query.md` §
+Tombstones) — assign `int(id) + 1`, write with the zero-padded id.
+Tombstones count: a deleted id is burned for good
+(`upsert.record_deleted`), and the *live* maximum falls below the
+burned ids as soon as any row was deleted, which turned a wiped log
+into a permanently failing append (every later turn re-hit the same
+tombstone and never advanced). Tombstoned rows come back content-wiped
+(`{id, _deletedAt, _ver}`, no `seq`), which is why the probe sorts on
+the id — the id IS the seq. Servers without `includeDeleted` are
+unsupported (400 `request.unknown_field`; no-backcompat). Safe under
+the single-active-writer contract (ADR-015 election); a duplicate id
+upsert is the collision signal (rejected on the write-once fields),
+same role the built-in's "append_only" rejection played. The host's
+`append_interrupted_turn` (ADR-005 §3) runs the same probe.
 
 ### 3. any@v1 surface
 

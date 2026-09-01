@@ -113,6 +113,8 @@ TRAITS = {
     "instructions_at": ("system", "last_user"),
     "malformed_retries": int,
     "vision": bool,
+    "signed_tool_calls": bool,
+    "pdf_input": ("none", "file", "image_url"),
 }
 
 GENERIC_TRAITS = {
@@ -120,6 +122,7 @@ GENERIC_TRAITS = {
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
     "instructions_at": "system", "malformed_retries": 2, "vision": True,
+    "signed_tool_calls": False, "pdf_input": "none",
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -135,7 +138,8 @@ PROFILES = {
     "gpt": {"match": r"^(gpt-|o[1-9]|chatgpt)", "traits": {
         "context_window": 128000, "max_output": 16384}},
     "gemini": {"match": r"gemini", "traits": {
-        "context_window": 1000000, "max_output": 65536}},
+        "context_window": 1000000, "max_output": 65536,
+        "signed_tool_calls": True}},
     # order matters: a family's newest generation lists before the family
     "deepseek-v4": {"match": r"deepseek-v4(?!-flash-vision)", "traits": {
         "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536,
@@ -371,10 +375,24 @@ class OpenAICompatAdapter:
         if files:
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
-                if _media_class(f["media_type"]) != "image":
+                cls = _media_class(f["media_type"])
+                if cls == "image":
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:{f['media_type']};base64,{f['data']}"}})
+                elif cls == "pdf" and traits.get("pdf_input") == "file":
+                    # ADR-020 §3: the wire's document part — the backend
+                    # (OpenAI natively, OpenRouter via its file-parser)
+                    # reads it; the model never sees bytes
+                    content.append({"type": "file", "file": {
+                        "filename": f.get("name") or "document.pdf",
+                        "file_data": f"data:application/pdf;base64,{f['data']}"}})
+                elif cls == "pdf" and traits.get("pdf_input") == "image_url":
+                    # Gemini's OpenAI layer: no `file` part (400), but a
+                    # PDF data URI under image_url is read as a document
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:application/pdf;base64,{f['data']}"}})
+                else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{f['media_type']};base64,{f['data']}"}})
             msg = {"role": m["role"], "content": content}
         else:
             # an assistant turn that only calls tools carries null, never ""
@@ -389,6 +407,15 @@ class OpenAICompatAdapter:
                 # opaque server state on the call (Gemini's thought
                 # signature rides `extra_content`) — round-tripped verbatim
                 tc.update(c.get("provider_state") or {})
+                if traits.get("signed_tool_calls"):
+                    # Gemini 3+ rejects unsigned functionCall parts (400).
+                    # Calls we construct ourselves (autorecall injection,
+                    # lifted fenced/xml calls) carry no signature — stamp
+                    # the documented skip sentinel; real signatures from
+                    # provider_state above are left untouched.
+                    google = tc.setdefault("extra_content", {}).setdefault("google", {})
+                    google.setdefault("thought_signature",
+                                      "skip_thought_signature_validator")
                 msg["tool_calls"].append(tc)
         if traits["reasoning"] == "roundtrip" and m["role"] == "assistant":
             for p in m["parts"]:
@@ -466,11 +493,13 @@ def _prepare(messages, system, tools, traits):
     """Prompt-level shaping before the wire: no-system-role models get
     the system text ahead of the first user turn; `fenced` carries the
     tool as a ```cell instruction with no tool API on the wire; a
-    text-only model refuses file parts before any call (ADR-020 §3)."""
+    text-only model refuses IMAGE parts before any call (ADR-020 §3) —
+    a PDF is the backend's to carry (`pdf_input`: OpenRouter's parser
+    hands a text-only model the text), so the adapter decides that."""
     if not traits["vision"]:
         for m in messages:
             for p in m["parts"]:
-                if p["type"] == "file":
+                if p["type"] == "file" and _media_class(p["media_type"]) == "image":
                     raise UnsupportedMedia(p["media_type"], "this model (text-only)")
     if traits["tool_mode"] == "fenced" and tools:
         system = (system or "") + _FENCED_INSTR
@@ -615,6 +644,20 @@ def _mark_openrouter_cache(req):
     return req
 
 
+def _has_file_part(req):
+    return any(isinstance(m.get("content"), list)
+               and any(p.get("type") == "file" for p in m["content"])
+               for m in req["messages"])
+
+
+# OpenRouter parses PDFs for every model through its file-parser plugin
+# (ADR-020 §3). Its default engine is the PAID OCR (mistral-ocr, $2 per
+# 1k pages), so a request carrying a file part pins the free text
+# extractor unless the tier's `options` already choose (`plugins` in
+# options wins — options merge after this hook).
+_OPENROUTER_PDF_PLUGIN = {"id": "file-parser", "pdf": {"engine": "cloudflare-ai"}}
+
+
 def _finish_openrouter(req, traits):
     if traits["thinking"] == "on":
         req["reasoning"] = {"enabled": True}
@@ -622,6 +665,8 @@ def _finish_openrouter(req, traits):
         req["reasoning"] = {"enabled": False}
     if traits["cache"] == "markers":
         _mark_openrouter_cache(req)
+    if _has_file_part(req) and "plugins" not in req:
+        req["plugins"] = [dict(_OPENROUTER_PDF_PLUGIN, pdf=dict(_OPENROUTER_PDF_PLUGIN["pdf"]))]
     return req
 
 
@@ -656,6 +701,14 @@ _BEARER = {"header": "Authorization", "prefix": "Bearer "}
 # backends that can write explicit cache breakpoints; elsewhere a
 # profile's `cache: "markers"` resolves to "auto" (§1.5)
 _MARKER_BACKENDS = ("anthropic", "openrouter")
+# How each backend's wire carries a PDF (ADR-020 §3) — a host fact, not
+# a model-family one: OpenAI reads the `file` part natively, OpenRouter
+# parses it for any model, Anthropic has `document` (the native
+# adapter ignores the carriage), Gemini's OpenAI layer rejects `file`
+# but reads a PDF data URI under `image_url` (probed 2026-09-01).
+# Absent = the wire has no known carriage: refuse before any call.
+_PDF_CARRIAGE = {"anthropic": "file", "openai": "file", "openrouter": "file",
+                 "gemini": "image_url"}
 
 _ANTHROPIC_KEY_HELP = ("https://platform.claude.com/docs/en/manage-claude/"
                        "authentication#select-a-workspace")
@@ -749,9 +802,13 @@ def _credential(prov, backend):
 def _effective(traits, backend):
     """Traits as this backend can honor them: `cache: "markers"` needs a
     backend that writes breakpoints, else it is the implicit prefix
-    cache (`auto`)."""
+    cache (`auto`); `pdf_input` (the PDF carriage) is granted by the
+    backend, whatever the model family says."""
     if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
         traits = {**traits, "cache": "auto"}
+    carriage = _PDF_CARRIAGE.get(backend)
+    if carriage and traits["pdf_input"] == "none":
+        traits = {**traits, "pdf_input": carriage}
     return traits
 
 
@@ -830,8 +887,11 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     line of a chat message — pass it verbatim), a bare fileId with
     `space=`, or a `{mime|media_type, data: <base64>, name?}` dict
     (e.g. `any.file_content(...)`'s result). Natively readable:
-    images (png/jpeg/gif/webp), PDF, text; anything else raises
-    `UnsupportedMedia` before any call — convert to text first.
+    images (png/jpeg/gif/webp), text, and PDF on a backend whose wire
+    carries documents (Anthropic, OpenAI, Gemini, any model via
+    OpenRouter — the `pdf_input` trait); anything else raises `UnsupportedMedia`
+    before any call — convert to text first, or route the read to a
+    tier whose backend can.
     `prompt` is the question; `system` optional. Returns the reply's
     text (str). Bytes cross the wire once per read — re-read rather
     than keeping files in the conversation (ADR-020 §5)."""

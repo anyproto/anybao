@@ -691,6 +691,42 @@ def test_unsupported_media_raises_before_any_call():
     assert content[1]["image_url"]["url"] == f"data:image/png;base64,{PNG_B64}"
 
 
+def test_pdf_rides_the_openai_wire_as_a_file_part_when_the_backend_carries_it():
+    # ADR-020 §3: `pdf_input` is a backend grant, not a profile trait
+    eff = LLM["_effective"]
+    assert eff(T(), "openrouter")["pdf_input"] == "file"
+    assert eff(T(), "openai")["pdf_input"] == "file"
+    assert eff(T(), "anthropic")["pdf_input"] == "file"
+    assert eff(T(), "gemini")["pdf_input"] == "image_url"   # probed 2026-09-01
+    assert eff(T(), "generic")["pdf_input"] == "none"
+    assert eff(T(), "deepseek")["pdf_input"] == "none"
+    o = LLM["OpenAICompatAdapter"]()
+    req = o.build_request(_file_msg("application/pdf", "UERG", "menu.pdf"), "", [], "m",
+                          T(pdf_input="file"))
+    content = req["messages"][0]["content"]
+    assert content[1] == {"type": "file", "file": {
+        "filename": "menu.pdf", "file_data": "data:application/pdf;base64,UERG"}}
+    # no name → a stable default filename
+    req = o.build_request(_file_msg("application/pdf", "UERG"), "", [], "m", T(pdf_input="file"))
+    assert req["messages"][0]["content"][1]["file"]["filename"] == "document.pdf"
+    # Gemini's carriage: the PDF data URI rides image_url
+    gem = o.build_request(_file_msg("application/pdf", "UERG"), "", [], "m",
+                          T(pdf_input="image_url"))
+    assert gem["messages"][0]["content"][1] == {
+        "type": "image_url", "image_url": {"url": "data:application/pdf;base64,UERG"}}
+    # OpenRouter: a request with a file part pins the FREE parser (the
+    # host default is paid OCR); no file part → no plugin; an explicit
+    # `plugins` (a tier's options) is left alone
+    fin = LLM["_finish_openrouter"]
+    assert fin(dict(req, messages=req["messages"]), T())["plugins"] == [
+        {"id": "file-parser", "pdf": {"engine": "cloudflare-ai"}}]
+    plain = o.build_request([{"role": "user", "parts": [{"type": "text", "text": "hi"}]}],
+                            "", [], "m", T())
+    assert "plugins" not in fin(plain, T())
+    pinned = dict(req, plugins=[{"id": "file-parser", "pdf": {"engine": "native"}}])
+    assert fin(pinned, T())["plugins"][0]["pdf"]["engine"] == "native"
+
+
 def test_read_resolves_ref_through_any_and_uses_vision_tier():
     host = FakeHost({"provider": "anthropic", "model": "eyes",
                      "base_url": "https://api.example", "api_key_ref": "k"},

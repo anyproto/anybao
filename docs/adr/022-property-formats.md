@@ -95,10 +95,33 @@ xKey; a key matching more than one property **errors listing the
 candidates** (never first-match). `_normalize_record` labels by
 handle. Builtin groups are untouched.
 
-Upstream ask (any-ui): carry the kind marker in `xKind` — the server
-field that exists for exactly this — and send a slug `xKey` for every
-new property. Forward-only; the marker rule above keeps old
-properties resolving by name either way.
+**`xKind` is the client-convention marker** (any-ui WEB-317: a slug
+`xKey` per property, the kind marker in `xKind`, the server field that
+exists for exactly this and never interprets it). The vocabulary is
+any-ui's — `packages/api-core/src/resources/types.ts` `STRING_XKINDS`
+(`longtext`, `date`, `url`, `email`, `select`) and `ARRAY_XKINDS`
+(`tags`, `links`, `relation`) — until a shared property spec exists
+(BOB-84); anybao mirrors it, it does not extend it. Two roles:
+
+- **Beside a server format** the marker is redundant metadata the UI's
+  picker/icons read: `any@v1` stamps `select` / `tags` / `links` /
+  `date` next to `format.type` `select` / `multiselect` / `links` /
+  `date`+`datetime`, so an agent-declared property looks like a
+  UI-declared one.
+- **Without a format** it is the whole convention: `url`, `email`,
+  `longtext` are `kind: string` properties with no server validation
+  (the server has no such formats; any-ui edits them as a text input
+  with `inputMode` and renders an `href`). `any@v1` accepts them in
+  the `format.type` spelling the model reaches for — `{"format":
+  {"type": "url"}}` — and lowers that to `kind: string, xKind: url`
+  with no `format` on the wire; a non-string `kind` alongside is an
+  error, an explicit `xKind` passes through. Values are plain strings,
+  written and read verbatim; the read ladder is any-ui's —
+  `format.type` wins, then `xKind`, then the legacy marker xKey.
+  `list_properties` rows carry `xKind`.
+
+The marker-xKey rule above is the bridge for properties that predate
+WEB-317 (the UI must read them forever; so must we).
 
 ### 2. Writes are definition-aware
 

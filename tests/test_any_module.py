@@ -531,12 +531,19 @@ def test_turns_chunks_chat_paths():
         "/children": {"objectId": "log1"},
         "/bundles": {"bundles": [{"id": "general-chat/v1",
                                   "rootId": "chat1"}]},
-        "/query": {"records": [{"id": "00000004", "seq": 4}]},
+        # the highest id ever written is a TOMBSTONE (content wiped, no
+        # seq) — the allocator must still count past it (ADR-017 §2)
+        "/query": {"records": [{"id": "00000004",
+                                "_deletedAt": {"$date": "2026-09-01T00:00:00Z"}}]},
         "/upsert": {"created": 1, "updated": 0, "skipped": 0},
     })
     c = client(fx)
     r = c.append_turn("s1", "chat1", {"userText": "hi", "replies": ["yo"]})
     assert r == {"recordIds": ["00000005"], "seq": 5}
+    probe = next(b for v, p, b in fx.calls if p.endswith("/query")
+                 and b.get("dataset") == "agent_turns")
+    assert probe == {"objectId": "log1", "dataset": "agent_turns",
+                     "includeDeleted": True, "sort": ["-id"], "limit": 1}
     c.create_chunk("s1", "chat1", {"level": 1})
     c.chat_send("s1", "chat1", {"text": "yo"})
     turn_up = next(b for v, p, b in fx.calls
@@ -811,18 +818,28 @@ def test_list_spaces_unwraps():
                                          "status": "active"}]
 
 
-def test_create_space_wire_shape_and_full_row_reply():
-    fx = wire(replies={"/v1/spaces": {
-        "id": "sp9", "name": "AI Startups",
-        "generalChatObjectId": "chat9"}})
+def test_create_space_installs_the_derived_general_chat():
+    # space create is a this-side-installs case (ADR-006 §0): the POST
+    # is followed by the derived general-chat/v1 ensure, and the reply
+    # is the trimmed row + the chat id (no chat id rides the space row)
+    fx = wire(replies={
+        "/v1/spaces": {"id": "sp9", "name": "AI Startups",
+                       "push": {"encKey": "SECRET"}},
+        "/bundles": {"bundle": {"id": "general-chat/v1", "rootId": "chat9",
+                                "derived": True}, "installed": True}})
     r = client(fx).create_space("AI Startups")
-    assert r["id"] == "sp9" and r["generalChatObjectId"] == "chat9"
+    assert r == {"id": "sp9", "name": "AI Startups", "generalChatId": "chat9"}
     # no spaceType: empty = server default on every vintage
     # ("anytype.space" is rejected since SDK v0.0.10)
-    assert fx.calls == [("POST", "/v1/spaces", {"name": "AI Startups"})]
+    assert fx.calls == [
+        ("POST", "/v1/spaces", {"name": "AI Startups"}),
+        ("POST", "/v1/spaces/sp9/bundles",
+         {"id": "general-chat/v1", "name": "General", "rootTypes": ["chat"],
+          "derived": True}),
+    ]
     # description only rides the wire when given
     client(fx).create_space("x", description="d")
-    assert fx.calls[-1][2] == {"name": "x", "description": "d"}
+    assert fx.calls[-2][2] == {"name": "x", "description": "d"}
 
 
 # --- list_programs (ADR-009 §2: repo browsing) --------------------------------
@@ -1007,15 +1024,15 @@ def test_space_rows_are_trimmed_push_never_leaks():
     assert raw[0]["push"] == {"encKey": "SECRET"}   # escape hatch
 
 
-def test_get_space_trims_but_keeps_derived_object_ids():
+def test_get_space_trims_sync_internals():
     fx = wire(replies={"/v1/spaces": {"spaces": []},
-                       "/spaces/s1": {"id": "s1", "generalChatObjectId": "chat9",
+                       "/spaces/s1": {"id": "s1", "name": "dev",
                                       "push": {"encKey": "SECRET"},
-                                      "agentConfigObjectId": "cfg1"}},
+                                      "spaceIndexObjectId": "idx",
+                                      "settings": {"x": 1}}},
               config={"any.base_url": "http://any"})
     r = load(fx)["get_space"]("s1")
-    assert r == {"id": "s1", "generalChatObjectId": "chat9",
-                 "agentConfigObjectId": "cfg1"}
+    assert r == {"id": "s1", "name": "dev"}
 
 
 def test_search_types_kwarg_redirects_to_query_objects():
@@ -1108,10 +1125,51 @@ def test_create_type_posts_property_formats_without_a_kind():
         {"name": "When", "format": {"type": "datetime"}},
         {"name": "Title"}]})
     posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
+    # + the any-ui kind marker beside the format (ADR-022 §1), so the
+    # UI's picker reads the property like one it made itself
     assert posted[0] == {"name": "When", "xKey": "when", "format": {"type": "datetime"},
-                         "meta": {"pos": "a0"}}
+                         "xKind": "date", "meta": {"pos": "a0"}}
     assert posted[1] == {"name": "Title", "xKey": "title", "kind": "string",
                          "meta": {"pos": "a0"}}
+
+
+def test_property_url_email_longtext_are_xkind_markers_not_formats():
+    # ADR-022 §1: any-ui's client conventions — a string property with
+    # an xKind marker and NO format on the wire (the server has no
+    # such format and would 400)
+    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"propId": "p9"}})
+    c = client(fx)
+    for marker in ("url", "email", "longtext"):
+        c.add_property("s1", "task", {"name": marker.title(),
+                                      "format": {"type": marker}})
+        body = fx.calls[-1][2]
+        assert body == {"name": marker.title(), "xKey": marker,
+                        "kind": "string", "xKind": marker, "meta": {"pos": "a0"}}
+    # an explicit xKind passes through untouched; a non-string kind is refused
+    c.add_property("s1", "task", {"name": "Site", "xKind": "url"})
+    assert fx.calls[-1][2]["xKind"] == "url"
+    with pytest.raises(ValueError, match='kind must be "string"'):
+        c.add_property("s1", "task", {"name": "N", "kind": "number",
+                                      "format": {"type": "url"}})
+    # an unknown format names both vocabularies
+    with pytest.raises(ValueError, match="server formats.*client conventions"):
+        c.add_property("s1", "task", {"name": "P", "format": {"type": "phone"}})
+
+
+def test_create_type_stamps_xkind_beside_server_formats():
+    fx = wire(replies={**_CAT, "/types": {"types": [], "typeId": "tNew"},
+                       "/types/tNew/properties": {"properties": [], "propId": "p1"}})
+    client(fx).create_type("s1", {"name": "Bookmark", "properties": [
+        {"name": "Link", "format": {"type": "url"}},
+        {"name": "Status", "format": {"type": "select",
+                                      "options": {"new": "New"}}},
+        {"name": "Tags", "format": {"type": "multiselect"}},
+        {"name": "Related", "format": {"type": "links"}}]})
+    posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
+    assert [(b.get("xKind"), b.get("kind"), (b.get("format") or {}).get("type"))
+            for b in posted] == [
+        ("url", "string", None), ("select", None, "select"),
+        ("tags", None, "multiselect"), ("links", None, "links")]
 
 
 # --- files (ADR-020 §2) -------------------------------------------------------

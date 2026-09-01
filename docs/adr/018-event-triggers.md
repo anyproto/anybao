@@ -68,9 +68,16 @@ Consequences that follow, and are intended:
 ### 2. The event kind
 
 - **Spec** (the ADR-006 shape, narrowed): `{dataset, objectId,
-  filter?}`. v1 supports exactly one source: `dataset:
-  "chat_messages"` with `objectId` = a chat object in the agent
-  space. Any other dataset parses fine and is stamped
+  spaceId?, filter?}`. v1 supports exactly one source: `dataset:
+  "chat_messages"` with `objectId` = a chat object in the space
+  `spaceId` — any space the agent account can read; absent or empty
+  `spaceId` means the agent space. The space is part of the source
+  identity: sources are keyed `(space, objectId)`, the watch
+  subscribes in that space, and `event.space` reports it. It has to
+  ride the record because the server answers a subscribe on an object
+  the space does not hold with an empty feed, never an error — a chat
+  id looked up in the wrong space is a watch that connects and never
+  fires. Any other dataset parses fine and is stamped
   `invalid_spec`-style by the health pass under a new marker
   `unsupported_source` (the `unsupported_kind` marker retires with
   this ADR). `filter` is reserved, ignored in v1.
@@ -135,8 +142,8 @@ boot re-seeds it if deleted).
 ### 4. Out of scope (v1)
 
 Event creation UI (records come from bao/programs; Scheduled renders
-and manages them), non-chat dataset sources, `filter`, cross-space
-sources, and any liveness-based failover for pinned triggers (a
+and manages them), non-chat dataset sources, `filter`, and any
+liveness-based failover for pinned triggers (a
 deliberate non-goal: pins are the substrate for remote runners, and
 consensus without a coordinator is not on offer).
 

@@ -462,14 +462,17 @@ _PROXIES = {
 
 # tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2;
 # ast: ADR-013 §3 — the program write path's syntax gate/source scanner;
-# html/email + the vendored trio: ADR-012 §6). six/typing_extensions are
-# bundled as internals of the vendored packages but stay un-importable.
+# html/email + the vendored trio: ADR-012 §6; zlib: pure codec, no
+# ambient authority — inflate for PDF FlateDecode streams / gzip / PNG
+# so a model never re-implements it in cells). six/typing_extensions
+# are bundled as internals of the vendored packages but stay
+# un-importable.
 _ALLOWED = {
     "math", "json", "re", "itertools", "functools", "collections",
     "contextlib", "textwrap", "heapq", "bisect", "statistics",
     "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
     "hashlib", "string", "copy", "unicodedata", "inspect", "ast",
-    "html", "email",
+    "html", "email", "zlib",
     "bs4", "soupsieve", "markdownify",   # vendored pure-Python (runtime/guest/)
 }
 

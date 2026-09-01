@@ -1745,19 +1745,19 @@ mod tests {
             .find(|l| l.trim_start().starts_with("1 "))
             .unwrap();
         assert!(t1.contains("tool"), "{t1}");
-        // 1M cacheWrite tokens at $3.75/MTok + 300 out at $15/MTok ≈ 3.7545
-        assert!(t1.contains("3.7545"), "{t1}");
+        // 1M cacheWrite tokens at $2.50/MTok + 300 out at $10/MTok ≈ 2.5030
+        assert!(t1.contains("2.5030"), "{t1}");
         let t2 = out
             .lines()
             .find(|l| l.trim_start().starts_with("2 "))
             .unwrap();
-        // 1M cacheRead at $0.30/MTok + 100 out ≈ 0.3015
-        assert!(t2.contains("0.3015"), "{t2}");
+        // 1M cacheRead at $0.20/MTok + 100 out ≈ 0.2010
+        assert!(t2.contains("0.2010"), "{t2}");
         let tot = out
             .lines()
             .find(|l| l.trim_start().starts_with("tot"))
             .unwrap();
-        assert!(tot.contains("4.0560"), "{tot}");
+        assert!(tot.contains("2.7040"), "{tot}");
         assert!(out.contains("2.5s wall"), "{out}");
     }
 

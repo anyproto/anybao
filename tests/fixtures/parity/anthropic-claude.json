@@ -74,7 +74,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011CeaHjX54yWZBDS7Bi4JVZ\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_01DacW4pm5rcQ7vJnCAZhbmA\",\"name\":\"run_cell\",\"input\":{\"code\":\"\\nfrom sympy import prime\\nprint(sum(prime(i) for i in range(1,21)))\\n\"},\"caller\":{\"type\":\"direct\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":5214,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":5214,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":77,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
+    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011Cecp7io88vc7ET4sW2Xsk\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_01Ni55qhLY3aF8orN1yRgc2c\",\"name\":\"run_cell\",\"input\":{\"code\":\"\\nfrom sympy import prime\\nprint(sum(prime(i) for i in range(1,21)))\\n\"},\"caller\":{\"type\":\"direct\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":5214,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":5214,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":77,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
    }
   },
   {
@@ -100,7 +100,7 @@
        "content": [
         {
          "type": "tool_use",
-         "id": "toolu_01DacW4pm5rcQ7vJnCAZhbmA",
+         "id": "toolu_01Ni55qhLY3aF8orN1yRgc2c",
          "name": "run_cell",
          "input": {
           "code": "\nfrom sympy import prime\nprint(sum(prime(i) for i in range(1,21)))\n"
@@ -113,7 +113,7 @@
        "content": [
         {
          "type": "tool_result",
-         "tool_use_id": "toolu_01DacW4pm5rcQ7vJnCAZhbmA",
+         "tool_use_id": "toolu_01Ni55qhLY3aF8orN1yRgc2c",
          "content": "Last value: 639",
          "is_error": false,
          "cache_control": {
@@ -168,7 +168,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011CeaHjdn92VyommirwtS3d\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"The sum of the first 20 prime numbers is **639**.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":88,\"cache_read_input_tokens\":5214,\"cache_creation\":{\"ephemeral_5m_input_tokens\":88,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":21,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
+    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011Cecp7qu1p6e4a4Mi2V7Qj\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"The sum of the first 20 prime numbers is **639**.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":88,\"cache_read_input_tokens\":5214,\"cache_creation\":{\"ephemeral_5m_input_tokens\":88,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":21,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
    }
   },
   {
@@ -220,7 +220,59 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011CeaHjs8p5Lq3RG6gBDX8c\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"EuUCCpABCBEYAipAhmKVAn+fCK4YLr8QorR7Qbjvp5bDnUK7u0rK6rS8UU30wkYSmmCJPtuacbF2Ei+67aB6rnpZshAaVKKs3cL2+zIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQxNTUyMzRlNi1iY2M3LTQ2YmUtOTY4Yi1hOTMzNjIyZTZiOWSoAban1NQGEgzXe3blx1ogZ8dK5IAaDAplTsbAloYvTaL6BSIwDAKrlWFvnaUQz+9XoX2hpGIurSsWMzrrL0KLtxKUxZnp6JGJ35++/2/ZVNpUWoLKKoEB55XJ6oTjxYDEHpdCs04MZzwIOBuz/YYlpXdBtPGyVVZQYCeXOX6Xjtt2jNGIfMonDLhrtHgBZUnQUnLaNqYHu97lkRMIjRypRLzEXHl9VqAWRoxQWPShvd+Ks8dgQs6oKaLrmeMyNKNq880FZisATXOfmhL1V2owdpoRjDjaIBUiGAE=\"},{\"type\":\"text\",\"text\":\"**Red**\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":23,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":41,\"output_tokens_details\":{\"thinking_tokens\":35},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
+    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011Cecp811CMd5XFVVEvsmuM\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"EvgCCpABCBEYAipAd5vyRNEsNjY695PGC7x1mdkKapx/8pUm7Hnr4M+9Op1ZCQqpxABT8EHQ75sqajTG+df/0He8IUfqVToqwtTFJTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQxNTUyMzRlNi1iY2M3LTQ2YmUtOTY4Yi1hOTMzNjIyZTZiOWSoAZ+r29QGEgy7o0ZBtuM4mAjVVBEaDJwEkcdxAGd24juGsCIwjnMLHEYz1n+ANl120W9owzC0UfMUyhMYMlu7iJrSGuvyfMzqucPtOdsv7Hnfke2JKpQB0Fag50tGpHeaqmo+adskts1xCkmAf8fwQlOwi/0+iFG4IkQpm8TdN9/dVU5m20BeWXaYnHCKsHFDVtmhHmU42WtjEbhx8Selz2yC660/CTLKSJNp7jBwY1awxpom+txRZi8qNYhWp7utTCgpeh0+UE8ZCor2FJE7UXXcjnnylerla+K13jbSP5Z/ZGbympf7iRyVkxgB\"},{\"type\":\"text\",\"text\":\"**Red**\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":23,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":44,\"output_tokens_details\":{\"thinking_tokens\":38},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://api.anthropic.com/v1/messages",
+    "headers": {
+     "anthropic-version": "2023-06-01"
+    },
+    "json": {
+     "model": "claude-sonnet-5",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "document",
+         "source": {
+          "type": "base64",
+          "media_type": "application/pdf",
+          "data": "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         }
+        },
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only.",
+         "cache_control": {
+          "type": "ephemeral"
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 32768
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "llm.key.anthropic",
+     "header": "x-api-key",
+     "about": {
+      "label": "Anthropic API key",
+      "hosts": [
+       "api.anthropic.com"
+      ],
+      "help": "https://platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace",
+      "note": "Create the key scoped to a single workspace: Console → Settings → API keys → Create key → choose a workspace. A key linked to your account with no workspace is rejected — the API then wants a workspace id on every request, which bao does not send."
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011Cecp8FHBeiBcTJuTJHLiv\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"VIOLET\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":1627,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1627,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":7,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
    }
   },
   {
@@ -264,7 +316,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011CeaHjynQubeKfSC1JTDiV\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"# The Lifeblood of Civilizations: The Enduring Importance of\"}],\"stop_reason\":\"max_tokens\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":20,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":24,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
+    "body": "{\"model\":\"claude-sonnet-5\",\"id\":\"msg_011Cecp8UCZudfG2HoVEH9Ve\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"# Rivers: The Lifeblood of Our Planet\\n\\nRivers\"}],\"stop_reason\":\"max_tokens\",\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":20,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":24,\"output_tokens_details\":{\"thinking_tokens\":0},\"service_tier\":\"standard\",\"inference_geo\":\"global\"}}"
    }
   }
  ]

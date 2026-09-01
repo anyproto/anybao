@@ -250,11 +250,12 @@ class AnyError(Exception):
 
 # Space-row fields the model can use; the rest (push key material,
 # settings, index pointers, icon, author hash) is sync plumbing — it
-# never belongs in model context (ADR-010 §8). Single-space extras
-# (generalChat/agentConfig/agentSecrets ids) survive the trim.
+# never belongs in model context (ADR-010 §8). No chat id rides a
+# space row: the general chat is the `general-chat/v1` bundle's root
+# (`general_chat(space)`), and the agent stores are `bao/v1` bundle
+# children (`bundle_child`) — ADR-006 §0, ADR-017 §0.
 _SPACE_ROW_FIELDS = ("id", "name", "description", "status", "ownRole",
-                     "spaceType", "createdAt", "generalChatObjectId",
-                     "agentConfigObjectId", "agentSecretsObjectId")
+                     "spaceType", "createdAt")
 
 
 def _trim_space_row(r):
@@ -285,6 +286,17 @@ _MARKER_XKEYS = frozenset({
     "select", "tags", "links", "relation", "date", "datetime", "url",
     "email", "longtext", "multiselect", "checkbox", "number", "text"})
 _FORMATS = ("select", "multiselect", "links", "date", "datetime")
+# Client conventions with NO server format (ADR-022 §1): a `kind:
+# string` property whose `xKind` says how clients render/edit it —
+# any-ui's STRING_XKINDS (api-core types.ts). Accepted here as
+# `format.type` sugar and lowered to the marker; the wire never sees
+# a format for them (the server would 400).
+_XKIND_MARKERS = ("url", "email", "longtext")
+# The marker any-ui stamps beside each server format, so a property
+# the agent declares reads in the UI's picker/icons exactly like one
+# the UI made (`datetime` shares `date` — the UI has one date kind).
+_XKIND_OF_FORMAT = {"select": "select", "multiselect": "tags", "links": "links",
+                    "date": "date", "datetime": "date"}
 _KINDS = ("string", "number", "boolean", "null", "array", "object",
           "datetime")
 # any-ui's option palette (optionPalette.ts) — colors are free strings on
@@ -1539,13 +1551,13 @@ class _Client:
         return rows if raw else [_trim_space_row(r) for r in rows]
 
     def get_space(self, space, raw=False):
-        """One space's row → {id, name, generalChatObjectId, …}; also THE
-        explicit name resolver — `get_space("dev")` works.
+        """One space's row → {id, name, description, status, ownRole,
+        spaceType, createdAt}; also THE explicit name resolver —
+        `get_space("dev")` works.
 
-        The single-space GET is the only read that carries
-        `generalChatObjectId` (+ agentConfig/agentSecrets ids) —
-        `list_spaces()` rows omit them by design. Sync internals are
-        trimmed like list_spaces (`raw=True` for the wire row)."""
+        No chat id on the row: the space's chat is `general_chat(space)`.
+        Sync internals are trimmed like list_spaces (`raw=True` for the
+        wire row)."""
         r = self._call("get", f"/v1/spaces/{space}")
         return r if raw else _trim_space_row(r)
 
@@ -1554,23 +1566,30 @@ class _Client:
         bundle's winning root.
 
         Every space has exactly ONE general chat, registered in the
-        bundles registry (the harness ensures it at serve boot). Post
-        there via `chat_send`; READ it via `query(space, chat_id,
-        "chat_messages", sort=["-createdAt"], limit=n)` — never create
-        a chat object or pick one from a query: name-matched "general"
-        chats are peer-made impostors that split the conversation.
-        404 bundle.not_found = nobody ensured the chat yet."""
+        bundles registry: the side that creates a space installs it
+        (`create_space` does, so does any-ui; the harness ensures the
+        bao space's at serve boot). Post there via `chat_send`; READ it
+        via `query(space, chat_id, "chat_messages",
+        sort=["-createdAt"], limit=n)` — never create a chat object or
+        pick one from a query: name-matched "general" chats are
+        peer-made impostors that split the conversation.
+        404 bundle.not_found = nobody ensured the chat yet (a space
+        made outside these paths that no client has opened)."""
         return self.get_bundle(space, "general-chat/v1")["rootId"]
 
     def create_space(self, name, description=None):
-        """Create a new top-level space; returns its (trimmed) row.
+        """Create a new top-level space WITH its general chat → the
+        (trimmed) space row + `generalChatId`.
 
-        `id` is the new space id, and `generalChatObjectId` its
-        derived general chat (every space has exactly one; write chat
-        there, never create chat objects). The space starts empty:
-        resolve/create types against it before typed writes (types and
-        xKeys are per-space). Check `list_spaces()` first — don't mint
-        a duplicate of an existing active space."""
+        Space create is a this-side-installs case (ADR-006 §0, same as
+        any-ui): right after the POST the `general-chat/v1` bundle is
+        ensured with `derived: true`, so `generalChatId` is the chat
+        every member and device lands on — write chat there, never
+        create chat objects (`general_chat(id)` returns the same id
+        later). The space starts empty: resolve/create types against
+        it before typed writes (types and xKeys are per-space). Check
+        `list_spaces()` first — don't mint a duplicate of an existing
+        active space."""
         # no spaceType: empty = server default on every vintage (the
         # literal "anytype.space" is rejected since SDK v0.0.10)
         body = {"name": name}
@@ -1578,7 +1597,13 @@ class _Client:
             body["description"] = description
         r = self._call("post", "/v1/spaces", body)
         self._spaces_cache = None    # new space -> refresh the name catalog
-        return _trim_space_row(r)
+        row = _trim_space_row(r)
+        # derived install: id is a function of the bundle id, so a
+        # fresh owned space needs no locked read and cannot 409
+        chat = self.ensure_bundle(row["id"], "general-chat/v1", name="General",
+                                  root_types=["chat"], derived=True)
+        row["generalChatId"] = chat["bundle"]["rootId"]
+        return row
 
     def open_in_ui(self, space, object_id=None):
         """Open a space — or one object in it — in the user's any-ui
@@ -1609,7 +1634,7 @@ class _Client:
 
     def list_properties(self, space, type_key, include_archived=False):
         """A type's property definitions, in display order: [{handle,
-        id, name, xKey, kind, scope, format?, options?, meta?}].
+        id, name, xKey, xKind?, kind, scope, format?, options?, meta?}].
 
         `handle` is THE key to read/write the property by (the xKey
         when it is a real slug, else the name — any-ui stamps
@@ -1619,6 +1644,9 @@ class _Client:
         "filter"?, "options"?}; `options` is the ordered
         [{key, name, color}] of a select/multiselect (values store the
         KEY; write by name or key, a new name mints an option).
+        `xKind` is the CLIENT convention when there is no format: a
+        string prop marked `url` / `email` / `longtext` takes a plain
+        string and the UI renders it as a link / textarea.
         A links prop takes object names/ids/any:// links; dates take
         instant()/ISO/epoch; a prop without format is a plain kind
         (write the JSON shape). `scope` is the write/sync class
@@ -1656,8 +1684,12 @@ class _Client:
         number | boolean | null | array | object — NOTHING else ("text"
         and "date" are 400s). Dates/links/selects are FORMATS, not
         kinds: {"format": {"type": "date"}} (types: date, datetime,
-        links, select, multiselect) with kind omitted — the
-        server derives it. xKeys default to a slug of the name.
+        links, select, multiselect) with kind omitted — the server
+        derives it. URL / e-mail / long text are the same spelling —
+        {"format": {"type": "url" | "email" | "longtext"}} — but are
+        client conventions (a string property marked `xKind`), not
+        server formats: values are plain strings, the UI renders them
+        as links / a textarea. xKeys default to a slug of the name.
         Idempotent: an existing USER type (by xKey, or by name for a
         pre-metatype type listed without one — its handle is re-claimed
         in place) is reused, only MISSING properties are added. A name
@@ -1709,7 +1741,7 @@ class _Client:
                 if pxkey in have:
                     continue
                 extra = {k: p[k] for k in ("kind", "meta", "format", "scope",
-                                           "description") if k in p}
+                                           "description", "xKind") if k in p}
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
                 added[pxkey] = self._post_property(space, tid, extra)["propId"]
@@ -1822,9 +1854,13 @@ class _Client:
         {key: {name, color?}}, "filter"?: <objects-query filter that
         narrows a links prop's candidates>}} with kind omitted (server
         derives it — date/datetime ⇒ `datetime`, written as
-        `instant(...)`; "tags" is reserved). `scope` ∈ synced (default)
-        | account | local — pinned like kind. The property is appended
-        to the type's display order (meta.pos). Returns {"propId"}."""
+        `instant(...)`; "tags" is reserved). {"format": {"type": "url"
+        | "email" | "longtext"}} declares a CLIENT convention: a string
+        property with that `xKind` marker and no server format — plain
+        string values, rendered by the UI as a link / textarea. `scope`
+        ∈ synced (default) | account | local — pinned like kind. The
+        property is appended to the type's display order (meta.pos).
+        Returns {"propId"}."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._post_property(space, tid, body)
 
@@ -1832,13 +1868,26 @@ class _Client:
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
         fmt = body.get("format")
-        if fmt is None:      # with a format, the server derives
+        if isinstance(fmt, dict) and fmt.get("type") in _XKIND_MARKERS:
+            # client convention (ADR-022 §1): string kind + xKind
+            # marker, NO format on the wire
+            if body.get("kind") not in (None, "string"):
+                raise ValueError(
+                    f'format.type {fmt["type"]!r} is a string convention — '
+                    f'kind must be "string" (or omitted), got {body["kind"]!r}')
+            body.pop("format")
+            body["kind"] = "string"
+            body.setdefault("xKind", fmt["type"])
+            fmt = None
+        elif fmt is None:    # with a format, the server derives
             body.setdefault("kind", "string")   # kind (links⇒array, date⇒datetime)
         elif isinstance(fmt, dict):
             if fmt.get("type") not in _FORMATS:
                 raise ValueError(
-                    f'format.type must be one of {list(_FORMATS)}, got '
-                    f'{fmt.get("type")!r} ("tags" is reserved server-side)')
+                    f'format.type must be one of {list(_FORMATS)} (server '
+                    f'formats) or {list(_XKIND_MARKERS)} (client conventions), '
+                    f'got {fmt.get("type")!r} ("tags" is reserved server-side)')
+            body.setdefault("xKind", _XKIND_OF_FORMAT[fmt["type"]])
             opts = fmt.get("options")
             if isinstance(opts, dict):
                 fmt = dict(fmt)
@@ -2141,8 +2190,15 @@ class _Client:
         return self._bundle_children[key]
 
     def _next_seq(self, space, host, dataset):
-        rows = self.query(space, host, dataset, sort=["-seq"], limit=1)
-        return int((rows[0].get("seq") if rows else 0) or 0) + 1
+        # ADR-017 §2: the next free id is one past the highest id EVER
+        # written, tombstones included — a deleted id never reuses
+        # (upsert.record_deleted), and the live maximum drops below the
+        # burned ones as soon as anything was deleted. Tombstones carry
+        # no `seq` (content wiped), so the probe sorts on the record id,
+        # which IS the zero-padded seq. One primary-key read.
+        rows = self.query(space, host, dataset, includeDeleted=True,
+                          sort=["-id"], limit=1)
+        return (int(rows[0]["id"]) if rows else 0) + 1
 
     def append_turn(self, space, chat_id, body):
         """Append an `agent_turns` record on the chat's log child.
@@ -2151,9 +2207,9 @@ class _Client:
         effects?, messageIds?, traceRef?, interrupted?, llm?}` — llm
         subkeys `{stopReason, inTokens, outTokens, cacheRead,
         cacheWrite, model, costUsd, fuelUsed, cells}`. seq absent →
-        max+1 (client-assigned; safe under the ADR-015 single active
-        writer, a duplicate seq write rejects). Returns {recordIds,
-        seq}."""
+        one past the highest id ever written, deleted rows included
+        (client-assigned; safe under the ADR-015 single active writer,
+        a duplicate seq write rejects). Returns {recordIds, seq}."""
         return self._append_log(space, chat_id, "agent_turns", body,
                                 search_text=True)
 

@@ -1,8 +1,15 @@
 {
-    "claude-sonnet-5": {"in": 3.0, "out": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+    "claude-sonnet-5": {"in": 2.0, "out": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5},
+    "claude-opus-5": {"in": 5.0, "out": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
     "claude-opus-4-8": {"in": 5.0, "out": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
     "claude-haiku-4-5": {"in": 1.0, "out": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
     "z-ai/glm-5.3": {"in": 1.4, "out": 4.4, "cacheRead": 0.26, "cacheWrite": 0.0},
+    "z-ai/glm-5v-turbo": {"in": 1.2, "out": 4.0, "cacheRead": 0.0, "cacheWrite": 0.0},
     "moonshotai/kimi-k3": {"in": 3.0, "out": 15.0, "cacheRead": 0.3, "cacheWrite": 0.0},
-    "deepseek/deepseek-v4-pro-0813": {"in": 1.32, "out": 3.96, "cacheRead": 0.044, "cacheWrite": 0.0}
+    "qwen/qwen3.8-max": {"in": 2.0, "out": 6.0, "cacheRead": 0.0, "cacheWrite": 0.0},
+    "deepseek/deepseek-v4-pro-0813": {"in": 0.66, "out": 1.98, "cacheRead": 0.044, "cacheWrite": 0.0},
+    "gpt-5.6-terra": {"in": 2.0, "out": 12.0, "cacheRead": 0.2, "cacheWrite": 0.0},
+    "gpt-5.6-sol": {"in": 4.0, "out": 20.0, "cacheRead": 0.4, "cacheWrite": 0.0},
+    "gpt-5.6-luna": {"in": 0.2, "out": 1.2, "cacheRead": 0.02, "cacheWrite": 0.0},
+    "gemini-3.7-flash": {"in": 0.75, "out": 3.75, "cacheRead": 0.0, "cacheWrite": 0.0}
 }

@@ -311,7 +311,8 @@ pub const STATUS_UNSUPPORTED_SOURCE: &str = "unsupported_source";
 pub const CHAT_MESSAGES: &str = "chat_messages";
 
 /// An event trigger's `(dataset, objectId)` source; None when either is
-/// missing/empty — the definition can never fire.
+/// missing/empty — the definition can never fire. The space is a
+/// separate axis: [`event_space`].
 pub fn event_source(t: &Trigger) -> Option<(&str, &str)> {
     if t.kind != "event" {
         return None;
@@ -322,6 +323,20 @@ pub fn event_source(t: &Trigger) -> Option<(&str, &str)> {
         return None;
     }
     Some((dataset, object_id))
+}
+
+/// The space an event trigger's source object lives in (ADR-018 §2):
+/// `spec.spaceId` when set, else `home` — the agent space, which is
+/// where a chat id without a space qualifier is looked up. A chat id
+/// alone is ambiguous across spaces (the server answers a subscribe
+/// on an object it does not hold with an empty feed, never an error),
+/// so the space rides the record and every consumer keys on both.
+pub fn event_space<'a>(t: &'a Trigger, home: &'a str) -> &'a str {
+    t.spec
+        .get("spaceId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(home)
 }
 
 /// The definition can never arm: a cron whose spec yields no next
@@ -375,19 +390,22 @@ pub fn owned_chat_watch(reg: &BTreeMap<String, Trigger>, instance: &str) -> Opti
 }
 
 /// The chat objects this device must watch (ADR-018 §2): one source
-/// per distinct `objectId` across its own enabled, well-formed
-/// `chat_messages` event triggers → the trigger ids it feeds.
+/// per distinct `(space, objectId)` across its own enabled,
+/// well-formed `chat_messages` event triggers → the trigger ids it
+/// feeds. `home` is the agent space, the default for records without
+/// a `spaceId`.
 pub fn desired_event_sources(
     reg: &BTreeMap<String, Trigger>,
     instance: &str,
-) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    home: &str,
+) -> BTreeMap<(String, String), Vec<String>> {
+    let mut out: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for t in reg.values() {
         if t.owner != instance || !t.enabled || is_chat_watch(&t.id) {
             continue; // the responder rides the native watcher, not a source thread
         }
         if let Some((CHAT_MESSAGES, object_id)) = event_source(t) {
-            out.entry(object_id.to_string())
+            out.entry((event_space(t, home).to_string(), object_id.to_string()))
                 .or_default()
                 .push(t.id.clone());
         }
@@ -1259,14 +1277,36 @@ mod tests {
             "cron".into(),
             Trigger::cron("cron", "cron", 60.0, "p@v1", json!({}), "peer-A", true),
         );
-        let desired = desired_event_sources(&reg, "peer-A");
+        // a cross-space source (ADR-018 §2): the same chat id under
+        // another space is a DIFFERENT source, keyed on both
+        let mut far = event_trigger("far", "peer-A", "chat-1", true);
+        far.spec = json!({"dataset": "chat_messages", "objectId": "chat-1",
+                          "spaceId": "space-far"});
+        reg.insert("far".into(), far);
+        let mut blank = event_trigger("blank", "peer-A", "chat-2", true);
+        blank.spec = json!({"dataset": "chat_messages", "objectId": "chat-2",
+                            "spaceId": ""}); // empty = home
+        reg.insert("blank".into(), blank);
+        let desired = desired_event_sources(&reg, "peer-A", "home");
         assert_eq!(
             desired,
             BTreeMap::from([
-                ("chat-1".to_string(), vec!["a".to_string(), "b".to_string()]),
-                ("chat-2".to_string(), vec!["c".to_string()]),
+                (
+                    ("home".to_string(), "chat-1".to_string()),
+                    vec!["a".to_string(), "b".to_string()]
+                ),
+                (
+                    ("home".to_string(), "chat-2".to_string()),
+                    vec!["blank".to_string(), "c".to_string()]
+                ),
+                (
+                    ("space-far".to_string(), "chat-1".to_string()),
+                    vec!["far".to_string()]
+                ),
             ])
         );
+        assert_eq!(event_space(&reg["far"], "home"), "space-far");
+        assert_eq!(event_space(&reg["a"], "home"), "home");
     }
 
     #[test]
@@ -1287,8 +1327,11 @@ mod tests {
         );
         assert_eq!(owned_chat_watch(&reg, "peer-B"), None);
         // the responder never gets a generic source thread of its own
-        let desired = desired_event_sources(&reg, "peer-A");
-        assert_eq!(desired["chat-1"], vec!["a".to_string()]);
+        let desired = desired_event_sources(&reg, "peer-A", "home");
+        assert_eq!(
+            desired[&("home".to_string(), "chat-1".to_string())],
+            vec!["a".to_string()]
+        );
         reg.get_mut("chat-watch").unwrap().enabled = false;
         assert_eq!(owned_chat_watch(&reg, "peer-A"), None); // paused = nobody answers here
     }

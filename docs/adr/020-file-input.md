@@ -75,13 +75,45 @@ providers differ:
 | media type | anthropic | openai-compat |
 |---|---|---|
 | `image/*` | `image` / base64 source | `image_url` data URI |
-| `application/pdf` | `document` / base64 source | unsupported |
+| `application/pdf` | `document` / base64 source | by the tier's `pdf_input` carriage: `file` part `{filename, file_data: data URI}`, or the PDF data URI under `image_url` (Gemini's OpenAI layer); `none` = unsupported |
 | `text/*` | `document` / text source (decoded UTF-8; `name` → `title`) | unsupported |
 | other | unsupported | unsupported |
 
 Unsupported raises `UnsupportedMedia(media_type, provider)` in
 `build_request` — *before* any http call, so the trace names the
-reason instead of a provider 400. `tool_mode: "fenced"` (ADR-005 §1.3)
+reason instead of a provider 400.
+
+**`pdf_input` is the PDF carriage, granted by the backend — not a
+model-family trait** (ADR-005 §1.3 vocabulary: `none | file |
+image_url`). How a wire carries a document is a fact about the host:
+OpenAI reads the `file` part natively; OpenRouter accepts it for
+*every* model and parses it server-side (its `file-parser` plugin);
+Anthropic has `document` (the native adapter ignores the carriage);
+Gemini's OpenAI-compat layer rejects `file` (`400 Invalid content part
+type: file`, probed 2026-09-01) but reads a PDF data URI under
+`image_url`. `_effective` therefore sets the carriage per backend
+(`file` for anthropic / openai / openrouter, `image_url` for gemini)
+whatever the profile says, and leaves `none` elsewhere (`generic`,
+`deepseek`, `groq`, …) — an unknown part on those wires would be a
+provider 400, so they keep the clean `UnsupportedMedia`. Two
+consequences:
+
+- A **text-only profile** (`vision: false` — glm-5, deepseek-v4)
+  still reads PDFs through OpenRouter: the parser hands the model
+  text. The text-only gate in `_prepare` therefore refuses IMAGE parts
+  only; PDFs are the adapter's decision. Live-verified 2026-09-01 for
+  both (parity goldens).
+- **OpenRouter's default parser is the paid OCR** (`mistral-ocr`, $2
+  per 1k pages). A request carrying a file part pins the free text
+  extractor — `plugins: [{id: "file-parser", pdf: {engine:
+  "cloudflare-ai"}}]` — unless the tier's `options` already carry
+  `plugins` (options merge after the backend hook, so a tier can
+  choose `native` for a model that reads PDFs itself, or the OCR for
+  scans). No plugin is sent on text-only requests.
+
+The neutral part and `read()` are unchanged: a PDF read on a tier
+whose backend cannot carry it still raises before any call, and the
+answer is to route that read to a tier whose backend can. `tool_mode: "fenced"` (ADR-005 §1.3)
 changes nothing here — file parts still route by the tier's adapter.
 Files a provider cannot read natively (docx, …) are the guest's job:
 convert to text and send a `text/plain` File part — the neutral shape

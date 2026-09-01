@@ -62,7 +62,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165792-7FdQCBXtbfwO4rw6jBtE\",\"object\":\"chat.completion\",\"created\":1788165792,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants me to compute the sum of the first 20 prime numbers using run_cell, then state the number.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"chatcmpl-tool-9d1a2e7ce9cbb6c1\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"def is_prime(n):\\\\n    if n < 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nn = 2\\\\nwhile len(primes) < 20:\\\\n    if is_prime(n):\\\\n        primes.append(n)\\\\n    n += 1\\\\n\\\\nprint(primes)\\\\nprint(sum(primes))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants me to compute the sum of the first 20 prime numbers using run_cell, then state the number.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3728,\"completion_tokens\":168,\"total_tokens\":3896,\"cost\":0.0130188,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0130188,\"upstream_inference_prompt_cost\":0.0106248,\"upstream_inference_completions_cost\":0.002394},\"completion_tokens_details\":{\"reasoning_tokens\":24,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270069-2xDx4dwHclbTa3om473O\",\"object\":\"chat.completion\",\"created\":1788270069,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants me to compute the sum of the first 20 prime numbers using run_cell, then tell them the number. Let me write Python code to find the first 20 primes and sum them.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"run_cell_0\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n < 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nn = 2\\\\nwhile len(primes) < 20:\\\\n    if is_prime(n):\\\\n        primes.append(n)\\\\n    n += 1\\\\n\\\\nprint(primes)\\\\nprint(sum(primes))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants me to compute the sum of the first 20 prime numbers using run_cell, then tell them the number. Let me write Python code to find the first 20 primes and sum them.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3725,\"completion_tokens\":184,\"total_tokens\":3909,\"cost\":0.013935,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.013935,\"upstream_inference_prompt_cost\":0.011175,\"upstream_inference_completions_cost\":0.00276},\"completion_tokens_details\":{\"reasoning_tokens\":41,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -85,7 +85,7 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "chatcmpl-tool-9d1a2e7ce9cbb6c1",
+         "id": "run_cell_0",
          "type": "function",
          "function": {
           "name": "run_cell",
@@ -96,7 +96,7 @@
        "reasoning_details": [
         {
          "type": "reasoning.text",
-         "text": "The user wants me to compute the sum of the first 20 prime numbers using run_cell, then state the number.",
+         "text": "The user wants me to compute the sum of the first 20 prime numbers using run_cell, then tell them the number. Let me write Python code to find the first 20 primes and sum them.",
          "format": "unknown",
          "index": 0
         }
@@ -104,7 +104,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "chatcmpl-tool-9d1a2e7ce9cbb6c1",
+       "tool_call_id": "run_cell_0",
        "content": "Last value: 639"
       }
      ],
@@ -147,7 +147,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165797-mv8xqZSlLCQdiyXmwXtR\",\"object\":\"chat.completion\",\"created\":1788165797,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"The sum of the first 20 primes (2, 3, 5, ..., 71) is **639**.\",\"refusal\":null,\"reasoning\":\"The primes are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71 and their sum is 639. Wait, the output showed \\\"Last value: 639\\\" — the print statements should have shown the list too, but only the last value is displayed. Anyway, the sum is 639.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The primes are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71 and their sum is 639. Wait, the output showed \\\"Last value: 639\\\" — the print statements should have shown the list too, but only the last value is displayed. Anyway, the sum is 639.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3931,\"completion_tokens\":146,\"total_tokens\":4077,\"cost\":0.00376257,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":3712,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00376257,\"upstream_inference_prompt_cost\":0.00168207,\"upstream_inference_completions_cost\":0.0020805},\"completion_tokens_details\":{\"reasoning_tokens\":108,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270074-B4MtOnChyfRlNfznLUVh\",\"object\":\"chat.completion\",\"created\":1788270074,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"The sum of the first 20 prime numbers (2 through 71) is **639**.\",\"refusal\":null,\"reasoning\":\"The first 20 primes are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, and their sum is 639.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The first 20 primes are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, and their sum is 639.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3948,\"completion_tokens\":105,\"total_tokens\":4053,\"cost\":0.01274805,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.01274805,\"upstream_inference_prompt_cost\":0.0112518,\"upstream_inference_completions_cost\":0.00149625},\"completion_tokens_details\":{\"reasoning_tokens\":73,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -192,7 +192,61 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165802-LjpZDaBFRecTTMsSgk4v\",\"object\":\"chat.completion\",\"created\":1788165802,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Red\",\"refusal\":null,\"reasoning\":\"The image is solid red. User wants one word answer. Answer: Red. Final should contain only one word perhaps.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The image is solid red. User wants one word answer. Answer: Red. Final should contain only one word perhaps.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":109,\"completion_tokens\":38,\"total_tokens\":147,\"cost\":0.00085215,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00085215,\"upstream_inference_prompt_cost\":0.00031065,\"upstream_inference_completions_cost\":0.0005415},\"completion_tokens_details\":{\"reasoning_tokens\":24,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270078-XE0nxpTNhSFgz6acpfdT\",\"object\":\"chat.completion\",\"created\":1788270078,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Red\",\"refusal\":null,\"reasoning\":\"The user is asking about the color of an image. Looking at the image description, it appears to be a small red image. The image shows a red color.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user is asking about the color of an image. Looking at the image description, it appears to be a small red image. The image shows a red color.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":105,\"completion_tokens\":46,\"total_tokens\":151,\"cost\":0.0008322,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":64,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0008322,\"upstream_inference_prompt_cost\":0.0001422,\"upstream_inference_completions_cost\":0.00069},\"completion_tokens_details\":{\"reasoning_tokens\":33,\"image_tokens\":0,\"audio_tokens\":0}}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "moonshotai/kimi-k3",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only."
+        },
+        {
+         "type": "file",
+         "file": {
+          "filename": "word.pdf",
+          "file_data": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 65536,
+     "plugins": [
+      {
+       "id": "file-parser",
+       "pdf": {
+        "engine": "cloudflare-ai"
+       }
+      }
+     ]
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "llm.key.openrouter",
+     "header": "Authorization",
+     "about": {
+      "label": "OpenRouter API key",
+      "hosts": [
+       "openrouter.ai"
+      ],
+      "help": "https://openrouter.ai/settings/keys"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270082-5c8BLaY0urXiIyT34ulb\",\"object\":\"chat.completion\",\"created\":1788270082,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"VIOLET\",\"refusal\":null,\"reasoning\":\"The user is asking what single word is written in the PDF. The file content shows \\\"VIOLET\\\" on Page 1. The answer should be that word only.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user is asking what single word is written in the PDF. The file content shows \\\"VIOLET\\\" on Page 1. The answer should be that word only.\",\"format\":\"unknown\",\"index\":0}],\"annotations\":[{\"type\":\"file\",\"file\":{\"hash\":\"c668d22729eebc2ee9e00de0624df46f4a707a2a48d22851bc38ee02750a782e\",\"name\":\"word.pdf\",\"content\":[{\"type\":\"text\",\"text\":\"<file name=\\\"word.pdf\\\">\"},{\"type\":\"text\",\"text\":\"# document.pdf\\n## Metadata\\n- PDFFormatVersion=1.4\\n- IsLinearized=false\\n- IsAcroFormPresent=false\\n- IsXFAPresent=false\\n- IsCollectionPresent=false\\n- IsSignaturesPresent=false\\n\\n\\n\\n## Contents\\n### Page 1\\nVIOLET\"},{\"type\":\"text\",\"text\":\"</file>\"}]}}]}}],\"usage\":{\"prompt_tokens\":175,\"completion_tokens\":51,\"total_tokens\":226,\"cost\":0.0012255,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0012255,\"upstream_inference_prompt_cost\":0.00049875,\"upstream_inference_completions_cost\":0.00072675},\"completion_tokens_details\":{\"reasoning_tokens\":35,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -226,7 +280,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165804-TLz05eCKRxD8AkNvwefZ\",\"object\":\"chat.completion\",\"created\":1788165804,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Phala\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informational writing task. Let me\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informational writing task. Let me\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":94,\"completion_tokens\":24,\"total_tokens\":118,\"cost\":0.0004692,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":64,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0004692,\"upstream_inference_prompt_cost\":0.0001092,\"upstream_inference_completions_cost\":0.00036},\"completion_tokens_details\":{\"reasoning_tokens\":29,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270086-0h3nJpLjWPznVwMFx1r5\",\"object\":\"chat.completion\",\"created\":1788270086,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Chutes\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informational writing task. Let me\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informational writing task. Let me\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":132,\"completion_tokens\":24,\"total_tokens\":156,\"cost\":0.000756,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000756,\"upstream_inference_prompt_cost\":0.000396,\"upstream_inference_completions_cost\":0.00036},\"completion_tokens_details\":{\"reasoning_tokens\":24,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   }
  ]

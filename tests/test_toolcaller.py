@@ -163,6 +163,28 @@ def test_done_turn_posts_reply_and_persists_turn():
                            "cacheRead": 0, "cacheWrite": 0, "cells": 0}
 
 
+def test_failed_trailing_append_turn_does_not_fail_the_run():
+    # ADR-005 §3: the reply is on screen before the log write; a
+    # rejected agent_turns append (e.g. a tombstoned seq after the log
+    # was wiped) leaves the run ok and names itself in the result
+    w = World([done_reply("hello")])
+    real_use = w.use
+
+    def use(spec):
+        m = real_use(spec)
+        if spec == "any@v1":
+            def boom(space, chat, body):
+                raise RuntimeError("409 log.seq_collision: agent_turns seq 12 rejected")
+            m.append_turn = boom
+        return m
+    w.use = use
+    out = run(w)
+    assert out["stop"] == "done" and out["replies"] == ["hello"]
+    assert out["logError"].startswith("RuntimeError: 409 log.seq_collision")
+    assert w.chat_posts[-1]["text"] == "hello"      # the reply landed, nothing else posted
+    assert w.turns == []                            # and the turn really was not logged
+
+
 def test_cell_turn_spans_digest_and_tool_result():
     cell = {"ok": True,
             "prints": [{"repr": "42", "size": 2, "schema": "int"}],

@@ -41,6 +41,7 @@ fails in the standard overlay setup, ADR-004 §2):
   | `multiselect` | a list of names: `["Backend", "Urgent"]` | names |
   | `links` (objects) | object NAMES, ids or `any://` links: `["Dune", "<id>"]` | `[{id, name, types}]` stubs |
   | `date` / `datetime` | `instant(...)`, an ISO string, epoch seconds | an instant |
+  | none, `xKind` `url` / `email` / `longtext` | a plain string (`"https://…"`) — the marker is a UI hint, not validation | verbatim (the UI renders a link / textarea) |
   | none | the kind's JSON shape (`3`, `true`, `"text"`) | verbatim |
   A select name that doesn't exist yet **creates the option** (the
   result's `createdOptions` says so — check it; pass
@@ -72,8 +73,12 @@ fails in the standard overlay setup, ADR-004 §2):
   "format": {"type": "select", "options": {"todo": "To do", "done":
   "Done"}}}`, `{"name": "Due", "format": {"type": "date"}}`, `{"name":
   "Related", "format": {"type": "links", "filter": {"any.types":
-  "page"}}}`. Returns `{typeId, xKey, created, addedProps}` — carry
-  the `xKey` forward, not the id.
+  "page"}}}`. URL / e-mail / long text use the same spelling —
+  `{"name": "Site", "format": {"type": "url"}}` (`email`,
+  `longtext`) — and become a string property with that `xKind`
+  marker (a client convention, not a server format: plain string
+  values, the UI shows a link). Returns `{typeId, xKey, created,
+  addedProps}` — carry the `xKey` forward, not the id.
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":
@@ -171,6 +176,24 @@ Links (`any://` URIs — the one reference format):
   call returns its answer text (ADR-020). Bytes: `file_content(space,
   link)` (base64); `list_files(space, objectId)` lists an object's
   attachments. Other formats (docx…) need converting to text first.
+- **Switching models is the user's, through the Model app** — never
+  edit `llm.tier.*` rows yourself when asked to "use GPT / switch to
+  Gemini": point the user at Model settings (Agent → Model), or at the
+  provider card in chat when no key is set yet. `config@v1.set_model`
+  exists for explicit, scoped asks ("set the vision tier to X"); a
+  provider change is three coherent rows plus a key, and the app owns
+  that.
+- **A PDF on a tier that cannot read it** (`UnsupportedMedia
+  application/pdf` from `read`): do NOT brute-force. One cheap
+  attempt, in one cell: for each `stream…endstream` body, strip, if
+  it ends in `~>` it is ASCII85 → `base64.a85decode(data,
+  adobe=True)`; then `zlib.decompress` (FlateDecode; a `zlib.error`
+  means it was uncompressed — keep the bytes); then pull the `(…) Tj`
+  / `[…] TJ` strings. Works for simple, text-generated PDFs (reportlab
+  and friends); scanned or font-encoded PDFs yield nothing readable.
+  If the attempt yields nothing, tell the user this model cannot read
+  the PDF and stop; never hand-implement inflate or ASCII85, never
+  probe bytes in a loop.
 - **Outgoing attachments**: `chat_send` takes `attachments`:
   `{"a0": {"type": "link", "link": "any://o/<sid>/<oid>"}, …}` (≤32,
   keys `[A-Za-z0-9_-]+`, type `link` or `image`) — attach the objects

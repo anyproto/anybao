@@ -163,11 +163,15 @@ builtin `any()`; the convention is `c = use("agent:any@v1")`.
   self-disables and stays as its own audit trail. Recurring schedules:
   same record with `"kind": "cron"` and `spec {"cron": "<expr>"}` or
   `{"every_s": n}`. React to chat activity: `"kind": "event"` with
-  `spec {"dataset": "chat_messages", "objectId": <chat id>}` — every
-  new message in that chat (not your own) runs `program` with `args`
-  plus `event: {space, objectId, messageId, text, agent?,
-  attachments?}`; live only, no replay of messages missed while the
-  runtime was down. Tell the user what you scheduled and for when.
+  `spec {"dataset": "chat_messages", "objectId": <chat id>, "spaceId":
+  <the space that chat lives in>}` — every new message in that chat
+  (not your own) runs `program` with `args` plus `event: {space,
+  objectId, messageId, text, agent?, attachments?}`; live only, no
+  replay of messages missed while the runtime was down. ALWAYS set
+  `spaceId` (a chat id is looked up in the space you name; without it
+  the home space is assumed, and a chat from another space would then
+  be watched in the wrong place and never fire). Tell the user what
+  you scheduled and for when.
   The recipe above IS the record shape — never dump existing
   `agent_triggers` records to learn it (they drag huge `_ver` noise
   into context). `program` can be ANY program — `agent:remind@v1` for
