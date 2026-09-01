@@ -112,6 +112,9 @@ traits = {
   "instructions_at": "system" | "last_user",          # where the per-turn instructions ride
   "malformed_retries": int,                           # re-ask budget for unparseable tool calls before wrap-up
   "vision":          bool,                            # false = text-only: a File part raises UnsupportedMedia before any call
+  "signed_tool_calls": bool,                          # provider rejects unsigned functionCall parts (Gemini 3+ thought
+                                                      # signatures): real signatures round-trip via provider_state;
+                                                      # client-constructed calls get the documented skip sentinel
 }
 ```
 

@@ -113,6 +113,7 @@ TRAITS = {
     "instructions_at": ("system", "last_user"),
     "malformed_retries": int,
     "vision": bool,
+    "signed_tool_calls": bool,
 }
 
 GENERIC_TRAITS = {
@@ -120,6 +121,7 @@ GENERIC_TRAITS = {
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
     "instructions_at": "system", "malformed_retries": 2, "vision": True,
+    "signed_tool_calls": False,
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -135,7 +137,8 @@ PROFILES = {
     "gpt": {"match": r"^(gpt-|o[1-9]|chatgpt)", "traits": {
         "context_window": 128000, "max_output": 16384}},
     "gemini": {"match": r"gemini", "traits": {
-        "context_window": 1000000, "max_output": 65536}},
+        "context_window": 1000000, "max_output": 65536,
+        "signed_tool_calls": True}},
     # order matters: a family's newest generation lists before the family
     "deepseek-v4": {"match": r"deepseek-v4(?!-flash-vision)", "traits": {
         "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536,
@@ -389,6 +392,15 @@ class OpenAICompatAdapter:
                 # opaque server state on the call (Gemini's thought
                 # signature rides `extra_content`) — round-tripped verbatim
                 tc.update(c.get("provider_state") or {})
+                if traits.get("signed_tool_calls"):
+                    # Gemini 3+ rejects unsigned functionCall parts (400).
+                    # Calls we construct ourselves (autorecall injection,
+                    # lifted fenced/xml calls) carry no signature — stamp
+                    # the documented skip sentinel; real signatures from
+                    # provider_state above are left untouched.
+                    google = tc.setdefault("extra_content", {}).setdefault("google", {})
+                    google.setdefault("thought_signature",
+                                      "skip_thought_signature_validator")
                 msg["tool_calls"].append(tc)
         if traits["reasoning"] == "roundtrip" and m["role"] == "assistant":
             for p in m["parts"]:

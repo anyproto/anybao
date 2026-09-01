@@ -63,6 +63,10 @@ TARGETS = {
     "openrouter-qwen3": {
         "provider": "openai-compat", "model": "qwen/qwen3-235b-a22b-2507",
         "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
+    "openai-terra": {  # gpt-5.6 chat/completions allows tools only with reasoning_effort none
+        "provider": "openai-compat", "model": "gpt-5.6-terra",
+        "base_url": "https://api.openai.com/v1", "api_key_ref": "llm.key.openai",
+        "options": {"reasoning_effort": "none"}},
     "openrouter-gpt": {
         "provider": "openai-compat", "model": "openai/gpt-5-mini",
         "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter"},
