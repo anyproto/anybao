@@ -301,6 +301,10 @@ fn main() -> Result<()> {
             let host = config::Config::load(config_file.as_deref())?;
             let addr = addr.unwrap_or_else(|| host.addr.clone());
             let mut config = load_map(&config)?;
+            // the explicit --config keys: with --from-space they shadow
+            // the space store's READS for this run (never its rows)
+            let mut config_overrides = config.clone();
+            config_overrides.remove("any.base_url");
             // Secrets come from .connectors.env (picked up by
             // Config::load) + --secrets-file only — env is not read.
             // run has no device-local store, so every seed is just
@@ -382,6 +386,18 @@ fn main() -> Result<()> {
             broker.runtime = runtime;
             broker.oauth = Some(oauth_state);
             broker.trace_store = Some(store.clone());
+            // --from-space parity (ADR-004 §6): the space's agent_config
+            // store, read through + written like serve; a space with no
+            // bao/v1 bundle binds nothing (seeds only, config.set refused)
+            if let Some((client, space_id)) = &from {
+                match serve::run_config_store(client, space_id, config_overrides)? {
+                    Some(cs) => broker.config_store = Some(cs),
+                    None => eprintln!(
+                        "config store: none — {space_id} carries no bao/v1 bundle; \
+                         config.get reads this run's seeds, config.set is refused"
+                    ),
+                }
+            }
             let mut out = runner::run_program(
                 &cage,
                 broker,

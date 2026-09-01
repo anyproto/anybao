@@ -439,6 +439,16 @@ pub struct ServeConfigStore {
     obj: String,
 }
 
+impl ServeConfigStore {
+    pub fn new(client: Arc<Client>, space: &str, obj: &str) -> Self {
+        Self {
+            client,
+            space: space.to_string(),
+            obj: obj.to_string(),
+        }
+    }
+}
+
 impl crate::broker::ConfigStore for ServeConfigStore {
     fn read(&self, key: &str) -> Result<Option<Value>, String> {
         let rows = self
@@ -459,6 +469,62 @@ impl crate::broker::ConfigStore for ServeConfigStore {
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
         upsert_config_row(&self.client, &self.space, &self.obj, key, value)
             .map_err(|e| e.to_string())
+    }
+}
+
+/// The `anyrt run --from-space` store binding (ADR-004 §6 parity):
+/// the space's `agent_config` rows read through and written exactly
+/// like serve, so a one-shot run reads the tiers the serve reads and
+/// `config.set` lands where the serve will see it. The run's own
+/// `--config` keys shadow READS only — an explicit per-run override
+/// never rewrites the space's rows (a scratch run is not a serve).
+///
+/// `None` = the space carries no `bao/v1` bundle (locked registry
+/// read: not a bao space, or one never served) — nothing is
+/// provisioned from a run; the broker's seeds map stands in and
+/// `config.set` is refused. With the row present, store resolution is
+/// serve's own `provision_agent_stores` (adopt-or-install is a local
+/// read on a provisioned space).
+pub fn run_config_store(
+    client: &Arc<Client>,
+    space: &str,
+    overrides: BTreeMap<String, Value>,
+) -> Result<Option<Arc<dyn crate::broker::ConfigStore>>> {
+    let reg = client
+        .list_bundles(space)
+        .context("bundles registry (run --from-space config store)")?;
+    let has_bao = reg["bundles"]
+        .as_array()
+        .map(|rows| rows.iter().any(|b| b["id"] == json!("bao/v1")))
+        .unwrap_or(false);
+    if !has_bao {
+        return Ok(None);
+    }
+    let stores = provision_agent_stores(client, space)?;
+    Ok(Some(Arc::new(ShadowedConfigStore {
+        inner: ServeConfigStore::new(client.clone(), space, &stores.config),
+        overrides,
+    })))
+}
+
+/// A config store with a read-only shadow in front: keys in
+/// `overrides` answer from the map, everything else reads through;
+/// every write goes to the inner store.
+pub struct ShadowedConfigStore {
+    inner: ServeConfigStore,
+    overrides: BTreeMap<String, Value>,
+}
+
+impl crate::broker::ConfigStore for ShadowedConfigStore {
+    fn read(&self, key: &str) -> Result<Option<Value>, String> {
+        if let Some(v) = self.overrides.get(key) {
+            return Ok(Some(v.clone()));
+        }
+        crate::broker::ConfigStore::read(&self.inner, key)
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Result<(), String> {
+        crate::broker::ConfigStore::set(&self.inner, key, value)
     }
 }
 
@@ -3781,6 +3847,56 @@ mod tests {
         let (c, log) = scripted(&[(500, json!({"error": "boom"}))]);
         bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
         assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn run_config_store_binds_nothing_without_a_bao_bundle() {
+        // a space that is not a bao space (or was never served): a
+        // one-shot run provisions nothing — locked read, no writes
+        let (c, log) = scripted(&[(200, json!({"bundles": [], "synced": true}))]);
+        let store = run_config_store(&Arc::new(c), "s1", BTreeMap::new()).unwrap();
+        assert!(store.is_none());
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "GET");
+        assert!(calls[0].1.ends_with("/spaces/s1/bundles"));
+    }
+
+    #[test]
+    fn shadowed_config_store_reads_overrides_first_and_writes_through() {
+        use crate::broker::ConfigStore as _;
+        let (c, log) = scripted(&[
+            (
+                200,
+                json!({"records": [{"id": "llm.tier.codegen", "key": "llm.tier.codegen",
+                                      "value": {"model": "space"}}]}),
+            ),
+            (200, json!({"ok": true})),
+        ]);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("llm.tier.classify".to_string(), json!({"model": "shadow"}));
+        let store = ShadowedConfigStore {
+            inner: ServeConfigStore::new(Arc::new(c), "s1", "cfgobj"),
+            overrides,
+        };
+        // shadowed key: answered locally, no wire call
+        assert_eq!(
+            store.read("llm.tier.classify").unwrap(),
+            Some(json!({"model": "shadow"}))
+        );
+        assert_eq!(log.lock().unwrap().len(), 0);
+        // other keys read through to the space
+        assert_eq!(
+            store.read("llm.tier.codegen").unwrap(),
+            Some(json!({"model": "space"}))
+        );
+        // writes always land in the space — even for a shadowed key
+        store
+            .set("llm.tier.classify", &json!({"model": "m2"}))
+            .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].0, "POST");
     }
 
     #[test]

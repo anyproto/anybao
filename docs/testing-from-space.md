@@ -20,7 +20,7 @@ do that, below.
 |---|---|---|---|
 | what runs | one program's `main(args)`, one-shot | same, one-shot | a `toolcaller@v1` conversation per chat message + triggers |
 | `use()` resolves from | local `--programs` dir (flat `name@vN.py` **or** folder `name@vN/program.py`) | the **deployed space object** — serve's `AnyModuleResolver`, no disk | the deployed space object (ADR-004 §6) |
-| config bootstrap | none — pass `--config` yourself | serve's `bootstrap()`: config defaults + env API keys | serve's `bootstrap()` + space config object |
+| config store | none — seeds + `--config`; `config.set` refused | the space's `agent_config` store when the space has `bao/v1` (read-through, `config.set` writes it; `--config` keys shadow reads this run) | the space's `agent_config` store (ADR-006 §3) |
 | good for | dev loop on local source | **testing the deployed form**, scripted | the full loop, end to end |
 
 Every mode records a full trace in `--traces-dir` (default `traces/`) —
@@ -50,6 +50,12 @@ anyrt run 'toolcaller@v1' --from-space bao --timeout-s 300 \
 
 - `--addr` (default `http://127.0.0.1:7001`) names the server; a
   `--config` file's `any.base_url` wins over it.
+- Config is the SPACE's: `config.get` answers from the bao space's
+  `agent_config` rows (what the serve reads) and `config.set` writes
+  them — a run that swaps `llm.tier.codegen` swaps it for the serve
+  too. `--config` keys shadow reads for this run only. A space with no
+  `bao/v1` bundle binds no store (a stderr line says so): seeds only,
+  `config.set` refused.
 - API keys come from the environment (`ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, `TOGETHER_API_KEY`) exactly as they do for serve —
   llm-using programs work with no `--config` at all.
