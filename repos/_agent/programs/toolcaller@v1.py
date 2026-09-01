@@ -379,9 +379,14 @@ def _run_model_cells(parts, results):
                             "content": render_bash(cr, res, bound),
                             "is_error": not cr["ok"]})
             continue
+        code = part["args"].get("code", "")
+        # `preview` rides into presence beats (ADR-025 §1 run.cell): the
+        # status surfaces show what the cell is doing, one collapsed line
         sid = effect("span.begin",  # noqa: F821 - guest global
-                     {"name": "cell", "input": {"cell": cid}})["span"]
-        cr = subcell(part["args"].get("code", ""), cid)  # noqa: F821
+                     {"name": "cell",
+                      "input": {"cell": cid,
+                                "preview": " ".join(code.split())[:48]}})["span"]
+        cr = subcell(code, cid)  # noqa: F821
         # the cell's failure rides its span-end record (ADR-003 §4b) —
         # type + message like @span; the traceback stays digest text
         err = cr["error"]

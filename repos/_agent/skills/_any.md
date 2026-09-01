@@ -212,6 +212,11 @@ Chat:
   unread state" — silently dropping chats this peer never opened. Type
   membership is always `filter={"any.types": "chat"}`; the rule
   generalizes to any type group whose properties are all local-scope.
+- On a run longer than a minute or two, set your status line —
+  `use("agent:status@v1").set("migrating the mail dataset")` — the
+  user's status bar shows it beside your presence dot (ADR-025).
+  Update it as phases change; it decays 90s after the last set, so
+  silence is safe and `set("")` clears early.
 
 Synced mail (`email_messages` records on a `mailbox` object, ADR-016):
 

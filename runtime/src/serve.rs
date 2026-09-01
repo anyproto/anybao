@@ -7,7 +7,7 @@
 //! shared cage.
 
 use crate::anyapi::Client;
-use crate::broker::{Broker, SharedMailbox};
+use crate::broker::{Broker, PresenceState, SharedMailbox, SharedPresence};
 use crate::config::Config;
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
@@ -810,6 +810,203 @@ pub fn alias_map(
     m
 }
 
+// --- bao presence beats (ADR-025) ------------------------------------------------
+//
+// Layer 1 only — deterministic, never model-generated (§1). Serve is
+// the SOLE publisher of `bao.status`: a beat every `STATUS_BEAT_S`
+// (and immediately when the guest sets a status line — the generation
+// poll below), a full-state idempotent envelope on the at-most-once
+// bus. The UI marks offline after 3 missed beats (30s, its clock); a
+// graceful shutdown publishes one `shutdown` beat for instant
+// offline, a crash is covered by the beat TTL.
+
+/// Beat cadence; the UI pairs it with a 3-missed-beats offline cutoff.
+pub const STATUS_BEAT_S: f64 = 10.0;
+/// The presence thread's poll: how fast a `bao.status` set republishes.
+const STATUS_POLL_S: f64 = 1.0;
+
+/// The freshest in-flight run's stamp — presence derives `working`
+/// from `RunCtx::live_runs`, the SAME registry `/break` resolves
+/// against (one source of truth for what's running, never a parallel
+/// counter). Freshest by `startedAt`; stampless entries (only the
+/// watcher's chat-keyed overlay has those, and it never lands here)
+/// are skipped defensively.
+fn current_run(runs: &BTreeMap<String, crate::triggers::LiveRun>) -> Option<Value> {
+    runs.values()
+        .filter(|l| l.stamp.is_object())
+        .max_by(|a, b| {
+            let at = |l: &&crate::triggers::LiveRun| l.stamp["startedAt"].as_f64().unwrap_or(0.0);
+            at(a).total_cmp(&at(b))
+        })
+        .map(|l| {
+            // live activity rides the stamp (ADR-025 §1): tool calls so
+            // far + the newest cell's preview — what bao is doing NOW
+            let mut run = l.stamp.clone();
+            run["cells"] = json!(l.activity.cells());
+            if let Some(preview) = l.activity.preview() {
+                run["cell"] = json!(preview);
+            }
+            run
+        })
+}
+
+/// The full-state beat envelope (ADR-025 §1). `state` ∈ boot | idle |
+/// working | shutdown; `run` rides only while working (the caller
+/// passes `current_run`), the line only while fresh (decay:
+/// `PresenceState::line`). Timestamps are unix seconds (staleness
+/// math is the consumer's job, same as `AgentTypingRow`'s `sinceSec`).
+fn status_envelope(
+    identity: &str,
+    status: &PresenceState,
+    run: Option<Value>,
+    state: &str,
+    now: f64,
+) -> Value {
+    let mut data = json!({"identity": identity, "state": state});
+    if let Some(run) = run {
+        data["run"] = run;
+    }
+    if let Some((line, at)) = status.line(now) {
+        data["line"] = json!(line);
+        data["lineAt"] = json!(at);
+    }
+    json!({
+        "type": "bao.status",
+        "scope": "account",
+        // the serving peer id (ADR-015 identity) — filterable + the
+        // multi-device dedup key (ADR-025 §6)
+        "target": identity,
+        "data": data,
+    })
+}
+
+/// Publish one beat at `now` (threaded for the fake-clock sequence
+/// tests). Best-effort like every bus write: a failed beat is logged
+/// noise, never a serve failure (the next one covers it).
+fn publish_status_beat(
+    client: &Client,
+    identity: &str,
+    status: &PresenceState,
+    run: Option<Value>,
+    state: &str,
+    now: f64,
+) {
+    if let Err(e) = client.publish_event(&status_envelope(identity, status, run, state, now)) {
+        warn!("bao.status beat not published: {e}");
+    }
+}
+
+/// The presence loop's carried state — split out so a pass is
+/// unit-testable without real sleeps.
+#[derive(Default)]
+struct PresenceLoop {
+    last_beat: Option<f64>,
+    last_sig: String,
+    booted: bool,
+}
+
+/// What makes a beat DUE besides cadence: any change in what the beat
+/// would say — the line generation, which run is live, and how far it
+/// has come. Run start/end and every new tool call republish within a
+/// poll (~1s), which is what keeps the UI's working/idle flip and the
+/// call counter live instead of up to a beat behind (ADR-025 §2).
+fn presence_sig(status: &PresenceState, run: Option<&Value>) -> String {
+    format!(
+        "{}|{}|{}",
+        status.line_gen(),
+        run.and_then(|r| r["id"].as_str()).unwrap_or(""),
+        run.and_then(|r| r["cells"].as_u64()).unwrap_or(0),
+    )
+}
+
+/// One poll pass: publish a beat if due (boot, cadence, or a change —
+/// line set, run start/end, tool call). Returns true when a beat went out.
+fn presence_pass(
+    client: &Client,
+    identity: &str,
+    status: &PresenceState,
+    run: Option<Value>,
+    st: &mut PresenceLoop,
+    now: f64,
+) -> bool {
+    let sig = presence_sig(status, run.as_ref());
+    let due = st.last_beat.is_none()
+        || now - st.last_beat.unwrap() >= STATUS_BEAT_S
+        || sig != st.last_sig;
+    if !due {
+        return false;
+    }
+    // boot once, then working/idle off the live-run registry (ADR-025 §1)
+    let state = if !st.booted {
+        "boot"
+    } else if run.is_some() {
+        "working"
+    } else {
+        "idle"
+    };
+    publish_status_beat(client, identity, status, run, state, now);
+    st.last_beat = Some(now);
+    st.last_sig = sig;
+    st.booted = true;
+    true
+}
+
+/// The presence thread: beats while serve lives, one `shutdown` beat
+/// on stop (the graceful path; a crash is covered by the beat TTL).
+fn presence_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut st = PresenceLoop::default();
+        loop {
+            sliced_sleep(Duration::from_secs_f64(STATUS_POLL_S), &stop);
+            if stop.load(Ordering::Relaxed) {
+                // the graceful-offline beat (ADR-025 §2)
+                publish_status_beat(
+                    &ctx.client,
+                    &presence_identity(&ctx),
+                    &ctx.status,
+                    None,
+                    "shutdown",
+                    now_s(),
+                );
+                return;
+            }
+            let now = now_s();
+            let run = current_run(&ctx.live_runs.lock().unwrap());
+            presence_pass(
+                &ctx.client,
+                &presence_identity(&ctx),
+                &ctx.status,
+                run,
+                &mut st,
+                now,
+            );
+        }
+    })
+}
+
+/// This serve's publisher identity: the election peer id when the
+/// server has one (ADR-015), else the process-stamped fallback —
+/// same value the UI dedups multi-device beats by (ADR-025 §6).
+fn presence_identity(ctx: &RunCtx) -> String {
+    ctx.self_peer
+        .clone()
+        .unwrap_or_else(|| format!("anyrt-{}", std::process::id()))
+}
+
+/// The run stamp for `working` beats (ADR-025 §1 `run`): the freshest
+/// run's id + a deterministic live title — bao's own message on chat
+/// runs, else the program spec. The ADR-023 summary title only exists
+/// at dump; this is what beats can say while the run is live.
+fn run_stamp(run_id: &str, spec: &str, args: &Value) -> Value {
+    let title = args["userText"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(preview)
+        .unwrap_or_else(|| spec.to_string());
+    json!({"id": run_id, "title": title, "startedAt": now_s()})
+}
+
 /// The embedder's handle on a running agent (ADR-009 §6): `ctx` is the
 /// per-turn API (`RunCtx::run`); `stop()` flips the shutdown flag and
 /// joins the watch/ticker/control threads. In-flight conversation
@@ -1235,12 +1432,14 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
         live_runs: Mutex::new(BTreeMap::new()),
+        status: Default::default(),
     });
 
     let mut threads = vec![
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
         retention_thread(ctx.clone(), shutdown.clone()),
+        presence_thread(ctx.clone(), shutdown.clone()),
     ];
     if election.enabled {
         threads.push(election_thread(
@@ -1370,6 +1569,9 @@ pub struct RunCtx {
     /// resolves here (ADR-005 §3); entries live exactly as long as
     /// `run_program` does.
     pub live_runs: Mutex<BTreeMap<String, crate::triggers::LiveRun>>,
+    /// serve-shared presence state (ADR-025): the `bao.status` syscall's
+    /// write target + the presence thread's read; sole publisher = serve
+    pub status: SharedPresence,
 }
 
 impl RunCtx {
@@ -1472,6 +1674,7 @@ impl RunCtx {
             .clone()
             .map(|s| s as Arc<dyn crate::broker::ConfigStore>);
         b.runtime = self.runtime.clone();
+        b.presence = Some(self.status.clone());
         b.resolver = Some(Box::new(AnyModuleResolver::new(
             self.client.clone(),
             &self.space,
@@ -1498,11 +1701,17 @@ impl RunCtx {
         let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
         broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
+        // the stamp + activity make this entry double as the presence
+        // source: working beats carry the freshest live run (ADR-025 §1)
+        let activity: crate::broker::SharedActivity = Default::default();
+        broker.activity = Some(activity.clone());
         self.live_runs.lock().unwrap().insert(
             run_id.clone(),
             crate::triggers::LiveRun {
                 mailbox: mailbox.clone(),
                 interrupt: interrupt.clone(),
+                stamp: run_stamp(&run_id, spec, args),
+                activity,
             },
         );
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
@@ -1560,11 +1769,15 @@ impl RunCtx {
         let run_id = broker.writer.run_id();
         let mailbox: SharedMailbox = Default::default();
         let interrupt = Arc::new(AtomicBool::new(false));
+        let activity: crate::broker::SharedActivity = Default::default();
+        broker.activity = Some(activity.clone());
         self.live_runs.lock().unwrap().insert(
             run_id.clone(),
             crate::triggers::LiveRun {
                 mailbox: mailbox.clone(),
                 interrupt: interrupt.clone(),
+                stamp: run_stamp(&run_id, spec, args),
+                activity,
             },
         );
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
@@ -1829,6 +2042,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
             LiveRun {
                 mailbox: mailbox.clone(),
                 interrupt: interrupt.clone(),
+                ..Default::default()
             },
         );
     }
@@ -2708,6 +2922,16 @@ fn handle_control(
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let mut reg = shared.triggers.lock().unwrap();
     match (method, parts.as_slice()) {
+        // presence observability (ADR-025 §7): exactly what the next
+        // beat would carry + the scheduler state, for "is it beating?"
+        ("GET", ["status"]) => {
+            let run = current_run(&ctx.live_runs.lock().unwrap());
+            let state = if run.is_some() { "working" } else { "idle" };
+            Ok(json!({
+                "envelope": status_envelope(&presence_identity(ctx), &ctx.status, run, state, now_s()),
+                "beatSec": STATUS_BEAT_S,
+            }))
+        }
         // election observability (ADR-015 §5); winner via a live
         // registry read, null when unavailable
         ("GET", ["election"]) => {
@@ -2868,6 +3092,180 @@ mod tests {
 
     fn spaces_reply(rows: Value) -> (u16, Value) {
         (200, json!({"spaces": rows}))
+    }
+
+    // --- bao.status beats (ADR-025 §7): StubTransport publish sequence --
+
+    fn status_calls(log: &crate::testutil::CallLog) -> Vec<Value> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, p, _)| m == "POST" && p == "/v1/events")
+            .map(|(_, _, b)| b.clone().unwrap_or_default()["data"].clone())
+            .collect()
+    }
+
+    #[test]
+    fn status_envelope_shape_matches_the_adr() {
+        let status: SharedPresence = Default::default();
+        let v = status_envelope("peer1", &status, None, "idle", 100.0);
+        assert_eq!(v["type"], "bao.status");
+        assert_eq!(v["scope"], "account");
+        assert_eq!(v["target"], "peer1");
+        assert_eq!(v["data"]["identity"], "peer1");
+        assert_eq!(v["data"]["state"], "idle");
+        assert!(v["data"]["run"].is_null(), "no run while idle");
+        assert!(v["data"].get("line").is_none(), "no line when unset");
+    }
+
+    #[test]
+    fn status_envelope_working_carries_run_and_line() {
+        let status: SharedPresence = Default::default();
+        status.set_line("wiring the UI atom", 99.0);
+        let run = json!({"id": "run_1", "title": "impl BOB-73", "startedAt": 1.0});
+        let v = status_envelope("peer1", &status, Some(run), "working", 100.0);
+        assert_eq!(v["data"]["state"], "working");
+        assert_eq!(v["data"]["run"]["id"], "run_1");
+        assert_eq!(v["data"]["run"]["title"], "impl BOB-73");
+        assert_eq!(v["data"]["line"], "wiring the UI atom");
+        assert_eq!(v["data"]["lineAt"], 99.0);
+    }
+
+    #[test]
+    fn status_envelope_line_decays_past_90s() {
+        let status: SharedPresence = Default::default();
+        status.set_line("stale soon", 100.0);
+        let at = 100.0;
+        let v = status_envelope("peer1", &status, None, "idle", at + 90.0);
+        assert_eq!(v["data"]["line"], "stale soon"); // fresh at the edge
+        let v = status_envelope("peer1", &status, None, "idle", at + 90.001);
+        assert!(v["data"].get("line").is_none(), "decayed — machine truth");
+    }
+
+    #[test]
+    fn current_run_is_the_freshest_stamped_entry_with_live_activity() {
+        use crate::triggers::LiveRun;
+        let mut runs: BTreeMap<String, LiveRun> = BTreeMap::new();
+        assert_eq!(current_run(&runs), None);
+        runs.insert(
+            "run_a".into(),
+            LiveRun {
+                stamp: json!({"id": "run_a", "title": "older", "startedAt": 1.0}),
+                ..Default::default()
+            },
+        );
+        runs.insert(
+            "run_b".into(),
+            LiveRun {
+                stamp: json!({"id": "run_b", "title": "fresher", "startedAt": 2.0}),
+                ..Default::default()
+            },
+        );
+        // a stampless (watcher-style) entry never wins
+        runs.insert("chat1".into(), LiveRun::default());
+        let run = current_run(&runs).unwrap();
+        assert_eq!(run["id"], "run_b");
+        assert_eq!(run["cells"], 0);
+        assert!(run.get("cell").is_none(), "no preview before a tool call");
+        // tool calls noted on the run's activity ride the folded value
+        runs.get("run_b")
+            .unwrap()
+            .activity
+            .note_cell(Some("c.query(space,\n  filter)"));
+        let run = current_run(&runs).unwrap();
+        assert_eq!(run["cells"], 1);
+        assert_eq!(run["cell"], "c.query(space, filter)");
+    }
+
+    #[test]
+    fn run_stamp_title_is_the_chat_text_or_spec() {
+        let stamp = run_stamp(
+            "run_1",
+            "agent:toolcaller@v1",
+            &json!({"userText": "  fix the flaky test  "}),
+        );
+        assert_eq!(stamp["title"], "fix the flaky test");
+        let stamp = run_stamp("run_2", "myProg@v1", &json!({}));
+        assert_eq!(stamp["title"], "myProg@v1"); // deterministic fallback
+    }
+
+    #[test]
+    fn presence_pass_publishes_the_adr_sequence() {
+        // ADR-025 §7: boot → idle → working (run start ⇒ immediate,
+        // +run title) → tool call ⇒ immediate (+cells/cell) → line set
+        // ⇒ immediate → run end ⇒ immediate idle → cadence beat with
+        // the line decayed → shutdown. Runs come and go through the
+        // live-runs registry, exactly as `RunCtx::run` maintains it.
+        use crate::triggers::LiveRun;
+        let (c, log) = scripted(&[]);
+        let status: SharedPresence = Default::default();
+        let mut runs: BTreeMap<String, LiveRun> = BTreeMap::new();
+        let mut st = PresenceLoop::default();
+        let mut t = 0.0;
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t); // boot beat at once
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 1.0); // cadence: not due
+        t += 10.0;
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t); // idle
+        runs.insert(
+            "run_1".into(),
+            LiveRun {
+                stamp: json!({"id": "run_1", "title": "hello there", "startedAt": t}),
+                ..Default::default()
+            },
+        );
+        // run start republishes within a poll — no cadence wait
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 1.0);
+        runs.get("run_1")
+            .unwrap()
+            .activity
+            .note_cell(Some("c.query(space)"));
+        // ...and so does every tool call (the live counter)
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 2.0);
+        status.set_line("greeting the user", t + 3.0);
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 3.0); // immediate on set
+        runs.remove("run_1");
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 4.0); // immediate idle
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 5.0); // no change: not due
+        t += 95.0; // past the 90s decay from the line's set (ADR-025 §3)
+        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t); // cadence, line gone
+        publish_status_beat(&c, "peer1", &status, None, "shutdown", t + 1.0);
+        let mut i = status_calls(&log).into_iter();
+        let boot = i.next().unwrap();
+        assert_eq!(boot["state"], "boot");
+        assert_eq!(boot["identity"], "peer1");
+        let idle = i.next().unwrap();
+        assert_eq!(idle["state"], "idle");
+        let working = i.next().unwrap();
+        assert_eq!(working["state"], "working");
+        assert_eq!(working["run"]["title"], "hello there");
+        assert_eq!(working["run"]["cells"], 0);
+        let called = i.next().unwrap();
+        assert_eq!(called["run"]["cells"], 1);
+        assert_eq!(called["run"]["cell"], "c.query(space)");
+        let lined = i.next().unwrap();
+        assert_eq!(lined["line"], "greeting the user");
+        let idle2 = i.next().unwrap();
+        assert_eq!(idle2["state"], "idle");
+        assert!(idle2["run"].is_null(), "run ended");
+        let idle3 = i.next().unwrap();
+        assert_eq!(idle3["state"], "idle");
+        assert!(idle3.get("line").is_none(), "line decayed");
+        let last = i.next().unwrap();
+        assert_eq!(last["state"], "shutdown");
+        assert!(i.next().is_none());
+    }
+
+    #[test]
+    fn presence_pass_resets_gen_on_publish_only() {
+        // a beat swallows the change signature; without one a set waits
+        // at most a beat interval, never a full cadence
+        let (c, _log) = scripted(&[]);
+        let status: SharedPresence = Default::default();
+        let mut st = PresenceLoop::default();
+        assert!(presence_pass(&c, "p", &status, None, &mut st, 0.0));
+        status.set_line("x", 0.5);
+        assert!(presence_pass(&c, "p", &status, None, &mut st, 0.5));
+        assert!(!presence_pass(&c, "p", &status, None, &mut st, 1.0));
     }
 
     #[test]

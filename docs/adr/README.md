@@ -38,6 +38,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 022 | Property formats — value resolution, hydration, option CRUD in `any@v1` | Accepted  |
 | 023 | Trace records in the `any` local store — bodies local, summaries synced, `effects.query` | Accepted  |
 | 024 | Shell effects — `sh.*`/`fs.*` syscalls + `bash` tool behind the `shell` feature, no restrictions yet | Accepted  |
+| 025 | Bao presence & status line over the event bus | Proposed |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
