@@ -250,11 +250,12 @@ class AnyError(Exception):
 
 # Space-row fields the model can use; the rest (push key material,
 # settings, index pointers, icon, author hash) is sync plumbing — it
-# never belongs in model context (ADR-010 §8). Single-space extras
-# (generalChat/agentConfig/agentSecrets ids) survive the trim.
+# never belongs in model context (ADR-010 §8). No chat id rides a
+# space row: the general chat is the `general-chat/v1` bundle's root
+# (`general_chat(space)`), and the agent stores are `bao/v1` bundle
+# children (`bundle_child`) — ADR-006 §0, ADR-017 §0.
 _SPACE_ROW_FIELDS = ("id", "name", "description", "status", "ownRole",
-                     "spaceType", "createdAt", "generalChatObjectId",
-                     "agentConfigObjectId", "agentSecretsObjectId")
+                     "spaceType", "createdAt")
 
 
 def _trim_space_row(r):
@@ -1539,13 +1540,13 @@ class _Client:
         return rows if raw else [_trim_space_row(r) for r in rows]
 
     def get_space(self, space, raw=False):
-        """One space's row → {id, name, generalChatObjectId, …}; also THE
-        explicit name resolver — `get_space("dev")` works.
+        """One space's row → {id, name, description, status, ownRole,
+        spaceType, createdAt}; also THE explicit name resolver —
+        `get_space("dev")` works.
 
-        The single-space GET is the only read that carries
-        `generalChatObjectId` (+ agentConfig/agentSecrets ids) —
-        `list_spaces()` rows omit them by design. Sync internals are
-        trimmed like list_spaces (`raw=True` for the wire row)."""
+        No chat id on the row: the space's chat is `general_chat(space)`.
+        Sync internals are trimmed like list_spaces (`raw=True` for the
+        wire row)."""
         r = self._call("get", f"/v1/spaces/{space}")
         return r if raw else _trim_space_row(r)
 
@@ -1554,23 +1555,30 @@ class _Client:
         bundle's winning root.
 
         Every space has exactly ONE general chat, registered in the
-        bundles registry (the harness ensures it at serve boot). Post
-        there via `chat_send`; READ it via `query(space, chat_id,
-        "chat_messages", sort=["-createdAt"], limit=n)` — never create
-        a chat object or pick one from a query: name-matched "general"
-        chats are peer-made impostors that split the conversation.
-        404 bundle.not_found = nobody ensured the chat yet."""
+        bundles registry: the side that creates a space installs it
+        (`create_space` does, so does any-ui; the harness ensures the
+        bao space's at serve boot). Post there via `chat_send`; READ it
+        via `query(space, chat_id, "chat_messages",
+        sort=["-createdAt"], limit=n)` — never create a chat object or
+        pick one from a query: name-matched "general" chats are
+        peer-made impostors that split the conversation.
+        404 bundle.not_found = nobody ensured the chat yet (a space
+        made outside these paths that no client has opened)."""
         return self.get_bundle(space, "general-chat/v1")["rootId"]
 
     def create_space(self, name, description=None):
-        """Create a new top-level space; returns its (trimmed) row.
+        """Create a new top-level space WITH its general chat → the
+        (trimmed) space row + `generalChatId`.
 
-        `id` is the new space id, and `generalChatObjectId` its
-        derived general chat (every space has exactly one; write chat
-        there, never create chat objects). The space starts empty:
-        resolve/create types against it before typed writes (types and
-        xKeys are per-space). Check `list_spaces()` first — don't mint
-        a duplicate of an existing active space."""
+        Space create is a this-side-installs case (ADR-006 §0, same as
+        any-ui): right after the POST the `general-chat/v1` bundle is
+        ensured with `derived: true`, so `generalChatId` is the chat
+        every member and device lands on — write chat there, never
+        create chat objects (`general_chat(id)` returns the same id
+        later). The space starts empty: resolve/create types against
+        it before typed writes (types and xKeys are per-space). Check
+        `list_spaces()` first — don't mint a duplicate of an existing
+        active space."""
         # no spaceType: empty = server default on every vintage (the
         # literal "anytype.space" is rejected since SDK v0.0.10)
         body = {"name": name}
@@ -1578,7 +1586,13 @@ class _Client:
             body["description"] = description
         r = self._call("post", "/v1/spaces", body)
         self._spaces_cache = None    # new space -> refresh the name catalog
-        return _trim_space_row(r)
+        row = _trim_space_row(r)
+        # derived install: id is a function of the bundle id, so a
+        # fresh owned space needs no locked read and cannot 409
+        chat = self.ensure_bundle(row["id"], "general-chat/v1", name="General",
+                                  root_types=["chat"], derived=True)
+        row["generalChatId"] = chat["bundle"]["rootId"]
+        return row
 
     def open_in_ui(self, space, object_id=None):
         """Open a space — or one object in it — in the user's any-ui

@@ -44,7 +44,7 @@ uv run pytest repos/_connectors/tests
 # 2. send the question as the user (no `agent` field = user input)
 curl -s -X POST "http://127.0.0.1:7009/v1/spaces/$BAO/objects/$CHAT/chat/messages" \
   -H 'content-type: application/json' -d '{"text":"<question>"}'
-# $BAO = bao space id, $CHAT = its generalChatObjectId
+# $BAO = bao space id, $CHAT = its general chat (general-chat/v1 bundle root)
 # (GET /v1/spaces, then GET /v1/spaces/$BAO)
 
 # 3. wait for the run, then read the whole story

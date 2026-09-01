@@ -381,11 +381,9 @@ impl Client {
         Ok(records_of(self.call("GET", &path, None)?, "spaces"))
     }
 
-    /// GET /v1/spaces/{spaceId} — the single-space handle. Unlike the
-    /// list route, this reply carries the derived `generalChatObjectId`
-    /// (server materializes the space's one general chat on first sight)
-    /// and `spaceIndexObjectId` — the fields anybao resolves its chat
-    /// against (ADR-006 §0).
+    /// GET /v1/spaces/{spaceId} — the single-space handle. No chat id
+    /// rides it: the general chat is the `general-chat/v1` bundle's
+    /// root, resolved through the bundles registry (ADR-006 §0).
     pub fn get_space(&self, space_id: &str) -> Result<Value, AnyError> {
         self.call("GET", &format!("/v1/spaces/{space_id}"), None)
     }

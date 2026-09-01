@@ -811,18 +811,28 @@ def test_list_spaces_unwraps():
                                          "status": "active"}]
 
 
-def test_create_space_wire_shape_and_full_row_reply():
-    fx = wire(replies={"/v1/spaces": {
-        "id": "sp9", "name": "AI Startups",
-        "generalChatObjectId": "chat9"}})
+def test_create_space_installs_the_derived_general_chat():
+    # space create is a this-side-installs case (ADR-006 §0): the POST
+    # is followed by the derived general-chat/v1 ensure, and the reply
+    # is the trimmed row + the chat id (no chat id rides the space row)
+    fx = wire(replies={
+        "/v1/spaces": {"id": "sp9", "name": "AI Startups",
+                       "push": {"encKey": "SECRET"}},
+        "/bundles": {"bundle": {"id": "general-chat/v1", "rootId": "chat9",
+                                "derived": True}, "installed": True}})
     r = client(fx).create_space("AI Startups")
-    assert r["id"] == "sp9" and r["generalChatObjectId"] == "chat9"
+    assert r == {"id": "sp9", "name": "AI Startups", "generalChatId": "chat9"}
     # no spaceType: empty = server default on every vintage
     # ("anytype.space" is rejected since SDK v0.0.10)
-    assert fx.calls == [("POST", "/v1/spaces", {"name": "AI Startups"})]
+    assert fx.calls == [
+        ("POST", "/v1/spaces", {"name": "AI Startups"}),
+        ("POST", "/v1/spaces/sp9/bundles",
+         {"id": "general-chat/v1", "name": "General", "rootTypes": ["chat"],
+          "derived": True}),
+    ]
     # description only rides the wire when given
     client(fx).create_space("x", description="d")
-    assert fx.calls[-1][2] == {"name": "x", "description": "d"}
+    assert fx.calls[-2][2] == {"name": "x", "description": "d"}
 
 
 # --- list_programs (ADR-009 §2: repo browsing) --------------------------------
@@ -1007,15 +1017,15 @@ def test_space_rows_are_trimmed_push_never_leaks():
     assert raw[0]["push"] == {"encKey": "SECRET"}   # escape hatch
 
 
-def test_get_space_trims_but_keeps_derived_object_ids():
+def test_get_space_trims_sync_internals():
     fx = wire(replies={"/v1/spaces": {"spaces": []},
-                       "/spaces/s1": {"id": "s1", "generalChatObjectId": "chat9",
+                       "/spaces/s1": {"id": "s1", "name": "dev",
                                       "push": {"encKey": "SECRET"},
-                                      "agentConfigObjectId": "cfg1"}},
+                                      "spaceIndexObjectId": "idx",
+                                      "settings": {"x": 1}}},
               config={"any.base_url": "http://any"})
     r = load(fx)["get_space"]("s1")
-    assert r == {"id": "s1", "generalChatObjectId": "chat9",
-                 "agentConfigObjectId": "cfg1"}
+    assert r == {"id": "s1", "name": "dev"}
 
 
 def test_search_types_kwarg_redirects_to_query_objects():
