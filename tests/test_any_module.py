@@ -531,12 +531,19 @@ def test_turns_chunks_chat_paths():
         "/children": {"objectId": "log1"},
         "/bundles": {"bundles": [{"id": "general-chat/v1",
                                   "rootId": "chat1"}]},
-        "/query": {"records": [{"id": "00000004", "seq": 4}]},
+        # the highest id ever written is a TOMBSTONE (content wiped, no
+        # seq) — the allocator must still count past it (ADR-017 §2)
+        "/query": {"records": [{"id": "00000004",
+                                "_deletedAt": {"$date": "2026-09-01T00:00:00Z"}}]},
         "/upsert": {"created": 1, "updated": 0, "skipped": 0},
     })
     c = client(fx)
     r = c.append_turn("s1", "chat1", {"userText": "hi", "replies": ["yo"]})
     assert r == {"recordIds": ["00000005"], "seq": 5}
+    probe = next(b for v, p, b in fx.calls if p.endswith("/query")
+                 and b.get("dataset") == "agent_turns")
+    assert probe == {"objectId": "log1", "dataset": "agent_turns",
+                     "includeDeleted": True, "sort": ["-id"], "limit": 1}
     c.create_chunk("s1", "chat1", {"level": 1})
     c.chat_send("s1", "chat1", {"text": "yo"})
     turn_up = next(b for v, p, b in fx.calls

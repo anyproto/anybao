@@ -2190,8 +2190,15 @@ class _Client:
         return self._bundle_children[key]
 
     def _next_seq(self, space, host, dataset):
-        rows = self.query(space, host, dataset, sort=["-seq"], limit=1)
-        return int((rows[0].get("seq") if rows else 0) or 0) + 1
+        # ADR-017 §2: the next free id is one past the highest id EVER
+        # written, tombstones included — a deleted id never reuses
+        # (upsert.record_deleted), and the live maximum drops below the
+        # burned ones as soon as anything was deleted. Tombstones carry
+        # no `seq` (content wiped), so the probe sorts on the record id,
+        # which IS the zero-padded seq. One primary-key read.
+        rows = self.query(space, host, dataset, includeDeleted=True,
+                          sort=["-id"], limit=1)
+        return (int(rows[0]["id"]) if rows else 0) + 1
 
     def append_turn(self, space, chat_id, body):
         """Append an `agent_turns` record on the chat's log child.
@@ -2200,9 +2207,9 @@ class _Client:
         effects?, messageIds?, traceRef?, interrupted?, llm?}` — llm
         subkeys `{stopReason, inTokens, outTokens, cacheRead,
         cacheWrite, model, costUsd, fuelUsed, cells}`. seq absent →
-        max+1 (client-assigned; safe under the ADR-015 single active
-        writer, a duplicate seq write rejects). Returns {recordIds,
-        seq}."""
+        one past the highest id ever written, deleted rows included
+        (client-assigned; safe under the ADR-015 single active writer,
+        a duplicate seq write rejects). Returns {recordIds, seq}."""
         return self._append_log(space, chat_id, "agent_turns", body,
                                 search_text=True)
 

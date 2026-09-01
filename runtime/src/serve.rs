@@ -2064,19 +2064,19 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
         .as_str()
         .context("bundle_child returned no objectId")?
         .to_string();
+    // ADR-017 §2: one past the highest id ever written, tombstones
+    // included (a deleted id never reuses; tombstones carry no `seq`,
+    // so the probe sorts on the record id = the zero-padded seq)
     let rows = ctx.client.query(
         &ctx.space,
         &log,
         "agent_turns",
-        &json!({"sort": ["-seq"], "limit": 1}),
+        &json!({"includeDeleted": true, "sort": ["-id"], "limit": 1}),
     )?;
     let seq = rows
         .first()
-        .and_then(|r| {
-            r["seq"]
-                .as_i64()
-                .or_else(|| r["seq"].as_f64().map(|f| f as i64))
-        })
+        .and_then(|r| r["id"].as_str())
+        .and_then(|id| id.parse::<i64>().ok())
         .unwrap_or(0)
         + 1;
     ctx.client.upsert_record(
