@@ -114,6 +114,7 @@ TRAITS = {
     "malformed_retries": int,
     "vision": bool,
     "signed_tool_calls": bool,
+    "pdf_input": bool,
 }
 
 GENERIC_TRAITS = {
@@ -121,7 +122,7 @@ GENERIC_TRAITS = {
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
     "instructions_at": "system", "malformed_retries": 2, "vision": True,
-    "signed_tool_calls": False,
+    "signed_tool_calls": False, "pdf_input": False,
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -374,10 +375,19 @@ class OpenAICompatAdapter:
         if files:
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
-                if _media_class(f["media_type"]) != "image":
+                cls = _media_class(f["media_type"])
+                if cls == "image":
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:{f['media_type']};base64,{f['data']}"}})
+                elif cls == "pdf" and traits.get("pdf_input"):
+                    # ADR-020 §3: the wire's document part — the backend
+                    # (OpenAI natively, OpenRouter via its file-parser)
+                    # reads it; the model never sees bytes
+                    content.append({"type": "file", "file": {
+                        "filename": f.get("name") or "document.pdf",
+                        "file_data": f"data:application/pdf;base64,{f['data']}"}})
+                else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{f['media_type']};base64,{f['data']}"}})
             msg = {"role": m["role"], "content": content}
         else:
             # an assistant turn that only calls tools carries null, never ""
@@ -478,11 +488,13 @@ def _prepare(messages, system, tools, traits):
     """Prompt-level shaping before the wire: no-system-role models get
     the system text ahead of the first user turn; `fenced` carries the
     tool as a ```cell instruction with no tool API on the wire; a
-    text-only model refuses file parts before any call (ADR-020 §3)."""
+    text-only model refuses IMAGE parts before any call (ADR-020 §3) —
+    a PDF is the backend's to carry (`pdf_input`: OpenRouter's parser
+    hands a text-only model the text), so the adapter decides that."""
     if not traits["vision"]:
         for m in messages:
             for p in m["parts"]:
-                if p["type"] == "file":
+                if p["type"] == "file" and _media_class(p["media_type"]) == "image":
                     raise UnsupportedMedia(p["media_type"], "this model (text-only)")
     if traits["tool_mode"] == "fenced" and tools:
         system = (system or "") + _FENCED_INSTR
@@ -627,6 +639,20 @@ def _mark_openrouter_cache(req):
     return req
 
 
+def _has_file_part(req):
+    return any(isinstance(m.get("content"), list)
+               and any(p.get("type") == "file" for p in m["content"])
+               for m in req["messages"])
+
+
+# OpenRouter parses PDFs for every model through its file-parser plugin
+# (ADR-020 §3). Its default engine is the PAID OCR (mistral-ocr, $2 per
+# 1k pages), so a request carrying a file part pins the free text
+# extractor unless the tier's `options` already choose (`plugins` in
+# options wins — options merge after this hook).
+_OPENROUTER_PDF_PLUGIN = {"id": "file-parser", "pdf": {"engine": "cloudflare-ai"}}
+
+
 def _finish_openrouter(req, traits):
     if traits["thinking"] == "on":
         req["reasoning"] = {"enabled": True}
@@ -634,6 +660,8 @@ def _finish_openrouter(req, traits):
         req["reasoning"] = {"enabled": False}
     if traits["cache"] == "markers":
         _mark_openrouter_cache(req)
+    if _has_file_part(req) and "plugins" not in req:
+        req["plugins"] = [dict(_OPENROUTER_PDF_PLUGIN, pdf=dict(_OPENROUTER_PDF_PLUGIN["pdf"]))]
     return req
 
 
@@ -668,6 +696,10 @@ _BEARER = {"header": "Authorization", "prefix": "Bearer "}
 # backends that can write explicit cache breakpoints; elsewhere a
 # profile's `cache: "markers"` resolves to "auto" (§1.5)
 _MARKER_BACKENDS = ("anthropic", "openrouter")
+# Backends whose wire carries a PDF as a document part (ADR-020 §3): a
+# host fact, not a model-family one — OpenAI reads it natively,
+# OpenRouter parses it for any model, Anthropic has `document`.
+_PDF_BACKENDS = ("anthropic", "openai", "openrouter")
 
 _ANTHROPIC_KEY_HELP = ("https://platform.claude.com/docs/en/manage-claude/"
                        "authentication#select-a-workspace")
@@ -761,9 +793,12 @@ def _credential(prov, backend):
 def _effective(traits, backend):
     """Traits as this backend can honor them: `cache: "markers"` needs a
     backend that writes breakpoints, else it is the implicit prefix
-    cache (`auto`)."""
+    cache (`auto`); `pdf_input` is granted by the backend (a wire that
+    carries document parts), whatever the model family says."""
     if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
         traits = {**traits, "cache": "auto"}
+    if backend in _PDF_BACKENDS and not traits["pdf_input"]:
+        traits = {**traits, "pdf_input": True}
     return traits
 
 
@@ -842,8 +877,11 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     line of a chat message — pass it verbatim), a bare fileId with
     `space=`, or a `{mime|media_type, data: <base64>, name?}` dict
     (e.g. `any.file_content(...)`'s result). Natively readable:
-    images (png/jpeg/gif/webp), PDF, text; anything else raises
-    `UnsupportedMedia` before any call — convert to text first.
+    images (png/jpeg/gif/webp), text, and PDF on a backend whose wire
+    carries documents (Anthropic, OpenAI, any model via OpenRouter —
+    the `pdf_input` trait); anything else raises `UnsupportedMedia`
+    before any call — convert to text first, or route the read to a
+    tier whose backend can.
     `prompt` is the question; `system` optional. Returns the reply's
     text (str). Bytes cross the wire once per read — re-read rather
     than keeping files in the conversation (ADR-020 §5)."""

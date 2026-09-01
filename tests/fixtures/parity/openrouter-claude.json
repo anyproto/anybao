@@ -78,7 +78,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165764-bmXT2yfhApSWmwko3jSE\",\"object\":\"chat.completion\",\"created\":1788165764,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_use\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"I need to add up the first 20 prime numbers to get the total.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"toolu_01Udpx75f5Ho1xV95dnkH3oM\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"\\\\nfrom sympy import prime\\\\nprint(sum(prime(i) for i in range(1,21)))\\\\n\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"I need to add up the first 20 prime numbers to get the total.\",\"format\":\"anthropic-claude-v1\",\"index\":0,\"signature\":\"EqoCCqgBCBEYAipAW5c9pPItYxHhDKCeP5Wnc0qe/Y28gJqFI3IDMZnLV+8aLsGq8hSfFuBad2EvXRwRDFHorBvM4w5VhG+XbAqgpjIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0YzBmMDQ2Zi0yNWZkLTQ1ZmItYmZiMy1hMDhhOGUyNDljYTdyEMKZ/eJrWHCCJ8SmYQuBLpiIAQGoAYj91NQGsAECEgyY6U3a3OjV5QkV+0AaDDjGb02vALcGV7C4dSIwOhdkOdJOfiHmmEHCo5wmFrBbRR6Mp6XaL9ymcp5igsJQLXRaCVi3BDCkUf5h5w+iKi/dsw5Qz4WWGZz1/6lhBZ5kPEznWw3+YrdkJwnFw385fYxWebYmr3ZWnhT0KWAWdRgB\"}]}}],\"usage\":{\"prompt_tokens\":5216,\"completion_tokens\":93,\"total_tokens\":5309,\"cost\":0.013969,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":5214,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.013969,\"upstream_inference_prompt_cost\":0.013039,\"upstream_inference_completions_cost\":0.00093},\"completion_tokens_details\":{\"reasoning_tokens\":15,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788269998-pHY40TM519EgQazBZiya\",\"object\":\"chat.completion\",\"created\":1788269998,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_use\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"I need to add up the first 20 prime numbers.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"toolu_015DkHbQ79zQwCmcrWASdrvn\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"\\\\nfrom sympy import primerange, prime\\\\nprimes = [prime(i) for i in range(1,21)]\\\\nprint(primes, sum(primes))\\\\n\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"I need to add up the first 20 prime numbers.\",\"format\":\"anthropic-claude-v1\",\"index\":0,\"signature\":\"ErICCrABCBEYAipAW5c9pPItYxHhDKCeP5Wnc0qe/Y28gJqFI3IDMZnLV+8aLsGq8hSfFuBad2EvXRwRDFHorBvM4w5VhG+XbAqgpjIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0YzBmMDQ2Zi0yNWZkLTQ1ZmItYmZiMy1hMDhhOGUyNDljYTd6HnVwcm9mXzAxMUNlYVhnOXF2VHlHVzJHZ3BnekV6YqgBs6vb1AYSDPrPvmNyx1ESYcmHlRoMwYEFe5qIab8myoq6IjCWbdhPfAMjqtyGArJRUKrProwo47FVyEvkYF/Qaa9lig5XEduglypHVXS3OnNW29sqL+sOSKqqD4Y45+1U1IX3oSfAxU92jAb5b1A9u6JTPNpAzQRP2HHiPHfB8tAseCSzGAE=\"}]}}],\"usage\":{\"prompt_tokens\":5216,\"completion_tokens\":108,\"total_tokens\":5324,\"cost\":0.014119,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":5214,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.014119,\"upstream_inference_prompt_cost\":0.013039,\"upstream_inference_completions_cost\":0.00108},\"completion_tokens_details\":{\"reasoning_tokens\":15,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -117,27 +117,27 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "toolu_01Udpx75f5Ho1xV95dnkH3oM",
+         "id": "toolu_015DkHbQ79zQwCmcrWASdrvn",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"\\nfrom sympy import prime\\nprint(sum(prime(i) for i in range(1,21)))\\n\"}"
+          "arguments": "{\"code\": \"\\nfrom sympy import primerange, prime\\nprimes = [prime(i) for i in range(1,21)]\\nprint(primes, sum(primes))\\n\"}"
          }
         }
        ],
        "reasoning_details": [
         {
          "type": "reasoning.text",
-         "text": "I need to add up the first 20 prime numbers to get the total.",
+         "text": "I need to add up the first 20 prime numbers.",
          "format": "anthropic-claude-v1",
          "index": 0,
-         "signature": "EqoCCqgBCBEYAipAW5c9pPItYxHhDKCeP5Wnc0qe/Y28gJqFI3IDMZnLV+8aLsGq8hSfFuBad2EvXRwRDFHorBvM4w5VhG+XbAqgpjIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0YzBmMDQ2Zi0yNWZkLTQ1ZmItYmZiMy1hMDhhOGUyNDljYTdyEMKZ/eJrWHCCJ8SmYQuBLpiIAQGoAYj91NQGsAECEgyY6U3a3OjV5QkV+0AaDDjGb02vALcGV7C4dSIwOhdkOdJOfiHmmEHCo5wmFrBbRR6Mp6XaL9ymcp5igsJQLXRaCVi3BDCkUf5h5w+iKi/dsw5Qz4WWGZz1/6lhBZ5kPEznWw3+YrdkJwnFw385fYxWebYmr3ZWnhT0KWAWdRgB"
+         "signature": "ErICCrABCBEYAipAW5c9pPItYxHhDKCeP5Wnc0qe/Y28gJqFI3IDMZnLV+8aLsGq8hSfFuBad2EvXRwRDFHorBvM4w5VhG+XbAqgpjIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0YzBmMDQ2Zi0yNWZkLTQ1ZmItYmZiMy1hMDhhOGUyNDljYTd6HnVwcm9mXzAxMUNlYVhnOXF2VHlHVzJHZ3BnekV6YqgBs6vb1AYSDPrPvmNyx1ESYcmHlRoMwYEFe5qIab8myoq6IjCWbdhPfAMjqtyGArJRUKrProwo47FVyEvkYF/Qaa9lig5XEduglypHVXS3OnNW29sqL+sOSKqqD4Y45+1U1IX3oSfAxU92jAb5b1A9u6JTPNpAzQRP2HHiPHfB8tAseCSzGAE="
         }
        ]
       },
       {
        "role": "tool",
-       "tool_call_id": "toolu_01Udpx75f5Ho1xV95dnkH3oM",
+       "tool_call_id": "toolu_015DkHbQ79zQwCmcrWASdrvn",
        "content": "Last value: 639"
       }
      ],
@@ -180,7 +180,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165768-GkHTaOrSufIEuUlRTcwr\",\"object\":\"chat.completion\",\"created\":1788165768,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"end_turn\",\"message\":{\"role\":\"assistant\",\"content\":\"The sum of the first 20 prime numbers is **639**.\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":5320,\"completion_tokens\":21,\"total_tokens\":5341,\"cost\":0.0014648,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":5214,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0014648,\"upstream_inference_prompt_cost\":0.0012548,\"upstream_inference_completions_cost\":0.00021},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n{\"id\":\"gen-1788270003-5QLAczvJXQ8zqAotGIhJ\",\"object\":\"chat.completion\",\"created\":1788270003,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"end_turn\",\"message\":{\"role\":\"assistant\",\"content\":\"The first 20 prime numbers sum to **639**.\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":5335,\"completion_tokens\":19,\"total_tokens\":5354,\"cost\":0.0014748,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":5214,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0014748,\"upstream_inference_prompt_cost\":0.0012848,\"upstream_inference_completions_cost\":0.00019},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -228,7 +228,64 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165770-hYtYfhJ3ynA8mF5BPFYR\",\"object\":\"chat.completion\",\"created\":1788165770,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"end_turn\",\"message\":{\"role\":\"assistant\",\"content\":\"**Red**\",\"refusal\":null,\"reasoning\":\"This is a tiny 3x3 pixel image that looks red or a shade of red.\\n\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"This is a tiny 3x3 pixel image that looks red or a shade of red.\\n\\n\",\"format\":\"anthropic-claude-v1\",\"index\":0,\"signature\":\"EvQCCqgBCBEYAipANmwr/qQ40gQHEaF0aLlHXvOy0YgammPVN9ln59yO1J9RtqX7L3xgMapBZVCV7Y5vyGBUGg6obo9WYvsH/2qPSTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0YzBmMDQ2Zi0yNWZkLTQ1ZmItYmZiMy1hMDhhOGUyNDljYTdyEMKZ/eJrWHCCJ8SmYQuBLpiIAQGoAY791NQGsAECEgxggskeUV04MdtjXP0aDK2EXEyehOYDLBhfGiIwrkG4N33tFQ1CyolCuVmhAvWp4GAbs30By1DJy1jENt9NI+PAxS2zAZOxVLCPHwSWKnmFjD5jyBXEOpxt9shEWSA18djNGdGq4NT97k0oYa1GGbiBXv6GUXmQS1DCvSxXAnJxSHKUUy1+6Yb8AQd5jIA/txc5ge/AekaItFpPo3ao8z0jf5HiA6mYPdMmXfYW3Gpjh7aZSCad18BnhEtSsaa6dp5gw+1Hry7dGAE=\"}]}}],\"usage\":{\"prompt_tokens\":23,\"completion_tokens\":43,\"total_tokens\":66,\"cost\":0.000476,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000476,\"upstream_inference_prompt_cost\":0.000046,\"upstream_inference_completions_cost\":0.00043},\"completion_tokens_details\":{\"reasoning_tokens\":37,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270005-OH7Gg0OnnXU01KwVcDxW\",\"object\":\"chat.completion\",\"created\":1788270005,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"end_turn\",\"message\":{\"role\":\"assistant\",\"content\":\"**Red**\",\"refusal\":null,\"reasoning\":\"This is a very small 20x20 pixel image, and it looks like it's red or orange in color.\\n\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"This is a very small 20x20 pixel image, and it looks like it's red or orange in color.\\n\\n\",\"format\":\"anthropic-claude-v1\",\"index\":0,\"signature\":\"EvcCCrABCBEYAipAHa2XFUFmXlNTQY/FOZbvmOGkRgXuFO5FvWpS9sRu0y4narI+kAg1AOMuTqPlXAS38QduHazjGnwompvb8de6wTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0YzBmMDQ2Zi0yNWZkLTQ1ZmItYmZiMy1hMDhhOGUyNDljYTd6HnVwcm9mXzAxMUNlYVhnOXF2VHlHVzJHZ3BnekV6YqgBuqvb1AYSDPzy5wFkrFM9r5xKFRoMFJVRssOVhKVFVY40IjD6JqK3DrGbpKKy1JoZZLsUcF9QReDR15k+1C7xL2UeySihvAVIxlP1eTCUDi10ZJgqdKPB4XLNTKYbOyieGDgP31MEvweEPr41wMtXSGgG+rNgFLVnuelP0vlMODaXRB4SZjyAOJ/NnJ63YIDSjDI415Rj9Tr1PBGMRJWT5mjyfkZlofe6nLLcnRy8lyfI5fBSiErbdVV7x6DYfgX2HiZ94tN+wzaIGAE=\"}]}}],\"usage\":{\"prompt_tokens\":23,\"completion_tokens\":41,\"total_tokens\":64,\"cost\":0.000456,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000456,\"upstream_inference_prompt_cost\":0.000046,\"upstream_inference_completions_cost\":0.00041},\"completion_tokens_details\":{\"reasoning_tokens\":34,\"image_tokens\":0,\"audio_tokens\":0}}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "anthropic/claude-sonnet-5",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only."
+        },
+        {
+         "type": "file",
+         "file": {
+          "filename": "word.pdf",
+          "file_data": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         },
+         "cache_control": {
+          "type": "ephemeral"
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 32768,
+     "plugins": [
+      {
+       "id": "file-parser",
+       "pdf": {
+        "engine": "cloudflare-ai"
+       }
+      }
+     ]
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "llm.key.openrouter",
+     "header": "Authorization",
+     "about": {
+      "label": "OpenRouter API key",
+      "hosts": [
+       "openrouter.ai"
+      ],
+      "help": "https://openrouter.ai/settings/keys"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270010-k15JwMErLVEm6mSqd9Sk\",\"object\":\"chat.completion\",\"created\":1788270010,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"end_turn\",\"message\":{\"role\":\"assistant\",\"content\":\"VIOLET\",\"refusal\":null,\"reasoning\":null,\"annotations\":[{\"type\":\"file\",\"file\":{\"hash\":\"c668d22729eebc2ee9e00de0624df46f4a707a2a48d22851bc38ee02750a782e\",\"name\":\"word.pdf\",\"content\":[{\"type\":\"text\",\"text\":\"<file name=\\\"word.pdf\\\">\"},{\"type\":\"text\",\"text\":\"# document.pdf\\n## Metadata\\n- PDFFormatVersion=1.4\\n- IsLinearized=false\\n- IsAcroFormPresent=false\\n- IsXFAPresent=false\\n- IsCollectionPresent=false\\n- IsSignaturesPresent=false\\n\\n\\n\\n## Contents\\n### Page 1\\nVIOLET\"},{\"type\":\"text\",\"text\":\"</file>\"}]}}]}}],\"usage\":{\"prompt_tokens\":145,\"completion_tokens\":7,\"total_tokens\":152,\"cost\":0.00036,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00036,\"upstream_inference_prompt_cost\":0.00029,\"upstream_inference_completions_cost\":0.00007},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -270,7 +327,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165775-Gx99yVX4gVIoZYJ5Zmpj\",\"object\":\"chat.completion\",\"created\":1788165775,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"max_tokens\",\"message\":{\"role\":\"assistant\",\"content\":\"# Rivers: The Lifeblood of Our Planet\\n\\nRivers\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":24,\"total_tokens\":44,\"cost\":0.00028,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00028,\"upstream_inference_prompt_cost\":0.00004,\"upstream_inference_completions_cost\":0.00024},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270013-eKBe1GZlvLFzRA8DoY5R\",\"object\":\"chat.completion\",\"created\":1788270013,\"model\":\"anthropic/claude-sonnet-5\",\"provider\":\"Claude Platform on AWS\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"max_tokens\",\"message\":{\"role\":\"assistant\",\"content\":\"# Rivers: The Lifeblood of Our Planet\\n\\nRivers\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":24,\"total_tokens\":44,\"cost\":0.00028,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00028,\"upstream_inference_prompt_cost\":0.00004,\"upstream_inference_completions_cost\":0.00024},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   }
  ]

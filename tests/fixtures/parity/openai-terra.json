@@ -66,7 +66,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\n  \"id\": \"chatcmpl-EJ3E0wWq1hW3R5yHaPygdwr15wl5I\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788209336,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": null,\n        \"tool_calls\": [\n          {\n            \"id\": \"call_HEg3iDZlMxsE62TTB17XhSY9\",\n            \"type\": \"function\",\n            \"function\": {\n              \"name\": \"run_cell\",\n              \"arguments\": \"{\\\"code\\\":\\\"import sympy as sp\\\\nprimes = list(sp.primerange(1, 100))[:20]\\\\nprint(primes)\\\\nprint(sum(primes))\\\"}\"\n            }\n          }\n        ],\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"tool_calls\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 3679,\n    \"completion_tokens\": 50,\n    \"total_tokens\": 3729,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 3676,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0IjzABMrHZ8Xy1Rq7VAvAYXtNH\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269990,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": null,\n        \"tool_calls\": [\n          {\n            \"id\": \"call_Su7IZvJDmuJB8OYxli8LRjWl\",\n            \"type\": \"function\",\n            \"function\": {\n              \"name\": \"run_cell\",\n              \"arguments\": \"{\\\"code\\\":\\\"import sympy as sp\\\\nprimes = list(sp.primerange(1, 100))[:20]\\\\n(sum(primes), primes)\\\"}\"\n            }\n          }\n        ],\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"tool_calls\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 3679,\n    \"completion_tokens\": 46,\n    \"total_tokens\": 3725,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 3676,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
@@ -89,18 +89,18 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "call_HEg3iDZlMxsE62TTB17XhSY9",
+         "id": "call_Su7IZvJDmuJB8OYxli8LRjWl",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"import sympy as sp\\nprimes = list(sp.primerange(1, 100))[:20]\\nprint(primes)\\nprint(sum(primes))\"}"
+          "arguments": "{\"code\": \"import sympy as sp\\nprimes = list(sp.primerange(1, 100))[:20]\\n(sum(primes), primes)\"}"
          }
         }
        ]
       },
       {
        "role": "tool",
-       "tool_call_id": "call_HEg3iDZlMxsE62TTB17XhSY9",
+       "tool_call_id": "call_Su7IZvJDmuJB8OYxli8LRjWl",
        "content": "Last value: 639"
       }
      ],
@@ -144,7 +144,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\n  \"id\": \"chatcmpl-EJ3E1ySajk5F2Ebt92ZqLBhPIQo27\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788209337,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"639\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 3745,\n    \"completion_tokens\": 4,\n    \"total_tokens\": 3749,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 3676,\n      \"cache_write_tokens\": 66,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0KpD2Q10uc7ovu1mnEZsZDIYR5\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269992,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"639\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 3741,\n    \"completion_tokens\": 4,\n    \"total_tokens\": 3745,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 3676,\n      \"cache_write_tokens\": 62,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
@@ -190,7 +190,54 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\n  \"id\": \"chatcmpl-EJ3E2mL51KFmJk4n4PNObZrbpPWEa\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788209338,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"Red\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 18,\n    \"completion_tokens\": 4,\n    \"total_tokens\": 22,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0MnaAsPXMtRKPuOhY2ewMFfqjC\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269994,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"Orange\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 18,\n    \"completion_tokens\": 4,\n    \"total_tokens\": 22,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
+   }
+  },
+  {
+   "request": {
+    "url": "https://api.openai.com/v1/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "gpt-5.6-terra",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only."
+        },
+        {
+         "type": "file",
+         "file": {
+          "filename": "word.pdf",
+          "file_data": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         }
+        }
+       ]
+      }
+     ],
+     "max_completion_tokens": 16384,
+     "reasoning_effort": "none"
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "llm.key.openai",
+     "header": "Authorization",
+     "about": {
+      "label": "OpenAI API key",
+      "hosts": [
+       "api.openai.com"
+      ],
+      "help": "https://platform.openai.com/api-keys"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0NCW3rtlq47k3CmKHWDluGoWDs\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269995,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"VIOLET\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 239,\n    \"completion_tokens\": 6,\n    \"total_tokens\": 245,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   },
   {
@@ -225,7 +272,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\n  \"id\": \"chatcmpl-EJ3E8XcTG9vMX8ISN6B1zuhxvIHbl\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788209344,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"Rivers are among the most powerful and essential features of the natural world. Flowing from mountains, springs\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"length\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 15,\n    \"completion_tokens\": 24,\n    \"total_tokens\": 39,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
+    "body": "{\n  \"id\": \"chatcmpl-EJJ0PuYq84azCbuuY56XfPdwSV9aO\",\n  \"object\": \"chat.completion\",\n  \"created\": 1788269997,\n  \"model\": \"gpt-5.6-terra\",\n  \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\": \"assistant\",\n        \"content\": \"Rivers are among the most influential features of Earth’s landscape. Flowing from mountains, springs, lakes\",\n        \"refusal\": null,\n        \"annotations\": []\n      },\n      \"finish_reason\": \"length\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 15,\n    \"completion_tokens\": 24,\n    \"total_tokens\": 39,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\": 0,\n      \"cache_write_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\": {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\": 0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\": \"default\",\n  \"system_fingerprint\": null\n}\n"
    }
   }
  ]

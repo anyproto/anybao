@@ -62,7 +62,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165916-PgTFP8HvmuYx2WNzcdQQ\",\"object\":\"chat.completion\",\"created\":1788165916,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Fireworks\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants the sum of the first 20 prime numbers. Let me compute it with a cell.\\n\\nFirst 20 primes: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71. Sum should be 639. But I must verify with a cell.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"chatcmpl-tool-b62ffc1a2851cbda\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"import sympy as sp\\\\nsum(sp.primerange(1, 100)) if False else None\\\\n\\\\n# robust: generate first 20 primes manually\\\\ndef primes(n):\\\\n    out, cand = [], 2\\\\n    while len(out) < n:\\\\n        if all(cand % p for p in out if p*p <= cand):\\\\n            out.append(cand)\\\\n        cand += 1\\\\n    return out\\\\n\\\\np20 = primes(20)\\\\nprint(p20)\\\\nprint(sum(p20))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants the sum of the first 20 prime numbers. Let me compute it with a cell.\\n\\nFirst 20 primes: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71. Sum should be 639. But I must verify with a cell.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3707,\"completion_tokens\":214,\"total_tokens\":3921,\"cost\":0.00190656,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":3706,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00190656,\"upstream_inference_prompt_cost\":0.00096496,\"upstream_inference_completions_cost\":0.0009416},\"completion_tokens_details\":{\"reasoning_tokens\":58,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n{\"id\":\"gen-1788270025-urnOzryCmCAecVLr7EEY\",\"object\":\"chat.completion\",\"created\":1788270025,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Modal\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"Compute the sum of the first 20 primes using run_cell.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"call_8082b9390b754bdf813ccb65\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"from sympy import prime\\\\nsum(prime(i) for i in range(1, 21))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"Compute the sum of the first 20 primes using run_cell.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3707,\"completion_tokens\":45,\"total_tokens\":3752,\"cost\":0.0053878,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0053878,\"upstream_inference_prompt_cost\":0.0051898,\"upstream_inference_completions_cost\":0.000198},\"completion_tokens_details\":{\"reasoning_tokens\":14,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -85,18 +85,18 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "chatcmpl-tool-b62ffc1a2851cbda",
+         "id": "call_8082b9390b754bdf813ccb65",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"import sympy as sp\\nsum(sp.primerange(1, 100)) if False else None\\n\\n# robust: generate first 20 primes manually\\ndef primes(n):\\n    out, cand = [], 2\\n    while len(out) < n:\\n        if all(cand % p for p in out if p*p <= cand):\\n            out.append(cand)\\n        cand += 1\\n    return out\\n\\np20 = primes(20)\\nprint(p20)\\nprint(sum(p20))\"}"
+          "arguments": "{\"code\": \"from sympy import prime\\nsum(prime(i) for i in range(1, 21))\"}"
          }
         }
        ],
        "reasoning_details": [
         {
          "type": "reasoning.text",
-         "text": "The user wants the sum of the first 20 prime numbers. Let me compute it with a cell.\n\nFirst 20 primes: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71. Sum should be 639. But I must verify with a cell.",
+         "text": "Compute the sum of the first 20 primes using run_cell.",
          "format": "unknown",
          "index": 0
         }
@@ -104,7 +104,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "chatcmpl-tool-b62ffc1a2851cbda",
+       "tool_call_id": "call_8082b9390b754bdf813ccb65",
        "content": "Last value: 639"
       }
      ],
@@ -147,7 +147,61 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165920-CqAvzVIm7UIy7g00S4bj\",\"object\":\"chat.completion\",\"created\":1788165920,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Fireworks\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"The sum of the first 20 prime numbers is **639** (primes: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71).\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":3931,\"completion_tokens\":80,\"total_tokens\":4011,\"cost\":0.00153024,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":3794,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00153024,\"upstream_inference_prompt_cost\":0.00117824,\"upstream_inference_completions_cost\":0.000352},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n{\"id\":\"gen-1788270027-rDsvrAODmxZV5sJUvOQh\",\"object\":\"chat.completion\",\"created\":1788270027,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"**639**\",\"refusal\":null,\"reasoning\":\"Verify: first 20 primes: 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71. Sum = 639. Confirmed by cell.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"Verify: first 20 primes: 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71. Sum = 639. Confirmed by cell.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3762,\"completion_tokens\":65,\"total_tokens\":3827,\"cost\":0.0055528,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0055528,\"upstream_inference_prompt_cost\":0.0052668,\"upstream_inference_completions_cost\":0.000286},\"completion_tokens_details\":{\"reasoning_tokens\":59,\"image_tokens\":0,\"audio_tokens\":0}}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "z-ai/glm-5.3",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only."
+        },
+        {
+         "type": "file",
+         "file": {
+          "filename": "word.pdf",
+          "file_data": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 65536,
+     "plugins": [
+      {
+       "id": "file-parser",
+       "pdf": {
+        "engine": "cloudflare-ai"
+       }
+      }
+     ]
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "llm.key.openrouter",
+     "header": "Authorization",
+     "about": {
+      "label": "OpenRouter API key",
+      "hosts": [
+       "openrouter.ai"
+      ],
+      "help": "https://openrouter.ai/settings/keys"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "\n         \n\n         \n{\"id\":\"gen-1788270028-fRk6WaijjJ3ABQMmVPQC\",\"object\":\"chat.completion\",\"created\":1788270028,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Modal\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"VIOLET\",\"refusal\":null,\"reasoning\":\"The user is asking me to identify the single word written in a PDF file. Looking at the file content provided, the PDF contains the text \\\"VIOLET\\\" on page 1. The answer should be that word only.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user is asking me to identify the single word written in a PDF file. Looking at the file content provided, the PDF contains the text \\\"VIOLET\\\" on page 1. The answer should be that word only.\",\"format\":\"unknown\",\"index\":0}],\"annotations\":[{\"type\":\"file\",\"file\":{\"hash\":\"c668d22729eebc2ee9e00de0624df46f4a707a2a48d22851bc38ee02750a782e\",\"name\":\"word.pdf\",\"content\":[{\"type\":\"text\",\"text\":\"<file name=\\\"word.pdf\\\">\"},{\"type\":\"text\",\"text\":\"# document.pdf\\n## Metadata\\n- PDFFormatVersion=1.4\\n- IsLinearized=false\\n- IsAcroFormPresent=false\\n- IsXFAPresent=false\\n- IsCollectionPresent=false\\n- IsSignaturesPresent=false\\n\\n\\n\\n## Contents\\n### Page 1\\nVIOLET\"},{\"type\":\"text\",\"text\":\"</file>\"}]}}]}}],\"usage\":{\"prompt_tokens\":98,\"completion_tokens\":51,\"total_tokens\":149,\"cost\":0.0003616,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0003616,\"upstream_inference_prompt_cost\":0.0001372,\"upstream_inference_completions_cost\":0.0002244},\"completion_tokens_details\":{\"reasoning_tokens\":49,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -181,7 +235,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n{\"id\":\"gen-1788165922-PXnWahXveDuS3aWZg3qy\",\"object\":\"chat.completion\",\"created\":1788165922,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Fireworks\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants a 500-word essay about rivers. This is a straightforward writing request. Let me think about what makes\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants a 500-word essay about rivers. This is a straightforward writing request. Let me think about what makes\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":21,\"completion_tokens\":24,\"total_tokens\":45,\"cost\":0.0001236,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":10,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0001236,\"upstream_inference_prompt_cost\":0.000018,\"upstream_inference_completions_cost\":0.0001056},\"completion_tokens_details\":{\"reasoning_tokens\":30,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n{\"id\":\"gen-1788270029-4KsmhyctFnaU5w03vZtO\",\"object\":\"chat.completion\",\"created\":1788270029,\"model\":\"z-ai/glm-5.3\",\"provider\":\"Modal\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informative writing task. Let me\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informative writing task. Let me\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":21,\"completion_tokens\":24,\"total_tokens\":45,\"cost\":0.000135,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000135,\"upstream_inference_prompt_cost\":0.0000294,\"upstream_inference_completions_cost\":0.0001056},\"completion_tokens_details\":{\"reasoning_tokens\":29,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   }
  ]

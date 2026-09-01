@@ -62,7 +62,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165905-jKOVg63XYsdRtAxBH0EK\",\"object\":\"chat.completion\",\"created\":1788165905,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"StreamLake\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"We need answer with tool use. Need compute sum first 20 prime numbers via run_cell. Then tell number. Need verify. Let's run Python.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"call_1q5cdlx9540k37wxhssjhrb6\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"def is_prime(n):\\\\n    if n < 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5)+1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nn = 2\\\\nwhile len(primes) < 20:\\\\n    if is_prime(n):\\\\n        primes.append(n)\\\\n    n += 1\\\\nprint(primes)\\\\nprint(sum(primes))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer with tool use. Need compute sum first 20 prime numbers via run_cell. Then tell number. Need verify. Let's run Python.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3905,\"completion_tokens\":173,\"total_tokens\":4078,\"cost\":0.00272633504,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":2048,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00272633504,\"upstream_inference_prompt_cost\":0.00214744244,\"upstream_inference_completions_cost\":0.0005788926},\"completion_tokens_details\":{\"reasoning_tokens\":32,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270015-UeqeH1IaMH1GXz9NmpeL\",\"object\":\"chat.completion\",\"created\":1788270015,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"StreamLake\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"We need answer with run_cell. Need compute sum first 20 primes. Use Python. Then final answer plain text with number. Let's run.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"call_abz2q70vy3ej6spe9mq95f2d\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"def is_prime(n):\\\\n    if n < 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5)+1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes=[]\\\\nn=2\\\\nwhile len(primes)<20:\\\\n    if is_prime(n):\\\\n        primes.append(n)\\\\n    n+=1\\\\nprint(primes)\\\\nprint(sum(primes))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer with run_cell. Need compute sum first 20 primes. Use Python. Then final answer plain text with number. Let's run.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3905,\"completion_tokens\":167,\"total_tokens\":4072,\"cost\":0.0049144524,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0049144524,\"upstream_inference_prompt_cost\":0.004355637,\"upstream_inference_completions_cost\":0.0005588154},\"completion_tokens_details\":{\"reasoning_tokens\":31,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -85,18 +85,18 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "call_1q5cdlx9540k37wxhssjhrb6",
+         "id": "call_abz2q70vy3ej6spe9mq95f2d",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5)+1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nn = 2\\nwhile len(primes) < 20:\\n    if is_prime(n):\\n        primes.append(n)\\n    n += 1\\nprint(primes)\\nprint(sum(primes))\"}"
+          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5)+1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes=[]\\nn=2\\nwhile len(primes)<20:\\n    if is_prime(n):\\n        primes.append(n)\\n    n+=1\\nprint(primes)\\nprint(sum(primes))\"}"
          }
         }
        ],
        "reasoning_details": [
         {
          "type": "reasoning.text",
-         "text": "We need answer with tool use. Need compute sum first 20 prime numbers via run_cell. Then tell number. Need verify. Let's run Python.",
+         "text": "We need answer with run_cell. Need compute sum first 20 primes. Use Python. Then final answer plain text with number. Let's run.",
          "format": "unknown",
          "index": 0
         }
@@ -104,7 +104,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "call_1q5cdlx9540k37wxhssjhrb6",
+       "tool_call_id": "call_abz2q70vy3ej6spe9mq95f2d",
        "content": "Last value: 639"
       }
      ],
@@ -147,7 +147,61 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788165909-8nvddFmCSUY5QNdKU8gD\",\"object\":\"chat.completion\",\"created\":1788165909,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"StreamLake\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"639\",\"refusal\":null,\"reasoning\":\"We need answer final. The cell output shows last value 639, but code also printed primes and sum? Wait tool returned \\\"Last value: 639\\\" only, maybe because output truncation? It says Last value: 639. Need verify maybe sum is 639. Let's double-check first 20 primes: 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71. Sum: let's compute mentally or already cell printed? It returned 639. Let's confirm sum manually maybe 639. 2+3+5+7+11+13+17+19+23+29 =? first 10: 2+3=5, +5=10, +7=17, +11=28, +13=41, +17=58, +19=77, +23=100, +29=129. Next 10: 31+37=68, +41=109, +43=152, +47=199, +53=252, +59=311, +61=372, +67=439, +71=510. Total 129+510=639. Yes. Final answer plain text: 639.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer final. The cell output shows last value 639, but code also printed primes and sum? Wait tool returned \\\"Last value: 639\\\" only, maybe because output truncation? It says Last value: 639. Need verify maybe sum is 639. Let's double-check first 20 primes: 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71. Sum: let's compute mentally or already cell printed? It returned 639. Let's confirm sum manually maybe 639. 2+3+5+7+11+13+17+19+23+29 =? first 10: 2+3=5, +5=10, +7=17, +11=28, +13=41, +17=58, +19=77, +23=100, +29=129. Next 10: 31+37=68, +41=109, +43=152, +47=199, +53=252, +59=311, +61=372, +67=439, +71=510. Total 129+510=639. Yes. Final answer plain text: 639.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":4095,\"completion_tokens\":275,\"total_tokens\":4370,\"cost\":0.00327957344,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":2048,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00327957344,\"upstream_inference_prompt_cost\":0.00235936844,\"upstream_inference_completions_cost\":0.000920205},\"completion_tokens_details\":{\"reasoning_tokens\":273,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270019-6sEhaniayj8wy3H6b78l\",\"object\":\"chat.completion\",\"created\":1788270019,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"StreamLake\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"639\",\"refusal\":null,\"reasoning\":\"We need answer final: sum of first 20 primes is 639. The tool output says \\\"Last value: 639\\\" but not the printed list? It only returned last value. We computed. Need state number.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer final: sum of first 20 primes is 639. The tool output says \\\"Last value: 639\\\" but not the printed list? It only returned last value. We computed. Need state number.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":4089,\"completion_tokens\":47,\"total_tokens\":4136,\"cost\":0.00250994744,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":2048,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00250994744,\"upstream_inference_prompt_cost\":0.00235267604,\"upstream_inference_completions_cost\":0.0001572714},\"completion_tokens_details\":{\"reasoning_tokens\":45,\"image_tokens\":0,\"audio_tokens\":0}}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "deepseek/deepseek-v4-pro-0813",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only."
+        },
+        {
+         "type": "file",
+         "file": {
+          "filename": "word.pdf",
+          "file_data": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 65536,
+     "plugins": [
+      {
+       "id": "file-parser",
+       "pdf": {
+        "engine": "cloudflare-ai"
+       }
+      }
+     ]
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "llm.key.openrouter",
+     "header": "Authorization",
+     "about": {
+      "label": "OpenRouter API key",
+      "hosts": [
+       "openrouter.ai"
+      ],
+      "help": "https://openrouter.ai/settings/keys"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "\n         \n\n         \n{\"id\":\"gen-1788270022-Dxe6Tj7o1izXAFHgMpCU\",\"object\":\"chat.completion\",\"created\":1788270022,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"CoreWeave\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"VIOLET\",\"refusal\":null,\"reasoning\":\"We need answer single word from PDF. Need inspect file. The prompt asks \\\"What single word is written in this PDF? Answer with that word only.\\\" File content shows Page 1 VIOLET. Need answer only word.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer single word from PDF. Need inspect file. The prompt asks \\\"What single word is written in this PDF? Answer with that word only.\\\" File content shows Page 1 VIOLET. Need answer only word.\",\"format\":\"unknown\",\"index\":0}],\"annotations\":[{\"type\":\"file\",\"file\":{\"hash\":\"c668d22729eebc2ee9e00de0624df46f4a707a2a48d22851bc38ee02750a782e\",\"name\":\"word.pdf\",\"content\":[{\"type\":\"text\",\"text\":\"<file name=\\\"word.pdf\\\">\"},{\"type\":\"text\",\"text\":\"# document.pdf\\n## Metadata\\n- PDFFormatVersion=1.4\\n- IsLinearized=false\\n- IsAcroFormPresent=false\\n- IsXFAPresent=false\\n- IsCollectionPresent=false\\n- IsSignaturesPresent=false\\n\\n\\n\\n## Contents\\n### Page 1\\nVIOLET\"},{\"type\":\"text\",\"text\":\"</file>\"}]}}]}}],\"usage\":{\"prompt_tokens\":168,\"completion_tokens\":51,\"total_tokens\":219,\"cost\":0.00042204,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00042204,\"upstream_inference_prompt_cost\":0.00022008,\"upstream_inference_completions_cost\":0.00020196},\"completion_tokens_details\":{\"reasoning_tokens\":50,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   },
   {
@@ -181,7 +235,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n{\"id\":\"gen-1788165915-NkUBXf6LBleerJFzuIQG\",\"object\":\"chat.completion\",\"created\":1788165915,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"Alibaba\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"We need answer user asks \\\"Write a 500-word essay about rivers.\\\" Need produce essay around 500 words. Need\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer user asks \\\"Write a 500-word essay about rivers.\\\" Need produce essay around 500 words. Need\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":92,\"completion_tokens\":24,\"total_tokens\":116,\"cost\":0.000184008,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000184008,\"upstream_inference_prompt_cost\":0.000103224,\"upstream_inference_completions_cost\":0.000080784},\"completion_tokens_details\":{\"reasoning_tokens\":24,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "\n         \n\n         \n{\"id\":\"gen-1788270024-ffIpQlMxnl6R3qXqTOQA\",\"object\":\"chat.completion\",\"created\":1788270024,\"model\":\"deepseek/deepseek-v4-pro-0813\",\"provider\":\"Cloudflare\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"We need answer write 500-word essay about rivers. Need produce essay. Need likely no issue. Need craft engaging,\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"We need answer write 500-word essay about rivers. Need produce essay. Need likely no issue. Need craft engaging,\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":92,\"completion_tokens\":24,\"total_tokens\":116,\"cost\":0.00021648,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00021648,\"upstream_inference_prompt_cost\":0.00012144,\"upstream_inference_completions_cost\":0.00009504},\"completion_tokens_details\":{\"reasoning_tokens\":28,\"image_tokens\":0,\"audio_tokens\":0}}}"
    }
   }
  ]
