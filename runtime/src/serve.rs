@@ -15,7 +15,7 @@ use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
 use crate::tracestore::{FileTraceStore, TraceStore};
 use crate::triggers::{
-    chat_watch_trigger, desired_event_sources, event_args, event_source, health_pass,
+    chat_watch_trigger, desired_event_sources, event_args, event_source, event_space, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
     standing_triggers, trigger_to_record, ChatInput, EventSource, LiveRun, RunResult, Scheduler,
     Trigger, WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
@@ -852,9 +852,10 @@ struct Shared {
     /// live messages that arrived while overlays were pending. Drained
     /// by the trigger ticker once ensure_ready clears.
     backlog: Mutex<Vec<ChatInput>>,
-    /// Live event sources (ADR-018 §2): chat object id → the stop flag
-    /// of the thread watching it. Converged on the registry every tick.
-    event_sources: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+    /// Live event sources (ADR-018 §2): `(space, chat object id)` → the
+    /// stop flag of the thread watching it. Converged on the registry
+    /// every tick.
+    event_sources: Mutex<BTreeMap<(String, String), Arc<AtomicBool>>>,
     /// The chat-responder record id (ADR-018 §3) — `chat-watch`, or a
     /// generation-suffixed reseed when the bare id was tombstoned.
     chat_watch_id: String,
@@ -2603,47 +2604,50 @@ fn finish_run(shared: &Shared, ctx: &RunCtx, trigger_id: &str, rr: &RunResult) {
 // --- event sources (ADR-018 §2) ------------------------------------------------
 
 /// Converge the live source threads on the registry: one watch per
-/// distinct chat object across this device's enabled `chat_messages`
-/// event triggers. New objects get a thread; objects no trigger needs
-/// any more (disabled, repinned away, deleted, breaker-tripped) get
-/// their thread stopped.
+/// distinct `(space, chat object)` across this device's enabled
+/// `chat_messages` event triggers — a record's `spec.spaceId`, else
+/// the agent space. New sources get a thread; sources no trigger
+/// needs any more (disabled, repinned away, deleted, breaker-tripped)
+/// get their thread stopped.
 fn reconcile_event_sources(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &Arc<AtomicBool>) {
     let desired = {
         let reg = shared.triggers.lock().unwrap();
         let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
-        desired_event_sources(&reg, &instance)
+        desired_event_sources(&reg, &instance, &ctx.space)
     };
     let mut live = shared.event_sources.lock().unwrap();
-    let stale: Vec<String> = live
+    let stale: Vec<(String, String)> = live
         .keys()
         .filter(|k| !desired.contains_key(*k))
         .cloned()
         .collect();
-    for object_id in stale {
-        if let Some(flag) = live.remove(&object_id) {
+    for key in stale {
+        if let Some(flag) = live.remove(&key) {
             flag.store(true, Ordering::Relaxed);
-            info!("event source stopped: chat {object_id}");
+            info!("event source stopped: chat {} in space {}", key.1, key.0);
         }
     }
-    for (object_id, trigger_ids) in desired {
-        if live.contains_key(&object_id) {
+    for ((space, object_id), trigger_ids) in desired {
+        if live.contains_key(&(space.clone(), object_id.clone())) {
             continue;
         }
         let flag = Arc::new(AtomicBool::new(false));
-        live.insert(object_id.clone(), flag.clone());
-        info!("event source started: chat {object_id} → {trigger_ids:?}");
+        live.insert((space.clone(), object_id.clone()), flag.clone());
+        info!("event source started: chat {object_id} in space {space} → {trigger_ids:?}");
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), stop.clone());
-        std::thread::spawn(move || event_source_thread(shared, ctx, object_id, flag, stop));
+        std::thread::spawn(move || event_source_thread(shared, ctx, space, object_id, flag, stop));
     }
 }
 
 /// One chat object's watch (ADR-018 §2, live-only): reconnect loop
-/// around the SSE feed; a snapshot only seeds the seen-set, `changes`
-/// fire the triggers that name this object. Exits when its own flag
-/// (source no longer desired) or the serve-wide stop is raised.
+/// around the SSE feed in the source's own space; a snapshot only
+/// seeds the seen-set, `changes` fire the triggers that name this
+/// source. Exits when its own flag (source no longer desired) or the
+/// serve-wide stop is raised.
 fn event_source_thread(
     shared: Arc<Shared>,
     ctx: Arc<RunCtx>,
+    space: String,
     object_id: String,
     own_stop: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -2652,13 +2656,15 @@ fn event_source_thread(
     let mut state = EventSource::default();
     while !halted() {
         let feed = ctx.client.subscribe_dataset(
-            &ctx.space,
+            &space,
             &object_id,
             CHAT_MESSAGES,
             &json!({"sort": ["-createdAt"], "limit": 64}),
         );
         match feed {
-            Err(e) => warn!("event source {object_id}: subscribe failed ({e}); retrying in 2s"),
+            Err(e) => warn!(
+                "event source {object_id} in space {space}: subscribe failed ({e}); retrying in 2s"
+            ),
             Ok(frames) => {
                 for frame in frames {
                     if halted() {
@@ -2677,7 +2683,7 @@ fn event_source_thread(
                         "changes" => {
                             for record in state.fresh(records_in(&frame.data), &ctx.cfg.agent_name)
                             {
-                                fire_event(&shared, &ctx, &object_id, &record);
+                                fire_event(&shared, &ctx, &space, &object_id, &record);
                             }
                         }
                         other => {
@@ -2692,11 +2698,11 @@ fn event_source_thread(
     }
 }
 
-/// Fire every enabled trigger of this device that names `object_id`,
-/// sequentially in the source thread, with full run bookkeeping.
-/// Deferred boot (ADR-009 §8) drops the event rather than queueing it —
-/// live-only means live-only.
-fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
+/// Fire every enabled trigger of this device that names the
+/// `(space, object_id)` source, sequentially in the source thread,
+/// with full run bookkeeping. Deferred boot (ADR-009 §8) drops the
+/// event rather than queueing it — live-only means live-only.
+fn fire_event(shared: &Shared, ctx: &RunCtx, space: &str, object_id: &str, record: &Value) {
     if let Err(status) = ctx.ensure_ready() {
         warn!("event on chat {object_id} dropped — not ready: {status}");
         return;
@@ -2707,11 +2713,12 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, object_id: &str, record: &Value) {
         reg.values()
             .filter(|t| t.owner == instance && t.enabled && !is_chat_watch(&t.id))
             .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
+            .filter(|t| event_space(t, &ctx.space) == space)
             .cloned()
             .collect()
     };
     for t in targets {
-        let args = event_args(&t, &ctx.space, object_id, record);
+        let args = event_args(&t, space, object_id, record);
         info!(
             "event trigger {:?} fired by message {:?} on chat {object_id}",
             t.id,

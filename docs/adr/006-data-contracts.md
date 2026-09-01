@@ -294,7 +294,7 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
 ### 4. Triggers (`agent_trigger` type + `trigger_runs` dataset)
 
 - Trigger object properties: `name`, `kind` (`cron | event | once`),
-  `spec` (cron expression | `{dataset, objectId, filter?}` — event
+  `spec` (cron expression | `{dataset, objectId, spaceId?, filter?}` — event
   delivery per ADR-018 §2 | `{at: <epoch seconds>}`), `program`
   (ADR-004 spec string), `args`, `owner` (the DEVICE PIN — see below),
   `enabled`, `logRuns`, and the observability rollup `lastRunAt /
