@@ -114,7 +114,12 @@ Cells execute in a constructed namespace containing **only**:
      `fractions`, `base64`, `hashlib`, `uuid`(v5 only — v1/v4 are
      nondeterministic; see open Q2), `unicodedata`, `html`, `email`
      (both added 2026-08-13, ADR-012 §6: pure parsing/formatting, no
-     ambient authority).
+     ambient authority), `zlib` (added 2026-09-01: a pure codec,
+     deterministic, no ambient authority — inflate/deflate/crc32 for
+     PDF FlateDecode streams, gzip bodies, PNG chunks; without it
+     models on tiers that cannot read a PDF natively re-implemented
+     inflate in cells, one burning a whole fuel budget — BOB-78 bench
+     finding 1).
   1b. *Vendored pure-Python third-party* (added 2026-08-13, ADR-012
      §6): `bs4` + `soupsieve`, `markdownify` — bundled verbatim into
      the kernel image from `runtime/guest/` (versions + licenses in

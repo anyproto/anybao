@@ -176,6 +176,17 @@ Links (`any://` URIs — the one reference format):
   call returns its answer text (ADR-020). Bytes: `file_content(space,
   link)` (base64); `list_files(space, objectId)` lists an object's
   attachments. Other formats (docx…) need converting to text first.
+- **A PDF on a tier that cannot read it** (`UnsupportedMedia
+  application/pdf` from `read`): do NOT brute-force. One cheap
+  attempt, in one cell: for each `stream…endstream` body, strip, if
+  it ends in `~>` it is ASCII85 → `base64.a85decode(data,
+  adobe=True)`; then `zlib.decompress` (FlateDecode; a `zlib.error`
+  means it was uncompressed — keep the bytes); then pull the `(…) Tj`
+  / `[…] TJ` strings. Works for simple, text-generated PDFs (reportlab
+  and friends); scanned or font-encoded PDFs yield nothing readable.
+  If the attempt yields nothing, tell the user this model cannot read
+  the PDF and stop; never hand-implement inflate or ASCII85, never
+  probe bytes in a loop.
 - **Outgoing attachments**: `chat_send` takes `attachments`:
   `{"a0": {"type": "link", "link": "any://o/<sid>/<oid>"}, …}` (≤32,
   keys `[A-Za-z0-9_-]+`, type `link` or `image`) — attach the objects
