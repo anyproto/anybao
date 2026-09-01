@@ -96,7 +96,7 @@ values and defaults in the source, meaning in ADR-005 §1.3.
 |---|---|---|---|---|
 | `anthropic-claude` | claude | anthropic | 2026-09-01 | markers: 5214 tokens written on call 1, read on call 2 |
 | `anthropic-openai-compat` | claude | generic | 2026-08-31 | Anthropic's `/v1/chat/completions`: no cache reporting → effective `cache: auto` |
-| `gemini-openai-compat` | gemini | gemini | 2026-08-31 | `thought_signature` rides the tool call's `provider_state` — required by Gemini 3.x |
+| `gemini-openai-compat` | gemini | gemini | 2026-09-01 | `thought_signature` rides the tool call's `provider_state` — required by Gemini 3.x; **PDF ok** as a data URI under `image_url` (the `file` part is a 400 on this layer) |
 | `openai-terra` (`gpt-5.6-terra`) | gpt | openai | 2026-09-01 | direct OpenAI: tools on chat/completions need tier `options {"reasoning_effort": "none"}` (a Responses-API backend is the proper fix); PDF ok as a native `file` part |
 | `openrouter-claude` (`anthropic/claude-sonnet-5`) | claude | openrouter | 2026-09-01 | markers through OpenRouter: `cache_write_tokens` 5214 → `cached_tokens` 5214; `reasoning_details` (signed) resent |
 | `openrouter-kimi-k3` (`moonshotai/kimi-k3`) | kimi-k3 | openrouter | 2026-09-01 | vision ok; implicit cache 3712 on call 2; may return the final answer under `reasoning` with `content` empty (+ leaked `<|close|>` trailer) — lifted to text; loop-verified on the :7005 rig (tool ids `run_cell:N`) |
@@ -104,13 +104,13 @@ values and defaults in the source, meaning in ADR-005 §1.3.
 | `openrouter-deepseek-v4` (`deepseek/deepseek-v4-pro-0813`) | deepseek-v4 | openrouter | 2026-09-01 | **text-only** (`vision: false`; `deepseek-v4-flash-vision-*` sees); implicit cache 3840; **PDF ok** via OpenRouter's parser |
 
 **PDF** (ADR-020 §3, recorded 2026-09-01): every entry on the
-`anthropic`, `openai` and `openrouter` backends reads the parity PDF
-(`pdf_input` is a backend grant) — Anthropic as a `document`, OpenAI
-as a native `file` part, OpenRouter as a `file` part parsed
-server-side with the free `cloudflare-ai` engine pinned by llm@v1
-(the host default is paid OCR; a tier's `options.plugins` overrides).
-`gemini-openai-compat` and `anthropic-openai-compat` (generic backend)
-refuse before any call.
+`anthropic`, `openai`, `openrouter` and `gemini` backends reads the
+parity PDF (`pdf_input` is the backend's carriage) — Anthropic as a
+`document`, OpenAI as a native `file` part, OpenRouter as a `file`
+part parsed server-side with the free `cloudflare-ai` engine pinned by
+llm@v1 (the host default is paid OCR; a tier's `options.plugins`
+overrides), Gemini as a PDF data URI under `image_url`.
+`anthropic-openai-compat` (generic backend) refuses before any call.
 
 All reasoning models on OpenRouter answer with `reasoning` +
 `reasoning_details`; the `reasoning: "roundtrip"` trait resends the

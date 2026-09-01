@@ -114,7 +114,7 @@ TRAITS = {
     "malformed_retries": int,
     "vision": bool,
     "signed_tool_calls": bool,
-    "pdf_input": bool,
+    "pdf_input": ("none", "file", "image_url"),
 }
 
 GENERIC_TRAITS = {
@@ -122,7 +122,7 @@ GENERIC_TRAITS = {
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
     "instructions_at": "system", "malformed_retries": 2, "vision": True,
-    "signed_tool_calls": False, "pdf_input": False,
+    "signed_tool_calls": False, "pdf_input": "none",
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -379,13 +379,18 @@ class OpenAICompatAdapter:
                 if cls == "image":
                     content.append({"type": "image_url", "image_url": {
                         "url": f"data:{f['media_type']};base64,{f['data']}"}})
-                elif cls == "pdf" and traits.get("pdf_input"):
+                elif cls == "pdf" and traits.get("pdf_input") == "file":
                     # ADR-020 §3: the wire's document part — the backend
                     # (OpenAI natively, OpenRouter via its file-parser)
                     # reads it; the model never sees bytes
                     content.append({"type": "file", "file": {
                         "filename": f.get("name") or "document.pdf",
                         "file_data": f"data:application/pdf;base64,{f['data']}"}})
+                elif cls == "pdf" and traits.get("pdf_input") == "image_url":
+                    # Gemini's OpenAI layer: no `file` part (400), but a
+                    # PDF data URI under image_url is read as a document
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:application/pdf;base64,{f['data']}"}})
                 else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
             msg = {"role": m["role"], "content": content}
@@ -696,10 +701,14 @@ _BEARER = {"header": "Authorization", "prefix": "Bearer "}
 # backends that can write explicit cache breakpoints; elsewhere a
 # profile's `cache: "markers"` resolves to "auto" (§1.5)
 _MARKER_BACKENDS = ("anthropic", "openrouter")
-# Backends whose wire carries a PDF as a document part (ADR-020 §3): a
-# host fact, not a model-family one — OpenAI reads it natively,
-# OpenRouter parses it for any model, Anthropic has `document`.
-_PDF_BACKENDS = ("anthropic", "openai", "openrouter")
+# How each backend's wire carries a PDF (ADR-020 §3) — a host fact, not
+# a model-family one: OpenAI reads the `file` part natively, OpenRouter
+# parses it for any model, Anthropic has `document` (the native
+# adapter ignores the carriage), Gemini's OpenAI layer rejects `file`
+# but reads a PDF data URI under `image_url` (probed 2026-09-01).
+# Absent = the wire has no known carriage: refuse before any call.
+_PDF_CARRIAGE = {"anthropic": "file", "openai": "file", "openrouter": "file",
+                 "gemini": "image_url"}
 
 _ANTHROPIC_KEY_HELP = ("https://platform.claude.com/docs/en/manage-claude/"
                        "authentication#select-a-workspace")
@@ -793,12 +802,13 @@ def _credential(prov, backend):
 def _effective(traits, backend):
     """Traits as this backend can honor them: `cache: "markers"` needs a
     backend that writes breakpoints, else it is the implicit prefix
-    cache (`auto`); `pdf_input` is granted by the backend (a wire that
-    carries document parts), whatever the model family says."""
+    cache (`auto`); `pdf_input` (the PDF carriage) is granted by the
+    backend, whatever the model family says."""
     if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
         traits = {**traits, "cache": "auto"}
-    if backend in _PDF_BACKENDS and not traits["pdf_input"]:
-        traits = {**traits, "pdf_input": True}
+    carriage = _PDF_CARRIAGE.get(backend)
+    if carriage and traits["pdf_input"] == "none":
+        traits = {**traits, "pdf_input": carriage}
     return traits
 
 
@@ -878,8 +888,8 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     `space=`, or a `{mime|media_type, data: <base64>, name?}` dict
     (e.g. `any.file_content(...)`'s result). Natively readable:
     images (png/jpeg/gif/webp), text, and PDF on a backend whose wire
-    carries documents (Anthropic, OpenAI, any model via OpenRouter —
-    the `pdf_input` trait); anything else raises `UnsupportedMedia`
+    carries documents (Anthropic, OpenAI, Gemini, any model via
+    OpenRouter — the `pdf_input` trait); anything else raises `UnsupportedMedia`
     before any call — convert to text first, or route the read to a
     tier whose backend can.
     `prompt` is the question; `system` optional. Returns the reply's

@@ -115,8 +115,9 @@ traits = {
   "signed_tool_calls": bool,                          # provider rejects unsigned functionCall parts (Gemini 3+ thought
                                                       # signatures): real signatures round-trip via provider_state;
                                                       # client-constructed calls get the documented skip sentinel
-  "pdf_input":       bool,                            # the wire carries a PDF as a document part — granted by the
-                                                      # BACKEND (anthropic/openai/openrouter), not the profile (ADR-020 §3)
+  "pdf_input":       "none" | "file" | "image_url",    # the PDF carriage on the wire — granted by the BACKEND, not the
+                                                      # profile (ADR-020 §3): file part (openai/openrouter/anthropic),
+                                                      # PDF data URI under image_url (gemini's OpenAI layer), none
 }
 ```
 

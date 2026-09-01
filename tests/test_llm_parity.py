@@ -192,7 +192,7 @@ def drive(chat, traits, report):
         {"type": "file", "media_type": "application/pdf", "data": pdf, "name": "word.pdf"},
         {"type": "text", "text": "What single word is written in this PDF? "
                                  "Answer with that word only."}]}]
-    if traits["pdf_input"]:
+    if traits["pdf_input"] != "none":
         reply = chat(pdf_msg, system="", tools=[])
         report["pdf_text"] = _texts(reply)
     else:
@@ -297,7 +297,7 @@ def test_parity(target):
         assert report["image_text"].strip(), "no answer for the image part"
     else:
         assert report["image_text"] == "refused: UnsupportedMedia", report["image_text"]
-    if traits["pdf_input"]:
+    if traits["pdf_input"] != "none":
         assert "violet" in report["pdf_text"].lower(), report["pdf_text"]
     else:
         assert report["pdf_text"] == "refused: UnsupportedMedia", report["pdf_text"]

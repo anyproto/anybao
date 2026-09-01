@@ -62,7 +62,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EpwDCpkDARFNMg81BkpXQ5sAVRyi3fUe5eJr8cCSwNpRUEo4FHMzFQxy6NH2hBG0m+UZ5ykwv55Zaewy1uC1xXUCSib7Y8C8PRsY9tqI5I+61uQv5kfB4O7dsaMNZpq7fP6mUyjgPxhkQ9AAOF8Dtol4Nqfh+lqiOsOsE9/kBG96x/fULbSVMNFruVXnGw4V3rE1NHU9G3mCMC0geJOdg5HYXJIAF6kGgVnt3r9GaUZqb+Pj3svVNLJEH6cmBtRxwWUhqmH/aktJ6W0MM8fqnR2BcqulBTWI190/sFp0D2fFOiPhSFH3X96+bEX77C2kqxNInwUCFlQG3APL4gFxuOfp0YqUbXaj5zu4jc293EYymyPRmW0v20Br9Qq9600C7MCrBEfb8Dpyaruko+sCpLdBFD1oRy30BJLRpBfXCMdFprTXFdIPuS01RIyy4RtIeT9e+hGOLD3wysx39P94Kp2C9A4zjBwVjvDBTzymYPojaoMynay/QBG/2IptRYtX61P6ATezkYJJaJ2ZcAy0N0iE1vYPKUExjWn7vN9pQw==\"}},\"function\":{\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n \\\\u003c 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\ncandidate = 2\\\\nwhile len(primes) \\\\u003c 20:\\\\n    if is_prime(candidate):\\\\n        primes.append(candidate)\\\\n    candidate += 1\\\\n\\\\nprint(primes)\\\\nprint(sum(primes))\\\\n\\\"}\",\"name\":\"run_cell\"},\"id\":\"call_2123064\",\"type\":\"function\"}]}}],\"created\":1788154882,\"id\":\"ARSVasChIbXpkdUP_oTA2AI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":129,\"prompt_tokens\":3985,\"total_tokens\":4190}}"
+    "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EvsBCvgBARFNMg/HtaVCOauJ9iEmVvD29ed2mVc85A0EKq82iRj5gfToYMQkRuS3KaLwqRs5QmrXUIpy97UUXiZss3yV0Vx8VvKAyCKXho0Emf2/orlV5MCbdhKJiuFrrVnR3/6f4F6QxrAGC/1t9Kn4Ib7BUxTPmKSVq4MX25KndNDC3RO3N1FapmcWf7LxQ4W8eIoRUp+2zks6Z8nOmH8VVLWEFpYOWB1wJX/fWVA5GcztOU0hUPKFOjaqa7gLoQbDDy7UCx1wbpuiMwEOfkk5uU27/tVF/SxtClU8EVmt3Yiu/iHsn2PIVo/hesUelNRc5qgfgDPS8ujBB/A=\"}},\"function\":{\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n \\\\u003c 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nnum = 2\\\\nwhile len(primes) \\\\u003c 20:\\\\n    if is_prime(num):\\\\n        primes.append(num)\\\\n    num += 1\\\\n\\\\nprint(primes)\\\\nprint(\\\\\\\"Sum:\\\\\\\", sum(primes))\\\\n\\\"}\",\"name\":\"run_cell\"},\"id\":\"call_1497322\",\"type\":\"function\"}]}}],\"created\":1788270553,\"id\":\"z9eWarnUAeu_nsEP9Jr2uA4\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":131,\"prompt_tokens\":3985,\"total_tokens\":4153}}"
    }
   },
   {
@@ -85,15 +85,15 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "call_2123064",
+         "id": "call_1497322",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\ncandidate = 2\\nwhile len(primes) < 20:\\n    if is_prime(candidate):\\n        primes.append(candidate)\\n    candidate += 1\\n\\nprint(primes)\\nprint(sum(primes))\\n\"}"
+          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nnum = 2\\nwhile len(primes) < 20:\\n    if is_prime(num):\\n        primes.append(num)\\n    num += 1\\n\\nprint(primes)\\nprint(\\\"Sum:\\\", sum(primes))\\n\"}"
          },
          "extra_content": {
           "google": {
-           "thought_signature": "EpwDCpkDARFNMg81BkpXQ5sAVRyi3fUe5eJr8cCSwNpRUEo4FHMzFQxy6NH2hBG0m+UZ5ykwv55Zaewy1uC1xXUCSib7Y8C8PRsY9tqI5I+61uQv5kfB4O7dsaMNZpq7fP6mUyjgPxhkQ9AAOF8Dtol4Nqfh+lqiOsOsE9/kBG96x/fULbSVMNFruVXnGw4V3rE1NHU9G3mCMC0geJOdg5HYXJIAF6kGgVnt3r9GaUZqb+Pj3svVNLJEH6cmBtRxwWUhqmH/aktJ6W0MM8fqnR2BcqulBTWI190/sFp0D2fFOiPhSFH3X96+bEX77C2kqxNInwUCFlQG3APL4gFxuOfp0YqUbXaj5zu4jc293EYymyPRmW0v20Br9Qq9600C7MCrBEfb8Dpyaruko+sCpLdBFD1oRy30BJLRpBfXCMdFprTXFdIPuS01RIyy4RtIeT9e+hGOLD3wysx39P94Kp2C9A4zjBwVjvDBTzymYPojaoMynay/QBG/2IptRYtX61P6ATezkYJJaJ2ZcAy0N0iE1vYPKUExjWn7vN9pQw=="
+           "thought_signature": "EvsBCvgBARFNMg/HtaVCOauJ9iEmVvD29ed2mVc85A0EKq82iRj5gfToYMQkRuS3KaLwqRs5QmrXUIpy97UUXiZss3yV0Vx8VvKAyCKXho0Emf2/orlV5MCbdhKJiuFrrVnR3/6f4F6QxrAGC/1t9Kn4Ib7BUxTPmKSVq4MX25KndNDC3RO3N1FapmcWf7LxQ4W8eIoRUp+2zks6Z8nOmH8VVLWEFpYOWB1wJX/fWVA5GcztOU0hUPKFOjaqa7gLoQbDDy7UCx1wbpuiMwEOfkk5uU27/tVF/SxtClU8EVmt3Yiu/iHsn2PIVo/hesUelNRc5qgfgDPS8ujBB/A="
           }
          }
         }
@@ -101,7 +101,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "call_2123064",
+       "tool_call_id": "call_1497322",
        "content": "Last value: 639"
       }
      ],
@@ -144,7 +144,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"The sum of the first 20 prime numbers is 639.\",\"extra_content\":{\"google\":{\"thought_signature\":\"EoUBCoIBARFNMg9R+VYWKp05kC4EDZJqvcssh23mRyWUIWhirXODcT0s75E+VL6Z/aaLuJnCztTCQ2yJEyiOZBA57umV3J4kG/I5dQGeir9x368aPBM0zXamVjzbCU8pFFKPU8s1hfe1UUB/w0ADVafq4Swn5l1bYMe2MlA2wKvcTVpqmUYZJA==\"}},\"role\":\"assistant\"}}],\"created\":1788154883,\"id\":\"AhSVarqUOOqFxs0P7sjM-Ao\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4210,\"total_tokens\":4238}}"
+    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"The sum of the first 20 prime numbers is 639.\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvgBCvUBARFNMg9cTpyEx8wJttf62LzN51Zy/9wn7QOQ8fsZ0AG19FUqKNZ02d+IdC1C6+Zo50SUkR0b1iZ0bhCHBPSGs2UcNKHZ10DsnTDMkjSVBnCwmouZQzNGKw697YO6pR0f/jPUh5Q9ZT1m9BTwUbyiHouEplabUmUDXmWGw6gXkZEDCJ32TXOj3zj5JkQJ2CFuNXNm267sboiNEe2VL5hOSbbUCijRolJf1jiA3NW1FhPMHwC2xvKG2MdY+qhF0zkdvGS4QMmNCqcRo7FypPnZK2TTB7WBLr7Xw5XdcWeH35WP3TanN8QFH/BgHW5gTXGF8MqMBJc=\"}},\"role\":\"assistant\"}}],\"created\":1788270557,\"id\":\"2deWap6JHJG1xN8P8s7O0A8\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4173,\"total_tokens\":4290}}"
    }
   },
   {
@@ -189,7 +189,52 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvcBCvQBARFNMg9+bNWpkgifKrr1wvLcpRtQys1+q2ni98xU6w/fPFIM9ICzynd12aXoOxkFK1v2o1j7lHCjnzlA21f6usphrv7kZnY47VdVZj58GkUEv9SXLdOxnvPIg8CABRnQ1JxsLZ5syqBReN/NnoAX+xVJ7HvoSj9vK66BhTeULPySK8U+jZGfrSFnoxsGYoGRF2xKozRL26Uk1V4zIoS+TjQ6XAVAidHuQ3AMXp4DYxofz02losxUHwrcPzirWSqibgN+AbaQsl+52ZbIrQxvucyOdfQMsdkSRvgGk5wePcuuaC3LD9XjS8wFbmoXUEJMQ3b6MQ==\"}},\"role\":\"assistant\"}}],\"created\":1788154884,\"id\":\"AxSVaqjFM7CBvdIPldWB6QI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":1101,\"total_tokens\":1142}}"
+    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvMBCvABARFNMg+0ufKnsFRgeTbAvkixeRfSSvW7+KJaKSwZeybDkC7jt/RSIcVZX5NbmiQ0gFB1Klc8l0SmmyUjiE4bSCoVEwBYJtZPBW37+UOz26S38acwy5UjVj5m4BymEwj4++EQMSSVblg0UzVyxklSlDbzUrY2nIPiO3UfESnoEyqbraJUXPE6i/o5KDG0GF/kMJNxbR5Hc6Szp+qanbepSWxhkjTV3kUw84naLwhNeVYbZ2Wk33yHC+z2MLZtF7UtmD23Go+VJgr9NImXy2CMUISCNUu3BQjg/fIpVd+pZ1J3Zr0Uxdi8hY38g/krbfFz\"}},\"role\":\"assistant\"}}],\"created\":1788270564,\"id\":\"3deWaqL3EtiNvdIPxdiO-A8\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":1101,\"total_tokens\":1141}}"
+   }
+  },
+  {
+   "request": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "headers": {},
+    "json": {
+     "model": "gemini-3.7-flash",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What single word is written in this PDF? Answer with that word only."
+        },
+        {
+         "type": "image_url",
+         "image_url": {
+          "url": "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA0MjAgNTk1XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiA0MDAgVGQgKFZJT0xFVCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5OAolJUVPRgo="
+         }
+        }
+       ]
+      }
+     ],
+     "max_tokens": 65536
+    },
+    "timeout": 180,
+    "credential": {
+     "ref": "google.key.gemini",
+     "header": "Authorization",
+     "about": {
+      "label": "Google AI Studio API key",
+      "hosts": [
+       "generativelanguage.googleapis.com"
+      ],
+      "help": "https://aistudio.google.com/apikey"
+     },
+     "prefix": "Bearer "
+    }
+   },
+   "response": {
+    "status": 200,
+    "headers": {},
+    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"VIOLET\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvYBCvMBARFNMg8VJfn86EYWUUO34ztMoJQenM+uZUACuzo1pFPShnUJy9IjWKal/0KNmrsWn30U/J6SwLMQrEoi3BXEKYGpRvOPo4v3wR6AhQ9PXMFY5Ra+pkYrmmxSFzBAYSPO5Lu9jB0L3ECV0t96JAl7C1oDGDC5APfIJAXGIr7Ns6U7Ki7zvz8LN0eZ9adG51P8czA8455AaS2RBgEM8ReXSkE3YfWefy2OXATrY41VXxlZQR7M9OMkj3LsJJMgOFo6cPlA3cezXGMro1fr2Khh7K+TUfu9NijkPb6ko+ongvfAh1/6xO49cu5sSEdc3PSrdCBh\"}},\"role\":\"assistant\"}}],\"created\":1788270572,\"id\":\"5NeWapjfKtKDxN8P3dSf6Ak\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":548,\"total_tokens\":585}}"
    }
   },
   {
@@ -223,7 +268,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"message\":{\"role\":\"assistant\"}}],\"created\":1788154885,\"id\":\"BRSVar_jAbSJvdIPgbzJyAQ\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":13,\"total_tokens\":34}}"
+    "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"message\":{\"role\":\"assistant\"}}],\"created\":1788270580,\"id\":\"7NeWaomLNrzdvdIPzfy7-QE\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":13,\"total_tokens\":34}}"
    }
   }
  ]

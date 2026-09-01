@@ -694,20 +694,26 @@ def test_unsupported_media_raises_before_any_call():
 def test_pdf_rides_the_openai_wire_as_a_file_part_when_the_backend_carries_it():
     # ADR-020 §3: `pdf_input` is a backend grant, not a profile trait
     eff = LLM["_effective"]
-    assert eff(T(), "openrouter")["pdf_input"] is True
-    assert eff(T(), "openai")["pdf_input"] is True
-    assert eff(T(), "anthropic")["pdf_input"] is True
-    assert eff(T(), "generic")["pdf_input"] is False
-    assert eff(T(), "gemini")["pdf_input"] is False
+    assert eff(T(), "openrouter")["pdf_input"] == "file"
+    assert eff(T(), "openai")["pdf_input"] == "file"
+    assert eff(T(), "anthropic")["pdf_input"] == "file"
+    assert eff(T(), "gemini")["pdf_input"] == "image_url"   # probed 2026-09-01
+    assert eff(T(), "generic")["pdf_input"] == "none"
+    assert eff(T(), "deepseek")["pdf_input"] == "none"
     o = LLM["OpenAICompatAdapter"]()
     req = o.build_request(_file_msg("application/pdf", "UERG", "menu.pdf"), "", [], "m",
-                          T(pdf_input=True))
+                          T(pdf_input="file"))
     content = req["messages"][0]["content"]
     assert content[1] == {"type": "file", "file": {
         "filename": "menu.pdf", "file_data": "data:application/pdf;base64,UERG"}}
     # no name → a stable default filename
-    req = o.build_request(_file_msg("application/pdf", "UERG"), "", [], "m", T(pdf_input=True))
+    req = o.build_request(_file_msg("application/pdf", "UERG"), "", [], "m", T(pdf_input="file"))
     assert req["messages"][0]["content"][1]["file"]["filename"] == "document.pdf"
+    # Gemini's carriage: the PDF data URI rides image_url
+    gem = o.build_request(_file_msg("application/pdf", "UERG"), "", [], "m",
+                          T(pdf_input="image_url"))
+    assert gem["messages"][0]["content"][1] == {
+        "type": "image_url", "image_url": {"url": "data:application/pdf;base64,UERG"}}
     # OpenRouter: a request with a file part pins the FREE parser (the
     # host default is paid OCR); no file part → no plugin; an explicit
     # `plugins` (a tier's options) is left alone
