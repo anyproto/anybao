@@ -127,6 +127,21 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
                                 "link": "any://o/<secretsObjectId>?key=connector.key.github"}}}
    ```
 
+**Onboarding marker (BOB-78).** When the missing ref is the codegen
+tier's `api_key_ref` and every `llm.tier.*` row still equals the
+embedded seed (`config_defaults.json` — the space has never chosen a
+provider), the row link carries the marker as a query parameter —
+`any://o/<secretsObj>?key=<ref>&setup=model` — and the text is
+provider-neutral ("Before I can think, I need a language model…").
+The attachment TYPE and shape are unchanged on purpose: the server's
+strict body rejects an extra attachment field (`400
+request.unknown_field`) but stores the link opaquely; a client that
+knows the parameter renders the provider chooser (presets → the three
+tier rows, then the chosen key), an older client reads only `key` and
+renders the plain card — the default path still works. Derived from
+state, never tracked — re-running onboarding is deleting the tier
+rows. A rejected key never carries the marker.
+
    `link` names the row; everything the UI renders comes from the
    row, so the message carries no payload and stays immutable-safe
    (chat attachments are create-only). Dedup: the request is posted

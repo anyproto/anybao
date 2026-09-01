@@ -1898,6 +1898,44 @@ fn short_error(raw: &str) -> String {
 /// request sits (`requestedIn`; cleared by the write that sets the
 /// value) — ADR-021 §2. Everything the UI renders comes off the row;
 /// the message only links it.
+/// The onboarding marker (BOB-78, ADR-021 §2): a missing model key on a
+/// space that has never chosen a provider — the client renders the
+/// provider chooser instead of the plain key card. Derived from state,
+/// never tracked: the missing ref is the codegen tier's `api_key_ref` AND
+/// every `llm.tier.*` row still equals the embedded seed
+/// (`config_defaults.json`). A row seeded by a toml `[config]` table or
+/// written by a previous choice differs, and the plain card is posted.
+/// No config store (or an unreadable one) = no marker.
+fn is_model_setup(missing_ref: &str, tier: impl Fn(&str) -> Option<Value>) -> bool {
+    let defaults = crate::config::config_defaults();
+    let tiers: Vec<(&String, &Value)> = defaults
+        .iter()
+        .filter(|(k, _)| k.starts_with("llm.tier."))
+        .collect();
+    let Some(codegen) = tier("llm.tier.codegen") else {
+        return false;
+    };
+    if codegen.get("api_key_ref").and_then(|v| v.as_str()) != Some(missing_ref) {
+        return false;
+    }
+    tiers.iter().all(|(key, seed)| {
+        tier(key)
+            .as_ref()
+            .map(|row| tier_identity(row) == tier_identity(seed))
+            == Some(true)
+    })
+}
+
+/// The four fields that make a tier row THIS provider — what the seed and a
+/// stored row are compared on (extra inferred keys never break equality).
+fn tier_identity(row: &Value) -> [Option<String>; 4] {
+    ["provider", "model", "base_url", "api_key_ref"].map(|k| {
+        row.get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim_end_matches('/').to_string())
+    })
+}
+
 fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     let Some(store) = &ctx.secret_store else {
         return 0;
@@ -1940,6 +1978,19 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
         } else {
             format!(", used for {}", hosts.join(", "))
         };
+        // BOB-78: a never-chosen space asking for its model key gets the
+        // provider chooser — a `&setup=model` marker on the row LINK (the
+        // server's strict body rejects extra attachment fields; the link
+        // is stored opaquely and an old client reads only `key`, so it
+        // renders today's plain card) and provider-neutral text.
+        let setup_model = status != "rejected"
+            && ctx.config_store.as_ref().is_some_and(|cs| {
+                is_model_setup(r, |key| {
+                    crate::broker::ConfigStore::read(cs.as_ref(), key)
+                        .ok()
+                        .flatten()
+                })
+            });
         let text = if status == "rejected" {
             let code = row
                 .and_then(|row| row.get("rejectedWith"))
@@ -1951,9 +2002,14 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
                 hosts.join(", ")
             };
             format!("The {label} was rejected by {by} ({code}) — please enter a new one (`{r}`).")
+        } else if setup_model {
+            "Before I can think, I need a language model. Choose a provider and paste its \
+             API key — you can change this later in Model settings."
+                .to_string()
         } else {
             format!("I need a credential to continue: {label} (`{r}`{used_for}).")
         };
+        let marker = if setup_model { "&setup=model" } else { "" };
         let sent = ctx.client.chat_send(
             &ctx.space,
             &ctx.chat,
@@ -1962,7 +2018,7 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
                 "agent": {"name": ctx.cfg.agent_name, "done": true},
                 "attachments": {"credreq": {
                     "type": "credential_request",
-                    "link": format!("any://o/{}?key={r}", store.obj)}}}),
+                    "link": format!("any://o/{}?key={r}{marker}", store.obj)}}}),
         );
         match sent {
             Ok(_) => {
@@ -3860,6 +3916,36 @@ mod tests {
         let (c, log) = scripted(&[(500, json!({"error": "boom"}))]);
         bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
         assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn model_setup_marker_needs_the_codegen_key_and_untouched_seed_rows() {
+        let defaults = crate::config::config_defaults();
+        let seeded = |key: &str| defaults.get(key).cloned();
+        // a fresh space asking for the seeded model key → chooser
+        assert!(is_model_setup("llm.key.anthropic", seeded));
+        // extra inferred keys / a trailing slash on a row keep equality
+        let decorated = |key: &str| {
+            defaults.get(key).cloned().map(|mut v| {
+                v["backend"] = json!("anthropic");
+                v["base_url"] = json!("https://api.anthropic.com/");
+                v
+            })
+        };
+        assert!(is_model_setup("llm.key.anthropic", decorated));
+        // a different missing ref (a connector key) → plain card
+        assert!(!is_model_setup("connector.key.github", seeded));
+        // a chosen provider (rows differ from the seed) → plain card
+        let chosen = |key: &str| {
+            defaults.get(key).cloned().map(|mut v| {
+                v["model"] = json!("z-ai/glm-5.3");
+                v["api_key_ref"] = json!("llm.key.openrouter");
+                v
+            })
+        };
+        assert!(!is_model_setup("llm.key.openrouter", chosen));
+        // no store rows at all → plain card
+        assert!(!is_model_setup("llm.key.anthropic", |_| None));
     }
 
     #[test]

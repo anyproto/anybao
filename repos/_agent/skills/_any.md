@@ -176,6 +176,13 @@ Links (`any://` URIs — the one reference format):
   call returns its answer text (ADR-020). Bytes: `file_content(space,
   link)` (base64); `list_files(space, objectId)` lists an object's
   attachments. Other formats (docx…) need converting to text first.
+- **Switching models is the user's, through the Model app** — never
+  edit `llm.tier.*` rows yourself when asked to "use GPT / switch to
+  Gemini": point the user at Model settings (Agent → Model), or at the
+  provider card in chat when no key is set yet. `config@v1.set_model`
+  exists for explicit, scoped asks ("set the vision tier to X"); a
+  provider change is three coherent rows plus a key, and the app owns
+  that.
 - **A PDF on a tier that cannot read it** (`UnsupportedMedia
   application/pdf` from `read`): do NOT brute-force. One cheap
   attempt, in one cell: for each `stream…endstream` body, strip, if
