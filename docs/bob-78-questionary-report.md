@@ -127,8 +127,10 @@ setup has rolled through").
 6. **No `url` property format** — `create_type` url → "format.type
    must be one of [select, multiselect, links, date, datetime]"
    (also: "tags is reserved server-side"). Every model fell back to
-   plain text and narrated the caveat. Either add the format or bless
-   the fallback in `_any`.
+   plain text and narrated the caveat. Resolved: `url` / `email` /
+   `longtext` are any-ui's `xKind` conventions (string kind, no server
+   format); `any@v1` accepts them in the `format.type` spelling and
+   lowers to the marker (ADR-022 §1). Shared vocabulary ticket: BOB-84.
 7. **File uploads store the request Content-Type verbatim** (no
    sniffing); an octet-stream upload of a real PNG poisons the file
    for llm input. llm@v1's UnsupportedMedia error text is excellent

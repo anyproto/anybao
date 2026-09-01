@@ -1118,10 +1118,51 @@ def test_create_type_posts_property_formats_without_a_kind():
         {"name": "When", "format": {"type": "datetime"}},
         {"name": "Title"}]})
     posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
+    # + the any-ui kind marker beside the format (ADR-022 §1), so the
+    # UI's picker reads the property like one it made itself
     assert posted[0] == {"name": "When", "xKey": "when", "format": {"type": "datetime"},
-                         "meta": {"pos": "a0"}}
+                         "xKind": "date", "meta": {"pos": "a0"}}
     assert posted[1] == {"name": "Title", "xKey": "title", "kind": "string",
                          "meta": {"pos": "a0"}}
+
+
+def test_property_url_email_longtext_are_xkind_markers_not_formats():
+    # ADR-022 §1: any-ui's client conventions — a string property with
+    # an xKind marker and NO format on the wire (the server has no
+    # such format and would 400)
+    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"propId": "p9"}})
+    c = client(fx)
+    for marker in ("url", "email", "longtext"):
+        c.add_property("s1", "task", {"name": marker.title(),
+                                      "format": {"type": marker}})
+        body = fx.calls[-1][2]
+        assert body == {"name": marker.title(), "xKey": marker,
+                        "kind": "string", "xKind": marker, "meta": {"pos": "a0"}}
+    # an explicit xKind passes through untouched; a non-string kind is refused
+    c.add_property("s1", "task", {"name": "Site", "xKind": "url"})
+    assert fx.calls[-1][2]["xKind"] == "url"
+    with pytest.raises(ValueError, match='kind must be "string"'):
+        c.add_property("s1", "task", {"name": "N", "kind": "number",
+                                      "format": {"type": "url"}})
+    # an unknown format names both vocabularies
+    with pytest.raises(ValueError, match="server formats.*client conventions"):
+        c.add_property("s1", "task", {"name": "P", "format": {"type": "phone"}})
+
+
+def test_create_type_stamps_xkind_beside_server_formats():
+    fx = wire(replies={**_CAT, "/types": {"types": [], "typeId": "tNew"},
+                       "/types/tNew/properties": {"properties": [], "propId": "p1"}})
+    client(fx).create_type("s1", {"name": "Bookmark", "properties": [
+        {"name": "Link", "format": {"type": "url"}},
+        {"name": "Status", "format": {"type": "select",
+                                      "options": {"new": "New"}}},
+        {"name": "Tags", "format": {"type": "multiselect"}},
+        {"name": "Related", "format": {"type": "links"}}]})
+    posted = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/properties")]
+    assert [(b.get("xKind"), b.get("kind"), (b.get("format") or {}).get("type"))
+            for b in posted] == [
+        ("url", "string", None), ("select", None, "select"),
+        ("tags", None, "multiselect"), ("links", None, "links")]
 
 
 # --- files (ADR-020 §2) -------------------------------------------------------

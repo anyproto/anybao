@@ -286,6 +286,17 @@ _MARKER_XKEYS = frozenset({
     "select", "tags", "links", "relation", "date", "datetime", "url",
     "email", "longtext", "multiselect", "checkbox", "number", "text"})
 _FORMATS = ("select", "multiselect", "links", "date", "datetime")
+# Client conventions with NO server format (ADR-022 §1): a `kind:
+# string` property whose `xKind` says how clients render/edit it —
+# any-ui's STRING_XKINDS (api-core types.ts). Accepted here as
+# `format.type` sugar and lowered to the marker; the wire never sees
+# a format for them (the server would 400).
+_XKIND_MARKERS = ("url", "email", "longtext")
+# The marker any-ui stamps beside each server format, so a property
+# the agent declares reads in the UI's picker/icons exactly like one
+# the UI made (`datetime` shares `date` — the UI has one date kind).
+_XKIND_OF_FORMAT = {"select": "select", "multiselect": "tags", "links": "links",
+                    "date": "date", "datetime": "date"}
 _KINDS = ("string", "number", "boolean", "null", "array", "object",
           "datetime")
 # any-ui's option palette (optionPalette.ts) — colors are free strings on
@@ -1623,7 +1634,7 @@ class _Client:
 
     def list_properties(self, space, type_key, include_archived=False):
         """A type's property definitions, in display order: [{handle,
-        id, name, xKey, kind, scope, format?, options?, meta?}].
+        id, name, xKey, xKind?, kind, scope, format?, options?, meta?}].
 
         `handle` is THE key to read/write the property by (the xKey
         when it is a real slug, else the name — any-ui stamps
@@ -1633,6 +1644,9 @@ class _Client:
         "filter"?, "options"?}; `options` is the ordered
         [{key, name, color}] of a select/multiselect (values store the
         KEY; write by name or key, a new name mints an option).
+        `xKind` is the CLIENT convention when there is no format: a
+        string prop marked `url` / `email` / `longtext` takes a plain
+        string and the UI renders it as a link / textarea.
         A links prop takes object names/ids/any:// links; dates take
         instant()/ISO/epoch; a prop without format is a plain kind
         (write the JSON shape). `scope` is the write/sync class
@@ -1670,8 +1684,12 @@ class _Client:
         number | boolean | null | array | object — NOTHING else ("text"
         and "date" are 400s). Dates/links/selects are FORMATS, not
         kinds: {"format": {"type": "date"}} (types: date, datetime,
-        links, select, multiselect) with kind omitted — the
-        server derives it. xKeys default to a slug of the name.
+        links, select, multiselect) with kind omitted — the server
+        derives it. URL / e-mail / long text are the same spelling —
+        {"format": {"type": "url" | "email" | "longtext"}} — but are
+        client conventions (a string property marked `xKind`), not
+        server formats: values are plain strings, the UI renders them
+        as links / a textarea. xKeys default to a slug of the name.
         Idempotent: an existing USER type (by xKey, or by name for a
         pre-metatype type listed without one — its handle is re-claimed
         in place) is reused, only MISSING properties are added. A name
@@ -1723,7 +1741,7 @@ class _Client:
                 if pxkey in have:
                     continue
                 extra = {k: p[k] for k in ("kind", "meta", "format", "scope",
-                                           "description") if k in p}
+                                           "description", "xKind") if k in p}
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
                 added[pxkey] = self._post_property(space, tid, extra)["propId"]
@@ -1836,9 +1854,13 @@ class _Client:
         {key: {name, color?}}, "filter"?: <objects-query filter that
         narrows a links prop's candidates>}} with kind omitted (server
         derives it — date/datetime ⇒ `datetime`, written as
-        `instant(...)`; "tags" is reserved). `scope` ∈ synced (default)
-        | account | local — pinned like kind. The property is appended
-        to the type's display order (meta.pos). Returns {"propId"}."""
+        `instant(...)`; "tags" is reserved). {"format": {"type": "url"
+        | "email" | "longtext"}} declares a CLIENT convention: a string
+        property with that `xKind` marker and no server format — plain
+        string values, rendered by the UI as a link / textarea. `scope`
+        ∈ synced (default) | account | local — pinned like kind. The
+        property is appended to the type's display order (meta.pos).
+        Returns {"propId"}."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._post_property(space, tid, body)
 
@@ -1846,13 +1868,26 @@ class _Client:
         body = dict(body or {})
         body.setdefault("xKey", _slugify_xkey(body.get("name") or ""))
         fmt = body.get("format")
-        if fmt is None:      # with a format, the server derives
+        if isinstance(fmt, dict) and fmt.get("type") in _XKIND_MARKERS:
+            # client convention (ADR-022 §1): string kind + xKind
+            # marker, NO format on the wire
+            if body.get("kind") not in (None, "string"):
+                raise ValueError(
+                    f'format.type {fmt["type"]!r} is a string convention — '
+                    f'kind must be "string" (or omitted), got {body["kind"]!r}')
+            body.pop("format")
+            body["kind"] = "string"
+            body.setdefault("xKind", fmt["type"])
+            fmt = None
+        elif fmt is None:    # with a format, the server derives
             body.setdefault("kind", "string")   # kind (links⇒array, date⇒datetime)
         elif isinstance(fmt, dict):
             if fmt.get("type") not in _FORMATS:
                 raise ValueError(
-                    f'format.type must be one of {list(_FORMATS)}, got '
-                    f'{fmt.get("type")!r} ("tags" is reserved server-side)')
+                    f'format.type must be one of {list(_FORMATS)} (server '
+                    f'formats) or {list(_XKIND_MARKERS)} (client conventions), '
+                    f'got {fmt.get("type")!r} ("tags" is reserved server-side)')
+            body.setdefault("xKind", _XKIND_OF_FORMAT[fmt["type"]])
             opts = fmt.get("options")
             if isinstance(opts, dict):
                 fmt = dict(fmt)

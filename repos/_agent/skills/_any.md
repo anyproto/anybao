@@ -41,6 +41,7 @@ fails in the standard overlay setup, ADR-004 §2):
   | `multiselect` | a list of names: `["Backend", "Urgent"]` | names |
   | `links` (objects) | object NAMES, ids or `any://` links: `["Dune", "<id>"]` | `[{id, name, types}]` stubs |
   | `date` / `datetime` | `instant(...)`, an ISO string, epoch seconds | an instant |
+  | none, `xKind` `url` / `email` / `longtext` | a plain string (`"https://…"`) — the marker is a UI hint, not validation | verbatim (the UI renders a link / textarea) |
   | none | the kind's JSON shape (`3`, `true`, `"text"`) | verbatim |
   A select name that doesn't exist yet **creates the option** (the
   result's `createdOptions` says so — check it; pass
@@ -72,8 +73,12 @@ fails in the standard overlay setup, ADR-004 §2):
   "format": {"type": "select", "options": {"todo": "To do", "done":
   "Done"}}}`, `{"name": "Due", "format": {"type": "date"}}`, `{"name":
   "Related", "format": {"type": "links", "filter": {"any.types":
-  "page"}}}`. Returns `{typeId, xKey, created, addedProps}` — carry
-  the `xKey` forward, not the id.
+  "page"}}}`. URL / e-mail / long text use the same spelling —
+  `{"name": "Site", "format": {"type": "url"}}` (`email`,
+  `longtext`) — and become a string property with that `xKind`
+  marker (a client convention, not a server format: plain string
+  values, the UI shows a link). Returns `{typeId, xKey, created,
+  addedProps}` — carry the `xKey` forward, not the id.
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":
