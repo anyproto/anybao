@@ -775,12 +775,22 @@ def main(args):
         stats["cells"] += len(results)
         messages.append({"role": "user", "parts": results})
 
+    out = {"stop": stop, "turns": turn, "tokens": tokens,
+           "replies": replies, "injected": len(plan["injected"])}
     if not quiet:
-        c.append_turn(space, chat_id, {
-            "userText": user_text, "replies": replies, "interrupted": False,
-            "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
-            "llm": {"stopReason": stop, **stats}})
-        if plan["injected"]:
-            ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
-    return {"stop": stop, "turns": turn, "tokens": tokens,
-            "replies": replies, "injected": len(plan["injected"])}
+        # ADR-005 §3: the log append is bookkeeping AFTER the reply
+        # landed — its failure (a tombstoned seq, an unreachable store)
+        # is not the run's. The failed effect is in the trace; the
+        # result names it so the run stays `ok` with a visible warning
+        # instead of a second "Something broke" bubble for work that
+        # succeeded.
+        try:
+            c.append_turn(space, chat_id, {
+                "userText": user_text, "replies": replies, "interrupted": False,
+                "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
+                "llm": {"stopReason": stop, **stats}})
+            if plan["injected"]:
+                ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
+        except Exception as e:  # noqa: BLE001 - any store failure, named in the result
+            out["logError"] = f"{type(e).__name__}: {e}"
+    return out

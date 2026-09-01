@@ -320,6 +320,16 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   data layer: the next boot window and the log-reading crons see the
   stopped exchange, and the model's view of the conversation matches
   the chat on screen (the trace has the full run).
+- **The trailing log append is bookkeeping, never the verdict.** The
+  guest writes its `agent_turns` row after the final bubble has
+  landed. If that write fails (a tombstoned seq, an unreachable
+  store) the run stays `ok` — the reply is on screen, the failed
+  effect is in the trace — and the result carries `logError` naming
+  it. Failing the run there meant a second "Something broke" bubble
+  and an `error` outcome for work that succeeded, which the user
+  could not act on. The lost row is still real damage (the next boot
+  window lacks the exchange), so the allocator itself must not lose
+  rows to tombstones — ADR-017 §2 owns that.
 - **How a run ended is data on the bubble, not text.** The host's
   terminal bubbles carry it in the message's `agent` group (any
   `chat_messages-v4`): `outcome` = `error` (the run died — the text

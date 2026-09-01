@@ -1784,6 +1784,12 @@ impl RunCtx {
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
         self.live_runs.lock().unwrap().remove(&run_id);
         let mut outcome = outcome?;
+        // ADR-005 §3: a failed trailing log append leaves the run ok
+        // and names itself in the result — surface it here, since the
+        // chat wrapper never reads the value
+        if let Some(e) = outcome.value.get("logError").and_then(|v| v.as_str()) {
+            warn!("run {run_id}: agent_turns append failed after the reply landed — {e}");
+        }
         // ADR-023 §3: a run whose trace could not be landed is a failed
         // run, named — never a silent gap
         let summary = outcome
