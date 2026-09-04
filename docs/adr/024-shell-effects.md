@@ -164,25 +164,31 @@ record can never show *what changed*. Four syscalls, guest global
 
 | effect | kind | cap | in → out |
 |---|---|---|---|
-| `fs.read` | read | `fs.read` | `{path, encoding?: "text"\|"base64", offset?, limit?}` → `{text\|data, size, lines?, truncated}` |
+| `fs.read` | read | `fs.read` | `{path, encoding?: "text"\|"blob", mime?, offset?, limit?}` → `{text, size, lines, truncated}` \| `{blob, size}` |
 | `fs.list` | read | `fs.list` | `{path, glob?, depth?}` → `{entries: [{path, kind, size}]}` |
-| `fs.write` | mutate | `fs.write` | `{path, content, encoding?, mkdirs?}` → `{bytes, created}` |
+| `fs.write` | mutate | `fs.write` | `{path, content: str \| Blob ref, mkdirs?}` → `{bytes, created}` |
 | `fs.edit` | mutate | `fs.edit` | `{path, old, new, all?}` → `{replacements}` |
 
 - **`fs.edit` is exact-replace**: `old` must occur exactly once
   (or `all: true`); zero or several occurrences is a typed failure
   (`fs.edit_ambiguous` / `fs.edit_not_found`) with no write. The
   record carries `old`/`new` verbatim — the trace *is* the diff.
-- **`fs.read` is bounded** like `sh` output (1 MiB, `truncated`) —
-  in memory too: the size comes from metadata before any allocation,
+- **`fs.read` text is bounded** like `sh` output (1 MiB, `truncated`)
+  — in memory too: the size comes from metadata before any allocation,
   text is streamed line by line (every line counted, only the
-  selected region kept, never more than the cap), base64 refuses a
-  file over the cap (`fs.too_large`) before reading it. `offset`/
-  `limit` are line-based for text so the model reads a region, not a
-  file — a region deep in a 100 MB log reads fine. `encoding:
-  "base64"` mirrors ADR-020 §1 for binary. `fs.edit` rewrites the
-  whole file and refuses one over 16 MiB (`fs.too_large` — use the
-  shell).
+  selected region kept, never more than the cap). `offset`/`limit`
+  are line-based so the model reads a region, not a file — a region
+  deep in a 100 MB log reads fine.
+- **Bytes are a Blob** (ADR-026 §4): `encoding: "blob"` streams the
+  file into the run's blob directory in one pass and returns a ref —
+  no cap, and the record carries the hash, never the bytes; `mime` is
+  the caller's (the guest guesses it from the name, octet-stream
+  otherwise). `fs.write` takes a str (text, utf-8) or a ref (the bytes
+  stream out of the directory; a ref with no file is `blob_missing`,
+  checked before the target is touched, so a failed write never
+  truncates what was there). There is no base64 leg. `fs.edit`
+  rewrites the whole file and refuses one over 16 MiB (`fs.too_large`
+  — use the shell).
 - **Paths** are taken as given: absolute, or relative to the serve's
   working directory. No resolution rules, no roots (§5).
 - **Read effects are safe to re-execute in loose replay** (ADR-002
@@ -268,8 +274,9 @@ exception, `.result` attached) is bound beside them. The result's
 `[timed out …]` line only when there is one, so a cell ending in
 `sh("git status")` reads like a terminal. `fs.read` returns the text
 as a `str` subclass carrying `.size`/`.lines`/`.truncated`;
-`fs.read_bytes`/`fs.write_bytes` carry the base64 leg so cells see
-`bytes`; `fs.edit` returns the replacement count; `fs.list` the
+`fs.read(path, encoding="blob")` returns a `Blob` and `fs.write` takes
+one (bytes are wrapped by `blob.of`, ADR-026 §4) so no byte ever sits
+in a record; `fs.edit` returns the replacement count; `fs.list` the
 entries. The `sh`/`fs` globals are bound in the CELL namespace only —
 `use()` modules go without (programs reach the shell through cells:
 the `bash` tool is a subcell) — and the feature probe is two

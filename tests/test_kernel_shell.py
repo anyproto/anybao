@@ -100,8 +100,9 @@ def test_fs_facade_crosses_as_fs_effects():
 
     def eff(name, payload):
         seen.append((name, payload))
-        if payload.get("encoding") == "base64":
-            return {"path": payload["path"], "data": "AJ+Slg==", "size": 4, "truncated": False}
+        if payload.get("encoding") == "blob":
+            return {"path": payload["path"], "size": 4,
+                    "blob": {"__blob": "sha256:" + "ab" * 32, "bytes": 4, "mime": payload["mime"]}}
         return {
             "fs.read": {"path": payload["path"], "text": "l2\nl3\n", "size": 12, "lines": 4,
                         "offset": payload.get("offset", 1), "truncated": False},
@@ -118,28 +119,60 @@ def test_fs_facade_crosses_as_fs_effects():
         'print(fs.write("/p/n", "abc"))\n'
         'print(fs.edit("/p/f", "l2", "L2"))\n'
         'print(fs.list("/p", glob="*.rs", depth=2))\n'
-        'print(fs.read_bytes("/p/b"))', "c1")
+        'b = fs.read("/p/b.png", encoding="blob")\n'
+        'print(isinstance(b, blob.Blob), b.mime, b.size)\n'
+        'print(fs.write("/p/o.png", b))', "c1")
     assert out["ok"], out["error"]
     reprs = [p["repr"] for p in out["prints"]]
     assert reprs[0] == "l2\nl3\n 4 12 False True"
     assert reprs[1] == "{'path': '/p/n', 'bytes': 3, 'created': True}"
     assert reprs[2] == "1"
     assert reprs[3] == "[{'path': '/p/a.rs', 'kind': 'file', 'size': 1}]"
+    assert reprs[4] == "True image/png 4"  # the Blob, mime from the name
     assert seen[:4] == [
         ("fs.read", {"path": "/p/f", "offset": 2, "limit": 2}),
         ("fs.write", {"path": "/p/n", "content": "abc", "mkdirs": True}),
         ("fs.edit", {"path": "/p/f", "old": "l2", "new": "L2", "all": False}),
         ("fs.list", {"path": "/p", "depth": 2, "glob": "*.rs"}),
     ]
-    assert seen[4] == ("fs.read", {"path": "/p/b", "encoding": "base64"})
+    # ADR-026 §4 on fs: the byte legs carry the ref, never the bytes
+    ref = {"__blob": "sha256:" + "ab" * 32, "bytes": 4, "mime": "image/png"}
+    assert seen[4] == ("fs.read", {"path": "/p/b.png", "encoding": "blob", "mime": "image/png"})
+    assert seen[5] == ("fs.write", {"path": "/p/o.png", "content": ref, "mkdirs": True})
 
 
-def test_fs_read_bytes_decodes_base64():
-    app = load_kernel(effect=lambda n, p: {"path": p["path"], "data": "AJ+Slg==", "size": 4,
-                                           "truncated": False}, shell=INFO)
-    out = app._run_cell('fs.read_bytes("/p/b")', "c1")
+def test_fs_write_wraps_bytes_into_a_blob_first():
+    """`fs.write(path, b"…")` = one `blob.put` (the bytes go to the
+    directory once) then `fs.write` with the ref; a mime override and an
+    unknown extension on the read leg."""
+    seen = []
+
+    def eff(name, payload):
+        seen.append((name, payload))
+        if name == "blob.put":
+            return {"__blob": "sha256:" + "cd" * 32, "bytes": 4, "mime": payload["mime"]}
+        if name == "fs.write":
+            return {"path": payload["path"], "bytes": 4, "created": True}
+        if name == "fs.read":
+            return {"path": payload["path"], "size": 9,
+                    "blob": {"__blob": "sha256:" + "ef" * 32, "bytes": 9, "mime": payload["mime"]}}
+        raise AssertionError(name)
+
+    app = load_kernel(effect=eff, shell=INFO)
+    out = app._run_cell(
+        'print(fs.write("/p/o.bin", b"\\x00\\x9f\\x92\\x96")["bytes"])\n'
+        'print(fs.read("/p/x.weird", encoding="blob").mime)\n'
+        'print(fs.read("/p/x.weird", encoding="blob", mime="application/pdf").mime)', "c1")
     assert out["ok"], out["error"]
-    assert out["last"]["repr"] == repr(b"\x00\x9f\x92\x96")
+    octet = "application/octet-stream"
+    assert [p["repr"] for p in out["prints"]] == ["4", octet, "application/pdf"]
+    assert seen[0] == ("blob.put", {"data": "AJ+Slg==", "mime": octet})
+    assert seen[1] == ("fs.write", {"path": "/p/o.bin", "mkdirs": True, "content":
+                       {"__blob": "sha256:" + "cd" * 32, "bytes": 4, "mime": octet}})
+    assert seen[2][1]["mime"] == "application/octet-stream"
+    assert seen[3][1]["mime"] == "application/pdf"
+    err = app._run_cell('fs.write("/p/o", 42)', "c2")["error"]
+    assert err["type"] == "TypeError"
 
 
 def test_use_modules_do_not_carry_sh():

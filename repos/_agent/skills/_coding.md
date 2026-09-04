@@ -25,6 +25,11 @@ user can do; act like a careful colleague at their keyboard.
   old, new)`** for an exact-match change (the trace records the diff —
   `old` must occur once, else widen it or `all=True`), **`fs.write`**
   for a whole new file. Searching, diffs, git stay in `bash`.
+- **Bytes are a Blob.** `fs.read(path, encoding="blob")` is a binary
+  file as a handle (no size cap) — pass it on to `attach_file`, an
+  http `body=`, a File part; `fs.write(path, blob_or_bytes)` puts
+  bytes on disk (an `http.get(url).blob` straight to a file). Never
+  base64 a file through a cell.
 
 ## How to work
 

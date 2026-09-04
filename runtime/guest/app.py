@@ -558,6 +558,13 @@ class Text(str):
         return t
 
 
+def _guess_mime(path):
+    """The built-in table only (ADR-002 §4: no host mime files) — the
+    same answer on every device and in replay."""
+    _mimetypes.knownfiles = []
+    return _mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
+
 class _Fs:
     """Files on the device bao runs on (ADR-024 §2). Absolute paths.
     `read` for a region of a file, `edit` for an exact-match
@@ -565,10 +572,18 @@ class _Fs:
     whole file; `list` for a directory. Searching (`rg`), diffs and git
     stay in `sh`."""
 
-    def read(self, path, offset=None, limit=None):
+    def read(self, path, offset=None, limit=None, encoding="text", mime=None):
         """Text of `path` (utf-8) as a str with `.size`/`.lines`/
         `.truncated`; `offset` (1-based line) + `limit` (lines) read a
-        region — do that for big files. Binary → `read_bytes`."""
+        region — do that for big files. `encoding="blob"` reads ANY
+        file as a Blob (ADR-026 §4): a handle, no size cap, `mime`
+        guessed from the name unless given — pass it on (`attach_file`,
+        an http `body=`, a File part) or `bytes(b)` it in."""
+        if encoding == "blob":
+            payload = {"path": path, "encoding": "blob", "mime": mime or _guess_mime(path)}
+            return Blob.from_ref(_effect("fs.read", payload)["blob"])
+        if encoding != "text":
+            raise TypeError(f'encoding must be "text" or "blob", got {encoding!r}')
         payload = {"path": path}
         if offset is not None:
             payload["offset"] = offset
@@ -576,20 +591,15 @@ class _Fs:
             payload["limit"] = limit
         return Text(_effect("fs.read", payload))
 
-    def read_bytes(self, path):
-        """Raw bytes of `path` (files up to 1 MiB)."""
-        return base64.b64decode(_effect("fs.read", {"path": path, "encoding": "base64"})["data"])
-
     def write(self, path, content, mkdirs=True):
-        """Write `content` (str) as the whole file; creates parent dirs
-        by default. Returns `{path, bytes, created}`. Prefer `edit` for
-        a change inside an existing file."""
+        """Write `content` as the whole file: a str is text (utf-8); a
+        Blob — or bytes, wrapped into one — is written byte for byte
+        (the host streams them, the trace keeps the ref). Creates parent
+        dirs by default. Returns `{path, bytes, created}`. Prefer `edit`
+        for a change inside an existing file."""
+        if not isinstance(content, str):
+            content = blob.of(content).ref()
         return _effect("fs.write", {"path": path, "content": content, "mkdirs": bool(mkdirs)})
-
-    def write_bytes(self, path, data, mkdirs=True):
-        """Write raw bytes as the whole file."""
-        return _effect("fs.write", {"path": path, "content": base64.b64encode(data).decode(),
-                                    "encoding": "base64", "mkdirs": bool(mkdirs)})
 
     def edit(self, path, old, new, all=False):
         """Replace `old` with `new` in `path`. `old` must occur EXACTLY

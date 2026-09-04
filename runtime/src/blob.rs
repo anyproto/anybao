@@ -121,6 +121,52 @@ impl BlobDir {
         Ok(raw_ref(&hash, bytes.len(), mime))
     }
 
+    /// A file on disk into the directory without holding it in memory
+    /// (ADR-026 §4, the `fs.read(encoding="blob")` leg): hashed in one
+    /// streamed pass, then copied (temp + rename) unless the hash is
+    /// already present. Returns the raw ref.
+    pub fn put_path(&self, src: &Path, mime: &str) -> anyhow::Result<Value> {
+        use std::io::Read;
+        let mut f = fs::File::open(src)?;
+        let mut h = Sha256::new();
+        let mut buf = vec![0u8; 1 << 16];
+        let mut size = 0usize;
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+            size += n;
+        }
+        let hash = format!("sha256:{}", hex::encode(h.finalize()));
+        let path = self.path_of(&hash)?;
+        if !path.exists() {
+            fs::create_dir_all(&self.dir)?;
+            let tmp = self
+                .dir
+                .join(format!(".{}.{}.tmp", &hash[7..], std::process::id()));
+            fs::copy(src, &tmp)?;
+            fs::rename(&tmp, &path)?;
+        }
+        Ok(raw_ref(&hash, size, mime))
+    }
+
+    /// The bytes behind `hash` streamed into `dst` (the
+    /// `fs.write(path, blob)` leg): `None` when the hash is not in the
+    /// directory. Returns the byte count.
+    pub fn copy_to(&self, hash: &str, dst: &mut impl Write) -> anyhow::Result<Option<u64>> {
+        let Ok(path) = self.path_of(hash) else {
+            return Ok(None);
+        };
+        let mut f = match fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(std::io::copy(&mut f, dst)?))
+    }
+
     pub fn exists(&self, hash: &str) -> bool {
         self.path_of(hash).map(|p| p.exists()).unwrap_or(false)
     }
