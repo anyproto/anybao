@@ -179,10 +179,16 @@ Cells execute in a constructed namespace containing **only**:
   pinned in the runtime, not borrowed from a crate, so a recorded run
   replays on any anyrt version (ADR-001 §2/§4: one record per run,
   not one per draw). `rand()` is the stdlib `random.random` over that
-  stream; the `time` proxy overrides only `time()`, `monotonic()` and
-  `sleep()` (recorded effects) and passes the rest of the module —
-  `gmtime`/`localtime`/`strftime`/`perf_counter` — through to the
-  floor. Consequences: `random`, `secrets` and `uuid` need no proxy —
+  stream; the `time` proxy overrides every "the present" spelling —
+  `time()`, `monotonic()`, `perf_counter()` and their `_ns` forms —
+  with the recorded `time.now`, and `sleep()` with the `sleep` effect,
+  and passes the rest of the module — `gmtime`/`localtime`/`strftime`
+  — through to the floor: a cell timing itself gets a real, replayable
+  delta; a library stamping an archive gets the run's start.
+  Admission rule that follows: a module whose *internals* run a
+  time-based loop or sleep (a retry deadline, a poll) sees a clock
+  that never advances and needs a proxy, never pass-through — none of
+  the tier-1 modules has one, they only stamp. Consequences: `random`, `secrets` and `uuid` need no proxy —
   the stdlib seeds from the pinned stream and a `shuffle` of ten
   thousand items is zero trace records; archives carry deterministic
   timestamps; module-internal ambient calls are replay-safe by

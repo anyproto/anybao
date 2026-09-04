@@ -658,14 +658,17 @@ def _datetime_proxy():
 
 
 def _time_proxy():
-    # the real module minus its three ambient reads: time()/monotonic()
-    # are the recorded `time.now`, sleep() the `sleep` effect; the rest
-    # (gmtime/localtime/strftime/perf_counter/…) passes through and
-    # sees the WASI floor — the run's recorded start (ADR-002 §4)
+    # the real module minus its ambient reads: every "what time is it
+    # now" spelling — time()/monotonic()/perf_counter() and their _ns
+    # forms — is the recorded `time.now`, sleep() the `sleep` effect;
+    # the rest (gmtime/localtime/strftime/…) passes through and sees
+    # the WASI floor — the run's recorded start (ADR-002 §4)
     ns = types.SimpleNamespace(**{k: v for k, v in vars(_time).items()
                                   if not k.startswith("_")})
     ns.time = now
     ns.monotonic = now
+    ns.perf_counter = now
+    ns.time_ns = ns.monotonic_ns = ns.perf_counter_ns = lambda: int(now() * 1e9)
     ns.sleep = lambda s: _effect("sleep", {"seconds": s})
     return ns
 
