@@ -9,7 +9,7 @@ Amends when accepted: ADR-001 §7 (two ref shapes), ADR-002 §4 (tiers,
 WASI determinism floor), ADR-020 §1/§2/§3/§6 (`response: "base64"`
 retired; `file_content` returns a Blob; `File.data` may be a Blob;
 trace view), ADR-023 §4/§6/§7 (raw blobs in the directory; retention
-sweep; tooling)
+sweep; tooling), ADR-024 §1 (`fs.read`/`fs.write` bytes on the handle)
 Tracks: Linear BOB-86 (design), WEB-400 (symptom: markdown image import)
 
 ## Context
@@ -176,6 +176,17 @@ c.attach_file(space, object_id, "rose.jpg", b)       # any@v1, §5
   close. Temporary *directories* are out of scope here — they arrive
   with the ADR-024 fs surface as a scoped folder under the same
   directory, and `glob` with them.
+- The ADR-024 fs surface (`--features shell`) rides the same handle
+  (amends ADR-024 §1): `fs.read(path, encoding="blob", mime=None)`
+  hashes and copies the device file into the directory in one streamed
+  pass and returns a Blob — the record carries the ref, never the
+  bytes, so a file of any size reads with no cap and nothing held in
+  guest or host memory; `fs.write(path, blob)` (bytes are wrapped by
+  `blob.of`) streams the bytes back out to the path. The directory is
+  the trace's memory of what was read — what replay needs — not a
+  store for the file, which stays where it is. There is no base64
+  leg: a device file, an http body and a guest-built payload are one
+  kind of thing in a cell.
 
 ### 5. `any@v1`: `attach_file`, `file_content` on the handle (amends ADR-020 §2)
 

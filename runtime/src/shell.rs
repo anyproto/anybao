@@ -9,7 +9,6 @@
 //! does what the serve's user can do.
 
 use crate::broker::EffectFailure;
-use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, Read, Write};
@@ -27,7 +26,9 @@ compile_error!("the `shell` feature needs a unix host (process groups, SIGKILL)"
 /// Per-stream capture cap (ADR-024 §1, resolved Q3: starts at 1 MiB,
 /// unmeasured). Over it, head + tail are kept and `truncated` is set.
 pub const STREAM_CAP: usize = 1 << 20;
-/// `fs.read` / `fs.write` payload cap — same number, same reason.
+/// `fs.read` text cap — same number, same reason. Bytes are not
+/// capped: `encoding: "blob"` streams the file into the blob
+/// directory and returns a ref (ADR-026 §4).
 pub const FILE_CAP: usize = STREAM_CAP;
 /// `fs.edit` rewrites the whole file: refuse anything a text edit has
 /// no business touching (16 MiB) before allocating it.
@@ -67,6 +68,11 @@ pub struct Ctx {
     /// shell (ADR-024 resolved Q1) instead of the serve's own. Tests
     /// turn it off for determinism.
     pub login_env: bool,
+    /// The run's blob directory (ADR-026 §1): `fs.read(encoding="blob")`
+    /// copies the file into it and hands back a ref, `fs.write` with a
+    /// ref body streams the bytes out of it. `None` = no directory in
+    /// this runtime (every byte leg fails typed).
+    pub blob_dir: Option<crate::blob::BlobDir>,
 }
 
 impl Ctx {
@@ -78,7 +84,22 @@ impl Ctx {
             shell: command_shell(login_env(&login_shell).and_then(|e| e.get("PATH").cloned())),
             login_shell,
             login_env: true,
+            blob_dir: None,
         }
+    }
+
+    pub fn with_blob_dir(mut self, dir: Option<crate::blob::BlobDir>) -> Self {
+        self.blob_dir = dir;
+        self
+    }
+
+    fn blob_dir(&self) -> Result<&crate::blob::BlobDir, EffectFailure> {
+        self.blob_dir.as_ref().ok_or_else(|| {
+            fail(
+                "blob_missing",
+                "no blob directory in this runtime — bytes cannot leave the trace",
+            )
+        })
     }
 }
 
@@ -253,9 +274,9 @@ pub fn execute(ctx: &Ctx, name: &str, payload: &Value) -> Result<Value, EffectFa
             "NotImplementedError",
             format!("{name}: not in this build (ADR-024 resolved Q4) — use sh.run, or tmux for long-running work"),
         )),
-        "fs.read" => fs_read(payload),
+        "fs.read" => fs_read(ctx, payload),
         "fs.list" => fs_list(payload),
-        "fs.write" => fs_write(payload),
+        "fs.write" => fs_write(ctx, payload),
         "fs.edit" => fs_edit(payload),
         _ => Err(fail("KeyError", format!("unknown effect {name}"))),
     }
@@ -619,7 +640,7 @@ fn io_fail(path: &str, e: std::io::Error) -> EffectFailure {
     fail(type_, format!("{path}: {e}"))
 }
 
-fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
+fn fs_read(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
     let path = str_arg(payload, "path")?;
     let encoding = payload
         .get("encoding")
@@ -629,18 +650,19 @@ fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
     // not just the reply (ADR-024 §2)
     let size = std::fs::metadata(path).map_err(|e| io_fail(path, e))?.len() as usize;
     match encoding {
-        "base64" => {
-            if size > FILE_CAP {
-                return Err(fail(
-                    "fs.too_large",
-                    format!("{path}: {size} bytes exceeds the {FILE_CAP}-byte base64 read cap"),
-                ));
-            }
-            let bytes = std::fs::read(path).map_err(|e| io_fail(path, e))?;
-            Ok(json!({
-                "path": path, "size": size, "truncated": false,
-                "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
-            }))
+        // ADR-026 §4: the bytes go to the blob directory, the record
+        // and the cell get a ref — no cap, nothing in memory
+        "blob" => {
+            let mime = payload
+                .get("mime")
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.is_empty())
+                .unwrap_or("application/octet-stream");
+            let r = ctx
+                .blob_dir()?
+                .put_path(Path::new(path), mime)
+                .map_err(|e| fail("OSError", format!("{path}: {e}")))?;
+            Ok(json!({"path": path, "size": size, "blob": r}))
         }
         "text" => {
             let offset = payload
@@ -694,7 +716,7 @@ fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
                     } else {
                         return Err(fail(
                             "UnicodeDecodeError",
-                            format!("{path}: not utf-8 — read it with encoding=\"base64\""),
+                            format!("{path}: not utf-8 — read it with encoding=\"blob\""),
                         ));
                     }
                 }
@@ -706,7 +728,7 @@ fn fs_read(payload: &Value) -> Result<Value, EffectFailure> {
         }
         other => Err(fail(
             "TypeError",
-            format!("encoding must be \"text\" or \"base64\", got {other:?}"),
+            format!("encoding must be \"text\" or \"blob\", got {other:?}"),
         )),
     }
 }
@@ -780,25 +802,17 @@ fn fs_list(payload: &Value) -> Result<Value, EffectFailure> {
     Ok(json!({"path": path, "entries": entries, "truncated": truncated}))
 }
 
-fn fs_write(payload: &Value) -> Result<Value, EffectFailure> {
+/// `content` is a str (the text, utf-8) or a raw ref (ADR-026 §4: the
+/// bytes stream out of the blob directory; the record keeps the ref).
+fn fs_write(ctx: &Ctx, payload: &Value) -> Result<Value, EffectFailure> {
     let path = str_arg(payload, "path")?;
-    let content = str_arg(payload, "content")?;
-    let encoding = payload
-        .get("encoding")
-        .and_then(|e| e.as_str())
-        .unwrap_or("text");
-    let bytes: Vec<u8> = match encoding {
-        "text" => content.as_bytes().to_vec(),
-        "base64" => base64::engine::general_purpose::STANDARD
-            .decode(content)
-            .map_err(|e| fail("ValueError", format!("content is not base64: {e}")))?,
-        other => {
-            return Err(fail(
-                "TypeError",
-                format!("encoding must be \"text\" or \"base64\", got {other:?}"),
-            ))
-        }
-    };
+    let content = payload.get("content").unwrap_or(&Value::Null);
+    if !content.is_string() && !crate::blob::is_raw_ref(content) {
+        return Err(fail(
+            "TypeError",
+            "content must be a str or a Blob (bytes → blob.from_bytes / the Blob you already hold)",
+        ));
+    }
     if payload
         .get("mkdirs")
         .and_then(|m| m.as_bool())
@@ -809,8 +823,29 @@ fn fs_write(payload: &Value) -> Result<Value, EffectFailure> {
         }
     }
     let created = !Path::new(path).exists();
-    std::fs::write(path, &bytes).map_err(|e| io_fail(path, e))?;
-    Ok(json!({"path": path, "bytes": bytes.len(), "created": created}))
+    let bytes = if let Some(text) = content.as_str() {
+        std::fs::write(path, text.as_bytes()).map_err(|e| io_fail(path, e))?;
+        text.len() as u64
+    } else {
+        let hash = content["__blob"].as_str().unwrap_or("");
+        let dir = ctx.blob_dir()?;
+        let missing = || {
+            fail(
+                "blob_missing",
+                format!("no blob {hash} in this bao's blob directory"),
+            )
+        };
+        // the bytes must exist before the target is touched: a failed
+        // write never truncates the file that was there
+        if !dir.exists(hash) {
+            return Err(missing());
+        }
+        let mut f = std::fs::File::create(path).map_err(|e| io_fail(path, e))?;
+        dir.copy_to(hash, &mut f)
+            .map_err(|e| fail("blob_missing", format!("blob {hash}: {e}")))?
+            .ok_or_else(missing)?
+    };
+    Ok(json!({"path": path, "bytes": bytes, "created": created}))
 }
 
 fn fs_edit(payload: &Value) -> Result<Value, EffectFailure> {
@@ -865,7 +900,12 @@ mod tests {
             shell: "/bin/sh".into(),
             login_shell: "/bin/sh".into(),
             login_env: false,
+            blob_dir: None,
         }
+    }
+
+    fn ctx_with_blobs(dir: &std::path::Path) -> Ctx {
+        ctx().with_blob_dir(Some(crate::blob::BlobDir::new(dir)))
     }
 
     #[test]
@@ -1070,14 +1110,21 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("row 000000 ééé\n"));
-        // base64 is refused before reading
-        let err = execute(
-            &ctx(),
+        // bytes are not capped: the file streams into the blob
+        // directory and comes back as a ref (ADR-026 §4)
+        let out = execute(
+            &ctx_with_blobs(dir.path()),
             "fs.read",
-            &json!({"path": ps, "encoding": "base64"}),
+            &json!({"path": ps, "encoding": "blob", "mime": "text/plain"}),
         )
-        .unwrap_err();
-        assert_eq!(err.type_, "fs.too_large");
+        .unwrap();
+        assert!(crate::blob::is_raw_ref(&out["blob"]), "{out}");
+        assert_eq!(out["blob"]["bytes"], size);
+        assert_eq!(out["blob"]["mime"], "text/plain");
+        assert_eq!(out["size"], size);
+        // without a directory the byte leg fails typed
+        let err = execute(&ctx(), "fs.read", &json!({"path": ps, "encoding": "blob"})).unwrap_err();
+        assert_eq!(err.type_, "blob_missing");
         // edit refuses past its own cap (sparse file, no bytes written)
         let huge = dir.path().join("huge.bin");
         std::fs::File::create(&huge)
@@ -1190,29 +1237,67 @@ mod tests {
         assert_eq!(out["created"], false);
     }
 
+    /// ADR-026 §4: a binary file reads as a Blob ref (the bytes land in
+    /// the directory under their hash, mime from the caller), and a ref
+    /// as `content` writes those bytes back out; a str is text; anything
+    /// else is refused; a ref with no file is `blob_missing`.
     #[test]
-    fn fs_read_binary_needs_base64() {
+    fn fs_read_binary_is_a_blob_and_write_takes_one() {
         let dir = tempfile::tempdir().unwrap();
+        let c = ctx_with_blobs(dir.path());
         let p = dir.path().join("b.bin");
-        std::fs::write(&p, [0u8, 159, 146, 150]).unwrap();
+        let bytes = [0u8, 159, 146, 150];
+        std::fs::write(&p, bytes).unwrap();
         let ps = p.to_string_lossy().into_owned();
-        let err = execute(&ctx(), "fs.read", &json!({"path": ps})).unwrap_err();
+        let err = execute(&c, "fs.read", &json!({"path": ps})).unwrap_err();
         assert_eq!(err.type_, "UnicodeDecodeError");
+        assert!(err.message.contains("encoding=\"blob\""));
         let out = execute(
-            &ctx(),
+            &c,
             "fs.read",
-            &json!({"path": ps, "encoding": "base64"}),
+            &json!({"path": ps, "encoding": "blob", "mime": "image/png"}),
         )
         .unwrap();
-        assert_eq!(out["data"], "AJ+Slg==");
+        let r = &out["blob"];
+        assert!(crate::blob::is_raw_ref(r), "{out}");
+        assert_eq!(r["__blob"], crate::blob::hash_of(&bytes));
+        assert_eq!(r["bytes"], 4);
+        assert_eq!(r["mime"], "image/png");
         assert_eq!(out["size"], 4);
+        assert_eq!(
+            c.blob_dir
+                .as_ref()
+                .unwrap()
+                .read(r["__blob"].as_str().unwrap())
+                .unwrap()
+                .unwrap(),
+            bytes
+        );
+        // default mime when the caller gives none
+        let out = execute(&c, "fs.read", &json!({"path": ps, "encoding": "blob"})).unwrap();
+        assert_eq!(out["blob"]["mime"], "application/octet-stream");
+        // the ref writes the bytes back out
+        let q = dir.path().join("sub/copy.bin");
+        let qs = q.to_string_lossy().into_owned();
         let out = execute(
-            &ctx(),
+            &c,
             "fs.write",
-            &json!({"path": ps, "content": "AJ+Slg==", "encoding": "base64"}),
+            &json!({"path": qs, "content": r, "mkdirs": true}),
         )
         .unwrap();
         assert_eq!(out["bytes"], 4);
+        assert_eq!(out["created"], true);
+        assert_eq!(std::fs::read(&q).unwrap(), bytes);
+        // not a str, not a ref → refused before touching the path
+        let err = execute(&c, "fs.write", &json!({"path": qs, "content": 42})).unwrap_err();
+        assert_eq!(err.type_, "TypeError");
+        // a ref whose bytes are gone → typed
+        let gone = crate::blob::raw_ref(&crate::blob::hash_of(b"nope"), 4, "text/plain");
+        let err = execute(&c, "fs.write", &json!({"path": qs, "content": gone})).unwrap_err();
+        assert_eq!(err.type_, "blob_missing");
+        // and no directory at all → typed, the file untouched
+        let err = execute(&ctx(), "fs.write", &json!({"path": qs, "content": r})).unwrap_err();
+        assert_eq!(err.type_, "blob_missing");
     }
 
     #[test]

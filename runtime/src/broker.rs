@@ -944,7 +944,8 @@ impl Broker {
             // ADR-024: shell effects, only in a `--features shell` build
             #[cfg(feature = "shell")]
             n if crate::shell::owns(n) => crate::shell::execute(
-                &crate::shell::Ctx::from_env(self.interrupt.clone(), self.deadline),
+                &crate::shell::Ctx::from_env(self.interrupt.clone(), self.deadline)
+                    .with_blob_dir(self.writer.blob_dir.clone()),
                 n,
                 payload,
             ),
@@ -2454,6 +2455,77 @@ mod tests {
         b.try_cell_done("main", true, None, false, json!({}))
             .unwrap();
         assert!(b.cursor.as_ref().unwrap().exhausted());
+    }
+
+    /// ADR-026 §4 on the fs surface: `fs.read(encoding="blob")` puts
+    /// the file in the run's directory and records a ref (stamped in
+    /// `blobs`, class read); `fs.write` with that ref streams the bytes
+    /// out (class mutate, the ref stays in the record); replay serves
+    /// both from the trace without touching the disk.
+    #[cfg(feature = "shell")]
+    #[test]
+    fn fs_blob_legs_record_refs_and_replay_from_trace() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.bin");
+        let bytes = b"\x89PNG\r\n\x1a\n";
+        std::fs::write(&src, bytes).unwrap();
+        let dst = dir.path().join("out/copy.bin");
+        let (srcs, dsts) = (
+            src.to_string_lossy().into_owned(),
+            dst.to_string_lossy().into_owned(),
+        );
+        let mut rec = make_broker("fsblob");
+        rec.writer.blob_dir = Some(crate::blob::BlobDir::new(&dir.path().join("traces")));
+        rec.current_cell = Some("main".into());
+        let out = rec
+            .call(
+                "fs.read",
+                json!({"path": srcs, "encoding": "blob", "mime": "image/png"}),
+            )
+            .unwrap();
+        let r = out["blob"].clone();
+        assert!(crate::blob::is_raw_ref(&r), "{out}");
+        let hash = r["__blob"].as_str().unwrap().to_string();
+        assert_eq!(hash, crate::blob::hash_of(bytes));
+        let record = rec.writer.records.last().unwrap();
+        assert_eq!(record["effect"], "fs.read");
+        assert_eq!(record["meta"]["class"], "read");
+        assert_eq!(record["blobs"], json!([hash]));
+        let out = rec
+            .call(
+                "fs.write",
+                json!({"path": dsts, "content": r, "mkdirs": true}),
+            )
+            .unwrap();
+        assert_eq!(out["bytes"], bytes.len());
+        assert_eq!(std::fs::read(&dst).unwrap(), bytes);
+        let record = rec.writer.records.last().unwrap();
+        assert_eq!(record["meta"]["class"], "mutate");
+        assert_eq!(record["input"]["content"], r); // the ref, never the bytes
+        assert_eq!(record["blobs"], json!([hash]));
+        rec.try_cell_done("main", true, None, false, json!({}))
+            .unwrap();
+
+        std::fs::remove_file(&dst).unwrap();
+        let mut rb = make_broker("fsblob2");
+        rb.mode = Mode::Replay;
+        rb.cursor = Some(ReplayCursor::new(&rec.writer.records));
+        rb.current_cell = Some("main".into());
+        let out = rb
+            .call(
+                "fs.read",
+                json!({"path": srcs, "encoding": "blob", "mime": "image/png"}),
+            )
+            .unwrap();
+        assert_eq!(out["blob"], r);
+        let out = rb
+            .call(
+                "fs.write",
+                json!({"path": dsts, "content": r, "mkdirs": true}),
+            )
+            .unwrap();
+        assert_eq!(out["bytes"], bytes.len());
+        assert!(!dst.exists()); // served from the trace, never re-run
     }
 
     /// ADR-024 §1: every sh.* is mutate and replay never re-runs a
