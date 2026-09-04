@@ -75,10 +75,21 @@ pub fn load_blobs(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
 /// Resolve a blob ref (`{"__blob": hash, "bytes": n}`, ADR-001 §7) back
 /// to its value. Non-refs — and refs whose blob is missing from the
 /// sidecar — pass through unchanged (the ref shape stays detectable).
+/// A raw ref (ADR-026 §2, `mime` present) stays a ref: the bytes are
+/// a handle, not a value — except the oversize text spill
+/// (`application/json`), which re-hydrates like any text spill.
 pub fn resolve_blobs(value: Value, blobs: &BTreeMap<String, String>) -> Value {
     let is_ref = value
         .as_object()
-        .map(|m| m.len() == 2 && m.contains_key("__blob") && m.contains_key("bytes"))
+        .map(|m| {
+            m.contains_key("__blob")
+                && m.contains_key("bytes")
+                && match m.len() {
+                    2 => true,
+                    3 => m.get("mime") == Some(&Value::String(crate::blob::JSON_MIME.into())),
+                    _ => false,
+                }
+        })
         .unwrap_or(false);
     if is_ref {
         if let Some(text) = value["__blob"].as_str().and_then(|h| blobs.get(h)) {

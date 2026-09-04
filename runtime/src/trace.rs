@@ -4,9 +4,11 @@
 //! separators — serde_json's default Map is a BTreeMap, matching
 //! Python's sort_keys=True), same input_key hash domain.
 
+use crate::blob::{self, BlobDir, JSON_MIME, RAW_TEXT_CUTOFF};
 use crate::tracestore::{TraceSink, TraceStore};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 pub const SCHEMA: i64 = 2;
 pub const BLOB_THRESHOLD: usize = 64 * 1024;
@@ -41,6 +43,16 @@ pub struct TraceWriter {
     /// the writer never touches storage directly.
     sink: Option<Box<dyn TraceSink>>,
     streamed: bool,
+    /// The raw blob directory (ADR-026 §1) — taken from the store at
+    /// `stream_to`; None = buffered writer, every spill stays text.
+    pub blob_dir: Option<BlobDir>,
+    /// Text spills that went to the directory instead (over
+    /// `RAW_TEXT_CUTOFF`, ADR-026 §2): kept in `blobs` for the summary,
+    /// never sent to the text-blob store.
+    raw_text: BTreeSet<String>,
+    /// Text spills the sink refused (ADR-026 §2: the sink stays; these
+    /// get one more try at `dump`).
+    failed_blobs: Vec<(String, String)>,
 }
 
 impl TraceWriter {
@@ -56,6 +68,9 @@ impl TraceWriter {
             seq: 0,
             sink: None,
             streamed: false,
+            blob_dir: None,
+            raw_text: BTreeSet::new(),
+            failed_blobs: Vec::new(),
         };
         w.push(json!({"kind": "header", "schema": SCHEMA, "run": run}));
         w
@@ -72,7 +87,34 @@ impl TraceWriter {
         }
         self.sink = Some(sink);
         self.streamed = true;
+        self.blob_dir = store.blob_dir().cloned();
         Ok(())
+    }
+
+    /// Bytes → the directory → a raw ref (ADR-026 §1). Without a
+    /// directory (buffered writer) the ref is still minted so the record
+    /// keeps its shape; the warning names the run and hash.
+    pub fn put_raw(&self, bytes: &[u8], mime: &str) -> Value {
+        let hash = blob::hash_of(bytes);
+        match &self.blob_dir {
+            Some(dir) => match dir.put(bytes, mime) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        "blob write failed (run {}, {hash}): {e}; the ref is recorded unresolved",
+                        self.run_id()
+                    );
+                    blob::raw_ref(&hash, bytes.len(), mime)
+                }
+            },
+            None => {
+                tracing::warn!(
+                    "no blob directory (run {}, {hash}): the ref is recorded unresolved",
+                    self.run_id()
+                );
+                blob::raw_ref(&hash, bytes.len(), mime)
+            }
+        }
     }
 
     fn push(&mut self, rec: Value) {
@@ -97,6 +139,11 @@ impl TraceWriter {
         self.seq
     }
 
+    /// ADR-001 §7 / ADR-026 §2: a value over the threshold leaves the
+    /// record as a ref. Text spills go to the store's text-blob place;
+    /// one that would not fit a store request goes to the directory as
+    /// raw `application/json` (same hash — the bytes are the text). A
+    /// refused text spill never drops the sink.
     fn spill(&mut self, value: Value) -> Value {
         let text = canonical_json(&value);
         if text.len() <= BLOB_THRESHOLD {
@@ -106,14 +153,36 @@ impl TraceWriter {
         h.update(text.as_bytes());
         let hash = format!("sha256:{}", hex::encode(h.finalize()));
         let bytes = text.len();
+        if bytes > RAW_TEXT_CUTOFF && self.blob_dir.is_some() {
+            let r = self.put_raw(text.as_bytes(), JSON_MIME);
+            self.raw_text.insert(hash.clone());
+            self.blobs.push((hash, text));
+            return r;
+        }
         if let Some(sink) = self.sink.as_mut() {
-            if sink.append_blob(&hash, &text).is_err() {
-                tracing::warn!("trace blob write failed; buffering until dump");
-                self.sink = None;
+            if let Err(e) = sink.append_blob(&hash, &text) {
+                tracing::warn!("trace blob write failed ({hash}): {e}; retried at run end");
+                self.failed_blobs.push((hash.clone(), text.clone()));
             }
         }
         self.blobs.push((hash.clone(), text));
         json!({"__blob": hash, "bytes": bytes})
+    }
+
+    /// ADR-026 §2/§6: a record whose input/output carries raw refs lists
+    /// their hashes in `blobs` — the retention sweep's live set.
+    fn stamp_raw_refs(rec: &mut Map<String, Value>) {
+        let mut refs = Vec::new();
+        for key in ["input", "output"] {
+            if let Some(v) = rec.get(key) {
+                blob::collect_raw_refs(v, &mut refs);
+            }
+        }
+        if !refs.is_empty() {
+            refs.sort();
+            refs.dedup();
+            rec.insert("blobs".into(), json!(refs));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -148,6 +217,7 @@ impl TraceWriter {
             // stamp only inside spans — span-free traces stay byte-stable
             rec.insert("span".into(), json!(s));
         }
+        Self::stamp_raw_refs(&mut rec);
         self.push(Value::Object(rec));
         seq
     }
@@ -163,11 +233,13 @@ impl TraceWriter {
     ) {
         let seq = self.next_seq();
         let spilled = self.spill(input);
-        self.push(json!({
+        let mut rec = json!({
             "kind": "span", "seq": seq, "phase": "begin", "span": span,
             "parent": parent, "name": name, "cell": cell,
             "input": spilled, "key": key,
-        }));
+        });
+        Self::stamp_raw_refs(rec.as_object_mut().expect("object"));
+        self.push(rec);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -186,11 +258,13 @@ impl TraceWriter {
             Some(v) => self.spill(v),
             None => Value::Null,
         };
-        self.push(json!({
+        let mut rec = json!({
             "kind": "span", "seq": seq, "phase": "end", "span": span,
             "name": name, "cell": cell, "ok": ok,
             "output": out, "error": error.unwrap_or(Value::Null), "meta": meta,
-        }));
+        });
+        Self::stamp_raw_refs(rec.as_object_mut().expect("object"));
+        self.push(rec);
     }
 
     pub fn cell(
@@ -216,8 +290,20 @@ impl TraceWriter {
     /// summary (ADR-023 §1) for the host to publish.
     pub fn dump(&mut self, store: &dyn TraceStore) -> anyhow::Result<Value> {
         let run = self.run_id();
+        // the text-blob store never sees a raw-written spill (ADR-026 §2)
+        let text_blobs: Vec<(String, String)> = self
+            .blobs
+            .iter()
+            .filter(|(h, _)| !self.raw_text.contains(h))
+            .cloned()
+            .collect();
         if !(self.sink.is_some() && self.streamed) {
-            store.write_run(&run, &self.records, &self.blobs)?;
+            store.write_run(&run, &self.records, &text_blobs)?;
+        } else if !self.failed_blobs.is_empty() {
+            let retry = std::mem::take(&mut self.failed_blobs);
+            if let Err(e) = store.write_blobs(&retry) {
+                tracing::warn!("trace blobs still unwritten at run end ({run}): {e}");
+            }
         }
         if let Some(mut sink) = self.sink.take() {
             sink.close()?;
@@ -295,5 +381,63 @@ mod tests {
         assert_eq!(side.lines().count(), 1);
         let entry: Value = serde_json::from_str(side.lines().next().unwrap()).unwrap();
         assert_eq!(entry["hash"], json!(w.blobs[0].0));
+    }
+
+    /// ADR-026 §2: a text spill over the request cap is written raw to
+    /// the directory (same hash — the bytes are the text), the record
+    /// carries the raw ref and lists it in `blobs`; a small spill stays
+    /// in the sidecar.
+    #[test]
+    fn oversize_text_spills_raw_to_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileTraceStore::new(dir.path());
+        let mut w = TraceWriter::new(json!({"id": "run_r", "program": "p"}));
+        w.stream_to(&store).unwrap();
+        let big = json!({"data": "z".repeat(RAW_TEXT_CUTOFF + 1)});
+        effect_rec(&mut w, big.clone());
+        let rec = w.records.last().unwrap();
+        assert_eq!(rec["output"]["mime"], json!(JSON_MIME));
+        let hash = rec["output"]["__blob"].as_str().unwrap().to_string();
+        assert_eq!(rec["blobs"], json!([hash]));
+        assert!(!store
+            .path_of("run_r")
+            .with_extension("jsonl.blobs")
+            .exists());
+        let on_disk = store
+            .blob_dir()
+            .unwrap()
+            .read_string(&hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&on_disk).unwrap(), big);
+        // readers re-hydrate it like a text spill
+        use crate::tracestore::TraceStore as _;
+        assert_eq!(store.record("run_r", 1).unwrap()["output"], big);
+        // the summary sees it too (dump keeps it in memory)
+        w.dump(&store).unwrap();
+    }
+
+    struct RefusingSink;
+    impl TraceSink for RefusingSink {
+        fn append(&mut self, _r: &Value) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn append_blob(&mut self, _h: &str, _d: &str) -> anyhow::Result<()> {
+            anyhow::bail!("413")
+        }
+    }
+
+    /// ADR-026 §2: a refused text spill never drops the sink — records
+    /// keep streaming; the blob is retried at run end.
+    #[test]
+    fn refused_blob_keeps_the_sink() {
+        let mut w = TraceWriter::new(json!({"id": "run_k", "program": "p"}));
+        w.sink = Some(Box::new(RefusingSink));
+        w.streamed = true;
+        effect_rec(&mut w, json!({"data": "z".repeat(BLOB_THRESHOLD + 1)}));
+        assert!(w.sink.is_some());
+        assert_eq!(w.failed_blobs.len(), 1);
+        effect_rec(&mut w, json!({"ok": 1}));
+        assert!(w.sink.is_some());
     }
 }

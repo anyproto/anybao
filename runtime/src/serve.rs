@@ -1421,6 +1421,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
                 client.clone(),
                 &space,
                 election.self_peer.clone(),
+                Some(crate::blob::BlobDir::new(&cfg.traces_dir)),
             )
             .context("trace store: ensuring the bao space's local collections")?,
         ),

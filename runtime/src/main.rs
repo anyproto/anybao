@@ -225,8 +225,12 @@ fn trace_store(
         Some(a) => {
             let client = Arc::new(anyapi::Client::new(a));
             let sid = serve::find_space(&client, space)?;
+            // raw blobs resolve from the dir beside the serve (ADR-026 §7)
             Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
-                client, &sid, None,
+                client,
+                &sid,
+                None,
+                Some(anyrt::blob::BlobDir::new(dir)),
             )?))
         }
         None => Ok(Box::new(FileTraceStore::new(dir))),

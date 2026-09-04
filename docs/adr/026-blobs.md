@@ -84,7 +84,14 @@ the least query-worthy content there is.
 
 A blob write that fails never fails the run: the ref is recorded, the
 failure is a warning naming the run and hash, and `trace show` renders
-the ref unresolved. The sink is not dropped.
+the ref unresolved. The sink is not dropped; a refused text spill gets
+one more write at run end.
+
+A record whose `input`/`output` carries raw refs anywhere — an http
+body, a File part's `data`, a request payload — lists their hashes in
+a top-level `blobs` array. That field is the index every raw-blob
+reader uses: the retention sweep's live set (§6) and the CLI's
+resolution (§7) never walk record bodies for refs.
 
 ### 3. `http.*`: the host classifies the body; blobs forward through payloads (amends ADR-002 §1, ADR-020 §1)
 
@@ -183,9 +190,9 @@ c.attach_file(space, object_id, "rose.jpg", b)       # any@v1, §5
 ### 6. Retention and cleanup (amends ADR-023 §6)
 
 The retention pass (serve's hourly ticker) gains one step after record
-expiry: collect the hashes referenced by any surviving record — the
-same `$exists` query that already protects `trace_blobs` — list the
-directory, unlink every file whose hash is not referenced. Raw blobs
+expiry: collect the hashes every surviving record lists in `blobs`
+(one `$exists` query, the shape that already protects `trace_blobs`),
+list the directory, unlink every file whose hash is not referenced. Raw blobs
 follow their runs' retention class; nothing is kept past the last
 record that names it. The file backend, which has no retention today
 (ADR-023 §6), gains none — its directory is swept by hand with its
