@@ -98,9 +98,12 @@ resolution (§7) never walk record bodies for refs.
 **Response.** The host decides text versus bytes from the actual
 response, never the caller: `text/*`, `application/json`, `+json`,
 `+xml`, `application/xml`, `application/x-www-form-urlencoded`,
-`application/javascript` bodies that decode as UTF-8 come back as
-`body` text exactly as today; every other media type, and any body
-that fails UTF-8, comes back as a Blob reference in `body`. The
+`application/javascript` (and `+json` / `+xml` / `x-ndjson`) bodies
+that decode as UTF-8 come back as `body` text exactly as today, and a
+`text/*` body that does not decode as UTF-8 decodes lossily — it is
+text by declaration; every other media type, an undeclared body that
+fails UTF-8, and a non-`text/*` text type that fails UTF-8 come back
+as a Blob reference in `body`. The
 output shape is unchanged (`{status, headers, body, url}`); the trace
 record carries the ref. `response: "text"` forces text (UTF-8 with
 replacement) for a misdeclared body — the one direction the host can
