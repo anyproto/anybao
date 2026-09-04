@@ -259,8 +259,13 @@ class Replayer:
 
 
 def _load(host):
+    # the kernel's Blob/blob globals (ADR-026 §5): the adapters type-check
+    # File parts against them; the parity conversation carries base64
+    # parts only, so no blob.* effect is expected
+    from kernelenv import load_kernel
+    k = load_kernel(effect=lambda name, payload: pytest.fail(f"unexpected kernel effect {name!r}"))
     g = {"effect": host, "span": lambda name=None, kind=None: (lambda f: f),
-         "use": lambda spec: pytest.fail(spec)}
+         "use": lambda spec: pytest.fail(spec), "Blob": k.Blob, "blob": k.blob}
     exec(compile(SRC, "llm@v1.py", "exec"), g)
     return g
 
