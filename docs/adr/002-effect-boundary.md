@@ -104,37 +104,56 @@ Cells execute in a constructed namespace containing **only**:
 
 ### 4. Shims and imports: ambient authority replaced, not blocked
 
-- **Module allowlist with three tiers**, resolved by our
-  MetaPathFinder (the only importer):
-  1. *Pure stdlib* — passes through: `math`, `json`, `re`, `itertools`,
-     `functools`, `collections`, `contextlib` (added 2026-07-22: pure
-     control flow, zero ambient authority; ruff SIM105 steers guest
-     code toward `contextlib.suppress`), `textwrap`, `heapq`, `bisect`,
-     `statistics`, `dataclasses`, `enum`, `typing`, `decimal`,
-     `fractions`, `base64`, `hashlib`, `uuid`(v5 only — v1/v4 are
-     nondeterministic; see open Q2), `unicodedata`, `html`, `email`
-     (both added 2026-08-13, ADR-012 §6: pure parsing/formatting, no
-     ambient authority), `zlib` (added 2026-09-01: a pure codec,
-     deterministic, no ambient authority — inflate/deflate/crc32 for
-     PDF FlateDecode streams, gzip bodies, PNG chunks; without it
-     models on tiers that cannot read a PDF natively re-implemented
-     inflate in cells, one burning a whole fuel budget — BOB-78 bench
-     finding 1).
-  1b. *Vendored pure-Python third-party* (added 2026-08-13, ADR-012
-     §6): `bs4` + `soupsieve`, `markdownify` — bundled verbatim into
-     the kernel image from `runtime/guest/` (versions + licenses in
+- **Module allowlist, audited once against the kernel's stdlib
+  (amendment 2026-09-04, ADR-026)**, resolved by `_guest_import` —
+  the cell namespace's only importer. Entries are dotted names
+  (`urllib.parse` admits that submodule, not `urllib.request`). Every
+  module the kernel image carries sits in exactly one tier with its
+  reason, and one guest test imports every admitted name, exercises
+  the proxied edges (a zip write, an in-memory sqlite table) and
+  asserts every refused name fails with its pointer. Admission test,
+  unchanged: deterministic, no ambient authority.
+  1. *Pure stdlib* — passes through:
+
+     | group | modules |
+     |---|---|
+     | data / text | `json`, `re`, `string`, `textwrap`, `unicodedata`, `difflib`, `csv`, `html`, `email`, `xml.etree`, `urllib.parse`, `tomllib`, `configparser`, `shlex`, `fnmatch`, `pprint`, `quopri`, `plistlib` |
+     | numbers | `math`, `cmath`, `decimal`, `fractions`, `statistics`, `ipaddress`, `colorsys`, `calendar` |
+     | containers / control | `itertools`, `functools`, `collections`, `contextlib`, `heapq`, `bisect`, `graphlib`, `operator`, `copy`, `dataclasses`, `enum`, `typing`, `abc`, `traceback` |
+     | codecs / bytes | `base64`, `binascii`, `struct`, `array`, `zlib`, `gzip`, `zipfile`, `tarfile`, `hashlib`, `hmac` |
+     | identity / chance | `uuid`, `random`, `secrets` — pure *because of the WASI floor below*: the stdlib seeds from the pinned entropy stream |
+     | introspection | `inspect` (ADR-010 §2), `ast` (ADR-013 §3) |
+
+     Not in the image at all (`bz2`, `lzma`, `ssl`, `ctypes`): the
+     ImportError says so, and `zipfile`/`tarfile` degrade to their
+     zlib-backed formats.
+  1b. *Vendored pure-Python third-party* (ADR-012 §6): `bs4` +
+     `soupsieve`, `markdownify` — bundled verbatim into the kernel
+     image from `runtime/guest/` (versions + licenses in
      `runtime/guest/VENDORED.md`), importable through the same
      allowlist; bs4 runs on the stdlib `html.parser` backend (no
      lxml). Their internal deps (`six`, `typing_extensions`) are
      bundled but NOT guest-importable — the allowlist names only the
      supported surface.
-  2. *Proxied stdlib* — modules whose API is wanted but which carry
-     ambient authority return a **proxy module**: `datetime`
-     (construction/arithmetic pass through; `datetime.now()`,
-     `date.today()` are effect-backed → `time.now` records), `random`
-     (all functions effect-backed → `random` records), `time`
-     (`time()`/`sleep()` effect-backed), `os` reduced to
-     `os.environ`-as-`env.get` effect.
+  2. *Proxied stdlib* — the API is wanted, the ambient part is
+     replaced by an effect or a blob:
+
+     | module | proxy |
+     |---|---|
+     | `datetime` | construction/arithmetic pass through; `datetime.now()`, `date.today()` are effect-backed → `time.now` records |
+     | `time` | `time()`/`sleep()` effect-backed |
+     | `os` | `os.environ` as the `env.get` effect; `os.fspath`/`os.PathLike` pass through (the archive modules need them) |
+     | `io` | pass through minus `open` — `io.open` is the real file opener |
+     | `tempfile` | `TemporaryFile`/`NamedTemporaryFile`/`SpooledTemporaryFile` return the blob writer (ADR-026 §4): a file-like object that becomes a Blob on close; `TemporaryDirectory`/`mkdtemp` refused pointing at ADR-024 |
+     | `sqlite3` | `connect(":memory:")` only — an in-memory database is pure; any path refused |
+     | `mimetypes` | the built-in table only (`init` never reads system files) |
+
+  Refused with a pointer, not a bare error: `pathlib`, `shutil`,
+  `glob`, `os.path` → the ADR-024 `fs.*` effects; `socket`, `select`,
+  `subprocess`, `threading`, `multiprocessing`, `asyncio`, `signal` →
+  the effect boundary; `urllib.request`, `http.client`, `ftplib`,
+  `smtplib` → `http`; `pickle` → `json` (code execution on load, no
+  use case).
   3. *Space programs* — `name@version` per the resolution rules
      (ADR-004); each load emits a `module.resolve` record.
   Everything else: `ImportError` with a message naming the boundary.
@@ -142,6 +161,24 @@ Cells execute in a constructed namespace containing **only**:
   `rand()`, `env(...)`) — same effects underneath.
 - **Import is an effect**: allowlist decisions and resolved versions
   are part of the recorded run.
+- **The WASI floor (amendment 2026-09-04, ADR-026).** The allowlist
+  gates what *cell code* imports; a module's own imports resolve
+  through the real importer, so `zipfile`'s `time.localtime()` or
+  `random`'s import-time seeding reach the WASI clock and entropy,
+  not a proxy. The host therefore pins the WASI context per cell:
+  the wall clock is the cell's recorded start (frozen within the
+  cell), the monotonic clock a counter advancing 1 µs per read, and
+  both random sources a stream derived from one per-run seed recorded
+  in the run header (ADR-001 §4: one record per run, not one per
+  draw). Consequences: `random`, `secrets` and `uuid` need no proxy —
+  the stdlib seeds from the pinned stream and a `shuffle` of ten
+  thousand items is zero trace records; archives carry deterministic
+  timestamps; module-internal ambient calls are replay-safe by
+  construction. The model-facing API for the present is still the
+  recorded effect — `now()` is the real current time and a record,
+  `rand()`/`uuid4()` stay as sugar — the floor is a determinism
+  guarantee, not a clock the guest is meant to read.
+  `PYTHONHASHSEED=0` is the same pin for hashing.
 
 ### 5. Enforcement strength is staged; the API is not
 

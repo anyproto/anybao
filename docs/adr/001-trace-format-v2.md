@@ -266,6 +266,15 @@ the trace (sidecar file / file attachment when the trace lives in a
 space object). Replay resolves refs transparently. Keeps JSONL lines
 bounded without truncating anything.
 
+**Two ref shapes (amendment 2026-09-04, ADR-026 §2).** A ref carrying
+`mime` — `{"__blob", "bytes", "mime"}` — is raw bytes at
+`<traces_dir>/blobs/<hex>` (hash over the bytes, same file in both
+backends); a ref without `mime` is the canonical JSON text of a
+spilled value, in the store's text-blob place (ADR-023 §4). A text
+spill too large for one store request is written as a raw blob
+(`mime: application/json`). A failed blob write records the ref and
+warns; it never fails the run.
+
 ### 8. Storage is one trait, the file layout is one impl (amendment 2026-08-28)
 
 Where a run persists is a **storage** decision, not a format one.
