@@ -54,6 +54,52 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C4. Drift refresh 2026-09-04 (pin → any a176029, staging-clean :7141 `/v1/openapi.json`)
+
+Closes BOB-66 (the 30 routes C3 left untriaged) plus 13 routes new
+since the C3 pin. `anyrt drift` is clean.
+
+- **Changed contract, fingerprint refreshed only**: 14 routes. Chat
+  message send carries `agent.outcome`, `context`, `control` (ours:
+  ADR-005 §5, the outcome/hard-break work); search gains optional
+  `passages` / `maxData` and per-hit passages in the reply (additive —
+  a capability `helper.search` can expose on demand); every query route
+  types `projection` values as integers and the space query adds
+  optional `includeDeleted` (no wire change); type property creation
+  gains `xKind` (adopted); auth + shutdown carry mode, capabilities and
+  the `X-Any-Control-Token` header (SYN-169 — harness routes, see the
+  open item below).
+- **Mapped** (existing callers, recorded): processes ×5 →
+  `list_processes` / `cancel_process` / the `_process_*` wrappers
+  behind progress@v1; bundles ×5 → `ensure_bundle` / `list_bundles` /
+  `get_bundle` / `bundle_child` / `resolve_loser`; datasets GET/POST/
+  PATCH/DELETE → `list_datasets` / `create_dataset` (POST + in-place
+  PATCH) / `remove_dataset` — program plumbing, `_`-private on the
+  flat surface (ADR-010 §1, ADR-017 §1): the chat agent never sees a
+  dataset DECLARATION, only records through query / upsert_records /
+  delete_records; `POST /spaces/:id/upsert` →
+  `upsert_records`; properties attach/detach → `attach_type` /
+  `detach_type` (the C2 mapping, lost in C3 when the path parameter
+  was renamed); `POST /events` → `open_in_ui` (+ serve); derived
+  spaces GET / POST-by-name → host `list_derived_spaces` /
+  `create_derived_space`; devices GET / PUT me / activate → the host's
+  ADR-015 election client.
+- **Excluded**: `/local/*` ×13 (the ADR-023 trace store — host anyapi
+  only, no guest route); `DELETE /auth` (harness auth/boot); devices
+  DELETE / query / query-subscribe (client device management);
+  `GET /events/subscribe` (client push plumbing).
+- **Present, pending a helper** (the history-routes form): dataset
+  field POST/DELETE (bao should be able to add/remove a field — today
+  `create_dataset` replaces the whole list; a helper is wanted) and
+  `GET /spaces/:id/objects/:objectId` (`get_object` reads through the
+  query route; the plain GET has no consumer).
+- **Open items from this pass**: (1) a guest `list_devices` so bao can
+  tell the user which devices exist, which is active and how to
+  switch (needs a UI settings page or the chat trigger to surface it);
+  (2) dataset field helpers (above). `POST /shutdown` needing the
+  control token on a managed server touches nothing here: anyrt never
+  calls it.
+
 ## C3. Drift refresh 2026-08-27 (pin → any 20708cd, staging :7134 `/v1/openapi.json`)
 
 - **Removed** (stale mappings, routes gone from the server): agent/brain,
