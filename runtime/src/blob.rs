@@ -32,10 +32,12 @@ pub fn raw_ref(hash: &str, bytes: usize, mime: &str) -> Value {
     json!({"__blob": hash, "bytes": bytes, "mime": mime})
 }
 
-/// `{__blob, bytes, mime}` — bytes in the directory.
+/// `{__blob, bytes, mime}` — bytes in the directory. An optional
+/// `encoding: "data-uri"` asks the wire expansion (ADR-026 §3) for the
+/// `data:<mime>;base64,…` form instead of bare base64.
 pub fn is_raw_ref(v: &Value) -> bool {
     v.as_object().is_some_and(|m| {
-        m.len() == 3
+        (m.len() == 3 || (m.len() == 4 && m.get("encoding") == Some(&json!("data-uri"))))
             && m.get("__blob").is_some_and(Value::is_string)
             && m.get("bytes").is_some_and(Value::is_number)
             && m.get("mime").is_some_and(Value::is_string)

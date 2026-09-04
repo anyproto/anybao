@@ -118,7 +118,10 @@ in the model's rendering of the page.
 **Request.** A Blob reference anywhere in an `http.*` payload is
 expanded by the host at send time: inside `json`, the ref is replaced
 by the base64 string of the bytes (the provider wire for images and
-PDFs, ADR-020 §3); as the whole `body`, the raw bytes are sent with
+PDFs, ADR-020 §3) — or, when the ref carries `encoding: "data-uri"`
+(`b.ref("data-uri")`), by `data:<mime>;base64,<…>`, the form the
+OpenAI-compatible `image_url` / `file_data` fields take; as the whole
+`body`, the raw bytes are sent with
 `Content-Type` from `mime` unless a header says otherwise (the `any`
 attach route, any raw upload). The **recorded input keeps the ref** —
 a request carrying a 5 MB image is a trace record of a few hundred
@@ -183,7 +186,9 @@ c.attach_file(space, object_id, "rose.jpg", b)       # any@v1, §5
   There is no file without an object in `any` (files bind to objects,
   any docs/17): "create a file" is always "attach to this object".
 - `file_content(spaceConfig, file)` returns the Blob the content GET
-  produced (`{fileId, mime, size, blob}`); `list_files` is unchanged.
+  produced (`{fileId, mime, size, blob}`); a `text/*` file, which the
+  GET classifies as text (§3), is wrapped into a Blob by `from_bytes`
+  so the result is one shape; `list_files` is unchanged.
 - `llm.read` accepts a Blob; a `File` part's `data` is base64 **or a
   Blob ref** (ADR-020 §3) — the adapters place whatever they were
   given into the provider JSON and the host expands it (§3). The

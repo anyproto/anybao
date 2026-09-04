@@ -2508,42 +2508,84 @@ class _Client:
         """Files in the space — `[{fileId, objectId, name, mime, size, …}]`;
         `object_id` narrows to one object's attachments. Files are
         addressed `any://f/<spaceId>/<fileId>` (chat attachments arrive
-        as such lines); read one with file_content / llm.read."""
+        as such lines); read one with file_content / llm.read, add one
+        with attach_file."""
         q = f"?objectId={object_id}" if object_id else ""
         return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
 
     def file_content(self, space, file):
-        """The file's bytes, base64 — `{fileId, mime, size, data}`. `file`
-        is an `any://f/<spaceId>/<fileId>` URI (a chat `[attachment …]`
-        line; `?variant=thumb` passes through) or a bare fileId in
-        `space`. Feed the result to `llm.read` / a File part; it is
-        NOT text — decode `data` yourself only for text/* files."""
+        """The file as a Blob — `{fileId, mime, size, blob}` (ADR-026 §5).
+        `file` is an `any://f/<spaceId>/<fileId>` URI (a chat
+        `[attachment …]` line; `?variant=thumb` passes through) or a
+        bare fileId in `space`. `blob` is a handle, zero bytes in the
+        cell: pass it to `llm.read`, a File part, `attach_file`, an
+        http `body=`; `bytes(blob)` / `blob.text()` pull the payload
+        in only when you must."""
         space, file_id, query = self._file_ref(space, file)
         url = self._base + f"/v1/spaces/{space}/files/{file_id}/content"
         if query:
             url += "?" + query
-        reply = effect("http.get", {"url": url, "response": "base64"})  # noqa: F821
+        reply = effect("http.get", {"url": url})  # noqa: F821
+        body = reply.get("body")
         if reply["status"] >= 400:
             try:
-                data = json.loads(_b64decode(reply.get("body") or ""))
+                data = json.loads(body) if isinstance(body, str) and body else {}
             except ValueError:
                 data = {}
             err = data.get("error", {}) if isinstance(data, dict) else {}
             raise AnyError(reply["status"], err.get("code", "unknown"),
                            err.get("message", ""))
-        b64 = reply.get("body") or ""
         mime = (reply.get("headers") or {}).get("content-type", "application/octet-stream")
         mime = mime.split(";", 1)[0].strip()
-        size = len(b64) // 4 * 3 - b64[-2:].count("=")
-        return {"fileId": file_id, "mime": mime, "size": size, "data": b64}
+        # a text/* file comes back as text (ADR-026 §3) — still a handle
+        b = (Blob.from_ref(body) if Blob.is_ref(body)  # noqa: F821 - guest globals
+             else blob.from_bytes(body or "", mime))  # noqa: F821
+        return {"fileId": file_id, "mime": b.mime, "size": b.size, "blob": b}
+
+    def attach_file(self, space, object_id, name, data, mime=None):
+        """Attach a file to an object — the write half (ADR-026 §5).
+        `data`: a Blob (an `http.get(...).blob`, `file_content(...)["blob"]`,
+        a `tempfile` writer's `.blob`) or `bytes`/`str` (wrapped into
+        one); `mime` defaults to the Blob's. One raw upload — the host
+        streams the bytes, the trace keeps the ref. Returns the
+        server's FileInfo plus `uri` (`any://f/<sid>/<fileId>`): put
+        that in markdown (`![alt](<uri>)` — the editor renders images
+        from any://f/ links only) or in `chat_send` attachments. There
+        is no file without an object: to "create a file", pick or
+        create the object it belongs to first."""
+        b = data if isinstance(data, Blob) else blob.of(data)  # noqa: F821 - guest globals
+        if not isinstance(data, Blob) and mime:  # noqa: F821
+            b = blob.from_bytes(bytes(b), mime)  # noqa: F821
+        mime = mime or b.mime
+        url = (self._base + f"/v1/spaces/{space}/objects/{object_id}/files"
+               f"?name={_urlquote(name)}")
+        reply = effect("http.post", {"url": url, "body": b,  # noqa: F821 - guest global
+                                     "headers": {"Content-Type": mime}})
+        raw = reply.get("body") or ""
+        if reply["status"] >= 400:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) and raw else {}
+            except ValueError:
+                data = {}
+            err = data.get("error", {}) if isinstance(data, dict) else {}
+            raise AnyError(reply["status"], err.get("code", "unknown"),
+                           err.get("message", ""))
+        info = json.loads(raw) if isinstance(raw, str) and raw else {}
+        if info.get("fileId"):
+            info["uri"] = f"any://f/{space}/{info['fileId']}"
+        return info
 
 
-def _b64decode(s):
-    import base64
-    try:
-        return base64.b64decode(s).decode("utf-8", "replace")
-    except (ValueError, TypeError):
-        return ""
+def _urlquote(s):
+    """Percent-encode one query value (RFC 3986 unreserved kept)."""
+    out = []
+    for ch in str(s).encode("utf-8"):
+        c = chr(ch)
+        if c.isalnum() and ch < 128 or c in "-._~":
+            out.append(c)
+        else:
+            out.append(f"%{ch:02X}")
+    return "".join(out)
 
 
 # --- flat module surface (ADR-010 §8) ----------------------------------------
@@ -2700,6 +2742,11 @@ def list_files(spaceConfig, object_id=None):
 @span(kind="getter")  # noqa: F821 - guest global
 def file_content(spaceConfig, file):
     return _c().file_content(_space(spaceConfig), file)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def attach_file(spaceConfig, object_id, name, data, mime=None):
+    return _c().attach_file(_space(spaceConfig), object_id, name, data, mime)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global

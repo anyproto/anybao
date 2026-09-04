@@ -359,9 +359,12 @@ impl Broker {
         if crate::blob::is_raw_ref(v) {
             use base64::Engine as _;
             let bytes = self.blob_bytes(v)?;
-            return Ok(Value::String(
-                base64::engine::general_purpose::STANDARD.encode(bytes),
-            ));
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            return Ok(Value::String(if v["encoding"] == "data-uri" {
+                format!("data:{};base64,{b64}", v["mime"].as_str().unwrap_or(""))
+            } else {
+                b64
+            }));
         }
         Ok(match v {
             Value::Object(m) => {
@@ -3273,6 +3276,14 @@ mod tests {
         assert_eq!(seen[0].2, br#"{"parts":[{"data":"iVBORw=="}]}"#.to_vec());
         assert_eq!(seen[1].1, "image/png");
         assert_eq!(seen[1].2, b"\x89PNG".to_vec());
+        // the data-URI form (the OpenAI image_url / file_data wire)
+        let mut du = r.clone();
+        du["encoding"] = json!("data-uri");
+        assert!(crate::blob::is_raw_ref(&du));
+        assert_eq!(
+            b.expand_refs(&json!({"url": du})).unwrap(),
+            json!({"url": "data:image/png;base64,iVBORw=="})
+        );
         let recs: Vec<&Value> = b
             .writer
             .records

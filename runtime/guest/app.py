@@ -179,11 +179,17 @@ class Blob:
 
     @staticmethod
     def is_ref(v):
-        return (isinstance(v, dict) and set(v) == {"__blob", "bytes", "mime"}
-                and isinstance(v.get("__blob"), str))
+        return (isinstance(v, dict) and isinstance(v.get("__blob"), str)
+                and set(v) - {"encoding"} == {"__blob", "bytes", "mime"})
 
-    def ref(self):
-        return {"__blob": self.sha256, "bytes": self.size, "mime": self.mime}
+    def ref(self, encoding=None):
+        """The reference the host expands on the wire (ADR-026 §3):
+        bare base64 inside JSON, or with `encoding="data-uri"` the
+        `data:<mime>;base64,…` string the OpenAI image wire wants."""
+        r = {"__blob": self.sha256, "bytes": self.size, "mime": self.mime}
+        if encoding:
+            r["encoding"] = encoding
+        return r
 
     def read(self, n=-1):
         """Up to `n` bytes from the current position (all remaining
@@ -948,6 +954,8 @@ def _json_safe(v):
         return v
     if isinstance(v, Blob):
         return v.ref()  # the handle, not its repr (ADR-026 §4)
+    if isinstance(v, (bytes, bytearray)):
+        return f"<{len(v)} bytes>"  # never a payload's repr in a span record
     if isinstance(v, (list, tuple)):
         return [_json_safe(x) for x in v]
     if isinstance(v, dict):

@@ -38,6 +38,26 @@ _MEDIA = {"anthropic": ("image/*", "application/pdf", "text/*"),
           "openai-compat": ("image/*",)}
 
 
+def _wire_data(data, mime, data_uri=False):
+    """A File part's `data` on the wire (ADR-026 §3/§5): a base64 str
+    goes as-is; a Blob / ref goes as the ref the host expands — bare
+    base64 inside JSON, or the `data:<mime>;base64,…` form for the
+    OpenAI `image_url` / `file_data` fields."""
+    if isinstance(data, Blob):  # noqa: F821 - guest global
+        data = data.ref()
+    if isinstance(data, dict) and "__blob" in data:
+        return {**data, "encoding": "data-uri"} if data_uri else data
+    return f"data:{mime};base64,{data}" if data_uri else data
+
+
+def _text_of(data):
+    """A text File part's payload as str: base64 decoded, or a Blob /
+    ref read through the host."""
+    if isinstance(data, Blob) or (isinstance(data, dict) and "__blob" in data):  # noqa: F821
+        return blob.of(data).text()  # noqa: F821 - guest global
+    return base64.b64decode(data).decode("utf-8", "replace")
+
+
 def _media_class(media_type):
     mt = (media_type or "").split(";", 1)[0].strip().lower()
     if mt.startswith("image/"):
@@ -277,13 +297,14 @@ class AnthropicAdapter:
         cls = _media_class(mt)
         if cls == "image":
             return {"type": "image",
-                    "source": {"type": "base64", "media_type": mt, "data": p["data"]}}
+                    "source": {"type": "base64", "media_type": mt,
+                               "data": _wire_data(p["data"], mt)}}
         if cls == "pdf":
             return {"type": "document",
                     "source": {"type": "base64", "media_type": "application/pdf",
-                               "data": p["data"]}}
+                               "data": _wire_data(p["data"], mt)}}
         if cls == "text":
-            text = base64.b64decode(p["data"]).decode("utf-8", "replace")
+            text = _text_of(p["data"])
             block = {"type": "document",
                      "source": {"type": "text", "media_type": "text/plain", "data": text}}
             if p.get("name"):
@@ -378,19 +399,19 @@ class OpenAICompatAdapter:
                 cls = _media_class(f["media_type"])
                 if cls == "image":
                     content.append({"type": "image_url", "image_url": {
-                        "url": f"data:{f['media_type']};base64,{f['data']}"}})
+                        "url": _wire_data(f["data"], f["media_type"], data_uri=True)}})
                 elif cls == "pdf" and traits.get("pdf_input") == "file":
                     # ADR-020 §3: the wire's document part — the backend
                     # (OpenAI natively, OpenRouter via its file-parser)
                     # reads it; the model never sees bytes
                     content.append({"type": "file", "file": {
                         "filename": f.get("name") or "document.pdf",
-                        "file_data": f"data:application/pdf;base64,{f['data']}"}})
+                        "file_data": _wire_data(f["data"], "application/pdf", data_uri=True)}})
                 elif cls == "pdf" and traits.get("pdf_input") == "image_url":
                     # Gemini's OpenAI layer: no `file` part (400), but a
                     # PDF data URI under image_url is read as a document
                     content.append({"type": "image_url", "image_url": {
-                        "url": f"data:application/pdf;base64,{f['data']}"}})
+                        "url": _wire_data(f["data"], "application/pdf", data_uri=True)}})
                 else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
             msg = {"role": m["role"], "content": content}
@@ -844,9 +865,11 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
 
     `messages`: `[{"role": "user"|"assistant", "parts": [Part]}]` —
     Part is `{"type": "text", "text"}` for plain turns; `{"type":
-    "file", "media_type", "data": <base64>, "name"?}` puts a file in
-    the turn (image / pdf / text natively — `any.file_content` returns
-    that shape; `read()` is the one-call form);
+    "file", "media_type", "data": <Blob | base64>, "name"?}` puts a
+    file in the turn (image / pdf / text natively — a Blob from
+    `any.file_content(...)["blob"]` / `http.get(...).blob` rides as its
+    ref, the host puts the bytes on the wire, ADR-026 §5; `read()` is
+    the one-call form);
     `tool_call`/`tool_result`/`thinking` parts round-trip loop
     traffic. `tier`: "codegen" (default, the strong model),
     "classify" (fast/cheap — one-off judgments) or "vision" (file
@@ -885,8 +908,9 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
 
     `file`: an `any://f/<spaceId>/<fileId>` URI (the `[attachment …]`
     line of a chat message — pass it verbatim), a bare fileId with
-    `space=`, or a `{mime|media_type, data: <base64>, name?}` dict
-    (e.g. `any.file_content(...)`'s result). Natively readable:
+    `space=`, a Blob (`http.get(url).blob`), or a `{mime|media_type,
+    blob | data: <base64>, name?}` dict (`any.file_content(...)`'s
+    result). Natively readable:
     images (png/jpeg/gif/webp), text, and PDF on a backend whose wire
     carries documents (Anthropic, OpenAI, Gemini, any model via
     OpenRouter — the `pdf_input` trait); anything else raises `UnsupportedMedia`
@@ -900,9 +924,11 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
         if not file.startswith("any://f/") and not space:
             raise TypeError("a bare fileId needs space=; or pass the any://f/ URI")
         file = any_.file_content(space or file.split("/")[3], file)
+    if isinstance(file, Blob):  # noqa: F821 - guest global
+        file = {"mime": file.mime, "blob": file}
     part = {"type": "file",
             "media_type": file.get("media_type") or file.get("mime"),
-            "data": file["data"]}
+            "data": file["blob"] if file.get("blob") is not None else file["data"]}
     if file.get("name"):
         part["name"] = file["name"]
     reply = chat([{"role": "user", "parts": [part, {"type": "text", "text": prompt}]}],
