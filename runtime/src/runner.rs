@@ -589,3 +589,155 @@ return {\"r\": [random.random() for _ in range(3)], \"shuffled\": xs,\n         
         assert_eq!(FloorRng::new(&[0u8; 32], 0).next(), 0x99ec_5f36_cb75_f2b4);
     }
 }
+
+/// The admitted batteries under the real kernel (ADR-002 §4 table):
+/// archive/codec/data modules work in wasm, and the floor makes their
+/// ambient calls deterministic — a zip written in two cells of one run
+/// is byte-identical, its entry stamp is the header's startedAt, and
+/// two runs from one header produce the same archive bytes.
+#[cfg(test)]
+mod allowlist_tests {
+    use super::*;
+    use crate::broker::Broker;
+    use crate::routes::Classifier;
+    use crate::trace::TraceWriter;
+    use std::collections::BTreeMap;
+
+    const PROGRAM: &str = r#"
+import csv
+import gzip
+import hashlib
+import io
+import mimetypes
+import sqlite3
+import struct
+import tarfile
+import urllib.parse
+import zipfile
+
+
+def build_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("a.txt", "hello")
+    return buf.getvalue()
+
+
+def refusal(name):
+    try:
+        __import__(name)
+    except ImportError as e:
+        return str(e)
+    return "imported"
+
+
+def main(args):
+    z1, z2 = build_zip(), build_zip()
+    with zipfile.ZipFile(io.BytesIO(z1)) as z:
+        dt = list(z.getinfo("a.txt").date_time)
+    tb = io.BytesIO()
+    with tarfile.open(fileobj=tb, mode="w:gz") as t:
+        ti = tarfile.TarInfo("b.txt")
+        ti.size = 3
+        t.addfile(ti, io.BytesIO(b"tar"))
+    with tarfile.open(fileobj=io.BytesIO(tb.getvalue()), mode="r:gz") as t:
+        tar_back = t.extractfile("b.txt").read().decode()
+    g = gzip.compress(b"gz")
+    out = io.StringIO()
+    csv.writer(out).writerow(["a", "b,c"])
+    row = next(csv.reader(io.StringIO(out.getvalue())))
+    con = sqlite3.connect(":memory:")
+    con.execute("create table t(x)")
+    con.execute("insert into t values (1),(2)")
+    return {
+        "zip_same": z1 == z2,
+        "zip_sha": hashlib.sha256(z1).hexdigest(),
+        "tar_sha": hashlib.sha256(tb.getvalue()).hexdigest(),
+        "gz_sha": hashlib.sha256(g).hexdigest(),
+        "dt": dt, "tar": tar_back, "gz": gzip.decompress(g).decode(),
+        "csv": row, "u32": struct.unpack("<I", struct.pack("<I", 7))[0],
+        "sum": con.execute("select sum(x) from t").fetchone()[0],
+        "mime": mimetypes.guess_type("photo.png")[0],
+        "host": urllib.parse.urlparse("https://a.b/c?d=1").netloc,
+        "refused": {
+            "pathlib": refusal("pathlib"),
+            "urllib.request": refusal("urllib.request"),
+            "bz2": refusal("bz2"),
+            "os.path": refusal("os.path"),
+        },
+    }
+"#;
+
+    fn run(dir: &std::path::Path, cage: &Cage, header: Value) -> RunOutcome {
+        let broker = Broker::new(
+            TraceWriter::new(header),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Some(dir.to_path_buf()),
+            Classifier::new(None),
+        );
+        run_program(
+            cage,
+            broker,
+            "batteries@v1",
+            &json!({}),
+            Default::default(),
+            Arc::new(AtomicBool::new(false)),
+            60.0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn batteries_work_in_wasm_and_archives_are_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("batteries@v1.py"), PROGRAM).unwrap();
+        let cage = Cage::embedded().unwrap();
+        let one = run(
+            dir.path(),
+            &cage,
+            json!({"id": "bt1", "program": "batteries@v1"}),
+        );
+        assert_eq!(one.status, "ok", "{:?}", one.error);
+        let v = &one.value;
+        assert_eq!(v["zip_same"], json!(true), "two cells, one archive");
+        assert_eq!(v["tar"], "tar");
+        assert_eq!(v["gz"], "gz");
+        assert_eq!(v["csv"], json!(["a", "b,c"]));
+        assert_eq!(v["u32"], 7);
+        assert_eq!(v["sum"], 3);
+        assert_eq!(v["mime"], "image/png");
+        assert_eq!(v["host"], "a.b");
+        for (name, pointer) in [
+            ("pathlib", "ADR-024"),
+            ("urllib.request", "http.get"),
+            ("bz2", "not compiled into the kernel image"),
+            ("os.path", "ADR-024"),
+        ] {
+            let msg = v["refused"][name].as_str().unwrap();
+            assert!(msg.contains(pointer), "{name}: {msg}");
+        }
+        // the zip entry stamp is the frozen wall clock (DOS time: 2 s grain)
+        let header = one.broker.writer.records[0]["run"].clone();
+        let started = header["startedAt"].as_f64().unwrap() as i64;
+        use chrono::{Datelike, Timelike};
+        let t = chrono::DateTime::from_timestamp(started, 0).unwrap();
+        assert_eq!(
+            v["dt"],
+            json!([
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second() - t.second() % 2
+            ])
+        );
+        // same header → same bytes, gzip mtime and tar stamps included
+        let two = run(dir.path(), &cage, header);
+        assert_eq!(two.status, "ok", "{:?}", two.error);
+        assert_eq!(two.value["zip_sha"], v["zip_sha"]);
+        assert_eq!(two.value["tar_sha"], v["tar_sha"]);
+        assert_eq!(two.value["gz_sha"], v["gz_sha"]);
+    }
+}

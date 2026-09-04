@@ -27,8 +27,11 @@ re-elides it.
 ## Cell semantics
 
 Plain Python, top-level statements. The last expression is captured.
-`print()` freely — it goes to you, never to the user. Only the curated
-stdlib imports work (`json`, `re`, `math`, `inspect`, …). The present
+`print()` freely — it goes to you, never to the user. The pure stdlib
+imports work (`json`, `re`, `csv`, `struct`, `zipfile`/`tarfile`/`gzip`,
+`xml.etree`, `urllib.parse`, `difflib`, `sqlite3` in memory, …); a
+refused import says where the capability lives instead — read the
+message, never re-implement the module. The present
 is a GLOBAL backed by a recorded effect: `now()` (unix seconds),
 `tz_offset()` (the user's UTC offset, seconds), `env(name)`,
 `uuid4()`, plus proxied `datetime`/`time`. `rand()` and the stdlib

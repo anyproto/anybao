@@ -4,45 +4,78 @@ import allowlist + proxied ambient-authority modules, Pythonic facades.
 Everything nondeterministic routes through `host-effect` (ADR-003).
 """
 
+import abc  # noqa: F401
+import array  # noqa: F401
 import ast
 
 # Literal imports so componentize-py BUNDLES these into the guest (its
-# static analysis can't see lazy imports) — every tier-1 allowlist
-# module plus datetime (proxied). Do not convert to importlib loops.
+# static analysis can't see lazy imports) — every allowlisted module
+# (ADR-002 §4 table) plus the proxied ones. Do not convert to importlib
+# loops.
 import base64  # noqa: F401
+import binascii  # noqa: F401
 import bisect  # noqa: F401
 import builtins as _b
+import calendar  # noqa: F401
+import cmath  # noqa: F401
 import collections  # noqa: F401
+import colorsys  # noqa: F401
+import configparser  # noqa: F401
 import contextlib  # noqa: F401
 import copy  # noqa: F401
+import csv  # noqa: F401
 import dataclasses  # noqa: F401
 import datetime  # noqa: F401  (guest sees only the proxy)
 import decimal  # noqa: F401
+import difflib  # noqa: F401
 import email.header  # noqa: F401  (tier-1, ADR-012 §6; email is lazy —
 import email.utils  # noqa: F401   literal submodule imports bundle them)
+import encodings.ascii  # noqa: F401  (codecs the admitted modules load lazily:
+import encodings.cp437  # noqa: F401   zipfile names, email/quopri bodies —
+import encodings.latin_1  # noqa: F401  componentize-py bundles only what it sees)
+import encodings.utf_16  # noqa: F401
 import enum  # noqa: F401
+import fnmatch  # noqa: F401
 import fractions  # noqa: F401
 import functools  # noqa: F401
+import graphlib  # noqa: F401
+import gzip  # noqa: F401
 import hashlib  # noqa: F401
 import heapq  # noqa: F401
+import hmac  # noqa: F401
 import html.entities  # noqa: F401  (tier-1, ADR-012 §6; also bs4's backend)
 import html.parser  # noqa: F401
 import inspect  # noqa: F401
+import io as _io  # (guest sees the proxy: minus open/open_code/FileIO)
+import ipaddress  # noqa: F401
 import itertools  # noqa: F401
 import json
 import math  # noqa: F401
+import mimetypes as _mimetypes  # (guest sees the proxy: built-in table only)
+import operator  # noqa: F401
+import plistlib  # noqa: F401
+import pprint  # noqa: F401
+import quopri  # noqa: F401
 import random  # the run's seeded stream (ADR-002 §4 floor)
 import re  # noqa: F401
 import secrets  # noqa: F401
+import shlex  # noqa: F401
+import sqlite3 as _sqlite3  # (guest sees the proxy: :memory: only)
 import statistics  # noqa: F401
 import string  # noqa: F401
+import struct  # noqa: F401
+import tarfile  # noqa: F401
 import textwrap  # noqa: F401
 import time as _time  # (guest sees the proxy: time()/monotonic()/sleep() effect-backed)
+import tomllib  # noqa: F401
 import traceback
 import types
 import typing  # noqa: F401
 import unicodedata  # noqa: F401
+import urllib.parse  # noqa: F401
 import uuid  # noqa: F401
+import xml.etree.ElementTree  # noqa: F401
+import zipfile  # noqa: F401
 
 import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
 import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
@@ -447,48 +480,143 @@ class _Environ:
 
 
 def _os_proxy():
-    return types.SimpleNamespace(environ=_Environ())
+    # environ is the env.get effect; fspath/PathLike are pure and what
+    # the archive modules ask of a path-like argument (ADR-002 §4)
+    import os as _os
+    return types.SimpleNamespace(environ=_Environ(), fspath=_os.fspath,
+                                 PathLike=_os.PathLike)
+
+
+def _io_proxy():
+    # the in-memory streams and wrappers; open/open_code/FileIO are the
+    # file openers — files are ADR-024 fs.* effects
+    return types.SimpleNamespace(**{k: v for k, v in vars(_io).items()
+                                    if not k.startswith("_")
+                                    and k not in ("open", "open_code", "FileIO")})
+
+
+def _sqlite3_proxy():
+    # an in-memory database is pure; a path is a file — refused
+    def connect(database=":memory:", *args, **kwargs):
+        if database != ":memory:" or kwargs.get("uri"):
+            raise EffectError(
+                f"sqlite3.connect({database!r}): only ':memory:' databases are "
+                "inside the effect boundary — a database file is ADR-024 fs.* "
+                "territory; build it in memory and write bytes out if needed")
+        return _sqlite3.connect(":memory:", *args, **kwargs)
+    ns = {k: v for k, v in vars(_sqlite3).items()
+          if not k.startswith("_") and k not in ("connect", "Connection")}
+    ns["connect"] = connect
+    return types.SimpleNamespace(**ns)
+
+
+def _mimetypes_proxy():
+    # the built-in table only: init() never reads /etc/mime.types & co
+    _mimetypes.knownfiles = []
+    _mimetypes.init()
+    return types.SimpleNamespace(**{k: v for k, v in vars(_mimetypes).items()
+                                    if not k.startswith("_") and k != "init"})
 
 
 _PROXIES = {
     "datetime": _datetime_proxy,
     "time": _time_proxy,
     "os": _os_proxy,
+    "io": _io_proxy,
+    "sqlite3": _sqlite3_proxy,
+    "mimetypes": _mimetypes_proxy,
 }
 
-# tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2;
-# ast: ADR-013 §3 — the program write path's syntax gate/source scanner;
-# html/email + the vendored trio: ADR-012 §6; zlib: pure codec, no
-# ambient authority — inflate for PDF FlateDecode streams / gzip / PNG
-# so a model never re-implements it in cells). six/typing_extensions
-# are bundled as internals of the vendored packages but stay
-# un-importable.
+# tier 1: pure stdlib, passes through — the ADR-002 §4 table (audited
+# once against the kernel image; deterministic, no ambient authority).
+# Entries are dotted names: an entry admits itself and its submodules
+# (`urllib.parse`, never `urllib.request`). inspect: ADR-010 §2; ast:
+# ADR-013 §3; html/email + the vendored trio: ADR-012 §6; random/uuid/
+# secrets are pure on the WASI floor. six/typing_extensions are
+# bundled as internals of the vendored packages but stay un-importable.
 _ALLOWED = {
-    "math", "json", "re", "itertools", "functools", "collections",
-    "contextlib", "textwrap", "heapq", "bisect", "statistics",
-    "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
-    "hashlib", "string", "copy", "unicodedata", "inspect", "ast",
-    "html", "email", "zlib",
-    "random", "uuid", "secrets",   # pure on the WASI floor: seeded once per run (ADR-002 §4)
-    "bs4", "soupsieve", "markdownify",   # vendored pure-Python (runtime/guest/)
+    # data / text
+    "json", "re", "string", "textwrap", "unicodedata", "difflib", "csv",
+    "html", "email", "xml.etree", "urllib.parse", "tomllib", "configparser",
+    "shlex", "fnmatch", "pprint", "quopri", "plistlib",
+    # numbers
+    "math", "cmath", "decimal", "fractions", "statistics", "ipaddress",
+    "colorsys", "calendar",
+    # containers / control
+    "itertools", "functools", "collections", "contextlib", "heapq", "bisect",
+    "graphlib", "operator", "copy", "dataclasses", "enum", "typing", "abc",
+    "traceback",
+    # codecs / bytes
+    "base64", "binascii", "struct", "array", "zlib", "gzip", "zipfile",
+    "tarfile", "hashlib", "hmac",
+    # identity / chance (seeded once per run, ADR-002 §4 floor)
+    "uuid", "random", "secrets",
+    # introspection
+    "inspect", "ast",
+    # vendored pure-Python (runtime/guest/, ADR-012 §6)
+    "bs4", "soupsieve", "markdownify",
 }
 
+# refused with a pointer (ADR-002 §4): the message names where the
+# capability actually lives, so a model never re-implements it
+_REFUSED = {
+    "pathlib": "files are the ADR-024 fs.* effects (fs.read/fs.list/fs.write)",
+    "shutil": "files are the ADR-024 fs.* effects (fs.read/fs.list/fs.write)",
+    "glob": "files are the ADR-024 fs.* effects (fs.list takes a glob)",
+    "os.path": "files are the ADR-024 fs.* effects; os.fspath/os.PathLike pass through",
+    "socket": "the network is the effect boundary: http.* is the one outbound door",
+    "select": "the network is the effect boundary: http.* is the one outbound door",
+    "subprocess": "processes are the effect boundary (sh.run under the shell feature)",
+    "threading": "cells are single-threaded; concurrency is the host's (http.get_many)",
+    "multiprocessing": "cells are single-threaded; concurrency is the host's (http.get_many)",
+    "asyncio": "cells are synchronous; concurrency is the host's (http.get_many)",
+    "signal": "signals are the host's (the run interrupt)",
+    "urllib.request": "use http.get/http.post (recorded, classified, capability-checked)",
+    "http.client": "use http.get/http.post (recorded, classified, capability-checked)",
+    "ftplib": "use http.*; no other protocol crosses the boundary",
+    "smtplib": "use http.*; mail goes through a connector program",
+    "pickle": "use json — pickle executes code on load and has no use here",
+}
+_NOT_IN_IMAGE = {"bz2", "lzma", "ssl", "ctypes"}
 
-def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
-    top = name.split(".")[0]
-    if top in _PROXIES:
-        if top not in _proxy_cache:
-            _proxy_cache[top] = _PROXIES[top]()
-        return _proxy_cache[top]
-    if top in _ALLOWED:
-        return _b.__import__(name, globals, locals, fromlist, level)
-    raise ImportError(
-        f"module '{name}' is outside the effect boundary. "
+
+def _matches(name, entries):
+    """`entries` admits `name` when an entry equals it or is a parent
+    package of it (dotted prefix)."""
+    return any(name == e or name.startswith(e + ".") for e in entries)
+
+
+def _boundary_error(name, reason):
+    # every refusal is a page of the model-facing doc: the reason (where
+    # the capability lives) and the whole admitted surface
+    return ImportError(
+        f"module '{name}' {reason} "
         f"Available: {', '.join(sorted(_ALLOWED))}; "
         f"proxied: {', '.join(sorted(_PROXIES))}; "
         f"plus globals http, now(), rand(), env(), uuid4(), values, effects, "
         f"effect(), span(), describe(), inferSchema(), help()."
     )
+
+
+def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
+    top = name.split(".")[0]
+    if _matches(name, _REFUSED):
+        hit = next(e for e in _REFUSED if name == e or name.startswith(e + "."))
+        raise _boundary_error(name, f"is outside the effect boundary: {_REFUSED[hit]}.")
+    if top in _PROXIES:
+        if name != top:
+            raise _boundary_error(name, f"is outside the effect boundary: '{top}' is "
+                                        f"proxied — import {top} and use what it exposes.")
+        if top not in _proxy_cache:
+            _proxy_cache[top] = _PROXIES[top]()
+        return _proxy_cache[top]
+    if _matches(name, _ALLOWED):
+        return _b.__import__(name, globals, locals, fromlist, level)
+    if top in _NOT_IN_IMAGE:
+        raise _boundary_error(name, f"is not compiled into the kernel image (no {top}); "
+                                    f"zlib-backed formats work: gzip, zipfile deflate, "
+                                    f"tarfile gz.")
+    raise _boundary_error(name, "is outside the effect boundary.")
 
 
 # ---- native introspection (ADR-010 §2) --------------------------------------
