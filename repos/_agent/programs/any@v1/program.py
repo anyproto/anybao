@@ -1424,6 +1424,24 @@ class _Client:
         body = {"identity": identity} if identity else {}
         return self._call("post", f"/v1/processes/{process_id}/cancel", body)
 
+    def list_devices(self):
+        """The account's device registry (ADR-015) → {self, active,
+        devices}.
+
+        `self` = this server's peerId; `active` = {appSlug: peerId},
+        the server-computed winner per app ("bao" is the agent; a
+        client app registers under its own slug); `devices` = [{peerId,
+        name, os, version, apps: {slug: presence}, activeClaims:
+        {slug: {seq, at}}}] — every device that has registered, live
+        or not (presence is the app's last heartbeat under `apps`).
+        Read-only: the winner rule is server-side and a switch is
+        MANUAL — the user activates bao on the device they want (the
+        standby serves notice within one 10 s poll). Use it to tell
+        the user which device answers right now, which others exist,
+        and where to switch — never to claim from here. A server
+        without the registry 404s (request.not_found)."""
+        return self._call("get", "/v1/devices")
+
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress
         # ONLY through agent:progress@v1, never these three directly)
@@ -2711,6 +2729,11 @@ def cancel_process(process_id, identity=None):
     return _c().cancel_process(process_id, identity)
 
 
+@span(kind="getter")  # noqa: F821 - guest global
+def list_devices():
+    return _c().list_devices()
+
+
 # `_`-private (hidden from the tool inventory): progress@v1's transport
 def _process_register(body):
     return _c()._process_register(body)
@@ -2941,7 +2964,7 @@ def delete_memory(spaceConfig, item_id):
 for _f in (create_object, update_object, delete_object, query_objects,
            list_programs, query, modify, upsert_record, upsert_records,
            delete_records, _list_datasets, _create_dataset, _remove_dataset,
-           aggregate, list_processes, cancel_process,
+           aggregate, list_processes, cancel_process, list_devices,
            get_markdown, put_markdown, edit_markdown, list_files, file_content,
            list_search_scopes,
            append_markdown, list_spaces, get_space, general_chat,

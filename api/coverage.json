@@ -98,7 +98,7 @@
     "GET /devices": {
       "excluded": null,
       "fingerprint": "sha256:80b17236f520104f",
-      "helper": "anyclient.list_devices (ADR-015 election; guest device listing = follow-up)"
+      "helper": "helper.list_devices (+ the host's ADR-015 election read)"
     },
     "GET /events/subscribe": {
       "excluded": "client push plumbing (UI)",

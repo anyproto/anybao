@@ -907,6 +907,18 @@ def test_list_programs_tools_only_filters():
 
 # --- flat module surface (ADR-010 §8) ------------------------------------------
 
+def test_list_devices_is_the_registry_read():
+    # ADR-015 §5: the guest reads the registry as-is — self, the
+    # server-computed winners, every registered device
+    reg = {"self": "p1", "active": {"bao": "p2"},
+           "devices": [{"peerId": "p1", "name": "laptop", "os": "linux", "apps": {"bao": {}}},
+                       {"peerId": "p2", "name": "mac", "os": "darwin", "apps": {"bao": {}},
+                        "activeClaims": {"bao": {"seq": 3, "at": 1}}}]}
+    fx = wire(replies={"/v1/devices": reg})
+    assert client(fx).list_devices() == reg
+    assert fx.calls == [("GET", "/v1/devices", None)]
+
+
 def test_flat_functions_lift_method_docstrings():
     g = load(wire())
     assert "envelope" in g["search"].__doc__       # ONE authored copy, lifted
