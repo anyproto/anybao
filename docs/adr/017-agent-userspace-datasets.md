@@ -176,6 +176,16 @@ types=None)`, `resolve_loser(space, bundle_id, loser_root_id)` — 1:1
 over the server endpoints, ids verbatim in bodies, percent-encoded in
 paths by the client.
 
+Declaration tier, `_`-private on the flat surface (ADR-010 §1: program
+plumbing, never in the chat agent's inventory): `_list_datasets`,
+`_create_dataset`, `_remove_dataset`, and the additive-evolution pair
+`_add_dataset_field(space, type_key, dataset_def_id, field)` →
+`{fieldDefId}` / `_remove_dataset_field(space, type_key,
+dataset_def_id, field_def_id)` — one field in or out of an existing
+definition (§1), keeping the declaration's pinned behaviour where
+remove + re-declare would drop it. Records stay public (`query`,
+`upsert_records`, `delete_records`).
+
 Kept signatures, reimplemented over the generic surface (programs and
 skills keep working unchanged): `get_brain` (resolves the
 `bao/brain/v1` child, cached per run), `create_memory` /

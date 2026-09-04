@@ -1862,6 +1862,38 @@ class _Client:
         return self._call(
             "delete", f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}")
 
+    def add_dataset_field(self, space, type_key, dataset_def_id, field):
+        """Add ONE field to an existing dataset definition (additive
+        evolution, ADR-017 §1) → {fieldDefId}.
+
+        field: {"key", "kind"?: string|number|boolean|array|object,
+        "required"?, "mutableBy"?: "author"|"any", "stamp"?:
+        "creator"|"createTime"|"modifyTime", "scope"?: "local",
+        "name"?, "shape"?}. Existing records simply lack the key
+        (a `required` field only gates writes from now on). The
+        alternative — remove + re-declare — drops the declaration's
+        pinned behaviour; adding a field keeps it. dataset_def_id from
+        list_datasets. 404 dataset.not_found when the def is gone."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call(
+            "post",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields",
+            field)
+        return {"fieldDefId": r.get("fieldDefId")}
+
+    def remove_dataset_field(self, space, type_key, dataset_def_id, field_def_id):
+        """Remove ONE field definition from a dataset (wire: 204) →
+        {}.
+
+        field_def_id = the `id` inside list_datasets' `fields`. Stored
+        values under that key are NOT cleaned up — the key becomes an
+        undeclared (any-typed) field for readers; a later add under
+        the same key re-declares it."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._call(
+            "delete",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
+
     def add_property(self, space, type_key, body):
         """POST one property onto a type (named by xKey — unknown keys
         error with the catalog). body: {"name", "xKey"?, "kind"?,
@@ -2714,6 +2746,15 @@ def _remove_dataset(spaceConfig, type_key, dataset_def_id):
     return _c().remove_dataset(_space(spaceConfig), type_key, dataset_def_id)
 
 
+def _add_dataset_field(spaceConfig, type_key, dataset_def_id, field):
+    return _c().add_dataset_field(_space(spaceConfig), type_key, dataset_def_id, field)
+
+
+def _remove_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id):
+    return _c().remove_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
+                                     field_def_id)
+
+
 @span(kind="getter")  # noqa: F821 - guest global
 def aggregate(spaceConfig, pipeline, object_id=None, dataset=None):
     return _c().aggregate(_space(spaceConfig), pipeline, object_id, dataset)
@@ -2964,6 +3005,7 @@ def delete_memory(spaceConfig, item_id):
 for _f in (create_object, update_object, delete_object, query_objects,
            list_programs, query, modify, upsert_record, upsert_records,
            delete_records, _list_datasets, _create_dataset, _remove_dataset,
+           _add_dataset_field, _remove_dataset_field,
            aggregate, list_processes, cancel_process, list_devices,
            get_markdown, put_markdown, edit_markdown, list_files, file_content,
            list_search_scopes,
