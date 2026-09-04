@@ -36,24 +36,25 @@ images as data-URI `image_url` blocks and has no document block.
 
 ## Decision
 
-### 1. Binary http responses: `response: "base64"` (amends ADR-002 §1, ADR-008 §2)
+### 1. Binary http responses (superseded by ADR-026 §3)
 
-`http.*` accepts `response: "base64"`. The output keeps its shape
-(`{status, headers, body, url}`) with `body` = the base64 of the raw
-response bytes and one added field `encoding: "base64"`. Without the
-flag the body is text, as today. No new effect: the thin-host rule
-holds (nothing file-shaped enters the host; a file read is a recorded
-GET like any other), the trace stays the record (a multi-MB body
-spills to the blob sidecar over ADR-001's 64 KiB threshold, replay
-resolves it), and a binary *request* body — upload — is out of scope
-(`json`/`body` stay text).
+The host classifies every response body: a text media type that
+decodes as UTF-8 comes back as `body` text; anything else comes back
+as a Blob reference in `body` (`{__blob, bytes, mime}`, ADR-026 §1).
+There is no `response: "base64"` flag and no `encoding` field;
+`response: "text"` forces text for a misdeclared body. A Blob
+reference in a request payload (`json` or `body`) is expanded by the
+host on the wire, so uploads are `http.post(url, body=blob)` — the
+thin-host rule holds both ways: a file read is a recorded GET, a file
+write a recorded POST, and the bytes exist once, in the blob
+directory, never in a record.
 
 ### 2. `any@v1.file_content(spaceConfig, file)` and `list_files`
 
 `file_content(spaceConfig, file)` — `file` is an `any://f/<sid>/<fid>`
-URI or a bare fileId — issues the content GET with `response:
-"base64"` and returns `{fileId, mime, size, data}` (`mime` from
-`Content-Type`, `size` = decoded byte length, `data` base64). A
+URI or a bare fileId — issues the content GET and returns `{fileId,
+mime, size, blob}` — `blob` the Blob the GET produced (ADR-026 §5;
+`bytes(blob)` when the guest really needs the payload). A
 `?variant=<tag>` on the URI passes through. `list_files(spaceConfig,
 object_id=None)` wraps `GET /files[?objectId=]` (name/mime/size per
 file) so bao can see what is attached to an object before reading it.
@@ -67,8 +68,10 @@ Part += File{media_type, data: <base64>, name?}
 ```
 
 One neutral part for every file, whatever it came from `any` as —
-`file_content`'s result wraps into it directly. `data` is base64
-always, text included: byte-exact, no encoding guesses in the guest.
+`file_content`'s result wraps into it directly. `data` is base64 or a
+Blob reference (ADR-026 §5) — byte-exact either way, no encoding
+guesses in the guest; the host expands a reference on the wire
+(ADR-026 §3), so the trace record of the request keeps the ref.
 The adapter owns the media-type routing, because that is where the
 providers differ:
 
@@ -124,7 +127,7 @@ natural home).
 
 `read(file, prompt, *, tier="vision", system="", max_tokens=None)` is
 the one-call form: `file` is an `any://f/…` URI, a bare fileId with a
-`space=` kwarg, or an already-fetched `{mime, data, name?}` dict;
+`space=` kwarg, an already-fetched `{mime, data, name?}` dict, or a Blob (ADR-026 §5);
 returns the reply text. Internally: `file_content` (when given a
 ref) + one `chat` with `[File, Text(prompt)]` parts. `chat` itself
 accepts `File` parts on any tier — a text-only tier fails as its
@@ -149,16 +152,17 @@ pattern), not inline bytes.
 
 ### 6. Trace view elides binary
 
-`anyrt trace show` renders a base64 body / `data` field as
-`<base64 <n> bytes <mime>>` — in http lines and inside the llm
-request. The bytes stay in the trace (blob sidecar); `--seq N` still
-dumps them.
+`anyrt trace show` renders a Blob reference as `<blob <mime> <n>
+bytes sha256:…>` — in http lines, inside the llm request, in cell
+values — never inline bytes. `--seq N` prints the record with the
+ref; `anyrt trace blob <hash>` writes the bytes (ADR-026 §7).
 
 ## Consequences
 
-- Each read costs the file twice in the trace (GET output + llm
-  request input), both as blobs — the price of "if it isn't in the
-  trace, it didn't happen". Acceptable at document scale.
+- A read costs the file once: the GET output and the llm request
+  input carry the same Blob reference, and the bytes exist once in
+  the blob directory (ADR-026 §2/§3). "If it isn't in the trace, it
+  didn't happen" holds through the reference.
 - Size/page limits are the provider's; the guest surfaces the 400 as
   `LlmError`. Downscaling images (`?variant=thumb`) is available at
   the ref level when needed.

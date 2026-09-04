@@ -18,3 +18,4 @@ anybao.test.toml
 tools/eval/results/
 /scratch/
 /configs/
+tests/fixtures/bob86/

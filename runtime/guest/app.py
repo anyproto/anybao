@@ -4,41 +4,79 @@ import allowlist + proxied ambient-authority modules, Pythonic facades.
 Everything nondeterministic routes through `host-effect` (ADR-003).
 """
 
+import abc  # noqa: F401
+import array  # noqa: F401
 import ast
 
 # Literal imports so componentize-py BUNDLES these into the guest (its
-# static analysis can't see lazy imports) — every tier-1 allowlist
-# module plus datetime (proxied). Do not convert to importlib loops.
+# static analysis can't see lazy imports) — every allowlisted module
+# (ADR-002 §4 table) plus the proxied ones. Do not convert to importlib
+# loops.
 import base64  # noqa: F401
+import binascii  # noqa: F401
 import bisect  # noqa: F401
 import builtins as _b
+import calendar  # noqa: F401
+import cmath  # noqa: F401
 import collections  # noqa: F401
+import colorsys  # noqa: F401
+import configparser  # noqa: F401
 import contextlib  # noqa: F401
 import copy  # noqa: F401
+import csv  # noqa: F401
 import dataclasses  # noqa: F401
 import datetime  # noqa: F401  (guest sees only the proxy)
 import decimal  # noqa: F401
+import difflib  # noqa: F401
 import email.header  # noqa: F401  (tier-1, ADR-012 §6; email is lazy —
 import email.utils  # noqa: F401   literal submodule imports bundle them)
+import encodings.ascii  # noqa: F401  (codecs the admitted modules load lazily:
+import encodings.cp437  # noqa: F401   zipfile names, email/quopri bodies —
+import encodings.latin_1  # noqa: F401  componentize-py bundles only what it sees)
+import encodings.utf_16  # noqa: F401
 import enum  # noqa: F401
+import fnmatch  # noqa: F401
 import fractions  # noqa: F401
 import functools  # noqa: F401
+import graphlib  # noqa: F401
+import gzip  # noqa: F401
 import hashlib  # noqa: F401
 import heapq  # noqa: F401
+import hmac  # noqa: F401
 import html.entities  # noqa: F401  (tier-1, ADR-012 §6; also bs4's backend)
 import html.parser  # noqa: F401
 import inspect  # noqa: F401
+import io
+import io as _io  # (guest sees the proxy: minus open/open_code/FileIO)
+import ipaddress  # noqa: F401
 import itertools  # noqa: F401
 import json
 import math  # noqa: F401
+import mimetypes as _mimetypes  # (guest sees the proxy: built-in table only)
+import operator  # noqa: F401
+import plistlib  # noqa: F401
+import pprint  # noqa: F401
+import quopri  # noqa: F401
+import random  # the run's seeded stream (ADR-002 §4 floor)
 import re  # noqa: F401
+import secrets  # noqa: F401
+import shlex  # noqa: F401
+import sqlite3 as _sqlite3  # (guest sees the proxy: :memory: only)
 import statistics  # noqa: F401
 import string  # noqa: F401
+import struct  # noqa: F401
+import tarfile  # noqa: F401
 import textwrap  # noqa: F401
+import time as _time  # (guest sees the proxy: time()/monotonic()/sleep() effect-backed)
+import tomllib  # noqa: F401
 import traceback
 import types
 import typing  # noqa: F401
 import unicodedata  # noqa: F401
+import urllib.parse  # noqa: F401
+import uuid  # noqa: F401
+import xml.etree.ElementTree  # noqa: F401
+import zipfile  # noqa: F401
 
 import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
 import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
@@ -49,8 +87,17 @@ class EffectError(Exception):
     pass
 
 
+def _json_default(v):
+    """Guest handles that cross the boundary as their reference
+    (ADR-026 §4: a Blob is its ref wherever JSON is expected)."""
+    if isinstance(v, Blob):
+        return v.ref()
+    raise TypeError(f"Object of type {type(v).__name__} is not JSON serializable")
+
+
 def _effect(name, payload=None):
-    reply = json.loads(wit_world.host_effect(name, json.dumps(payload or {})))
+    wire = json.dumps(payload or {}, default=_json_default)
+    reply = json.loads(wit_world.host_effect(name, wire))
     if not reply.get("ok"):
         err = reply.get("error") or {}
         raise EffectError(f"{err.get('type', 'EffectError')}: {err.get('message', '')}")
@@ -127,7 +174,10 @@ def fmt_ts(v, fmt="%a %Y-%m-%d %H:%M", offset_s=None):
 
 
 def rand():
-    return _effect("random.random")["value"]
+    """Uniform [0, 1) from the run's seeded stream (ADR-002 §4): the
+    stdlib `random`, seeded once per run from the recorded seed — no
+    record per draw."""
+    return random.random()
 
 
 def env(name, default=None):
@@ -139,20 +189,215 @@ def uuid4():
     return _effect("uuid4")["hex"]
 
 
+# ---- blobs (ADR-026 §4): bytes as handles ----------------------------------
+
+BLOB_BYTES_CEILING = 64 * 1024 * 1024
+
+
+class BinaryBody(Exception):
+    """`.text` / `.json()` on a Response whose body is bytes — use
+    `.blob` (a Blob: `.mime`, `.size`, `bytes(b)`, `b.read(n)`)."""
+
+
+class Blob:
+    """A handle on bytes the host holds (ADR-026): `.sha256`, `.size`,
+    `.mime` — zero bytes in the guest until asked. File-like:
+    `read(n)` / `seek` / `tell`; `bytes(b)` for the whole payload (≤ 64
+    MiB, else read in ranges); `text()` decodes it. Pass it wherever
+    bytes go — an http `body=`, a File part's `data`, `attach_file` —
+    the host moves the bytes; the trace keeps the ref."""
+
+    def __init__(self, sha256, size, mime):
+        self.sha256 = sha256
+        self.size = int(size)
+        self.mime = mime
+        self._pos = 0
+
+    @classmethod
+    def from_ref(cls, ref):
+        return cls(ref["__blob"], ref["bytes"], ref["mime"])
+
+    @staticmethod
+    def is_ref(v):
+        return (isinstance(v, dict) and isinstance(v.get("__blob"), str)
+                and set(v) - {"encoding"} == {"__blob", "bytes", "mime"})
+
+    def ref(self, encoding=None):
+        """The reference the host expands on the wire (ADR-026 §3):
+        bare base64 inside JSON, or with `encoding="data-uri"` the
+        `data:<mime>;base64,…` string the OpenAI image wire wants."""
+        r = {"__blob": self.sha256, "bytes": self.size, "mime": self.mime}
+        if encoding:
+            r["encoding"] = encoding
+        return r
+
+    def read(self, n=-1):
+        """Up to `n` bytes from the current position (all remaining
+        when n < 0); advances the position."""
+        if n is None or n < 0:
+            n = self.size - self._pos
+        n = max(0, min(n, self.size - self._pos))
+        if n == 0:
+            return b""
+        out = _effect("blob.read", {"hash": self.sha256, "offset": self._pos, "length": n})
+        data = base64.b64decode(out["data"])
+        self._pos += len(data)
+        return data
+
+    def seek(self, pos, whence=0):
+        if whence == 1:
+            pos += self._pos
+        elif whence == 2:
+            pos += self.size
+        self._pos = max(0, min(int(pos), self.size))
+        return self._pos
+
+    def tell(self):
+        return self._pos
+
+    def __bytes__(self):
+        if self.size > BLOB_BYTES_CEILING:
+            raise ValueError(
+                f"blob is {self.size} bytes, over the {BLOB_BYTES_CEILING} in-guest ceiling — "
+                f"read it in ranges (b.read(n)) or pass the Blob on as-is (http body=, "
+                f"attach_file, a File part): the host moves bytes without the guest holding them")
+        pos = self._pos
+        self._pos = 0
+        try:
+            return self.read(self.size)
+        finally:
+            self._pos = pos
+
+    def text(self, encoding="utf-8", errors="replace"):
+        """The payload decoded as text (text/* blobs)."""
+        return bytes(self).decode(encoding, errors)
+
+    def __len__(self):
+        return self.size
+
+    def __eq__(self, other):
+        return isinstance(other, Blob) and other.sha256 == self.sha256
+
+    def __hash__(self):
+        return hash(self.sha256)
+
+    def __repr__(self):
+        return f"<Blob {self.mime} {self.size} bytes {self.sha256[:23]}>"
+
+
+class _BlobWriter:
+    """`tempfile.TemporaryFile()` in the guest (ADR-026 §4): a file-like
+    object to write into; `close()` (or leaving the `with`) hands the
+    bytes to the host and sets `.blob`. Text mode encodes utf-8."""
+
+    def __init__(self, mime="application/octet-stream", text=False):
+        self.mime = mime
+        self._text = text
+        self._buf = io.StringIO() if text else io.BytesIO()
+        self.blob = None
+        self.closed = False
+
+    def write(self, data):
+        return self._buf.write(data)
+
+    def writelines(self, lines):
+        self._buf.writelines(lines)
+
+    def read(self, n=-1):
+        return self._buf.read(n)
+
+    def seek(self, pos, whence=0):
+        return self._buf.seek(pos, whence)
+
+    def tell(self):
+        return self._buf.tell()
+
+    def flush(self):
+        pass
+
+    def getvalue(self):
+        v = self._buf.getvalue()
+        return v.encode("utf-8") if self._text else v
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.blob = blob.from_bytes(self.getvalue(), self.mime)
+        return self.blob
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+class _BlobNs:
+    """`blob.from_bytes(data, mime)` — guest bytes → a Blob (the host
+    writes them once; the trace records the ref). `blob.open(mime)` —
+    a writer that becomes a Blob on close (what `tempfile` returns)."""
+
+    Blob = Blob
+
+    def from_bytes(self, data, mime="application/octet-stream"):
+        if isinstance(data, Blob):
+            return data
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError(f"from_bytes wants bytes (or a str), got {type(data).__name__}")
+        out = _effect("blob.put", {"data": base64.b64encode(bytes(data)).decode(), "mime": mime})
+        return Blob.from_ref(out)
+
+    def open(self, mime="application/octet-stream", text=False):
+        return _BlobWriter(mime, text)
+
+    def is_ref(self, v):
+        return Blob.is_ref(v)
+
+    def of(self, v):
+        """A Blob from a Blob, a ref dict, or bytes (mime octet-stream)."""
+        if isinstance(v, Blob):
+            return v
+        if Blob.is_ref(v):
+            return Blob.from_ref(v)
+        return self.from_bytes(v)
+
+
+blob = _BlobNs()
+
+
 # ---- http facade (ADR-002 §1 Pythonic surface) -----------------------------
 
 class Response:
+    """`.status`, `.headers`, `.url` (final, post-redirect), and the body
+    as the host classified it (ADR-026 §3): `.text` / `.json()` for a
+    text body, `.blob` (a Blob) for bytes — an image, a PDF, a zip.
+    `.text` on a bytes body raises BinaryBody; `.blob` is None on a
+    text body. `http.get(url, response="text")` forces text."""
+
     def __init__(self, raw):
         self.status = raw.get("status")
         self.headers = raw.get("headers") or {}
-        self.text = raw.get("body") or ""
         self.url = raw.get("url")  # final url, post-redirect (ADR-008 §2)
+        body = raw.get("body")
+        self.blob = Blob.from_ref(body) if Blob.is_ref(body) else None
+        self._text = "" if self.blob is not None else (body or "")
+
+    @property
+    def text(self):
+        if self.blob is not None:
+            raise BinaryBody(f"the body is bytes ({self.blob!r}); use .blob")
+        return self._text
 
     def json(self):
         return json.loads(self.text)
 
     def __repr__(self):
-        return f"<Response {self.status}, {len(self.text)} bytes>"
+        if self.blob is not None:
+            return f"<Response {self.status}, {self.blob!r}>"
+        return f"<Response {self.status}, {len(self._text)} bytes>"
 
 
 def _batch(name, payloads):
@@ -412,27 +657,20 @@ def _datetime_proxy():
     )
 
 
-def _random_proxy():
-    def _sample(seq, k):
-        pool = list(seq)
-        return [pool.pop(int(rand() * len(pool))) for _ in range(k)]
-
-    return types.SimpleNamespace(
-        random=rand,
-        uniform=lambda a, b: a + rand() * (b - a),
-        randint=lambda a, b: a + int(rand() * (b - a + 1)),
-        choice=lambda seq: seq[int(rand() * len(seq))],
-        sample=_sample,
-        shuffle=lambda lst: lst.sort(key=lambda _: rand()),
-    )
-
-
 def _time_proxy():
-    return types.SimpleNamespace(
-        time=now,
-        monotonic=now,  # good enough for cell code; real monotonic is ambient
-        sleep=lambda s: _effect("sleep", {"seconds": s}),
-    )
+    # the real module minus its ambient reads: every "what time is it
+    # now" spelling — time()/monotonic()/perf_counter() and their _ns
+    # forms — is the recorded `time.now`, sleep() the `sleep` effect;
+    # the rest (gmtime/localtime/strftime/…) passes through and sees
+    # the WASI floor — the run's recorded start (ADR-002 §4)
+    ns = types.SimpleNamespace(**{k: v for k, v in vars(_time).items()
+                                  if not k.startswith("_")})
+    ns.time = now
+    ns.monotonic = now
+    ns.perf_counter = now
+    ns.time_ns = ns.monotonic_ns = ns.perf_counter_ns = lambda: int(now() * 1e9)
+    ns.sleep = lambda s: _effect("sleep", {"seconds": s})
+    return ns
 
 
 class _Environ:
@@ -450,48 +688,167 @@ class _Environ:
 
 
 def _os_proxy():
-    return types.SimpleNamespace(environ=_Environ())
+    # environ is the env.get effect; fspath/PathLike are pure and what
+    # the archive modules ask of a path-like argument (ADR-002 §4)
+    import os as _os
+    return types.SimpleNamespace(environ=_Environ(), fspath=_os.fspath,
+                                 PathLike=_os.PathLike)
+
+
+def _io_proxy():
+    # the in-memory streams and wrappers; open/open_code/FileIO are the
+    # file openers — files are ADR-024 fs.* effects
+    return types.SimpleNamespace(**{k: v for k, v in vars(_io).items()
+                                    if not k.startswith("_")
+                                    and k not in ("open", "open_code", "FileIO")})
+
+
+def _sqlite3_proxy():
+    # an in-memory database is pure; a path is a file — refused
+    def connect(database=":memory:", *args, **kwargs):
+        if database != ":memory:" or kwargs.get("uri"):
+            raise EffectError(
+                f"sqlite3.connect({database!r}): only ':memory:' databases are "
+                "inside the effect boundary — a database file is ADR-024 fs.* "
+                "territory; build it in memory and write bytes out if needed")
+        return _sqlite3.connect(":memory:", *args, **kwargs)
+    ns = {k: v for k, v in vars(_sqlite3).items()
+          if not k.startswith("_") and k not in ("connect", "Connection")}
+    ns["connect"] = connect
+    return types.SimpleNamespace(**ns)
+
+
+def _mimetypes_proxy():
+    # the built-in table only: init() never reads /etc/mime.types & co
+    _mimetypes.knownfiles = []
+    _mimetypes.init()
+    return types.SimpleNamespace(**{k: v for k, v in vars(_mimetypes).items()
+                                    if not k.startswith("_") and k != "init"})
+
+
+def _tempfile_proxy():
+    """ADR-026 §4 / ADR-002 §4: a temporary FILE is a blob writer — what
+    the guest writes becomes a Blob on close; temporary directories
+    wait for the ADR-024 fs surface."""
+    def _file(mode="w+b", mime="application/octet-stream", **_kw):
+        return _BlobWriter(mime, text="b" not in mode)
+
+    def _no_dir(*_a, **_k):
+        raise ImportError("tempfile directories are outside the effect boundary "
+                          "(ADR-024 fs surface); a temporary FILE is a blob writer: "
+                          "tempfile.TemporaryFile(mime=...) → write → .blob on close")
+
+    return types.SimpleNamespace(
+        TemporaryFile=_file,
+        NamedTemporaryFile=_file,
+        SpooledTemporaryFile=_file,
+        TemporaryDirectory=_no_dir,
+        mkdtemp=_no_dir,
+        mkstemp=_no_dir,
+        gettempdir=_no_dir,
+    )
 
 
 _PROXIES = {
     "datetime": _datetime_proxy,
-    "random": _random_proxy,
     "time": _time_proxy,
     "os": _os_proxy,
+    "tempfile": _tempfile_proxy,
+    "io": _io_proxy,
+    "sqlite3": _sqlite3_proxy,
+    "mimetypes": _mimetypes_proxy,
 }
 
-# tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2;
-# ast: ADR-013 §3 — the program write path's syntax gate/source scanner;
-# html/email + the vendored trio: ADR-012 §6; zlib: pure codec, no
-# ambient authority — inflate for PDF FlateDecode streams / gzip / PNG
-# so a model never re-implements it in cells). six/typing_extensions
-# are bundled as internals of the vendored packages but stay
-# un-importable.
+# tier 1: pure stdlib, passes through — the ADR-002 §4 table (audited
+# once against the kernel image; deterministic, no ambient authority).
+# Entries are dotted names: an entry admits itself and its submodules
+# (`urllib.parse`, never `urllib.request`). inspect: ADR-010 §2; ast:
+# ADR-013 §3; html/email + the vendored trio: ADR-012 §6; random/uuid/
+# secrets are pure on the WASI floor. six/typing_extensions are
+# bundled as internals of the vendored packages but stay un-importable.
 _ALLOWED = {
-    "math", "json", "re", "itertools", "functools", "collections",
-    "contextlib", "textwrap", "heapq", "bisect", "statistics",
-    "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
-    "hashlib", "string", "copy", "unicodedata", "inspect", "ast",
-    "html", "email", "zlib",
-    "bs4", "soupsieve", "markdownify",   # vendored pure-Python (runtime/guest/)
+    # data / text
+    "json", "re", "string", "textwrap", "unicodedata", "difflib", "csv",
+    "html", "email", "xml.etree", "urllib.parse", "tomllib", "configparser",
+    "shlex", "fnmatch", "pprint", "quopri", "plistlib",
+    # numbers
+    "math", "cmath", "decimal", "fractions", "statistics", "ipaddress",
+    "colorsys", "calendar",
+    # containers / control
+    "itertools", "functools", "collections", "contextlib", "heapq", "bisect",
+    "graphlib", "operator", "copy", "dataclasses", "enum", "typing", "abc",
+    "traceback",
+    # codecs / bytes
+    "base64", "binascii", "struct", "array", "zlib", "gzip", "zipfile",
+    "tarfile", "hashlib", "hmac",
+    # identity / chance (seeded once per run, ADR-002 §4 floor)
+    "uuid", "random", "secrets",
+    # introspection
+    "inspect", "ast",
+    # vendored pure-Python (runtime/guest/, ADR-012 §6)
+    "bs4", "soupsieve", "markdownify",
 }
+
+# refused with a pointer (ADR-002 §4): the message names where the
+# capability actually lives, so a model never re-implements it
+_REFUSED = {
+    "pathlib": "files are the ADR-024 fs.* effects (fs.read/fs.list/fs.write)",
+    "shutil": "files are the ADR-024 fs.* effects (fs.read/fs.list/fs.write)",
+    "glob": "files are the ADR-024 fs.* effects (fs.list takes a glob)",
+    "os.path": "files are the ADR-024 fs.* effects; os.fspath/os.PathLike pass through",
+    "socket": "the network is the effect boundary: http.* is the one outbound door",
+    "select": "the network is the effect boundary: http.* is the one outbound door",
+    "subprocess": "processes are the effect boundary (sh.run under the shell feature)",
+    "threading": "cells are single-threaded; concurrency is the host's (http.get_many)",
+    "multiprocessing": "cells are single-threaded; concurrency is the host's (http.get_many)",
+    "asyncio": "cells are synchronous; concurrency is the host's (http.get_many)",
+    "signal": "signals are the host's (the run interrupt)",
+    "urllib.request": "use http.get/http.post (recorded, classified, capability-checked)",
+    "http.client": "use http.get/http.post (recorded, classified, capability-checked)",
+    "ftplib": "use http.*; no other protocol crosses the boundary",
+    "smtplib": "use http.*; mail goes through a connector program",
+    "pickle": "use json — pickle executes code on load and has no use here",
+}
+_NOT_IN_IMAGE = {"bz2", "lzma", "ssl", "ctypes"}
+
+
+def _matches(name, entries):
+    """`entries` admits `name` when an entry equals it or is a parent
+    package of it (dotted prefix)."""
+    return any(name == e or name.startswith(e + ".") for e in entries)
+
+
+def _boundary_error(name, reason):
+    # every refusal is a page of the model-facing doc: the reason (where
+    # the capability lives) and the whole admitted surface
+    return ImportError(
+        f"module '{name}' {reason} "
+        f"Available: {', '.join(sorted(_ALLOWED))}; "
+        f"proxied: {', '.join(sorted(_PROXIES))}; "
+        f"plus globals http, blob/Blob, now(), rand(), env(), uuid4(), values, effects, "
+        f"effect(), span(), describe(), inferSchema(), help()."
+    )
 
 
 def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
     top = name.split(".")[0]
+    if _matches(name, _REFUSED):
+        hit = next(e for e in _REFUSED if name == e or name.startswith(e + "."))
+        raise _boundary_error(name, f"is outside the effect boundary: {_REFUSED[hit]}.")
     if top in _PROXIES:
+        if name != top:
+            raise _boundary_error(name, f"is outside the effect boundary: '{top}' is "
+                                        f"proxied — import {top} and use what it exposes.")
         if top not in _proxy_cache:
             _proxy_cache[top] = _PROXIES[top]()
         return _proxy_cache[top]
-    if top in _ALLOWED:
+    if _matches(name, _ALLOWED):
         return _b.__import__(name, globals, locals, fromlist, level)
-    raise ImportError(
-        f"module '{name}' is outside the effect boundary. "
-        f"Available: {', '.join(sorted(_ALLOWED))}; "
-        f"proxied: {', '.join(sorted(_PROXIES))}; "
-        f"plus globals http, now(), rand(), env(), uuid4(), values, effects, "
-        f"effect(), span(), describe(), inferSchema(), help()."
-    )
+    if top in _NOT_IN_IMAGE:
+        raise _boundary_error(name, f"is not compiled into the kernel image (no {top}); "
+                                    f"zlib-backed formats work: gzip, zipfile deflate, "
+                                    f"tarfile gz.")
+    raise _boundary_error(name, "is outside the effect boundary.")
 
 
 # ---- native introspection (ADR-010 §2) --------------------------------------
@@ -723,6 +1080,10 @@ def _json_safe(v):
     values degrade to repr (ADR-001 §4c)."""
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
+    if isinstance(v, Blob):
+        return v.ref()  # the handle, not its repr (ADR-026 §4)
+    if isinstance(v, (bytes, bytearray)):
+        return f"<{len(v)} bytes>"  # never a payload's repr in a span record
     if isinstance(v, (list, tuple)):
         return [_json_safe(x) for x in v]
     if isinstance(v, dict):
@@ -863,6 +1224,9 @@ def _fresh_ns() -> dict:
         "effect": _effect,           # raw channel (plumbing; facades preferred)
         "EffectError": EffectError,
         "http": http,
+        "Blob": Blob,          # bytes as handles (ADR-026 §4)
+        "blob": blob,
+        "BinaryBody": BinaryBody,
         "now": now,
         "tz_offset": tz_offset,
         "ts_s": ts_s,           # instants, ADR-019 §1

@@ -141,9 +141,17 @@ live (a content-addressed collection instead of a per-run sidecar) and
 that identical blobs dedupe across runs. Blob content is **not**
 queryable by design — the request bodies the model saw are the least
 query-worthy bytes and the largest; `effects.get` re-hydrates them as
-today. Whether any-store compresses pages is an open upstream
-question (ticket §2); if it does not, the dedupe alone removes most of
-the repetition.
+today. any-store v2 S2-compresses values over 256 bytes; the dedupe
+removes the cross-run repetition.
+
+**Raw blobs live outside the store (amendment 2026-09-04, ADR-026
+§2).** The collection holds text spills only, and only those that fit
+one request (≤ 700 KB canonical). Raw bytes — an http body the host
+classified as binary, guest-built payloads, oversize text spills —
+are files at `<traces_dir>/blobs/<hex>`, referenced from records by
+`{__blob, bytes, mime}`. The store stays a document store: a 5 MB
+image is never an overflow chain in `sdk.db`, and a blob write can
+never hit the 1 MiB body cap.
 
 ### 5. Reads and the query surface
 
@@ -182,7 +190,9 @@ likely first one.
 Expiry deletes `trace_records` by `runId` filter (200 runs per
 delete), then blobs no surviving record references (the live refs are
 collected with one `$exists` query — local↔local `$lookup` was not
-needed), and marks the `trace_runs` mirror row `expired`. **Summaries
+needed), then raw blob files the same live-ref set no longer names
+(amendment 2026-09-04, ADR-026 §6: list `<traces_dir>/blobs/`, unlink
+the unreferenced), and marks the `trace_runs` mirror row `expired`. **Summaries
 are kept forever**, synced and mirrored — small, and what "did it run"
 questions and `traceRef` links resolve against after the body is gone
 (`effects.of/get/stats` on an expired run answer a typed error naming
@@ -196,7 +206,10 @@ config file, like `serve`) and read through `AnyTraceStore`; a path or
 `--traces-dir` argument selects `FileTraceStore` as today. `follow`
 polls `query` (no subscribe on local collections). `anyrt trace import
 <dir>` loads existing `.jsonl` files once (records + blobs + a
-synthesized summary) so history survives the switch.
+synthesized summary) so history survives the switch, and copies the
+dir's `blobs/` along. Raw blobs resolve from the `traces_dir` of the
+config file the CLI reads `--addr` from — same machine as the serve;
+against a remote serve a raw ref renders unresolved (ADR-026 §7).
 
 ### 8. Trigger audit fields become a view (ADR-006 §4 amendment)
 

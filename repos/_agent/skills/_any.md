@@ -173,9 +173,40 @@ Links (`any://` URIs — the one reference format):
   (`get_markdown` / `query_objects` / `query`); `f/` files are READ
   with `use("llm@v1").read("<the any://f/… link verbatim>", "<your
   question>")` — the model sees the file (image / pdf / text) and the
-  call returns its answer text (ADR-020). Bytes: `file_content(space,
-  link)` (base64); `list_files(space, objectId)` lists an object's
-  attachments. Other formats (docx…) need converting to text first.
+  call returns its answer text (ADR-020). The bytes: `file_content(space,
+  link)["blob"]` — a Blob; `list_files(space, objectId)` lists an
+  object's attachments. Other formats (docx…) need converting to text
+  first.
+- **Bytes are handles (Blob, ADR-026).** `http.get(url)` classifies
+  the body itself: a page / JSON is `.text` / `.json()`, an image /
+  PDF / zip is `.blob` — a `Blob` with `.mime`, `.size`, `.sha256`
+  and zero bytes in your cell (`.text` on it raises BinaryBody).
+  Pass the Blob on as-is — `attach_file(…, blob)`, `llm.read(blob,
+  …)`, a File part's `data`, an http `body=` — the host moves the
+  bytes; `bytes(b)` / `b.read(n)` / `b.text()` pull them into the
+  cell only when you must (≤ 64 MiB). Your own bytes become one with
+  `blob.from_bytes(data, mime)` or a `tempfile.TemporaryFile(mime=…)`
+  writer (`.blob` after close).
+- **Add a file to an object** — `attach_file(space, objectId, name,
+  data, mime=None)` (data: a Blob or bytes) → `{fileId, …, uri:
+  "any://f/<sid>/<fileId>"}`. There is no file without an object: to
+  "create a file", pick or create the object first, then attach.
+  **Images on a page** render ONLY from `any://f/` links — a remote
+  `![alt](https://…)` stays literal text in the editor. Importing
+  markdown with images, in one cell per page:
+  `b = http.get(img_url).blob` → `uri = attach_file(space, page,
+  name, b)["uri"]` → replace the image reference with a plain
+  markdown image line `![alt](uri)`: a `![alt](url)` becomes
+  `![alt](uri)`, and GitBook's whole `<div …><figure><img src="…"
+  …>…</figure></div>` block becomes that one `![alt](uri)` line
+  (resolve a relative `src` against the page URL) — the editor
+  renders markdown image lines, never an `<img>` inside html — then
+  `put_markdown`. No html wrapper, no remote image url, no `<img>`
+  may remain in the body.
+- **Bundle files** (zip the space's pages): `zipfile` over a
+  `tempfile.TemporaryFile(mime="application/zip")` writer — one
+  `writestr` per `get_markdown` — then `attach_file(space, target,
+  "pages.zip", w.blob)`.
 - **Switching models is the user's, through the Model app** — never
   edit `llm.tier.*` rows yourself when asked to "use GPT / switch to
   Gemini": point the user at Model settings (Agent → Model), or at the

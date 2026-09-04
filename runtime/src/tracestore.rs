@@ -11,6 +11,7 @@
 //! `load` returns the intact log exactly as written, and blob
 //! resolution stays a reader-side view (`load_resolved`).
 
+use crate::blob::{BlobDir, JSON_MIME};
 use crate::replay::resolve_blobs;
 use crate::trace::canonical_json;
 use crate::trace::SCHEMA;
@@ -64,6 +65,16 @@ pub trait TraceStore: Send + Sync {
         records: &[Value],
         blobs: &[(String, String)],
     ) -> anyhow::Result<()>;
+    /// Text blobs a streaming sink refused earlier — one more try at
+    /// run end (ADR-026 §2). Default: nothing to do.
+    fn write_blobs(&self, _blobs: &[(String, String)]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// The raw blob directory beside this store (ADR-026 §1); None =
+    /// raw refs cannot resolve here (a remote store).
+    fn blob_dir(&self) -> Option<&BlobDir> {
+        None
+    }
     /// Run-end hook (ADR-023 §3): the whole log is landed (streamed or
     /// via `write_run`); returns the run summary (§1) — computed from
     /// the blob-resolved log — and a store that keeps summaries stores
@@ -221,11 +232,14 @@ pub fn parse_blobs(text: &str) -> anyhow::Result<BTreeMap<String, String>> {
 #[derive(Debug, Clone)]
 pub struct FileTraceStore {
     dir: PathBuf,
+    blob_dir: BlobDir,
 }
 
 impl FileTraceStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        FileTraceStore { dir: dir.into() }
+        let dir: PathBuf = dir.into();
+        let blob_dir = BlobDir::new(&dir);
+        FileTraceStore { dir, blob_dir }
     }
 
     pub fn dir(&self) -> &Path {
@@ -353,10 +367,28 @@ impl TraceStore for FileTraceStore {
 
     fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
         let side = Self::blob_path(&self.path_of(run_id));
-        if !side.exists() {
-            return Ok(BTreeMap::new());
+        let mut out = if side.exists() {
+            parse_blobs(&fs::read_to_string(&side)?)?
+        } else {
+            BTreeMap::new()
+        };
+        // oversize text spills live in the directory (ADR-026 §2)
+        raw_text_fallback(&self.blob_dir, &self.load(run_id)?, &mut out)?;
+        Ok(out)
+    }
+
+    fn blob(&self, run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
+        let side = Self::blob_path(&self.path_of(run_id));
+        if side.exists() {
+            if let Some(t) = parse_blobs(&fs::read_to_string(&side)?)?.remove(hash) {
+                return Ok(Some(t));
+            }
         }
-        parse_blobs(&fs::read_to_string(&side)?)
+        self.blob_dir.read_string(hash)
+    }
+
+    fn blob_dir(&self) -> Option<&BlobDir> {
+        Some(&self.blob_dir)
     }
 
     fn load_in_flight(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
@@ -512,6 +544,9 @@ pub struct AnyTraceStore {
     blobs: Value,
     runs: Value,
     device: Option<String>,
+    /// Raw blobs (ADR-026 §1) beside the serve — None when this store
+    /// is read from another machine (the refs render unresolved, §7).
+    blob_dir: Option<BlobDir>,
 }
 
 impl AnyTraceStore {
@@ -520,6 +555,7 @@ impl AnyTraceStore {
         client: Arc<Client>,
         space_id: &str,
         device: Option<String>,
+        blob_dir: Option<BlobDir>,
     ) -> anyhow::Result<Self> {
         let records = Client::local_coll(space_id, RECORDS_COLL);
         let blobs = Client::local_coll(space_id, BLOBS_COLL);
@@ -550,6 +586,7 @@ impl AnyTraceStore {
             blobs,
             runs,
             device,
+            blob_dir,
         })
     }
 
@@ -704,8 +741,22 @@ impl TraceStore for AnyTraceStore {
     ) -> anyhow::Result<()> {
         let docs: Vec<Value> = records.iter().map(|r| Self::doc_of(run_id, r)).collect();
         self.upsert_chunks(&self.records, &docs)?;
-        let bdocs: Vec<Value> = blobs.iter().map(|(h, d)| Self::blob_doc(h, d)).collect();
+        self.write_blobs(blobs)
+    }
+
+    fn write_blobs(&self, blobs: &[(String, String)]) -> anyhow::Result<()> {
+        // a text over the request cap is a raw blob in the directory
+        // (ADR-026 §2), never a document here
+        let bdocs: Vec<Value> = blobs
+            .iter()
+            .filter(|(_, d)| d.len() <= CHUNK_BYTES)
+            .map(|(h, d)| Self::blob_doc(h, d))
+            .collect();
         self.upsert_chunks(&self.blobs, &bdocs)
+    }
+
+    fn blob_dir(&self) -> Option<&BlobDir> {
+        self.blob_dir.as_ref()
     }
 
     fn finish(
@@ -778,6 +829,24 @@ impl TraceStore for AnyTraceStore {
             .collect();
         for chunk in dead.chunks(500) {
             self.client.local_delete(&self.blobs, Some(chunk), None)?;
+        }
+        // raw blobs no surviving record lists in `blobs` (ADR-026 §6)
+        if let Some(dir) = &self.blob_dir {
+            let listed = self.query_all(
+                &self.records,
+                json!({"blobs": {"$exists": true}}),
+                json!(["seq"]),
+            )?;
+            let keep: std::collections::BTreeSet<String> = listed
+                .iter()
+                .filter_map(|r| r["blobs"].as_array())
+                .flatten()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect();
+            let swept = dir.sweep(&keep)?;
+            if swept > 0 {
+                tracing::info!("trace retention: {swept} raw blobs swept");
+            }
         }
         Ok(victims.len())
     }
@@ -903,8 +972,13 @@ impl TraceStore for AnyTraceStore {
 
     fn blob(&self, _run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
         match self.client.local_get(&self.blobs, hash) {
-            Ok(doc) => Ok(doc["data"].as_str().map(str::to_string)),
-            Err(e) if e.status == 404 => Ok(None), // local.doc_not_found
+            Ok(doc) if doc["data"].is_string() => Ok(doc["data"].as_str().map(str::to_string)),
+            Ok(_) => Ok(None),
+            Err(e) if e.status == 404 => match &self.blob_dir {
+                // an oversize text spill (ADR-026 §2) is in the directory
+                Some(dir) => dir.read_string(hash),
+                None => Ok(None),
+            },
             Err(e) => Err(e.into()),
         }
     }
@@ -929,7 +1003,7 @@ impl TraceStore for AnyTraceStore {
             return Ok(BTreeMap::new());
         }
         let rows = self.query_all(&self.blobs, json!({"id": {"$in": hashes}}), json!(["id"]))?;
-        Ok(rows
+        let mut out: BTreeMap<String, String> = rows
             .into_iter()
             .filter_map(|b| {
                 Some((
@@ -937,7 +1011,11 @@ impl TraceStore for AnyTraceStore {
                     b["data"].as_str()?.to_string(),
                 ))
             })
-            .collect())
+            .collect();
+        if let Some(dir) = &self.blob_dir {
+            raw_text_fallback(dir, &docs, &mut out)?;
+        }
+        Ok(out)
     }
 
     fn header(&self, run_id: &str) -> anyhow::Result<Value> {
@@ -951,6 +1029,31 @@ impl TraceStore for AnyTraceStore {
             .ok_or_else(|| anyhow::anyhow!("unknown run {run_id}"))?;
         Ok(Self::record_of(h))
     }
+}
+
+/// Oversize text spills (ADR-026 §2: raw refs with `mime:
+/// application/json` at a record's input/output) read from the
+/// directory into a blobs map, alongside the store's text blobs.
+fn raw_text_fallback(
+    dir: &BlobDir,
+    records: &[Value],
+    out: &mut BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    for r in records {
+        for key in ["input", "output"] {
+            let v = &r[key];
+            if v["mime"] == JSON_MIME {
+                if let Some(h) = v["__blob"].as_str() {
+                    if !out.contains_key(h) {
+                        if let Some(t) = dir.read_string(h)? {
+                            out.insert(h.to_string(), t);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Re-hydrate one record's `input`/`output` blob refs through single
@@ -1110,7 +1213,7 @@ mod live {
             .as_str()
             .unwrap()
             .to_string();
-        let store = AnyTraceStore::new(client.clone(), &space, Some("dev-1".into())).unwrap();
+        let store = AnyTraceStore::new(client.clone(), &space, Some("dev-1".into()), None).unwrap();
 
         // stream one run through a writer: header + a spilled effect + span + cell
         let mut w = crate::trace::TraceWriter::new(json!({"id": "run_live1", "program": "p@v1"}));

@@ -305,7 +305,130 @@ pub struct Broker {
     resolve_cache: BTreeMap<String, Value>,
 }
 
+/// ADR-026 §3: the media types whose bodies come back as `body` text;
+/// every other type is bytes → a raw blob ref.
+fn is_text_media(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || matches!(
+            mime,
+            "application/json"
+                | "application/xml"
+                | "application/x-www-form-urlencoded"
+                | "application/javascript"
+                | "application/x-ndjson"
+        )
+        || mime.ends_with("+json")
+        || mime.ends_with("+xml")
+}
+
+/// `Content-Type` → the bare media type, lowercased; absent = unknown.
+fn media_of(content_type: Option<&str>) -> Option<String> {
+    content_type
+        .map(|c| {
+            c.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .filter(|m| !m.is_empty())
+}
+
 impl Broker {
+    /// The bytes behind a raw ref (ADR-026 §3/§4) from this run's blob
+    /// directory; a missing file is a typed failure.
+    fn blob_bytes(&self, r: &Value) -> Result<Vec<u8>, EffectFailure> {
+        let hash = r["__blob"].as_str().unwrap_or("");
+        let missing = || EffectFailure {
+            type_: "blob_missing".into(),
+            message: format!("no blob {hash} in this bao's blob directory"),
+        };
+        let dir = self.writer.blob_dir.as_ref().ok_or_else(missing)?;
+        dir.read(hash)
+            .map_err(|e| EffectFailure {
+                type_: "blob_missing".into(),
+                message: format!("blob {hash}: {e}"),
+            })?
+            .ok_or_else(missing)
+    }
+
+    /// ADR-026 §3: a raw ref anywhere inside a `json` payload is sent
+    /// as the base64 of its bytes (the provider wire for images and
+    /// PDFs); the recorded input keeps the ref.
+    fn expand_refs(&self, v: &Value) -> Result<Value, EffectFailure> {
+        if crate::blob::is_raw_ref(v) {
+            use base64::Engine as _;
+            let bytes = self.blob_bytes(v)?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            return Ok(Value::String(if v["encoding"] == "data-uri" {
+                format!("data:{};base64,{b64}", v["mime"].as_str().unwrap_or(""))
+            } else {
+                b64
+            }));
+        }
+        Ok(match v {
+            Value::Object(m) => {
+                let mut out = Map::new();
+                for (k, x) in m {
+                    out.insert(k.clone(), self.expand_refs(x)?);
+                }
+                Value::Object(out)
+            }
+            Value::Array(a) => Value::Array(
+                a.iter()
+                    .map(|x| self.expand_refs(x))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            other => other.clone(),
+        })
+    }
+
+    /// `blob.read {hash, offset?, length?}` → `{data: base64, bytes}`
+    /// from the directory (ADR-026 §4).
+    fn sys_blob_read(&self, payload: &Value) -> Result<Value, EffectFailure> {
+        let hash = payload.get("hash").and_then(|h| h.as_str()).unwrap_or("");
+        let offset = payload.get("offset").and_then(|o| o.as_u64()).unwrap_or(0);
+        let length = payload
+            .get("length")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(u64::MAX);
+        let missing = || EffectFailure {
+            type_: "blob_missing".into(),
+            message: format!("no blob {hash} in this bao's blob directory"),
+        };
+        let dir = self.writer.blob_dir.as_ref().ok_or_else(missing)?;
+        let bytes = dir
+            .read_range(hash, offset, length)
+            .map_err(|e| EffectFailure {
+                type_: "blob_missing".into(),
+                message: format!("blob {hash}: {e}"),
+            })?
+            .ok_or_else(missing)?;
+        use base64::Engine as _;
+        Ok(json!({
+            "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "bytes": bytes.len(),
+        }))
+    }
+
+    /// `blob.put {data: base64, mime}` → the payload the record sees:
+    /// `{ref}` (ADR-026 §4).
+    fn materialize_put(&self, payload: &Value) -> Result<Value, EffectFailure> {
+        use base64::Engine as _;
+        let data = payload.get("data").and_then(|d| d.as_str()).unwrap_or("");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| EffectFailure {
+                type_: "TypeError".into(),
+                message: format!("blob.put: data is not base64: {e}"),
+            })?;
+        let mime = payload
+            .get("mime")
+            .and_then(|m| m.as_str())
+            .unwrap_or("application/octet-stream");
+        Ok(json!({"ref": self.writer.put_raw(&bytes, mime)}))
+    }
+
     /// Record-mode permissive broker — the shape main.rs builds today.
     /// Replay/mock/grants wiring sets the public fields (`mode`,
     /// `cursor`, `mock_index`, `mock_unmatched`, `blobs`, `grants`).
@@ -539,6 +662,14 @@ impl Broker {
     }
 
     pub fn call(&mut self, name: &str, payload: Value) -> Result<Value, EffectFailure> {
+        // ADR-026 §4: `blob.put`'s normaliser materialises — the bytes go
+        // to the directory here, the recorded input is the ref (its key
+        // is content-addressed; replay re-mints the same ref).
+        let payload = if name == "blob.put" {
+            self.materialize_put(&payload)?
+        } else {
+            payload
+        };
         let class = self.classify(name, &payload);
         let cap = self.cap_of(name, &payload);
         // ADR-024 §1: credential-looking `env` values on sh.* are masked
@@ -621,7 +752,14 @@ impl Broker {
                 .unwrap_or_default();
             meta.insert("mocked".into(), json!(true));
             meta.insert("class".into(), json!(class));
-            return self.record_mocked(name, canonical, &key, span.as_deref(), &rec, meta);
+            let out = self.record_mocked(name, canonical, &key, span.as_deref(), &rec, meta)?;
+            // ADR-026 §4: the record holds the ref, the directory the
+            // bytes — a replayed read is served from the directory
+            return if name == "blob.read" {
+                self.execute(name, &payload)
+            } else {
+                Ok(out)
+            };
         }
 
         if self.mode == Mode::Mock {
@@ -673,12 +811,19 @@ impl Broker {
         let cell = self.current_cell.clone();
         match result {
             Ok(output) => {
+                // ADR-026 §4: a blob read's bytes are never a record —
+                // the ref in the input names them, the directory holds them
+                let recorded = if name == "blob.read" {
+                    json!({"bytes": output["bytes"]})
+                } else {
+                    output.clone()
+                };
                 self.writer.effect(
                     name,
                     cell.as_deref(),
                     canonical,
                     &key,
-                    Some(output.clone()),
+                    Some(recorded),
                     None,
                     Value::Object(meta),
                     span.as_deref(),
@@ -764,13 +909,6 @@ impl Broker {
                 "remaining": self.fuel_gauge.load(std::sync::atomic::Ordering::Relaxed),
                 "budget": crate::runner::FUEL_PER_CELL,
             })),
-            "random.random" => {
-                // secrets-grade uniform in [0,1), mirroring the reference host
-                let mut buf = [0u8; 8];
-                getrandom(&mut buf);
-                let bits = u64::from_le_bytes(buf) >> 11; // 53 bits
-                Ok(json!({"value": bits as f64 / (1u64 << 53) as f64}))
-            }
             "uuid4" => Ok(json!({"hex": uuid::Uuid::new_v4().to_string()})),
             "sleep" => {
                 let secs = payload
@@ -800,6 +938,8 @@ impl Broker {
             "trace.runs" => self.sys_trace_runs(payload),
             "trace.stats" => self.sys_trace_stats(payload),
             "trace.query" => self.sys_trace_query(payload),
+            "blob.read" => self.sys_blob_read(payload),
+            "blob.put" => Ok(payload.get("ref").cloned().unwrap_or(Value::Null)),
             "kernel.boot" => Ok(payload.clone()), // pins echo into the record
             // ADR-024: shell effects, only in a `--features shell` build
             #[cfg(feature = "shell")]
@@ -1054,6 +1194,31 @@ impl Broker {
             };
             (agent, 0) // uncredentialed: the client follows internally
         };
+        // the wire body (ADR-026 §3): `json` with refs expanded to base64,
+        // a text `body`, or a raw ref as raw bytes + its mime
+        enum Wire {
+            None,
+            Json(String),
+            Text(String),
+            Bytes(Vec<u8>, String),
+        }
+        let wire = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
+            Wire::Json(crate::trace::canonical_json(&self.expand_refs(body)?))
+        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
+            Wire::Text(body.to_string())
+        } else if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
+            let mime = r["mime"]
+                .as_str()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            Wire::Bytes(self.blob_bytes(r)?, mime)
+        } else {
+            Wire::None
+        };
+        let has_content_type = payload
+            .get("headers")
+            .and_then(|h| h.as_object())
+            .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type")));
         let mut cur_url = url;
         let mut cur_verb = verb;
         let mut with_body = true;
@@ -1073,13 +1238,20 @@ impl Broker {
             }
             let sent = if !with_body {
                 req.call() // 301/302/303 hop downgraded to a bare GET
-            } else if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
-                req.set("Content-Type", "application/json")
-                    .send_string(&crate::trace::canonical_json(body))
-            } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
-                req.send_string(body)
             } else {
-                req.call()
+                match &wire {
+                    Wire::Json(text) => req
+                        .set("Content-Type", "application/json")
+                        .send_string(text),
+                    Wire::Text(text) => req.send_string(text),
+                    Wire::Bytes(bytes, mime) => {
+                        if !has_content_type {
+                            req = req.set("Content-Type", mime);
+                        }
+                        req.send_bytes(bytes)
+                    }
+                    Wire::None => req.call(),
+                }
             };
             let resp = match sent {
                 Ok(r) => r,
@@ -1115,28 +1287,39 @@ impl Broker {
             .iter()
             .filter_map(|h| resp.header(h).map(|v| (h.to_lowercase(), json!(v))))
             .collect();
-        // `response: "base64"` — raw bytes, base64 in `body` (ADR-020 §1);
-        // default is text, as before. A multi-MB body spills to the blob
-        // sidecar like any big output.
-        let as_base64 = payload.get("response").and_then(|r| r.as_str()) == Some("base64");
-        let mut out = json!({"status": status, "headers": headers, "url": final_url});
-        if as_base64 {
-            let mut bytes = Vec::new();
-            resp.into_reader()
-                .read_to_end(&mut bytes)
-                .map_err(|e| EffectFailure {
-                    type_: "URLError".into(),
-                    message: e.to_string(),
-                })?;
-            use base64::Engine as _;
-            out["body"] = json!(base64::engine::general_purpose::STANDARD.encode(&bytes));
-            out["encoding"] = json!("base64");
-        } else {
-            out["body"] = json!(resp.into_string().map_err(|e| EffectFailure {
+        // ADR-026 §3: the host classifies the body — a text media type
+        // that decodes as UTF-8 is `body` text (a `text/*` that does not
+        // decodes lossily: text by declaration); anything else is bytes,
+        // written to the blob directory and returned as a raw ref.
+        // `response: "text"` forces text.
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|e| EffectFailure {
                 type_: "URLError".into(),
                 message: e.to_string(),
-            })?);
-        }
+            })?;
+        let force_text = payload.get("response").and_then(|r| r.as_str()) == Some("text");
+        let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
+        let declared_text = media.as_deref().is_some_and(is_text_media);
+        let body = if force_text || media.as_deref().is_some_and(|m| m.starts_with("text/")) {
+            Value::String(String::from_utf8_lossy(&bytes).into_owned())
+        } else if declared_text || media.is_none() {
+            match String::from_utf8(bytes) {
+                Ok(text) => Value::String(text),
+                Err(e) => self.writer.put_raw(
+                    e.as_bytes(),
+                    media.as_deref().unwrap_or("application/octet-stream"),
+                ),
+            }
+        } else {
+            self.writer.put_raw(
+                &bytes,
+                media.as_deref().unwrap_or("application/octet-stream"),
+            )
+        };
+        let mut out = json!({"status": status, "headers": headers, "url": final_url});
+        out["body"] = body;
         // ADR-021 §2: a rejection of a static-ref request means the
         // stored value is wrong — the host asks for a replacement, the
         // same way it asks for a missing one. 403 is left alone (scopes,
@@ -1674,7 +1857,7 @@ pub(crate) fn urlencode(s: &str) -> String {
 }
 
 pub(crate) fn getrandom(buf: &mut [u8]) {
-    // uuid's rng is already OS-backed; reuse it for the random syscall
+    // uuid's rng is already OS-backed; reuse it (oauth's PKCE verifier)
     for chunk in buf.chunks_mut(16) {
         let bytes = *uuid::Uuid::new_v4().as_bytes();
         chunk.copy_from_slice(&bytes[..chunk.len()]);
@@ -2999,32 +3182,170 @@ mod tests {
         assert!(!dump.contains("sk-live"));
     }
 
-    /// `response: "base64"` reads raw bytes (a PNG is not UTF-8) and
-    /// hands them back base64 with `encoding` set — ADR-020 §1.
+    /// ADR-026 §3: a binary body comes back as a raw ref, the bytes in
+    /// the run's blob directory; a JSON body stays text.
     #[test]
-    fn http_get_base64_response() {
+    fn http_binary_body_is_a_blob_ref() {
         let png_head: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0xff, 0xfe, 0x00];
         let bytes = png_head.clone();
-        let base = fake_server(1, move |req| {
-            let resp = tiny_http::Response::from_data(bytes.clone())
-                .with_header(tiny_http::Header::from_bytes("Content-Type", "image/png").unwrap());
+        let base = fake_server(2, move |req| {
+            let resp = if req.url().ends_with("/f") {
+                tiny_http::Response::from_data(bytes.clone()).with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "image/png").unwrap(),
+                )
+            } else {
+                tiny_http::Response::from_data(b"{\"a\":1}".to_vec()).with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
+                )
+            };
             let _ = req.respond(resp);
         });
-        let mut b = make_broker("run_b64");
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = make_broker("run_blob");
+        b.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
         let out = b
-            .call(
-                "http.get",
-                json!({"url": format!("{base}/f"), "response": "base64"}),
-            )
+            .call("http.get", json!({"url": format!("{base}/f")}))
             .unwrap();
         assert_eq!(out["status"], json!(200));
-        assert_eq!(out["encoding"], json!("base64"));
-        assert_eq!(out["headers"]["content-type"], json!("image/png"));
-        use base64::Engine as _;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(out["body"].as_str().unwrap())
+        assert!(crate::blob::is_raw_ref(&out["body"]), "{out}");
+        assert_eq!(out["body"]["mime"], json!("image/png"));
+        assert_eq!(out["body"]["bytes"], json!(7));
+        let hash = out["body"]["__blob"].as_str().unwrap();
+        assert_eq!(
+            b.writer
+                .blob_dir
+                .as_ref()
+                .unwrap()
+                .read(hash)
+                .unwrap()
+                .unwrap(),
+            png_head
+        );
+        // the record lists the raw ref (ADR-026 §2)
+        let rec = b.writer.records.last().unwrap();
+        assert_eq!(rec["blobs"], json!([hash]));
+        let out = b
+            .call("http.get", json!({"url": format!("{base}/j")}))
             .unwrap();
-        assert_eq!(decoded, png_head);
+        assert_eq!(out["body"], json!("{\"a\":1}"));
+    }
+
+    /// ADR-026 §3: a raw ref inside `json` goes out as base64, a raw
+    /// ref as `body` goes out as the bytes with its mime — and the
+    /// recorded input keeps the refs.
+    #[test]
+    fn http_forwards_blob_refs_on_the_wire() {
+        let seen: Arc<Mutex<Vec<(String, String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let base = fake_server(2, move |mut req| {
+            let ct = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("content-type"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            let mut body = Vec::new();
+            req.as_reader().read_to_end(&mut body).unwrap();
+            sink.lock().unwrap().push((req.url().to_string(), ct, body));
+            let _ = req.respond(tiny_http::Response::from_string("{}"));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = make_broker("run_fwd");
+        let blobs = crate::blob::BlobDir::new(dir.path());
+        b.writer.blob_dir = Some(blobs.clone());
+        let r = blobs.put(b"\x89PNG", "image/png").unwrap();
+        b.call(
+            "http.post",
+            json!({"url": format!("{base}/json"), "json": {"parts": [{"data": r}]}}),
+        )
+        .unwrap();
+        b.call(
+            "http.post",
+            json!({"url": format!("{base}/raw"), "body": r}),
+        )
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].1, "application/json");
+        assert_eq!(seen[0].2, br#"{"parts":[{"data":"iVBORw=="}]}"#.to_vec());
+        assert_eq!(seen[1].1, "image/png");
+        assert_eq!(seen[1].2, b"\x89PNG".to_vec());
+        // the data-URI form (the OpenAI image_url / file_data wire)
+        let mut du = r.clone();
+        du["encoding"] = json!("data-uri");
+        assert!(crate::blob::is_raw_ref(&du));
+        assert_eq!(
+            b.expand_refs(&json!({"url": du})).unwrap(),
+            json!({"url": "data:image/png;base64,iVBORw=="})
+        );
+        let recs: Vec<&Value> = b
+            .writer
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "effect")
+            .collect();
+        assert!(crate::blob::is_raw_ref(
+            &recs[0]["input"]["json"]["parts"][0]["data"]
+        ));
+        assert!(crate::blob::is_raw_ref(&recs[1]["input"]["body"]));
+        assert_eq!(recs[1]["blobs"], json!([r["__blob"]]));
+    }
+
+    /// ADR-026 §4: `blob.put` records the ref, never the bytes;
+    /// `blob.read` records the byte count, and a replayed read is served
+    /// from the directory.
+    #[test]
+    fn blob_syscalls_record_refs_and_replay_from_the_directory() {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = make_broker("run_put");
+        b.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
+        let r = b
+            .call(
+                "blob.put",
+                json!({"data": b64(b"hello blob"), "mime": "text/plain"}),
+            )
+            .unwrap();
+        assert!(crate::blob::is_raw_ref(&r));
+        assert_eq!(r["bytes"], json!(10));
+        let hash = r["__blob"].as_str().unwrap().to_string();
+        let out = b
+            .call("blob.read", json!({"hash": hash, "offset": 6, "length": 4}))
+            .unwrap();
+        assert_eq!(out["data"], json!(b64(b"blob")));
+        let recs: Vec<Value> = b
+            .writer
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "effect")
+            .cloned()
+            .collect();
+        assert_eq!(recs[0]["input"], json!({"ref": r}));
+        assert!(recs[0]["input"]["ref"]["__blob"].is_string());
+        assert_eq!(recs[1]["output"], json!({"bytes": 4})); // no data in the record
+        assert_eq!(recs[1]["blobs"], Value::Null); // the hash is a string arg, not a ref
+
+        let mut rb = make_broker("run_put");
+        rb.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
+        rb.mode = Mode::Replay;
+        rb.cursor = Some(ReplayCursor::new(&b.writer.records));
+        let r2 = rb
+            .call(
+                "blob.put",
+                json!({"data": b64(b"hello blob"), "mime": "text/plain"}),
+            )
+            .unwrap();
+        assert_eq!(r2, r);
+        let out2 = rb
+            .call("blob.read", json!({"hash": hash, "offset": 6, "length": 4}))
+            .unwrap();
+        assert_eq!(out2["data"], json!(b64(b"blob")));
+        let missing = rb
+            .call("blob.read", json!({"hash": "sha256:00", "offset": 0}))
+            .unwrap_err();
+        // an unrecorded read is a divergence in strict replay, not a
+        // silent directory read
+        assert_eq!(missing.type_, "DivergenceError", "{missing:?}");
     }
 
     #[test]

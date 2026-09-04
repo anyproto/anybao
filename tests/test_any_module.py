@@ -33,13 +33,31 @@ def wire(replies=None, status=200, config=None):
     return fx
 
 
+BLOBS = {}   # the fake blob directory behind the kernel's blob.* effects
+
+
+def _kernel_effect(name, payload, now):
+    import base64
+    import hashlib
+    if name == "blob.put":
+        raw = base64.b64decode(payload["data"])
+        h = "sha256:" + hashlib.sha256(raw).hexdigest()
+        BLOBS[h] = raw
+        return {"__blob": h, "bytes": len(raw), "mime": payload["mime"]}
+    if name == "blob.read":
+        raw = BLOBS[payload["hash"]][payload["offset"]:payload["offset"] + payload["length"]]
+        return {"data": base64.b64encode(raw).decode(), "bytes": len(raw)}
+    return {"epoch": now, "offset_s": 0}
+
+
 def load(fx, now=1_787_673_600.0):
     # ts_s / instant / now are kernel globals (ADR-019 §1) — the real
     # implementations, loaded from the guest kernel source
     from kernelenv import load_kernel
-    k = load_kernel(effect=lambda n, p: {"epoch": now, "offset_s": 0})
+    k = load_kernel(effect=lambda n, p: _kernel_effect(n, p, now))
     g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f),
-         "use": None, "ts_s": k.ts_s, "instant": k.instant, "now": k.now}
+         "use": None, "ts_s": k.ts_s, "instant": k.instant, "now": k.now,
+         "Blob": k.Blob, "blob": k.blob}
     exec(compile(SRC, "any@v1.py", "exec"), g)
     return g
 
@@ -1174,24 +1192,25 @@ def test_create_type_stamps_xkind_beside_server_formats():
 
 # --- files (ADR-020 §2) -------------------------------------------------------
 
-def test_file_content_reads_base64_and_parses_refs():
-    import base64
-    raw = b"\x89PNG\r\n\x1a\n\x00\xff"
+REF = {"__blob": "sha256:" + "ab" * 32, "bytes": 11, "mime": "image/png"}
+
+
+def test_file_content_returns_a_blob_and_parses_refs():
     seen = []
 
     def fx(name, payload):
         seen.append((name, payload))
         if name in ("config.get", "runtime.get"):
             return {"value": "http://any"}
-        assert name == "http.get" and payload["response"] == "base64"
+        assert name == "http.get" and "response" not in payload
         return {"status": 200, "headers": {"content-type": "image/png"},
-                "body": base64.b64encode(raw).decode()}
+                "body": dict(REF)}
 
     g = load(fx)
     c = g["_Client"]("http://any")
     r = c.file_content("s-given", "any://f/s-in-uri/file9?variant=thumb")
-    assert r == {"fileId": "file9", "mime": "image/png", "size": len(raw),
-                 "data": base64.b64encode(raw).decode()}
+    assert (r["fileId"], r["mime"], r["size"]) == ("file9", "image/png", 11)
+    assert isinstance(r["blob"], g["Blob"]) and r["blob"].sha256 == REF["__blob"]
     assert seen[-1][1]["url"] == "http://any/v1/spaces/s-in-uri/files/file9/content?variant=thumb"
     # bare fileId → the given space
     c.file_content("s-given", "file9")
@@ -1203,12 +1222,52 @@ def test_file_content_reads_base64_and_parses_refs():
     assert len(seen) == n
 
 
-def test_file_content_error_body_is_decoded():
-    import base64
+def test_file_content_text_file_is_still_a_blob():
+    # a text/* file comes back as text (ADR-026 §3) — wrapped into a handle
+    fx = lambda n, p: {"status": 200, "headers": {"content-type": "text/markdown"},  # noqa: E731
+                       "body": "# hi\n"}
+    r = load(fx)["_Client"]("http://any").file_content("s", "f1")
+    assert r["mime"] == "text/markdown" and r["size"] == 5
+    assert r["blob"].text() == "# hi\n"
+
+
+def test_attach_file_uploads_the_blob_as_the_body():
+    seen = []
 
     def fx(name, payload):
+        seen.append((name, payload))
+        return {"status": 201, "headers": {},
+                "body": json.dumps({"fileId": "f9", "objectId": "o1", "size": 11,
+                                    "name": "rosé 1.png", "mime": "image/png"})}
+
+    g = load(fx)
+    c = g["_Client"]("http://any")
+    b = g["Blob"].from_ref(REF)
+    info = c.attach_file("s1", "o1", "rosé 1.png", b)
+    assert info["uri"] == "any://f/s1/f9" and info["fileId"] == "f9"
+    name, payload = seen[-1]
+    assert name == "http.post"
+    assert payload["url"] == "http://any/v1/spaces/s1/objects/o1/files?name=ros%C3%A9%201.png"
+    assert payload["body"] is b and payload["headers"] == {"Content-Type": "image/png"}
+    # bytes are wrapped into a Blob first; an explicit mime wins
+    info = c.attach_file("s1", "o1", "a.csv", b"a,b\n", mime="text/csv")
+    body = seen[-1][1]["body"]
+    assert isinstance(body, g["Blob"]) and body.mime == "text/csv" and body.size == 4
+    assert seen[-1][1]["headers"] == {"Content-Type": "text/csv"}
+    # a server error is an AnyError
+    fx_err = lambda n, p: {"status": 403, "headers": {},  # noqa: E731
+                           "body": json.dumps({"error": {"code": "space.read_only",
+                                                         "message": "guest"}})}
+    g2 = load(fx_err)
+    with pytest.raises(g2["AnyError"]) as e:
+        g2["_Client"]("http://any").attach_file("s1", "o1", "x", b"1")
+    assert e.value.code == "space.read_only"
+
+
+def test_file_content_error_body_is_decoded():
+    def fx(name, payload):
         body = json.dumps({"error": {"code": "file.not_available", "message": "not yet"}})
-        return {"status": 409, "headers": {}, "body": base64.b64encode(body.encode()).decode()}
+        return {"status": 409, "headers": {}, "body": body}
 
     g = load(fx)
     with pytest.raises(g["AnyError"]) as e:
@@ -1224,11 +1283,9 @@ def test_list_files_narrows_by_object():
 
 
 def test_file_not_available_carries_sync_hint():
-    import base64
-
     def fx(name, payload):
         body = json.dumps({"error": {"code": "file.not_available", "message": "no bytes"}})
-        return {"status": 409, "headers": {}, "body": base64.b64encode(body.encode()).decode()}
+        return {"status": 409, "headers": {}, "body": body}
 
     g = load(fx)
     with pytest.raises(g["AnyError"]) as e:

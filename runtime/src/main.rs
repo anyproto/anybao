@@ -191,13 +191,27 @@ enum TraceCmd {
         #[arg(long, default_value = "bao")]
         space: String,
     },
+    /// write one raw blob's bytes (ADR-026 §7) — to stdout, or -o file
+    Blob {
+        /// `sha256:<hex>` (or bare hex) from a trace record's ref
+        hash: String,
+        /// the traces dir whose blobs/ holds it
+        #[arg(long, default_value = "traces")]
+        dir: PathBuf,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// copy a jsonl traces directory into a server's local store
-    /// (ADR-023 §7) — records, blobs, and a summary per run; idempotent
+    /// (ADR-023 §7) — records, blobs, and a summary per run; the raw
+    /// blobs/ dir is copied to --dest-dir/blobs (ADR-026 §7); idempotent
     Import {
         #[arg(default_value = "traces")]
         dir: PathBuf,
         #[arg(long)]
         addr: String,
+        /// the serve's traces dir (raw blobs land in its blobs/)
+        #[arg(long, default_value = "traces")]
+        dest_dir: PathBuf,
         #[arg(long, default_value = "bao")]
         space: String,
     },
@@ -225,8 +239,12 @@ fn trace_store(
         Some(a) => {
             let client = Arc::new(anyapi::Client::new(a));
             let sid = serve::find_space(&client, space)?;
+            // raw blobs resolve from the dir beside the serve (ADR-026 §7)
             Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
-                client, &sid, None,
+                client,
+                &sid,
+                None,
+                Some(anyrt::blob::BlobDir::new(dir)),
             )?))
         }
         None => Ok(Box::new(FileTraceStore::new(dir))),
@@ -557,11 +575,53 @@ fn main() -> Result<()> {
             view::follow(store.as_ref(), &id)
         }
         Cmd::Trace {
-            cmd: TraceCmd::Import { dir, addr, space },
+            cmd: TraceCmd::Blob { hash, dir, out },
+        } => {
+            let store = anyrt::blob::BlobDir::new(&dir);
+            let bytes = store
+                .read(&hash)?
+                .ok_or_else(|| anyhow::anyhow!("no blob {hash} in {}", store.dir().display()))?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, &bytes)?;
+                    eprintln!("{} bytes → {}", bytes.len(), path.display());
+                }
+                None => {
+                    use std::io::Write as _;
+                    std::io::stdout().write_all(&bytes)?;
+                }
+            }
+            Ok(())
+        }
+        Cmd::Trace {
+            cmd:
+                TraceCmd::Import {
+                    dir,
+                    addr,
+                    space,
+                    dest_dir,
+                },
         } => {
             use anyrt::tracestore::TraceStore;
             let src = FileTraceStore::new(&dir);
-            let dst = trace_store(Some(&addr), &space, &dir)?;
+            let dst = trace_store(Some(&addr), &space, &dest_dir)?;
+            // raw blobs travel as files (ADR-026 §7)
+            let src_blobs = anyrt::blob::BlobDir::new(&dir);
+            let dst_blobs = anyrt::blob::BlobDir::new(&dest_dir);
+            if src_blobs.dir() != dst_blobs.dir() {
+                let mut copied = 0usize;
+                for h in src_blobs.list()? {
+                    if !dst_blobs.exists(&h) {
+                        if let Some(b) = src_blobs.read(&h)? {
+                            dst_blobs.put(&b, "application/octet-stream")?;
+                            copied += 1;
+                        }
+                    }
+                }
+                if copied > 0 {
+                    eprintln!("{copied} raw blobs → {}", dst_blobs.dir().display());
+                }
+            }
             let runs = src.list()?;
             let total = runs.len();
             let mut done = 0usize;

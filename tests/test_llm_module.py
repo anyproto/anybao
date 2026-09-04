@@ -16,11 +16,31 @@ PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "progr
 SRC = (PROGRAMS_DIR / "llm@v1" / "program.py").read_text()
 
 
+BLOBS = {}   # the fake blob directory behind the kernel's blob.* effects
+
+
+def _kernel_effect(name, payload):
+    import base64
+    import hashlib
+    if name == "blob.put":
+        raw = base64.b64decode(payload["data"])
+        h = "sha256:" + hashlib.sha256(raw).hexdigest()
+        BLOBS[h] = raw
+        return {"__blob": h, "bytes": len(raw), "mime": payload["mime"]}
+    if name == "blob.read":
+        raw = BLOBS[payload["hash"]][payload["offset"]:payload["offset"] + payload["length"]]
+        return {"data": base64.b64encode(raw).decode(), "bytes": len(raw)}
+    pytest.fail(f"unexpected kernel effect {name!r}")
+
+
 def load(effect=None):
+    from kernelenv import load_kernel
+    k = load_kernel(effect=_kernel_effect)
     g = {
         "effect": effect or (lambda name, payload: pytest.fail(f"unexpected effect {name!r}")),
         "span": lambda name=None, kind=None: (lambda f: f),
         "use": lambda spec: pytest.fail(f"unexpected use({spec!r})"),
+        "Blob": k.Blob, "blob": k.blob,
     }
     exec(compile(SRC, "llm@v1.py", "exec"), g)
     return g
@@ -675,6 +695,27 @@ def test_anthropic_routes_file_parts_by_media_type():
     assert txt[1]["type"] == "text" and "cache_control" in txt[1]
 
 
+def test_blob_file_parts_ride_as_refs_the_host_expands():
+    # ADR-026 §5: a Blob's ref is what the adapters place on the wire —
+    # bare inside anthropic source blocks, data-URI form on the OpenAI
+    # image_url / file_data fields; a text document is read through
+    # the host
+    b = LLM["blob"].from_bytes(b"hello, file", "text/plain")
+    png = LLM["Blob"]("sha256:" + "ab" * 32, 8, "image/png")
+    a = LLM["AnthropicAdapter"]()
+    img = a.build_request(_file_msg("image/png", png), "", [], "m", CLAUDE)
+    assert img["messages"][0]["content"][0]["source"]["data"] == png.ref()
+    txt = a.build_request(_file_msg("text/plain", b), "", [], "m", CLAUDE)
+    assert txt["messages"][0]["content"][0]["source"]["data"] == "hello, file"
+    o = LLM["OpenAICompatAdapter"]()
+    req = o.build_request(_file_msg("image/png", png), "", [], "m", T())
+    assert req["messages"][0]["content"][1]["image_url"]["url"] == png.ref("data-uri")
+    pdf = LLM["Blob"]("sha256:" + "cd" * 32, 8, "application/pdf")
+    req = o.build_request(_file_msg("application/pdf", pdf, "menu.pdf"), "", [], "m",
+                          T(pdf_input="file"))
+    assert req["messages"][0]["content"][1]["file"]["file_data"] == pdf.ref("data-uri")
+
+
 def test_unsupported_media_raises_before_any_call():
     a = LLM["AnthropicAdapter"]()
     with pytest.raises(LLM["UnsupportedMedia"]) as e:
@@ -750,5 +791,10 @@ def test_read_resolves_ref_through_any_and_uses_vision_tier():
     # an already-fetched dict skips any@v1
     assert g["read"]({"mime": "image/png", "data": PNG_B64}, "again?") == "a cat"
     assert len(fetched) == 1
+    # a Blob (http.get(url).blob) / a file_content result carrying one
+    png = g["Blob"]("sha256:" + "ab" * 32, 8, "image/png")
+    assert g["read"](png, "blob?") == "a cat"
+    assert host.posts[-1]["json"]["messages"][0]["content"][0]["source"]["data"] == png.ref()
+    assert g["read"]({"mime": "image/png", "blob": png}, "dict?") == "a cat"
     with pytest.raises(TypeError):
         g["read"]("bare-file-id", "?")

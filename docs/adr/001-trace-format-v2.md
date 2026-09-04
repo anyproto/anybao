@@ -52,7 +52,9 @@ way.
 ```jsonc
 // header (line 1)
 {"kind": "header", "schema": 2, "run": {"id": "...", "program": "name@vN",
- "programHash": "...", "args": {...}, "instance": "...", "startedAt": ...}}
+ "programHash": "...", "args": {...}, "instance": "...", "startedAt": ...,
+ "seed": "<64 hex>"}}   // startedAt + seed = the WASI floor (ADR-002 §4):
+                        // filled at run start, replayed from the header
 
 // effect record (one per call)
 {"kind": "effect",
@@ -97,11 +99,16 @@ per the config-effect design). Secrets structurally cannot enter traces.
 ### 4. Everything nondeterministic is a record
 
 `llm.chat` (full request incl. messages, full response), `fetch`,
-`time.now`, `random`, `env.get`, `sleep`, `chat.send`, `console.log`
+`time.now`, `env.get`, `sleep`, `chat.send`, `console.log`
 (structured value — the model-facing output channel), and
 `module.resolve` (name@version → spaceId + contentHash, so the loaded
 code version is part of the recorded run). This is the isolation
 principle made concrete: if it isn't in the trace, it didn't happen.
+Randomness is one record, not one per draw (amendment 2026-09-04,
+ADR-002 §4): the header's `seed` derives every random byte the guest
+sees — `rand()`, the stdlib `random`, `os.urandom` behind `uuid`
+and `secrets` — through the WASI floor; `uuid4()` the global stays
+its own recorded effect (an identity worth a visible line).
 
 ### 4b. Cell records (amendment 2026-07-07)
 
@@ -265,6 +272,15 @@ by `{"__blob": "sha256:...", "bytes": N}` and the bytes stored next to
 the trace (sidecar file / file attachment when the trace lives in a
 space object). Replay resolves refs transparently. Keeps JSONL lines
 bounded without truncating anything.
+
+**Two ref shapes (amendment 2026-09-04, ADR-026 §2).** A ref carrying
+`mime` — `{"__blob", "bytes", "mime"}` — is raw bytes at
+`<traces_dir>/blobs/<hex>` (hash over the bytes, same file in both
+backends); a ref without `mime` is the canonical JSON text of a
+spilled value, in the store's text-blob place (ADR-023 §4). A text
+spill too large for one store request is written as a raw blob
+(`mime: application/json`). A failed blob write records the ref and
+warns; it never fails the run.
 
 ### 8. Storage is one trait, the file layout is one impl (amendment 2026-08-28)
 

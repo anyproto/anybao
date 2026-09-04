@@ -29,6 +29,7 @@ base64 = "0.22"          # http `response: "base64"` bodies (ADR-020 §1; alread
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
+rand = "0.10"            # the WASI floor: per-run seed + its seeded stream (ADR-002 §4)
 cron = "0.12"            # trigger cron expressions (every_s needs nothing)
 chrono = "0.4"           # cron's time source
 tiny_http = "0.12"       # the localhost trigger control API

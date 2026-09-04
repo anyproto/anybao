@@ -10,6 +10,7 @@
 //! silence); the bin installs a fmt subscriber.
 
 pub mod anyapi;
+pub mod blob;
 pub mod broker;
 pub mod caps;
 pub mod config;

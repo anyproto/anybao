@@ -167,11 +167,13 @@ fn pretty_body(raw: &str, pad: &str) -> String {
     }
 }
 
-/// Binary payloads elided for the eye (ADR-020 §6): a base64 `data`
-/// string next to a `media_type` (a File part / provider source
-/// block) renders as `<base64 N bytes mime>`. `--seq N` bypasses this.
+/// Binary payloads elided for the eye (ADR-020 §6): a raw blob ref
+/// (ADR-026 §7) renders as `<blob mime N bytes sha256:…>`; a base64
+/// `data` string next to a `media_type` (a File part / provider source
+/// block) as `<base64 N bytes mime>`. `--seq N` bypasses this.
 fn elide_binary(v: &Value) -> Value {
     match v {
+        Value::Object(_) if crate::blob::is_raw_ref(v) => Value::String(blob_marker(v)),
         Value::Object(m) => {
             let mut out = serde_json::Map::new();
             let mime = m.get("media_type").and_then(|x| x.as_str());
@@ -190,6 +192,17 @@ fn elide_binary(v: &Value) -> Value {
         Value::Array(a) => Value::Array(a.iter().map(elide_binary).collect()),
         _ => v.clone(),
     }
+}
+
+/// `<blob image/jpeg 563619 bytes sha256:…>` — the one line a raw ref
+/// ever renders as (ADR-026 §7).
+pub fn blob_marker(r: &Value) -> String {
+    format!(
+        "<blob {} {} bytes {}>",
+        s(&r["mime"]),
+        r["bytes"],
+        clip(&s(&r["__blob"]), 23)
+    )
 }
 
 fn base64_marker(b64: &str, mime: Option<&str>) -> String {
@@ -218,9 +231,8 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
         let path = short_path(r["input"]["url"].as_str().unwrap_or("?"));
         let status = r["output"]["status"].as_i64().unwrap_or(0);
         let mut line = format!("{head} {} {path} → {status} ({dur}ms)", rest.to_uppercase());
-        let body = if r["output"]["encoding"] == "base64" {
-            let mime = r["output"]["headers"]["content-type"].as_str();
-            base64_marker(r["output"]["body"].as_str().unwrap_or(""), mime)
+        let body = if crate::blob::is_raw_ref(&r["output"]["body"]) {
+            blob_marker(&r["output"]["body"])
         } else {
             s(&r["output"]["body"])
         };
@@ -257,15 +269,16 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
             clip(&s(&r["output"]["kernel_sha256"]), 12)
         );
     }
+    let output = elide_binary(&r["output"]);
     if full {
         return format!(
             "{head} {name} [{class}, {dur}ms] ->\n{}",
-            pretty_json(&r["output"], &format!("{pad}    "))
+            pretty_json(&output, &format!("{pad}    "))
         );
     }
     format!(
         "{head} {name} [{class}, {dur}ms] -> {}",
-        clip_loc(&r["output"].to_string(), limit)
+        clip_loc(&output.to_string(), limit)
     )
 }
 
