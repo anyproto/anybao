@@ -68,7 +68,7 @@
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields/{fieldId}": {
       "excluded": null,
       "fingerprint": "sha256:0022df0b248e4310",
-      "helper": null
+      "helper": "helper.remove_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
@@ -98,7 +98,7 @@
     "GET /devices": {
       "excluded": null,
       "fingerprint": "sha256:80b17236f520104f",
-      "helper": "anyclient.list_devices (ADR-015 election; guest device listing = follow-up)"
+      "helper": "helper.list_devices (+ the host's ADR-015 election read)"
     },
     "GET /events/subscribe": {
       "excluded": "client push plumbing (UI)",
@@ -753,7 +753,7 @@
     "POST /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields": {
       "excluded": null,
       "fingerprint": "sha256:512c53f0a7582c1a",
-      "helper": null
+      "helper": "helper.add_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,

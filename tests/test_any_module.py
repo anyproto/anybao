@@ -907,6 +907,44 @@ def test_list_programs_tools_only_filters():
 
 # --- flat module surface (ADR-010 §8) ------------------------------------------
 
+def test_list_devices_is_the_registry_read():
+    # ADR-015 §5: the guest reads the registry as-is — self, the
+    # server-computed winners, every registered device
+    reg = {"self": "p1", "active": {"bao": "p2"},
+           "devices": [{"peerId": "p1", "name": "laptop", "os": "linux", "apps": {"bao": {}}},
+                       {"peerId": "p2", "name": "mac", "os": "darwin", "apps": {"bao": {}},
+                        "activeClaims": {"bao": {"seq": 3, "at": 1}}}]}
+    fx = wire(replies={"/v1/devices": reg})
+    assert client(fx).list_devices() == reg
+    assert fx.calls == [("GET", "/v1/devices", None)]
+
+
+def test_dataset_field_helpers_hit_the_field_routes():
+    # ADR-017 §1 additive evolution: one field in, one field out, the
+    # declaration itself untouched (no PATCH, no re-declare)
+    fx = wire(replies={"/types": {"types": [{"id": "mb", "xKey": "mailbox"}]},
+                       "/fields": {"fieldDefId": "f9"}})
+    c = client(fx)
+    assert c.add_dataset_field("s1", "mailbox", "d1", {"key": "notes", "kind": "string",
+                                                        "mutableBy": "any"}) == {"fieldDefId": "f9"}
+    assert c.remove_dataset_field("s1", "mailbox", "d1", "f9") == {}
+    assert [c for c in fx.calls if c[0] != "GET"] == [
+        ("POST", "/v1/spaces/s1/types/mb/datasets/d1/fields",
+         {"key": "notes", "kind": "string", "mutableBy": "any"}),
+        ("DELETE", "/v1/spaces/s1/types/mb/datasets/d1/fields/f9", None),
+    ]
+
+
+def test_dataset_field_helpers_are_private_on_the_flat_surface():
+    # the declaration tier stays program plumbing (ADR-010 §1 hides `_`
+    # names from the inventory); the device read is public
+    g = load(wire())
+    assert "_add_dataset_field" in g and "_remove_dataset_field" in g
+    assert "add_dataset_field" not in g and "remove_dataset_field" not in g
+    assert "fieldDefId" in g["_add_dataset_field"].__doc__
+    assert "MANUAL" in g["list_devices"].__doc__
+
+
 def test_flat_functions_lift_method_docstrings():
     g = load(wire())
     assert "envelope" in g["search"].__doc__       # ONE authored copy, lifted

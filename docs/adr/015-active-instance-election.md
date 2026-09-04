@@ -151,6 +151,13 @@ Control API `GET /election` →
 `{app, enabled, active, peerId, winner}` (winner via a live
 registry read, null when unavailable).
 
+Guest: `any@v1.list_devices()` (getter, public) is the registry read
+verbatim — `{self, active, devices}` — so bao can tell the user which
+device answers right now, which others exist and where to switch.
+Read-only by design: the rule stays server-side (§2) and a switch is
+the user activating on the device they want (§4 cadence); no guest
+`activate` exists, the election claims only for its own process (§3).
+
 ## Consequences
 
 - Split-brain becomes a ≤ poll-interval race window instead of a

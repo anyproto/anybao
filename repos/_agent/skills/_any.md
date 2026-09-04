@@ -145,6 +145,10 @@ Spaces:
   object — use it when the user asks to "open"/"show" something, or
   right after creating what they'll want to look at. Fire-and-forget:
   `subscribers: 0` just means no window is connected, nothing queues.
+- **Devices**: `c.list_devices()` → `{self, active, devices}` — which
+  device runs bao right now (`active["bao"]`), which others are
+  registered and when they were last seen. Switching is the USER's
+  act on the device they want; tell them where, never try to claim.
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
 

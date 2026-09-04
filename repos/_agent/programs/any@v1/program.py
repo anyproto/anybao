@@ -1424,6 +1424,24 @@ class _Client:
         body = {"identity": identity} if identity else {}
         return self._call("post", f"/v1/processes/{process_id}/cancel", body)
 
+    def list_devices(self):
+        """The account's device registry (ADR-015) → {self, active,
+        devices}.
+
+        `self` = this server's peerId; `active` = {appSlug: peerId},
+        the server-computed winner per app ("bao" is the agent; a
+        client app registers under its own slug); `devices` = [{peerId,
+        name, os, version, apps: {slug: presence}, activeClaims:
+        {slug: {seq, at}}}] — every device that has registered, live
+        or not (presence is the app's last heartbeat under `apps`).
+        Read-only: the winner rule is server-side and a switch is
+        MANUAL — the user activates bao on the device they want (the
+        standby serves notice within one 10 s poll). Use it to tell
+        the user which device answers right now, which others exist,
+        and where to switch — never to claim from here. A server
+        without the registry 404s (request.not_found)."""
+        return self._call("get", "/v1/devices")
+
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress
         # ONLY through agent:progress@v1, never these three directly)
@@ -1843,6 +1861,38 @@ class _Client:
         tid = self._resolve_type_or_raise(space, type_key)
         return self._call(
             "delete", f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}")
+
+    def add_dataset_field(self, space, type_key, dataset_def_id, field):
+        """Add ONE field to an existing dataset definition (additive
+        evolution, ADR-017 §1) → {fieldDefId}.
+
+        field: {"key", "kind"?: string|number|boolean|array|object,
+        "required"?, "mutableBy"?: "author"|"any", "stamp"?:
+        "creator"|"createTime"|"modifyTime", "scope"?: "local",
+        "name"?, "shape"?}. Existing records simply lack the key
+        (a `required` field only gates writes from now on). The
+        alternative — remove + re-declare — drops the declaration's
+        pinned behaviour; adding a field keeps it. dataset_def_id from
+        list_datasets. 404 dataset.not_found when the def is gone."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call(
+            "post",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields",
+            field)
+        return {"fieldDefId": r.get("fieldDefId")}
+
+    def remove_dataset_field(self, space, type_key, dataset_def_id, field_def_id):
+        """Remove ONE field definition from a dataset (wire: 204) →
+        {}.
+
+        field_def_id = the `id` inside list_datasets' `fields`. Stored
+        values under that key are NOT cleaned up — the key becomes an
+        undeclared (any-typed) field for readers; a later add under
+        the same key re-declares it."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._call(
+            "delete",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
 
     def add_property(self, space, type_key, body):
         """POST one property onto a type (named by xKey — unknown keys
@@ -2696,6 +2746,15 @@ def _remove_dataset(spaceConfig, type_key, dataset_def_id):
     return _c().remove_dataset(_space(spaceConfig), type_key, dataset_def_id)
 
 
+def _add_dataset_field(spaceConfig, type_key, dataset_def_id, field):
+    return _c().add_dataset_field(_space(spaceConfig), type_key, dataset_def_id, field)
+
+
+def _remove_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id):
+    return _c().remove_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
+                                     field_def_id)
+
+
 @span(kind="getter")  # noqa: F821 - guest global
 def aggregate(spaceConfig, pipeline, object_id=None, dataset=None):
     return _c().aggregate(_space(spaceConfig), pipeline, object_id, dataset)
@@ -2709,6 +2768,11 @@ def list_processes():
 @span(kind="mutator")  # noqa: F821 - guest global
 def cancel_process(process_id, identity=None):
     return _c().cancel_process(process_id, identity)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def list_devices():
+    return _c().list_devices()
 
 
 # `_`-private (hidden from the tool inventory): progress@v1's transport
@@ -2941,7 +3005,8 @@ def delete_memory(spaceConfig, item_id):
 for _f in (create_object, update_object, delete_object, query_objects,
            list_programs, query, modify, upsert_record, upsert_records,
            delete_records, _list_datasets, _create_dataset, _remove_dataset,
-           aggregate, list_processes, cancel_process,
+           _add_dataset_field, _remove_dataset_field,
+           aggregate, list_processes, cancel_process, list_devices,
            get_markdown, put_markdown, edit_markdown, list_files, file_content,
            list_search_scopes,
            append_markdown, list_spaces, get_space, general_chat,
