@@ -28,6 +28,7 @@ import heapq  # noqa: F401
 import html.entities  # noqa: F401  (tier-1, ADR-012 §6; also bs4's backend)
 import html.parser  # noqa: F401
 import inspect  # noqa: F401
+import io
 import itertools  # noqa: F401
 import json
 import math  # noqa: F401
@@ -49,8 +50,17 @@ class EffectError(Exception):
     pass
 
 
+def _json_default(v):
+    """Guest handles that cross the boundary as their reference
+    (ADR-026 §4: a Blob is its ref wherever JSON is expected)."""
+    if isinstance(v, Blob):
+        return v.ref()
+    raise TypeError(f"Object of type {type(v).__name__} is not JSON serializable")
+
+
 def _effect(name, payload=None):
-    reply = json.loads(wit_world.host_effect(name, json.dumps(payload or {})))
+    wire = json.dumps(payload or {}, default=_json_default)
+    reply = json.loads(wit_world.host_effect(name, wire))
     if not reply.get("ok"):
         err = reply.get("error") or {}
         raise EffectError(f"{err.get('type', 'EffectError')}: {err.get('message', '')}")
@@ -139,20 +149,209 @@ def uuid4():
     return _effect("uuid4")["hex"]
 
 
+# ---- blobs (ADR-026 §4): bytes as handles ----------------------------------
+
+BLOB_BYTES_CEILING = 64 * 1024 * 1024
+
+
+class BinaryBody(Exception):
+    """`.text` / `.json()` on a Response whose body is bytes — use
+    `.blob` (a Blob: `.mime`, `.size`, `bytes(b)`, `b.read(n)`)."""
+
+
+class Blob:
+    """A handle on bytes the host holds (ADR-026): `.sha256`, `.size`,
+    `.mime` — zero bytes in the guest until asked. File-like:
+    `read(n)` / `seek` / `tell`; `bytes(b)` for the whole payload (≤ 64
+    MiB, else read in ranges); `text()` decodes it. Pass it wherever
+    bytes go — an http `body=`, a File part's `data`, `attach_file` —
+    the host moves the bytes; the trace keeps the ref."""
+
+    def __init__(self, sha256, size, mime):
+        self.sha256 = sha256
+        self.size = int(size)
+        self.mime = mime
+        self._pos = 0
+
+    @classmethod
+    def from_ref(cls, ref):
+        return cls(ref["__blob"], ref["bytes"], ref["mime"])
+
+    @staticmethod
+    def is_ref(v):
+        return (isinstance(v, dict) and set(v) == {"__blob", "bytes", "mime"}
+                and isinstance(v.get("__blob"), str))
+
+    def ref(self):
+        return {"__blob": self.sha256, "bytes": self.size, "mime": self.mime}
+
+    def read(self, n=-1):
+        """Up to `n` bytes from the current position (all remaining
+        when n < 0); advances the position."""
+        if n is None or n < 0:
+            n = self.size - self._pos
+        n = max(0, min(n, self.size - self._pos))
+        if n == 0:
+            return b""
+        out = _effect("blob.read", {"hash": self.sha256, "offset": self._pos, "length": n})
+        data = base64.b64decode(out["data"])
+        self._pos += len(data)
+        return data
+
+    def seek(self, pos, whence=0):
+        if whence == 1:
+            pos += self._pos
+        elif whence == 2:
+            pos += self.size
+        self._pos = max(0, min(int(pos), self.size))
+        return self._pos
+
+    def tell(self):
+        return self._pos
+
+    def __bytes__(self):
+        if self.size > BLOB_BYTES_CEILING:
+            raise ValueError(
+                f"blob is {self.size} bytes, over the {BLOB_BYTES_CEILING} in-guest ceiling — "
+                f"read it in ranges (b.read(n)) or pass the Blob on as-is (http body=, "
+                f"attach_file, a File part): the host moves bytes without the guest holding them")
+        pos = self._pos
+        self._pos = 0
+        try:
+            return self.read(self.size)
+        finally:
+            self._pos = pos
+
+    def text(self, encoding="utf-8", errors="replace"):
+        """The payload decoded as text (text/* blobs)."""
+        return bytes(self).decode(encoding, errors)
+
+    def __len__(self):
+        return self.size
+
+    def __eq__(self, other):
+        return isinstance(other, Blob) and other.sha256 == self.sha256
+
+    def __hash__(self):
+        return hash(self.sha256)
+
+    def __repr__(self):
+        return f"<Blob {self.mime} {self.size} bytes {self.sha256[:23]}>"
+
+
+class _BlobWriter:
+    """`tempfile.TemporaryFile()` in the guest (ADR-026 §4): a file-like
+    object to write into; `close()` (or leaving the `with`) hands the
+    bytes to the host and sets `.blob`. Text mode encodes utf-8."""
+
+    def __init__(self, mime="application/octet-stream", text=False):
+        self.mime = mime
+        self._text = text
+        self._buf = io.StringIO() if text else io.BytesIO()
+        self.blob = None
+        self.closed = False
+
+    def write(self, data):
+        return self._buf.write(data)
+
+    def writelines(self, lines):
+        self._buf.writelines(lines)
+
+    def read(self, n=-1):
+        return self._buf.read(n)
+
+    def seek(self, pos, whence=0):
+        return self._buf.seek(pos, whence)
+
+    def tell(self):
+        return self._buf.tell()
+
+    def flush(self):
+        pass
+
+    def getvalue(self):
+        v = self._buf.getvalue()
+        return v.encode("utf-8") if self._text else v
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.blob = blob.from_bytes(self.getvalue(), self.mime)
+        return self.blob
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+class _BlobNs:
+    """`blob.from_bytes(data, mime)` — guest bytes → a Blob (the host
+    writes them once; the trace records the ref). `blob.open(mime)` —
+    a writer that becomes a Blob on close (what `tempfile` returns)."""
+
+    Blob = Blob
+
+    def from_bytes(self, data, mime="application/octet-stream"):
+        if isinstance(data, Blob):
+            return data
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError(f"from_bytes wants bytes (or a str), got {type(data).__name__}")
+        out = _effect("blob.put", {"data": base64.b64encode(bytes(data)).decode(), "mime": mime})
+        return Blob.from_ref(out)
+
+    def open(self, mime="application/octet-stream", text=False):
+        return _BlobWriter(mime, text)
+
+    def is_ref(self, v):
+        return Blob.is_ref(v)
+
+    def of(self, v):
+        """A Blob from a Blob, a ref dict, or bytes (mime octet-stream)."""
+        if isinstance(v, Blob):
+            return v
+        if Blob.is_ref(v):
+            return Blob.from_ref(v)
+        return self.from_bytes(v)
+
+
+blob = _BlobNs()
+
+
 # ---- http facade (ADR-002 §1 Pythonic surface) -----------------------------
 
 class Response:
+    """`.status`, `.headers`, `.url` (final, post-redirect), and the body
+    as the host classified it (ADR-026 §3): `.text` / `.json()` for a
+    text body, `.blob` (a Blob) for bytes — an image, a PDF, a zip.
+    `.text` on a bytes body raises BinaryBody; `.blob` is None on a
+    text body. `http.get(url, response="text")` forces text."""
+
     def __init__(self, raw):
         self.status = raw.get("status")
         self.headers = raw.get("headers") or {}
-        self.text = raw.get("body") or ""
         self.url = raw.get("url")  # final url, post-redirect (ADR-008 §2)
+        body = raw.get("body")
+        self.blob = Blob.from_ref(body) if Blob.is_ref(body) else None
+        self._text = "" if self.blob is not None else (body or "")
+
+    @property
+    def text(self):
+        if self.blob is not None:
+            raise BinaryBody(f"the body is bytes ({self.blob!r}); use .blob")
+        return self._text
 
     def json(self):
         return json.loads(self.text)
 
     def __repr__(self):
-        return f"<Response {self.status}, {len(self.text)} bytes>"
+        if self.blob is not None:
+            return f"<Response {self.status}, {self.blob!r}>"
+        return f"<Response {self.status}, {len(self._text)} bytes>"
 
 
 def _batch(name, payloads):
@@ -453,11 +652,35 @@ def _os_proxy():
     return types.SimpleNamespace(environ=_Environ())
 
 
+def _tempfile_proxy():
+    """ADR-026 §4 / ADR-002 §4: a temporary FILE is a blob writer — what
+    the guest writes becomes a Blob on close; temporary directories
+    wait for the ADR-024 fs surface."""
+    def _file(mode="w+b", mime="application/octet-stream", **_kw):
+        return _BlobWriter(mime, text="b" not in mode)
+
+    def _no_dir(*_a, **_k):
+        raise ImportError("tempfile directories are outside the effect boundary "
+                          "(ADR-024 fs surface); a temporary FILE is a blob writer: "
+                          "tempfile.TemporaryFile(mime=...) → write → .blob on close")
+
+    return types.SimpleNamespace(
+        TemporaryFile=_file,
+        NamedTemporaryFile=_file,
+        SpooledTemporaryFile=_file,
+        TemporaryDirectory=_no_dir,
+        mkdtemp=_no_dir,
+        mkstemp=_no_dir,
+        gettempdir=_no_dir,
+    )
+
+
 _PROXIES = {
     "datetime": _datetime_proxy,
     "random": _random_proxy,
     "time": _time_proxy,
     "os": _os_proxy,
+    "tempfile": _tempfile_proxy,
 }
 
 # tier 1: pure stdlib, passes through (ADR-002 §4; inspect: ADR-010 §2;
@@ -489,7 +712,7 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         f"module '{name}' is outside the effect boundary. "
         f"Available: {', '.join(sorted(_ALLOWED))}; "
         f"proxied: {', '.join(sorted(_PROXIES))}; "
-        f"plus globals http, now(), rand(), env(), uuid4(), values, effects, "
+        f"plus globals http, blob/Blob, now(), rand(), env(), uuid4(), values, effects, "
         f"effect(), span(), describe(), inferSchema(), help()."
     )
 
@@ -723,6 +946,8 @@ def _json_safe(v):
     values degrade to repr (ADR-001 §4c)."""
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
+    if isinstance(v, Blob):
+        return v.ref()  # the handle, not its repr (ADR-026 §4)
     if isinstance(v, (list, tuple)):
         return [_json_safe(x) for x in v]
     if isinstance(v, dict):
@@ -863,6 +1088,9 @@ def _fresh_ns() -> dict:
         "effect": _effect,           # raw channel (plumbing; facades preferred)
         "EffectError": EffectError,
         "http": http,
+        "Blob": Blob,          # bytes as handles (ADR-026 §4)
+        "blob": blob,
+        "BinaryBody": BinaryBody,
         "now": now,
         "tz_offset": tz_offset,
         "ts_s": ts_s,           # instants, ADR-019 §1

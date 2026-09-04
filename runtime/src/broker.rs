@@ -380,6 +380,52 @@ impl Broker {
         })
     }
 
+    /// `blob.read {hash, offset?, length?}` → `{data: base64, bytes}`
+    /// from the directory (ADR-026 §4).
+    fn sys_blob_read(&self, payload: &Value) -> Result<Value, EffectFailure> {
+        let hash = payload.get("hash").and_then(|h| h.as_str()).unwrap_or("");
+        let offset = payload.get("offset").and_then(|o| o.as_u64()).unwrap_or(0);
+        let length = payload
+            .get("length")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(u64::MAX);
+        let missing = || EffectFailure {
+            type_: "blob_missing".into(),
+            message: format!("no blob {hash} in this bao's blob directory"),
+        };
+        let dir = self.writer.blob_dir.as_ref().ok_or_else(missing)?;
+        let bytes = dir
+            .read_range(hash, offset, length)
+            .map_err(|e| EffectFailure {
+                type_: "blob_missing".into(),
+                message: format!("blob {hash}: {e}"),
+            })?
+            .ok_or_else(missing)?;
+        use base64::Engine as _;
+        Ok(json!({
+            "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "bytes": bytes.len(),
+        }))
+    }
+
+    /// `blob.put {data: base64, mime}` → the payload the record sees:
+    /// `{ref}` (ADR-026 §4).
+    fn materialize_put(&self, payload: &Value) -> Result<Value, EffectFailure> {
+        use base64::Engine as _;
+        let data = payload.get("data").and_then(|d| d.as_str()).unwrap_or("");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| EffectFailure {
+                type_: "TypeError".into(),
+                message: format!("blob.put: data is not base64: {e}"),
+            })?;
+        let mime = payload
+            .get("mime")
+            .and_then(|m| m.as_str())
+            .unwrap_or("application/octet-stream");
+        Ok(json!({"ref": self.writer.put_raw(&bytes, mime)}))
+    }
+
     /// Record-mode permissive broker — the shape main.rs builds today.
     /// Replay/mock/grants wiring sets the public fields (`mode`,
     /// `cursor`, `mock_index`, `mock_unmatched`, `blobs`, `grants`).
@@ -613,6 +659,14 @@ impl Broker {
     }
 
     pub fn call(&mut self, name: &str, payload: Value) -> Result<Value, EffectFailure> {
+        // ADR-026 §4: `blob.put`'s normaliser materialises — the bytes go
+        // to the directory here, the recorded input is the ref (its key
+        // is content-addressed; replay re-mints the same ref).
+        let payload = if name == "blob.put" {
+            self.materialize_put(&payload)?
+        } else {
+            payload
+        };
         let class = self.classify(name, &payload);
         let cap = self.cap_of(name, &payload);
         // ADR-024 §1: credential-looking `env` values on sh.* are masked
@@ -695,7 +749,14 @@ impl Broker {
                 .unwrap_or_default();
             meta.insert("mocked".into(), json!(true));
             meta.insert("class".into(), json!(class));
-            return self.record_mocked(name, canonical, &key, span.as_deref(), &rec, meta);
+            let out = self.record_mocked(name, canonical, &key, span.as_deref(), &rec, meta)?;
+            // ADR-026 §4: the record holds the ref, the directory the
+            // bytes — a replayed read is served from the directory
+            return if name == "blob.read" {
+                self.execute(name, &payload)
+            } else {
+                Ok(out)
+            };
         }
 
         if self.mode == Mode::Mock {
@@ -747,12 +808,19 @@ impl Broker {
         let cell = self.current_cell.clone();
         match result {
             Ok(output) => {
+                // ADR-026 §4: a blob read's bytes are never a record —
+                // the ref in the input names them, the directory holds them
+                let recorded = if name == "blob.read" {
+                    json!({"bytes": output["bytes"]})
+                } else {
+                    output.clone()
+                };
                 self.writer.effect(
                     name,
                     cell.as_deref(),
                     canonical,
                     &key,
-                    Some(output.clone()),
+                    Some(recorded),
                     None,
                     Value::Object(meta),
                     span.as_deref(),
@@ -874,6 +942,8 @@ impl Broker {
             "trace.runs" => self.sys_trace_runs(payload),
             "trace.stats" => self.sys_trace_stats(payload),
             "trace.query" => self.sys_trace_query(payload),
+            "blob.read" => self.sys_blob_read(payload),
+            "blob.put" => Ok(payload.get("ref").cloned().unwrap_or(Value::Null)),
             "kernel.boot" => Ok(payload.clone()), // pins echo into the record
             // ADR-024: shell effects, only in a `--features shell` build
             #[cfg(feature = "shell")]
@@ -3214,6 +3284,64 @@ mod tests {
         ));
         assert!(crate::blob::is_raw_ref(&recs[1]["input"]["body"]));
         assert_eq!(recs[1]["blobs"], json!([r["__blob"]]));
+    }
+
+    /// ADR-026 §4: `blob.put` records the ref, never the bytes;
+    /// `blob.read` records the byte count, and a replayed read is served
+    /// from the directory.
+    #[test]
+    fn blob_syscalls_record_refs_and_replay_from_the_directory() {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = make_broker("run_put");
+        b.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
+        let r = b
+            .call(
+                "blob.put",
+                json!({"data": b64(b"hello blob"), "mime": "text/plain"}),
+            )
+            .unwrap();
+        assert!(crate::blob::is_raw_ref(&r));
+        assert_eq!(r["bytes"], json!(10));
+        let hash = r["__blob"].as_str().unwrap().to_string();
+        let out = b
+            .call("blob.read", json!({"hash": hash, "offset": 6, "length": 4}))
+            .unwrap();
+        assert_eq!(out["data"], json!(b64(b"blob")));
+        let recs: Vec<Value> = b
+            .writer
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "effect")
+            .cloned()
+            .collect();
+        assert_eq!(recs[0]["input"], json!({"ref": r}));
+        assert!(recs[0]["input"]["ref"]["__blob"].is_string());
+        assert_eq!(recs[1]["output"], json!({"bytes": 4})); // no data in the record
+        assert_eq!(recs[1]["blobs"], Value::Null); // the hash is a string arg, not a ref
+
+        let mut rb = make_broker("run_put");
+        rb.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
+        rb.mode = Mode::Replay;
+        rb.cursor = Some(ReplayCursor::new(&b.writer.records));
+        let r2 = rb
+            .call(
+                "blob.put",
+                json!({"data": b64(b"hello blob"), "mime": "text/plain"}),
+            )
+            .unwrap();
+        assert_eq!(r2, r);
+        let out2 = rb
+            .call("blob.read", json!({"hash": hash, "offset": 6, "length": 4}))
+            .unwrap();
+        assert_eq!(out2["data"], json!(b64(b"blob")));
+        let missing = rb
+            .call("blob.read", json!({"hash": "sha256:00", "offset": 0}))
+            .unwrap_err();
+        // an unrecorded read is a divergence in strict replay, not a
+        // silent directory read
+        assert_eq!(missing.type_, "DivergenceError", "{missing:?}");
     }
 
     #[test]
