@@ -31,14 +31,18 @@ import inspect  # noqa: F401
 import itertools  # noqa: F401
 import json
 import math  # noqa: F401
+import random  # the run's seeded stream (ADR-002 §4 floor)
 import re  # noqa: F401
+import secrets  # noqa: F401
 import statistics  # noqa: F401
 import string  # noqa: F401
 import textwrap  # noqa: F401
+import time as _time  # (guest sees the proxy: time()/monotonic()/sleep() effect-backed)
 import traceback
 import types
 import typing  # noqa: F401
 import unicodedata  # noqa: F401
+import uuid  # noqa: F401
 
 import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
 import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
@@ -127,7 +131,10 @@ def fmt_ts(v, fmt="%a %Y-%m-%d %H:%M", offset_s=None):
 
 
 def rand():
-    return _effect("random.random")["value"]
+    """Uniform [0, 1) from the run's seeded stream (ADR-002 §4): the
+    stdlib `random`, seeded once per run from the recorded seed — no
+    record per draw."""
+    return random.random()
 
 
 def env(name, default=None):
@@ -412,27 +419,17 @@ def _datetime_proxy():
     )
 
 
-def _random_proxy():
-    def _sample(seq, k):
-        pool = list(seq)
-        return [pool.pop(int(rand() * len(pool))) for _ in range(k)]
-
-    return types.SimpleNamespace(
-        random=rand,
-        uniform=lambda a, b: a + rand() * (b - a),
-        randint=lambda a, b: a + int(rand() * (b - a + 1)),
-        choice=lambda seq: seq[int(rand() * len(seq))],
-        sample=_sample,
-        shuffle=lambda lst: lst.sort(key=lambda _: rand()),
-    )
-
-
 def _time_proxy():
-    return types.SimpleNamespace(
-        time=now,
-        monotonic=now,  # good enough for cell code; real monotonic is ambient
-        sleep=lambda s: _effect("sleep", {"seconds": s}),
-    )
+    # the real module minus its three ambient reads: time()/monotonic()
+    # are the recorded `time.now`, sleep() the `sleep` effect; the rest
+    # (gmtime/localtime/strftime/perf_counter/…) passes through and
+    # sees the WASI floor — the run's recorded start (ADR-002 §4)
+    ns = types.SimpleNamespace(**{k: v for k, v in vars(_time).items()
+                                  if not k.startswith("_")})
+    ns.time = now
+    ns.monotonic = now
+    ns.sleep = lambda s: _effect("sleep", {"seconds": s})
+    return ns
 
 
 class _Environ:
@@ -455,7 +452,6 @@ def _os_proxy():
 
 _PROXIES = {
     "datetime": _datetime_proxy,
-    "random": _random_proxy,
     "time": _time_proxy,
     "os": _os_proxy,
 }
@@ -473,6 +469,7 @@ _ALLOWED = {
     "dataclasses", "enum", "typing", "decimal", "fractions", "base64",
     "hashlib", "string", "copy", "unicodedata", "inspect", "ast",
     "html", "email", "zlib",
+    "random", "uuid", "secrets",   # pure on the WASI floor: seeded once per run (ADR-002 §4)
     "bs4", "soupsieve", "markdownify",   # vendored pure-Python (runtime/guest/)
 }
 

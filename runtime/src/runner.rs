@@ -9,13 +9,102 @@ use crate::broker::{Broker, SharedMailbox};
 use crate::trace::canonical_json;
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store, UpdateDeadline};
 use wasmtime_wasi::p2::add_to_linker_sync;
-use wasmtime_wasi::{ResourceTable, WasiCtxBuilder};
+use wasmtime_wasi::{HostMonotonicClock, HostWallClock, ResourceTable, WasiCtxBuilder};
+
+// ---- the WASI floor (ADR-002 §4) ------------------------------------------
+// The allowlist gates what cell code imports; a module's own ambient
+// calls (zipfile's time.localtime, random's import-time seeding,
+// os.urandom behind uuid4/secrets) reach the WASI clocks and entropy.
+// These are what they reach: the run's recorded start and one recorded
+// seed — deterministic by construction, replayed from the header.
+
+/// Wall clock frozen at the header's `startedAt`.
+struct FloorWallClock(Duration);
+
+impl HostWallClock for FloorWallClock {
+    fn resolution(&self) -> Duration {
+        Duration::from_micros(1)
+    }
+    fn now(&self) -> Duration {
+        self.0
+    }
+}
+
+/// Monotonic clock: a counter advancing 1 µs per read.
+struct FloorMonotonic(AtomicU64);
+
+impl HostMonotonicClock for FloorMonotonic {
+    fn resolution(&self) -> u64 {
+        1_000
+    }
+    fn now(&self) -> u64 {
+        self.0.fetch_add(1_000, Ordering::Relaxed) + 1_000
+    }
+}
+
+/// xoshiro256** seeded by splitmix64 over (run seed, source tag) —
+/// pinned here, not to a crate's StdRng, so a recorded run replays on
+/// any anyrt version.
+pub struct FloorRng {
+    s: [u64; 4],
+}
+
+impl FloorRng {
+    pub fn new(seed: &[u8; 32], tag: u64) -> Self {
+        let mut x = tag;
+        for chunk in seed.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..chunk.len()].copy_from_slice(chunk);
+            x ^= u64::from_le_bytes(b);
+            x = x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+        let mut s = [0u64; 4];
+        for w in s.iter_mut() {
+            x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            *w = z ^ (z >> 31);
+        }
+        FloorRng { s }
+    }
+
+    fn next(&mut self) -> u64 {
+        let s = &mut self.s;
+        let result = s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
+        let t = s[1] << 17;
+        s[2] ^= s[0];
+        s[3] ^= s[1];
+        s[1] ^= s[2];
+        s[0] ^= s[3];
+        s[2] ^= t;
+        s[3] = s[3].rotate_left(45);
+        result
+    }
+}
+
+impl rand::TryRng for FloorRng {
+    type Error = std::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok((self.next() >> 32) as u32)
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.next())
+    }
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        for chunk in dst.chunks_mut(8) {
+            let bytes = self.next().to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
 
 pub const EPOCH_TICK_MS: u64 = 10;
 /// Per-run compute budget (ADR-003 §2 fuel; bumped 5B→50B 2026-08-11:
@@ -180,9 +269,21 @@ pub fn run_program(
     // blocks (sh.run, ADR-024 §1) polls it and kills its child, where
     // the epoch bump alone could not reach (ADR-003 §2 amendment)
     broker.interrupt = interrupt.clone();
+    let floor = broker.writer.floor();
     let wasi = WasiCtxBuilder::new()
         .inherit_stderr() // guest tracebacks; no fs/net granted
         .env("PYTHONHASHSEED", "0") // determinism pin
+        // the rest of the floor (ADR-002 §4): frozen wall clock,
+        // counter monotonic, one recorded seed behind both entropy sources
+        .wall_clock(FloorWallClock(Duration::from_secs_f64(
+            floor.started_at.max(0.0),
+        )))
+        .monotonic_clock(FloorMonotonic(AtomicU64::new(0)))
+        .secure_random(FloorRng::new(&floor.seed, 1))
+        .insecure_random(FloorRng::new(&floor.seed, 2))
+        .insecure_random_seed(u128::from_le_bytes(
+            floor.seed[..16].try_into().expect("16 of 32 seed bytes"),
+        ))
         .build();
     let mut store = Store::new(
         &cage.engine,
@@ -358,5 +459,133 @@ mod tests {
             t0.elapsed()
         );
         assert_eq!(out.status, "interrupted");
+    }
+}
+
+/// The WASI floor (ADR-002 §4): what a guest's ambient calls see is
+/// derived from the header's `startedAt` + `seed`, so a run is
+/// deterministic from its header alone — including module-internal
+/// calls no proxy reaches (os.urandom behind uuid4/secrets, the
+/// stdlib random's import-time seeding, time.gmtime()).
+#[cfg(test)]
+mod floor_tests {
+    use super::*;
+    use crate::broker::{Broker, Mode};
+    use crate::replay::ReplayCursor;
+    use crate::routes::Classifier;
+    use crate::trace::TraceWriter;
+    use std::collections::BTreeMap;
+
+    const PROGRAM: &str = "import random\nimport secrets\nimport time\nimport uuid\n\n\
+def main(args):\n    xs = list(range(20))\n    random.shuffle(xs)\n    \
+return {\"r\": [random.random() for _ in range(3)], \"shuffled\": xs,\n            \
+\"u\": str(uuid.uuid4()), \"tok\": secrets.token_hex(8),\n            \
+\"gm\": list(time.gmtime()[:6]), \"lt\": list(time.localtime()[:6]),\n            \
+\"pc\": time.perf_counter() > 0, \"rand\": rand()}\n";
+
+    fn run(
+        dir: &std::path::Path,
+        cage: &Cage,
+        header: Value,
+        replay_of: Option<&[Value]>,
+    ) -> RunOutcome {
+        let mut broker = Broker::new(
+            TraceWriter::new(header),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Some(dir.to_path_buf()),
+            Classifier::new(None),
+        );
+        if let Some(records) = replay_of {
+            broker.mode = Mode::Replay;
+            broker.cursor = Some(ReplayCursor::new(records));
+        }
+        run_program(
+            cage,
+            broker,
+            "floor@v1",
+            &json!({}),
+            Default::default(),
+            Arc::new(AtomicBool::new(false)),
+            60.0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn header_seeds_every_ambient_source_and_replays() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("floor@v1.py"), PROGRAM).unwrap();
+        let cage = Cage::embedded().unwrap();
+
+        let one = run(
+            dir.path(),
+            &cage,
+            json!({"id": "fl1", "program": "floor@v1"}),
+            None,
+        );
+        assert_eq!(one.status, "ok", "{:?}", one.error);
+        let header = one.broker.writer.records[0]["run"].clone();
+        assert_eq!(header["seed"].as_str().map(str::len), Some(64));
+        let started = header["startedAt"].as_f64().unwrap();
+
+        // the frozen wall clock IS the header's startedAt (UTC = local: no TZ)
+        let t = chrono::DateTime::from_timestamp(started as i64, 0).unwrap();
+        use chrono::{Datelike, Timelike};
+        let expect = json!([
+            t.year(),
+            t.month(),
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
+        ]);
+        assert_eq!(one.value["gm"], expect);
+        assert_eq!(one.value["lt"], expect);
+        assert_eq!(one.value["pc"], json!(true));
+        assert_eq!(one.value["r"].as_array().unwrap().len(), 3);
+        assert!(one.value["rand"].is_f64());
+        assert!(
+            !one.broker
+                .writer
+                .records
+                .iter()
+                .any(|r| r["effect"] == "random.random"),
+            "no per-draw records"
+        );
+
+        // same header → same stream: uuid4, secrets, shuffle, random all agree
+        let two = run(dir.path(), &cage, header.clone(), None);
+        assert_eq!(two.status, "ok", "{:?}", two.error);
+        assert_eq!(two.value, one.value);
+
+        // a fresh header draws a fresh seed → different identities
+        let three = run(
+            dir.path(),
+            &cage,
+            json!({"id": "fl3", "program": "floor@v1"}),
+            None,
+        );
+        assert_ne!(three.value["u"], one.value["u"]);
+        assert_ne!(three.value["tok"], one.value["tok"]);
+
+        // strict replay from the recorded log: every record matches, the
+        // shuffle comes out identical
+        let replayed = run(dir.path(), &cage, header, Some(&one.broker.writer.records));
+        assert_eq!(replayed.status, "ok", "{:?}", replayed.error);
+        assert_eq!(replayed.value, one.value);
+    }
+
+    #[test]
+    fn floor_rng_is_pinned() {
+        // the generator is part of the trace contract: a recorded seed
+        // must yield these words on every anyrt version
+        let mut r = FloorRng::new(&[7u8; 32], 1);
+        let a = r.next();
+        let mut r2 = FloorRng::new(&[7u8; 32], 1);
+        assert_eq!(a, r2.next());
+        let mut other = FloorRng::new(&[7u8; 32], 2);
+        assert_ne!(a, other.next(), "source tags separate the streams");
+        assert_eq!(FloorRng::new(&[0u8; 32], 0).next(), 0x99ec_5f36_cb75_f2b4);
     }
 }

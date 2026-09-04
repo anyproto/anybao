@@ -43,15 +43,33 @@ pub struct TraceWriter {
     streamed: bool,
 }
 
+/// What the guest's ambient calls see (ADR-002 §4, the WASI floor):
+/// the header's `startedAt` is the wall clock, `seed` derives every
+/// random byte. Both live in the header so a replay re-derives them.
+pub struct Floor {
+    pub started_at: f64,
+    pub seed: [u8; 32],
+}
+
 impl TraceWriter {
-    pub fn new(run: Value) -> Self {
+    /// A run header carries `startedAt` and a 32-byte `seed` (ADR-001
+    /// §2): filled here when absent (a live run), kept when present
+    /// (a replay handing back the recorded header).
+    pub fn new(mut run: Value) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        if let Some(obj) = run.as_object_mut() {
+            obj.entry("startedAt").or_insert_with(|| json!(now));
+            obj.entry("seed")
+                .or_insert_with(|| json!(hex::encode(rand::random::<[u8; 32]>())));
+        }
+        let started_at = run["startedAt"].as_f64().unwrap_or(now);
         let mut w = TraceWriter {
             records: Vec::new(),
             blobs: Vec::new(),
-            started_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0),
+            started_at,
             trigger: None,
             seq: 0,
             sink: None,
@@ -59,6 +77,20 @@ impl TraceWriter {
         };
         w.push(json!({"kind": "header", "schema": SCHEMA, "run": run}));
         w
+    }
+
+    /// The floor this run's guest sees, read back from the header.
+    pub fn floor(&self) -> Floor {
+        let run = &self.records[0]["run"];
+        let mut seed = [0u8; 32];
+        if let Some(bytes) = run["seed"].as_str().and_then(|h| hex::decode(h).ok()) {
+            let n = bytes.len().min(32);
+            seed[..n].copy_from_slice(&bytes[..n]);
+        }
+        Floor {
+            started_at: run["startedAt"].as_f64().unwrap_or(self.started_at),
+            seed,
+        }
     }
 
     /// Start streaming into `store`: everything committed so far (the
@@ -269,7 +301,11 @@ mod tests {
 
         // dump on the streamed store is a no-op; bytes equal a buffered twin
         w.dump(&store).unwrap();
-        let mut twin = TraceWriter::new(json!({"id": "run_twin", "program": "p"}));
+        // the twin hands back the same header (a replay does): the
+        // floor's startedAt/seed are part of the bytes compared below
+        let mut twin_run = w.records[0]["run"].clone();
+        twin_run["id"] = json!("run_twin");
+        let mut twin = TraceWriter::new(twin_run);
         effect_rec(&mut twin, json!({"ok": 1}));
         effect_rec(&mut twin, json!({"ok": 2}));
         twin.cell("main", true, None, false, json!({"fuel_used": 1}));
