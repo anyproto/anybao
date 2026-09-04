@@ -830,6 +830,24 @@ impl TraceStore for AnyTraceStore {
         for chunk in dead.chunks(500) {
             self.client.local_delete(&self.blobs, Some(chunk), None)?;
         }
+        // raw blobs no surviving record lists in `blobs` (ADR-026 §6)
+        if let Some(dir) = &self.blob_dir {
+            let listed = self.query_all(
+                &self.records,
+                json!({"blobs": {"$exists": true}}),
+                json!(["seq"]),
+            )?;
+            let keep: std::collections::BTreeSet<String> = listed
+                .iter()
+                .filter_map(|r| r["blobs"].as_array())
+                .flatten()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect();
+            let swept = dir.sweep(&keep)?;
+            if swept > 0 {
+                tracing::info!("trace retention: {swept} raw blobs swept");
+            }
+        }
         Ok(victims.len())
     }
 

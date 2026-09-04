@@ -194,6 +194,19 @@ impl BlobDir {
         Ok(out)
     }
 
+    /// The retention sweep (ADR-026 §6): unlink every file whose hash
+    /// is not in `keep`. Returns the number removed.
+    pub fn sweep(&self, keep: &std::collections::BTreeSet<String>) -> anyhow::Result<usize> {
+        let mut n = 0;
+        for h in self.list()? {
+            if !keep.contains(&h) {
+                self.remove(&h)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     pub fn remove(&self, hash: &str) -> anyhow::Result<()> {
         let path = self.path_of(hash)?;
         match fs::remove_file(&path) {
@@ -226,6 +239,19 @@ mod tests {
         store.remove(h).unwrap();
         assert!(store.read(h).unwrap().is_none());
         assert!(store.path_of("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn sweep_keeps_the_referenced_and_drops_the_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobDir::new(dir.path());
+        let keep_ref = store.put(b"keep", "text/plain").unwrap();
+        store.put(b"orphan", "text/plain").unwrap();
+        let keep: std::collections::BTreeSet<String> =
+            [keep_ref["__blob"].as_str().unwrap().to_string()].into();
+        assert_eq!(store.sweep(&keep).unwrap(), 1);
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert!(store.exists(keep_ref["__blob"].as_str().unwrap()));
     }
 
     #[test]
