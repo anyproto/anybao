@@ -909,13 +909,6 @@ impl Broker {
                 "remaining": self.fuel_gauge.load(std::sync::atomic::Ordering::Relaxed),
                 "budget": crate::runner::FUEL_PER_CELL,
             })),
-            "random.random" => {
-                // secrets-grade uniform in [0,1), mirroring the reference host
-                let mut buf = [0u8; 8];
-                getrandom(&mut buf);
-                let bits = u64::from_le_bytes(buf) >> 11; // 53 bits
-                Ok(json!({"value": bits as f64 / (1u64 << 53) as f64}))
-            }
             "uuid4" => Ok(json!({"hex": uuid::Uuid::new_v4().to_string()})),
             "sleep" => {
                 let secs = payload
@@ -1864,7 +1857,7 @@ pub(crate) fn urlencode(s: &str) -> String {
 }
 
 pub(crate) fn getrandom(buf: &mut [u8]) {
-    // uuid's rng is already OS-backed; reuse it for the random syscall
+    // uuid's rng is already OS-backed; reuse it (oauth's PKCE verifier)
     for chunk in buf.chunks_mut(16) {
         let bytes = *uuid::Uuid::new_v4().as_bytes();
         chunk.copy_from_slice(&bytes[..chunk.len()]);

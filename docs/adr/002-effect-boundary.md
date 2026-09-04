@@ -126,7 +126,12 @@ Cells execute in a constructed namespace containing **only**:
 
      Not in the image at all (`bz2`, `lzma`, `ssl`, `ctypes`): the
      ImportError says so, and `zipfile`/`tarfile` degrade to their
-     zlib-backed formats.
+     zlib-backed formats. The image holds what componentize-py's
+     static analysis sees from `app.py`, so every admitted module is
+     imported there literally — and so are the codecs those modules
+     load lazily (`cp437` for zip entry names, `latin-1`/`ascii` for
+     mail bodies): a zip read failed on `unknown encoding: cp437`
+     until it was.
   1b. *Vendored pure-Python third-party* (ADR-012 §6): `bs4` +
      `soupsieve`, `markdownify` — bundled verbatim into the kernel
      image from `runtime/guest/` (versions + licenses in
@@ -143,10 +148,10 @@ Cells execute in a constructed namespace containing **only**:
      | `datetime` | construction/arithmetic pass through; `datetime.now()`, `date.today()` are effect-backed → `time.now` records |
      | `time` | `time()`/`sleep()` effect-backed |
      | `os` | `os.environ` as the `env.get` effect; `os.fspath`/`os.PathLike` pass through (the archive modules need them) |
-     | `io` | pass through minus `open` — `io.open` is the real file opener |
+     | `io` | pass through minus `open`, `open_code`, `FileIO` — the three that take a path |
      | `tempfile` | `TemporaryFile`/`NamedTemporaryFile`/`SpooledTemporaryFile` return the blob writer (ADR-026 §4): a file-like object that becomes a Blob on close; `TemporaryDirectory`/`mkdtemp` refused pointing at ADR-024 |
-     | `sqlite3` | `connect(":memory:")` only — an in-memory database is pure; any path refused |
-     | `mimetypes` | the built-in table only (`init` never reads system files) |
+     | `sqlite3` | `connect(":memory:")` only — an in-memory database is pure; a path or `uri=True` is refused, and `Connection` (whose constructor takes a path) is not exposed |
+     | `mimetypes` | the built-in table only: `knownfiles` emptied and `init()` run once at proxy build, `init` not exposed |
 
   Refused with a pointer, not a bare error: `pathlib`, `shutil`,
   `glob`, `os.path` → the ADR-024 `fs.*` effects; `socket`, `select`,
@@ -165,12 +170,19 @@ Cells execute in a constructed namespace containing **only**:
   gates what *cell code* imports; a module's own imports resolve
   through the real importer, so `zipfile`'s `time.localtime()` or
   `random`'s import-time seeding reach the WASI clock and entropy,
-  not a proxy. The host therefore pins the WASI context per cell:
-  the wall clock is the cell's recorded start (frozen within the
-  cell), the monotonic clock a counter advancing 1 µs per read, and
-  both random sources a stream derived from one per-run seed recorded
-  in the run header (ADR-001 §4: one record per run, not one per
-  draw). Consequences: `random`, `secrets` and `uuid` need no proxy —
+  not a proxy. The host therefore pins the WASI context per run —
+  the host runs one cell per run (ADR-001 §4b), so the run is the
+  cell: the wall clock is the header's `startedAt` (frozen for the
+  run), the monotonic clock a counter advancing 1 µs per read, and
+  both random sources xoshiro256** seeded (splitmix64) from the
+  header's 32-byte `seed` and a per-source tag — the generator is
+  pinned in the runtime, not borrowed from a crate, so a recorded run
+  replays on any anyrt version (ADR-001 §2/§4: one record per run,
+  not one per draw). `rand()` is the stdlib `random.random` over that
+  stream; the `time` proxy overrides only `time()`, `monotonic()` and
+  `sleep()` (recorded effects) and passes the rest of the module —
+  `gmtime`/`localtime`/`strftime`/`perf_counter` — through to the
+  floor. Consequences: `random`, `secrets` and `uuid` need no proxy —
   the stdlib seeds from the pinned stream and a `shuffle` of ten
   thousand items is zero trace records; archives carry deterministic
   timestamps; module-internal ambient calls are replay-safe by
@@ -193,7 +205,7 @@ the SAME syscall surface natively; nothing above the boundary changes).
 
 **Syscall analogy, taken literally.** The host is a kernel: it exposes
 a SMALL, STABLE syscall set — `http.*` (the one outbound door),
-`config.get`, `mailbox.drain`, time/random/uuid/sleep/env,
+`config.get`, `mailbox.drain`, time/uuid/sleep/env,
 `module.resolve`, `batch`, `trace.*` views, span begin/end — plus the
 broker machinery (trace, replay, capability check, redaction) and the
 engine itself. Everything else — the any client, llm adapters, memory
@@ -250,7 +262,7 @@ binary tomorrow, and the agent cannot tell.**
 
 1. **Ergonomic shim names** — inject `now()/rand()/env()` globals in
    addition to proxied modules; both routes hit the same effects.
-2. **`uuid`** — effect-backed `uuid4()` (recorded like `random`);
+2. **`uuid`** — effect-backed `uuid4()` (recorded);
    deterministic uuid5 passes through the allowlist.
 3. **Batch** — N individual records + host-side concurrency, exposed as
    **per-facade `*_many` methods** (no generic combinator in v2.0):
