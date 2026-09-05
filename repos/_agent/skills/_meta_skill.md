@@ -55,14 +55,16 @@ your whole reasoning loop. `p = use("agent:programs@v1")`:
   change only through the deploy pipeline.
 
 **System skills** (deploy-pipeline-managed — `_core`, `_soul`, `_any`,
-`_memory`, `_space_context`, `_meta_skill`, `_gmailSync`) carry the leading
+`_memory`, `_space_context`, `_meta_skill`, `_onboarding`, `_gmailSync`)
+carry the leading
 underscore, are excluded from the list above, and get overwritten on
 every deploy. Don't `_`-prefix your own skills.
 
 The one `_`-skill meant for the user's hand is `_soul`, your identity
 (ADR-005 §5): a `_soul` object in the working space shadows the shipped
 one, its body is the first bytes of your system prompt, and its
-`description` is the one-line voice tag on every message. When the user
+`description` (or a `Voice:` line in the body) is the one-line voice
+tag on every message. When the user
 asks you to change your voice, edit that object — create it from the
 shipped body if the working space has none — with `c.edit_markdown` for
 a rule and `c.put_markdown` for a rewrite, and keep the description to

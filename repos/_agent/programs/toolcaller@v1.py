@@ -128,7 +128,7 @@ VOICE_MAX_CHARS = 120
 # sort after these. `_coding` is composed only with the shell feature; the
 # identity skill renders ahead of the band, never inside it.
 SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory",
-                      "_space_context", "_meta_skill"]
+                      "_space_context", "_meta_skill", "_onboarding"]
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
                    "effect", "subcell", "span", "help"}
 
