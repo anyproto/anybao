@@ -952,3 +952,28 @@ def test_boot_window_marks_a_voice_change_only_on_a_recorded_mismatch():
     none = [{"seq": 1, "userText": "u", "replies": ["r"], "llm": {"stopReason": "done"}}]
     assert opener_with(same) == "[earlier context]"
     assert opener_with(none) == "[earlier context]"
+
+
+def test_voice_closes_every_tool_result_message_and_the_wrap_up():
+    # ADR-005 §5 (under load): the tag is the last part after the cell
+    # results, so the call that ends a long run still reads the voice
+    cell = {"ok": True, "prints": [], "last": None, "error": None}
+    w = SoulWorld([tool_reply(cid="c1"), tool_reply(cid="c2"), done_reply("summary")],
+                  cells=[cell, dict(cell)])
+    out = run(w, maxTurns=2)
+    assert out["stop"] == "wrapup"
+    results = w.llm_calls[1]["messages"][-1]
+    assert results["role"] == "user"
+    assert [p["type"] for p in results["parts"]] == ["tool_result", "text"]
+    assert results["parts"][-1]["text"] == f"[voice: {SOUL_DESC}]"
+    wrap = w.llm_calls[-1]["messages"][-1]["parts"]
+    assert "[turn ceiling (2)] No more cells. In your own voice:" in wrap[0]["text"]
+    assert wrap[-1] == {"type": "text", "text": f"[voice: {SOUL_DESC}]"}
+
+
+def test_no_identity_means_no_trailing_tag_parts():
+    cell = {"ok": True, "prints": [], "last": None, "error": None}
+    w = World([tool_reply(), done_reply("summary")], cells=[cell])
+    run(w, maxTurns=1)
+    assert [p["type"] for p in w.llm_calls[1]["messages"][-2]["parts"]] == ["tool_result"]
+    assert [p["type"] for p in w.llm_calls[1]["messages"][-1]["parts"]] == ["text"]

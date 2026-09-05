@@ -329,17 +329,28 @@ def _dangling(messages, reason):
             for p in last["parts"] if p["type"] == "tool_call"]
 
 
-def _wrapup(messages, llm, system, tier, reason, stats, tools):
+def _voice_part(voice):
+    """The voice tag as a trailing text part (ADR-005 §5): closes every
+    tool-result message and the wrap-up, so the reply that ends a long
+    run — generated after tens of thousands of tokens of cells, at a
+    call the loop cannot predict — still reads the voice last."""
+    return [{"type": "text", "text": f"[voice: {voice}]"}] if voice else []
+
+
+def _wrapup(messages, llm, system, tier, reason, stats, tools, voice=""):
     # The wrap-up call keeps the SAME tool list as every other turn:
     # the tools are part of the cached prompt prefix, and dropping them
     # here made the biggest prompt of the run — the last one — a full
     # cache miss (105k uncached tokens, 7% of a 109-turn run's cost).
     # Text-only is asked for, not enforced by the wire; a model that
     # answers with a tool call anyway gets one more, tool-less call.
+    # The ask is voiced (§5): "summarize" alone was a report-genre
+    # instruction that flattened the identity exactly at the end.
     parts = _dangling(messages, reason)
     parts.append({"type": "text", "text":
-        f"[{reason}] No more cells. Summarize what you did, what is done, "
-        f"and what is still pending."})
+        f"[{reason}] No more cells. In your own voice: what you did, what is "
+        f"done, and what is still pending."})
+    parts.extend(_voice_part(voice))
     messages.append({"role": "user", "parts": parts})
     reply = llm.chat(messages, system=system, tier=tier, tools=tools)
     _tally(stats, reply.get("usage", {}))
@@ -347,7 +358,10 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     texts = _texts(reply["parts"])
     if not texts and any(p["type"] == "tool_call" for p in reply["parts"]):
         parts = _dangling(messages, reason)
-        parts.append({"type": "text", "text": "Text only — no tool calls. Summarize."})
+        parts.append({"type": "text", "text":
+                      "Text only — no tool calls. In your own voice: what is done "
+                      "and what is pending."})
+        parts.extend(_voice_part(voice))
         messages.append({"role": "user", "parts": parts})
         reply = llm.chat(messages, system=system, tier=tier, tools=[])
         _tally(stats, reply.get("usage", {}))
@@ -849,7 +863,8 @@ def main(args):
         if malformed > traits["malformed_retries"]:
             wrapup_reason = wrapup_reason or f"{malformed} malformed tool calls"
         if wrapup_reason:
-            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats, tools)
+            replies = _wrapup(messages, llm, system, tier, wrapup_reason, stats, tools,
+                              voice)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break
@@ -870,7 +885,7 @@ def main(args):
             break
         if reply["stop"] == "length":
             replies = _wrapup(messages, llm, system, tier,
-                              "response length limit", stats, tools)
+                              "response length limit", stats, tools, voice)
             stop = "wrapup"
             bubble("\n".join(replies), True)
             break
@@ -882,7 +897,9 @@ def main(args):
         results = []
         malformed += _run_model_cells(reply["parts"], results)
         stats["cells"] += len(results)
-        messages.append({"role": "user", "parts": results})
+        # the tag closes the results message (§5): recency at the one
+        # boundary the loop cannot predict — the call that ends the run
+        messages.append({"role": "user", "parts": results + _voice_part(voice)})
 
     out = {"stop": stop, "turns": turn, "tokens": tokens,
            "replies": replies, "injected": len(plan["injected"])}

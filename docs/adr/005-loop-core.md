@@ -268,9 +268,11 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   (§1.3): the boot window is capped at a quarter of `context_window`,
   and a call whose input reached 85% of it is the last — the next
   turn is the wrap-up. Hitting one triggers a
-  **wrap-up turn** — a final constrained call ("no more cells;
-  summarize state, what's done, what's pending") — never a silent hard
-  stop (the no-lossy-truncation doctrine: caps produce a wrap-up, not a
+  **wrap-up turn** — a final constrained call ("no more cells; in
+  your own voice: what you did, what is done, what is still pending"
+  — voiced since the §5 amendment of 2026-09-05, a bare "summarize"
+  being a report-genre instruction that flattened the identity exactly
+  at the end) — never a silent hard stop (the no-lossy-truncation doctrine: caps produce a wrap-up, not a
   cut).
 - **Mailbox, drained between turns via the `mailbox.drain` syscall.**
   The drain is a recorded effect, so injections and soft breaks are IN
@@ -492,6 +494,16 @@ that, each byte-stable per conversation (§1.5):
    run (the system block is composed once); an edit made while a run
    is live lands on the next run. No system-tail voice line: the tag
    has one home.
+   **Under load** (same-day follow-up): after tens of cells the user
+   message — and its tag — sit behind tens of thousands of tokens of
+   code and digests, and the reply that ends the run is generated at a
+   call the loop cannot predict, so it read no voice at all and fell
+   into the report genre. The same tag therefore also CLOSES every
+   tool-result message and the wrap-up message, as a trailing
+   `[voice: …]` text part after the results (both wires already carry
+   results + text in one neutral message, §2). ~20 tokens per call,
+   append-only and so cache-safe; identical every time. Quiet runs
+   carry none (no identity → empty tag).
 3. **Fingerprints, recorded on the turn.** `soulFingerprint` =
    sha256(soul body + "\n" + tag)[:16] (absent when no identity was
    composed) and `promptFingerprint` = sha256(system block as sent)[:16],
