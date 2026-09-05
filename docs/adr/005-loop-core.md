@@ -1,7 +1,8 @@
 # ADR-005: Loop core
 
 Status: **Accepted** (2026-07-07); §1 amended 2026-08-31 (backends,
-model profiles, traits — BOB-74)
+model profiles, traits — BOB-74); §5 amended 2026-09-05 (identity
+block, voice tag, prompt fingerprints)
 Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
@@ -455,6 +456,71 @@ method list. Two rules govern what the model sees:
   binder/constructor, e.g. `use("memory@v1").memory(c, space)`). Kind is
   narrative only — it never gates capability or the boundary read/mutate
   class (ADR-002).
+
+**Identity, voice tag and prompt fingerprints (amendment 2026-09-05).**
+Measured on the shipped skills: `_soul` is ~230 tokens of a ~16k-token
+system block (1.4%), rendered under a `# Skill: _soul` heading in the
+third person, immediately followed by `_core` opening with a second
+identity ("You are a code-synthesis agent"), and a warm chat's boot
+window replays up to 20k tokens of the agent's own earlier replies as
+literal assistant turns. A soul edit therefore barely moves the voice:
+position, framing and the transcript outvote it. Four mechanisms fix
+that, each byte-stable per conversation (§1.5):
+
+1. **Identity is a section, not a skill.** The body of the `_soul`
+   `agent_skill` object is the FIRST bytes of the system block,
+   verbatim: no heading, no wrapper, nothing before it. It loads
+   two-tier like every `_` skill (ADR-009 §3: the agent overlay ships
+   the default; a `_soul` object in the working space shadows it, so
+   the user edits their own copy in the space and the next run picks
+   it up — no deploy); an empty working-space body falls back to the
+   shipped one. `_soul` leaves `SYSTEM_SKILL_ORDER`; the skills band
+   starts at `_core`. Content rule: the soul is the only "You are" in
+   the prompt — `_core` states the METHOD ("you act through one tool,
+   `run_cell` …"), never a second identity. The body is capped at
+   2000 tokens (head kept, a marker names the object) so a pasted
+   essay cannot eat the prompt.
+2. **The voice tag rides the newest message.** One line, derived at
+   compose time from the `_soul` object: its `description` property
+   (first line) or, absent that, the first sentence of the body;
+   whitespace collapsed, `[`, `]` and `|` stripped, ≤120 chars. It is
+   appended to the per-message suffix — `[now: … | user's view — … |
+   voice: …]` — on the opener and on every mailbox inject, llm copy
+   only (the persisted turn keeps the raw `userText`, so the tag never
+   re-enters the boot window). Recency is the lever: the newest
+   instruction lands AFTER the replayed old replies. Captured once per
+   run (the system block is composed once); an edit made while a run
+   is live lands on the next run. No system-tail voice line: the tag
+   has one home.
+3. **Fingerprints, recorded on the turn.** `soulFingerprint` =
+   sha256(soul body + "\n" + tag)[:16] (absent when no identity was
+   composed) and `promptFingerprint` = sha256(system block as sent)[:16],
+   both on the turn's `llm` group (ADR-006 §1 amendment). This delivers
+   the fingerprint promised above: which soul produced a reply is a
+   turn-row read, and the sent bytes stay in the `llm.chat` record.
+   Surfacing them on the run summary (`trace ls/show --stats`, ADR-023
+   §8) and a deploy-time warning when a working-space `_` skill shadows
+   a shipped one are runtime follow-ups.
+4. **The boot window knows when the voice changed.** When any raw-tail
+   turn carries a recorded `soulFingerprint` different from the current
+   one, the boot window opens with one line — `[voice changed after
+   turn #N — the replies below were written under an earlier identity;
+   take the current identity and the voice line on the newest message
+   as the voice, not their tone]` — prepended to its first user message.
+   Turns without a recorded fingerprint (pre-amendment rows) never
+   trigger it. Only the raw tail replays literal replies; chunk lines
+   are summaries and need no marker.
+
+Quiet runs (ADR-008 §5) compose WITHOUT the identity and carry no tag:
+a delegated child's report returns to the parent, not to the user, and
+the shipped method block is its whole identity.
+
+Precedent elsewhere: harnesses that expose a persona file load it
+verbatim as the first section of the prompt, skip it for delegated
+children, and write the default as a behavior spec (a sizing rule,
+named prohibitions, an earned-depth escape hatch) rather than a trait
+list — trait lists change nothing. Rewriting `_soul` along those lines
+is a content change reviewed on its own, not part of this amendment.
 
 ### 6. Purity
 

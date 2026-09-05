@@ -119,6 +119,13 @@ reads the registry.
   usage (dead fields today); plus `costUsd` (computed from tier
   pricing), `fuelUsed`, `cells` (count) — the ADR-003 metrics rollup at
   turn level.
+- **`llm` prompt provenance (amendment 2026-09-05, ADR-005 §5)**:
+  `soulFingerprint` (16 hex — sha256 of the identity block + voice
+  tag; absent when the run composed no identity) and
+  `promptFingerprint` (16 hex — sha256 of the system block as sent).
+  Nested keys of the declared `object` field, so no dataset field is
+  added (ADR-017 §1). The boot window reads `soulFingerprint` off the
+  raw tail to mark a voice change; pre-amendment rows lack both.
 - **`traceRef` replaces `debugRef`**: the trace (ADR-001 format, one
   object per run, spilled blobs as file attachments) is the single
   SOURCE OF TRUTH; "the debug log" becomes two VIEWS over it — agent-

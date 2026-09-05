@@ -111,7 +111,9 @@ subPages, answer, sources, searchQueries, timing, usage}`.
   consumed by a child); ceilings still bound the run. The system
   prompt gets one extra line telling the model it is a subagent whose
   final reply returns to the delegating agent. Everything else —
-  compose_system over the space, the cell loop, digests — unchanged.
+  compose_system over the space, the cell loop, digests — unchanged
+  (amendment 2026-09-05, ADR-005 §5: the child composes WITHOUT the
+  identity block and its messages carry no voice tag).
 - `subagent@v1.delegate(task, opts?)` =
   `use("toolcaller@v1").main({space, chatId, userText: task,
   quiet: True, …opts})`. Same space, full tool surface, fresh context
