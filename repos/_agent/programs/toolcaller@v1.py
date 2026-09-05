@@ -472,10 +472,15 @@ def _load_system_skills(c, space, code_space=None):
 
 def _voice_tag(description, body):
     """The voice tag (ADR-005 §5): the identity object's description
-    (first line), else the body's first sentence (headings skipped);
-    `[`, `]` and `|` out — they delimit the suffix — and ≤ VOICE_MAX_CHARS."""
+    (first line), else a `Voice:` line in the body (how the shipped
+    default carries its tag — deploy sets no description), else the
+    body's first sentence (headings skipped); `[`, `]` and `|` out —
+    they delimit the suffix — and ≤ VOICE_MAX_CHARS."""
     lines = (description or "").strip().splitlines()
     text = lines[0] if lines else ""
+    if not text.strip():
+        m = re.search(r"^\s*(?:\*\*)?Voice:(?:\*\*)?\s*(.+?)\s*$", body or "", re.M)
+        text = m.group(1) if m else ""
     if not text.strip():
         prose = " ".join(ln for ln in (body or "").splitlines()
                          if not ln.lstrip().startswith("#"))

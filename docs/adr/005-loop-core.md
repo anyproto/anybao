@@ -479,12 +479,20 @@ that, each byte-stable per conversation (§1.5):
    shipped one. `_soul` leaves `SYSTEM_SKILL_ORDER`; the skills band
    starts at `_core`. Content rule: the soul is the only "You are" in
    the prompt — `_core` states the METHOD ("you act through one tool,
-   `run_cell` …"), never a second identity. The body is capped at
-   2000 tokens (head kept, a marker names the object) so a pasted
-   essay cannot eat the prompt.
+   `run_cell` …"), never a second identity. Reply SHAPE is the
+   identity's too (content follow-up, same day): typical size, the
+   shape of a finished-work reply, when to ask — `_core` keeps the
+   method and the client's rendering facts (links render as chips,
+   tables do not render, a bubble reads well to ~300 words), stated as
+   facts, never as style, so a persona that drops its own size rules
+   still has a floor and a persona edit can never break rendering.
+   The body is capped at 2000 tokens (head kept, a marker names the
+   object) so a pasted essay cannot eat the prompt.
 2. **The voice tag rides the newest message.** One line, derived at
    compose time from the `_soul` object: its `description` property
-   (first line) or, absent that, the first sentence of the body;
+   (first line), else a `Voice:` line in the body (how the shipped
+   default carries its tag — deploy sets no description property),
+   else the first sentence of the body;
    whitespace collapsed, `[`, `]` and `|` stripped, ≤120 chars. It is
    appended to the per-message suffix — `[now: … | user's view — … |
    voice: …]` — on the opener and on every mailbox inject, llm copy

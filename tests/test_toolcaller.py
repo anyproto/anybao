@@ -892,6 +892,9 @@ def test_voice_tag_falls_back_to_the_first_sentence_and_is_sanitized():
                               "of the user. Second sentence.")
     assert tag == "You are Bao, a dry mirror of the user"
     assert g["_voice_tag"]("  line one\nline two ", "body") == "line one"
+    # the shipped default: no description property, a `Voice:` line in the body
+    body = "You are Bao. Dry.\n\nVoice: dry, deadpan; no filler\n\n## Voice\n- x"
+    assert g["_voice_tag"]("", body) == "dry, deadpan; no filler"
     long = g["_voice_tag"]("w" * 50 + " " + "x" * 100, "")
     assert len(long) <= g["VOICE_MAX_CHARS"] + 1 and long.endswith("…")
     assert g["_voice_tag"]("", "") == ""
