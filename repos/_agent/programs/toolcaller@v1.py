@@ -12,11 +12,13 @@ args: {space, chatId, userText, uiContext?, system?, agentName?, traceRef?,
 maxTurns?, maxTokensTotal?, tier?, bootTokens?, quiet?}.
 
 quiet (ADR-008 §5): a delegated sub-run — no chat bubbles, no boot
-window/auto-recall, no persisted turn/ROI, and the parent's mailbox is
-left alone; ceilings still bound the run and the replies return to the
-caller (the subagent@v1 wrapper).
+window/auto-recall, no persisted turn/ROI, no identity block or voice
+tag (ADR-005 §5), and the parent's mailbox is left alone; ceilings
+still bound the run and the replies return to the caller (the
+subagent@v1 wrapper).
 """
 
+import hashlib
 import re
 
 # markdown-link destinations in a reply: [Name](any://…) — the source
@@ -117,9 +119,15 @@ MAX_SIDE_EFFECT_LINES = 12
 BASH_HEAD_CHARS = 12000
 BASH_TAIL_CHARS = 4000
 BASH_STDERR_CHARS = 3000
+# The identity skill (ADR-005 §5): its body opens the system block
+# verbatim; its description (else its first sentence) is the voice tag.
+IDENTITY_SKILL = "_soul"
+SOUL_MAX_TOKENS = 2000
+VOICE_MAX_CHARS = 120
 # Fixed order of the built-in system skills in the prompt; unknown _-skills
-# sort after these. `_coding` is composed only with the shell feature.
-SYSTEM_SKILL_ORDER = ["_soul", "_core", "_any", "_coding", "_memory",
+# sort after these. `_coding` is composed only with the shell feature; the
+# identity skill renders ahead of the band, never inside it.
+SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory",
                       "_space_context", "_meta_skill"]
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
                    "effect", "subcell", "span", "help"}
@@ -152,12 +160,13 @@ def _view(ctx):
     return None
 
 
-def _context_suffix(ctx):
+def _context_suffix(ctx, voice=""):
     """ADR-005 §5: a user message closes with a timestamp + view suffix
-    ('here'/'this page' resolve against the view line). A message the
-    client sent without a view degrades to timestamp-only. The suffix
-    rides the llm message only; the persisted turn keeps the raw
-    userText."""
+    ('here'/'this page' resolve against the view line) + the voice tag
+    (recency: the newest instruction lands AFTER the replayed history).
+    A message the client sent without a view degrades to timestamp-only.
+    The suffix rides the llm message only; the persisted turn keeps the
+    raw userText."""
     epoch = now()  # noqa: F821 - guest global
     # the host's local zone with its offset spelled out (ADR-019 §8)
     stamp = fmt_ts(epoch, "%a %Y-%m-%d %H:%M")  # noqa: F821 - guest global
@@ -166,6 +175,8 @@ def _context_suffix(ctx):
         line += (f" | user's view — space: {ctx['spaceId']}"
                  + (f", object: {ctx['objectId']}" if ctx.get("objectId") else "")
                  + (f", view: {ctx['view']}" if ctx.get("view") else ""))
+    if voice:
+        line += f" | voice: {voice}"
     return line + "]"
 
 
@@ -408,38 +419,115 @@ def _run_model_cells(parts, results):
 
 
 def _skills_in(c, space):
-    """`{name: markdown}` for the _-prefixed agent_skill objects in one
-    space. Returns {} if the skill type isn't there yet (fresh space)."""
+    """`{name: {"body", "description"}}` for the _-prefixed agent_skill
+    objects in one space. Returns {} if the skill type isn't there yet
+    (fresh space). The description is the identity skill's voice tag
+    (ADR-005 §5); the other skills never read it."""
     type_id = next((t["id"] for t in c.list_types(space)
                     if (t.get("xKey") or t.get("key")) == "agent_skill"), None)
     if not type_id:
         return {}
     out = {}
     for o in c.query_objects(space, filter={"any.types": type_id}):
-        name = (o.get("any") or {}).get("name") or ""
+        meta = o.get("any") or {}
+        name = meta.get("name") or ""
         if name.startswith("_"):
-            out[name] = c.get_markdown(space, o["id"])
+            out[name] = {"body": c.get_markdown(space, o["id"]) or "",
+                         "description": meta.get("description") or ""}
+    return out
+
+
+def _load_skill_objects(c, space, code_space=None):
+    """Two-tier skills (ADR-009 §3): shipped skills from the agent code
+    overlay, user skills from the working space, merged by name — the
+    working space wins (same shadowing doctrine as programs). An empty
+    working-space body does not shadow: the shipped one stays."""
+    code_space = code_space or space
+    out = _skills_in(c, code_space)
+    if code_space != space:
+        for name, obj in _skills_in(c, space).items():
+            if obj["body"].strip() or name not in out:
+                out[name] = obj
     return out
 
 
 def _load_system_skills(c, space, code_space=None):
-    """Two-tier skills (ADR-009 §3): shipped skills from the agent code
-    overlay, user skills from the working space, merged by name — the
-    working space wins (same shadowing doctrine as programs)."""
-    code_space = code_space or space
-    out = _skills_in(c, code_space)
-    if code_space != space:
-        out.update(_skills_in(c, space))
-    return out
+    """`{name: markdown}` — the two-tier merge, bodies only."""
+    return {n: o["body"] for n, o in _load_skill_objects(c, space, code_space).items()}
+
+
+def _voice_tag(description, body):
+    """The voice tag (ADR-005 §5): the identity object's description
+    (first line), else the body's first sentence (headings skipped);
+    `[`, `]` and `|` out — they delimit the suffix — and ≤ VOICE_MAX_CHARS."""
+    lines = (description or "").strip().splitlines()
+    text = lines[0] if lines else ""
+    if not text.strip():
+        prose = " ".join(ln for ln in (body or "").splitlines()
+                         if not ln.lstrip().startswith("#"))
+        flat = " ".join(prose.split())
+        text = re.split(r"(?<=[.!?])\s", flat, maxsplit=1)[0] if flat else ""
+    text = " ".join(re.sub(r"[\[\]|]", " ", text).split()).rstrip(".")
+    if len(text) > VOICE_MAX_CHARS:
+        text = text[:VOICE_MAX_CHARS].rsplit(" ", 1)[0] + "…"
+    return text
+
+
+def _cap_soul(body):
+    """The identity body, head-capped at SOUL_MAX_TOKENS (ADR-005 §5): a
+    pasted essay must not eat the prompt; the marker names the object."""
+    body = (body or "").strip()
+    limit = SOUL_MAX_TOKENS * 4
+    if len(body) <= limit:
+        return body
+    return (body[:limit].rstrip()
+            + f"\n\n[… `{IDENTITY_SKILL}` truncated to ~{SOUL_MAX_TOKENS} tokens — "
+              "keep the identity short]")
+
+
+def _identity(soul):
+    """`(body, voice)` from the identity object: the verbatim (capped)
+    body and its voice tag; ("", "") without one."""
+    if not soul or not (soul.get("body") or "").strip():
+        return "", ""
+    body = _cap_soul(soul["body"])
+    return body, _voice_tag(soul.get("description"), body)
+
+
+def _fingerprint(text):
+    """16 hex chars of sha256 — the prompt provenance stamp (ADR-005 §5)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _mark_voice_change(boot, last_seq):
+    """Open the boot window with the voice-change marker (ADR-005 §5):
+    the raw tail below it replays replies written under an earlier
+    identity. Prepended to the first user message; a window that opens
+    with an assistant turn gets a user message of its own."""
+    if not boot:
+        return boot
+    where = f" after turn #{last_seq}" if last_seq is not None else ""
+    marker = (f"[voice changed{where} — the replies below were written under an "
+              "earlier identity; take the current identity and the voice line on "
+              "the newest message as the voice, not their tone]")
+    first = dict(boot[0])
+    parts = list(first["parts"])
+    i = next((i for i, p in enumerate(parts) if p["type"] == "text"), None)
+    if first.get("role") != "user" or i is None:
+        return [{"role": "user", "parts": [{"type": "text", "text": marker}]}, *boot]
+    parts[i] = {**parts[i], "text": marker + "\n\n" + parts[i]["text"]}
+    first["parts"] = parts
+    return [first, *boot[1:]]
 
 
 def _compose_skills(skills, has_shell=False):
     """Fixed order (SYSTEM_SKILL_ORDER first, unknown _-skills sorted
     after), each trimmed, joined by blank lines. `_coding` rides only
     with the shell feature (ADR-024 §4) — no prompt tax for tools the
-    binary lacks."""
+    binary lacks; the identity skill never joins the band (§5)."""
     if not has_shell:
         skills = {n: s for n, s in skills.items() if n != "_coding"}
+    skills = {n: s for n, s in skills.items() if n != IDENTITY_SKILL}
     known = [n for n in SYSTEM_SKILL_ORDER if n in skills]
     rest = sorted(n for n in skills if n not in SYSTEM_SKILL_ORDER)
     return "\n\n".join(skills[n].strip() for n in known + rest)
@@ -586,18 +674,27 @@ def _repo_inventory(c, overlays, code_space=None):
 
 
 def compose_system(c, space, code_space=None, overlays=None, style="full",
-                   has_shell=False):
-    """The full system prompt loaded from the space(s): skills + tool
-    docs (both two-tier: agent code overlay + working space, working
-    wins) + repo inventory + memory categories. Guest-side — the host
-    injects nothing. `style` is the profile's `prompt_style`."""
-    parts = [_compose_skills(_load_system_skills(c, space, code_space), has_shell),
+                   has_shell=False, identity=True):
+    """The full system prompt loaded from the space(s): the identity
+    block first (the `_soul` object body, verbatim — ADR-005 §5), then
+    skills + tool docs (both two-tier: agent code overlay + working
+    space, working wins) + repo inventory + memory categories.
+    Guest-side — the host injects nothing. `style` is the profile's
+    `prompt_style`; `identity=False` (quiet runs) composes no identity
+    and no voice. Returns `{system, voice, soulFingerprint}`."""
+    objects = _load_skill_objects(c, space, code_space)
+    soul = objects.pop(IDENTITY_SKILL, None)
+    body, voice = _identity(soul) if identity else ("", "")
+    skills = {n: o["body"] for n, o in objects.items()}
+    parts = [body,
+             _compose_skills(skills, has_shell),
              _user_skills(c, space),
              _tool_docs(c, space, code_space, style),
              _repo_inventory(c, overlays,
                              code_space if code_space != space else None),
              _memory_categories(c, space)]
-    return "\n\n".join(p for p in parts if p)
+    return {"system": "\n\n".join(p for p in parts if p), "voice": voice,
+            "soulFingerprint": _fingerprint(body + "\n" + voice) if body else ""}
 
 
 def main(args):
@@ -631,8 +728,10 @@ def main(args):
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    system = compose_system(c, space, code_space, overlays,
-                            traits["prompt_style"], bool(shell))
+    composed = compose_system(c, space, code_space, overlays,
+                              traits["prompt_style"], bool(shell), identity=not quiet)
+    system, voice, soul_fp = (composed["system"], composed["voice"],
+                              composed["soulFingerprint"])
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
@@ -662,6 +761,8 @@ def main(args):
             "task. There is no interactive user on this thread: your final "
             "reply is returned verbatim to the delegating agent — make it a "
             "complete, self-contained report.")
+    # the stable block as sent — prompt provenance on the turn (§5)
+    prompt_fp = _fingerprint(system)
 
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
@@ -676,6 +777,12 @@ def main(args):
                 chunks[lvl] = got
         boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens)
         tail = hist.raw_tail(turns, total_tokens=boot_tokens)
+        # a raw-tail turn recorded under another soul: say so up front (§5)
+        stale = [t.get("seq") for t in tail
+                 if (t.get("llm") or {}).get("soulFingerprint") not in (None, "", soul_fp)]
+        if stale:
+            boot = _mark_voice_change(
+                boot, max((q for q in stale if isinstance(q, int)), default=None))
         boot_min_seq = tail[0].get("seq") if tail else None
         plan = ar.plan(c, space, user_text, boot_min_seq)
 
@@ -694,7 +801,8 @@ def main(args):
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + _context_suffix(ui_ctx) + user_suffix}]},
+                            "text": user_text + _context_suffix(ui_ctx, voice)
+                                    + user_suffix}]},
                 *plan["messages"]]
 
     def bubble(text, done):
@@ -727,7 +835,8 @@ def main(args):
                     subcell(f"currentUserSpace = {ui_ctx!r}", "_ctx")  # noqa: F821
                 messages.append({"role": "user",
                                  "parts": [{"type": "text",
-                                            "text": msg["text"] + _context_suffix(inj_ctx)}]})
+                                            "text": msg["text"]
+                                                    + _context_suffix(inj_ctx, voice)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"
         if turn >= max_turns:
@@ -788,7 +897,8 @@ def main(args):
             c.append_turn(space, chat_id, {
                 "userText": user_text, "replies": replies, "interrupted": False,
                 "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
-                "llm": {"stopReason": stop, **stats}})
+                "llm": {"stopReason": stop, **stats, "promptFingerprint": prompt_fp,
+                        **({"soulFingerprint": soul_fp} if soul_fp else {})}})
             if plan["injected"]:
                 ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
         except Exception as e:  # noqa: BLE001 - any store failure, named in the result

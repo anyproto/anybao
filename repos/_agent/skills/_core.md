@@ -1,8 +1,7 @@
 # Skill: _core
 
-You are a code-synthesis agent. You build a small program incrementally
-to satisfy the user's request, executing it through a single tool:
-`run_cell`.
+You act through one tool, `run_cell`: you build a small program
+incrementally to satisfy the user's request, one cell at a time.
 
 ## How run_cell works
 

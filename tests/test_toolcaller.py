@@ -2,6 +2,7 @@
 globals: scripted llm module, fake any client, fake subcell, recorded
 mailbox/span/trace effects."""
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,11 @@ def tool_reply(code="1+1", cid="cell_x", usage=None):
 def done_reply(text="done", usage=None):
     return {"parts": [{"type": "text", "text": text}], "stop": "done",
             "usage": usage or {"in": 5, "out": 2}}
+
+
+def fp(text):
+    """The prompt provenance stamp (ADR-005 §5): sha256[:16]."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 class World:
@@ -158,9 +164,11 @@ def test_done_turn_posts_reply_and_persists_turn():
                                 "agent": {"name": "bao", "done": True}}
     turn = w.turns[0]
     assert turn["userText"] == "go" and turn["traceRef"] == "run_x"
-    # api.LLMStats contract keys only (strict server bind rejects strays)
+    # the LLMStats keys + the prompt fingerprint (ADR-006 §1 amendment);
+    # no identity object in this space → no soulFingerprint key at all
     assert turn["llm"] == {"stopReason": "done", "inTokens": 5, "outTokens": 2,
-                           "cacheRead": 0, "cacheWrite": 0, "cells": 0}
+                           "cacheRead": 0, "cacheWrite": 0, "cells": 0,
+                           "promptFingerprint": fp(w.llm_calls[0]["system"])}
 
 
 def test_failed_trailing_append_turn_does_not_fail_the_run():
@@ -202,7 +210,8 @@ def test_cell_turn_spans_digest_and_tool_result():
     assert "mutate http.post #9" in part["content"]              # side effects
     assert w.turns[0]["llm"] == {"stopReason": "done", "cells": 1,
                                  "inTokens": 15, "outTokens": 7,
-                                 "cacheRead": 0, "cacheWrite": 0}
+                                 "cacheRead": 0, "cacheWrite": 0,
+                                 "promptFingerprint": fp(w.llm_calls[0]["system"])}
 
 
 def test_cell_error_marks_tool_result_is_error():
@@ -821,3 +830,125 @@ def test_bash_output_is_clipped_head_and_tail():
     assert text.startswith("A" * 12000 + marker)
     assert text.endswith("Z" * 4000 + "\n→ sh.last")
     assert "M" not in text
+
+
+# --- identity block + voice tag (ADR-005 §5 amendment 2026-09-05) ------------
+
+SOUL_BODY = ("You are Bao. Dry, skeptical, never sentimental.\n\n"
+             "- one aside per reply at most\n- no exclamation marks")
+SOUL_DESC = "dry, skeptical; one aside per reply"
+
+
+class SoulWorld(World):
+    """A space whose skill objects are an identity (`_soul`, with a
+    description) and `_core` — what compose_system reads."""
+
+    def use(self, spec):
+        mod = super().use(spec)
+        if spec != "any@v1":
+            return mod
+        mod.list_types = lambda space: [{"id": "skillT", "xKey": "agent_skill"}]
+
+        def query_objects(space, filter=None, **kw):
+            if filter == {"any.types": "skillT"}:
+                return [{"id": "o_soul", "any": {"name": "_soul",
+                                                 "description": SOUL_DESC}},
+                        {"id": "o_core", "any": {"name": "_core"}}]
+            return []
+        mod.query_objects = query_objects
+        mod.get_markdown = lambda space, oid: {
+            "o_soul": SOUL_BODY,
+            "o_core": "# Skill: _core\n\nYou act through one tool."}[oid]
+        return mod
+
+
+def test_identity_opens_the_system_block_and_the_voice_rides_the_suffix():
+    w = SoulWorld([tool_reply("x = 1"), done_reply("ok")],
+                  mailbox=[{"kind": "inject", "text": "also this"}],
+                  cells=[{"ok": True, "prints": [], "last": None, "error": None}])
+    run(w, uiContext={"spaceId": "sp9"})
+    system = w.llm_calls[0]["system"]
+    assert system.startswith(SOUL_BODY)          # verbatim, first bytes, no heading
+    assert system.count("You are Bao.") == 1     # and not again inside the skills band
+    assert system.index("You act through one tool.") > len(SOUL_BODY)
+    opener = next(p["text"] for m in w.llm_calls[0]["messages"] for p in m["parts"]
+                  if p["type"] == "text" and p["text"].startswith("go\n\n[now: "))
+    assert opener.endswith(f"user's view — space: sp9 | voice: {SOUL_DESC}]")
+    # every mailbox inject carries it too
+    inject = next(p["text"] for c in w.llm_calls for m in c["messages"]
+                  for p in m["parts"] if p["type"] == "text"
+                  and p["text"].startswith("also this"))
+    assert "\n\n[now: " in inject and inject.endswith(f" | voice: {SOUL_DESC}]")
+    # the persisted turn keeps the raw text and records both fingerprints
+    turn = w.turns[0]
+    assert turn["userText"] == "go"
+    assert turn["llm"]["promptFingerprint"] == fp(system)
+    assert turn["llm"]["soulFingerprint"] == fp(SOUL_BODY + "\n" + SOUL_DESC)
+
+
+def test_voice_tag_falls_back_to_the_first_sentence_and_is_sanitized():
+    g = _helpers()
+    tag = g["_voice_tag"]("", "# Skill: _soul\n\nYou are Bao, a [dry] mirror | "
+                              "of the user. Second sentence.")
+    assert tag == "You are Bao, a dry mirror of the user"
+    assert g["_voice_tag"]("  line one\nline two ", "body") == "line one"
+    long = g["_voice_tag"]("w" * 50 + " " + "x" * 100, "")
+    assert len(long) <= g["VOICE_MAX_CHARS"] + 1 and long.endswith("…")
+    assert g["_voice_tag"]("", "") == ""
+
+
+def test_soul_body_is_head_capped():
+    g = _helpers()
+    body = "word " * 3000
+    capped = g["_cap_soul"](body)
+    assert len(capped) < len(body) and "`_soul` truncated" in capped
+    assert g["_cap_soul"]("  short  ") == "short"
+
+
+def test_skill_objects_carry_description_and_an_empty_user_body_does_not_shadow():
+    g = _helpers()
+    two = TwoSpaces()
+    two.skills["code"].append(("s3", "_soul", "You are Bao."))
+    two.skills["user"].append(("u2", "_soul", "   "))
+    objs = g["_load_skill_objects"](two, "user", "code")
+    assert objs["_soul"] == {"body": "You are Bao.", "description": ""}
+    assert objs["_core"]["body"] == "# user core"      # a real body still shadows
+
+
+def test_quiet_run_composes_no_identity_and_no_voice():
+    w = SoulWorld([done_reply("report")])
+    run(w, quiet=True)
+    system = w.llm_calls[0]["system"]
+    assert not system.startswith("You are Bao")
+    assert "You act through one tool." in system and "## Subagent" in system
+    assert "voice:" not in w.llm_calls[0]["messages"][0]["parts"][0]["text"]
+    assert w.turns == []
+
+
+def test_boot_window_marks_a_voice_change_only_on_a_recorded_mismatch():
+    current = fp(SOUL_BODY + "\n" + SOUL_DESC)
+
+    def opener_with(turns):
+        class WithHistory(SoulWorld):
+            def use(self, spec):
+                mod = super().use(spec)
+                if spec == "history@v1":
+                    mod.recent_turns = staticmethod(lambda c, s, ch, n: turns)
+                return mod
+
+        w = WithHistory([done_reply("ok")])
+        run(w)
+        return w.llm_calls[0]["messages"][0]["parts"][0]["text"]
+
+    text = opener_with([
+        {"seq": 4, "userText": "old", "replies": ["r"],
+         "llm": {"soulFingerprint": "0000deadbeef0000"}},
+        {"seq": 5, "userText": "newer", "replies": ["r2"],
+         "llm": {"soulFingerprint": current}}])
+    assert text.startswith("[voice changed after turn #4 —")
+    assert text.endswith("]\n\n[earlier context]")   # the fake window's own text follows
+    # the same fingerprint, or none recorded (pre-amendment rows): no marker
+    same = [{"seq": 1, "userText": "u", "replies": ["r"], "llm": {"soulFingerprint": current}}]
+    none = [{"seq": 1, "userText": "u", "replies": ["r"], "llm": {"stopReason": "done"}}]
+    assert opener_with(same) == "[earlier context]"
+    assert opener_with(none) == "[earlier context]"

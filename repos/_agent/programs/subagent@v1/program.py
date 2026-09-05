@@ -25,8 +25,9 @@ def delegate(space, task, opts=None):
     """Run `task` in a quiet child loop → {report, stop, turns, tokens}.
 
     `task` is a self-contained instruction string. The child composes
-    its system prompt from the same space (all tools available) but
-    starts with fresh context — no chat history,
+    its system prompt from the same space (all tools available, no
+    identity block or voice tag — ADR-005 §5) but starts with fresh
+    context — no chat history,
     no auto-recall, and it cannot post to chat; ceilings bound the
     run (default maxTurns 30). `opts`: {"maxTurns"?, "maxTokensTotal"?,
     "tier"?, "agentName"? (default "bao-sub"), "chatId"?}. `report`
