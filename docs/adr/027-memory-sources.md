@@ -1,6 +1,6 @@
 # ADR-027: Memory sources — any dataset as extraction evidence
 
-Status: **Proposed** (2026-09-05)
+Status: **Accepted** (2026-09-06; proposed 2026-09-05)
 Date: 2026-09-05
 Builds on: ADR-007 §1b/§2/§5 (extraction, dedup, recall), ADR-016
 (mail as a runtime dataset), ADR-017 (brain + `agent_job_state`),

@@ -40,7 +40,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 024 | Shell effects — `sh.*`/`fs.*` syscalls + `bash` tool behind the `shell` feature, no restrictions yet | Accepted  |
 | 025 | Bao presence & status line over the event bus | Proposed |
 | 026 | Blobs — bytes as handles, a host-owned content-addressed store beside the trace | Accepted |
-| 027 | Memory sources — any dataset as extraction evidence | Proposed |
+| 027 | Memory sources — any dataset as extraction evidence | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
