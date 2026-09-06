@@ -26,6 +26,35 @@ pub mod runner;
 pub mod serve;
 #[cfg(feature = "shell")]
 pub mod shell;
+
+/// `runtime.get("shell")` (ADR-024 §4): where bao is — `{cwd, home,
+/// shell, os}` in a `--features shell` binary, `null` without. The key
+/// always resolves, so the two per-run probes (the kernel's bind, the
+/// toolcaller's tool-set decision) are clean reads, never a recorded
+/// `KeyError` in every trace.
+pub fn shell_runtime_value() -> serde_json::Value {
+    #[cfg(feature = "shell")]
+    {
+        shell::runtime_value()
+    }
+    #[cfg(not(feature = "shell"))]
+    {
+        serde_json::Value::Null
+    }
+}
+
+#[cfg(test)]
+mod shell_runtime_value_tests {
+    #[test]
+    fn shell_key_always_resolves() {
+        let v = super::shell_runtime_value();
+        if cfg!(feature = "shell") {
+            assert_eq!(v["os"], std::env::consts::OS);
+        } else {
+            assert!(v.is_null());
+        }
+    }
+}
 pub mod stats;
 #[cfg(test)]
 pub mod testutil;

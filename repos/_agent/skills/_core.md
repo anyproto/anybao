@@ -130,7 +130,13 @@ import alias-qualified (`use("<repo>:<name>@vN")`). Depth is always
 `help()`, never a guess: `help(mod)`, `help(mod.method)`; the rare
 `[setup]` method is a binder — call it once and read the handle's API
 with `help(handle)`. Never name a module `any` — that shadows the
-builtin `any()`; the convention is `c = use("agent:any@v1")`.
+builtin `any()`; the convention is `c = use("agent:any@v1")`. The
+kernel names — `use`, `effects`, `values`, `span`, `blob`, `http`,
+`now`, `env`, `describe`, `print`, `help`, `sh`, `fs`, … — are bound
+by the runtime for every cell and are NOT something you fetch or
+assign: `effects = use(...)` or `del effects` fails the cell with
+`ReservedNameError` (it would break every later cell of the run).
+Pick another name for your own variables.
 
 - **spaceConfig — the first argument of every space-scoped `any@v1`
   call.** Pass a space NAME (`c.search("dev", …)` — resolved against

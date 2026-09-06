@@ -282,7 +282,8 @@ another device is live for the next cell. A store hiccup fails that
 - `config.set {key, value}` — mutate, traced (ADR-002): upserts the
   row. Refuses the secret namespaces with `ConfigError`.
 - `runtime.get {key}` → `{value}` — runtime wiring (`any.base_url`,
-  `overlays.aliases`); `KeyError` otherwise.
+  `overlays.aliases`, `shell` — an object with the shell feature, `null`
+  without, ADR-024 §4); `KeyError` for an unknown key.
 - `config@v1` (`list/get/set/set_model`) is the agent's tool: `get`,
   `set`, `set_model` over the effects, `list` a plain dataset query
   through `any@v1` (the `bao/config/v1` child of the `bao/v1` bundle).

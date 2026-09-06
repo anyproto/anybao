@@ -121,14 +121,17 @@ BASH_STDERR_CHARS = 3000
 # sort after these. `_coding` is composed only with the shell feature.
 SYSTEM_SKILL_ORDER = ["_soul", "_core", "_any", "_coding", "_memory",
                       "_space_context", "_meta_skill"]
+# The bash tool's `as=` pre-check only; the kernel is the authority
+# (`_KERNEL_NAMES`, ADR-003 §3) and refuses any cell that rebinds one.
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
                    "effect", "subcell", "span", "help"}
 
 
 def _shell_info():
     """`runtime.get("shell")` → `{cwd, home, shell, os}` when the binary
-    has shell effects (ADR-024 §6), else None: decides the tool set and
-    whether `_coding` is composed. One recorded read per run."""
+    has shell effects, null without (ADR-024 §4/§6) → None: decides the
+    tool set and whether `_coding` is composed. One recorded read per
+    run, a clean one either way."""
     try:
         return effect("runtime.get", {"key": "shell"}).get("value") or None  # noqa: F821
     except Exception:

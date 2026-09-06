@@ -263,7 +263,7 @@ Typical flow: `bash("cargo test 2>&1 | tail -80")` → read → `run_cell`:
 
 **In-cell surface, deliberately small.** Two namespace globals, `sh`
 and `fs` (amends ADR-002 §3), added in `runtime/guest/app.py` beside
-`http`; bound only when `runtime.get("shell")` resolves (§6). `sh` is
+`http`; bound only when `runtime.get("shell")` is non-null (§6). `sh` is
 callable — `sh("cmd", cwd=None, timeout_s=None, stdin=None, env=None,
 check=False)` returns the result object above (`check=True` raises on
 non-zero exit); `sh.lines("cmd")` is the one-liner for
@@ -289,7 +289,9 @@ becomes a translation step. Docstrings are the doc (ADR-010):
 
 - `runtime.get("shell")` (ADR-006 §3 surface) → `{cwd, home, shell,
   os}` — where bao is, so the first cell doesn't have to probe with
-  `pwd`. Absent (KeyError) in a binary without the feature (§6).
+  `pwd`. `null` in a binary without the feature (§6): the key always
+  resolves, so the two per-run probes are clean reads and a trace
+  never opens with recorded `KeyError`s (amendment 2026-09-06).
 - **`_coding.md`, a new space-resident skill**, deployed like any
   other (`anyrt deploy`), composed in when the binary has the
   feature (§6). It carries the workflow, not the API: `bash` to run
@@ -348,7 +350,7 @@ off by default:
   kernel with the plain componentize command; desktop builds never
   contain a shell unless that dependency opts in explicitly.
 - **One kernel.** The guest (`app.py`) binds the `sh` and `fs`
-  globals only when `runtime.get("shell")` resolves at boot; in a
+  globals only when `runtime.get("shell")` is non-null at boot; in a
   binary without the feature the names are absent from the
   namespace, `help()` does not list them, and the toolcaller leaves
   `_coding.md` out of `compose_system` (the skill is space-resident

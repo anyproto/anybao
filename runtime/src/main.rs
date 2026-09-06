@@ -350,8 +350,7 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| addr.clone());
             let mut runtime: BTreeMap<String, Value> = BTreeMap::new();
             runtime.insert("any.base_url".into(), Value::String(any_base.clone()));
-            #[cfg(feature = "shell")]
-            runtime.insert("shell".into(), anyrt::shell::runtime_value());
+            runtime.insert("shell".into(), anyrt::shell_runtime_value());
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
             let from: Option<(Arc<anyapi::Client>, String)> = match &from_space {

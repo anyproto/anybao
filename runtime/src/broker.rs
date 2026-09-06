@@ -3307,7 +3307,9 @@ mod tests {
     /// recorded input keeps the refs.
     #[test]
     fn http_forwards_blob_refs_on_the_wire() {
-        let seen: Arc<Mutex<Vec<(String, String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        // (url, content-type, body) per request the fake server saw
+        type Seen = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let base = fake_server(2, move |mut req| {
             let ct = req

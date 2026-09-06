@@ -134,6 +134,23 @@ The setters (stop words in the chat, the control API's `POST
   matches v1's "Last value" digest section).
 - Cells are **single-threaded, synchronous** Python. No `async`/threads
   in guest code; concurrency is the host's job (`*_many`, ADR-002).
+- **Kernel names are reserved (amendment 2026-09-06).** The bindings
+  every cell starts with — the namespace globals (`effect`, `effects`,
+  `values`, `use`, `span`, `blob`, `Blob`, `http`, `now`, `env`,
+  `describe`, `inferSchema`, `subcell`, …), the per-cell `print`, the
+  curated `help`, and `sh`/`fs`/`ShellError` (ADR-024 §6) — cannot be
+  rebound or deleted by a cell. The parse step (`_guard_kernel_names`)
+  refuses, with `ReservedNameError` naming the line and the name, any
+  module-scope assignment, `del`, `def`/`class`, import alias,
+  `except`/`with`/`for`/walrus/match capture of one, and a `global`
+  declaration of one inside a def. Function, lambda, class and
+  comprehension bodies are their own scope and are not checked. Chosen
+  over silently re-injecting the bindings before every cell: the cell
+  fails once with a message the model can act on, instead of the run
+  degrading (`effects = use(...)` rebinds the trace facade and `del
+  effects` cannot bring it back — the 2026-09-04 incident, BOB-92).
+  The set is derived from the namespace constructor, never listed
+  twice; the toolcaller's bash `as=` check is a pre-check only.
 - **`subcell(code, cell_id)` — nested cells inside a program.** A
   program that drives model turns (the `toolcaller`) runs each model
   cell through the guest-global `subcell`: same persistent namespace,
