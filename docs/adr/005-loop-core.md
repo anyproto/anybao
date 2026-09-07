@@ -456,6 +456,57 @@ method list. Two rules govern what the model sees:
   narrative only — it never gates capability or the boundary read/mutate
   class (ADR-002).
 
+**Identity first (amendment 2026-09-07).** The `_soul` `agent_skill`
+object is the identity, not a skill. Its body is the FIRST bytes of the
+system block, verbatim: no heading, no wrapper, nothing before it. It
+loads two-tier like every `_` skill (ADR-009 §3: the agent overlay
+ships the default; a `_soul` object in the working space shadows it, so
+the user edits their own copy and the next run picks it up, no deploy).
+A BLANK working-space body does not shadow — for every `_` skill, so an
+emptied soul falls back to the shipped one instead of composing none.
+`_soul` is not in `SYSTEM_SKILL_ORDER`; the band starts at `_core`. The
+soul is FREE TEXT: the harness reads no structure out of it — no tag
+line, no named sections, no description property — so the user's
+editing contract is "write who Bao is, in any shape". Capped at 2000
+tokens, head kept, a marker names the cut.
+
+Content rule: the soul is the only "You are" in the prompt. Every other
+skill states METHOD (`_core`: "you act through one tool, `run_cell`";
+`_any`: "object-first"), never a second identity — a second identity,
+placed after a short soul, outvotes it. CONDUCT is policy, not voice,
+and lives in `_core` (resolve first, ask last; say-and-wait before
+anything leaves the space; list before deleting; one structural
+suggestion at a time): a user who rewrites their soul cannot delete a
+safety rule by accident. `_core` also states the client's RENDERING
+FACTS (links render as chips, markdown tables do not render in chat, a
+bubble reads well to ~300 words) as facts, never as style, so a persona
+that drops its own size rules still has a floor and a soul edit can
+never break rendering.
+
+Quiet runs (ADR-008 §5) compose WITHOUT the identity: a delegated
+child's report returns to the parent, not to the user; the `## Subagent`
+line is its whole identity.
+
+Fingerprints, recorded on the persisted turn's `llm` group (ADR-006
+§1): `promptFingerprint` = sha256(system block as sent)[:16] and
+`soulFingerprint` = sha256(soul body)[:16], the latter absent when no
+identity was composed. This delivers the fingerprint promised above:
+which identity produced a reply is a turn-row read, the sent bytes stay
+in the `llm.chat` record, and the soul fingerprint is the selector a
+history-curation step would need (replay only turns written under the
+current identity).
+
+Basis: persona drift in long agentic sessions is a long-context effect
+— the model imitates the recent transcript (tens of cells of code, its
+own earlier replies) more than it obeys the static system block, and a
+persona-file harness's standing practice is exactly this section:
+persona first, verbatim, skipped for delegated children, written as a
+behaviour spec rather than a trait list (ContextEcho,
+arxiv.org/abs/2605.24279; OpenClaw SOUL.md; Letta core memory). The
+effect of this amendment is measurable from traces by
+`soulFingerprint`: reply length, paragraph breaks and hedge density per
+identity, before any further mechanism is added.
+
 ### 6. Purity
 
 The loop is a pure function over (history, policies, mailbox) with ALL

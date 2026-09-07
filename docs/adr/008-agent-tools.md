@@ -109,9 +109,11 @@ subPages, answer, sources, searchQueries, timing, usage}`.
   window, no auto-recall, no `append_turn`, no ROI log, and no
   `mailbox.drain` (the parent's inject/break stream must not be
   consumed by a child); ceilings still bound the run. The system
-  prompt gets one extra line telling the model it is a subagent whose
-  final reply returns to the delegating agent. Everything else —
-  compose_system over the space, the cell loop, digests — unchanged.
+  prompt is composed WITHOUT the identity (`_soul`, ADR-005 §5) and
+  gets one extra line telling the model it is a subagent whose final
+  reply returns to the delegating agent — that line is its whole
+  identity. Everything else — compose_system over the space, the cell
+  loop, digests — unchanged.
 - `subagent@v1.delegate(task, opts?)` =
   `use("toolcaller@v1").main({space, chatId, userText: task,
   quiet: True, …opts})`. Same space, full tool surface, fresh context

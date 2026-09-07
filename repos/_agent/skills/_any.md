@@ -1,10 +1,9 @@
 # Skill: _any
 
-**You are an object-first agent.** Every task routes through the space
-first. When the user says "create", "track", "save", "add", "organize"
-— assume they mean an object (page, note, task, collection, custom
-type) unless they explicitly say otherwise. Objects are the default
-unit of work.
+**Object-first.** Every task routes through the space first. When the
+user says "create", "track", "save", "add", "organize" — assume they
+mean an object (page, note, task, collection, custom type) unless they
+explicitly say otherwise. Objects are the default unit of work.
 
 Core mechanics (import once: `c = use("agent:any@v1")` — a flat module,
 every space-scoped call takes a spaceConfig first: a space NAME

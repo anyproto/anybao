@@ -6,8 +6,9 @@ from pathlib import Path
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "skills"
 
-# The fixed lead order the composer honors (runtime/src/deploy.rs).
-SYSTEM_SKILL_ORDER = ("_soul", "_core", "_any", "_coding", "_memory",
+# The fixed lead order the composer honors (toolcaller SYSTEM_SKILL_ORDER);
+# `_soul` is the identity, outside the band (ADR-005 §5).
+SYSTEM_SKILL_ORDER = ("_core", "_any", "_coding", "_memory",
                       "_space_context", "_meta_skill")
 
 
@@ -18,7 +19,28 @@ def load_skills_dir(path: Path) -> dict[str, str]:
 
 def test_skill_sources_cover_the_system_set():
     skills = load_skills_dir(SKILLS_DIR)
-    assert set(SYSTEM_SKILL_ORDER) <= set(skills)
+    assert set(SYSTEM_SKILL_ORDER) | {"_soul"} <= set(skills)
+
+
+def test_soul_is_the_only_identity_and_carries_no_heading():
+    """ADR-005 §5: the soul opens the prompt verbatim ("You are …" is its
+    first line, no `# Skill:` heading); every other skill states method,
+    never a second identity; conduct policy lives in `_core`, not in the
+    user-editable soul."""
+    skills = load_skills_dir(SKILLS_DIR)
+    soul = skills["_soul"]
+    assert soul.startswith("You are Bao.") and "# Skill" not in soul
+    assert "## Examples" in soul
+    for name, body in skills.items():
+        if name == "_soul":
+            continue
+        assert "You are a" not in body and "You are an" not in body, \
+            f"{name} carries a second identity"
+    core = skills["_core"]
+    assert "## Conduct" in core
+    for rule in ("list it and ask", "wait for a yes", "Resolve first"):
+        assert rule in core
+    assert "Conduct" not in soul
 
 
 def test_core_skill_documents_the_real_surface():

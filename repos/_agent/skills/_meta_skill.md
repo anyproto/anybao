@@ -57,4 +57,7 @@ your whole reasoning loop. `p = use("agent:programs@v1")`:
 **System skills** (deploy-pipeline-managed — `_core`, `_soul`, `_any`,
 `_memory`, `_space_context`, `_meta_skill`, `_gmailSync`) carry the leading
 underscore, are excluded from the list above, and get overwritten on
-every deploy. Don't `_`-prefix your own skills.
+every deploy. Don't `_`-prefix your own skills. `_soul` is the identity:
+its body opens the system prompt verbatim, free text, no structure the
+harness reads. To change who you are, the user edits a `_soul` skill in
+the working space (it shadows the shipped one; a blank body does not).

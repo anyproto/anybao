@@ -158,7 +158,12 @@ def test_done_turn_posts_reply_and_persists_turn():
                                 "agent": {"name": "bao", "done": True}}
     turn = w.turns[0]
     assert turn["userText"] == "go" and turn["traceRef"] == "run_x"
-    # api.LLMStats contract keys only (strict server bind rejects strays)
+    # the LLMStats keys + prompt provenance (ADR-005 §5; `llm` is an
+    # object-kind dataset field, nested keys are free — ADR-006 §1); no
+    # soul in an empty space → no soulFingerprint
+    fp = turn["llm"].pop("promptFingerprint")
+    assert len(fp) == 16 and int(fp, 16) >= 0
+    assert "soulFingerprint" not in turn["llm"]
     assert turn["llm"] == {"stopReason": "done", "inTokens": 5, "outTokens": 2,
                            "cacheRead": 0, "cacheWrite": 0, "cells": 0}
 
@@ -200,9 +205,11 @@ def test_cell_turn_spans_digest_and_tool_result():
     assert "#0 42" in part["content"]
     assert 'values.get("cell_x", \'last\')' in part["content"]   # stub over budget
     assert "mutate http.post #9" in part["content"]              # side effects
-    assert w.turns[0]["llm"] == {"stopReason": "done", "cells": 1,
-                                 "inTokens": 15, "outTokens": 7,
-                                 "cacheRead": 0, "cacheWrite": 0}
+    llm = dict(w.turns[0]["llm"])
+    llm.pop("promptFingerprint")
+    assert llm == {"stopReason": "done", "cells": 1,
+                   "inTokens": 15, "outTokens": 7,
+                   "cacheRead": 0, "cacheWrite": 0}
 
 
 def test_cell_error_marks_tool_result_is_error():
@@ -503,6 +510,88 @@ def test_skills_merge_working_space_wins():
     skills = g["_load_system_skills"](TwoSpaces(), "user", "code")
     # user copy shadows the shipped _core; shipped-only _extra survives
     assert skills == {"_core": "# user core", "_extra": "# shipped extra"}
+
+
+def test_blank_working_space_skill_does_not_shadow():
+    g = _helpers()
+    two = TwoSpaces()
+    two.skills["user"].append(("u2", "_extra", "  \n"))
+    skills = g["_load_system_skills"](two, "user", "code")
+    assert skills["_extra"] == "# shipped extra"
+
+
+# --- identity first (ADR-005 §5) ----------------------------------------------
+
+SOUL = "You are Bao. Dry, brief, on their side.\n\n## Voice\n\n- deadpan"
+
+
+def _souled(user_soul=None):
+    two = TwoSpaces()
+    two.skills["code"].insert(0, ("s0", "_soul", SOUL))
+    if user_soul is not None:
+        two.skills["user"].append(("u9", "_soul", user_soul))
+    return two
+
+
+def test_identity_opens_the_system_block_verbatim_and_leaves_the_band():
+    g = _helpers()
+    system, soul = g["compose_system"](_souled(), "user", "code")
+    assert soul == SOUL
+    assert system.startswith(SOUL + "\n\n# user core")   # first bytes, no heading
+    assert "# Skill: _soul" not in system
+    assert "_soul" not in g["SYSTEM_SKILL_ORDER"]
+
+
+def test_identity_working_space_shadows_blank_falls_back():
+    g = _helpers()
+    system, soul = g["compose_system"](_souled("You are Bo."), "user", "code")
+    assert soul == "You are Bo." and system.startswith("You are Bo.\n\n")
+    system, soul = g["compose_system"](_souled("\n  \n"), "user", "code")
+    assert soul == SOUL
+
+
+def test_identity_is_capped_head_kept():
+    g = _helpers()
+    essay = "word " * 5000                       # ~6k tokens
+    two = _souled(essay)
+    _, soul = g["compose_system"](two, "user", "code")
+    assert soul.startswith("word word") and soul.endswith("shorten the object]")
+    assert g["approx_tokens"](soul) <= g["IDENTITY_TOKEN_CAP"] + 20
+
+
+def test_no_identity_when_asked_quiet_and_when_the_space_has_none():
+    g = _helpers()
+    system, soul = g["compose_system"](_souled(), "user", "code", identity=False)
+    assert soul == "" and system.startswith("# user core")
+    system, soul = g["compose_system"](TwoSpaces(), "user", "code")
+    assert soul == "" and system.startswith("# user core")
+
+
+class Souled(World):
+    """World whose space ships a `_soul` skill."""
+
+    def use(self, spec):
+        mod = super().use(spec)
+        if spec == "any@v1":
+            mod.list_types = lambda space: [{"id": "skillT", "xKey": "agent_skill"}]
+            mod.query_objects = (lambda space, filter=None, **kw:
+                                 [{"id": "o1", "any": {"name": "_soul"}}]
+                                 if filter == {"any.types": "skillT"} else [])
+            mod.get_markdown = lambda space, oid: SOUL
+        return mod
+
+
+def test_run_records_both_fingerprints_and_quiet_composes_no_identity():
+    w = Souled([done_reply("hi")])
+    run(w)
+    assert w.llm_calls[0]["system"].startswith(SOUL)
+    llm = w.turns[0]["llm"]
+    assert len(llm["soulFingerprint"]) == 16 and len(llm["promptFingerprint"]) == 16
+    assert llm["soulFingerprint"] != llm["promptFingerprint"]
+    w2 = Souled([done_reply("report")])
+    run(w2, quiet=True)
+    assert not w2.llm_calls[0]["system"].startswith(SOUL)
+    assert "## Subagent" in w2.llm_calls[0]["system"]
 
 
 def test_skills_degenerate_single_space_reads_once():
