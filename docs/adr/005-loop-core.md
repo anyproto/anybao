@@ -532,7 +532,16 @@ restores shape and not identity, the pair does both and held for 20
 further turns (one model, one position). That was measured pulling a
 model back to its trained default; holding a custom persona uphill is
 the open question, answered from traces by `soulFingerprint` × reply
-shape, before any further mechanism. Not adopted: a voice tag on every
+shape, before any further mechanism. Measured 2026-09-07 by exact wire
+replay of 21 staging conversations (gemini-3.7-flash, final model call
+re-issued per arm, Sonnet 5 judging blind pairs on voice and shape):
+against main the amendment wins 34 of 41 pairs with the recorded
+20-message window and 34 of 37 with a window of 38 old-voice exchanges
+(report-genre replies 3→1 vs 15→21 of the pairs). The anchor alone is
+within noise on the short window (19 wins, 12 losses, 11 ties) and
+decisive on the old-voice window (27 wins, 5 losses, 8 ties; report-
+genre 5 vs 19 of 40): the system-block identity is outvoted by history
+exactly as predicted, and the anchor is what holds it. Not adopted: a voice tag on every
 tool result (no harness precedent; repeated instructions breed
 suppression) and rewriting the reply with a second call (100 real
 replies × 4 cheap models, 2026-09-07: every model either dropped
