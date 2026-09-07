@@ -541,7 +541,10 @@ against main the amendment wins 34 of 41 pairs with the recorded
 within noise on the short window (19 wins, 12 losses, 11 ties) and
 decisive on the old-voice window (27 wins, 5 losses, 8 ties; report-
 genre 5 vs 19 of 40): the system-block identity is outvoted by history
-exactly as predicted, and the anchor is what holds it. Not adopted: a voice tag on every
+exactly as predicted, and the anchor is what holds it. The same
+old-voice replay on claude-sonnet-5, gpt-5.6-terra and claude-opus-5
+(reasoning off) holds the ranking on every model: branch over main
+26:5, 27:6 and 16:1; branch over no-anchor 22:7, 16:11 and 12:6. Not adopted: a voice tag on every
 tool result (no harness precedent; repeated instructions breed
 suppression) and rewriting the reply with a second call (100 real
 replies × 4 cheap models, 2026-09-07: every model either dropped
