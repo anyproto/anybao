@@ -130,15 +130,17 @@ IDENTITY_TOKEN_CAP = 2000
 # The recency anchor (ADR-005 §5): one fabricated exchange written into
 # the llm messages right before the user's message — an identity POINTER
 # (voice by reference, nothing parsed out of the soul) + one shape demo.
-# Fixed, persona-neutral harness text; ~80 tokens; once per run.
+# Fixed harness text, deliberately voice-NEUTRAL: the demo teaches size
+# and shape (result first, what is left, nothing else) and must fit any
+# soul a user writes — no asides, no attitude, no wording from _soul.md.
+# ~80 tokens; once per run.
 ANCHOR_REMINDER = (
     "[Reminder] Who you are is the block at the top of your instructions. "
     "Answer in that voice, at the size of the ask: the result first, then "
     "only what the reader needs. Here is the shape I want:")
 ANCHOR_ACK = "Understood."
 ANCHOR_DEMO_ASK = "how many notes did you tag?"
-ANCHOR_DEMO_REPLY = ("Forty-one. Three had no clear topic, so they are still "
-                     "untagged. Your call.")
+ANCHOR_DEMO_REPLY = "Forty-one. Three had no clear topic, so they are still untagged."
 # The bash tool's `as=` pre-check only; the kernel is the authority
 # (`_KERNEL_NAMES`, ADR-003 §3) and refuses any cell that rebinds one.
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
