@@ -2,9 +2,21 @@ version = 1
 revision = 3
 requires-python = ">=3.13"
 
-[manifest]
+[[package]]
+name = "anybao"
+version = "0.0.0"
+source = { virtual = "." }
 
-[manifest.dependency-groups]
+[package.dev-dependencies]
+dev = [
+    { name = "componentize-py" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
 dev = [
     { name = "componentize-py", specifier = ">=0.24.0" },
     { name = "pytest", specifier = ">=8" },
