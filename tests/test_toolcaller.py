@@ -581,6 +581,41 @@ class Souled(World):
         return mod
 
 
+def test_anchor_sits_between_history_and_the_user_message_llm_only():
+    class SouledWithHistory(Souled):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 1, "userText": "old",
+                                          "replies": ["r"]}])
+            return mod
+
+    w = SouledWithHistory([done_reply("ok")])
+    run(w)
+    msgs = w.llm_calls[0]["messages"]
+    assert msgs[0]["parts"][0]["text"] == "[earlier context]"
+    anchor = msgs[1:5]
+    assert [m["role"] for m in anchor] == ["user", "assistant", "user", "assistant"]
+    assert anchor[0]["parts"][0]["text"].startswith("[Reminder] Who you are is the block")
+    assert anchor[1]["parts"][0]["text"] == "Understood."
+    assert msgs[5]["parts"][0]["text"].startswith("go\n\n[now: ")
+    # llm copy only: the persisted turn keeps the raw text
+    assert w.turns[0]["userText"] == "go"
+    # no identity → no anchor: the user message opens the conversation
+    w2 = World([done_reply("ok")])
+    run(w2)
+    assert w2.llm_calls[0]["messages"][0]["parts"][0]["text"].startswith("go")
+
+
+def test_wrapup_asks_for_the_state_in_voice_not_a_summary():
+    w = Souled([tool_reply(), done_reply("state")],
+               cells=[{"ok": True, "prints": [], "last": None, "error": None}])
+    run(w, maxTurns=1)
+    last = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+    assert "In your own voice" in last and "ummarize" not in last
+
+
 def test_run_records_both_fingerprints_and_quiet_composes_no_identity():
     w = Souled([done_reply("hi")])
     run(w)
@@ -592,6 +627,7 @@ def test_run_records_both_fingerprints_and_quiet_composes_no_identity():
     run(w2, quiet=True)
     assert not w2.llm_calls[0]["system"].startswith(SOUL)
     assert "## Subagent" in w2.llm_calls[0]["system"]
+    assert len(w2.llm_calls[0]["messages"]) == 1      # no anchor either
 
 
 def test_skills_degenerate_single_space_reads_once():

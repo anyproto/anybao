@@ -507,6 +507,41 @@ effect of this amendment is measurable from traces by
 `soulFingerprint`: reply length, paragraph breaks and hedge density per
 identity, before any further mechanism is added.
 
+**Recency anchor (amendment 2026-09-07).** Between the boot window and
+the current user message the loop writes ONE fabricated exchange into
+the llm messages: a user turn pointing at the identity ("[Reminder] Who
+you are is the block at the top of your instructions. Answer in that
+voice, at the size of the ask: the result first, then only what the
+reader needs. Here is the shape I want:"), an assistant "Understood.",
+and one demo pair — a one-line ask, a two-line result-first answer.
+Fixed harness text, persona-neutral: the demo carries reply SHAPE
+(result first, what is left, nothing else), the pointer carries VOICE by
+reference, and nothing is parsed out of the soul, so the free-text
+contract above holds. Once per run, ~80 tokens, llm copy only — the
+persisted turn keeps the raw `userText`, so the anchor never re-enters
+the boot window; absent without an identity (no soul, quiet runs). The
+wrap-up message asks for the state "in your own voice" rather than for
+a summary: "summarize" is a report-genre instruction at the one call
+that most needs the identity.
+
+Basis (ContextEcho, arxiv.org/abs/2605.24279): the same reminder placed
+as a recent user exchange beats it in the system block on every model
+tested; an identity sentence alone restores identity and wrecks reply
+shape (replies 20× longer, format compliance 30%), a one-shot demo alone
+restores shape and not identity, the pair does both and held for 20
+further turns (one model, one position). That was measured pulling a
+model back to its trained default; holding a custom persona uphill is
+the open question, answered from traces by `soulFingerprint` × reply
+shape, before any further mechanism. Not adopted: a voice tag on every
+tool result (no harness precedent; repeated instructions breed
+suppression) and rewriting the reply with a second call (100 real
+replies × 4 cheap models, 2026-09-07: every model either dropped
+offers, questions and caveats or added sentences; the failures are
+semantic and no cheap gate catches them). Next candidates if drift
+persists past the anchor: replay only raw-tail turns whose
+`soulFingerprint` matches (in-voice history as the demo), and a fresh
+short-context call for the final reply of long runs.
+
 ### 6. Purity
 
 The loop is a pure function over (history, policies, mailbox) with ALL

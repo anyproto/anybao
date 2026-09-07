@@ -127,6 +127,18 @@ SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory",
 IDENTITY_SKILL = "_soul"
 # a pasted essay must not eat the prompt: head kept, a marker names the cut
 IDENTITY_TOKEN_CAP = 2000
+# The recency anchor (ADR-005 §5): one fabricated exchange written into
+# the llm messages right before the user's message — an identity POINTER
+# (voice by reference, nothing parsed out of the soul) + one shape demo.
+# Fixed, persona-neutral harness text; ~80 tokens; once per run.
+ANCHOR_REMINDER = (
+    "[Reminder] Who you are is the block at the top of your instructions. "
+    "Answer in that voice, at the size of the ask: the result first, then "
+    "only what the reader needs. Here is the shape I want:")
+ANCHOR_ACK = "Understood."
+ANCHOR_DEMO_ASK = "how many notes did you tag?"
+ANCHOR_DEMO_REPLY = ("Forty-one. Three had no clear topic, so they are still "
+                     "untagged. Your call.")
 # The bash tool's `as=` pre-check only; the kernel is the authority
 # (`_KERNEL_NAMES`, ADR-003 §3) and refuses any cell that rebinds one.
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
@@ -336,8 +348,8 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     # answers with a tool call anyway gets one more, tool-less call.
     parts = _dangling(messages, reason)
     parts.append({"type": "text", "text":
-        f"[{reason}] No more cells. Summarize what you did, what is done, "
-        f"and what is still pending."})
+        f"[{reason}] No more cells. In your own voice: what you did, what "
+        f"is done, what is still pending."})
     messages.append({"role": "user", "parts": parts})
     reply = llm.chat(messages, system=system, tier=tier, tools=tools)
     _tally(stats, reply.get("usage", {}))
@@ -345,7 +357,8 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     texts = _texts(reply["parts"])
     if not texts and any(p["type"] == "tool_call" for p in reply["parts"]):
         parts = _dangling(messages, reason)
-        parts.append({"type": "text", "text": "Text only — no tool calls. Summarize."})
+        parts.append({"type": "text", "text":
+                      "Text only — no tool calls. In your own voice: where things stand."})
         messages.append({"role": "user", "parts": parts})
         reply = llm.chat(messages, system=system, tier=tier, tools=[])
         _tally(stats, reply.get("usage", {}))
@@ -456,6 +469,22 @@ def _identity(skills):
         body = (body[:IDENTITY_TOKEN_CAP * 4].rstrip()
                 + f"\n\n[_soul cut at {IDENTITY_TOKEN_CAP} tokens — shorten the object]")
     return body
+
+
+def _anchor(soul):
+    """ADR-005 §5 recency anchor: the four messages placed between the
+    boot window and the user's message. Recent user/assistant turns
+    condition the reply more than the static system block, so the
+    identity is pointed at from THERE, once, with a demo that carries
+    reply SHAPE (result first, what is left, nothing else). llm copy
+    only — never persisted, never in the boot window. [] without an
+    identity (no soul in the space, quiet runs)."""
+    if not soul:
+        return []
+    return [{"role": "user", "parts": [{"type": "text", "text": ANCHOR_REMINDER}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": ANCHOR_ACK}]},
+            {"role": "user", "parts": [{"type": "text", "text": ANCHOR_DEMO_ASK}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": ANCHOR_DEMO_REPLY}]}]
 
 
 def _fingerprint(text):
@@ -736,6 +765,7 @@ def main(args):
                      '.recall(use("agent:any@v1"), baoSpaceConfig)')
     subcell(ctx_code, "_ctx")  # noqa: F821 - guest global
     messages = [*boot,
+                *_anchor(soul),
                 {"role": "user",
                  "parts": [{"type": "text",
                             "text": user_text + _context_suffix(ui_ctx) + user_suffix}]},
