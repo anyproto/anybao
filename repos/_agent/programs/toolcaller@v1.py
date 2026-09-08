@@ -610,11 +610,14 @@ def _user_skills(c, space):
 def _memory_categories(c, space):
     """The category-name inventory in the brain — the write path's
     vocabulary anchor."""
-    brain = c.get_brain()   # the bao space's — `space` here IS it
-    brain_id = brain.get("objectId") if isinstance(brain, dict) else None
-    if not brain_id:
+    try:   # the bao space's brain (ADR-017 §0); a run without one has no memory
+        brain = c.get_brain()
+        brain_id = brain.get("objectId") if isinstance(brain, dict) else None
+        if not brain_id:
+            return ""
+        items = c.query(c.bao_space(), brain_id, "agent_memory_items", limit=500)
+    except Exception:  # noqa: BLE001 — an unreadable brain is not a run failure
         return ""
-    items = c.query(space, brain_id, "agent_memory_items", limit=500)
     cats = sorted({i.get("category") for i in items if i.get("category")})
     return ("Memory categories in use: " + ", ".join(cats)) if cats else ""
 

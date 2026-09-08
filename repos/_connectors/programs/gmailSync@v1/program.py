@@ -42,7 +42,7 @@ _BOUNDARY = "anybao_gmail_sync"
 # synced address hosts the records, in the collection the declaration
 # reports — every read and write names the key.
 MAILBOX_TYPE = {
-    "name": "Mailbox", "xKey": "mailbox",
+    "name": "Mailbox", "xKey": "mailbox", "hidden": True,   # harness type (ADR-027 §2)
     "properties": [{"name": "address"}],
 }
 _DATASET = "email_messages"

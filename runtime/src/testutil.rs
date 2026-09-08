@@ -489,8 +489,12 @@ impl State {
         };
         let key = (space.to_string(), tid.to_string());
         let existing = self.dataset_defs.entry(key.clone()).or_default();
-        let taken =
-            |k: &str, defs: &Vec<Value>| defs.iter().any(|d| d["key"] == k || d["partId"] == k);
+        // a part key is unique within the type (pinned) — the fake keeps
+        // it on every dataset row the part declares (`partKey`)
+        let taken = |k: &str, defs: &Vec<Value>| {
+            defs.iter()
+                .any(|d| d["key"] == k || d["partId"] == k || d["partKey"] == k)
+        };
         if taken(part_key, existing) {
             return err(
                 409,
@@ -536,6 +540,7 @@ impl State {
             row["collection"] = json!(collection);
             row["module"] = json!(module);
             row["partId"] = json!(part_id);
+            row["partKey"] = json!(part_key);
             if shared {
                 row["shared"] = json!(true);
             }

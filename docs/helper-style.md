@@ -80,8 +80,9 @@ obj["book"]["author"]           # reads mirror the write shape
   `{"markdown": ...}`; the object must carry `page` (or a type with a
   shared editor part) first.
 - `POST /types` returns `{"typeId": ...}`, NOT `{"id": ...}`.
-- Property creation uses `kind` for plain values and `format` for
-  dates/links/selects (ADR-022), and `xKey` (not `key`).
+- Property creation uses `kind` for the value shape and `xFormat`
+  (`{"type": <slug>, …}`) for dates/relations/choices (ADR-027 §4) —
+  there is no `format` or `xKind` — and `xKey` (not `key`).
 - Registered handler types (`program`, `chat`, …) REJECT
   `POST /types/:id/properties` (500) — properties statically declared;
   only user types accept dynamic props.

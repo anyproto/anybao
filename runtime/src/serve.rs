@@ -1564,6 +1564,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         runs_anchor,
         triggers_ds: stores.triggers_ds.clone(),
         runs_ds: stores.runs_ds.clone(),
+        secrets_ds: stores.secrets_ds.clone(),
         aliases,
         code_space,
         secrets_guard,
@@ -1677,6 +1678,9 @@ pub struct RunCtx {
     /// the collections the triggers / runs records live in (ADR-027 §2)
     pub triggers_ds: String,
     pub runs_ds: String,
+    /// the secrets store's collection, resolved at boot — the broker's
+    /// exact-collection guard next to the suffix rule (ADR-027 §2)
+    pub secrets_ds: String,
     /// resolver alias namespace (ADR-009 §2) — overlays + the `agent`
     /// default
     pub aliases: BTreeMap<String, String>,
@@ -1809,6 +1813,7 @@ impl RunCtx {
             Classifier::new(Some(&self.cfg.addr)),
         );
         b.secrets_guard = self.secrets_guard.clone();
+        b.secrets_collection = Some(self.secrets_ds.clone());
         b.oauth = Some(self.oauth.clone());
         b.trace_store = Some(self.traces.clone());
         b.secret_store = self

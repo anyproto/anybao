@@ -84,6 +84,10 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
                 and body["filter"]["id"] in HOST_TYPES:
             oid = body["filter"]["id"]   # a store host's carried types
             return _reply(200, {"records": [{"id": oid, "any": {"types": HOST_TYPES[oid]}}]})
+        if name == "http.patch" and "/types/" in path:
+            return _reply(200, {})     # a harness type re-hidden (ADR-027 §2)
+        if path.endswith("/catalog"):
+            return _reply(200, {"usecases": []})
         if path.endswith("/children"):
             if body and body.get("seed") == "bao/brain/v1":
                 if brain is None:

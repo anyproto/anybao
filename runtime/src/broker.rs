@@ -285,6 +285,11 @@ pub struct Broker {
     /// refused before execution (ADR-008: secrets never enter guest
     /// code or traces; connectors authenticate via `credential: {ref}`).
     pub secrets_guard: Option<String>,
+    /// The secrets store's collection as resolved at boot
+    /// (`AgentStores::secrets_ds`, ADR-027 §2) — refused in guest bodies
+    /// next to the `_agent_secrets` suffix rule, so the guard does not
+    /// rest on the server's collection naming alone.
+    pub secrets_collection: Option<String>,
     /// Managed OAuth state (ADR-011) — process-shared; None = no oauth
     /// wiring (managed refs fail typed `not_configured`).
     pub oauth: Option<Arc<OauthState>>,
@@ -464,6 +469,7 @@ impl Broker {
             blobs: BTreeMap::new(),
             grants: None,
             secrets_guard: None,
+            secrets_collection: None,
             oauth: None,
             secret_store: None,
             config_store: None,
@@ -1363,7 +1369,11 @@ impl Broker {
         };
         let body = payload.get("json");
         let body_dataset = body.and_then(|b| b.get("dataset")).and_then(|d| d.as_str());
-        if body_dataset.is_some_and(|d| d.ends_with("_agent_secrets") || d == "agent_secrets") {
+        if body_dataset.is_some_and(|d| {
+            d.ends_with("_agent_secrets")
+                || d == "agent_secrets"
+                || self.secrets_collection.as_deref() == Some(d)
+        }) {
             return Err(forbidden("the agent_secrets dataset"));
         }
         if let Some(id) = &self.secrets_guard {
@@ -2007,10 +2017,15 @@ mod tests {
     fn secrets_guard_blocks_dataset_and_object() {
         let mut b = make_broker("run_guard");
         b.secrets_guard = Some("bafysecretsobj".into());
+        b.secrets_collection = Some("resolved-at-boot".into());
 
-        // the secrets collection in the body → refused (any space, any
-        // declaring type: the collection is `<typeId>_agent_secrets`)
-        for ds in ["bafytype_agent_secrets", "agent_secrets"] {
+        // the secrets collection in the body → refused: the one resolved
+        // at boot, or any `<typeId>_agent_secrets` by the naming rule
+        for ds in [
+            "bafytype_agent_secrets",
+            "agent_secrets",
+            "resolved-at-boot",
+        ] {
             let err = b
                 .call(
                     "http.post",
@@ -2052,7 +2067,7 @@ mod tests {
                     .unwrap_or(false)
             })
             .count();
-        assert_eq!(denials, 4);
+        assert_eq!(denials, 5);
     }
 
     #[test]

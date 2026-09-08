@@ -681,10 +681,17 @@ class _Client:
     @staticmethod
     def _collection_key(collection):
         """The store key inside a minted collection name (`<typeId>_<key>`
-        → `<key>`); a canonical collection is its own key."""
-        if isinstance(collection, str) and collection.startswith("bafy") \
-                and "_" in collection:
-            return collection.split("_", 1)[1]
+        → `<key>`); a canonical collection is its own key. The type id
+        is recognised by SHAPE (a long alphanumeric content id, whatever
+        its multibase prefix) — no catalog read, so hits from a foreign
+        space (cross-space edges) resolve the same and the pre-wire
+        instant guard stays offline."""
+        if not isinstance(collection, str) or collection in _CANONICAL_COLLECTIONS \
+                or "_" not in collection:
+            return collection
+        prefix, key = collection.split("_", 1)
+        if len(prefix) >= 20 and prefix.isalnum():
+            return key
         return collection
 
     def _prop_handles(self, space, type_id):
@@ -1713,7 +1720,11 @@ class _Client:
         dataset the pipeline runs over that object's dataset records
         instead — field refs are then the dataset's PLAIN keys
         ("$internalDate"), no xKey resolution either way."""
-        if object_id or dataset:
+        if bool(object_id) != bool(dataset):
+            raise ValueError("aggregate over records takes BOTH object_id and "
+                             "dataset (the object's dataset key); neither "
+                             "aggregates the space's objects")
+        if object_id and dataset:
             return self._call("post", f"/v1/spaces/{space}/aggregate",
                               {"objectId": object_id,
                                "dataset": self._collection(space, object_id, dataset),
@@ -1988,8 +1999,18 @@ class _Client:
                 f'"{row.get("name")}" — builtins cannot be created or '
                 "reshaped. Pick another name, or pass an explicit "
                 'non-reserved "xKey".')
+        if xkey in self._catalog_type_xkeys():
+            raise ValueError(
+                f'"{xkey}" is the type of a catalog app (`list_available_apps`) '
+                "— catalog types cannot be created or reshaped; `setup_app` "
+                "installs the app. Pick another name, or pass an explicit "
+                'non-catalog "xKey".')
         tid = row["id"] if row else None
         created = False
+        if tid is not None and body.get("hidden") and not row.get("hidden"):
+            # a harness type minted before it was hidden: re-hide (ADR-027 §2)
+            self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"hidden": True})
+            self._cat_invalidate(space)
         if tid is None:
             req = {k: body[k] for k in ("name", "description", "iconCid",
                                         "hidden", "weight", "layout")
@@ -2685,8 +2706,9 @@ class _Client:
         try:
             objs = self.query_objects(space, filter={"id": {"$in": ids}})
             by_id = {o["id"]: o for o in objs}
-            type_name = {t["id"]: t.get("name") for t in self.list_types(space)}
-            type_name.update({t.get("xKey"): t.get("name") for t in self.list_types(space)
+            rows = self._catalog(space)["rows"]        # memoized per space
+            type_name = {t["id"]: t.get("name") for t in rows}
+            type_name.update({t.get("xKey"): t.get("name") for t in rows
                               if t.get("xKey")})
         except AnyError:
             return
@@ -2794,6 +2816,18 @@ class _Client:
         if self._catalog_cache is None:
             self._catalog_cache = self._call("get", "/v1/catalog").get("usecases") or []
         return self._catalog_cache
+
+    def _catalog_type_xkeys(self):
+        """The xKeys of the types the catalog's apps bring (wiki, person,
+        …) — reserved handles a user type may not take. One read per
+        run; a server without a catalog reserves nothing."""
+        try:
+            usecases = self._catalog_usecases()
+        except AnyError:
+            return set()
+        return {(b.get("type") or {}).get("xKey")
+                for u in usecases for b in u.get("bundles") or []
+                if (b.get("type") or {}).get("xKey")}
 
     def _usecase_of_bundle(self, bundle_id):
         for u in self._catalog_usecases():

@@ -208,6 +208,7 @@ def test_object_type_property_creation_paths():
     assert [(v, p) for v, p, _ in fx.calls] == [
         ("POST", "/v1/spaces/s1/objects"),
         ("GET", "/v1/spaces/s1/types"),          # idempotency probe
+        ("GET", "/v1/catalog"),                  # catalog types are reserved (once per run)
         ("POST", "/v1/spaces/s1/types"),
         ("GET", "/v1/spaces/s1/bundles"),        # collections app probe (§5)
         ("POST", "/v1/catalog/collections/setup"),
@@ -239,6 +240,60 @@ def test_create_type_composite_fans_out_properties():
                            "xFormat": {"pos": "a0"}}   # fake lists no props → a0
     # the space already has the collections app: no setup
     assert not any(p.endswith("/collections/setup") for v, p, _ in fx.calls)
+
+
+def test_create_type_refuses_catalog_types_and_rehides_a_harness_type():
+    # a catalog app's type (wiki, person, …) is reserved: never created
+    # or reshaped by create_type — `setup_app` installs the app
+    fx = wire(replies={
+        "/types": {"types": [{"id": "tw", "xKey": "wiki", "name": "Wiki"}], "typeId": "t9"},
+        "/catalog": {"usecases": [{"id": "wiki", "bundles": [
+            {"id": "system:wiki/v1", "type": {"xKey": "wiki"}}]}]},
+        "/bundles": {"bundles": [{"id": "system:collections/v1"}]}})
+    c = client(fx)
+    with pytest.raises(ValueError, match="catalog app"):
+        c.create_type("s1", {"name": "Wiki", "properties": [{"name": "Extra"}]})
+    assert not any(v == "POST" for v, _, _ in fx.calls)      # nothing minted or reshaped
+    # a harness type minted before it was hidden gets one PATCH (ADR-027 §2)
+    fx = wire(replies={
+        "/types": {"types": [{"id": "tl", "xKey": "agent_log", "name": "Agent Log"}]},
+        "/catalog": {"usecases": []}})
+    r = client(fx).create_type("s1", {"name": "Agent Log", "xKey": "agent_log",
+                                      "hidden": True})
+    assert r["created"] is False
+    assert ("PATCH", "/v1/spaces/s1/types/tl", {"hidden": True}) in fx.calls
+    # a server without a catalog reserves nothing
+    fx = wire(replies={"/types": {"types": [], "typeId": "t9"},
+                       "/bundles": {"bundles": [{"id": "system:collections/v1"}]}},
+              status=404)
+    fx404 = fx
+    ok = wire(replies={"/types": {"types": [], "typeId": "t9"},
+                       "/bundles": {"bundles": [{"id": "system:collections/v1"}]}})
+
+    def fx_mixed(name, payload):   # the catalog 404s, everything else answers
+        if payload.get("url", "").endswith("/v1/catalog"):
+            return fx404(name, payload)
+        return ok(name, payload)
+    fx_mixed.calls = ok.calls
+    assert client(fx_mixed).create_type("s1", {"name": "Plant"})["created"] is True
+
+
+def test_collection_key_is_shape_based_and_offline():
+    c = client(wire())
+    assert c._collection_key("bafyreibrain0000000000000_agent_memory_items") == "agent_memory_items"
+    # another multibase prefix — the id is recognised by shape, not by "bafy"
+    assert c._collection_key("zb2rhXYZabc0123456789abcdef_agent_turns") == "agent_turns"
+    assert c._collection_key("editor_blocks") == "editor_blocks"          # canonical
+    assert c._collection_key("chat_messages") == "chat_messages"
+    assert c._collection_key("agent_turns") == "agent_turns"              # a bare key
+
+
+def test_aggregate_over_records_needs_object_and_dataset():
+    c = client(wire(replies={"/aggregate": {"records": []}}))
+    with pytest.raises(ValueError, match="BOTH object_id and dataset"):
+        c.aggregate("s1", [{"$count": "n"}], dataset="email_messages")
+    with pytest.raises(ValueError, match="BOTH object_id and dataset"):
+        c.aggregate("s1", [{"$count": "n"}], object_id="o1")
 
 
 def test_create_type_sets_up_the_collections_app_once():
@@ -1020,7 +1075,8 @@ def test_memory_verbs_and_paths():
     assert fx.calls[-1][2]["recordIds"] == ["m1"]
     assert fx.calls[-1][2]["dataset"] == "br_agent_memory_items"
     # every memory call went to the bao space — the only home (ADR-017 §0)
-    assert all(p.startswith("/v1/spaces/s1/") for _, p, _ in fx.calls)
+    assert all(p.startswith("/v1/spaces/s1/") for _, p, _ in fx.calls
+               if p != "/v1/catalog")
 
 
 def test_memory_has_one_home():

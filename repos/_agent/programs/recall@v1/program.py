@@ -60,7 +60,7 @@ class Recall:
             raise ValueError(
                 "search needs a non-empty query — the index has no "
                 "browse-all mode. To enumerate memory items: "
-                'a.query(space, a.get_brain(space)["objectId"], '
+                'a.query(a.bao_space(), a.get_brain()["objectId"], '
                 '"agent_memory_items"); for history use '
                 "history@v1 or by_period().")
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
@@ -139,12 +139,14 @@ class Recall:
     def neighbors(self, object_id):
         """1-hop neighborhood: {"forward": [...], "backlinks": [...]}.
 
-        Forward = links-format property values on the object's row
-        (arrays of `any://<objectId>` URIs; edge label = property,
-        targetId a bare object id); each `{type, prop, targetId}`.
-        Backlinks = objects that reference it, from the server's
-        reverse read (`…/backlinks`); each `{sourceId, type, prop}`.
-        type/prop are xKeys — content ids never surface here."""
+        Forward = relation property values on the object's row
+        (arrays of `any://…` URIs; edge label = property, targetId a
+        bare object id); each `{type, prop, targetId}`. Backlinks =
+        the server's reverse read (`…/backlinks`), one per edge:
+        `{sourceId, kind}` plus `type` + `prop` for a relation edge
+        (kind "relation") or `dataset` (+ `recordId`) for a block/
+        message/record edge — index `type`/`prop` only after checking
+        `kind`. type/prop are xKeys — content ids never surface here."""
         forward = []
         # normalize=False: graph edges are identified by raw type/prop ids
         # on the wire (ADR-006 §6); resolved to xKeys before returning.

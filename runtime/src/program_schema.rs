@@ -71,7 +71,7 @@ impl ProgramSchema {
     /// Read-only resolve: `Ok(None)` when the space has no `program`
     /// type (or the type lacks a declared property).
     pub fn lookup(c: &Client, space: &str) -> Result<Option<Self>, AnyError> {
-        let Some(tid) = find_type(c, space)? else {
+        let Some((tid, _hidden)) = find_type(c, space)? else {
             return Ok(None);
         };
         let props = prop_map(c, space, &tid)?;
@@ -95,7 +95,13 @@ impl ProgramSchema {
     /// the resolved schema. Only MISSING pieces are created.
     pub fn ensure(c: &Client, space: &str) -> anyhow::Result<Self> {
         let tid = match find_type(c, space)? {
-            Some(t) => t,
+            Some((t, hidden)) => {
+                if !hidden {
+                    // minted before it was hidden: re-hide (ADR-027 §2)
+                    c.patch_type(space, &t, &json!({"hidden": true}))?;
+                }
+                t
+            }
             None => {
                 // hidden: never offered by a client's type picker (ADR-027 §2)
                 let res = c.create_type(
@@ -186,11 +192,16 @@ impl ProgramSchema {
     }
 }
 
-fn find_type(c: &Client, space: &str) -> Result<Option<String>, AnyError> {
+/// The program type's id + whether it is hidden already.
+fn find_type(c: &Client, space: &str) -> Result<Option<(String, bool)>, AnyError> {
     Ok(c.list_types(space)?
         .iter()
         .find(|t| t["xKey"] == PROGRAM_TYPE_XKEY)
-        .and_then(|t| t["id"].as_str().map(str::to_string)))
+        .and_then(|t| {
+            t["id"]
+                .as_str()
+                .map(|id| (id.to_string(), t["hidden"] == json!(true)))
+        }))
 }
 
 /// dataset key → collection, read off the type's declarations.

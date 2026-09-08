@@ -455,10 +455,14 @@ def apply(space, proposal_id):
     try:
         items = c.query(space, proposal_id, "enrich_proposal_items",
                         limit=1000)
-    except ValueError:
+    except ValueError as e:
         # the key→collection resolution (ADR-027 §2): a deleted or
         # unknown proposal object declares no proposal dataset — the
-        # same "nothing to apply" as an empty draft, never a raise
+        # same "nothing to apply" as an empty draft. Any other
+        # resolution error (ambiguous declaration, bad space) surfaces.
+        if "carries no type declaring" not in str(e):
+            return {"ok": False, "proposalId": proposal_id,
+                    "error": f"apply failed: {e}"}
         items = []
     except anymod.AnyError as e:
         return {"ok": False, "proposalId": proposal_id,
