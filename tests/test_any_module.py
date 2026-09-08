@@ -242,7 +242,7 @@ def test_create_type_composite_fans_out_properties():
     assert not any(p.endswith("/collections/setup") for v, p, _ in fx.calls)
 
 
-def test_create_type_refuses_catalog_types_and_rehides_a_harness_type():
+def test_create_type_refuses_catalog_types():
     # a catalog app's type (wiki, person, …) is reserved: never created
     # or reshaped by create_type — `setup_app` installs the app
     fx = wire(replies={
@@ -254,14 +254,6 @@ def test_create_type_refuses_catalog_types_and_rehides_a_harness_type():
     with pytest.raises(ValueError, match="catalog app"):
         c.create_type("s1", {"name": "Wiki", "properties": [{"name": "Extra"}]})
     assert not any(v == "POST" for v, _, _ in fx.calls)      # nothing minted or reshaped
-    # a harness type minted before it was hidden gets one PATCH (ADR-027 §2)
-    fx = wire(replies={
-        "/types": {"types": [{"id": "tl", "xKey": "agent_log", "name": "Agent Log"}]},
-        "/catalog": {"usecases": []}})
-    r = client(fx).create_type("s1", {"name": "Agent Log", "xKey": "agent_log",
-                                      "hidden": True})
-    assert r["created"] is False
-    assert ("PATCH", "/v1/spaces/s1/types/tl", {"hidden": True}) in fx.calls
     # a server without a catalog reserves nothing
     fx = wire(replies={"/types": {"types": [], "typeId": "t9"},
                        "/bundles": {"bundles": [{"id": "system:collections/v1"}]}},

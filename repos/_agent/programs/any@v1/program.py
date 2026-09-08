@@ -2007,10 +2007,6 @@ class _Client:
                 'non-catalog "xKey".')
         tid = row["id"] if row else None
         created = False
-        if tid is not None and body.get("hidden") and not row.get("hidden"):
-            # a harness type minted before it was hidden: re-hide (ADR-027 §2)
-            self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"hidden": True})
-            self._cat_invalidate(space)
         if tid is None:
             req = {k: body[k] for k in ("name", "description", "iconCid",
                                         "hidden", "weight", "layout")

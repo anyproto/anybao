@@ -691,18 +691,9 @@ fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)
         .list_types(space)?
         .iter()
         .find(|t| t["xKey"] == SKILL_TYPE)
-        .and_then(|t| {
-            t["id"]
-                .as_str()
-                .map(|id| (id.to_string(), t["hidden"] == json!(true)))
-        }) {
-        Some((t, hidden)) => {
-            if !hidden {
-                // minted before it was hidden: re-hide (ADR-027 §2)
-                client.patch_type(space, &t, &json!({"hidden": true}))?;
-            }
-            t
-        }
+        .and_then(|t| t["id"].as_str().map(str::to_string))
+    {
+        Some(t) => t,
         None => {
             let res = client.create_type(
                 space,
