@@ -80,11 +80,12 @@ parts}` + `GET …/objects/:o/links` + account-wide `GET /v1/backlinks`,
   route diff §17, port checklist §19) and
   `any-parts-catalog-port-inventory.md` (every anybao call site by
   `path:line`).
-- any-ui main (c0351cc6) still speaks `general-chat/v1` and `nav.*`
-  (28 files): the UI has NOT ported yet. Both clients must land on
-  `system:general-chat/v1`; since the root is derived from the bundle
-  id there is nothing to coordinate on the id, only on timing for
-  existing spaces (§2.2).
+- any-ui main carries its own port since PRs #910/#912/#914 (the
+  catalog series) and #915/#918 (descriptors), checked 2026-09-08
+  evening: the chat resolves through `POST /v1/catalog/general-chat/setup`
+  (`src/lib/api/general-chat.ts`), the sidebar is the `miniapp` query,
+  the remaining `nav.*` reads are the editor's block tree. Both clients
+  land on the same derived root; §5.3 can run against the rig.
 
 ## 2. Decisions the port needs (user calls)
 
