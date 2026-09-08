@@ -9,15 +9,17 @@ pytestmark = pytest.mark.integration
 
 
 def _item(client, space: str, brain: str, item_id: str) -> dict:
-    recs = client.query(space, brain, "agent_memory_items",
-                        filter={"id": item_id}, limit=1)
+    coll = client.collection(space, "agent_brain", "agent_memory_items")
+    recs = client.query(space, brain, coll, filter={"id": item_id}, limit=1)
     assert recs, f"item {item_id} not found on brain"
     return recs[0]
 
 
-def test_memory_write_lifecycle(client, fresh_space, guest_use):
-    brain = client.get_brain(fresh_space)["objectId"]
-    m = guest_use("memory@v1").memory(guest_use("any@v1"), fresh_space)
+def test_memory_write_lifecycle(client, bao_space, guest_use):
+    fresh_space = bao_space
+    c = guest_use("any@v1")
+    brain = c.get_brain(fresh_space)["objectId"]
+    m = guest_use("memory@v1").memory(c, fresh_space)
 
     # create — required fields + arrays/numbers persist as written
     item_id = m.add("lesson", "integration test fact",
@@ -36,7 +38,7 @@ def test_memory_write_lifecycle(client, fresh_space, guest_use):
     assert rec["context"] == "refined fact"
     assert rec["tags"] == ["it"]
     assert rec["category"] == "lesson"
-    assert rec["modifiedAt"] >= before
+    assert c.ts_s(rec["modifiedAt"]) >= c.ts_s(before)   # instants (ADR-019)
 
     # bump_access — the §4.3 recall ROI signal
     got = m.bump_access(item_id, rec["accessCount"])
@@ -45,5 +47,5 @@ def test_memory_write_lifecycle(client, fresh_space, guest_use):
 
     # delete — the row is gone from the dataset read
     m.delete(item_id)
-    assert client.query(fresh_space, brain, "agent_memory_items",
-                        filter={"id": item_id}, limit=1) == []
+    assert c.query(fresh_space, brain, "agent_memory_items",
+                   filter={"id": item_id}, limit=1) == []

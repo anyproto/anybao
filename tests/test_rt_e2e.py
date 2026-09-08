@@ -64,32 +64,46 @@ class FakeBackends(BaseHTTPRequestHandler):
             # empty catalog -> space-name resolution passes strings
             # through (degenerate-env rule, ADR-010 §8)
             return self._reply({"spaces": []})
-        if "/types/" in self.path and self.path.endswith("/datasets"):
-            # defs pre-exist with matching search leaves — no PATCH
+        path = self.path.partition("?")[0]
+        if "/types/" in path and path.endswith("/datasets"):
+            # defs pre-exist with matching search leaves — no PATCH;
+            # the collection is the server's (ADR-027 §2): `<typeId>_<key>`
+            tid = path.rsplit("/types/", 1)[1].split("/")[0]
+
+            def ds(n, key, **rest):
+                return {"id": n, "key": key, "collection": f"{tid}_{key}",
+                        "module": "records", **rest}
             return self._reply({"datasets": [
-                {"id": "d1", "name": "agent_memory_items",
-                 "search": {"title": "context", "text": "body",
-                            "scope": "agent"}},
-                {"id": "d2", "name": "agent_job_state"},
-                {"id": "d3", "name": "agent_turns",
-                 "search": {"title": "userText", "text": "searchText",
-                            "scope": "history"}},
-                {"id": "d4", "name": "agent_chunks",
-                 "search": {"text": "summary", "scope": "history"}}]})
-        if self.path.endswith("/types"):
+                ds("d1", "agent_memory_items",
+                   search={"title": "context", "text": "body", "scope": "agent"}),
+                ds("d2", "agent_job_state"), ds("d5", "agent_roi_injections"),
+                ds("d3", "agent_turns",
+                   search={"title": "userText", "text": "searchText",
+                           "scope": "history"}),
+                ds("d4", "agent_chunks", search={"text": "summary", "scope": "history"})]})
+        if path.endswith("/types"):
             return self._reply({"types": [
-                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain"},
-                {"id": "lg", "name": "Agent Log", "xKey": "agent_log"}]})
+                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain", "hidden": True},
+                {"id": "lg", "name": "Agent Log", "xKey": "agent_log", "hidden": True}]})
+        if path.endswith("/v1/catalog"):
+            return self._reply({"usecases": []})
         if self.path.endswith("/properties"):
             # builtin-group filter paths resolve against these (A19);
             # program.any_tool rides the compose's tool query
             return self._reply({"properties": [
                 {"id": "name"}, {"id": "types"}, {"id": "any_tool"}]})
         if self.path.endswith("/bundles"):
-            # the test chat c1 is a bundle root (ADR-017)
+            # the test chat c1 is the catalog's chat root (ADR-027 §1)
             return self._reply({"bundles": [
-                {"id": "general-chat/v1", "rootId": "c1"}]})
+                {"id": "system:general-chat/v1", "rootId": "c1", "derived": True}],
+                "synced": True})
         return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
+
+    @staticmethod
+    def _store(collection):
+        # the guest addresses a store by its collection `<typeId>_<key>`;
+        # the fake keeps records by key
+        return collection.split("_", 1)[1] if "_" in collection else collection
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -101,13 +115,13 @@ class FakeBackends(BaseHTTPRequestHandler):
             return self._reply(cls.llm_replies.pop(0))
         if self.path.endswith("/search"):
             return self._reply({"hits": [], "mode": "fts"})
+        if self.path.endswith("/objects/query"):
+            return self._reply({"records": []})
         if self.path.endswith("/query"):
-            rows = cls.datasets.get(body.get("dataset", ""), [])
+            rows = cls.datasets.get(self._store(body.get("dataset", "")), [])
             return self._reply({"records": rows})
-        if "/types/" in self.path and self.path.endswith("/datasets"):
-            # a declaration the GET fixture doesn't list (e.g. the ROI
-            # dataset) — accept it
-            return self._reply({"datasetDefId": "dX", "created": True})
+        if "/types/" in self.path and self.path.endswith("/parts"):
+            return self._reply({"partId": "pX"}, 201)
         if self.path.endswith("/children"):
             seed = body.get("seed", "")
             oid = {"bao/brain/v1": "brain1", "bao/log/v1": "log1"}.get(
@@ -116,7 +130,7 @@ class FakeBackends(BaseHTTPRequestHandler):
         if self.path.endswith("/upsert"):
             recs = [dict(r.get("fields") or {}, id=r["id"])
                     for r in body.get("records") or []]
-            cls.datasets.setdefault(body["dataset"], []).extend(recs)
+            cls.datasets.setdefault(self._store(body["dataset"]), []).extend(recs)
             return self._reply({"created": len(recs), "updated": 0,
                                 "skipped": 0, "rejections": [],
                                 "pages": [{"recordIds": [r["id"] for r in recs]}]})
@@ -125,7 +139,7 @@ class FakeBackends(BaseHTTPRequestHandler):
             return self._reply({"recordIds": [f"m{len(cls.chat_posts)}"]})
         if self.path.endswith("/modify"):
             rec = body["records"][0]
-            cls.datasets.setdefault(body["dataset"], []).append(
+            cls.datasets.setdefault(self._store(body["dataset"]), []).append(
                 {"id": rec["id"], **rec["ops"][0]["value"]})
             return self._reply({"versionId": "v", "changeId": "c",
                                 "recordIds": [rec["id"]]})
