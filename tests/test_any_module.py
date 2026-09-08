@@ -614,6 +614,25 @@ def test_create_dataset_single_element_text_array_is_not_drift():
     assert not [c for c in fx.calls if c[0] == "PATCH"]
 
 
+def test_create_dataset_module_part_gives_the_type_a_body():
+    # a shared editor part (ADR-027 §3): declared under `body` unless the
+    # type already holds editor_blocks; no key on a module dataset
+    fx = wire(replies={"/types": {"types": [{"id": "pr", "xKey": "program"}]},
+                       "/types/pr/datasets": {"datasets": [
+                           {"id": "d1", "key": "editor_blocks", "collection": "editor_blocks",
+                            "module": "editor", "shared": True}]}})
+    r = client(fx).create_dataset("s1", "program", {"module": "editor", "shared": True})
+    assert r == {"datasetDefId": "d1", "collection": "editor_blocks", "created": False}
+    assert not [c for c in fx.calls if c[0] == "POST"]
+    fx = wire(replies={"/types": {"types": [{"id": "pr", "xKey": "program"}]},
+                       "/parts": {"partId": "p1"}})
+    client(fx).create_dataset("s1", "program", {"module": "editor", "shared": True})
+    part = next(b for v, p, b in fx.calls if p.endswith("/parts"))
+    assert part == {"key": "body", "datasets": [{"module": "editor", "shared": True}]}
+    with pytest.raises(ValueError, match="shared"):
+        client(fx).create_dataset("s1", "program", {"module": "editor"})
+
+
 def test_create_dataset_declares_one_part_per_store():
     # a missing store is declared as a part with the dataset inline
     # under the same key; the collection is read back off the listing

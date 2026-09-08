@@ -57,12 +57,14 @@ def _has_store(c, space):
 
 
 def _ensure_store(c, space):
-    """Idempotently declare the `mini_app` type + dataset (cached per run)."""
-    if space in _ensured:
+    """Idempotently declare the `mini_app` type + dataset (cached per run,
+    keyed by the resolved space id — `space` may be a spaceConfig)."""
+    sid = c.get_space(space)["id"]
+    if sid in _ensured:
         return
-    c.create_type(space, _TYPE_DECL)
-    c._create_dataset(space, _TYPE, _DATASET_DECL)
-    _ensured.add(space)
+    c.create_type(sid, _TYPE_DECL)
+    c._create_dataset(sid, _TYPE, _DATASET_DECL)
+    _ensured.add(sid)
 
 
 def _find(c, space, name):

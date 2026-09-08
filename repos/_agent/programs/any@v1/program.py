@@ -2025,7 +2025,9 @@ class _Client:
 
     def create_dataset(self, space, type_key, draft):
         """Ensure a records dataset on a USER type — one part per store
-        (ADR-016, ADR-027 §2).
+        (ADR-016, ADR-027 §2). A module part instead — `{"module":
+        "editor", "shared": true, "part"?: "body"}` — gives the type's
+        objects the shared page body (`editor_blocks`).
 
         draft: {"key": "<store key>", "displayName"?, "idRule":
         "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
@@ -2057,6 +2059,26 @@ class _Client:
         if "name" in (draft or {}):
             raise ValueError("create_dataset: \"name\" is not a dataset field — "
                              "the store is addressed by \"key\"")
+        if (draft or {}).get("module") in ("editor", "chat"):
+            # a module part: the shared canonical collection (`editor`
+            # gives the type's objects the page body); `chat` is the
+            # server's — the wire refuses it
+            if not draft.get("shared"):
+                raise ValueError("create_dataset: a module dataset is shared "
+                                 "(the module's canonical collection)")
+            canonical = "editor_blocks" if draft["module"] == "editor" else "chat_messages"
+            for d in self.list_datasets(space, type_key):
+                if d.get("collection") == canonical:
+                    return {"datasetDefId": d.get("id"), "collection": canonical,
+                            "created": False}
+            self._call("post", f"/v1/spaces/{space}/types/{tid}/parts",
+                       {"key": draft.get("part") or "body", "datasets": [
+                           {"module": draft["module"], "shared": True}]})
+            self._ds_invalidate(space, type_id=tid)
+            d = next((d for d in self._datasets_of(space, tid)
+                      if d.get("collection") == canonical), None) or {}
+            return {"datasetDefId": d.get("id"), "collection": canonical,
+                    "created": True}
         key = (draft or {}).get("key") or ""
         if not key:
             raise ValueError("create_dataset: the draft needs a \"key\" (the store key)")
