@@ -507,52 +507,26 @@ effect of this amendment is measurable from traces by
 `soulFingerprint`: reply length, paragraph breaks and hedge density per
 identity, before any further mechanism is added.
 
-**Recency anchor (amendment 2026-09-07).** Between the boot window and
-the current user message the loop writes ONE fabricated exchange into
-the llm messages: a user turn pointing at the identity ("[Reminder] Who
-you are is the block at the top of your instructions. Answer in that
-voice, at the size of the ask: the result first, then only what the
-reader needs. Here is the shape I want:"), an assistant "Understood.",
-and one demo pair — a one-line ask, a two-line result-first answer.
-Fixed harness text, persona-neutral: the demo carries reply SHAPE
-(result first, what is left, nothing else), the pointer carries VOICE by
-reference, and nothing is parsed out of the soul, so the free-text
-contract above holds. Once per run, ~80 tokens, llm copy only — the
-persisted turn keeps the raw `userText`, so the anchor never re-enters
-the boot window; absent without an identity (no soul, quiet runs). The
-wrap-up message asks for the state "in your own voice" rather than for
-a summary: "summarize" is a report-genre instruction at the one call
-that most needs the identity.
-
-Basis (ContextEcho, arxiv.org/abs/2605.24279): the same reminder placed
-as a recent user exchange beats it in the system block on every model
-tested; an identity sentence alone restores identity and wrecks reply
-shape (replies 20× longer, format compliance 30%), a one-shot demo alone
-restores shape and not identity, the pair does both and held for 20
-further turns (one model, one position). That was measured pulling a
-model back to its trained default; holding a custom persona uphill is
-the open question, answered from traces by `soulFingerprint` × reply
-shape, before any further mechanism. Measured 2026-09-07 by exact wire
-replay of 21 staging conversations (gemini-3.7-flash, final model call
-re-issued per arm, Sonnet 5 judging blind pairs on voice and shape):
-against main the amendment wins 34 of 41 pairs with the recorded
-20-message window and 34 of 37 with a window of 38 old-voice exchanges
-(report-genre replies 3→1 vs 15→21 of the pairs). The anchor alone is
-within noise on the short window (19 wins, 12 losses, 11 ties) and
-decisive on the old-voice window (27 wins, 5 losses, 8 ties; report-
-genre 5 vs 19 of 40): the system-block identity is outvoted by history
-exactly as predicted, and the anchor is what holds it. The same
-old-voice replay on claude-sonnet-5, gpt-5.6-terra and claude-opus-5
-(reasoning off) holds the ranking on every model: branch over main
-26:5, 27:6 and 16:1; branch over no-anchor 22:7, 16:11 and 12:6. Not adopted: a voice tag on every
-tool result (no harness precedent; repeated instructions breed
-suppression) and rewriting the reply with a second call (100 real
-replies × 4 cheap models, 2026-09-07: every model either dropped
-offers, questions and caveats or added sentences; the failures are
-semantic and no cheap gate catches them). Next candidates if drift
-persists past the anchor: replay only raw-tail turns whose
-`soulFingerprint` matches (in-voice history as the demo), and a fresh
-short-context call for the final reply of long runs.
+**Recency anchor: not adopted (2026-09-08).** A fabricated
+user/assistant exchange written into the llm messages between the boot
+window and the current user message (identity pointer + one shape demo,
+ContextEcho, arxiv.org/abs/2605.24279) was shipped on 2026-09-07 and
+reverted the next day. It won a blind voice-and-shape A/B (34 of 41
+pairs vs the previous prompt; `docs/voice-ab-report.md`), but the judge
+never scored continuity: in live chats the model reads the fake turns as
+its own recent history. Seen in production: the demo's invented fact
+("Forty-one" tagged notes) was disowned to the user as a claim it "should
+not have made", and a short follow-up ("let's do") lost its referent
+because four harness turns sat between the offer and the reply. Rule
+that follows: the harness writes NO turns into the conversation; a
+reminder, if one is ever needed, rides on the user's own turn so the
+last real assistant message stays adjacent to it. Also not adopted, for
+the record: a voice tag on every tool result (repeated instructions breed
+suppression) and rewriting the reply with a second call (100 real replies
+x 4 cheap models: every model dropped offers, questions and caveats or
+added sentences). Candidates if drift persists: replay only raw-tail
+turns whose `soulFingerprint` matches (in-voice history as the demo), and
+a fresh short-context call for the final reply of long runs.
 
 ### 6. Purity
 
