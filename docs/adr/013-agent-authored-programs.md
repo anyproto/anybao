@@ -56,6 +56,8 @@ the point.
 
 ### 1. Storage & addressing — the working space, deploy's exact shape
 
+**Amended 2026-09-08 (ADR-027 §2/§3):** the `program` type is hidden and declares a shared editor part (`body`) plus the two stores as parts; `program_source` / `program_manifest` are dataset keys whose collections `ProgramSchema` reads back (`source` / `manifest`).
+
 An agent-authored program is a `program`-typed object **in the
 agent's working space**, bit-identical in shape to what deploy
 writes: source in `program_source`/"main"/{code}, derived `summary` +

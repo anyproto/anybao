@@ -23,6 +23,8 @@ companion PR deletes the built-ins; fresh datasets, old data unread.
 
 ### 0. Home objects — the `bao/v1` bundle and its children
 
+**Amended 2026-09-08 (ADR-027 §1/§2):** the chat's bundle is `system:general-chat/v1` (the catalog's); every store below is declared as a part of its type and addressed by the collection the declaration reports (`AgentStores::*_ds`), never by the bare name.
+
 anyrt registers the **`bao/v1` bundle** at serve boot (the server
 keeps no catalog) and derives one child per store:
 
@@ -67,6 +69,8 @@ serve, to be decided when it lands:
   a filtered delete-records pass.
 
 ### 1. Types and datasets (userspace, ensured by their writers)
+
+**Amended 2026-09-08 (ADR-027 §2):** the names below are dataset KEYS. Each store is one part (`POST …/types/:typeId/parts`, `{key, datasets: [draft]}`, `name` → `key`), idempotent by key; records live in the `collection` the datasets listing reports (`<typeId>_<key>`). Every harness type is `hidden`. The pre-metatype xKey re-claim bridge is gone.
 
 Five user types, same type/dataset names as before (the built-ins are
 deleted; no coexistence). Declarations use the runtime-dataset field
@@ -195,6 +199,8 @@ the chat's `bao/log/v1` child with client seq). Dedicated-endpoint
 paths inside these methods are deleted, not conditionally kept.
 
 ### 4. anyrt (host)
+
+**Amended 2026-09-08 (ADR-027 §2):** `provision_agent_stores` returns the four collections next to the child ids; every host consumer reads them from `AgentStores` / `RunCtx` (`triggers_ds`, `runs_ds`, the config and secret stores' `dataset`); the guest-declared `agent_log` collection is resolved through `store_collection` when the host writes an interrupted turn.
 
 - Boot: register `bao/v1`, derive the config/secrets/triggers
   children, ensure the three host-written types + datasets

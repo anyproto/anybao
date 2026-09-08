@@ -83,105 +83,131 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
     anyhow::bail!("space not found: {name_or_id:?} (run --from-space never creates one)")
 }
 
-/// The space's general chat — the `general-chat/v1` bundle's root
-/// (ADR-006 §0). The server keeps no catalog and installs nothing on
-/// its own (SYN-163: chats are not server-owned), so anybao ensures
-/// the bundle itself, and the root is DERIVED (any #177, SYN-172): its
-/// id is a function of the bundle id, identical on every device and
-/// member, so the chat can never fork — chat content cannot be merged
-/// across objects, so a fork must be impossible rather than
-/// resolvable.
-///
-/// Read first, ensure only on a definitive miss (`any`
-/// docs/08-clients.md §12): the registry list is a LOCKED read —
-/// `synced: true` + no row means not installed, `synced: false` means
-/// absence is provisional and installing on it could demote an
-/// install this device has not seen yet. A row bound to a non-derived
-/// root is not a general chat under this contract: serve stops with
-/// an error naming the object (no created-root fallback, no
-/// migration — ADR-006 §0 carries the recovery). The bundles route is
-/// REQUIRED — a server without it is unsupported (no-backcompat).
+/// The space's general chat — the catalog's `general-chat` usecase
+/// (ADR-027 §1): `POST /v1/catalog/general-chat/setup` adopts or
+/// installs the one chat, on a root DERIVED from the bundle id —
+/// identical on every device and member, computed offline, so the
+/// chat can never fork (chat content cannot be merged across objects,
+/// so a fork must be impossible rather than resolvable). The server
+/// runs the registry-convergence wait itself; `409 bundle.not_ready`
+/// (a winner's tree still syncing to this device) is retried briefly.
+/// A non-derived root is a server this runtime does not support:
+/// serve stops naming the object. The catalog route is REQUIRED — a
+/// server without it is unsupported (no-backcompat).
 fn general_chat(c: &Client, space: &str) -> Result<String> {
-    const ID: &str = "general-chat/v1";
-    let derived_root = |bundle: &Value| -> Result<String> {
-        let root = bundle["rootId"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .context("general-chat/v1 registry row carries no rootId")?;
-        if bundle["derived"] != json!(true) {
-            anyhow::bail!(
-                "derived general chat not found in space {space}: {ID} is bound to \
-                 non-derived chat object {root}"
-            );
-        }
-        Ok(root.to_string())
-    };
+    let mut last_err = None;
     for _ in 0..5 {
-        let reg = c.list_bundles(space).context("bundles registry")?;
-        let row = reg["bundles"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|b| b["id"] == json!(ID)));
-        if let Some(row) = row {
-            return derived_root(row);
+        match c.catalog_setup("general-chat", space) {
+            Ok(reply) => {
+                let bundle = &reply["bundles"][0]["bundle"];
+                let root = bundle["rootId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .context("general-chat setup reply carries no rootId")?;
+                if bundle["derived"] != json!(true) {
+                    anyhow::bail!(
+                        "derived general chat not found in space {space}: the catalog's \
+                         general-chat is bound to non-derived chat object {root}"
+                    );
+                }
+                return Ok(root.to_string());
+            }
+            Err(e) if e.status == 409 => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e).context("general-chat catalog setup"),
         }
-        if reg["synced"] == json!(true) {
-            let reply = c
-                .ensure_bundle(space, ID, "General", &["chat"], true)
-                .context("general-chat bundle ensure")?;
-            return derived_root(&reply["bundle"]);
-        }
-        // registry not converged on this device — absence is provisional
-        std::thread::sleep(Duration::from_secs(2));
     }
-    anyhow::bail!("bundles registry of space {space} never converged (synced: false)")
+    Err(last_err.unwrap()).context("general chat never became ready")
 }
 
-/// The host-written agent stores (ADR-017 §0/§1): anyrt registers the
-/// `bao/v1` bundle and derives + declares ONLY what it writes before
-/// guest code can run — config, secrets, triggers. Brain and chat
-/// logs are guest-owned (any@v1 ensures them lazily).
+/// The host-written agent stores (ADR-017 §0/§1, ADR-027 §2): anyrt
+/// registers the `bao/v1` bundle and derives + declares ONLY what it
+/// writes before guest code can run — config, secrets, triggers,
+/// runs. Brain and chat logs are guest-owned (any@v1 ensures them
+/// lazily). Every store is a part of its type; the collection each
+/// one lives in is read back from the declaration, never composed.
 pub struct AgentStores {
     pub config: String,
     pub secrets: String,
     pub triggers: String,
     /// `bao/runs/v1` — the synced per-run summaries (ADR-023 §1)
     pub runs: String,
+    /// the collections (`<typeId>_<key>`) the four stores' records live in
+    pub config_ds: String,
+    pub secrets_ds: String,
+    pub triggers_ds: String,
+    pub runs_ds: String,
 }
 
+/// Find-or-create a harness type by xKey. Harness types are HIDDEN
+/// (ADR-027 §2): a client's type picker never offers them; the
+/// listing includes hidden rows, so the find never re-creates one.
 fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
-    let types = c.list_types(space)?;
-    for t in &types {
+    for t in c.list_types(space)? {
         if t["xKey"] == xkey {
-            return Ok(t["id"].as_str().unwrap_or_default().to_string());
-        }
-    }
-    // A type created before the server's meta-type xkey move (any PR
-    // #176) reads back with no xKey — re-claim its handle in place
-    // (one type.xkey write) instead of shadowing it with a duplicate.
-    for t in &types {
-        if t["xKey"].as_str().unwrap_or_default().is_empty() && t["name"] == name {
-            if let Some(tid) = t["id"].as_str() {
-                c.set_properties(space, tid, "type", &json!({"xkey": xkey}))?;
-                return Ok(tid.to_string());
+            let tid = t["id"].as_str().unwrap_or_default().to_string();
+            if t["hidden"] != json!(true) {
+                c.patch_type(space, &tid, &json!({"hidden": true}))?;
             }
+            return Ok(tid);
         }
     }
-    let created = c.create_type(space, &json!({"name": name, "xKey": xkey}))?;
+    let created = c.create_type(space, &json!({"name": name, "xKey": xkey, "hidden": true}))?;
     Ok(created["typeId"].as_str().unwrap_or_default().to_string())
 }
 
-fn ensure_dataset(c: &Client, space: &str, type_id: &str, draft: &Value) -> Result<()> {
-    let name = draft["name"].as_str().unwrap_or_default();
-    // no reconcile needed: the host stores declare no mutable
-    // search.* leaves
-    if c.list_datasets(space, type_id)?
+/// The collection a type's dataset lives in, read off the datasets
+/// listing (`None` = the type declares no such key).
+pub fn dataset_collection(
+    c: &Client,
+    space: &str,
+    type_id: &str,
+    key: &str,
+) -> Result<Option<String>> {
+    Ok(c.list_datasets(space, type_id)?
         .iter()
-        .any(|d| d["name"] == name)
-    {
-        return Ok(());
+        .find(|d| d["key"] == key)
+        .and_then(|d| d["collection"].as_str())
+        .map(str::to_string))
+}
+
+/// The collection of a harness store addressed by type xKey + dataset
+/// key — for stores another writer declares (the guest's `agent_log`).
+/// `None` when the type or the key is not there yet.
+pub fn store_collection(
+    c: &Client,
+    space: &str,
+    type_xkey: &str,
+    key: &str,
+) -> Result<Option<String>> {
+    let Some(tid) = c
+        .list_types(space)?
+        .into_iter()
+        .find(|t| t["xKey"] == type_xkey)
+        .and_then(|t| t["id"].as_str().map(str::to_string))
+    else {
+        return Ok(None);
+    };
+    dataset_collection(c, space, &tid, key)
+}
+
+/// Declare one store as a part of its type — `{key, datasets: [draft]}`
+/// with the dataset under the same key — unless the key is already
+/// declared, and return the collection the records live in. No
+/// reconcile: the host stores declare no mutable search.* leaves.
+fn ensure_dataset(c: &Client, space: &str, type_id: &str, draft: &Value) -> Result<String> {
+    let key = draft["key"]
+        .as_str()
+        .context("store draft carries no key")?
+        .to_string();
+    if let Some(coll) = dataset_collection(c, space, type_id, &key)? {
+        return Ok(coll);
     }
-    c.create_dataset(space, type_id, draft)?;
-    Ok(())
+    c.add_part(space, type_id, &json!({"key": key, "datasets": [draft]}))?;
+    dataset_collection(c, space, type_id, &key)?
+        .with_context(|| format!("store {key} declared but not listed"))
 }
 
 /// bundle_child with the same brief `bundle.not_ready` retry policy as
@@ -221,7 +247,8 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     for _ in 0..5 {
         // Created root on purpose: the bao space is single-account
         // (owner escape covers offline installs) and created stays the
-        // default — a derived root could never be uninstalled.
+        // default — a derived root could never be uninstalled. `page`
+        // (built-in) gives the root a body.
         match c.ensure_bundle(space, "bao/v1", "bao", &["page"], false) {
             Ok(_) => {
                 registered = true;
@@ -247,26 +274,25 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     // any-typed (tier objects, strings, lists) and the whole trigger
     // record shape stays undeclared for exactly that reason.
     // `agent_config` is `{key, value}` synced only (ADR-006 §3) — no
-    // device-local tier; a pre-existing space keeps its retired
-    // declarations inert (ensure_dataset never reconciles).
-    ensure_dataset(
+    // device-local tier.
+    let config_ds = ensure_dataset(
         c,
         space,
         &cfg_t,
         &json!({
-        "name": CONFIG_DATASET, "displayName": "Agent Config",
+        "key": CONFIG_KEY, "displayName": "Agent Config",
         "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
         "dynamic": true,
         "fields": [
             {"key": "key", "kind": "string", "mutableBy": "any"},
         ]}),
     )?;
-    ensure_dataset(
+    let secrets_ds = ensure_dataset(
         c,
         space,
         &sec_t,
         &json!({
-        "name": SECRETS_DATASET, "displayName": "Agent Secrets",
+        "key": SECRETS_KEY, "displayName": "Agent Secrets",
         "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
         // A system dataset: declared, not dynamic. The value is
         // ACCOUNT-scoped (synced — ADR-021 §4: any-sync encrypts every
@@ -294,21 +320,21 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             {"key": "meta", "kind": "object", "mutableBy": "any"},
         ]}),
     )?;
-    ensure_dataset(
+    let triggers_ds = ensure_dataset(
         c,
         space,
         &trg_t,
         &json!({
-            "name": "agent_triggers", "displayName": "Agent Triggers",
+            "key": TRIGGERS_KEY, "displayName": "Agent Triggers",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
-    ensure_dataset(
+    let runs_ds = ensure_dataset(
         c,
         space,
         &trg_t,
         &json!({
-            "name": "agent_runs", "displayName": "Agent Runs",
+            "key": RUNS_KEY, "displayName": "Agent Runs",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
@@ -317,6 +343,10 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
         triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
         runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &[&trg_t])?,
+        config_ds,
+        secrets_ds,
+        triggers_ds,
+        runs_ds,
     };
     // Display names only — every consumer resolves these anchors by
     // bundle seed, never by name (ADR-017 §0), but a derived object
@@ -357,15 +387,20 @@ fn ensure_child_name(c: &Client, space: &str, object_id: &str, want: &str) -> Re
 /// defaults declare `api_key_ref: "llm.key.anthropic"`).
 const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 
-/// The `agent_config` dataset name (mirrors the server-side type).
-const CONFIG_DATASET: &str = "agent_config";
-
-/// The `agent_secrets` dataset + its value field: the dedicated home of
+/// The host stores' dataset KEYS (ADR-027 §2) — the part/dataset key
+/// on each store's type. Records live in the collection the
+/// declaration reports (`<typeId>_<key>`, `AgentStores::*_ds`); no
+/// read or write names a key on the wire.
+const CONFIG_KEY: &str = "agent_config";
+/// The secrets store's key + its value field: the dedicated home of
 /// account-scoped secrets (ADR-021 §4), split out of `agent_config` so
-/// the broker can block guest reads of the whole dataset by name/object
-/// id while the config object stays guest-readable.
-const SECRETS_DATASET: &str = "agent_secrets";
+/// the broker can block guest reads of the whole collection (by the
+/// `_agent_secrets` suffix, ADR-011 §4) and of the object while the
+/// config object stays guest-readable.
+const SECRETS_KEY: &str = "agent_secrets";
 const SECRETS_FIELD: &str = "value";
+const TRIGGERS_KEY: &str = "agent_triggers";
+const RUNS_KEY: &str = "agent_runs";
 
 /// Config seeding (ADR-006 §3) — the seed passes of
 /// [`bootstrap_secrets`], over the `agent_config` store (one `{key,
@@ -380,8 +415,14 @@ const SECRETS_FIELD: &str = "value";
 ///
 /// Best-effort: a failed query or write warns and serve goes on (a
 /// missing row then fails its `config.get` loudly, per key).
-fn bootstrap_config(c: &Client, space: &str, obj: &str, hard: &BTreeMap<String, Value>) {
-    let rows = match c.query(space, obj, CONFIG_DATASET, &json!({})) {
+fn bootstrap_config(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    hard: &BTreeMap<String, Value>,
+) {
+    let rows = match c.query(space, obj, dataset, &json!({})) {
         Ok(rows) => rows,
         Err(e) => {
             warn!("config store unavailable at seed time ({e})");
@@ -399,7 +440,7 @@ fn bootstrap_config(c: &Client, space: &str, obj: &str, hard: &BTreeMap<String, 
         if stored.get(key) == Some(value) {
             continue;
         }
-        match upsert_config_row(c, space, obj, key, value) {
+        match upsert_config_row(c, space, obj, dataset, key, value) {
             Ok(()) if stored.contains_key(key) => info!("config: {key} overwritten (hard seed)"),
             Ok(()) => info!("config: {key} bootstrapped to store (hard seed)"),
             Err(e) => warn!("config: could not persist {key} ({e})"),
@@ -409,7 +450,7 @@ fn bootstrap_config(c: &Client, space: &str, obj: &str, hard: &BTreeMap<String, 
         if hard.contains_key(&key) || stored.contains_key(&key) {
             continue;
         }
-        match upsert_config_row(c, space, obj, &key, &value) {
+        match upsert_config_row(c, space, obj, dataset, &key, &value) {
             Ok(()) => info!("config: {key} bootstrapped to store (default)"),
             Err(e) => warn!("config: could not persist {key} ({e})"),
         }
@@ -418,11 +459,18 @@ fn bootstrap_config(c: &Client, space: &str, obj: &str, hard: &BTreeMap<String, 
 
 /// One synced upsert of a config row — per-path ops, no
 /// read-merge-write (a concurrent UI save is never clobbered).
-fn upsert_config_row(c: &Client, space: &str, obj: &str, key: &str, value: &Value) -> Result<()> {
+fn upsert_config_row(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    key: &str,
+    value: &Value,
+) -> Result<()> {
     c.modify(
         space,
         &json!({
-            "objectId": obj, "dataset": CONFIG_DATASET,
+            "objectId": obj, "dataset": dataset,
             "records": [{"id": key, "upsert": true, "ops": [
                 {"type": "$set", "path": "key", "value": key},
                 {"type": "$set", "path": "value", "value": value}]}]}),
@@ -437,14 +485,17 @@ pub struct ServeConfigStore {
     client: Arc<Client>,
     space: String,
     obj: String,
+    /// the `agent_config` collection (resolved at provisioning)
+    dataset: String,
 }
 
 impl ServeConfigStore {
-    pub fn new(client: Arc<Client>, space: &str, obj: &str) -> Self {
+    pub fn new(client: Arc<Client>, space: &str, obj: &str, dataset: &str) -> Self {
         Self {
             client,
             space: space.to_string(),
             obj: obj.to_string(),
+            dataset: dataset.to_string(),
         }
     }
 }
@@ -456,7 +507,7 @@ impl crate::broker::ConfigStore for ServeConfigStore {
             .query(
                 &self.space,
                 &self.obj,
-                CONFIG_DATASET,
+                &self.dataset,
                 &json!({"filter": {"key": key}}),
             )
             .map_err(|e| e.to_string())?;
@@ -467,8 +518,15 @@ impl crate::broker::ConfigStore for ServeConfigStore {
     }
 
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
-        upsert_config_row(&self.client, &self.space, &self.obj, key, value)
-            .map_err(|e| e.to_string())
+        upsert_config_row(
+            &self.client,
+            &self.space,
+            &self.obj,
+            &self.dataset,
+            key,
+            value,
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -502,7 +560,7 @@ pub fn run_config_store(
     }
     let stores = provision_agent_stores(client, space)?;
     Ok(Some(Arc::new(ShadowedConfigStore {
-        inner: ServeConfigStore::new(client.clone(), space, &stores.config),
+        inner: ServeConfigStore::new(client.clone(), space, &stores.config, &stores.config_ds),
         overrides,
     })))
 }
@@ -758,13 +816,15 @@ pub struct ServeSecretStore {
     client: Arc<Client>,
     space: String,
     obj: String,
+    /// the `agent_secrets` collection (resolved at provisioning)
+    dataset: String,
 }
 
 impl crate::broker::SecretSource for ServeSecretStore {
     fn read(&self, key: &str) -> Result<Option<String>, String> {
         let rows = self
             .client
-            .query(&self.space, &self.obj, SECRETS_DATASET, &json!({}))
+            .query(&self.space, &self.obj, &self.dataset, &json!({}))
             .map_err(|e| e.to_string())?;
         Ok(stored_local_secret(&rows, key, SECRETS_FIELD))
     }
@@ -803,7 +863,7 @@ impl ServeSecretStore {
             &self.client,
             &self.space,
             &self.obj,
-            SECRETS_DATASET,
+            &self.dataset,
             key,
             &Value::Object(patch),
         ) {
@@ -818,7 +878,7 @@ impl crate::oauth::SecretPersist for ServeSecretStore {
             &self.client,
             &self.space,
             &self.obj,
-            SECRETS_DATASET,
+            &self.dataset,
             SECRETS_FIELD,
             key,
             value,
@@ -837,7 +897,7 @@ impl crate::oauth::SecretPersist for ServeSecretStore {
         });
         self.client.modify(
             &self.space,
-            &json!({"objectId": self.obj, "dataset": SECRETS_DATASET,
+            &json!({"objectId": self.obj, "dataset": self.dataset,
                     "records": [{"id": key, "upsert": true, "ops": ops}]}),
         )?;
         Ok(())
@@ -1104,7 +1164,7 @@ impl AgentHandle {
             &store.client,
             &store.space,
             &store.obj,
-            SECRETS_DATASET,
+            &store.dataset,
             SECRETS_FIELD,
             key,
             value,
@@ -1252,12 +1312,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let secrets_obj = Some(stores.secrets.clone());
     let config_store: Option<Arc<ServeConfigStore>> = config_obj.as_ref().map(|obj| {
         let hard = std::mem::take(&mut cfg.config_overrides);
-        bootstrap_config(&client, &space, obj, &hard);
-        info!("config obj={obj}");
+        bootstrap_config(&client, &space, obj, &stores.config_ds, &hard);
+        info!("config obj={obj} collection={}", stores.config_ds);
         Arc::new(ServeConfigStore {
             client: client.clone(),
             space: space.clone(),
             obj: obj.clone(),
+            dataset: stores.config_ds.clone(),
         })
     });
     // The guest read-guard target — the secrets object, threaded into
@@ -1272,7 +1333,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
                 &client,
                 &space,
                 sobj,
-                SECRETS_DATASET,
+                &stores.secrets_ds,
                 SECRETS_FIELD,
                 &mut cfg.secrets,
                 &overrides,
@@ -1312,6 +1373,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             client: client.clone(),
             space: space.clone(),
             obj: obj.clone(),
+            dataset: stores.secrets_ds.clone(),
         })
     });
     let persist: Option<Box<dyn crate::oauth::SecretPersist>> = secrets_obj.as_ref().map(|obj| {
@@ -1319,6 +1381,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             client: client.clone(),
             space: space.clone(),
             obj: obj.clone(),
+            dataset: stores.secrets_ds.clone(),
         }) as Box<dyn crate::oauth::SecretPersist>
     });
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -1342,7 +1405,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // grant metadata (.granted_scopes/.account — synced, non-secret)
     // loads back so oauth.status survives a restart; best-effort
     if let Some(sobj) = &secrets_obj {
-        if let Ok(rows) = client.query(&space, sobj, SECRETS_DATASET, &json!({})) {
+        if let Ok(rows) = client.query(&space, sobj, &stores.secrets_ds, &json!({})) {
             for row in &rows {
                 let Some(k) = row.get("key").and_then(|v| v.as_str()) else {
                     continue;
@@ -1453,7 +1516,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             client.upsert_record(
                 &space,
                 &anchor,
-                "agent_triggers",
+                &stores.triggers_ds,
                 &t.id,
                 &trigger_to_record(&t),
             )?;
@@ -1464,7 +1527,14 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // once, then claimed/repinned/paused through the dataset. A fresh
     // seed on an active boot is stamped right away so the watch
     // connects without waiting for the first reconcile tick.
-    let (chat_watch_id, seeded) = seed_chat_watch(&client, &space, &anchor, &chat, standing_owner)?;
+    let (chat_watch_id, seeded) = seed_chat_watch(
+        &client,
+        &space,
+        &anchor,
+        &stores.triggers_ds,
+        &chat,
+        standing_owner,
+    )?;
     if let Some(t) = seeded {
         if boot_active {
             registry.insert(t.id.clone(), t);
@@ -1489,6 +1559,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         chat: chat.clone(),
         anchor: anchor.clone(),
         runs_anchor,
+        triggers_ds: stores.triggers_ds.clone(),
+        runs_ds: stores.runs_ds.clone(),
         aliases,
         code_space,
         secrets_guard,
@@ -1599,6 +1671,9 @@ pub struct RunCtx {
     /// the `bao/runs/v1` child — one synced `agent_runs` summary per
     /// run (ADR-023 §1), written by `publish_run`
     pub runs_anchor: String,
+    /// the collections the triggers / runs records live in (ADR-027 §2)
+    pub triggers_ds: String,
+    pub runs_ds: String,
     /// resolver alias namespace (ADR-009 §2) — overlays + the `agent`
     /// default
     pub aliases: BTreeMap<String, String>,
@@ -1695,7 +1770,7 @@ impl RunCtx {
         }
         if let Err(e) =
             self.client
-                .upsert_record(&self.space, &self.runs_anchor, "agent_runs", &id, &summary)
+                .upsert_record(&self.space, &self.runs_anchor, &self.runs_ds, &id, &summary)
         {
             warn!("agent_runs {id}: summary not published: {e}");
         }
@@ -1945,7 +2020,7 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     for r in refs {
         let rows = ctx
             .client
-            .query(&ctx.space, &store.obj, SECRETS_DATASET, &json!({}))
+            .query(&ctx.space, &store.obj, &store.dataset, &json!({}))
             .unwrap_or_default();
         let row = rows
             .iter()
@@ -2033,7 +2108,7 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
                     &ctx.client,
                     &ctx.space,
                     &store.obj,
-                    SECRETS_DATASET,
+                    &store.dataset,
                     r,
                     &patch,
                 ) {
@@ -2114,6 +2189,10 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
         .find(|t| t["xKey"] == json!("agent_log"))
         .and_then(|t| t["id"].as_str().map(str::to_string))
         .context("agent_log type not provisioned yet (no turn ever logged)")?;
+    // the guest declares the log store (ADR-017 §1); its collection is
+    // read off the declaration, never composed (ADR-027 §2)
+    let turns = dataset_collection(&ctx.client, &ctx.space, &tid, "agent_turns")?
+        .context("agent_log type declares no agent_turns dataset")?;
     let child = ctx
         .client
         .bundle_child(&ctx.space, &root, "bao/log/v1", &[tid.as_str()])?;
@@ -2127,7 +2206,7 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
     let rows = ctx.client.query(
         &ctx.space,
         &log,
-        "agent_turns",
+        &turns,
         &json!({"includeDeleted": true, "sort": ["-id"], "limit": 1}),
     )?;
     let seq = rows
@@ -2139,7 +2218,7 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
     ctx.client.upsert_record(
         &ctx.space,
         &log,
-        "agent_turns",
+        &turns,
         &format!("{seq:08}"),
         &json!({
             "seq": seq, "fromAgent": ctx.cfg.agent_name,
@@ -2547,7 +2626,7 @@ fn trigger_ticker(
             // election-independent.
             match ctx
                 .client
-                .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+                .query(&ctx.space, &ctx.anchor, &ctx.triggers_ds, &json!({}))
             {
                 Err(e) => {
                     if !reconcile_failing {
@@ -2577,7 +2656,7 @@ fn trigger_ticker(
                         let _ = ctx.client.upsert_record(
                             &ctx.space,
                             &ctx.anchor,
-                            "agent_triggers",
+                            &ctx.triggers_ds,
                             &t.id,
                             &trigger_to_record(t),
                         );
@@ -2594,7 +2673,7 @@ fn trigger_ticker(
                         let _ = ctx.client.upsert_record(
                             &ctx.space,
                             &ctx.anchor,
-                            "agent_triggers",
+                            &ctx.triggers_ds,
                             &t.id,
                             &trigger_to_record(t),
                         );
@@ -2658,7 +2737,7 @@ fn finish_run(shared: &Shared, ctx: &RunCtx, trigger_id: &str, rr: &RunResult) {
     let _ = ctx.client.upsert_record(
         &ctx.space,
         &ctx.anchor,
-        "agent_triggers",
+        &ctx.triggers_ds,
         trigger_id,
         &trigger_to_record(live),
     );
@@ -2847,7 +2926,7 @@ fn election_thread(
                         let _ = ctx.client.upsert_record(
                             &ctx.space,
                             &ctx.anchor,
-                            "agent_triggers",
+                            &ctx.triggers_ds,
                             &t.id,
                             &trigger_to_record(&t),
                         );
@@ -2885,7 +2964,7 @@ fn takeover(shared: &Shared, ctx: &RunCtx) {
         let _ = ctx.client.upsert_record(
             &ctx.space,
             &ctx.anchor,
-            "agent_triggers",
+            &ctx.triggers_ds,
             &t.id,
             &trigger_to_record(t),
         );
@@ -2897,7 +2976,7 @@ fn takeover(shared: &Shared, ctx: &RunCtx) {
     // held it (foreign-owned → not adopted).
     let Ok(recs) = ctx
         .client
-        .query(&ctx.space, &ctx.anchor, "agent_triggers", &json!({}))
+        .query(&ctx.space, &ctx.anchor, &ctx.triggers_ds, &json!({}))
     else {
         return;
     };
@@ -2913,7 +2992,7 @@ fn takeover(shared: &Shared, ctx: &RunCtx) {
             let _ = ctx.client.upsert_record(
                 &ctx.space,
                 &ctx.anchor,
-                "agent_triggers",
+                &ctx.triggers_ds,
                 id,
                 &trigger_to_record(&t),
             );
@@ -2943,7 +3022,7 @@ fn note_chat_start(shared: &Shared, ctx: &RunCtx) {
     let _ = ctx.client.upsert_record(
         &ctx.space,
         &ctx.anchor,
-        "agent_triggers",
+        &ctx.triggers_ds,
         &t.id,
         &trigger_to_record(t),
     );
@@ -2958,11 +3037,12 @@ fn seed_chat_watch(
     client: &Client,
     space: &str,
     anchor: &str,
+    dataset: &str,
     chat: &str,
     owner: &str,
 ) -> Result<(String, Option<Trigger>)> {
     let recs = client
-        .query(space, anchor, "agent_triggers", &json!({}))
+        .query(space, anchor, dataset, &json!({}))
         .context("reading agent_triggers to seed the chat responder")?;
     if let Some(id) = recs
         .iter()
@@ -2978,7 +3058,7 @@ fn seed_chat_watch(
             format!("{CHAT_WATCH_ID}-g{gen}")
         };
         let t = chat_watch_trigger(&id, chat, owner);
-        match client.upsert_record(space, anchor, "agent_triggers", &id, &trigger_to_record(&t)) {
+        match client.upsert_record(space, anchor, dataset, &id, &trigger_to_record(&t)) {
             Ok(reply) if reply_tombstoned(&reply) => continue,
             Ok(_) => return Ok((id, Some(t))),
             Err(e) if e.code.contains("record_deleted") => continue,
@@ -3130,7 +3210,7 @@ fn handle_control(
             let rows = ctx.client.query(
                 &ctx.space,
                 &ctx.runs_anchor,
-                "agent_runs",
+                &ctx.runs_ds,
                 &json!({"filter": {"triggerId": id}, "sort": ["-startedAt"],
                         "limit": 20}),
             )?;
@@ -3152,7 +3232,7 @@ fn handle_control(
             let rec = trigger_to_record(t);
             let _ = ctx
                 .client
-                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+                .upsert_record(&ctx.space, &ctx.anchor, &ctx.triggers_ds, id, &rec);
             Ok(rec)
         }
         ("POST", ["triggers", id, "enable"]) => {
@@ -3163,7 +3243,7 @@ fn handle_control(
             let rec = trigger_to_record(t);
             let _ = ctx
                 .client
-                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+                .upsert_record(&ctx.space, &ctx.anchor, &ctx.triggers_ds, id, &rec);
             Ok(rec)
         }
         ("POST", ["triggers", id, "disable"]) => {
@@ -3172,7 +3252,7 @@ fn handle_control(
             let rec = trigger_to_record(t);
             let _ = ctx
                 .client
-                .upsert_record(&ctx.space, &ctx.anchor, "agent_triggers", id, &rec);
+                .upsert_record(&ctx.space, &ctx.anchor, &ctx.triggers_ds, id, &rec);
             Ok(rec)
         }
         // one-shot program run (ADR-009 §6): {program, args?} runs a
@@ -3405,26 +3485,89 @@ mod tests {
     }
 
     #[test]
-    fn ensure_type_rekeys_legacy_xkeyless_type_by_name() {
-        // a type from before the server's meta-type xkey move (any PR
-        // #176) lists with no xKey — its handle is re-claimed in place
-        // with one type.xkey write, never shadowed by a duplicate
+    fn ensure_type_hides_a_listed_type_that_is_not_hidden_yet() {
+        // harness types are hidden (ADR-027 §2): a row found by xKey
+        // without the flag gets one PATCH, no create
         let (c, log) = scripted(&[
             (
                 200,
-                json!({"types": [{"id": "t-legacy", "name": "Agent Config"}]}),
+                json!({"types": [{"id": "t-cfg", "xKey": "agent_config", "name": "Agent Config"}]}),
             ),
-            (200, json!({})),
+            (204, json!({})),
         ]);
         assert_eq!(
             ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
-            "t-legacy"
+            "t-cfg"
         );
         let calls = log.lock().unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[1].0, "POST");
-        assert_eq!(calls[1].1, "/v1/spaces/s1/properties/t-legacy/set/type");
-        assert_eq!(calls[1].2, Some(json!({"patch": {"xkey": "agent_config"}})));
+        assert_eq!(calls[0].1, "/v1/spaces/s1/types?includeHidden=true");
+        assert_eq!(
+            (calls[1].0.as_str(), calls[1].1.as_str(), calls[1].2.clone()),
+            (
+                "PATCH",
+                "/v1/spaces/s1/types/t-cfg",
+                Some(json!({"hidden": true}))
+            )
+        );
+    }
+
+    #[test]
+    fn provisioning_declares_parts_and_reads_collections_back() {
+        // ADR-027 §1/§2 end to end over the in-memory server: the chat
+        // is the catalog's derived root; every store is a part of its
+        // hidden type; the collection is read back, never composed;
+        // a second boot adopts everything
+        let c = Client::with_transport(Box::new(crate::testutil::FakeSpace::new()));
+        assert_eq!(general_chat(&c, "sp").unwrap(), "chat-sp");
+        let stores = provision_agent_stores(&c, "sp").unwrap();
+        for (ds, key) in [
+            (&stores.config_ds, "_agent_config"),
+            (&stores.secrets_ds, "_agent_secrets"),
+            (&stores.triggers_ds, "_agent_triggers"),
+            (&stores.runs_ds, "_agent_runs"),
+        ] {
+            assert!(ds.ends_with(key), "{ds}");
+        }
+        // triggers and runs share the trigger type's collection prefix
+        assert_eq!(
+            stores.triggers_ds.trim_end_matches("_agent_triggers"),
+            stores.runs_ds.trim_end_matches("_agent_runs")
+        );
+        for t in c.list_types("sp").unwrap() {
+            if t["xKey"].as_str().unwrap_or("").starts_with("agent_") {
+                assert_eq!(t["hidden"], json!(true), "{t}");
+            }
+        }
+        // a write by the resolved collection lands; by the bare key it
+        // is refused (the server knows no such records dataset)
+        c.upsert_record(
+            "sp",
+            &stores.config,
+            &stores.config_ds,
+            "k",
+            &json!({"key": "k"}),
+        )
+        .unwrap();
+        let err = c
+            .upsert_record(
+                "sp",
+                &stores.config,
+                "agent_config",
+                "k",
+                &json!({"key": "k"}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "dataset.unknown");
+        let again = provision_agent_stores(&c, "sp").unwrap();
+        assert_eq!(again.config, stores.config);
+        assert_eq!(again.config_ds, stores.config_ds);
+        assert_eq!(again.runs_ds, stores.runs_ds);
+        // the chat's log child derives under the catalog bundle
+        let child = c
+            .bundle_child("sp", "system:general-chat/v1", "bao/log/v1", &[])
+            .unwrap();
+        assert!(child["objectId"].as_str().is_some_and(|s| !s.is_empty()));
     }
 
     #[test]
@@ -3443,7 +3586,13 @@ mod tests {
             "t-new"
         );
         let calls = log.lock().unwrap();
+        assert_eq!(calls[0].1, "/v1/spaces/s1/types?includeHidden=true");
         assert_eq!(calls[1].1, "/v1/spaces/s1/types");
+        // created hidden from the first change (ADR-027 §2)
+        assert_eq!(
+            calls[1].2,
+            Some(json!({"name": "Agent Config", "xKey": "agent_config", "hidden": true}))
+        );
     }
 
     #[test]
@@ -3496,76 +3645,62 @@ mod tests {
         assert_eq!(ensure_space(&c, "myspace").unwrap(), "mine");
     }
 
-    #[test]
-    fn general_chat_reads_an_existing_derived_row_without_ensuring() {
-        let (c, log) = scripted(&[(
+    fn chat_setup_reply(installed: bool) -> (u16, Value) {
+        (
             200,
-            json!({"bundles": [{"id": "general-chat/v1", "rootId": "chat-root",
-                                "derived": true}],
-                   "synced": true}),
-        )]);
-        assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
-        let calls = log.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            (calls[0].0.as_str(), calls[0].1.as_str()),
-            ("GET", "/v1/spaces/sp/bundles")
-        );
+            json!({"usecase": "general-chat", "bundles": [{
+                "usecase": "general-chat", "id": "system:general-chat/v1",
+                "bundle": {"id": "system:general-chat/v1", "rootId": "chat-root",
+                           "roots": ["chat-root"], "derived": true},
+                "installed": installed, "typeId": "chat-root",
+                "miniapp": {"bundle": "system:general-chat/v1"}}]}),
+        )
     }
 
     #[test]
-    fn general_chat_installs_derived_on_a_definitive_miss() {
+    fn general_chat_is_the_catalog_setup_root() {
+        // one call, adopt or install alike (ADR-027 §1)
+        for installed in [true, false] {
+            let (c, log) = scripted(&[chat_setup_reply(installed)]);
+            assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
+            let calls = log.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                (calls[0].0.as_str(), calls[0].1.as_str(), calls[0].2.clone()),
+                (
+                    "POST",
+                    "/v1/catalog/general-chat/setup",
+                    Some(json!({"spaceId": "sp"}))
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn general_chat_retries_not_ready_then_lands() {
+        // a winner's tree still syncing to this device: retried, never
+        // installed around
         let (c, log) = scripted(&[
             (
-                200,
-                json!({"bundles": [{"id": "bao/v1", "rootId": "x"}], "synced": true}),
+                409,
+                json!({"error": {"code": "bundle.not_ready", "message": "syncing"}}),
             ),
-            (
-                200,
-                json!({"bundle": {"id": "general-chat/v1", "rootId": "chat-root",
-                                  "derived": true},
-                       "installed": true}),
-            ),
+            chat_setup_reply(false),
         ]);
         assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
-        let calls = log.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[1].0, "POST");
-        assert_eq!(
-            calls[1].2,
-            Some(json!({"id": "general-chat/v1", "name": "General",
-                        "rootTypes": ["chat"], "derived": true}))
-        );
+        assert_eq!(log.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn general_chat_never_installs_on_a_provisional_miss() {
-        // synced:false → re-read, never ensure (an unseen created
-        // install would be demoted irreversibly); converges on the
-        // second read here
-        let (c, log) = scripted(&[
-            (200, json!({"bundles": [], "synced": false})),
-            (
-                200,
-                json!({"bundles": [{"id": "general-chat/v1", "rootId": "chat-root",
-                                    "derived": true}],
-                       "synced": true}),
-            ),
-        ]);
-        assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
-        let calls = log.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert!(calls.iter().all(|c| c.0 == "GET"));
-    }
-
-    #[test]
-    fn general_chat_rejects_a_non_derived_row() {
-        // a created root under the id is not a general chat: stop,
-        // name the object, never fall back to it
+    fn general_chat_rejects_a_non_derived_root() {
+        // a created root under the catalog id is not a general chat:
+        // stop, name the object, never fall back to it
         let (c, log) = scripted(&[(
             200,
-            json!({"bundles": [{"id": "general-chat/v1", "rootId": "old-root"}],
-                   "synced": true}),
+            json!({"usecase": "general-chat", "bundles": [{
+                "id": "system:general-chat/v1",
+                "bundle": {"id": "system:general-chat/v1", "rootId": "old-root"},
+                "installed": false}]}),
         )]);
         let err = general_chat(&c, "sp").unwrap_err().to_string();
         assert!(
@@ -3580,7 +3715,8 @@ mod tests {
     fn chat_watch_seeds_once_and_leaves_an_existing_record_alone() {
         // fresh space: one read, one write of the bare id
         let (c, log) = scripted(&[(200, json!({"records": []})), (200, json!({}))]);
-        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "peer-A").unwrap();
+        let (id, seeded) =
+            seed_chat_watch(&c, "sp", "anchor", "t_agent_triggers", "chat-1", "peer-A").unwrap();
         assert_eq!(id, "chat-watch");
         let t = seeded.expect("this boot created it");
         assert_eq!((t.kind.as_str(), t.owner.as_str()), ("event", "peer-A"));
@@ -3601,7 +3737,8 @@ mod tests {
             json!({"records": [{"id": "rollup"}, {"id": "chat-watch-g2", "owner": "peer-B",
                                 "enabled": false}]}),
         )]);
-        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "peer-A").unwrap();
+        let (id, seeded) =
+            seed_chat_watch(&c, "sp", "anchor", "t_agent_triggers", "chat-1", "peer-A").unwrap();
         assert_eq!(id, "chat-watch-g2");
         assert!(seeded.is_none());
         assert_eq!(log.lock().unwrap().len(), 1);
@@ -3618,7 +3755,8 @@ mod tests {
             ),
             (200, json!({})),
         ]);
-        let (id, seeded) = seed_chat_watch(&c, "sp", "anchor", "chat-1", "").unwrap();
+        let (id, seeded) =
+            seed_chat_watch(&c, "sp", "anchor", "t_agent_triggers", "chat-1", "").unwrap();
         assert_eq!(id, "chat-watch-g2");
         assert_eq!(seeded.unwrap().owner, ""); // standby boot: unassigned
         let calls = log.lock().unwrap();
@@ -3630,9 +3768,9 @@ mod tests {
     }
 
     #[test]
-    fn general_chat_requires_the_bundles_route() {
-        // no-backcompat: a server without bundles is unsupported —
-        // error, never a SpaceInfo-field fallback
+    fn general_chat_requires_the_catalog_route() {
+        // no-backcompat: a server without the catalog is unsupported —
+        // error, never a registry or SpaceInfo-field fallback
         let (c, log) = scripted(&[(
             404,
             json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
@@ -3876,7 +4014,7 @@ mod tests {
             replies.push((200, json!({})));
         }
         let (c, log) = scripted(&replies);
-        bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
+        bootstrap_config(&c, "s1", "cfgobj", "t1_agent_config", &BTreeMap::new());
         let calls = log.lock().unwrap();
         // one query + one upsert per missing default (the stored key skipped)
         assert_eq!(calls.len(), n);
@@ -3900,7 +4038,7 @@ mod tests {
         let mut hard = BTreeMap::new();
         let forced = json!({"provider": "gemini", "model": "rig-model"});
         hard.insert("search.provider.deepresearch".to_string(), forced.clone());
-        bootstrap_config(&c, "s1", "cfgobj", &hard);
+        bootstrap_config(&c, "s1", "cfgobj", "t1_agent_config", &hard);
         let calls = log.lock().unwrap();
         assert_eq!(calls.len(), 2);
         let rec = &calls[1].2.as_ref().unwrap()["records"][0];
@@ -3915,7 +4053,7 @@ mod tests {
     #[test]
     fn bootstrap_config_store_unreachable_writes_nothing() {
         let (c, log) = scripted(&[(500, json!({"error": "boom"}))]);
-        bootstrap_config(&c, "s1", "cfgobj", &BTreeMap::new());
+        bootstrap_config(&c, "s1", "cfgobj", "t1_agent_config", &BTreeMap::new());
         assert_eq!(log.lock().unwrap().len(), 1);
     }
 
@@ -3976,7 +4114,7 @@ mod tests {
         let mut overrides = BTreeMap::new();
         overrides.insert("llm.tier.classify".to_string(), json!({"model": "shadow"}));
         let store = ShadowedConfigStore {
-            inner: ServeConfigStore::new(Arc::new(c), "s1", "cfgobj"),
+            inner: ServeConfigStore::new(Arc::new(c), "s1", "cfgobj", "t1_agent_config"),
             overrides,
         };
         // shadowed key: answered locally, no wire call
@@ -4010,6 +4148,7 @@ mod tests {
             client: Arc::new(c),
             space: "s1".into(),
             obj: "cfgobj".into(),
+            dataset: "t1_agent_config".into(),
         };
         use crate::broker::ConfigStore as _;
         assert_eq!(
@@ -4018,6 +4157,7 @@ mod tests {
         );
         let calls = log.lock().unwrap();
         assert!(calls[0].1.ends_with("/query"));
-        assert_eq!(calls[0].2.as_ref().unwrap()["dataset"], "agent_config");
+        // the resolved collection, never the bare key (ADR-027 §2)
+        assert_eq!(calls[0].2.as_ref().unwrap()["dataset"], "t1_agent_config");
     }
 }

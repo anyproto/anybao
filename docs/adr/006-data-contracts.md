@@ -17,6 +17,8 @@ place.
 
 ### 0. Reuse the bao space; the derived general chat
 
+**Amended 2026-09-08 (ADR-027 §1): the general chat is the catalog's** — `POST /v1/catalog/general-chat/setup` returns the derived root (`system:general-chat/v1`); no registry read, no client ensure, no `general-chat/v1`. The turn log is the `bao/log/v1` child of that bundle.
+
 anybao adopts the EXISTING bao space (review 2026-07-07) — this keeps
 the per-space memory brain (shape unchanged), space identity, programs
 history. Mixed-shape safety comes one level down: `agent_turns`/

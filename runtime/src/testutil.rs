@@ -111,25 +111,36 @@ impl Transport for StubTransport {
     }
 }
 
-/// A minimal in-memory `any` server: per-space objects with property
-/// groups, per-object datasets with `_addSeq`, types/properties,
-/// markdown and the agent brain — just enough surface for
-/// deploy/skills/resolver.
+/// A minimal in-memory `any` server speaking the ADR-027 contract:
+/// per-space objects with property groups, types with parts whose
+/// datasets live in server-computed collections (`<typeId>_<key>`,
+/// or a module's canonical collection when shared), the write gate
+/// (an object holds a collection only while it carries a declaring
+/// type), the hidden built-ins `page` / `miniapp` / `bin` /
+/// `dataview`, the bundles registry with children, and the catalog's
+/// `general-chat` usecase — just enough surface for deploy / skills /
+/// resolver / serve provisioning.
 #[derive(Default)]
 pub struct FakeSpace {
     state: Mutex<State>,
 }
 
+/// The catalog's general chat: one derived, self-typed root per space.
+pub const GENERAL_CHAT_BUNDLE: &str = "system:general-chat/v1";
+
 #[derive(Default)]
 struct State {
-    /// (space, oid) → property groups ({"any": {...}, "program": {...}})
+    /// (space, oid) → property groups ({"any": {...}, "<typeId>": {...}})
     objects: BTreeMap<(String, String), Value>,
-    /// (space, oid, dataset) → rid → stored record (with _addSeq injected)
+    /// (space, oid, collection) → rid → stored record (with _addSeq injected)
     datasets: BTreeMap<(String, String, String), BTreeMap<String, Value>>,
     addseq: BTreeMap<(String, String, String), i64>,
+    /// space → type rows `{id, xKey, name, hidden?, builtIn?}`; the
+    /// built-ins are seeded on first touch
     types: BTreeMap<String, Vec<Value>>,
     props: BTreeMap<(String, String), Vec<Value>>,
-    /// (space, typeId) → runtime dataset definitions (ADR-016)
+    /// (space, typeId) → compiled dataset rows `{id, key, collection,
+    /// module, shared?, partId, …draft}`
     dataset_defs: BTreeMap<(String, String), Vec<Value>>,
     markdown: BTreeMap<(String, String), String>,
     /// (space, fileId) → (objectId, name, bytes)
@@ -140,11 +151,16 @@ struct State {
     pending: BTreeMap<String, Vec<(String, String)>>,
     /// (space, identity) → (permission, status)
     members: BTreeMap<(String, String), (String, String)>,
+    /// space → bundle id → registry row `{id, rootId, roots, derived?}`
+    bundles: BTreeMap<String, BTreeMap<String, Value>>,
+    /// (space, bundle id, seed) → the derived child's object id
+    children: BTreeMap<(String, String, String), String>,
     next_obj: u64,
     next_type: u64,
     next_prop: u64,
     next_file: u64,
     next_req: u64,
+    next_part: u64,
 }
 
 impl FakeSpace {
@@ -168,20 +184,100 @@ fn group_get<'a>(props: &'a Value, dotted: &str) -> Option<&'a Value> {
     props.get(group)?.get(field)
 }
 
+fn err(status: u16, code: &str, message: impl Into<String>) -> (u16, Value) {
+    (
+        status,
+        json!({"error": {"code": code, "message": message.into()}}),
+    )
+}
+
+/// The registered built-ins every space has (hidden, static). `page`
+/// is the one with a part: the shared editor body.
+const BUILTIN_TYPES: [&str; 4] = ["page", "miniapp", "bin", "dataview"];
+
 impl State {
-    fn create_object(&mut self, space: &str, body: &Value) -> Value {
+    /// Seed the built-in types on a space's first touch.
+    fn touch(&mut self, space: &str) {
+        if self.types.contains_key(space) {
+            return;
+        }
+        let rows = BUILTIN_TYPES
+            .iter()
+            .map(|t| json!({"id": t, "xKey": t, "name": t, "hidden": true, "builtIn": true}))
+            .collect();
+        self.types.insert(space.to_string(), rows);
+        self.dataset_defs.insert(
+            (space.to_string(), "page".to_string()),
+            vec![
+                json!({"id": "page_body", "key": "editor_blocks", "collection": "editor_blocks",
+                        "module": "editor", "shared": true, "partId": "page_body"}),
+            ],
+        );
+    }
+
+    fn type_exists(&self, space: &str, tid: &str) -> bool {
+        self.types
+            .get(space)
+            .map(|rows| rows.iter().any(|t| t["id"] == tid))
+            .unwrap_or(false)
+    }
+
+    /// The collections an object holds: every dataset declared by a
+    /// type it carries.
+    fn held_collections(&self, space: &str, oid: &str) -> Vec<String> {
+        let Some(props) = self.objects.get(&(space.to_string(), oid.to_string())) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for t in props["any"]["types"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
+            let Some(tid) = t.as_str() else { continue };
+            if let Some(defs) = self.dataset_defs.get(&(space.to_string(), tid.to_string())) {
+                for d in defs {
+                    if let Some(c) = d["collection"].as_str() {
+                        out.push(c.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn records_collection_known(&self, space: &str, collection: &str) -> bool {
+        self.dataset_defs
+            .iter()
+            .filter(|((sp, _), _)| sp == space)
+            .any(|(_, defs)| {
+                defs.iter()
+                    .any(|d| d["collection"] == collection && d["module"] == "records")
+            })
+    }
+
+    fn create_object(&mut self, space: &str, body: &Value) -> (u16, Value) {
+        self.touch(space);
+        let types = body["types"].as_array().cloned().unwrap_or_default();
+        for t in &types {
+            if !t.as_str().is_some_and(|tid| self.type_exists(space, tid)) {
+                return err(
+                    400,
+                    "type.not_found",
+                    format!("types names a type this space does not have: {t}"),
+                );
+            }
+        }
         self.next_obj += 1;
         let oid = format!("obj{}", self.next_obj);
         let mut props = body.get("initialProperties").cloned().unwrap_or(json!({}));
         // mirror the server: requested types are queryable as any.types
-        if let Some(types) = body.get("types") {
-            if props.get("any").is_none() {
-                props["any"] = json!({});
-            }
-            props["any"]["types"] = types.clone();
+        if props.get("any").is_none() {
+            props["any"] = json!({});
         }
+        props["any"]["types"] = json!(types);
         self.objects.insert((space.to_string(), oid.clone()), props);
-        json!({"objectId": oid})
+        (201, json!({"objectId": oid}))
     }
 
     fn query_objects(&self, space: &str, body: &Value) -> Value {
@@ -215,6 +311,9 @@ impl State {
         json!({"records": records})
     }
 
+    /// A read of a collection nobody serves answers an empty list —
+    /// the server's tolerance for a declaring type that has not
+    /// synced yet; a mis-keyed collection is silent here too.
     fn query(&self, space: &str, body: &Value) -> Value {
         let oid = body["objectId"].as_str().unwrap_or("").to_string();
         let dataset = body["dataset"].as_str().unwrap_or("").to_string();
@@ -239,9 +338,32 @@ impl State {
         json!({"records": records})
     }
 
-    fn modify(&mut self, space: &str, body: &Value) -> Value {
+    /// The write gate: the collection must be a records dataset some
+    /// type of the space declares (else `dataset.unknown`) and the
+    /// object must carry one of its declaring types (else
+    /// `dataset.not_declared`). Module collections are never written
+    /// through /modify.
+    fn modify(&mut self, space: &str, body: &Value) -> (u16, Value) {
         let oid = body["objectId"].as_str().unwrap_or("").to_string();
         let dataset = body["dataset"].as_str().unwrap_or("").to_string();
+        if !self.records_collection_known(space, &dataset) {
+            return err(
+                400,
+                "dataset.unknown",
+                format!("dataset {dataset:?} is not a records dataset this space declares"),
+            );
+        }
+        if !self
+            .held_collections(space, &oid)
+            .iter()
+            .any(|c| c == &dataset)
+        {
+            return err(
+                400,
+                "dataset.not_declared",
+                "the object carries no type whose parts declare this collection",
+            );
+        }
         let key = (space.to_string(), oid, dataset);
         for rec in body["records"].as_array().cloned().unwrap_or_default() {
             let rid = rec["id"].as_str().unwrap_or("").to_string();
@@ -266,24 +388,10 @@ impl State {
                 }
             }
         }
-        json!({"ok": true})
+        (200, json!({"ok": true}))
     }
 
     fn set_properties(&mut self, space: &str, oid: &str, tid: &str, patch: &Value) -> Value {
-        // the meta-type: `set/type` on a type row patches the catalog
-        // entry (`type.xkey` re-claim, any PR #176)
-        if tid == "type" {
-            if let Some(rows) = self.types.get_mut(space) {
-                for t in rows.iter_mut() {
-                    if t["id"] == oid {
-                        if let Some(x) = patch["xkey"].as_str() {
-                            t["xKey"] = json!(x);
-                        }
-                    }
-                }
-            }
-            return json!({"ok": true});
-        }
         let props = self
             .objects
             .entry((space.to_string(), oid.to_string()))
@@ -299,14 +407,142 @@ impl State {
         json!({"ok": true})
     }
 
-    fn create_type(&mut self, space: &str, body: &Value) -> Value {
+    fn attach_type(&mut self, space: &str, oid: &str, tid: &str) -> (u16, Value) {
+        self.touch(space);
+        if !self.type_exists(space, tid) {
+            return err(404, "type.not_found", format!("no type {tid}"));
+        }
+        let Some(props) = self.objects.get_mut(&(space.to_string(), oid.to_string())) else {
+            return err(404, "sdk.not_found", format!("no object {oid}"));
+        };
+        if props.get("any").is_none() {
+            props["any"] = json!({});
+        }
+        let mut types = props["any"]["types"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !types.iter().any(|t| t == tid) {
+            types.push(json!(tid));
+        }
+        props["any"]["types"] = json!(types);
+        (200, json!({"ok": true}))
+    }
+
+    fn create_type(&mut self, space: &str, body: &Value) -> (u16, Value) {
+        self.touch(space);
+        let Some(xkey) = body["xKey"].as_str().filter(|x| !x.is_empty()) else {
+            return err(400, "request.missing_field", "xKey required");
+        };
+        let taken = self.types[space]
+            .iter()
+            .any(|t| t["xKey"] == xkey || t["id"] == xkey);
+        if taken {
+            return err(409, "type.xkey_conflict", format!("xKey {xkey:?} is held"));
+        }
         self.next_type += 1;
         let tid = format!("type{}", self.next_type);
-        self.types
-            .entry(space.to_string())
-            .or_default()
-            .push(json!({"id": tid, "xKey": body["xKey"], "name": body["name"]}));
-        json!({"typeId": tid})
+        let mut row = json!({"id": tid, "xKey": xkey, "name": body["name"]});
+        if body["hidden"] == json!(true) {
+            row["hidden"] = json!(true);
+        }
+        self.types.entry(space.to_string()).or_default().push(row);
+        (201, json!({"typeId": tid}))
+    }
+
+    fn patch_type(&mut self, space: &str, tid: &str, body: &Value) -> (u16, Value) {
+        self.touch(space);
+        let Some(row) = self
+            .types
+            .get_mut(space)
+            .and_then(|rows| rows.iter_mut().find(|t| t["id"] == tid))
+        else {
+            return err(404, "type.not_found", format!("no type {tid}"));
+        };
+        if row["builtIn"] == json!(true) {
+            return err(400, "type.registered", "built-in types are static");
+        }
+        for k in ["hidden", "weight", "layout", "meta"] {
+            if let Some(v) = body.get(k) {
+                row[k] = v.clone();
+            }
+        }
+        (204, json!({}))
+    }
+
+    /// POST …/types/:tid/parts — the part and its datasets in one
+    /// change; the collection is computed here, exactly as the server
+    /// does, and only ever read back by clients.
+    fn add_part(&mut self, space: &str, tid: &str, draft: &Value) -> (u16, Value) {
+        self.touch(space);
+        if !self.type_exists(space, tid) {
+            return err(404, "type.not_found", format!("no type {tid}"));
+        }
+        if self.types[space]
+            .iter()
+            .any(|t| t["id"] == tid && t["builtIn"] == json!(true))
+        {
+            return err(400, "type.registered", "built-in types are static");
+        }
+        let Some(part_key) = draft["key"].as_str().filter(|k| !k.is_empty()) else {
+            return err(400, "dataset.decl_invalid", "part key required");
+        };
+        let key = (space.to_string(), tid.to_string());
+        let existing = self.dataset_defs.entry(key.clone()).or_default();
+        let taken =
+            |k: &str, defs: &Vec<Value>| defs.iter().any(|d| d["key"] == k || d["partId"] == k);
+        if taken(part_key, existing) {
+            return err(
+                409,
+                "dataset.key_conflict",
+                format!("key {part_key:?} exists"),
+            );
+        }
+        self.next_part += 1;
+        let part_id = format!("part{}", self.next_part);
+        let mut rows = Vec::new();
+        for ds in draft["datasets"].as_array().cloned().unwrap_or_default() {
+            let module = ds["module"].as_str().unwrap_or("records").to_string();
+            let shared = ds["shared"] == json!(true);
+            let (dkey, collection) = match (module.as_str(), shared) {
+                ("editor", true) => ("editor_blocks".to_string(), "editor_blocks".to_string()),
+                ("chat", _) => return err(400, "dataset.module_reserved", "chat is the server's"),
+                ("records", true) => {
+                    return err(400, "dataset.shared_conflict", "records never shares")
+                }
+                (m, _) if m != "records" && m != "editor" => {
+                    return err(400, "dataset.module_unknown", format!("module {m:?}"))
+                }
+                _ => {
+                    let Some(k) = ds["key"].as_str().filter(|k| !k.is_empty()) else {
+                        return err(400, "dataset.decl_invalid", "dataset key required");
+                    };
+                    (k.to_string(), format!("{tid}_{k}"))
+                }
+            };
+            if ds.get("name").is_some() {
+                return err(
+                    400,
+                    "request.unknown_field",
+                    "name is not a dataset field; use key",
+                );
+            }
+            if taken(&dkey, existing) || rows.iter().any(|r: &Value| r["key"] == dkey) {
+                return err(409, "dataset.key_conflict", format!("key {dkey:?} exists"));
+            }
+            let mut row = ds.clone();
+            row["id"] = json!(format!("ds_{tid}_{dkey}"));
+            row["key"] = json!(dkey);
+            row["collection"] = json!(collection);
+            row["module"] = json!(module);
+            row["partId"] = json!(part_id);
+            if shared {
+                row["shared"] = json!(true);
+            }
+            rows.push(row);
+        }
+        existing.extend(rows);
+        (201, json!({"partId": part_id}))
     }
 
     fn add_property(&mut self, space: &str, tid: &str, body: &Value) -> Value {
@@ -317,11 +553,130 @@ impl State {
             .or_default()
             .push(json!({"id": pid, "xKey": body["xKey"],
                          "name": body["name"], "kind": body["kind"],
-                         // ADR-022: keep the definition's format/meta/scope
-                         // so host tests can observe them
-                         "format": body["format"], "meta": body["meta"],
+                         // keep the definition's descriptor/meta/scope so
+                         // host tests can observe them (ADR-027 §4)
+                         "xFormat": body["xFormat"], "meta": body["meta"],
                          "scope": body["scope"]}));
         json!({"propId": pid})
+    }
+
+    /// The catalog's `general-chat` usecase: a derived, self-typed,
+    /// hidden root carrying `miniapp`, the one declaration of the chat
+    /// module. Adopt-or-install, idempotent.
+    fn catalog_setup(&mut self, usecase: &str, space: &str) -> (u16, Value) {
+        if usecase != "general-chat" {
+            return err(404, "catalog.not_found", format!("no usecase {usecase:?}"));
+        }
+        self.touch(space);
+        let root = format!("chat-{space}");
+        let reg = self.bundles.entry(space.to_string()).or_default();
+        let installed = !reg.contains_key(GENERAL_CHAT_BUNDLE);
+        if installed {
+            reg.insert(
+                GENERAL_CHAT_BUNDLE.into(),
+                json!({"id": GENERAL_CHAT_BUNDLE, "name": "General", "rootId": root,
+                       "roots": [root], "losers": [], "derived": true}),
+            );
+            self.types.entry(space.to_string()).or_default().push(
+                json!({"id": root, "xKey": "general_chat", "name": "General", "hidden": true}),
+            );
+            self.dataset_defs.insert(
+                (space.to_string(), root.clone()),
+                vec![
+                    json!({"id": format!("ds_{root}_chat"), "key": "chat_messages",
+                            "collection": "chat_messages", "module": "chat",
+                            "shared": true, "partId": "chat"}),
+                ],
+            );
+            self.objects.insert(
+                (space.to_string(), root.clone()),
+                json!({"any": {"name": "General", "types": ["__type__", root, "miniapp"]},
+                       "miniapp": {"bundle": GENERAL_CHAT_BUNDLE}}),
+            );
+        }
+        let row = self.bundles[space][GENERAL_CHAT_BUNDLE].clone();
+        (
+            200,
+            json!({"usecase": usecase, "bundles": [{
+            "usecase": usecase, "id": GENERAL_CHAT_BUNDLE, "bundle": row,
+            "installed": installed, "typeId": root,
+            "miniapp": {"bundle": GENERAL_CHAT_BUNDLE}}]}),
+        )
+    }
+
+    fn ensure_bundle(&mut self, space: &str, body: &Value) -> (u16, Value) {
+        self.touch(space);
+        let id = body["id"].as_str().unwrap_or("").to_string();
+        if id.starts_with("system:") {
+            return err(409, "bundle.reserved", "ids under system: are the server's");
+        }
+        if let Some(row) = self.bundles.get(space).and_then(|r| r.get(&id)) {
+            return (200, json!({"bundle": row, "installed": false}));
+        }
+        let derived = body["derived"] == json!(true);
+        let root_types = body["rootTypes"].clone();
+        let (status, created) = self.create_object(
+            space,
+            &json!({"types": root_types,
+                    "initialProperties": {"any": {"name": body["name"]}}}),
+        );
+        if status >= 400 {
+            return (status, created);
+        }
+        let root = created["objectId"].as_str().unwrap_or("").to_string();
+        let mut row = json!({"id": id, "name": body["name"], "rootId": root,
+                             "roots": [root], "losers": []});
+        if derived {
+            row["derived"] = json!(true);
+        }
+        self.bundles
+            .entry(space.to_string())
+            .or_default()
+            .insert(id, row.clone());
+        (200, json!({"bundle": row, "installed": true}))
+    }
+
+    fn bundle_child(&mut self, space: &str, bundle: &str, body: &Value) -> (u16, Value) {
+        let Some(row) = self.bundles.get(space).and_then(|r| r.get(bundle)).cloned() else {
+            return err(404, "bundle.not_found", format!("no bundle {bundle}"));
+        };
+        let seed = body["seed"].as_str().unwrap_or("").to_string();
+        if seed.is_empty() {
+            return err(400, "request.missing_field", "seed required");
+        }
+        let key = (space.to_string(), bundle.to_string(), seed.clone());
+        if let Some(oid) = self.children.get(&key) {
+            return (200, json!({"objectId": oid}));
+        }
+        let types = body["types"].as_array().cloned().unwrap_or_default();
+        for t in &types {
+            if !t.as_str().is_some_and(|tid| self.type_exists(space, tid)) {
+                return err(
+                    400,
+                    "type.not_found",
+                    format!("types names a type this space does not have: {t}"),
+                );
+            }
+        }
+        let oid = format!(
+            "child-{}-{}",
+            row["rootId"].as_str().unwrap_or(""),
+            seed.replace('/', "-")
+        );
+        self.objects.insert(
+            (space.to_string(), oid.clone()),
+            json!({"any": {"types": types}}),
+        );
+        self.children.insert(key, oid.clone());
+        (200, json!({"objectId": oid}))
+    }
+
+    /// The editor write gate: the object must carry a type declaring
+    /// the shared body (`page`, or a type with a shared editor part).
+    fn holds_body(&self, space: &str, oid: &str) -> bool {
+        self.held_collections(space, oid)
+            .iter()
+            .any(|c| c == "editor_blocks")
     }
 }
 
@@ -334,34 +689,50 @@ impl Transport for FakeSpace {
     ) -> Result<(u16, Value), AnyError> {
         let mut s = self.state.lock().unwrap();
         let body = body.cloned().unwrap_or(json!({}));
-        let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        let (route, query) = path.split_once('?').unwrap_or((path, ""));
+        let segs: Vec<&str> = route.trim_start_matches('/').split('/').collect();
         let reply = match (method, segs.as_slice()) {
+            ("POST", ["v1", "catalog", usecase, "setup"]) => {
+                let sp = body["spaceId"].as_str().unwrap_or("").to_string();
+                return Ok(s.catalog_setup(usecase, &sp));
+            }
             ("POST", ["v1", "spaces", sp, "objects", "query"]) => s.query_objects(sp, &body),
-            ("POST", ["v1", "spaces", sp, "objects"]) => s.create_object(sp, &body),
+            ("POST", ["v1", "spaces", sp, "objects"]) => return Ok(s.create_object(sp, &body)),
             ("POST", ["v1", "spaces", sp, "query"]) => s.query(sp, &body),
-            ("POST", ["v1", "spaces", sp, "modify"]) => s.modify(sp, &body),
+            ("POST", ["v1", "spaces", sp, "modify"]) => return Ok(s.modify(sp, &body)),
             ("POST", ["v1", "spaces", sp, "properties", oid, "set", tid]) => {
                 let (sp, oid, tid) = (sp.to_string(), oid.to_string(), tid.to_string());
                 s.set_properties(&sp, &oid, &tid, &body["patch"])
             }
-            ("GET", ["v1", "spaces", sp, "types"]) => {
-                json!({"types": s.types.get(*sp).cloned().unwrap_or_default()})
+            ("POST", ["v1", "spaces", sp, "properties", oid, "attach", tid]) => {
+                let (sp, oid, tid) = (sp.to_string(), oid.to_string(), tid.to_string());
+                return Ok(s.attach_type(&sp, &oid, &tid));
             }
-            ("POST", ["v1", "spaces", sp, "types"]) => s.create_type(sp, &body),
+            ("GET", ["v1", "spaces", sp, "properties", oid]) => {
+                json!({"record": s.objects.get(&(sp.to_string(), oid.to_string())).cloned()})
+            }
+            ("GET", ["v1", "spaces", sp, "types"]) => {
+                s.touch(sp);
+                let include_hidden = query.contains("includeHidden=true");
+                let rows: Vec<Value> = s.types[*sp]
+                    .iter()
+                    .filter(|t| include_hidden || t["hidden"] != json!(true))
+                    .cloned()
+                    .collect();
+                json!({"types": rows})
+            }
+            ("POST", ["v1", "spaces", sp, "types"]) => return Ok(s.create_type(sp, &body)),
+            ("PATCH", ["v1", "spaces", sp, "types", tid]) => {
+                let (sp, tid) = (sp.to_string(), tid.to_string());
+                return Ok(s.patch_type(&sp, &tid, &body));
+            }
+            ("POST", ["v1", "spaces", sp, "types", tid, "parts"]) => {
+                let (sp, tid) = (sp.to_string(), tid.to_string());
+                return Ok(s.add_part(&sp, &tid, &body));
+            }
             ("GET", ["v1", "spaces", sp, "types", tid, "datasets"]) => {
                 json!({"datasets": s.dataset_defs
                     .get(&(sp.to_string(), tid.to_string())).cloned().unwrap_or_default()})
-            }
-            ("POST", ["v1", "spaces", sp, "types", tid, "datasets"]) => {
-                let defs = s
-                    .dataset_defs
-                    .entry((sp.to_string(), tid.to_string()))
-                    .or_default();
-                let id = format!("ds{}", defs.len() + 1);
-                let mut def = body.clone();
-                def["id"] = json!(id);
-                defs.push(def);
-                json!({"datasetDefId": id})
             }
             ("GET", ["v1", "spaces", sp, "types", tid, "properties"]) => {
                 json!({"properties": s.props.get(&(sp.to_string(), tid.to_string()))
@@ -371,27 +742,47 @@ impl Transport for FakeSpace {
                 let (sp, tid) = (sp.to_string(), tid.to_string());
                 s.add_property(&sp, &tid, &body)
             }
-            ("GET", ["v1", "spaces", sp, "objects", oid, "editor", "markdown"]) => {
+            (
+                "GET",
+                ["v1", "spaces", sp, "objects", oid, "editor", "editor_blocks", "markdown"],
+            ) => {
                 json!({"content": s.markdown.get(&(sp.to_string(), oid.to_string()))
                                    .cloned().unwrap_or_default()})
             }
-            ("PUT", ["v1", "spaces", sp, "objects", oid, "editor", "markdown"]) => {
+            (
+                "PUT",
+                ["v1", "spaces", sp, "objects", oid, "editor", "editor_blocks", "markdown"],
+            ) => {
+                if !s.holds_body(sp, oid) {
+                    return Ok(err(
+                        400,
+                        "dataset.not_declared",
+                        "the object carries no type whose parts declare this collection",
+                    ));
+                }
                 let content = body["content"].as_str().unwrap_or("").to_string();
                 s.markdown
                     .insert((sp.to_string(), oid.to_string()), content);
                 json!({"ok": true})
             }
+            ("POST", ["v1", "spaces", sp, "bundles"]) => return Ok(s.ensure_bundle(sp, &body)),
+            ("GET", ["v1", "spaces", sp, "bundles"]) => {
+                let rows: Vec<Value> = s
+                    .bundles
+                    .get(*sp)
+                    .map(|r| r.values().cloned().collect())
+                    .unwrap_or_default();
+                json!({"bundles": rows, "synced": true})
+            }
+            ("POST", ["v1", "spaces", sp, "bundles", enc, "children"]) => {
+                let bundle = enc.replace("%2F", "/").replace("%3A", ":");
+                return Ok(s.bundle_child(sp, &bundle, &body));
+            }
             ("GET", ["v1", "spaces", sp, "files", fid]) => {
                 match s.files.get(&(sp.to_string(), fid.to_string())) {
                     Some((oid, name, bytes)) => json!({"fileId": fid, "objectId": oid,
                                                        "name": name, "size": bytes.len()}),
-                    None => {
-                        return Ok((
-                            404,
-                            json!({"error": {"code": "not_found",
-                                             "message": format!("no file {fid}")}}),
-                        ))
-                    }
+                    None => return Ok(err(404, "not_found", format!("no file {fid}"))),
                 }
             }
             // --- sharing (ADR-009 §8) ---
@@ -403,11 +794,7 @@ impl Transport for FakeSpace {
             ("POST", ["v1", "spaces", "join"]) => {
                 let token = body["inviteToken"].as_str().unwrap_or("");
                 let Some(sp) = s.invites.get(token).cloned() else {
-                    return Ok((
-                        400,
-                        json!({"error": {"code": "invite.invalid",
-                                         "message": "unknown invite"}}),
-                    ));
+                    return Ok(err(400, "invite.invalid", "unknown invite"));
                 };
                 s.next_req += 1;
                 let rid = format!("req{}", s.next_req);
@@ -434,18 +821,10 @@ impl Transport for FakeSpace {
                 let rid = body["requestRecordId"].as_str().unwrap_or("");
                 let perm = body["permission"].as_str().unwrap_or("none").to_string();
                 let Some(list) = s.pending.get_mut(*sp) else {
-                    return Ok((
-                        404,
-                        json!({"error": {"code": "request.not_found",
-                                         "message": "no pending requests"}}),
-                    ));
+                    return Ok(err(404, "request.not_found", "no pending requests"));
                 };
                 let Some(pos) = list.iter().position(|(r, _)| r == rid) else {
-                    return Ok((
-                        404,
-                        json!({"error": {"code": "request.not_found",
-                                         "message": format!("no request {rid}")}}),
-                    ));
+                    return Ok(err(404, "request.not_found", format!("no request {rid}")));
                 };
                 let (_, identity) = list.remove(pos);
                 s.members
@@ -463,14 +842,7 @@ impl Transport for FakeSpace {
                     .collect();
                 json!({"members": members})
             }
-            ("GET", ["v1", "spaces", _, "agent", "brain"]) => json!({"objectId": "brain"}),
-            _ => {
-                return Ok((
-                    404,
-                    json!({"error": {"code": "no_route",
-                                     "message": format!("{method} {path}")}}),
-                ))
-            }
+            _ => return Ok(err(404, "request.not_found", format!("{method} {path}"))),
         };
         Ok((200, reply))
     }
@@ -512,11 +884,7 @@ impl Transport for FakeSpace {
                            "size": body.len()}),
                 ))
             }
-            _ => Ok((
-                404,
-                json!({"error": {"code": "no_route",
-                                 "message": format!("{method} {path}")}}),
-            )),
+            _ => Ok(err(404, "request.not_found", format!("{method} {path}"))),
         }
     }
 
