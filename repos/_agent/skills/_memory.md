@@ -40,7 +40,7 @@ categories before inventing one (vocabulary drift kills recall).
   (`createdAt`) and chunks (period overlap), merged by time. Per-day/
   week/month turn counts: `history.activity(c, space, chat_id, unit)`.
 - **Graph**: `r.neighbors(object_id)` — follow a hit's `edges`
-  (`[{to, type}]`) and links-format properties on objects; expansion
+  (`[{to, type}]`) and relation properties on objects; expansion
   AFTER retrieval.
 
 "What do you remember?" is ENUMERATION, not search — `r.search("")`
@@ -67,7 +67,7 @@ immutable after create.
 
 - **Canonicalize entities**: search before creating any object.
 - A fact naming two entities ⇒ make sure both objects exist and link
-  them via a links-format property. Prose mentions feed the index;
+  them via a relation property. Prose mentions feed the index;
   properties feed the graph.
 - **Edge vocabulary** (curated — prefer these, create new types
   reluctantly): `relates_to`, `caused_by`, `supersedes`, `decided_in`,
