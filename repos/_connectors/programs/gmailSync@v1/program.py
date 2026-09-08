@@ -254,10 +254,14 @@ def _batch_get(ids, fmt):
             "https://gmail.googleapis.com/batch/gmail/v1",
             headers={"Content-Type": f"multipart/mixed; boundary={_BOUNDARY}"},
             body=body, timeout=120, credential=_gm._CRED)
+        # a multipart/mixed reply classifies as bytes (ADR-026 §3): the
+        # text is on the Blob, `.text` on the response would raise
+        b = getattr(resp, "blob", None)
+        text = b.text() if b is not None else resp.text
         if resp.status >= 300:
-            raise RuntimeError(f"batch HTTP {resp.status}: {resp.text[:200]}")
+            raise RuntimeError(f"batch HTTP {resp.status}: {text[:200]}")
         rb = (resp.headers.get("content-type") or "").split("boundary=")[1].split(";")[0].strip()
-        for chunk in resp.text.split("--" + rb):
+        for chunk in text.split("--" + rb):
             chunk = chunk.strip()
             if not chunk or chunk == "--":
                 continue
