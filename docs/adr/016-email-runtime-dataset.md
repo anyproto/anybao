@@ -39,6 +39,8 @@ primitives, entirely in anybao.
 
 ### 1. Storage model
 
+**Amended 2026-09-08 (ADR-027 §2):** `email_messages` is the dataset KEY of one part on the `mailbox` type (draft `key`, not `name`); records live in the collection the declaration reports, and every read and write names the key — resolved against the mailbox object's types by `any@v1`.
+
 A user type **`mailbox`** (xKey `mailbox`, property `address`), one
 object per synced address, ensure-created by gmailSync. On it, a
 runtime dataset **`email_messages`** declared via
@@ -133,6 +135,8 @@ change).
   client's guess.
 
 ### 4. any@v1 surface (ADR-010 §8)
+
+**Amended 2026-09-08 (ADR-027 §2):** `_create_dataset` declares one part per store and returns `collection`; `query` / `upsert_records` / `delete_records` / `aggregate` take the store key.
 
 The dataset machinery is generic program surface, not gmail plumbing —
 emails are merely the first corpus. Flat methods, 1:1 over the server

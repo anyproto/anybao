@@ -127,6 +127,8 @@ chunk drill-down.
 
 ### 4. The client boundary refuses bare time literals
 
+**Amended 2026-09-08 (ADR-027 §2):** the declared-datetime map is keyed by the store KEY (a collection maps back to its key), and the guard runs before the key resolves to a collection, so nothing reaches the wire.
+
 `any@v1` extends its ADR-006 §6 resolution step with a kind check.
 While rewriting a filter it knows, per key, whether the target is an
 instant:

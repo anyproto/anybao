@@ -1,6 +1,9 @@
 # ADR-022: Property formats — value resolution and hydration in `any@v1`
 
-Status: **Accepted** (2026-08-27)
+Status: **Accepted** (2026-08-27); §1–§4 **superseded by ADR-027 §4**
+(2026-09-08): descriptors live in `xFormat` (`choice`, `relation`,
+`date`, …), the marker-xKey bridge, `xKind`, `meta.pos` and the
+archived marker are gone. §5's guidance stands in the skills.
 Date: 2026-08-26
 Builds on: ADR-006 §6 (xKey normalization at the client boundary),
 ADR-010 §8 (flat `any@v1` surface), ADR-019 (instants)

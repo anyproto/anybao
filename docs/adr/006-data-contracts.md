@@ -426,6 +426,8 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
 
 ### 6. xKey normalization at the client boundary (added 2026-07-17)
 
+**Amended 2026-09-08 (ADR-027 §2/§3):** the reserved groups are `any` and `_ver`; `nav` is gone; the hidden built-in types (`page`, `miniapp`, `bin`, `dataview`) resolve by their literal id; a dataset argument is a store KEY resolved against the host object's types to the server's collection (a canonical or already-resolved collection passes through; zero or several matches error).
+
 **Context.** The `any` server stores and validates typed values by
 content-id: a value lives at `record[typeId][propId]`, and
 `create_object` / `objects/query` take those ids verbatim — the server
