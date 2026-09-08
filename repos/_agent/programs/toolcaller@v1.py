@@ -17,6 +17,7 @@ left alone; ceilings still bound the run and the replies return to the
 caller (the subagent@v1 wrapper).
 """
 
+import hashlib
 import re
 
 # markdown-link destinations in a reply: [Name](any://…) — the source
@@ -119,8 +120,27 @@ BASH_TAIL_CHARS = 4000
 BASH_STDERR_CHARS = 3000
 # Fixed order of the built-in system skills in the prompt; unknown _-skills
 # sort after these. `_coding` is composed only with the shell feature.
-SYSTEM_SKILL_ORDER = ["_soul", "_core", "_any", "_coding", "_memory",
+# `_soul` is not in the band: it is the identity, rendered verbatim as
+# the first bytes of the system block (ADR-005 §5).
+SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory",
                       "_space_context", "_meta_skill"]
+IDENTITY_SKILL = "_soul"
+# a pasted essay must not eat the prompt: head kept, a marker names the cut
+IDENTITY_TOKEN_CAP = 2000
+# The recency anchor (ADR-005 §5): one fabricated exchange written into
+# the llm messages right before the user's message — an identity POINTER
+# (voice by reference, nothing parsed out of the soul) + one shape demo.
+# Fixed harness text, deliberately voice-NEUTRAL: the demo teaches size
+# and shape (result first, what is left, nothing else) and must fit any
+# soul a user writes — no asides, no attitude, no wording from _soul.md.
+# ~80 tokens; once per run.
+ANCHOR_REMINDER = (
+    "[Reminder] Who you are is the block at the top of your instructions. "
+    "Answer in that voice, at the size of the ask: the result first, then "
+    "only what the reader needs. Here is the shape I want:")
+ANCHOR_ACK = "Understood."
+ANCHOR_DEMO_ASK = "how many notes did you tag?"
+ANCHOR_DEMO_REPLY = "Forty-one. Three had no clear topic, so they are still untagged."
 # The bash tool's `as=` pre-check only; the kernel is the authority
 # (`_KERNEL_NAMES`, ADR-003 §3) and refuses any cell that rebinds one.
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
@@ -330,8 +350,8 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     # answers with a tool call anyway gets one more, tool-less call.
     parts = _dangling(messages, reason)
     parts.append({"type": "text", "text":
-        f"[{reason}] No more cells. Summarize what you did, what is done, "
-        f"and what is still pending."})
+        f"[{reason}] No more cells. In your own voice: what you did, what "
+        f"is done, what is still pending."})
     messages.append({"role": "user", "parts": parts})
     reply = llm.chat(messages, system=system, tier=tier, tools=tools)
     _tally(stats, reply.get("usage", {}))
@@ -339,7 +359,8 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     texts = _texts(reply["parts"])
     if not texts and any(p["type"] == "tool_call" for p in reply["parts"]):
         parts = _dangling(messages, reason)
-        parts.append({"type": "text", "text": "Text only — no tool calls. Summarize."})
+        parts.append({"type": "text", "text":
+                      "Text only — no tool calls. In your own voice: where things stand."})
         messages.append({"role": "user", "parts": parts})
         reply = llm.chat(messages, system=system, tier=tier, tools=[])
         _tally(stats, reply.get("usage", {}))
@@ -428,12 +449,50 @@ def _skills_in(c, space):
 def _load_system_skills(c, space, code_space=None):
     """Two-tier skills (ADR-009 §3): shipped skills from the agent code
     overlay, user skills from the working space, merged by name — the
-    working space wins (same shadowing doctrine as programs)."""
+    working space wins (same shadowing doctrine as programs). A BLANK
+    working-space body does not shadow (ADR-005 §5): an emptied `_soul`
+    falls back to the shipped identity instead of composing none."""
     code_space = code_space or space
     out = _skills_in(c, code_space)
     if code_space != space:
-        out.update(_skills_in(c, space))
+        out.update({n: md for n, md in _skills_in(c, space).items()
+                    if (md or "").strip()})
     return out
+
+
+def _identity(skills):
+    """ADR-005 §5: the `_soul` body is the identity, not a skill — popped
+    out of the band and rendered verbatim as the FIRST bytes of the
+    system block (no heading, nothing before it). Free text: the
+    harness reads no structure out of it. Capped at IDENTITY_TOKEN_CAP
+    tokens, head kept. '' when the space ships no soul."""
+    body = (skills.pop(IDENTITY_SKILL, "") or "").strip()
+    if approx_tokens(body) > IDENTITY_TOKEN_CAP:
+        body = (body[:IDENTITY_TOKEN_CAP * 4].rstrip()
+                + f"\n\n[_soul cut at {IDENTITY_TOKEN_CAP} tokens — shorten the object]")
+    return body
+
+
+def _anchor(soul):
+    """ADR-005 §5 recency anchor: the four messages placed between the
+    boot window and the user's message. Recent user/assistant turns
+    condition the reply more than the static system block, so the
+    identity is pointed at from THERE, once, with a demo that carries
+    reply SHAPE (result first, what is left, nothing else). llm copy
+    only — never persisted, never in the boot window. [] without an
+    identity (no soul in the space, quiet runs)."""
+    if not soul:
+        return []
+    return [{"role": "user", "parts": [{"type": "text", "text": ANCHOR_REMINDER}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": ANCHOR_ACK}]},
+            {"role": "user", "parts": [{"type": "text", "text": ANCHOR_DEMO_ASK}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": ANCHOR_DEMO_REPLY}]}]
+
+
+def _fingerprint(text):
+    """16 hex chars of sha256 — prompt provenance (ADR-005 §5): which
+    identity / which system block produced a reply is a turn-row read."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _compose_skills(skills, has_shell=False):
@@ -589,18 +648,26 @@ def _repo_inventory(c, overlays, code_space=None):
 
 
 def compose_system(c, space, code_space=None, overlays=None, style="full",
-                   has_shell=False):
-    """The full system prompt loaded from the space(s): skills + tool
-    docs (both two-tier: agent code overlay + working space, working
-    wins) + repo inventory + memory categories. Guest-side — the host
-    injects nothing. `style` is the profile's `prompt_style`."""
-    parts = [_compose_skills(_load_system_skills(c, space, code_space), has_shell),
+                   has_shell=False, identity=True):
+    """The full system prompt loaded from the space(s): identity (the
+    `_soul` body, first, verbatim) + skills + tool docs (both two-tier:
+    agent code overlay + working space, working wins) + repo inventory
+    + memory categories. Guest-side — the host injects nothing. `style`
+    is the profile's `prompt_style`; `identity=False` (quiet runs,
+    ADR-008 §5) composes without the soul. Returns `(system, soul)` —
+    the soul body separately so the run can fingerprint it."""
+    skills = _load_system_skills(c, space, code_space)
+    soul = _identity(skills)          # always popped: never in the band
+    if not identity:
+        soul = ""
+    parts = [soul,
+             _compose_skills(skills, has_shell),
              _user_skills(c, space),
              _tool_docs(c, space, code_space, style),
              _repo_inventory(c, overlays,
                              code_space if code_space != space else None),
              _memory_categories(c, space)]
-    return "\n\n".join(p for p in parts if p)
+    return "\n\n".join(p for p in parts if p), soul
 
 
 def main(args):
@@ -634,8 +701,9 @@ def main(args):
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    system = compose_system(c, space, code_space, overlays,
-                            traits["prompt_style"], bool(shell))
+    system, soul = compose_system(c, space, code_space, overlays,
+                                  traits["prompt_style"], bool(shell),
+                                  identity=not quiet)
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
@@ -666,6 +734,10 @@ def main(args):
             "reply is returned verbatim to the delegating agent — make it a "
             "complete, self-contained report.")
 
+    # prompt provenance (ADR-005 §5): recorded on the persisted turn
+    prompt_fp = _fingerprint(system)
+    soul_fp = _fingerprint(soul) if soul else ""
+
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
     if quiet:
@@ -695,6 +767,7 @@ def main(args):
                      '.recall(use("agent:any@v1"), baoSpaceConfig)')
     subcell(ctx_code, "_ctx")  # noqa: F821 - guest global
     messages = [*boot,
+                *_anchor(soul),
                 {"role": "user",
                  "parts": [{"type": "text",
                             "text": user_text + _context_suffix(ui_ctx) + user_suffix}]},
@@ -791,7 +864,9 @@ def main(args):
             c.append_turn(space, chat_id, {
                 "userText": user_text, "replies": replies, "interrupted": False,
                 "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
-                "llm": {"stopReason": stop, **stats}})
+                "llm": {"stopReason": stop, **stats,
+                        "promptFingerprint": prompt_fp,
+                        **({"soulFingerprint": soul_fp} if soul_fp else {})}})
             if plan["injected"]:
                 ar.log_roi(c, space, plan["injected"], replies, now())  # noqa: F821
         except Exception as e:  # noqa: BLE001 - any store failure, named in the result

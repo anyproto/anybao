@@ -456,6 +456,104 @@ method list. Two rules govern what the model sees:
   narrative only — it never gates capability or the boundary read/mutate
   class (ADR-002).
 
+**Identity first (amendment 2026-09-07).** The `_soul` `agent_skill`
+object is the identity, not a skill. Its body is the FIRST bytes of the
+system block, verbatim: no heading, no wrapper, nothing before it. It
+loads two-tier like every `_` skill (ADR-009 §3: the agent overlay
+ships the default; a `_soul` object in the working space shadows it, so
+the user edits their own copy and the next run picks it up, no deploy).
+A BLANK working-space body does not shadow — for every `_` skill, so an
+emptied soul falls back to the shipped one instead of composing none.
+`_soul` is not in `SYSTEM_SKILL_ORDER`; the band starts at `_core`. The
+soul is FREE TEXT: the harness reads no structure out of it — no tag
+line, no named sections, no description property — so the user's
+editing contract is "write who Bao is, in any shape". Capped at 2000
+tokens, head kept, a marker names the cut.
+
+Content rule: the soul is the only "You are" in the prompt. Every other
+skill states METHOD (`_core`: "you act through one tool, `run_cell`";
+`_any`: "object-first"), never a second identity — a second identity,
+placed after a short soul, outvotes it. CONDUCT is policy, not voice,
+and lives in `_core` (resolve first, ask last; say-and-wait before
+anything leaves the space; list before deleting; one structural
+suggestion at a time): a user who rewrites their soul cannot delete a
+safety rule by accident. `_core` also states the client's RENDERING
+FACTS (links render as chips, markdown tables do not render in chat, a
+bubble reads well to ~300 words) as facts, never as style, so a persona
+that drops its own size rules still has a floor and a soul edit can
+never break rendering.
+
+Quiet runs (ADR-008 §5) compose WITHOUT the identity: a delegated
+child's report returns to the parent, not to the user; the `## Subagent`
+line is its whole identity.
+
+Fingerprints, recorded on the persisted turn's `llm` group (ADR-006
+§1): `promptFingerprint` = sha256(system block as sent)[:16] and
+`soulFingerprint` = sha256(soul body)[:16], the latter absent when no
+identity was composed. This delivers the fingerprint promised above:
+which identity produced a reply is a turn-row read, the sent bytes stay
+in the `llm.chat` record, and the soul fingerprint is the selector a
+history-curation step would need (replay only turns written under the
+current identity).
+
+Basis: persona drift in long agentic sessions is a long-context effect
+— the model imitates the recent transcript (tens of cells of code, its
+own earlier replies) more than it obeys the static system block, and a
+persona-file harness's standing practice is exactly this section:
+persona first, verbatim, skipped for delegated children, written as a
+behaviour spec rather than a trait list (ContextEcho,
+arxiv.org/abs/2605.24279; OpenClaw SOUL.md; Letta core memory). The
+effect of this amendment is measurable from traces by
+`soulFingerprint`: reply length, paragraph breaks and hedge density per
+identity, before any further mechanism is added.
+
+**Recency anchor (amendment 2026-09-07).** Between the boot window and
+the current user message the loop writes ONE fabricated exchange into
+the llm messages: a user turn pointing at the identity ("[Reminder] Who
+you are is the block at the top of your instructions. Answer in that
+voice, at the size of the ask: the result first, then only what the
+reader needs. Here is the shape I want:"), an assistant "Understood.",
+and one demo pair — a one-line ask, a two-line result-first answer.
+Fixed harness text, persona-neutral: the demo carries reply SHAPE
+(result first, what is left, nothing else), the pointer carries VOICE by
+reference, and nothing is parsed out of the soul, so the free-text
+contract above holds. Once per run, ~80 tokens, llm copy only — the
+persisted turn keeps the raw `userText`, so the anchor never re-enters
+the boot window; absent without an identity (no soul, quiet runs). The
+wrap-up message asks for the state "in your own voice" rather than for
+a summary: "summarize" is a report-genre instruction at the one call
+that most needs the identity.
+
+Basis (ContextEcho, arxiv.org/abs/2605.24279): the same reminder placed
+as a recent user exchange beats it in the system block on every model
+tested; an identity sentence alone restores identity and wrecks reply
+shape (replies 20× longer, format compliance 30%), a one-shot demo alone
+restores shape and not identity, the pair does both and held for 20
+further turns (one model, one position). That was measured pulling a
+model back to its trained default; holding a custom persona uphill is
+the open question, answered from traces by `soulFingerprint` × reply
+shape, before any further mechanism. Measured 2026-09-07 by exact wire
+replay of 21 staging conversations (gemini-3.7-flash, final model call
+re-issued per arm, Sonnet 5 judging blind pairs on voice and shape):
+against main the amendment wins 34 of 41 pairs with the recorded
+20-message window and 34 of 37 with a window of 38 old-voice exchanges
+(report-genre replies 3→1 vs 15→21 of the pairs). The anchor alone is
+within noise on the short window (19 wins, 12 losses, 11 ties) and
+decisive on the old-voice window (27 wins, 5 losses, 8 ties; report-
+genre 5 vs 19 of 40): the system-block identity is outvoted by history
+exactly as predicted, and the anchor is what holds it. The same
+old-voice replay on claude-sonnet-5, gpt-5.6-terra and claude-opus-5
+(reasoning off) holds the ranking on every model: branch over main
+26:5, 27:6 and 16:1; branch over no-anchor 22:7, 16:11 and 12:6. Not adopted: a voice tag on every
+tool result (no harness precedent; repeated instructions breed
+suppression) and rewriting the reply with a second call (100 real
+replies × 4 cheap models, 2026-09-07: every model either dropped
+offers, questions and caveats or added sentences; the failures are
+semantic and no cheap gate catches them). Next candidates if drift
+persists past the anchor: replay only raw-tail turns whose
+`soulFingerprint` matches (in-voice history as the demo), and a fresh
+short-context call for the final reply of long runs.
+
 ### 6. Purity
 
 The loop is a pure function over (history, policies, mailbox) with ALL
