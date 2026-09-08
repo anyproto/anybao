@@ -1,6 +1,11 @@
 # Port plan — any "parts / modules / bundles / catalog" break (any a176029 → 5d709c8)
 
-Status: 2026-09-08 — ADR-027 accepted, Phase 2 in progress; branch
+Status: 2026-09-08 — ADR-027 accepted; Phases 2 (runtime), 3 (guest,
+programs, skills) and 4 (tests) DONE; the §5.1 matrix rows 1–4, 6, 7,
+11, 15 are pinned by `tests/test_integration.py` + the live
+conversation (10/10 integration tests green on :7142); rows 5, 8–10,
+12, 13 and §5.3 (any-ui coexistence) remain for the cutover rehearsal;
+branch
 `feat/any-parts-catalog-port`. DECIDED (user, 2026-09-08): **clean
 cut, no migration of anything** — old chat roots, old collections and
 old property definitions are left behind unread; the code and docs
