@@ -95,6 +95,13 @@ class World:
             def get_brain(self, space):
                 return {}
 
+            def list_apps(self, space):
+                # ADR-027 §5: the sidebar as data — one app in the
+                # agent space, a hidden one filtered out
+                return [{"name": "Wiki", "usecase": "wiki", "bundleId": "system:wiki/v1",
+                         "description": "A tree of pages", "hidden": False},
+                        {"name": "General", "usecase": "general-chat", "hidden": True}]
+
         class Llm:
             @staticmethod
             def chat(messages, system="", tier="codegen", tools=None):
@@ -383,6 +390,11 @@ def test_user_message_carries_timestamp_and_view_context():
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
     assert "`s1`" in call["system"] and "`c1`" in call["system"]
+    # the installed apps ride it (ADR-027 §5): agent space + the
+    # user's space, hidden entries out
+    assert "- apps in the agent space: Wiki (wiki): A tree of pages\n" in call["system"]
+    assert "- apps in the user's space: Wiki (wiki): A tree of pages\n" in call["system"]
+    assert "General" not in call["system"].split("## Runtime context")[1]
     # the persisted turn keeps the raw userText — suffix is llm-only
     assert w.turns[0]["userText"] == "go"
     # the same view is bound as cell globals before the loop (ADR-010 §8)

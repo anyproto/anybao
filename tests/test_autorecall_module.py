@@ -11,10 +11,13 @@ PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "progr
 SRC = (PROGRAMS_DIR / "autorecall@v1.py").read_text()
 
 MEM_HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",
+           "key": "agent_memory_items",
            "recordId": "m1", "score": 0.033}
 TURN_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_turns",
+            "key": "agent_turns",
             "recordId": "t1", "score": 0.032}
 CHUNK_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_chunks",
+             "key": "agent_chunks",
              "recordId": "c1", "score": 0.017}
 
 MEM_REC = {"id": "m1", "category": "preference", "context": "prefers dark roast",

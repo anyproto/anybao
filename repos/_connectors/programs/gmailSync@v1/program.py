@@ -37,15 +37,17 @@ _FUEL_FLOOR = 4_000_000_000   # checkpoint when remaining drops below;
 _HTML_CAP = 300_000           # pathological bodies; clean_html input cap
 _BOUNDARY = "anybao_gmail_sync"
 
-# ADR-016 §1: the mailbox type owns the email_messages runtime dataset;
-# one mailbox object per synced address hosts the records.
+# ADR-016 §1 / ADR-027 §2: the mailbox type declares the email_messages
+# dataset (one part, key `email_messages`); one mailbox object per
+# synced address hosts the records, in the collection the declaration
+# reports — every read and write names the key.
 MAILBOX_TYPE = {
     "name": "Mailbox", "xKey": "mailbox",
     "properties": [{"name": "address"}],
 }
 _DATASET = "email_messages"
 EMAIL_DATASET = {
-    "name": _DATASET, "displayName": "Email messages",
+    "key": _DATASET, "displayName": "Email messages",
     "idRule": "user",          # record id = Gmail message id (ADR-016 §1)
     "deleteBy": "author", "skipHistory": True,
     # scope "email": recall queries it explicitly (recall@v1 default
@@ -80,7 +82,7 @@ EMAIL_DATASET = {
     ],
 }
 STATE_TYPE = {
-    "name": "Sync state", "xKey": "sync_state",
+    "name": "Sync state", "xKey": "sync_state", "hidden": True,
     "properties": [
         {"name": "cursor"}, {"name": "page_token"},
         {"name": "synced_count", "kind": "number"},

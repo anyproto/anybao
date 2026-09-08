@@ -81,7 +81,8 @@ class FakeAny:
 
     def _create_dataset(self, sid, type_key, draft):
         assert type_key == "program"
-        self.ensured = getattr(self, "ensured", []) + [(sid, draft["name"])]
+        self.ensured = getattr(self, "ensured", []) + [
+            (sid, draft.get("key") or draft.get("module"))]
         return {"ok": True}
 
     def get_space(self, sc):
@@ -160,7 +161,9 @@ def test_create_tool_is_live_on_use():
     assert out == {"ok": True, "objectId": out["objectId"],
                    "spec": "mailWatch@v1", "anyTool": True, "probe": "ok"}
     # the store was declared before the first write (ADR-017 §1)
-    assert fake.ensured == [(SID, "type"), (SID, "program_source"),
+    # deploy's declaration order: the type, its shared editor body
+    # part, then the two stores (ADR-027 §2/§3)
+    assert fake.ensured == [(SID, "type"), (SID, "editor"), (SID, "program_source"),
                             (SID, "program_manifest")]
     # deploy's exact storage shape: derived props + program_source/main
     row = fake.spaces[SID][out["objectId"]]

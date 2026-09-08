@@ -17,9 +17,9 @@ _any = use("any@v1")  # noqa: F821 - guest global
 
 DEFAULT_SCOPES = ("agent", "history", "basic", "email")
 
-# Reserved property groups (`any`, `nav`) are structural, not user
-# graph edges — neighbors skips them.
-RESERVED_GROUPS = {"any", "nav"}
+# Reserved property groups (`any`, the hidden built-ins' groups) are
+# structural, not user graph edges — neighbors skips them.
+RESERVED_GROUPS = {"any", "page", "miniapp", "bin", "dataview"}
 
 # by_period sorts the merged records by each source's natural time field.
 _TS_FIELD = {"memory": "validFrom", "turn": "createdAt", "chunk": "periodStart"}
@@ -167,29 +167,33 @@ class Recall:
                                  "prop": link_props[prop_id],
                                  "targetId": t.removeprefix("any://")}
                                 for t in targets if isinstance(t, str) and t]
-        try:
-            raw = self._c.backlinks(self._space, object_id)
-        except _any.AnyError as e:
-            if e.code != "request.not_found":  # route absent = pre-backlinks server
-                raise
-            raw = []
-        backlinks = [{"sourceId": b["objectId"], "type": b["type"],
-                      "prop": b["prop"]} for b in raw]
+        # what links here: the link index's edges at the object itself
+        # (ADR-027 §5) — a relation value names "type.prop", a block or
+        # message names its collection
+        raw = self._c.backlinks(self._space, object_id)
+        backlinks = []
+        for b in raw.get("object") or []:
+            edge = {"sourceId": b["objectId"], "kind": b.get("kind")}
+            if b.get("prop"):
+                edge["type"], _, edge["prop"] = b["prop"].partition(".")
+            elif b.get("key"):
+                edge["dataset"] = b["key"]
+            backlinks.append(edge)
         return {"forward": forward, "backlinks": backlinks}
 
     def _link_props(self, type_id):
-        """{propId → prop xKey} for the type's links-format properties
-        (the object-reference convention, docs/03-api.md § Backlinks).
-        A group key that isn't a queryable type (e.g. a dataset
-        artifact) just yields no edges rather than failing the whole
-        read — list_properties raises ValueError on unknown keys."""
+        """{propId → prop xKey} for the type's relation properties (the
+        object-reference descriptor, ADR-027 §4). A group key that
+        isn't a queryable type (e.g. a dataset artifact) just yields no
+        edges rather than failing the whole read — list_properties
+        raises ValueError on unknown keys."""
         try:
             props = self._c.list_properties(self._space, type_id)
         except (_any.AnyError, ValueError):
             return {}
         return {p["id"]: p.get("xKey") or p.get("name") or p["id"]
                 for p in props
-                if (p.get("format") or {}).get("type") == "links"}
+                if ((p.get("xFormat") or {}).get("type") == "relation")}
 
 
 @span(kind="setup")  # noqa: F821 - guest global

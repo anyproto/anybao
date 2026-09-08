@@ -148,6 +148,43 @@ def approx_tokens(text):
     return (len(text) + 3) // 4
 
 
+APPS_CAP = 15
+
+
+def _apps_lines(c, space, ui_ctx):
+    """The installed apps of the agent space and of the user's current
+    space (ADR-027 §5) — one `name (usecase): description` per app,
+    capped; beyond the cap the model calls `list_apps`. Apps are data:
+    the line is what lets the model know a wiki or a CRM exists
+    without guessing. A space whose list cannot be read contributes
+    nothing (the model can still ask)."""
+    out = []
+    seen = []
+    for label, sid in (("agent space", space),
+                       ("user's space", (ui_ctx or {}).get("spaceId"))):
+        if not sid or sid in seen:
+            continue
+        seen.append(sid)
+        try:
+            apps = [a for a in c.list_apps(sid) if not a.get("hidden")]
+        except Exception:  # noqa: BLE001 — an unreadable list is not a run failure
+            continue
+        if not apps:
+            out.append(f"- apps in the {label}: none installed (`list_available_apps`)")
+            continue
+        items = []
+        for a in apps[:APPS_CAP]:
+            item = a.get("name") or a.get("bundleId") or "?"
+            if a.get("usecase"):
+                item += f" ({a['usecase']})"
+            if a.get("description"):
+                item += f": {a['description']}"
+            items.append(item)
+        more = f"; +{len(apps) - APPS_CAP} more (`list_apps`)" if len(apps) > APPS_CAP else ""
+        out.append(f"- apps in the {label}: " + "; ".join(items) + more)
+    return "".join(line + "\n" for line in out)
+
+
 def _view(ctx):
     """The user's view when they SENT a message — the `context` group
     any-ui stamps on the chat message (ADR-005 §5), handed in by the
@@ -673,11 +710,13 @@ def main(args):
     system, soul = compose_system(c, space, code_space, overlays,
                                   traits["prompt_style"], bool(shell),
                                   identity=not quiet)
+    ui_ctx = _view(args.get("uiContext"))
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
+        + _apps_lines(c, space, ui_ctx) +
         "- bound cell globals (valid spaceConfig args): `currentUserSpace` — "
         "the user's view when they sent the message (`{spaceId, objectId?, "
         "view?}` or None; the same view rides the message as a "
@@ -723,7 +762,6 @@ def main(args):
         boot_min_seq = tail[0].get("seq") if tail else None
         plan = ar.plan(c, space, user_text, boot_min_seq)
 
-    ui_ctx = _view(args.get("uiContext"))
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
     ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"

@@ -138,8 +138,8 @@ def _plan(client, space, user_text, boot_min_seq, policy):
     hits = rec.search(user_text, scopes=list(INJECT_SCOPES),
                       limit=(p["max_memory"] + p["max_history"]) * 2)
     relevant = [h for h in hits if h.get("score", 0) >= p["min_score"]]
-    mem_hits = [h for h in relevant if h.get("dataset") == "agent_memory_items"]
-    hist_hits = [h for h in relevant if h.get("dataset") in _HISTORY_DATASETS]
+    mem_hits = [h for h in relevant if h.get("key") == "agent_memory_items"]
+    hist_hits = [h for h in relevant if h.get("key") in _HISTORY_DATASETS]
     if not mem_hits and not hist_hits:
         return {"messages": [], "injected": []}
 
@@ -148,7 +148,7 @@ def _plan(client, space, user_text, boot_min_seq, policy):
 
     injected, mem_lines, bumped = [], [], []
     for h, r in pairs:
-        if h["dataset"] != "agent_memory_items" or len(mem_lines) >= p["max_memory"]:
+        if h["key"] != "agent_memory_items" or len(mem_lines) >= p["max_memory"]:
             continue
         line = memory_line(r)
         cost = approx_tokens(line)
@@ -161,10 +161,10 @@ def _plan(client, space, user_text, boot_min_seq, policy):
 
     hist_lines = []
     for h, r in pairs:
-        if h["dataset"] not in _HISTORY_DATASETS or len(hist_lines) >= p["max_history"] \
-                or covered_by_boot(r, h["dataset"], boot_min_seq):
+        if h["key"] not in _HISTORY_DATASETS or len(hist_lines) >= p["max_history"] \
+                or covered_by_boot(r, h["key"], boot_min_seq):
             continue
-        line = history_line(r, h["dataset"])
+        line = history_line(r, h["key"])
         cost = approx_tokens(line)
         if cost > budget:
             break
