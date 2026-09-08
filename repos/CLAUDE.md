@@ -8,7 +8,7 @@ join read-only and import from (`use("<alias>:<name>@vN")`).
 | folder | space (production) | alias | contents |
 |---|---|---|---|
 | `_agent` | `_agentrepo` | `agent` | the bao agent: toolcaller loop, tool + cron programs, `_`-system skills |
-| `_connectors` | `_connectorsrepo` | `connectors` | external-service connectors (linear, github, granola, attio, figma, intercom) |
+| `_connectors` | `_connectorsrepo` | `connectors` | external-service connectors (linear, github, telegram, granola, attio, figma, intercom, google) |
 
 Deploy (hash-gated, upsert-only — stale space objects need manual
 deletion):

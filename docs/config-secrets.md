@@ -19,6 +19,7 @@ Put a dotenv-style `.connectors.env` **next to the config file**
 llm.key.anthropic=sk-ant-…
 connector.key.linear=lin_api_…
 connector.key.github=github_pat_…
+connector.key.telegram=8100000000:AAH…   # the whole BotFather token
 connector.key.granola=          # empty value DELETES the stored secret
 ```
 
@@ -112,7 +113,13 @@ Guest code never needs the values: the host injects `credential:
 {ref}` headers after recording (ADR-008), and a missing key surfaces
 as a typed `SecretMissing` failure (message `no secret for credential
 ref "<ref>"`, which connectors map to their not-connected error) plus
-the chat prompt above.
+the chat prompt above. Where an API has no header to inject into —
+Telegram puts its bot token in the path — the ref names
+`in: "url"` and the guest writes the marker `{credential}` in the url
+instead (ADR-008 §1); the substitution still happens after recording,
+and the value is scrubbed back out of the url, headers and text body
+the response comes back with, so a trace of a Telegram call reads
+`/bot{credential}/sendMessage` like every other recorded url.
 
 ## Upgrading from the pre-split layout
 

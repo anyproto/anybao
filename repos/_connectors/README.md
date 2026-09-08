@@ -1,4 +1,4 @@
-# connectors — external-service connectors for the any agent: Linear (issues, read/write), GitHub (issues/PRs/commits/repos/notifications/files + raw API), Granola (meeting notes), Attio (CRM), Figma (design files), Intercom (support), Google via googleAuth OAuth (Gmail, Calendar, Drive/Meet transcripts, Sheets) — all read-only except Linear and GitHub's raw request()
+# connectors — external-service connectors for the any agent: Linear (issues, read/write), GitHub (issues/PRs/commits/repos/notifications/files + raw API), Telegram (bot updates in, messages/files out), Granola (meeting notes), Attio (CRM), Figma (design files), Intercom (support), Google via googleAuth OAuth (Gmail, Calendar, Drive/Meet transcripts, Sheets) — all read-only except Linear, Telegram and GitHub's raw request()
 
 An overlay repo (anybao ADR-009): guest programs that connect the
 agent to external services. The repo tree is published to an `any`
@@ -60,7 +60,7 @@ then read the run: `anyrt trace ls traces-test --program toolcaller`,
 
 Every connector names an http-effect credential ref (anybao ADR-008):
 
-| ref | header |
+| ref | injected as |
 |---|---|
 | `connector.key.linear` | Authorization, RAW (no Bearer) |
 | `connector.key.github` | Authorization, Bearer |
@@ -68,10 +68,19 @@ Every connector names an http-effect credential ref (anybao ADR-008):
 | `connector.key.attio` | Authorization, Bearer |
 | `connector.key.figma` | X-Figma-Token |
 | `connector.key.intercom` | Authorization, Bearer |
+| `connector.key.telegram` | **the url** — `/bot{credential}/` |
 | `connector.oauth.google` | Authorization, Bearer (managed — see below) |
 
-The host injects the header after recording — secrets never enter
-guest code or the trace. Keys are seeded by importing a dotenv-style
+The host injects the value after recording — secrets never enter
+guest code or the trace. `connector.key.telegram` is the one ref that
+goes into the **url** rather than a header (ADR-008 §1, amended
+2026-09-08): the Bot API takes its token as a path segment and offers
+no header at all, so `telegram@v1` writes the marker `{credential}`
+where the value belongs and the host substitutes it on the wire only
+— same custody, same secret-free trace, and the value is scrubbed
+back out of anything the response echoes.
+
+Keys are seeded by importing a dotenv-style
 .env keyed by the ref itself (`connector.key.linear=…`): any-ui Help →
 Import connector keys, or a `.connectors.env` beside `anybao.toml`
 (rotation and revoke work the same way — see anybao
@@ -99,3 +108,8 @@ Google family landed with ADR-011 (host-held OAuth): googleAuth@v1 +
 gmail@v1, googleCalendar@v1, googleDrive@v1 (Meet transcripts),
 googleSheets@v1 — endpoint shapes ported from the bobrik branch, all
 awaiting live hardening (testing-flow.md) behind a BYO Google client.
+telegram@v1 (2026-09-08, read/write) is the first connector on a
+url-injected credential; unit-tested against recorded Bot API
+envelopes, not yet live-verified (testing-flow.md), and it is a
+connector only — bao answering ON Telegram is a bridge on top of it,
+not built.
