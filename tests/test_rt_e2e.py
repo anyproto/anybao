@@ -158,6 +158,7 @@ def run_rt(base, spec, args):
     scratch = Path(tempfile.mkdtemp())
     (scratch / "config.json").write_text(json.dumps({
         "any.base_url": base,
+        "bao.space": "s1",          # the memory home (ADR-017 §0), lifted to runtime
         "llm.tier.codegen": {"provider": "anthropic", "model": "t",
                              "base_url": f"{base}/llm",
                              "api_key_ref": "llm.key"},

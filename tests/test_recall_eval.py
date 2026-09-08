@@ -65,7 +65,7 @@ def test_recall_golden_eval(client, bao_space, guest_use):
 
     c = guest_use("any@v1")
     for it in items:
-        c.create_memory(fresh_space, {k: v for k, v in it.items() if k != "kind"})
+        c.create_memory({k: v for k, v in it.items() if k != "kind"})
 
     # the indexer is async — poll on the first case before asserting
     try:

@@ -452,7 +452,7 @@ method list. Two rules govern what the model sees:
   The vocabulary is the SAME narrative set the span carries as
   `meta.kind` (ADR-001 §4d), one meaning across discovery and trace:
   `getter` (read), `mutator` (write / side-effecting), `setup` (a
-  binder/constructor, e.g. `use("memory@v1").memory(c, space)`). Kind is
+  binder/constructor, e.g. `use("memory@v1").memory(c)`). Kind is
   narrative only — it never gates capability or the boundary read/mutate
   class (ADR-002).
 

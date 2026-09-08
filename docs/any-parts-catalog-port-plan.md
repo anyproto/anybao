@@ -769,3 +769,9 @@ the rollback.
    the any-ui port.)
 5. Which any commit to pin: 5d709c8 (docs only on top of 4c6b427) —
    pin the merge commit that carries the SDK v0.3.3 bump.
+6. RESOLVED (ADR-017 §0 amendment, 2026-09-08): memory has ONE home,
+   the bao space. The rig demo showed the model repairing a
+   `bundle.not_found` by installing `bao/v1` into a user space; now the
+   runtime publishes `bao.space`, the guest memory verbs take no space,
+   recall reads that brain from any bound space, and the guest
+   `ensure_bundle` refuses `bao/v1`.

@@ -194,6 +194,7 @@ _DATASET_TIME_KEYS = {d["key"]: _datetime_keys(d) for d in
 # object's types to the collection the declaration reports.
 _CANONICAL_COLLECTIONS = ("chat_messages", "editor_blocks", "objects")
 # the catalog's general chat — the one chat a space has (ADR-027 §1)
+_BAO_BUNDLE = "bao/v1"          # the harness bundle: bao space only (ADR-017 §0)
 _GENERAL_CHAT_BUNDLE = "system:general-chat/v1"
 # the catalog's wiki — the tree an object is in while it carries the
 # wiki type with `parentId` / `pos` set (ADR-027 §3)
@@ -427,8 +428,9 @@ def _pick_color(key):
 
 
 class _Client:
-    def __init__(self, base_url):
+    def __init__(self, base_url, bao_space=None):
         self._base = base_url.rstrip("/")
+        self._bao_space = bao_space   # the memory home (ADR-017 §0), runtime-wired
         # Per-space type/property catalog, memoized for the client's lifetime
         # (one cell). Resolves xKey<->id both ways so the agent reads/writes
         # types and properties by their stable xKey slug, never raw content
@@ -2458,7 +2460,15 @@ class _Client:
         created fresh and rootId is provisional until the space syncs.
         409 bundle.not_ready (a winner's tree hasn't landed on this
         device) is retryable. Ids are permanent — never reuse one for
-        a successor install."""
+        a successor install. `bao/v1` is the harness's own bundle:
+        serve registers it in the bao space and nowhere else (memory
+        lives there — `get_brain` takes no space); it is refused
+        here."""
+        if bundle_id == _BAO_BUNDLE:
+            raise ValueError(
+                f"{_BAO_BUNDLE} is the harness bundle — serve registers it in "
+                "the bao space only; memory lives there (get_brain() / "
+                "create_memory() take no space), never in a user space")
         body = {"id": bundle_id}
         if name:
             body["name"] = name
@@ -2877,17 +2887,30 @@ class _Client:
         self._ensured_stores[key] = colls
         return colls
 
-    def get_brain(self, space):
-        """The per-space brain object hosting agent_memory_items — the
+    def bao_space(self):
+        """The bao space id — memory's only home (ADR-017 §0). Wired by
+        the runtime (serve; `run --from-space` or a `bao.space` config
+        key); raises when this run has none."""
+        if not self._bao_space:
+            raise ValueError(
+                "no bao space wired for this run (runtime.get bao.space): "
+                "memory lives in the bao space only — serve, or "
+                "`anyrt run --from-space`")
+        return self._bao_space
+
+    def get_brain(self):
+        """The brain object hosting agent_memory_items — the bao space's
         `bao/v1` bundle's `bao/brain/v1` child (ADR-017 §0), with the
-        `agent_brain` type + dataset ensured lazily (guest-owned
-        store). `{objectId}` — deterministic, no create race; requires
-        the harness to have registered `bao/v1` (serve boot)."""
+        `agent_brain` type + datasets ensured lazily (guest-owned
+        store). `{objectId}` — deterministic, no create race. Memory
+        has ONE home: the bao space (`bao_space()`); there is no
+        per-space brain, facts about a space go in `context`/`tags`."""
+        space = self.bao_space()
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
                             _ROI_DATASET])
         tid = self._resolve_type_or_raise(space, "agent_brain")
-        return self.bundle_child(space, "bao/v1", "bao/brain/v1", [tid])
+        return self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", [tid])
 
     def collection(self, space, type_key, dataset_key):
         """The collection a type's dataset lives in (`<typeId>_<key>`),
@@ -2898,8 +2921,9 @@ class _Client:
         return next((d.get("collection") for d in self._datasets_of(space, tid)
                      if d.get("key") == dataset_key), None)
 
-    def create_memory(self, space, fields):
-        """Create a memory item (category + context required).
+    def create_memory(self, fields):
+        """Create a memory item (category + context required) in the
+        bao space's brain — memory's only home.
 
         Writes the brain child's agent_memory_items dataset. Returns
         ModifyResult — recordIds[0] is the item id. Fields:
@@ -2932,13 +2956,13 @@ class _Client:
             raise AnyError(400, "request.invalid_field",
                            "validFrom must be an instant — instant(seconds) "
                            "(ADR-019 §2)")
-        brain = self.get_brain(space)["objectId"]
+        brain = self.get_brain()["objectId"]
         ops = [{"type": "$set", "path": k, "value": v} for k, v in f.items()]
-        return self.modify(space, {
+        return self.modify(self.bao_space(), {
             "objectId": brain, "dataset": "agent_memory_items",
             "records": [{"id": "", "upsert": True, "ops": ops}]})
 
-    def evolve_memory(self, space, item_id, fields):
+    def evolve_memory(self, item_id, fields):
         """Evolve a memory item's mutable fields (author-only).
 
         modifiedAt is bumped by its stamp on apply. Mutable allow-list
@@ -2957,18 +2981,18 @@ class _Client:
             raise AnyError(400, "request.invalid_field",
                            "context must stay a non-empty string")
         self._mem_check_ranges(f)
-        brain = self.get_brain(space)["objectId"]
+        brain = self.get_brain()["objectId"]
         ops = [{"type": "$set", "path": k, "value": v} for k, v in f.items()]
-        return self.modify(space, {
+        return self.modify(self.bao_space(), {
             "objectId": brain, "dataset": "agent_memory_items",
             "records": [{"id": item_id, "ops": ops}]})
 
-    def delete_memory(self, space, item_id):
+    def delete_memory(self, item_id):
         """Delete a memory item by id (author-only — the dataset's
         deleteBy gate)."""
-        brain = self.get_brain(space)["objectId"]
-        return self.delete_records(space, brain, "agent_memory_items",
-                                   [item_id])
+        brain = self.get_brain()["objectId"]
+        return self.delete_records(self.bao_space(), brain,
+                                   "agent_memory_items", [item_id])
 
     @staticmethod
     def _mem_check_ranges(f):
@@ -3103,7 +3127,11 @@ def _c():
     global _instance
     if _instance is None:
         base = effect("runtime.get", {"key": "any.base_url"})["value"]  # noqa: F821
-        _instance = _Client(base)
+        try:   # absent in a run without a bao space (memory is then off)
+            bao = effect("runtime.get", {"key": "bao.space"})["value"]  # noqa: F821
+        except Exception:  # noqa: BLE001 - the effect's KeyError, whatever its class
+            bao = None
+        _instance = _Client(base, bao)
     return _instance
 
 
@@ -3468,23 +3496,28 @@ def collection(spaceConfig, type_key, dataset_key):
 
 
 @span(kind="getter")  # noqa: F821 - guest global
-def get_brain(spaceConfig):
-    return _c().get_brain(_space(spaceConfig))
+def bao_space():
+    return _c().bao_space()
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def get_brain():
+    return _c().get_brain()
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def create_memory(spaceConfig, fields):
-    return _c().create_memory(_space(spaceConfig), fields)
+def create_memory(fields):
+    return _c().create_memory(fields)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def evolve_memory(spaceConfig, item_id, fields):
-    return _c().evolve_memory(_space(spaceConfig), item_id, fields)
+def evolve_memory(item_id, fields):
+    return _c().evolve_memory(item_id, fields)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def delete_memory(spaceConfig, item_id):
-    return _c().delete_memory(_space(spaceConfig), item_id)
+def delete_memory(item_id):
+    return _c().delete_memory(item_id)
 
 
 # lift the method docstrings onto the public functions — ONE authored
@@ -3505,6 +3538,6 @@ for _f in (create_object, move_object, list_children, update_object,
            create_type, add_property, append_turn, create_chunk,
            chat_send, search, backlinks, links, backlinks_everywhere,
            list_apps, list_available_apps, setup_app, collection,
-           get_brain, create_memory, evolve_memory, delete_memory):
+           bao_space, get_brain, create_memory, evolve_memory, delete_memory):
     _f.__doc__ = getattr(_Client, _f.__name__.lstrip("_")).__doc__
 del _f

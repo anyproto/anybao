@@ -47,36 +47,38 @@ def test_search_finds_written_content(client, fresh_space, guest_use):
     assert {"objectId", "dataset", "recordId", "score"} <= hit.keys()
 
 
-def test_by_period_fans_out_across_real_datasets(client, fresh_space, guest_use):
+def test_by_period_fans_out_across_real_datasets(client, bao_space, guest_use):
+    # turns/chunks on the bound space's chat log, memory on THE brain —
+    # the bao space's, self-resolved by recall (ADR-017 §0)
     now = int(time.time())
-    chat = client.create_object(fresh_space, {"types": ["chat"]})["objectId"]
-    client.append_turn(fresh_space, chat,
-                       {"userText": "hello", "replies": ["hi"], "llm": {"stopReason": "done"}})
-    client.create_chunk(fresh_space, chat, {
-        "summary": "hour one", "level": 1, "fromSeq": 0, "toSeq": 0,
-        "periodStart": now - 60, "periodEnd": now})
-    brain = client.call("GET", f"/v1/spaces/{fresh_space}/agent/brain")["objectId"]
-    client.call("POST", f"/v1/spaces/{fresh_space}/agent/memory",
-                 {"category": "lesson", "context": "test fact"})
+    c = guest_use("any@v1")
+    chat = c.general_chat(bao_space)
+    c.append_turn(bao_space, chat,
+                  {"userText": "hello", "replies": ["hi"], "llm": {"stopReason": "done"}})
+    c.create_chunk(bao_space, chat, {
+        "summary": "hour one", "level": 1, "fromSeq": 1, "toSeq": 1,
+        "periodStart": c.instant(now - 60), "periodEnd": c.instant(now)})
+    mid = c.create_memory({"category": "lesson", "context": "test fact"})["recordIds"][0]
 
-    r = guest_use("recall@v1").recall(guest_use("any@v1"), fresh_space,
-                                      brain_object_id=brain, chat_object_id=chat)
+    r = guest_use("recall@v1").recall(c, bao_space, chat_object_id=chat)
     recs = r.by_period(now - 3600, now + 3600)
     assert {x["source"] for x in recs} == {"memory", "turn", "chunk"}
+    assert any(x["source"] == "memory" and x["id"] == mid for x in recs)
     # merged list is time-ascending on each source's natural field
-    ts = [x.get("validFrom") or x.get("periodStart") or x.get("createdAt") or 0 for x in recs]
+    ts = [c.ts_s(x.get("validFrom") or x.get("periodStart") or x.get("createdAt")) or 0
+          for x in recs]
     assert ts == sorted(ts)
     # out-of-range window is empty
     assert r.by_period(now - 7200, now - 7100) == []
 
 
 def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
-    # Object refs are links-format properties: arrays of any://<id> URIs
-    # (an object-KIND property would reject a bare id string). Helper
-    # doesn't take a format kwarg, so define the property via the client.
+    # Object refs are relation properties: arrays of any:// URIs
+    # (ADR-027 §4). Defined on the wire, xFormat verbatim.
     tid = client.create_type(fresh_space, {"name": "Note", "xKey": "note"})["typeId"]
     pid = client.add_property(fresh_space, tid, {
-        "name": "Relates To", "xKey": "relates_to", "format": {"type": "links"}})["propId"]
+        "name": "Relates To", "xKey": "relates_to", "kind": "array",
+        "xFormat": {"type": "relation", "relation": {"targetTypes": ["note"]}}})["propId"]
     target = client.create_object(fresh_space, {
         "types": [tid], "initialProperties": {"any": {"name": "target"}}})["objectId"]
     source = client.create_object(fresh_space, {
@@ -97,6 +99,11 @@ def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
         if e.code == "request.not_found":
             pytest.skip("server predates the /backlinks route")
         raise
+    # the backlink index is asynchronous — poll briefly
+    deadline = time.monotonic() + 10
     back = rec.neighbors(target)
-    assert {"sourceId": source, "type": "note",
-            "prop": "relates_to"} in back["backlinks"]
+    while not back["backlinks"] and time.monotonic() < deadline:
+        time.sleep(0.5)
+        back = rec.neighbors(target)
+    assert [(b["sourceId"], b["type"], b["prop"], b["kind"]) for b in back["backlinks"]] \
+        == [(source, "note", "relates_to", "relation")]

@@ -25,6 +25,8 @@ companion PR deletes the built-ins; fresh datasets, old data unread.
 
 **Amended 2026-09-08 (ADR-027 §1/§2):** the chat's bundle is `system:general-chat/v1` (the catalog's); every store below is declared as a part of its type and addressed by the collection the declaration reports (`AgentStores::*_ds`), never by the bare name.
 
+**Amended 2026-09-08 (memory home):** `bao/v1` exists in the bao space and nowhere else — memory has ONE home. The runtime publishes the bao space id as `runtime.get("bao.space")` (serve; `run --from-space`, or a `bao.space` config key); the guest memory verbs take no space (`get_brain()`, `create_memory(fields)`, `evolve_memory(id, fields)`, `delete_memory(id)`, `memory(c)`), recall's memory source reads that brain whatever space recall is bound to, and the guest `ensure_bundle` refuses the `bao/v1` id. A fact about a user space is a memory item with that space in `context`/`tags`, not a brain in that space (observed 2026-09-08: the model installed `bao/v1` into a user space to repair a `bundle.not_found`).
+
 anyrt registers the **`bao/v1` bundle** at serve boot (the server
 keeps no catalog) and derives one child per store:
 
@@ -190,12 +192,13 @@ definition (§1), keeping the declaration's pinned behaviour where
 remove + re-declare would drop it. Records stay public (`query`,
 `upsert_records`, `delete_records`).
 
-Kept signatures, reimplemented over the generic surface (programs and
-skills keep working unchanged): `get_brain` (resolves the
-`bao/brain/v1` child, cached per run), `create_memory` /
-`evolve_memory` / `delete_memory` (upsert/delete records on the brain
-child + the §1 validation), `append_turn` / `create_chunk` (upsert on
-the chat's `bao/log/v1` child with client seq). Dedicated-endpoint
+Memory verbs, over the generic surface: `bao_space()` (the runtime-wired
+home), `get_brain()` (resolves the bao space's `bao/brain/v1` child,
+cached per run), `create_memory(fields)` / `evolve_memory(id, fields)`
+/ `delete_memory(id)` (upsert/delete records on the brain child + the
+§1 validation) — no space parameter, memory has one home (§0).
+`append_turn` / `create_chunk` (upsert on the chat's `bao/log/v1`
+child with client seq) keep their space. Dedicated-endpoint
 paths inside these methods are deleted, not conditionally kept.
 
 ### 4. anyrt (host)

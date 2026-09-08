@@ -38,16 +38,18 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
-    def create_memory(self, space, fields):
-        self.calls.append(("create", space, fields))
+    # the verbs take no space: memory has one home (ADR-017 §0); the
+    # capture keeps a fixed "s1" slot so the assertions read as before
+    def create_memory(self, fields):
+        self.calls.append(("create", "s1", fields))
         return {"versionId": "v1", "changeId": "c1", "recordIds": ["new1"]}
 
-    def evolve_memory(self, space, item_id, fields):
-        self.calls.append(("evolve", space, item_id, fields))
+    def evolve_memory(self, item_id, fields):
+        self.calls.append(("evolve", "s1", item_id, fields))
         return {}
 
-    def delete_memory(self, space, item_id):
-        self.calls.append(("delete", space, item_id))
+    def delete_memory(self, item_id):
+        self.calls.append(("delete", "s1", item_id))
         return {}
 
 
@@ -83,7 +85,7 @@ def verdict_chat(verdict):
 
 
 def memory(client, chat=None):
-    return MEM["memory"](client, "s1", llm_chat=chat or verdict_chat({"action": "create"}))
+    return MEM["memory"](client, llm_chat=chat or verdict_chat({"action": "create"}))
 
 
 # --- add / evolve / delete ----------------------------------------------------
@@ -144,7 +146,7 @@ def test_default_llm_chat_comes_from_llm_module():
 
     used = []
     g = load(use=lambda spec: used.append(spec) or FakeLlmModule())
-    mem = g["memory"](FakeClient(), "s1")
+    mem = g["memory"](FakeClient())
     mem.save_with_dedup(CANDIDATE, FakeRecall())
     assert used == ["llm@v1"] and seen == ["classify"]
 

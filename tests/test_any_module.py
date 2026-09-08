@@ -69,8 +69,8 @@ def load(fx, now=1_787_673_600.0):
 # space ids; the flat module functions (the public surface, ADR-010 §8)
 # validate spaceConfig shape and are covered by the flat-surface tests
 # with an id-shaped space.
-def client(fx, base="http://any"):
-    return load(fx)["_Client"](base)
+def client(fx, base="http://any", bao=None):
+    return load(fx)["_Client"](base, bao)
 
 
 # id-shaped (dotted, long, no spaces) — passes the module _sid guard
@@ -993,11 +993,11 @@ def _brain_wire():
 
 def test_memory_verbs_and_paths():
     fx = wire(replies=_brain_wire())
-    c = client(fx)
-    assert c.get_brain("s1") == {"objectId": "brain1"}
-    c.create_memory("s1", {"category": "fact", "context": "x"})
-    c.evolve_memory("s1", "m1", {"accessCount": 2})
-    c.delete_memory("s1", "m1")
+    c = client(fx, bao="s1")            # the runtime-wired memory home
+    assert c.get_brain() == {"objectId": "brain1"}
+    c.create_memory({"category": "fact", "context": "x"})
+    c.evolve_memory("m1", {"accessCount": 2})
+    c.delete_memory("m1")
     create = next(b for v, p, b in fx.calls if p.endswith("/modify"))
     assert create["objectId"] == "brain1"
     # the store key resolves to the brain's collection (ADR-027 §2)
@@ -1019,22 +1019,46 @@ def test_memory_verbs_and_paths():
     assert fx.calls[-1][1] == "/v1/spaces/s1/delete-records"
     assert fx.calls[-1][2]["recordIds"] == ["m1"]
     assert fx.calls[-1][2]["dataset"] == "br_agent_memory_items"
+    # every memory call went to the bao space — the only home (ADR-017 §0)
+    assert all(p.startswith("/v1/spaces/s1/") for _, p, _ in fx.calls)
+
+
+def test_memory_has_one_home():
+    # no bao space wired (a run without one): the verbs refuse loudly
+    # instead of picking a space; the harness bundle cannot be
+    # installed from the guest — that was the model's "repair" that put
+    # a brain into a user space (ADR-017 §0)
+    fx = wire(replies=_brain_wire())
+    c = client(fx)
+    with pytest.raises(ValueError, match="no bao space wired"):
+        c.get_brain()
+    with pytest.raises(ValueError, match="no bao space wired"):
+        c.create_memory({"category": "fact", "context": "x"})
+    with pytest.raises(ValueError, match="harness bundle"):
+        c.ensure_bundle("s2", "bao/v1")
+    assert fx.calls == []
+    # the module reads the home off the runtime; absent = memory off
+    g = load(wire(config={"any.base_url": "http://any", "bao.space": "s1"}))
+    assert g["bao_space"]() == "s1"
+    g = load(wire(config={"any.base_url": "http://any"}))
+    with pytest.raises(ValueError, match="no bao space wired"):
+        g["bao_space"]()
 
 
 def test_memory_validation_is_client_side():
     fx = wire(replies=_brain_wire())
-    c = client(fx)
+    c = client(fx, bao="s1")
     err = load(wire())["AnyError"]  # class identity differs per load
     with pytest.raises(Exception, match="category required"):
-        c.create_memory("s1", {"context": "x"})
+        c.create_memory({"context": "x"})
     with pytest.raises(Exception, match="unknown memory fields"):
-        c.create_memory("s1", {"category": "fact", "context": "x",
-                               "embeddingRef": "nope"})
+        c.create_memory({"category": "fact", "context": "x",
+                         "embeddingRef": "nope"})
     with pytest.raises(Exception, match="not evolvable"):
-        c.evolve_memory("s1", "m1", {"category": "flip"})
+        c.evolve_memory("m1", {"category": "flip"})
     with pytest.raises(Exception, match="confidence"):
-        c.create_memory("s1", {"category": "fact", "context": "x",
-                               "confidence": 11})
+        c.create_memory({"category": "fact", "context": "x",
+                         "confidence": 11})
     assert err  # silence unused warning
 
 

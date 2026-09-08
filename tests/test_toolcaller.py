@@ -92,7 +92,7 @@ class World:
             def query(self, space, oid, dataset, **kw):
                 return []
 
-            def get_brain(self, space):
+            def get_brain(self):
                 return {}
 
             def list_apps(self, space):
@@ -513,7 +513,7 @@ class TwoSpaces:
             return row[1]
         return ""
 
-    def get_brain(self, space):
+    def get_brain(self):
         return {}
 
 

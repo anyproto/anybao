@@ -80,7 +80,7 @@ def valid_links(proposals, neighbor_ids, existing_edges, max_links):
 def main(args):
     space = args["space"]
     c = use("any@v1")  # noqa: F821 - guest global
-    brain = c.get_brain(space)["objectId"]
+    brain = c.get_brain()["objectId"]   # the bao space's (ADR-017 §0)
     last = _state(c, space, brain)
     items = c.query(space, brain, "agent_memory_items",
                     filter={"createdAt": {"$gt": last}}, sort=["createdAt"],
@@ -88,7 +88,7 @@ def main(args):
     if not items:
         return {"swept": 0, "linked": 0, "errors": 0}
 
-    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    mem = use("memory@v1").memory(c)  # noqa: F821 - guest global
     tier = args.get("tier", TIER)
     max_links = args.get("maxLinks", MAX_LINKS)
     linked = errors = 0

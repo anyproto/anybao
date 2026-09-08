@@ -105,8 +105,8 @@ def test_guest_stores_resolve_keys_turns_and_memory_land(client, bao_space, gues
     chunks = c.query(bao_space, log, "agent_chunks")
     assert [(x["seq"], x["level"]) for x in chunks] == [(1, 1)]
     # memory on the brain child, read back by key and by collection
-    mid = c.create_memory(bao_space, {"category": "fact", "context": "teal"})["recordIds"][0]
-    brain = c.get_brain(bao_space)["objectId"]
+    mid = c.create_memory({"category": "fact", "context": "teal"})["recordIds"][0]
+    brain = c.get_brain()["objectId"]
     assert client.bundle_child(bao_space, "bao/v1", "bao/brain/v1") == brain
     [item] = c.query(bao_space, brain, "agent_memory_items", filter={"id": mid})
     assert item["context"] == "teal"

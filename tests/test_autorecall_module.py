@@ -69,7 +69,7 @@ def load(hits, recs=None, fail=False):
     mem = FakeMemory()
     modules = {
         "recall@v1": SimpleNamespace(recall=lambda client, space, **kw: rec),
-        "memory@v1": SimpleNamespace(memory=lambda client, space: mem),
+        "memory@v1": SimpleNamespace(memory=lambda client: mem),
     }
     g = {**kernel_globals(), "use": lambda spec: modules[spec],
          "span": lambda name=None, kind=None: (lambda fn: fn)}

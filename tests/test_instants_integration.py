@@ -57,9 +57,8 @@ def test_agent_stores_hold_instants_and_by_period_range_scans(client, bao_space,
     chat = c.general_chat(fresh_space)
     now = int(time.time())
     # memory: validFrom defaults to instant(now()); a number is refused
-    mid = c.create_memory(fresh_space,
-                          {"category": "lesson", "context": "instants"})["recordIds"][0]
-    brain = c.get_brain(fresh_space)["objectId"]
+    mid = c.create_memory({"category": "lesson", "context": "instants"})["recordIds"][0]
+    brain = c.get_brain()["objectId"]
     item = c.query(fresh_space, brain, "agent_memory_items", filter={"id": mid})[0]
     assert _instant(item["validFrom"]) and abs(ts_s(item["validFrom"]) - now) < 120
     assert _instant(item["createdAt"])

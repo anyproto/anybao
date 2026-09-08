@@ -130,7 +130,8 @@ def build(fx, space="s1", **recall_kw):
     nospan = lambda name=None, kind=None: (lambda f: f)  # noqa: E731
     any_g = {"effect": fx, "span": nospan, "use": None, **kernel_globals()}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
-    any_g["_instance"] = any_g["_Client"]("http://any")   # skip config.get
+    # skip runtime.get; "s1" = the bao space (the memory home)
+    any_g["_instance"] = any_g["_Client"]("http://any", "s1")
     any_mod = SimpleNamespace(**any_g)
     rec_g = {"effect": fx, "span": nospan, **kernel_globals(),
              "use": lambda spec: {"any@v1": any_mod}[spec]}

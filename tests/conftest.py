@@ -219,17 +219,27 @@ def fresh_space(client) -> str:
 
 
 @pytest.fixture
-def bao_space(client, fresh_space) -> str:
+def runtime_values(any_server) -> dict:
+    """What `runtime.get` answers in the guest shim: the server url,
+    plus `bao.space` once a test provisions a bao space (memory's
+    only home, ADR-017 §0) — serve wires the same two keys."""
+    return {"any.base_url": any_server}
+
+
+@pytest.fixture
+def bao_space(client, fresh_space, runtime_values) -> str:
     """A throwaway space with what serve provisions before guest code
     runs (ADR-017 §0): the catalog chat and the `bao/v1` bundle the
-    guest-owned stores (brain, chat log) derive their children from."""
+    guest-owned stores (brain, chat log) derive their children from;
+    published to the guest as `bao.space`."""
     client.general_chat(fresh_space)
     client.ensure_bundle(fresh_space, {"id": "bao/v1", "name": "bao", "rootTypes": ["page"]})
+    runtime_values["bao.space"] = fresh_space
     return fresh_space
 
 
 @pytest.fixture
-def guest_use(any_server):
+def guest_use(any_server, runtime_values):
     """Guest modules exec'd host-side over a REAL-http effect shim — the
     integration twin of the offline exec-with-fakes technique. `use(spec)`
     loads from programs/ and hits the live server. Self-contained: the
@@ -247,7 +257,9 @@ def guest_use(any_server):
                 json_body=payload.get("json"), body=payload.get("body"),
                 timeout=payload.get("timeout"))
         if name in ("config.get", "runtime.get"):
-            return {"value": {"any.base_url": any_server}[payload["key"]]}
+            if payload["key"] not in runtime_values:
+                raise KeyError(f"no runtime value for {payload['key']!r}")
+            return {"value": runtime_values[payload["key"]]}
         raise AssertionError(f"unexpected effect in guest shim: {name}")
 
     def use(spec):

@@ -173,7 +173,7 @@ def _plan(client, space, user_text, boot_min_seq, policy):
 
     msgs = frame_messages(user_text, mem_lines, hist_lines)
     if msgs:
-        mem = use("memory@v1").memory(client, space)  # noqa: F821 - guest global
+        mem = use("memory@v1").memory(client)  # noqa: F821 - guest global
         for r in bumped:  # injected = recalled (§4.3)
             try:  # noqa: SIM105 - no contextlib in the guest; best-effort bump
                 mem.bump_access(r["id"], r.get("accessCount", 0))

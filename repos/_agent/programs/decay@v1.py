@@ -28,8 +28,8 @@ def main(args):
     floor = args.get("floor", FLOOR)
     ts = now()  # noqa: F821 - guest global (time effect, recorded)
     c = use("any@v1")  # noqa: F821 - guest global
-    brain = c.get_brain(space)["objectId"]
-    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    brain = c.get_brain()["objectId"]   # the bao space's (ADR-017 §0)
+    mem = use("memory@v1").memory(c)  # noqa: F821 - guest global
     items = c.query(space, brain, "agent_memory_items",
                     limit=args.get("batch", BATCH))
     swept = updated = 0

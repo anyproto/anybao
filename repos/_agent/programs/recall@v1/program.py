@@ -10,7 +10,8 @@ read."""
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # ADR-007 §5. The temporal sources live on different objects (memory
-# items on the brain, turns/chunks on the chat object) — a None id
+# items on the brain — the bao space's, memory's only home (ADR-017
+# §0) — turns/chunks on the bound space's chat object); a None id
 # just skips that source.
 
 _any = use("any@v1")  # noqa: F821 - guest global
@@ -97,9 +98,9 @@ class Recall:
         when NO source is bound (a silent [] read as "nothing
         happened that week" — seen live, run_7318bebb61af44b0)."""
         if self._brain is None:
-            try:
-                self._brain = (self._c.get_brain(self._space) or {}).get("objectId")
-            except Exception:  # no agent data in this space — source stays off
+            try:   # the brain is the bao space's (ADR-017 §0)
+                self._brain = (self._c.get_brain() or {}).get("objectId")
+            except Exception:  # no bao space wired — source stays off
                 self._brain = ""
         if not self._brain and not self._chat:
             raise ValueError(
@@ -111,7 +112,7 @@ class Recall:
         lo, hi = instant(from_ts), instant(to_ts)  # noqa: F821 - guest globals
         if self._brain:
             items = self._c.query(
-                self._space, self._brain, "agent_memory_items",
+                self._c.bao_space(), self._brain, "agent_memory_items",
                 filter={"validFrom": {"$gte": lo, "$lte": hi}},
                 sort=["validFrom"])
             out += [{**r, "source": "memory"} for r in items]

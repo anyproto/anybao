@@ -610,7 +610,7 @@ def _user_skills(c, space):
 def _memory_categories(c, space):
     """The category-name inventory in the brain — the write path's
     vocabulary anchor."""
-    brain = c.get_brain(space)
+    brain = c.get_brain()   # the bao space's — `space` here IS it
     brain_id = brain.get("objectId") if isinstance(brain, dict) else None
     if not brain_id:
         return ""

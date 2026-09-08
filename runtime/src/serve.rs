@@ -1452,6 +1452,9 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // uses to refuse overlay-exported specs (ADR-013 §1)
     let mut runtime: BTreeMap<String, Value> = BTreeMap::new();
     runtime.insert("any.base_url".into(), Value::String(cfg.addr.clone()));
+    // `runtime.get("bao.space")`: the bao space id — memory lives there
+    // and nowhere else (ADR-017 §0); the guest memory verbs take no space
+    runtime.insert("bao.space".into(), Value::String(space.clone()));
     runtime.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
     // `runtime.get("shell")`: the shell's whereabouts in a `--features
     // shell` build, null otherwise (ADR-024 §4/§6); the guest binds
