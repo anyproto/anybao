@@ -665,6 +665,23 @@ spaces) and **upgrade** (the data-dir copies from Phase 0.3).
     bao reports it is not installed and offers the setup; on "yes",
     `catalog/crm/setup` runs and the reply lists the new bundles.
 
+#### 5.1 results (2026-09-08, rig `:7142`, branch `feat/any-parts-catalog-port`)
+
+| row | result |
+|---|---|
+| 1, 2, 3 (chat, stores, conversation) | PASS — `tests/test_integration.py` + live conversations (traces `run_f64f79ba9d124922`, `run_9514401a0a124fd0`…) |
+| 4 (memory + autorecall) | PASS — extraction cron saved 3 items into the brain's collection; recall after restart answered from them |
+| 5 (history) | PARTIAL — extraction and linkgen crons ran green through `/run`; rollup created 0 chunks (4 turns, below its window) — `create_chunk` on the wire is pinned by the integration test |
+| 6 (pages), 7 (properties) | PASS — integration tests; the live page landed under the wiki root with a position after its sibling |
+| 8 (programs, mini apps) | PASS after two fixes found here (`create_dataset` module parts, miniapp cache key): `tealcount@v1` created and run, `teal-card` created |
+| 9 (gmail) | NOT RUN — pulls the user's mailbox into a rig space; the user's call |
+| 10 (triggers across a restart) | PASS — the six standing crons and the chat responder came back with the new peer as owner; the next message answered |
+| 11 (errors) | PASS — integration tests (`bundle.reserved`, `dataset.module_reserved`, `dataset.unknown`, `dataset.not_declared`) |
+| 12 (two devices) | PASS — a second device of the same account (`:7143`, `configs/anybao.staging-parts-dev2.toml`) booted standby, adopted the same chat, config object and collections; `losers` empty on both |
+| 13 (overlay) | PASS — a fresh owner account (`:7022`) with `_agentrepo` deployed and a guest-key invite; `configs/anybao.staging-parts-guest.toml` joined read-only, synced, and the reply resolved programs from it |
+| 14 (checks) | PASS — cargo, clippy, fmt, drift, ruff, pytest, connectors, rt_e2e |
+| 15 (apps) | PASS — "which apps does this space have" answered from the runtime context / `list_apps` |
+
 ### 5.2 Upgrade rig — the data-dir copies
 
 1. Boot serve on the copied user account: `catalog/general-chat/setup`
