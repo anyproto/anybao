@@ -1151,6 +1151,7 @@ impl Broker {
         // through the token lifecycle (ADR-011 §6) — same guest shape,
         // different custody.
         let mut static_ref: Option<(String, Value)> = None;
+        let mut url_secret: Option<String> = None;
         let cred = match payload.get("credential").and_then(|c| c.as_object()) {
             Some(cred) => {
                 let r = cred
@@ -1168,6 +1169,28 @@ impl Broker {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                // `in` says where the value goes: a header (the default,
+                // every connector before Telegram) or the url itself.
+                let site = cred.get("in").and_then(|v| v.as_str()).unwrap_or("header");
+                if site != "header" && site != "url" {
+                    return Err(EffectFailure {
+                        type_: "TypeError".into(),
+                        message: format!(
+                            "credential {{in: {site:?}}}: the value goes in a \"header\" \
+                             (default) or the \"url\" (ADR-008 §1)"
+                        ),
+                    });
+                }
+                if site == "url" && !url.contains(URL_CRED_PLACEHOLDER) {
+                    return Err(EffectFailure {
+                        type_: "TypeError".into(),
+                        message: format!(
+                            "credential {{in: \"url\"}} needs {URL_CRED_PLACEHOLDER} in the \
+                             url — the host substitutes it after the payload is recorded \
+                             (ADR-008 §1)"
+                        ),
+                    });
+                }
                 let value = if r.starts_with(OAUTH_REF_PREFIX) {
                     self.resolve_managed(&r)?
                 } else {
@@ -1175,17 +1198,33 @@ impl Broker {
                         Some((r.clone(), cred.get("about").cloned().unwrap_or(Value::Null)));
                     self.resolve_static(&r, cred.get("about"))?
                 };
-                Some((header, format!("{prefix}{value}")))
+                if site == "url" {
+                    url_secret = Some(format!("{prefix}{value}"));
+                    None
+                } else {
+                    Some((header, format!("{prefix}{value}")))
+                }
             }
             None => None,
         };
+        // A placeholder with nothing to fill it is a guest bug — refuse
+        // rather than send the literal to the destination.
+        if url_secret.is_none() && url.contains(URL_CRED_PLACEHOLDER) {
+            return Err(EffectFailure {
+                type_: "TypeError".into(),
+                message: format!(
+                    "the url carries {URL_CRED_PLACEHOLDER} but the request names no \
+                     credential {{in: \"url\"}} (ADR-008 §1)"
+                ),
+            });
+        }
         // The client never follows a credentialed request: ureq strips by
         // header NAME, so any custom credential header would replay at
         // whatever host answers 3xx (and Authorization is dropped even
         // same-host). The host owns the follow decision — default manual,
         // an explicit count follows same-origin only with the header
         // re-attached per hop — ADR-011 §4.
-        let (agent, mut hops_left) = if cred.is_some() {
+        let (agent, mut hops_left) = if cred.is_some() || url_secret.is_some() {
             let agent = ureq::AgentBuilder::new().redirects(0).build();
             (agent, explicit_redirects.unwrap_or(0))
         } else {
@@ -1220,7 +1259,12 @@ impl Broker {
             .get("headers")
             .and_then(|h| h.as_object())
             .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type")));
-        let mut cur_url = url;
+        // the secret enters here and nowhere earlier: the payload is
+        // already recorded with the placeholder intact (ADR-008 §1)
+        let mut cur_url = match &url_secret {
+            Some(secret) => url.replace(URL_CRED_PLACEHOLDER, secret),
+            None => url,
+        };
         let mut cur_verb = verb;
         let mut with_body = true;
         let resp = loop {
@@ -1260,8 +1304,10 @@ impl Broker {
                 Err(e) => {
                     return Err(EffectFailure {
                         type_: "URLError".into(),
-                        message: e.to_string(),
-                    })
+                        // ureq names the url it failed on — scrub before it
+                        // becomes a trace record
+                        message: scrub_secret(&e.to_string(), url_secret.as_deref()),
+                    });
                 }
             };
             if hops_left == 0 || !matches!(resp.status(), 301 | 302 | 303 | 307 | 308) {
@@ -1282,11 +1328,19 @@ impl Broker {
             cur_url = next;
         };
         let status = resp.status();
-        let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
+        // post-redirect (ADR-008 §2), placeholder restored (ADR-008 §1)
+        let final_url = scrub_secret(resp.get_url(), url_secret.as_deref());
         let headers: Map<String, Value> = resp
             .headers_names()
             .iter()
-            .filter_map(|h| resp.header(h).map(|v| (h.to_lowercase(), json!(v))))
+            .filter_map(|h| {
+                resp.header(h).map(|v| {
+                    (
+                        h.to_lowercase(),
+                        json!(scrub_secret(v, url_secret.as_deref())),
+                    )
+                })
+            })
             .collect();
         // ADR-026 §3: the host classifies the body — a text media type
         // that decodes as UTF-8 is `body` text (a `text/*` that does not
@@ -1298,7 +1352,7 @@ impl Broker {
             .read_to_end(&mut bytes)
             .map_err(|e| EffectFailure {
                 type_: "URLError".into(),
-                message: e.to_string(),
+                message: scrub_secret(&e.to_string(), url_secret.as_deref()),
             })?;
         let force_text = payload.get("response").and_then(|r| r.as_str()) == Some("text");
         let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
@@ -1318,6 +1372,14 @@ impl Broker {
                 &bytes,
                 media.as_deref().unwrap_or("application/octet-stream"),
             )
+        };
+        // an echoed secret in a text body is the last way one could reach
+        // the trace; a bytes body is stored as received (ADR-008 §1)
+        let body = match (&url_secret, body) {
+            (Some(secret), Value::String(text)) => {
+                Value::String(text.replace(secret.as_str(), URL_CRED_PLACEHOLDER))
+            }
+            (_, other) => other,
         };
         let mut out = json!({"status": status, "headers": headers, "url": final_url});
         out["body"] = body;
@@ -1842,6 +1904,25 @@ fn same_origin_target(current: &str, location: &str) -> Option<String> {
         && next.host_str() == base.host_str()
         && next.port_or_known_default() == base.port_or_known_default())
     .then(|| next.to_string())
+}
+
+/// ADR-008 §1: where a destination takes its credential in the URL
+/// (Telegram's `/bot<token>/`, an API key in the query) the guest
+/// writes this placeholder and the host substitutes the secret after
+/// the payload is recorded — the same "resolved after recording"
+/// custody the header injection has, so the trace holds the
+/// placeholder and never the value.
+pub(crate) const URL_CRED_PLACEHOLDER: &str = "{credential}";
+
+/// Put the placeholder back wherever the destination echoed the secret
+/// at us — the final url, a header value, a text body. Everything
+/// recorded from a url-credentialed response goes through here; bytes
+/// bodies do not (they land in the blob store as received).
+fn scrub_secret(text: &str, secret: Option<&str>) -> String {
+    match secret {
+        Some(s) if !s.is_empty() => text.replace(s, URL_CRED_PLACEHOLDER),
+        _ => text.to_string(),
+    }
 }
 
 pub(crate) fn urlencode(s: &str) -> String {
@@ -3252,6 +3333,164 @@ mod tests {
         // the secret still never reaches the trace
         let dump = serde_json::to_string(&b.writer.records).unwrap();
         assert!(!dump.contains("sk-live"));
+    }
+
+    // --- url-injected credentials (ADR-008 §1) ---------------------------
+
+    fn url_cred_payload(url: String) -> Value {
+        json!({"url": url, "credential":
+            {"ref": "connector.key.x", "in": "url",
+             "about": {"label": "Telegram bot token", "hosts": ["api.telegram.org"]}}})
+    }
+
+    #[test]
+    fn url_credential_is_substituted_after_the_payload_is_recorded() {
+        // Telegram's shape: the token is a path segment, so the guest
+        // writes {credential} and the host fills it in on the wire only
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let base = fake_server(1, move |req| {
+            seen2.lock().unwrap().push(req.url().to_string());
+            let _ = req.respond(tiny_http::Response::from_string("{\"ok\":true}"));
+        });
+        let mut b = make_broker("run_url_cred");
+        b.secrets
+            .insert("connector.key.x".into(), "8100:AAH-secret".into());
+
+        let out = b
+            .call(
+                "http.get",
+                url_cred_payload(format!("{base}/bot{{credential}}/getMe")),
+            )
+            .unwrap();
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["/bot8100:AAH-secret/getMe"]
+        );
+        assert_eq!(out["status"], json!(200));
+        // what comes back names the placeholder, never the value
+        assert!(out["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/bot{credential}/getMe"));
+        let dump = serde_json::to_string(&b.writer.records).unwrap();
+        assert!(!dump.contains("AAH-secret"), "{dump}");
+        assert!(dump.contains("{credential}"));
+    }
+
+    #[test]
+    fn url_credential_scrubs_a_secret_the_destination_echoes_back() {
+        // an error body or a Location header quoting the request url is
+        // the other way the token could land in the trace
+        let base = fake_server(1, |req| {
+            let resp = tiny_http::Response::from_string(
+                "{\"ok\":false,\"description\":\"bad path /bot8100:AAH-secret/x\"}",
+            )
+            .with_status_code(404)
+            .with_header(tiny_http::Header::from_bytes("X-Echo", "/bot8100:AAH-secret/x").unwrap());
+            let _ = req.respond(resp);
+        });
+        let mut b = make_broker("run_url_cred_echo");
+        b.secrets
+            .insert("connector.key.x".into(), "8100:AAH-secret".into());
+
+        let out = b
+            .call(
+                "http.get",
+                url_cred_payload(format!("{base}/bot{{credential}}/x")),
+            )
+            .unwrap();
+
+        assert_eq!(out["status"], json!(404));
+        assert!(out["body"].as_str().unwrap().contains("/bot{credential}/x"));
+        assert_eq!(out["headers"]["x-echo"], json!("/bot{credential}/x"));
+        let dump = serde_json::to_string(&b.writer.records).unwrap();
+        assert!(!dump.contains("AAH-secret"), "{dump}");
+    }
+
+    #[test]
+    fn url_credential_never_follows_a_redirect_by_default() {
+        // same rule as a credentialed header (ADR-011 §4): the host owns
+        // the follow, so a 302 is data and the target is never contacted
+        let hits = Arc::new(AtomicUsize::new(0));
+        let target = counting_target(hits.clone());
+        let origin = redirecting_origin(format!("{target}/leak"));
+        let mut b = make_broker("run_url_cred_redirect");
+        b.secrets.insert("connector.key.x".into(), "sk-url".into());
+
+        let out = b
+            .call(
+                "http.get",
+                url_cred_payload(format!("{origin}/bot{{credential}}/x")),
+            )
+            .unwrap();
+
+        assert_eq!(out["status"], json!(302));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn url_credential_rejection_asks_for_a_replacement() {
+        // ADR-021 §2 holds for url-injected refs too — Telegram answers a
+        // bad token with 401, which means the stored value is wrong
+        let base = fake_server(1, |req| {
+            let resp = tiny_http::Response::from_string("{\"ok\":false,\"error_code\":401}")
+                .with_status_code(401);
+            let _ = req.respond(resp);
+        });
+        let store = Arc::new(MemStore {
+            rows: BTreeMap::from([("connector.key.x".to_string(), "sk-stale".to_string())]),
+            missing: Mutex::new(Vec::new()),
+        });
+        let mut b = make_broker("run_url_cred_401");
+        b.secret_store = Some(store.clone());
+
+        let out = b
+            .call(
+                "http.get",
+                url_cred_payload(format!("{base}/bot{{credential}}/x")),
+            )
+            .unwrap();
+
+        assert_eq!(out["status"], json!(401));
+        let marked = store.missing.lock().unwrap();
+        assert_eq!(marked[0].0, "connector.key.x#401"); // mark_rejected
+        assert_eq!(marked[0].1["hosts"], json!(["api.telegram.org"]));
+    }
+
+    #[test]
+    fn url_credential_and_placeholder_are_refused_apart() {
+        let mut b = make_broker("run_url_cred_shape");
+        b.secrets.insert("connector.key.x".into(), "sk-url".into());
+        // in: "url" without the placeholder would send an unauthenticated
+        // request that reads as a plain 401
+        let err = b
+            .call(
+                "http.get",
+                url_cred_payload("http://127.0.0.1:1/getMe".into()),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "TypeError");
+        assert!(err.message.contains("{credential}"), "{}", err.message);
+        // the placeholder with nothing to fill it is the same bug, seen
+        // from the other side
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:1/bot{credential}/getMe"}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "TypeError");
+        assert!(
+            err.message.contains("names no credential"),
+            "{}",
+            err.message
+        );
+        // and an unknown site is not silently treated as a header
+        let mut payload = url_cred_payload("http://127.0.0.1:1/x".into());
+        payload["credential"]["in"] = json!("cookie");
+        assert_eq!(b.call("http.get", payload).unwrap_err().type_, "TypeError");
     }
 
     /// ADR-026 §3: a binary body comes back as a raw ref, the bytes in

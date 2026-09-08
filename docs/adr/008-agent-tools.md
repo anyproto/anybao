@@ -1,6 +1,7 @@
 # ADR-008: Agent tools — webSearch, deepResearch, subagent, miniapp
 
-Status: **Accepted** (2026-07-17)
+Status: **Accepted** (2026-07-17; §1 amended 2026-09-08 — a credential can be
+injected into the url, for APIs that offer no header)
 Date: 2026-07-17
 Builds on: ADR-002 (effect boundary, credential injection), ADR-004
 (module loading), ADR-005 (loop core), ADR-006 §3 (config defaults
@@ -43,6 +44,41 @@ secret (`llm.key.anthropic` from `ANTHROPIC_API_KEY`).
 - Guest requests name `credential: {ref: "google.key.gemini",
   header: "x-goog-api-key"}`; the host injects the header value after
   the effect is recorded — the key never appears in the trace.
+- **Amendment 2026-09-08 — the injection site can be the url.** Some
+  APIs take their credential as a path segment or query parameter and
+  offer no header at all: Telegram's Bot API is
+  `api.telegram.org/bot<token>/METHOD`, and the header request
+  (tdlib/telegram-bot-api#138) has been open for years. Injecting only
+  into headers left those APIs with no honest connector — the guest
+  would have to hold the token, which the read guard refuses and the
+  isolation principle forbids. So the credential shape gains `in`:
+
+  ```python
+  {"ref": "connector.key.telegram", "in": "url", "about": {…}}
+  # url: "https://api.telegram.org/bot{credential}/sendMessage"
+  ```
+
+  `in` defaults to `"header"` (every connector before `telegram@v1`
+  and `llm@v1` are unchanged); `"url"` substitutes the value for the
+  marker `{credential}`, `prefix` still applies, and any other value
+  is refused. **Custody is the same rule, not a weaker one**: the
+  payload is recorded with the marker, the host substitutes on the
+  wire only, so the trace holds `{credential}` and replay stays pure.
+  The url is the one injection site a destination can quote back at
+  us, so everything recorded from the response — the final `url`,
+  header values, a text body — has the value replaced by the marker
+  again on the way out (a bytes body goes to the blob store as
+  received; a connector that expects its token echoed in binary is
+  not a shape we serve).
+- The two halves are refused apart, typed `TypeError`: `in: "url"`
+  with no marker in the url would send an unauthenticated request that
+  reads as a bad key, and a marker with no credential would send the
+  literal `{credential}` to the destination. Redirects follow the
+  credentialed rule unchanged (ADR-011 §4 — manual by default,
+  same-origin only with an explicit count); the substitution is never
+  re-applied to a `location` the destination chose. A 401 marks the
+  ref rejected exactly as a header ref does (ADR-021 §2), which is
+  what Telegram answers to a revoked token.
 
 ### 2. http redirect surface (amends ADR-002 §1)
 
