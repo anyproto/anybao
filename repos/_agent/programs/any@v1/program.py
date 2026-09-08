@@ -446,6 +446,7 @@ class _Client:
         self._chat_cache = {}      # space -> the general chat's root id
         self._wiki_cache = {}      # space -> {typeId, parentId, pos, folder}
         self._catalog_cache = None  # the server's usecase catalog
+        self._collections_ready = set()   # spaces whose collections app is set up
 
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
@@ -1968,9 +1969,11 @@ class _Client:
         a builtin handle (any, spaceIndex, type, page, miniapp, bin,
         dataview) or a catalog type's ERRORS — those cannot be created
         or reshaped. `hidden: True` keeps the type out of pickers (the
-        harness types are). Returns {"typeId", "xKey", "created",
-        "addedProps": {xKey: propId}} — reference everything by xKey
-        afterwards."""
+        harness types are). Minting a listed type also sets up the
+        space's `collections` app (the client's types feature switch)
+        when it lacks one, so the type and its objects show in the UI.
+        Returns {"typeId", "xKey", "created", "addedProps": {xKey:
+        propId}} — reference everything by xKey afterwards."""
         body = dict(body or {})
         props = body.pop("properties", None) or []
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
@@ -2005,8 +2008,27 @@ class _Client:
                 extra["xKey"] = pxkey
                 added[pxkey] = self._post_property(space, tid, extra)["propId"]
         self._cat_invalidate(space)   # freshly (re)shaped type -> refresh xKey map
+        if created and not body.get("hidden"):
+            self._ensure_collections_app(space)
         return {"typeId": tid, "xKey": xkey, "created": created,
                 "addedProps": added}
+
+    def _ensure_collections_app(self, space):
+        """A user type is invisible in the client until the space has
+        the catalog's `collections` app (the types feature switch, a
+        bare miniapp root — ADR-027 §5): set it up once per space per
+        run when a listed type is minted. Idempotent on the server;
+        best-effort here (a space that cannot install still holds the
+        type)."""
+        if space in self._collections_ready:
+            return
+        try:
+            if not any(b.get("id") == "system:collections/v1"
+                       for b in self.list_bundles(space)):
+                self._call("post", "/v1/catalog/collections/setup", {"spaceId": space})
+        except AnyError:
+            return
+        self._collections_ready.add(space)
 
     def list_datasets(self, space, type_key):
         """The datasets a type declares (by xKey) → [defs].

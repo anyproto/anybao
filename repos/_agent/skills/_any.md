@@ -80,7 +80,9 @@ fails in the standard overlay setup, ADR-004 §2):
   "date"}}`, `{"name": "Author", "xFormat": {"type": "relation",
   "relation": {"targetTypes": ["person"]}}}`, `{"name": "Site",
   "xFormat": {"type": "url"}}`. Returns `{typeId, xKey, created,
-  addedProps}` — carry the `xKey` forward, not the id.
+  addedProps}` — carry the `xKey` forward, not the id. Minting a type
+  also installs the space's Collections app when missing — that is
+  what makes types and their objects visible in the client.
 - **Property writes are nested type groups** keyed by the type xKey,
   mirroring the read shape:
   `c.create_object(s, {"types": ["book"], "initialProperties":

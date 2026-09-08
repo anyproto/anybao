@@ -209,6 +209,8 @@ def test_object_type_property_creation_paths():
         ("POST", "/v1/spaces/s1/objects"),
         ("GET", "/v1/spaces/s1/types"),          # idempotency probe
         ("POST", "/v1/spaces/s1/types"),
+        ("GET", "/v1/spaces/s1/bundles"),        # collections app probe (§5)
+        ("POST", "/v1/catalog/collections/setup"),
         ("GET", "/v1/spaces/s1/types"),          # add_property xKey resolution
         ("GET", "/v1/spaces/s1/types/t1/properties"),   # xFormat.pos append (ADR-027 §4)
         ("POST", "/v1/spaces/s1/types/t1/properties")]
@@ -219,6 +221,7 @@ def test_object_type_property_creation_paths():
 def test_create_type_composite_fans_out_properties():
     fx = wire(replies={
         "/types": {"types": [], "typeId": "t9"},
+        "/bundles": {"bundles": [{"id": "system:collections/v1"}], "synced": True},
         "/types/t9/properties": {"properties": [], "propId": "p1"}})
     r = client(fx).create_type("s1", {
         "name": "Comic Book",
@@ -234,6 +237,22 @@ def test_create_type_composite_fans_out_properties():
                            "xFormat": {"pos": "a0"}}
     assert posts[2][1] == {"name": "year", "xKey": "year", "kind": "number",
                            "xFormat": {"pos": "a0"}}   # fake lists no props → a0
+    # the space already has the collections app: no setup
+    assert not any(p.endswith("/collections/setup") for v, p, _ in fx.calls)
+
+
+def test_create_type_sets_up_the_collections_app_once():
+    # a listed user type is invisible in the client until the space
+    # has the collections app (ADR-027 §5): minted once per space
+    fx = wire(replies={"/types": {"types": [], "typeId": "t9"},
+                       "/bundles": {"bundles": [], "synced": True},
+                       "/types/t9/properties": {"properties": []}})
+    c = client(fx)
+    c.create_type("s1", {"name": "Plant"})
+    c.create_type("s1", {"name": "Pot"})
+    c.create_type("s1", {"name": "Agent Thing", "hidden": True})   # hidden: never
+    setups = [(v, p, b) for v, p, b in fx.calls if p.endswith("/collections/setup")]
+    assert setups == [("POST", "/v1/catalog/collections/setup", {"spaceId": "s1"})]
 
 
 def test_create_type_idempotent_adds_only_missing():
