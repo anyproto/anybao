@@ -674,7 +674,7 @@ spaces) and **upgrade** (the data-dir copies from Phase 0.3).
 | 5 (history) | PARTIAL — extraction and linkgen crons ran green through `/run`; rollup created 0 chunks (4 turns, below its window) — `create_chunk` on the wire is pinned by the integration test |
 | 6 (pages), 7 (properties) | PASS — integration tests; the live page landed under the wiki root with a position after its sibling |
 | 8 (programs, mini apps) | PASS after two fixes found here (`create_dataset` module parts, miniapp cache key): `tealcount@v1` created and run, `teal-card` created |
-| 9 (gmail) | NOT RUN — pulls the user's mailbox into a rig space; the user's call |
+| 9 (gmail) | PASS — one 50-message tick into the phase0 space's mailbox (`email_messages` records in the mailbox type's collection, `owners` = the type, stamps present); found and fixed a pre-existing ADR-026 regression (the multipart batch reply is a Blob) |
 | 10 (triggers across a restart) | PASS — the six standing crons and the chat responder came back with the new peer as owner; the next message answered |
 | 11 (errors) | PASS — integration tests (`bundle.reserved`, `dataset.module_reserved`, `dataset.unknown`, `dataset.not_declared`) |
 | 12 (two devices) | PASS — a second device of the same account (`:7143`, `configs/anybao.staging-parts-dev2.toml`) booted standby, adopted the same chat, config object and collections; `losers` empty on both |
