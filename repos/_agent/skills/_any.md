@@ -196,6 +196,16 @@ Links (`any://` URIs — the one reference format):
   everywhere), `any://m/<sid>/<identity>` a member mention,
   `any://s/<sid>` a space, `any://f/<sid>/<fileId>` a file. WRITE new
   links in text in this form: `[Name](any://o/<sid>/<oid>)`.
+- **The space segment of a link is the space ID, never a name.**
+  Names work in every `space` ARGUMENT (`put_markdown("ta", …)`) and
+  nowhere inside a URI: `any://f/ta/<fileId>` is a dead link — the
+  server answers 404 and the UI shows a broken chip. Take ids from
+  `currentUserSpace["spaceId"]`, `get_space("ta")["id"]` or the rows
+  you queried, and paste `attach_file(...)["uri"]` verbatim — a
+  hand-built file link is always wrong. `put/append/edit_markdown`
+  and `chat_send` report a mis-shaped link (name or missing space
+  segment) under `warnings` and as a `warning:` line; they never
+  rewrite it — fix the text and write again.
 - Legacy bare forms still parse as objects and exist in stored data:
   `any://<objectId>` and `any://<spaceId>/<objectId>` — when reading,
   the LAST path segment of an `o`/bare link is the object id.
@@ -232,8 +242,10 @@ Links (`any://` URIs — the one reference format):
   writer (`.blob` after close).
 - **Add a file to an object** — `attach_file(space, objectId, name,
   data, mime=None)` (data: a Blob or bytes) → `{fileId, …, uri:
-  "any://f/<sid>/<fileId>"}`. There is no file without an object: to
-  "create a file", pick or create the object first, then attach.
+  "any://f/<sid>/<fileId>"}` — `uri` IS the file link: `[name](uri)`
+  in markdown or chat text is the download, `![alt](uri)` an image.
+  There is no file without an object: to "create a file", pick or
+  create the object first, then attach.
   **Images on a page** render ONLY from `any://f/` links — a remote
   `![alt](https://…)` stays literal text in the editor. Importing
   markdown with images, in one cell per page:
@@ -272,7 +284,9 @@ Links (`any://` URIs — the one reference format):
   `{"a0": {"type": "link", "link": "any://o/<sid>/<oid>"}, …}` (≤32,
   keys `[A-Za-z0-9_-]+`, type `link` or `image`) — attach the objects
   you cite so the UI shows preview chips; plain `any://o/…` markdown
-  links in text render clickable too.
+  links in text render clickable too. Every `[Name](any://…)` link in
+  your final REPLY becomes a chip automatically — a link with a space
+  name in it becomes a broken chip nobody can open.
 
 Chat:
 

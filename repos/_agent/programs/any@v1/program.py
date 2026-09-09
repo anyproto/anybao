@@ -17,6 +17,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # (AnyError), the NUL write guard, typed per-route calls.
 
 import json
+import re
 
 
 def _sanitize_nuls(obj):
@@ -497,6 +498,75 @@ class _Client:
             return sid    # degenerate env (no listable spaces): server decides
         names = ", ".join(f'"{r.get("name") or r["id"]}"' for r in active)
         raise ValueError(f'no space named "{sid}" — spaces: {names}')
+
+    # --- outgoing link shape (ADR-010 §8) -------------------------------------
+    # Names resolve in `space` ARGUMENTS only; inside an any:// URI the
+    # space segment is always the id — `any://f/ta/<fid>` is a dead link
+    # for every reader (server 404 space.not_found, UI "Couldn't download
+    # the file"). The text writers judge every typed link they ship and
+    # report `warnings` (the create_object key) — never rewrite, never
+    # refuse: the body is the caller's, verbatim.
+    _LINK = re.compile(r"any://[^\s<>\"'()\[\]]+")
+
+    @staticmethod
+    def _is_space_id(s):
+        return "." in s and " " not in s and len(s) >= 20
+
+    def _link_issue(self, uri):
+        """Why a reader could not resolve `uri` — None when its shape is
+        fine. Typed links only (`any://<kind>/<spaceId>/…`); the legacy
+        bare forms live in stored data and pass."""
+        path = uri[len("any://"):].split("?", 1)[0].split("#", 1)[0]
+        parts = path.rstrip("/").split("/")
+        kind = parts[0]
+        if kind not in ("o", "f", "m", "s"):
+            return None
+        if len(parts) < (2 if kind == "s" else 3):
+            return (f"{uri}: no space segment — a typed link is "
+                    f"any://{kind}/<spaceId>/<id>")
+        seg = parts[1]
+        if self._is_space_id(seg):
+            return None
+        try:
+            sid = self._resolve_space(seg)
+        except (ValueError, AnyError):
+            sid = seg
+        if sid != seg:
+            rest = "/".join(parts[2:])
+            return (f'{uri}: "{seg}" is a space NAME — the space segment of '
+                    f"a link is its id: any://{kind}/{sid}"
+                    + (f"/{rest}" if rest else ""))
+        return (f'{uri}: "{seg}" is not a space id — a typed link is '
+                f"any://{kind}/<spaceId>/…")
+
+    def _link_warnings(self, *texts):
+        out = []
+        for t in texts:
+            if not isinstance(t, str):
+                continue
+            for uri in self._LINK.findall(t):
+                w = self._link_issue(uri)
+                if w and w not in out:
+                    out.append(w)
+        return out
+
+    @staticmethod
+    def _warned(result, warnings):
+        """Merge link warnings into a write's result; each also prints as
+        a `warning:` line so it reaches the cell digest even when the
+        call is not the cell's last expression."""
+        if not warnings:
+            return result
+        if not isinstance(result, dict):
+            result = {"result": result}
+        result["warnings"] = [*(result.get("warnings") or []), *warnings]
+        try:
+            emit = print   # the cell's printer, bound for modules (ADR-003 §3)
+        except NameError:  # an older kernel: the key alone
+            return result
+        for w in warnings:
+            emit("warning: " + w)
+        return result
 
     # --- xKey catalog + resolution (ADR-006 §6) ------------------------------
     # The server stores and validates by content-id: a value lives at
@@ -1789,10 +1859,14 @@ class _Client:
 
     def put_markdown(self, space, object_id, content):
         """Replace the object's editor body with `content` (markdown).
-        Whole-body write — prefer append_markdown when adding."""
+        Whole-body write — prefer append_markdown when adding. A typed
+        `any://` link in the body whose space segment is not a space id
+        (a NAME, or missing) is reported under `warnings` (and printed),
+        never rewritten — fix the text and write again."""
         self._ensure_body(space, object_id)
-        return self._call("put", self._md_path(space, object_id),
-                          {"content": content})
+        r = self._call("put", self._md_path(space, object_id),
+                       {"content": content})
+        return self._warned(r, self._link_warnings(content))
 
     def edit_markdown(self, space, object_id, edits):
         """Surgical text edits on the editor body — THE point-edit path
@@ -1805,18 +1879,24 @@ class _Client:
         "newText": "- [x] Buy milk"}]. Typed 400s say what to fix:
         markdown.no_match / ambiguous_match (add surrounding lines to
         disambiguate) / overlapping_edits. Returns PUT's {inserted,
-        updated, deleted, unchanged}; a no-op edit is a clean 200."""
-        return self._call("patch", self._md_path(space, object_id),
-                          {"edits": edits})
+        updated, deleted, unchanged}; a no-op edit is a clean 200. A
+        mis-shaped `any://` link in a newText → `warnings` (see
+        put_markdown)."""
+        r = self._call("patch", self._md_path(space, object_id),
+                       {"edits": edits})
+        texts = [e.get("newText") for e in (edits or []) if isinstance(e, dict)]
+        return self._warned(r, self._link_warnings(*texts))
 
     def append_markdown(self, space, object_id, content):
         """Append to the editor body (server-side append-only fast path).
 
         No read-modify-write, so it can't clobber the body the way a
-        get+put race can. Returns the api.MarkdownSetResponse dict."""
+        get+put race can. Returns the api.MarkdownSetResponse dict, plus
+        `warnings` for a mis-shaped `any://` link (see put_markdown)."""
         self._ensure_body(space, object_id)
-        return self._call("post", self._md_path(space, object_id, "/append"),
-                          {"content": content})
+        r = self._call("post", self._md_path(space, object_id, "/append"),
+                       {"content": content})
+        return self._warned(r, self._link_warnings(content))
 
     # --- spaces & ui context ---------------------------------------------------
     def list_spaces(self, raw=False):
@@ -2632,9 +2712,18 @@ class _Client:
         `general_chat(space)` — never a queried or created chat. To
         READ messages: `query(space, chat_id, "chat_messages",
         sort=["-createdAt"], limit=n)` (agent_turns is the agentlog,
-        not the conversation)."""
-        return self._call("post",
-                          f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
+        not the conversation). A typed `any://` link in `text` or in an
+        attachment whose space segment is a NAME or missing ships as
+        written and is reported under `warnings` (and printed) — the
+        chip/download it renders is dead until the text is fixed."""
+        r = self._call("post",
+                       f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
+        if isinstance(body, dict):
+            atts = body.get("attachments") or {}
+            links = [a.get("link") for a in atts.values()
+                     if isinstance(a, dict)] if isinstance(atts, dict) else []
+            r = self._warned(r, self._link_warnings(body.get("text"), *links))
+        return r
 
     # --- search & graph ----------------------------------------------------------
     def search(self, space, query, scopes=None, limit=None, mode=None,
@@ -3103,11 +3192,14 @@ class _Client:
         a `tempfile` writer's `.blob`) or `bytes`/`str` (wrapped into
         one); `mime` defaults to the Blob's. One raw upload — the host
         streams the bytes, the trace keeps the ref. Returns the
-        server's FileInfo plus `uri` (`any://f/<sid>/<fileId>`): put
-        that in markdown (`![alt](<uri>)` — the editor renders images
-        from any://f/ links only) or in `chat_send` attachments. There
-        is no file without an object: to "create a file", pick or
-        create the object it belongs to first."""
+        server's FileInfo plus `uri` (`any://f/<sid>/<fileId>`) — THE
+        file link: paste it verbatim into markdown (`![alt](<uri>)` —
+        the editor renders images from any://f/ links only; `[name](<uri>)`
+        for a download) or into `chat_send` attachments. Never compose
+        a file link yourself: its space segment is the space ID, and a
+        NAME there (`any://f/ta/…`) is a dead link. There is no file
+        without an object: to "create a file", pick or create the
+        object it belongs to first."""
         b = data if isinstance(data, Blob) else blob.of(data)  # noqa: F821 - guest globals
         if not isinstance(data, Blob) and mime:  # noqa: F821
             b = blob.from_bytes(bytes(b), mime)  # noqa: F821

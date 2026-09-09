@@ -240,7 +240,17 @@ prevent, caused by the one place the renderer couldn't see.
   explicit resolver. Space rows are TRIMMED to model-usable fields —
   push-notification key material, `settings`, index pointers, icon,
   author hash never enter model context (`raw=True` returns wire
-  rows).
+  rows). **Amended 2026-09-09**: name resolution is an ARGUMENT
+  convenience only — inside an `any://` URI the space segment is the
+  id. The text writers (`put_markdown`, `append_markdown`,
+  `edit_markdown` newText, `chat_send` text + attachment links) judge
+  every typed link (`o/`, `f/`, `m/`, `s/`) they ship: a missing or
+  non-id space segment is reported under `warnings` (naming the id
+  when the segment is a known space name) and as a printed
+  `warning:` line. They never rewrite or refuse the body — the
+  content is the caller's verbatim, and a refusal in `chat_send`
+  would drop the toolcaller's own reply, which rides the same call.
+  Legacy bare forms (`any://<oid>`, `any://<sid>/<oid>`) pass.
 - **Omission errors transparently.** A first argument that cannot be a
   space ref (empty or whitespace-bearing string — prose that landed in
   the spaceConfig slot — or a non-string non-mapping) raises a

@@ -951,6 +951,83 @@ def test_markdown_roundtrip_uses_content_key():
     assert [p for _, p, _ in fx.calls].count("/v1/spaces/s1/objects/query") == 1
 
 
+# --- outgoing link shape (ADR-010 §8 amendment 2026-09-09) --------------------
+
+SPACES = {"/v1/spaces": {"spaces": [
+    {"id": SID, "name": "ta", "status": "active"}]}}
+
+
+def test_markdown_writers_warn_on_a_space_name_in_a_link(capsys):
+    fx = wire(replies={**SPACES,
+                       "/objects/query": {"records": [
+                           {"id": "o1", "any": {"types": ["page"]}}]},
+                       "/markdown": {"inserted": 1}})
+    c = client(fx)
+    r = c.put_markdown("s1", "o1", "[x.docx](any://f/ta/2yp2VRDcFqu)")
+    assert r["inserted"] == 1
+    assert r["warnings"] == [
+        'any://f/ta/2yp2VRDcFqu: "ta" is a space NAME — the space segment '
+        f"of a link is its id: any://f/{SID}/2yp2VRDcFqu"]
+    # the body shipped verbatim — no rewrite
+    put = next(b for v, p, b in fx.calls if v == "PUT")
+    assert put == {"content": "[x.docx](any://f/ta/2yp2VRDcFqu)"}
+    # and the warning also reaches the cell digest as a printed line
+    assert capsys.readouterr().out.startswith("warning: any://f/ta/")
+
+
+def test_markdown_writers_warn_on_a_missing_space_segment():
+    fx = wire(replies={"/objects/query": {"records": [
+                           {"id": "o1", "any": {"types": ["page"]}}]},
+                       "/append": {"inserted": 1}})
+    c = client(fx)
+    r = c.append_markdown("s1", "o1", "see [Page](any://o/bafyobj1) and "
+                          "[again](any://o/bafyobj1)")
+    assert r["warnings"] == [
+        "any://o/bafyobj1: no space segment — a typed link is any://o/<spaceId>/<id>"]
+    r = c.edit_markdown("s1", "o1", [{"oldText": "a", "newText": "[s](any://s)"}])
+    assert r["warnings"] == [
+        "any://s: no space segment — a typed link is any://s/<spaceId>/<id>"]
+
+
+def test_well_shaped_and_legacy_links_pass_silently():
+    fx = wire(replies={**SPACES,
+                       "/objects/query": {"records": [
+                           {"id": "o1", "any": {"types": ["page"]}}]},
+                       "/markdown": {"inserted": 1}})
+    c = client(fx)
+    body = (f"[a](any://o/{SID}/bafyobj1) ![i](any://f/{SID}/fid?w=1) "
+            f"[m](any://m/{SID}/ident) [sp](any://s/{SID}) "
+            "legacy any://bafyobj1 and any://bafyspace0000000000000000.x/bafyobj1 "
+            "and [rec](any://o/" + SID + "/o/editor_blocks/b1)")
+    assert c.put_markdown("s1", "o1", body) == {"inserted": 1}
+    assert not any(p == "/v1/spaces" for _, p, _ in fx.calls)   # no catalog fetch
+
+
+def test_unknown_non_id_space_segment_warns_without_a_name():
+    fx = wire(replies={**SPACES, "/objects/query": {"records": [
+        {"id": "o1", "any": {"types": ["page"]}}]}})
+    c = client(fx)
+    r = c.put_markdown("s1", "o1", "[f](any://f/nope/fid)")
+    assert r["warnings"] == [
+        'any://f/nope/fid: "nope" is not a space id — a typed link is any://f/<spaceId>/…']
+
+
+def test_chat_send_warns_on_text_and_attachment_links_but_still_sends():
+    fx = wire(replies={**SPACES, "/messages": {"id": "m1"}})
+    c = client(fx)
+    r = c.chat_send("s1", "chat1", {
+        "text": "here: [x.docx](any://f/ta/2yp2VRDcFqu)",
+        "attachments": {"a0": {"type": "link", "link": "any://o/bafyobj1"},
+                        "a1": {"type": "link", "link": f"any://o/{SID}/bafyobj1"}}})
+    assert r["id"] == "m1"
+    assert r["warnings"] == [
+        'any://f/ta/2yp2VRDcFqu: "ta" is a space NAME — the space segment '
+        f"of a link is its id: any://f/{SID}/2yp2VRDcFqu",
+        "any://o/bafyobj1: no space segment — a typed link is any://o/<spaceId>/<id>"]
+    sent = next(b for v, p, b in fx.calls if p.endswith("/messages"))
+    assert "warnings" not in sent and sent["text"].endswith("2yp2VRDcFqu)")
+
+
 # --- search / backlinks -------------------------------------------------------------
 
 def test_search_returns_full_envelope_and_optional_fields():
