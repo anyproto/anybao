@@ -93,13 +93,22 @@ fails in the standard overlay setup, ADR-004 §2):
   with `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
   {"rating": 9}})`. Properties placed anywhere else, or an unknown
   type/property key, error — never silently dropped.
-- **Placing a page in the user's tree**: `parent=` on `create_object`
-  (`""` = top level, or a parent object id; `folder=True` makes a
-  folder) puts the object in the space's page tree — the Wiki app;
-  `c.move_object(s, obj_id, parent)` moves one; `c.list_children(s,
-  parent)` walks it. Without `parent` an object is outside every tree
-  and still reachable by search, links and queries — say where you
-  put it.
+- **The Wiki shows exactly the objects that carry the space's hidden
+  `wiki` type** (its `parentId` / `pos` / `folder` values are the
+  placement); whatever else an object is, without that type it is not
+  in the Wiki. Never attach `wiki` by hand — the placement calls add
+  it: `parent=` on `create_object` (`""` = top level, or a folder's
+  object id) puts a new object in the tree; `c.move_object(s, obj_id,
+  parent, folder=None)` adds or moves an existing one. `folder=True`
+  makes a folder — a create with a name, no body, no other types:
+  `c.create_object(s, {"name": "Recipes"}, parent="", folder=True)`.
+  To file a page under a folder, find the folder first with
+  `c.list_children(s, "")` (match by name; `list_children(s,
+  folder_id)` walks deeper), create it once if missing, then pass its
+  `objectId` as `parent`. `c.detach_type(s, obj_id, "wiki")` takes an
+  object out of the Wiki without deleting it. Without `parent` an
+  object is outside every tree and still reachable by search, links
+  and queries — say where you put it.
 - **Append to a body with `c.append_markdown(s, obj_id, text)`** —
   server-side append-only fast path; never get+put round-trip to add a
   section (a concurrent get+put clobbers the body).
