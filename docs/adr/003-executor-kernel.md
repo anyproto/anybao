@@ -158,7 +158,11 @@ The setters (stop words in the chat, the control API's `POST
   driver (a JSON-friendly `{ok, prints, last, error}`, not the host
   CellResult dataclass). Nested execution **restores the caller's
   printer** on return, so a child cell's `print()` output never leaks
-  into the driver's own. Per-model-cell trace granularity comes from
+  into the driver's own. **Amended 2026-09-09**: a program module
+  loaded by `use()` is bound the same channel — its `print()` is the
+  ACTIVE cell's printer, so a warning a library raises mid-cell
+  (any@v1's link-shape `warnings`, ADR-010 §8) reaches the digest of
+  the cell that called it; outside any cell it is a no-op. Per-model-cell trace granularity comes from
   wrapping each `subcell` in a `cell`-named span (§4b): the span groups
   that cell's effects, and the driver reads them back with
   `trace.effects_of(span=…)` for the digest. A failed cell ends its

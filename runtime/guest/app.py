@@ -926,6 +926,16 @@ def _help(obj):
     return text  # no cell printer (module top level): hand back the text
 
 
+def _module_print(*a, **kw):
+    """A program module's `print` — the ACTIVE cell's traced printer
+    (ADR-003 §3): a warning a module prints lands in the digest of the
+    cell that called it, like `help()`. Outside any cell it is a no-op
+    (a module's own top-level run has no digest to reach)."""
+    p = _ns.get("print")
+    if callable(p) and p is not _module_print:
+        p(*a, **kw)
+
+
 # ---- curated builtins (ADR-002 §3) -----------------------------------------
 
 _SAFE_NAMES = [
@@ -1186,6 +1196,7 @@ def _bound_use(owner):
         mod = types.ModuleType(spec.split("@")[0].split(":")[-1])
         mod.__dict__.update(_fresh_ns())
         mod.__dict__["use"] = _bound_use(r["objectId"])
+        mod.__dict__["print"] = _module_print
         exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
         _module_cache[ck] = mod
         return mod
