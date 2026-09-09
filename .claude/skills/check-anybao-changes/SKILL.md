@@ -41,8 +41,10 @@ user input and start a toolcaller run):
 ```
 BAO=$(curl -s http://127.0.0.1:7001/v1/spaces | \
   python3 -c "import sys,json;print([s['id'] for s in json.load(sys.stdin)['spaces'] if s['name']=='bao' and s.get('status')=='active'][0])")
-CHAT=$(curl -s http://127.0.0.1:7001/v1/spaces/$BAO | \
-  python3 -c "import sys,json;print(json.load(sys.stdin)['generalChatObjectId'])")
+# the space row carries no chat id since ADR-027 (the general chat is a
+# catalog bundle): take it from the serve's boot line
+# `anyrt serving space=<bao> chat=<CHAT>` in its log / terminal
+CHAT=<chat id from the serve's "anyrt serving … chat=" line>
 curl -s -X POST "http://127.0.0.1:7001/v1/spaces/$BAO/objects/$CHAT/chat/messages" \
   -H 'content-type: application/json' \
   -d '{"text":"<a prompt that forces the changed code path>"}'
