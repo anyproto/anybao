@@ -1,6 +1,6 @@
-"""The memory WRITE facade over a space's brain (agent_memory_items).
+"""The memory WRITE facade over the brain (agent_memory_items).
 
-Bind `m = memory(c, space)` (c = the any@v1 module), then save through
+Bind `m = memory(c)` (c = the any@v1 module), then save through
 `m.save_with_dedup(candidate, rec)` (rec = recall@v1) — recall
 supplies lookalikes, a fast-tier judge decides merge | supersede |
 create. Raw `add` skips dedup; use only when the fact is known new.
@@ -76,12 +76,12 @@ def _first_json(text):
 
 
 class Memory:
-    """Memory writes over one space's brain object. The server resolves
-    the brain (deterministic derived id) — no object id param needed."""
+    """Memory writes over THE brain — the bao space's (ADR-017 §0);
+    memory has one home, so no space is bound. The server resolves the
+    brain (deterministic derived id) — no object id param needed."""
 
-    def __init__(self, client, space, llm_chat):
+    def __init__(self, client, llm_chat):
         self._c = client
-        self._space = space
         self._chat = llm_chat
 
     @span(kind="mutator")  # noqa: F821 - guest global
@@ -93,7 +93,7 @@ class Memory:
         of the ModifyResult."""
         body = {"category": category, "context": context, **fields}
         _require(body, "memory item")
-        reply = self._c.create_memory(self._space, body)
+        reply = self._c.create_memory(body)
         return {"itemId": reply["recordIds"][0]}
 
     @span(kind="mutator")  # noqa: F821 - guest global
@@ -106,13 +106,13 @@ class Memory:
                              f"mutable: {list(MUTABLE_FIELDS)}")
         if not fields:
             raise ValueError("evolve needs at least one field")
-        self._c.evolve_memory(self._space, item_id, fields)
+        self._c.evolve_memory(item_id, fields)
         return {"itemId": item_id}
 
     @span(kind="mutator")  # noqa: F821 - guest global
     def delete(self, item_id):
         """Delete a memory item (author-only)."""
-        self._c.delete_memory(self._space, item_id)
+        self._c.delete_memory(item_id)
         return {"itemId": item_id}
 
     @span(kind="mutator")  # noqa: F821 - guest global
@@ -194,14 +194,16 @@ class Memory:
 
 
 @span(kind="setup")  # noqa: F821 - guest global
-def memory(client, space, llm_chat=None):
-    """Bind the memory facade to one space's brain — then `help(m)`.
+def memory(client, llm_chat=None):
+    """Bind the memory facade to the brain — then `help(m)`.
 
-    The brain is server-resolved, no object id needed.
+    Memory lives in the bao space only (ADR-017 §0): no space to pick,
+    a fact ABOUT a space goes in `context`/`tags`. The brain is
+    server-resolved, no object id needed.
 
     `client` is an any@v1 client (create_memory/evolve_memory/
     delete_memory); the judge's model call defaults to llm@v1 chat
     and is injectable for tests."""
     if llm_chat is None:
         llm_chat = use("llm@v1").chat  # noqa: F821 - guest global
-    return Memory(client, space, llm_chat)
+    return Memory(client, llm_chat)

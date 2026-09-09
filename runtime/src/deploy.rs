@@ -22,7 +22,7 @@
 #![allow(dead_code)]
 
 use crate::anyapi::{AnyError, Client};
-use crate::program_schema::{ProgramSchema, MANIFEST_DATASET, SOURCE_DATASET};
+use crate::program_schema::ProgramSchema;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -443,10 +443,11 @@ impl<'a> Deployer<'a> {
         &self,
         object_id: &str,
         props: &Value,
-    ) -> Result<Option<String>, AnyError> {
+    ) -> anyhow::Result<Option<String>> {
+        let s = self.schema()?;
         let src = self
             .client
-            .query(&self.space, object_id, SOURCE_DATASET, &json!({}))?;
+            .query(&self.space, object_id, &s.source, &json!({}))?;
         let Some(main) = src.first() else {
             return Ok(None);
         };
@@ -455,7 +456,7 @@ impl<'a> Deployer<'a> {
         let any_tool = props["any_tool"].as_bool().unwrap_or(false);
         let man_recs = self
             .client
-            .query(&self.space, object_id, MANIFEST_DATASET, &json!({}))?;
+            .query(&self.space, object_id, &s.manifest, &json!({}))?;
         let manifest = man_recs
             .first()
             .and_then(|r| r.get("manifest"))
@@ -516,7 +517,7 @@ impl<'a> Deployer<'a> {
         self.client.upsert_record(
             &self.space,
             &oid,
-            SOURCE_DATASET,
+            &s.source,
             "main",
             &json!({"code": p.code}),
         )?;
@@ -524,14 +525,14 @@ impl<'a> Deployer<'a> {
             self.client.upsert_record(
                 &self.space,
                 &oid,
-                MANIFEST_DATASET,
+                &s.manifest,
                 "main",
                 &json!({"manifest": p.manifest}),
             )?;
         } else {
             // a program that lost its manifest must not keep a stale one
             // (the in-space fingerprint would never converge)
-            self.clear_dataset(&oid, MANIFEST_DATASET)?;
+            self.clear_dataset(&oid, &s.manifest)?;
         }
         Ok(status)
     }
@@ -559,9 +560,9 @@ impl<'a> Deployer<'a> {
     }
 }
 
-/// Find-or-create a `type_id`-typed object by `any.name` — the trigger
-/// anchor / kernel object / README pattern (unregistered custom type
-/// keys work; the server materializes them).
+/// Find-or-create a `type_id`-typed object by `any.name` — the README
+/// pattern (the type must exist in the space: a built-in such as
+/// `page`, or a declared user type).
 ///
 /// Racing starts (query-then-create, plus index lag right after a
 /// create) can leave SEVERAL anchors; with `limit: 1` + first-row pick
@@ -614,7 +615,9 @@ pub fn instant_ms(v: &Value) -> Option<i64> {
 
 // --- repo deploy — a source folder published to a space (ADR-009 §2) ---
 
-pub const README_TYPE: &str = "readme";
+/// The README is a plain document: the built-in `page` gives it its
+/// body (ADR-027 §3).
+pub const README_TYPE: &str = "page";
 
 /// The overlay's description object, from the source root's README.md.
 /// Hash-gated by content comparison (a fresh object reads back "").
@@ -676,49 +679,43 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
     Ok(out)
 }
 
-/// Ensure the agent_skill type exists WITH its name property and return
-/// (typeId, namePropId). Both live-caught constraints: a fresh user
-/// type has no schema (property writes rejected until one is defined),
-/// and raw-client writes key type groups by typeID, not xKey (only
-/// builtins have id == xKey).
+/// Ensure the agent_skill type exists WITH its name property and its
+/// shared editor part — the skill's markdown body is held through the
+/// type, never attached per object (ADR-027 §3) — and return (typeId,
+/// namePropId). Live-caught constraints: a fresh user type has no
+/// schema (property writes rejected until one is defined), and
+/// raw-client writes key type groups by typeID, not xKey (only
+/// builtins have id == xKey). Hidden: never offered by a picker.
 fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)> {
-    let mut tid: Option<String> = None;
-    let types = client.list_types(space)?;
-    for t in &types {
-        let key = t["xKey"].as_str().or_else(|| t["key"].as_str());
-        if key == Some(SKILL_TYPE) {
-            tid = t["id"]
-                .as_str()
-                .or_else(|| t["typeId"].as_str())
-                .map(str::to_string);
-            break;
-        }
-    }
-    // A pre-metatype "Agent Skill" (any PR #176) reads back with no
-    // xKey — re-claim the handle in place rather than duplicating it.
-    if tid.is_none() {
-        for t in &types {
-            if t["xKey"].as_str().unwrap_or_default().is_empty() && t["name"] == "Agent Skill" {
-                if let Some(id) = t["id"].as_str() {
-                    client.set_properties(space, id, "type", &json!({"xkey": SKILL_TYPE}))?;
-                    tid = Some(id.to_string());
-                    break;
-                }
-            }
-        }
-    }
-    let tid = match tid {
+    let tid = match client
+        .list_types(space)?
+        .iter()
+        .find(|t| t["xKey"] == SKILL_TYPE)
+        .and_then(|t| t["id"].as_str().map(str::to_string))
+    {
         Some(t) => t,
         None => {
-            let res =
-                client.create_type(space, &json!({"name": "Agent Skill", "xKey": SKILL_TYPE}))?;
+            let res = client.create_type(
+                space,
+                &json!({"name": "Agent Skill", "xKey": SKILL_TYPE, "hidden": true}),
+            )?;
             res["typeId"]
                 .as_str()
-                .or_else(|| res["id"].as_str())
                 .ok_or_else(|| anyhow::anyhow!("create_type reply has no typeId: {res}"))?
                 .to_string()
         }
     };
+    let has_body = client
+        .list_datasets(space, &tid)?
+        .iter()
+        .any(|d| d["collection"] == crate::anyapi::EDITOR_BLOCKS);
+    if !has_body {
+        client.add_part(
+            space,
+            &tid,
+            &json!({"key": "body", "datasets": [{"module": "editor", "shared": true}]}),
+        )?;
+    }
     for p in client.list_properties(space, &tid)? {
         if p["xKey"].as_str() == Some("name") {
             let pid = p["id"]
@@ -1117,7 +1114,7 @@ mod tests {
         assert_eq!(d.deploy_one(&p).unwrap(), "unchanged");
         // the written source round-trips; derived props are cached
         let src = c
-            .query("agent", "obj1", "program_source", &json!({}))
+            .query("agent", "obj1", &schema(&c, "agent").source, &json!({}))
             .unwrap();
         assert_eq!(src[0]["code"], json!(TOOL));
         let s = schema(&c, "agent");
@@ -1136,7 +1133,7 @@ mod tests {
         let changed = ProgramSource::new("t", "v1", &format!("{TOOL}# changed"));
         assert_eq!(d.deploy_one(&changed).unwrap(), "updated");
         let src = c
-            .query("agent", "obj1", "program_source", &json!({}))
+            .query("agent", "obj1", &schema(&c, "agent").source, &json!({}))
             .unwrap();
         assert!(src[0]["code"].as_str().unwrap().contains("# changed"));
     }
@@ -1187,7 +1184,7 @@ mod tests {
         let p = ProgramSource::new("t", "v1", TOOL).with_manifest(manifest());
         assert_eq!(d.deploy_one(&p).unwrap(), "created");
         let man = c
-            .query("agent", "obj1", "program_manifest", &json!({}))
+            .query("agent", "obj1", &schema(&c, "agent").manifest, &json!({}))
             .unwrap();
         assert_eq!(man[0]["manifest"], manifest());
         assert_eq!(d.deploy_one(&p).unwrap(), "unchanged"); // manifest round-trips
@@ -1200,7 +1197,7 @@ mod tests {
             "updated"
         );
         assert!(c
-            .query("agent", "obj1", "program_manifest", &json!({}))
+            .query("agent", "obj1", &schema(&c, "agent").manifest, &json!({}))
             .unwrap()
             .is_empty());
     }

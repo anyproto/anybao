@@ -126,6 +126,8 @@ subPages, answer, sources, searchQueries, timing, usage}`.
 
 ### 6. `miniapp@v1` (folder tool)
 
+**Amended 2026-09-08 (ADR-027 §2):** `mini_app` is a hidden type; its dataset is one part keyed `mini_app`, addressed by key.
+
 Over the harness-declared `mini_app` user type (amended 2026-08-26;
 the server builtin is deleted — xKey `mini_app`, ensured by this
 program, its writer, on `create`; ADR-017 §1): content lives in its

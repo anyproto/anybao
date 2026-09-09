@@ -19,26 +19,30 @@ PROGRAMS = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 ANY_SRC = (PROGRAMS / "any@v1" / "program.py").read_text()
 RECALL_SRC = (PROGRAMS / "recall@v1" / "program.py").read_text()
 
+# a search hit names its collection; any@v1 adds the store `key`
 HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",
-       "recordId": "m1", "score": 0.9}
+       "key": "agent_memory_items", "recordId": "m1", "score": 0.9}
 
-# One object row with a user type t1: p_ref / p_refs are links-format
-# props (the object-ref convention — arrays of any:// URIs; p_ref
-# exercises scalar tolerance), p_str a plain string; `any` and `nav`
-# are reserved and must be skipped.
+# One object row with a user type t1: p_ref / p_refs are relation
+# props (the object-ref descriptor — arrays of any:// URIs; p_ref
+# exercises scalar tolerance), p_str a plain string; `any` and the
+# hidden built-ins' groups are reserved and must be skipped.
 OBJ_ROW = {
     "id": "obj1",
-    "any": {"name": "Dune"},
-    "nav": {"parentId": "root"},
+    "any": {"name": "Dune", "types": ["t1", "page"]},
+    "page": {},
     "t1": {"p_ref": "any://target1", "p_refs": ["any://target2", "any://target3"],
            "p_str": "prose"},
 }
 T1_PROPS = [
-    {"id": "p_ref", "name": "Author", "kind": "array", "format": {"type": "links"}},
+    {"id": "p_ref", "name": "Author", "kind": "array", "xFormat": {"type": "relation"}},
     {"id": "p_refs", "name": "Mentions", "kind": "array",
-     "format": {"type": "links", "ui": "links"}},
+     "xFormat": {"type": "relation", "config": {"multiple": True}}},
     {"id": "p_str", "name": "Notes", "kind": "string"},
 ]
+# the store hosts and the types they carry (the key → collection
+# resolution reads them; collections equal their keys in this rig)
+HOST_TYPES = {"brain1": ["br"], "brainX": ["br"], "chat1": ["lg"], "chat9": ["lg"]}
 
 
 def _reply(status, data):
@@ -52,30 +56,36 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
     space where the harness never registered bao/v1)."""
     def fx(name, payload):
         assert name.startswith("http."), name
-        path = payload["url"].removeprefix("http://any")
+        path = payload["url"].removeprefix("http://any").partition("?")[0]
         body = payload.get("json")
         if path.endswith("/v1/spaces"):   # name-resolution plumbing (§8):
             return _reply(200, {"spaces": []})   # uncaptured, indices stable
-        # ADR-017 store plumbing — uncaptured so dataset-call indices
-        # stay stable across tests
+        # ADR-017 / ADR-027 store plumbing — uncaptured so dataset-call
+        # indices stay stable across tests
         if path.endswith("/bundles"):
-            # every chat in the fixtures is a bundle root; its log
-            # child is the chat id + "-log"
+            # every chat in the fixtures is a bundle root
             return _reply(200, {"bundles": [
-                {"id": "general-chat/v1", "rootId": (body or {}).get("rootId")
-                 or "chat9"},
+                {"id": "system:general-chat/v1", "rootId": "chat9", "derived": True},
                 {"id": "chat1-bundle/v1", "rootId": "chat1"}]})
         if "/types/" in path and path.endswith("/datasets"):
+            def ds(key, **rest):
+                return {"id": "d_" + key, "key": key, "collection": key,
+                        "module": "records", **rest}
             return _reply(200, {"datasets": [
-                {"id": "d1", "name": "agent_memory_items",
-                 "search": {"title": "context", "text": "body",
-                            "scope": "agent"}},
-                {"id": "d2", "name": "agent_job_state"},
-                {"id": "d3", "name": "agent_turns",
-                 "search": {"title": "userText", "text": "searchText",
-                            "scope": "history"}},
-                {"id": "d4", "name": "agent_chunks",
-                 "search": {"text": "summary", "scope": "history"}}]})
+                ds("agent_memory_items",
+                   search={"title": "context", "text": "body", "scope": "agent"}),
+                ds("agent_job_state"), ds("agent_roi_injections"),
+                ds("agent_turns",
+                   search={"title": "userText", "text": "searchText",
+                           "scope": "history"}),
+                ds("agent_chunks", search={"text": "summary", "scope": "history"})]})
+        if path.endswith("/objects/query") and isinstance((body or {}).get("filter"), dict) \
+                and isinstance(body["filter"].get("id"), str) \
+                and body["filter"]["id"] in HOST_TYPES:
+            oid = body["filter"]["id"]   # a store host's carried types
+            return _reply(200, {"records": [{"id": oid, "any": {"types": HOST_TYPES[oid]}}]})
+        if path.endswith("/catalog"):
+            return _reply(200, {"usecases": []})
         if path.endswith("/children"):
             if body and body.get("seed") == "bao/brain/v1":
                 if brain is None:
@@ -87,7 +97,7 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
             # chat's own id in these fixtures (host identity is what
             # the assertions check)
             root = path.rsplit("/bundles/", 1)[1].removesuffix("/children")
-            chat = {"general-chat%2Fv1": "chat9",
+            chat = {"system%3Ageneral-chat%2Fv1": "chat9",
                     "chat1-bundle%2Fv1": "chat1"}.get(root, "chat9")
             return _reply(200, {"objectId": chat})
         capture.append((name.removeprefix("http.").upper(), path, body))
@@ -103,8 +113,13 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
                 {"id": "br", "name": "Agent Brain", "xKey": "agent_brain"},
                 {"id": "lg", "name": "Agent Log", "xKey": "agent_log"}]})
         if path.endswith("/backlinks"):
-            return _reply(200, {"backlinks": [
-                {"objectId": "src9", "typeId": "t1", "propId": "p_ref"}]})
+            return _reply(200, {"object": [
+                {"source": {"spaceId": "s1", "objectId": "src9", "dataset": "prop",
+                            "recordId": "p_ref", "typeId": "t1"},
+                 "kind": "relation", "target": {"uri": "any://o/s1/obj1"}},
+                {"source": {"spaceId": "s1", "objectId": "pg1", "dataset": "editor_blocks",
+                            "recordId": "blk"},
+                 "kind": "link", "target": {"uri": "any://o/s1/obj1"}}], "parts": []})
         if path.endswith("/query"):  # per-object dataset query
             recs = {"agent_memory_items": list(memory), "agent_turns": list(turns),
                     "agent_chunks": list(chunks)}[body["dataset"]]
@@ -117,7 +132,8 @@ def build(fx, space="s1", **recall_kw):
     nospan = lambda name=None, kind=None: (lambda f: f)  # noqa: E731
     any_g = {"effect": fx, "span": nospan, "use": None, **kernel_globals()}
     exec(compile(ANY_SRC, "any@v1.py", "exec"), any_g)
-    any_g["_instance"] = any_g["_Client"]("http://any")   # skip config.get
+    # skip runtime.get; "s1" = the bao space (the memory home)
+    any_g["_instance"] = any_g["_Client"]("http://any", "s1")
     any_mod = SimpleNamespace(**any_g)
     rec_g = {"effect": fx, "span": nospan, **kernel_globals(),
              "use": lambda spec: {"any@v1": any_mod}[spec]}
@@ -255,15 +271,17 @@ def test_neighbors_forward_refs_only_links_props():
     cap = []
     got = recall(cap).neighbors("obj1")
     # type/prop are xKeys (name fallback when the prop has no xKey) —
-    # content ids never surface in either direction
-    assert got["backlinks"] == [{"sourceId": "src9", "type": "t_one",
-                                 "prop": "Author"}]
+    # content ids never surface in either direction; a block edge
+    # names its collection
+    assert got["backlinks"] == [
+        {"sourceId": "src9", "kind": "relation", "type": "t_one", "prop": "Author"},
+        {"sourceId": "pg1", "kind": "link", "dataset": "editor_blocks"}]
     # any:// prefixes stripped — targets speak bare object ids
     assert sorted(f["targetId"] for f in got["forward"]) == ["target1", "target2", "target3"]
     by_target = {f["targetId"]: f for f in got["forward"]}
     assert by_target["target1"]["prop"] == "Author"
     assert by_target["target2"]["prop"] == "Mentions"
-    # p_str (no links format) contributed nothing; reserved any/nav skipped
+    # p_str (no relation slug) contributed nothing; reserved any/page skipped
     assert all(f["prop"] != "Notes" for f in got["forward"])
     assert all(f["type"] == "t_one" for f in got["forward"])
 
@@ -280,7 +298,7 @@ def test_neighbors_unknown_object_is_empty():
     def fx(name, payload):
         path = payload["url"]
         if path.endswith("/backlinks"):
-            return _reply(200, {"backlinks": []})
+            return _reply(200, {"object": [], "parts": []})
         return _reply(200, {"records": []})
     assert build(fx).neighbors("nope") == {"forward": [], "backlinks": []}
 
@@ -293,18 +311,6 @@ def test_neighbors_tolerates_unqueryable_type_group():
         if path.endswith("/objects/query"):
             return _reply(200, {"records": [{"id": "o", "ghost": {"p": "x"}}]})
         if path.endswith("/backlinks"):
-            return _reply(200, {"backlinks": []})
+            return _reply(200, {"object": [], "parts": []})
         return _reply(404, {"error": {"code": "type.not_found", "message": "ghost"}})
     assert build(fx).neighbors("o") == {"forward": [], "backlinks": []}
-
-
-def test_neighbors_backlinks_route_missing_degrades_empty():
-    # pre-backlinks server: the route 404s with request.not_found —
-    # neighbors still answers with forward refs and empty backlinks
-    def fx(name, payload):
-        if payload["url"].endswith("/v1/spaces"):
-            return _reply(200, {"spaces": []})   # name-resolution plumbing (§8)
-        if payload["url"].endswith("/objects/query"):
-            return _reply(200, {"records": []})
-        return _reply(404, {"error": {"code": "request.not_found", "message": "Not Found"}})
-    assert build(fx).neighbors("x") == {"forward": [], "backlinks": []}

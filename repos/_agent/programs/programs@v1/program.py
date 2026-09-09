@@ -202,12 +202,14 @@ def _validate_source(spec, code):
 # --- storage (deploy's exact shape, ADR-013 §1) ------------------------------
 
 # The `program` store, declared exactly as deploy declares it
-# (runtime/src/program_schema.rs is normative): a user type by xKey, four
-# unindexed properties, two runtime datasets WITHOUT a search mapping
-# (source is code, never indexed — ADR-010 §5). programs@v1 is the
-# writer in a working space, so it ensures the store there (ADR-017 §1).
+# (runtime/src/program_schema.rs is normative): a hidden user type by
+# xKey, four unindexed properties, a shared editor part (the docs body
+# every program object holds through its type) and two datasets
+# WITHOUT a search mapping (source is code, never indexed — ADR-010
+# §5; ADR-027 §2/§3). programs@v1 is the writer in a working space, so
+# it ensures the store there (ADR-017 §1).
 _PROGRAM_TYPE = {
-    "name": "Program", "xKey": "program",
+    "name": "Program", "xKey": "program", "hidden": True,
     "properties": [
         {"name": "Name", "xKey": "name", "kind": "string",
          "meta": {"index": "none"}},
@@ -218,10 +220,11 @@ _PROGRAM_TYPE = {
         {"name": "Summary", "xKey": "summary", "kind": "string",
          "meta": {"index": "none"}}]}
 _PROGRAM_DATASETS = [
-    {"name": "program_source", "displayName": "Program Source",
+    {"module": "editor", "shared": True},
+    {"key": "program_source", "displayName": "Program Source",
      "idRule": "user", "deleteBy": "anyone", "dynamic": True,
      "fields": [{"key": "code", "kind": "string", "mutableBy": "any"}]},
-    {"name": "program_manifest", "displayName": "Program Manifest",
+    {"key": "program_manifest", "displayName": "Program Manifest",
      "idRule": "user", "deleteBy": "anyone", "dynamic": True,
      "fields": [{"key": "manifest", "kind": "object", "mutableBy": "any"}]}]
 _ensured = set()

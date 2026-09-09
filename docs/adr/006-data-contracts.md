@@ -17,6 +17,8 @@ place.
 
 ### 0. Reuse the bao space; the derived general chat
 
+**Amended 2026-09-08 (ADR-027 §1): the general chat is the catalog's** — `POST /v1/catalog/general-chat/setup` returns the derived root (`system:general-chat/v1`); no registry read, no client ensure, no `general-chat/v1`. The turn log is the `bao/log/v1` child of that bundle.
+
 anybao adopts the EXISTING bao space (review 2026-07-07) — this keeps
 the per-space memory brain (shape unchanged), space identity, programs
 history. Mixed-shape safety comes one level down: `agent_turns`/
@@ -423,6 +425,8 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
 5. (Parallel, §4c): backlinks read surface.
 
 ### 6. xKey normalization at the client boundary (added 2026-07-17)
+
+**Amended 2026-09-08 (ADR-027 §2/§3):** the reserved groups are `any` and `_ver`; `nav` is gone; the hidden built-in types (`page`, `miniapp`, `bin`, `dataview`) resolve by their literal id; a dataset argument is a store KEY resolved against the host object's types to the server's collection (a canonical or already-resolved collection passes through; zero or several matches error).
 
 **Context.** The `any` server stores and validates typed values by
 content-id: a value lives at `record[typeId][propId]`, and

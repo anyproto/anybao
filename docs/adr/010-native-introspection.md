@@ -210,6 +210,8 @@ through the same prompt that carries everything else:
 
 ### 8. Flat tool surface — spaceConfig (2026-08-04)
 
+**Amended 2026-09-08 (ADR-027 §3/§5):** `create_object(…, parent=, folder=)`, `move_object`, `list_children` (the wiki tree); `list_apps`, `list_available_apps`, `setup_app` (the catalog); `links`, `backlinks_everywhere`; `collection`; `list_properties` loses `include_archived`, `archive_property` is gone. The toolcaller's runtime context carries the installed apps of the agent space and of `currentUserSpace`.
+
 Evidence: `run_87d61b0379144eed`. `any@v1`'s API lived on a `[setup]`
 handle, so §3's inventory showed one line — `client()` — and the real
 surface reached the model only through a hand-maintained skill copy,

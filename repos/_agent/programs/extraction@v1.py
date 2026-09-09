@@ -88,7 +88,7 @@ def normalize(candidate, max_seq):
 def main(args):
     space, chat = args["space"], args["chatId"]
     c = use("any@v1")  # noqa: F821 - guest global
-    brain = c.get_brain(space)["objectId"]
+    brain = c.get_brain()["objectId"]   # the bao space's (ADR-017 §0)
     log = c.chat_log(space, chat)["objectId"]
     last = _state(c, space, brain)
     turns = c.query(space, log, "agent_turns",
@@ -98,7 +98,7 @@ def main(args):
         return {"scanned": 0, "saved": 0, "deduplicated": 0, "skipped": 0,
                 "errors": 0}
 
-    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    mem = use("memory@v1").memory(c)  # noqa: F821 - guest global
     rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
     max_seq = max(t["seq"] for t in turns)
     saved = deduped = skipped = errors = 0

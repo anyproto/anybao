@@ -62,7 +62,7 @@ class FakeGuest:
         self.state_writes = []
 
     # --- ADR-017: deterministic resolvers ---
-    def get_brain(self, space):
+    def get_brain(self):   # no space: memory has one home (ADR-017 §0)
         return {"objectId": "brain1"}
 
     def chat_log(self, space, chat_id):
@@ -104,7 +104,7 @@ class FakeGuest:
         if spec == "llm@v1":
             return SimpleNamespace(chat=self.chat)
         if spec == "memory@v1":
-            return SimpleNamespace(memory=lambda client, space: self)
+            return SimpleNamespace(memory=lambda client: self)
         if spec == "recall@v1":
             return SimpleNamespace(recall=lambda client, space, **kw: self)
         raise AssertionError(f"unexpected module {spec}")

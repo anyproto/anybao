@@ -148,20 +148,13 @@ def _decompose(llm, question, answer):
 
 
 def _page_type(c, space):
-    """An existing pages/page type wins; else the idempotent create."""
-    keys = {(t.get("xKey") or t.get("key")): t for t in c.list_types(space)}
-    for k in ("pages", "page"):
-        if k in keys:
-            return k
-    return c.create_type(space, {"name": "Page"})["xKey"]
+    """The built-in `page`: every document carries it (ADR-027 §3)."""
+    return "page"
 
 
 def _create_page(c, space, type_key, name, markdown):
-    oid = c.create_object(space, {
-        "types": [type_key],
-        "initialProperties": {"any": {"name": name}}})["objectId"]
-    c.put_markdown(space, oid, markdown)
-    return oid
+    return c.create_object(space, {
+        "types": [type_key], "name": name, "markdown": markdown})["objectId"]
 
 
 def _sources_md(sources):

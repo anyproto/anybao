@@ -143,7 +143,7 @@ def test_tool_docs_composes_from_real_programs():
     assert ("search(*queries) [getter] — Run one or more web searches; "
             "one formatted string per query.") in docs
     assert "### memory" in docs
-    assert "memory(client, space, llm_chat=None) [setup]" in docs
+    assert "memory(client, llm_chat=None) [setup]" in docs
     # handle methods stay behind help(m) — no method line for them
     assert "  save_with_dedup(" not in docs
     assert "_provider" not in docs         # underscore names hidden

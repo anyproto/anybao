@@ -9,11 +9,12 @@ rewrite source. Prefer `edit()` for small changes and
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
-# ADR-008 §6. `mini_app` is a harness-declared USER type (xKey
+# ADR-008 §6. `mini_app` is a harness-declared hidden USER type (xKey
 # `mini_app`) this program — its writer — ensures per space (ADR-017
-# §1); content lives in its runtime dataset `mini_app` (declared
-# without a search mapping: HTML is code, never indexed), single record
-# "main", flat string fields; writes are per-field $set ops. Every
+# §1, ADR-027 §2); content lives in its dataset `mini_app` (one part,
+# declared without a search mapping: HTML is code, never indexed),
+# single record "main", flat string fields; writes are per-field $set
+# ops — the key resolves to the app object's collection. Every
 # source write runs the runtime-script guard: author
 # copies of the react/react-dom/useAnytypeState tags are stripped and
 # all three are prepended in load order (they must precede the
@@ -25,9 +26,9 @@ import re
 _TYPE = "mini_app"
 _DATASET = "mini_app"
 _RECORD = "main"
-_TYPE_DECL = {"name": "Mini App", "xKey": _TYPE}
+_TYPE_DECL = {"name": "Mini App", "xKey": _TYPE, "hidden": True}
 _DATASET_DECL = {
-    "name": _DATASET, "displayName": "Mini App",
+    "key": _DATASET, "displayName": "Mini App",
     "idRule": "user", "deleteBy": "anyone", "dynamic": True,
     "fields": [{"key": "source", "kind": "string", "mutableBy": "any"},
                {"key": "state", "kind": "string", "mutableBy": "any"},
@@ -56,12 +57,17 @@ def _has_store(c, space):
 
 
 def _ensure_store(c, space):
-    """Idempotently declare the `mini_app` type + dataset (cached per run)."""
-    if space in _ensured:
+    """Idempotently declare the `mini_app` type + dataset (cached per run,
+    keyed by the resolved space id — `space` may be a spaceConfig)."""
+    key = space if isinstance(space, str) else repr(space)
+    if key in _ensured:          # the raw handle first: no round trip
         return
-    c.create_type(space, _TYPE_DECL)
-    c._create_dataset(space, _TYPE, _DATASET_DECL)
-    _ensured.add(space)
+    sid = c.get_space(space)["id"]
+    if sid not in _ensured:
+        c.create_type(sid, _TYPE_DECL)
+        c._create_dataset(sid, _TYPE, _DATASET_DECL)
+        _ensured.add(sid)
+    _ensured.add(key)
 
 
 def _find(c, space, name):

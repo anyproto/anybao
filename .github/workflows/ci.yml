@@ -42,3 +42,5 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: nix develop -c make runtime-check
       - run: nix develop -c make runtime
+      # the vendored any spec vs the coverage manifest (ADR-002 §2)
+      - run: nix develop -c make api-drift

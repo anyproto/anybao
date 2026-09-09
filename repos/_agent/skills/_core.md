@@ -225,9 +225,10 @@ round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.
 
 The boot window shows old history as chunk lines:
 `[chunk #N (L1), turns A–B]`. Expand instead of guessing:
-`c.query(space, chat_id, "agent_turns", filter={"seq": {"$gte": A,
-"$lte": B}}, sort=["seq"])`. L2+ chunks cover chunk seqs — recurse via
-`agent_chunks`. Auto-recall runs before your first turn as a `run_cell`
+`c.query(space, c.chat_log(space, chat_id)["objectId"], "agent_turns",
+filter={"seq": {"$gte": A, "$lte": B}}, sort=["seq"])` — turns live on
+the chat's log child, never on the chat. L2+ chunks cover chunk seqs —
+recurse via `agent_chunks`. Auto-recall runs before your first turn as a `run_cell`
 you'll see in context (it bound `rec`, a recall@v1 instance you can
 reuse); its digest is evidence with a date, not doctrine — can be stale.
 

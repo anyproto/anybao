@@ -285,6 +285,11 @@ pub struct Broker {
     /// refused before execution (ADR-008: secrets never enter guest
     /// code or traces; connectors authenticate via `credential: {ref}`).
     pub secrets_guard: Option<String>,
+    /// The secrets store's collection as resolved at boot
+    /// (`AgentStores::secrets_ds`, ADR-027 §2) — refused in guest bodies
+    /// next to the `_agent_secrets` suffix rule, so the guard does not
+    /// rest on the server's collection naming alone.
+    pub secrets_collection: Option<String>,
     /// Managed OAuth state (ADR-011) — process-shared; None = no oauth
     /// wiring (managed refs fail typed `not_configured`).
     pub oauth: Option<Arc<OauthState>>,
@@ -464,6 +469,7 @@ impl Broker {
             blobs: BTreeMap::new(),
             grants: None,
             secrets_guard: None,
+            secrets_collection: None,
             oauth: None,
             secret_store: None,
             config_store: None,
@@ -1339,10 +1345,12 @@ impl Broker {
     }
 
     /// Refuse guest http requests that would touch stored secrets: a
-    /// body whose `dataset` names `agent_secrets` (exact field match —
-    /// covers query/subscribe/modify/aggregate/delete-records on ANY
-    /// space, since the server only acts on a literal dataset name), or
-    /// a url/body referencing the guarded object id (object-scoped
+    /// body whose `dataset` is the secrets store's collection — every
+    /// space's is `<typeId>_agent_secrets` (ADR-027 §2), so the
+    /// `_agent_secrets` suffix is the invariant (ADR-011 §4); covers
+    /// query/subscribe/modify/aggregate/delete-records on ANY space,
+    /// since the server only acts on a literal collection name — or a
+    /// url/body referencing the guarded object id (object-scoped
     /// routes on the home space's secrets object). Fired BEFORE
     /// execution, so the refusal is the recorded fact — deterministic
     /// on replay, and no secret ever reaches the trace. Content-based
@@ -1361,7 +1369,11 @@ impl Broker {
         };
         let body = payload.get("json");
         let body_dataset = body.and_then(|b| b.get("dataset")).and_then(|d| d.as_str());
-        if body_dataset == Some("agent_secrets") {
+        if body_dataset.is_some_and(|d| {
+            d.ends_with("_agent_secrets")
+                || d == "agent_secrets"
+                || self.secrets_collection.as_deref() == Some(d)
+        }) {
             return Err(forbidden("the agent_secrets dataset"));
         }
         if let Some(id) = &self.secrets_guard {
@@ -2005,17 +2017,25 @@ mod tests {
     fn secrets_guard_blocks_dataset_and_object() {
         let mut b = make_broker("run_guard");
         b.secrets_guard = Some("bafysecretsobj".into());
+        b.secrets_collection = Some("resolved-at-boot".into());
 
-        // dataset reference in the body → refused (any space)
-        let err = b
-            .call(
-                "http.post",
-                json!({"url": "http://127.0.0.1:7001/v1/spaces/s/query",
-                       "json": {"objectId": "whatever", "dataset": "agent_secrets"}}),
-            )
-            .unwrap_err();
-        assert_eq!(err.type_, "forbidden");
-        assert!(err.message.contains("credential"));
+        // the secrets collection in the body → refused: the one resolved
+        // at boot, or any `<typeId>_agent_secrets` by the naming rule
+        for ds in [
+            "bafytype_agent_secrets",
+            "agent_secrets",
+            "resolved-at-boot",
+        ] {
+            let err = b
+                .call(
+                    "http.post",
+                    json!({"url": "http://127.0.0.1:7001/v1/spaces/s/query",
+                           "json": {"objectId": "whatever", "dataset": ds}}),
+                )
+                .unwrap_err();
+            assert_eq!(err.type_, "forbidden");
+            assert!(err.message.contains("credential"));
+        }
 
         // guarded object id in the url → refused
         let err = b
@@ -2047,7 +2067,7 @@ mod tests {
                     .unwrap_or(false)
             })
             .count();
-        assert_eq!(denials, 3);
+        assert_eq!(denials, 5);
     }
 
     #[test]

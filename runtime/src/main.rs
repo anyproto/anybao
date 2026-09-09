@@ -323,6 +323,7 @@ fn main() -> Result<()> {
             // the space store's READS for this run (never its rows)
             let mut config_overrides = config.clone();
             config_overrides.remove("any.base_url");
+            config_overrides.remove("bao.space");
             // Secrets come from .connectors.env (picked up by
             // Config::load) + --secrets-file only — env is not read.
             // run has no device-local store, so every seed is just
@@ -350,6 +351,11 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| addr.clone());
             let mut runtime: BTreeMap<String, Value> = BTreeMap::new();
             runtime.insert("any.base_url".into(), Value::String(any_base.clone()));
+            // `bao.space` (ADR-017 §0): the memory home. A --config key
+            // wins; --from-space is that space by definition (below)
+            if let Some(v) = config.remove("bao.space") {
+                runtime.insert("bao.space".into(), v);
+            }
             runtime.insert("shell".into(), anyrt::shell_runtime_value());
             // --from-space: serve's composition, one-shot (ADR-004 §6) —
             // space-backed resolver, no disk
@@ -366,6 +372,9 @@ fn main() -> Result<()> {
             if let Some((_, space_id)) = &from {
                 let aliases = serve::alias_map(&host.overlays, space_id);
                 runtime.insert("overlays.aliases".into(), serde_json::to_value(&aliases)?);
+                runtime
+                    .entry("bao.space".into())
+                    .or_insert_with(|| Value::String(space_id.clone()));
             }
             let resolver: Option<Box<dyn resolver::ModuleResolver + Send>> =
                 from.as_ref().map(|(client, space_id)| {

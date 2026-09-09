@@ -103,9 +103,10 @@ class FakeAny:
                 "created": False, "addedProps": {}}
 
     def _create_dataset(self, space, type_key, draft):
-        self.datasets_created.append((type_key, draft["name"]))
+        self.datasets_created.append((type_key, draft["key"]))
         self.dataset_drafts.append(draft)
-        return {"datasetDefId": "ds1", "created": True}
+        return {"datasetDefId": "ds1", "collection": "T_MAILBOX_email_messages",
+                "created": True}
 
     # -- objects
     def query_objects(self, space, filter=None, limit=None, **kw):

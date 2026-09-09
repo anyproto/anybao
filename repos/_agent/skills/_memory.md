@@ -8,8 +8,12 @@ memory items.
 ## Saving — budget ~1–2 per turn
 
 Get the facades once: `c = use("agent:any@v1")`, `mem =
-use("agent:memory@v1").memory(c, space)`, `r =
-use("agent:recall@v1").recall(c, space)`. Every save goes through `mem.save_with_dedup(candidate,
+use("agent:memory@v1").memory(c)`, `r =
+use("agent:recall@v1").recall(c, baoSpaceConfig)`. Memory has ONE
+home — the bao space's brain; there is no per-space memory and the
+facade takes no space. A fact about a user space goes in `context`
+(and `tags`), never into that space: never `ensure_bundle` `bao/v1`
+anywhere (refused). Every save goes through `mem.save_with_dedup(candidate,
 recall=r)` with `candidate = {"category": ..., "context": ...}`.
 `category` (lowercase slug) and `context` (one-line fact) are REQUIRED;
 add `body` (detail), `confidence` (1–10, user-stated facts rank above
@@ -40,12 +44,12 @@ categories before inventing one (vocabulary drift kills recall).
   (`createdAt`) and chunks (period overlap), merged by time. Per-day/
   week/month turn counts: `history.activity(c, space, chat_id, unit)`.
 - **Graph**: `r.neighbors(object_id)` — follow a hit's `edges`
-  (`[{to, type}]`) and links-format properties on objects; expansion
+  (`[{to, type}]`) and relation properties on objects; expansion
   AFTER retrieval.
 
 "What do you remember?" is ENUMERATION, not search — `r.search("")`
 is rejected (the index has no browse-all mode). List the brain
-dataset instead: `c.query(space, c.get_brain(space)["objectId"],
+dataset instead: `c.query(baoSpaceConfig, c.get_brain()["objectId"],
 "agent_memory_items", limit=...)` (sort/filter by `category`,
 `salience`; time fields `validFrom`/`createdAt`/`modifiedAt` are
 instants — filter with `instant(seconds)`, render with `fmt_ts`).
@@ -67,7 +71,7 @@ immutable after create.
 
 - **Canonicalize entities**: search before creating any object.
 - A fact naming two entities ⇒ make sure both objects exist and link
-  them via a links-format property. Prose mentions feed the index;
+  them via a relation property. Prose mentions feed the index;
   properties feed the graph.
 - **Edge vocabulary** (curated — prefer these, create new types
   reluctantly): `relates_to`, `caused_by`, `supersedes`, `decided_in`,

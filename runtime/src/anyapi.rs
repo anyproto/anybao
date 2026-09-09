@@ -337,6 +337,10 @@ fn unwrap_envelope(status: u16, data: Value) -> Result<Value, AnyError> {
     Ok(data)
 }
 
+/// The editor module's canonical collection — the shared body an object
+/// holds while it carries `page` or a type with a shared editor part.
+pub const EDITOR_BLOCKS: &str = "editor_blocks";
+
 /// Percent-encode one query-string value (RFC 3986 unreserved set).
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -382,8 +386,9 @@ impl Client {
     }
 
     /// GET /v1/spaces/{spaceId} — the single-space handle. No chat id
-    /// rides it: the general chat is the `general-chat/v1` bundle's
-    /// root, resolved through the bundles registry (ADR-006 §0).
+    /// rides it: the general chat is the catalog's (`catalog_setup`,
+    /// ADR-027 §1). A deleted space still answers 200 with
+    /// `status: "deleted"` — branch on the status, never on the code.
     pub fn get_space(&self, space_id: &str) -> Result<Value, AnyError> {
         self.call("GET", &format!("/v1/spaces/{space_id}"), None)
     }
@@ -427,22 +432,38 @@ impl Client {
         self.call("POST", &format!("/v1/spaces/derived/{name}"), None)
     }
 
+    // --- catalog (ADR-027 §1) ---
+    /// POST /v1/catalog/{usecase}/setup — adopt-or-install one of the
+    /// server's well-known usecases into a space, dependencies first.
+    /// Reply `{usecase, bundles: [{usecase, id, bundle: {id, rootId,
+    /// roots, losers?, derived?}, installed, typeId?, properties?,
+    /// miniapp?}]}`. Idempotent on every member and device; the
+    /// server runs the registry-convergence wait itself, so 409
+    /// `bundle.not_ready` is the only retryable answer.
+    pub fn catalog_setup(&self, usecase: &str, space_id: &str) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/catalog/{usecase}/setup"),
+            Some(&json!({"spaceId": space_id})),
+        )
+    }
+
     // --- bundles (SYN-163) ---
-    /// POST /v1/spaces/{s}/bundles — adopt-or-install a bundle: one
-    /// root object registered under a permanent id in the space's
-    /// bundles registry ("general-chat/v1" — the slash is part of the
-    /// id, sent verbatim in bodies). With a winner already registered
-    /// this is a local read (`installed: false`); otherwise the server
-    /// mints the root with `root_types` attached and registers it in
-    /// one change. Reply `{bundle: {id, rootId, roots, losers,
-    /// derived}, installed}`. `derived: true` (SYN-172) installs on
-    /// the root DERIVED from the bundle id — the same id on every
-    /// device, computed offline, so the install can never fork; the
-    /// price is permanence (a derived root is undeletable, so no
-    /// uninstall). Without it the root is created fresh and `rootId`
-    /// is provisional until the space syncs. 409 `bundle.not_ready`
-    /// means a winner's tree hasn't landed on this device yet
-    /// (retryable).
+    /// POST /v1/spaces/{s}/bundles — adopt-or-install a client bundle:
+    /// one root object registered under a permanent id in the space's
+    /// bundles registry ("bao/v1" — the slash is part of the id, sent
+    /// verbatim in bodies; ids under `system:` are the catalog's, 409
+    /// `bundle.reserved`). With a winner already registered this is a
+    /// local read (`installed: false`); otherwise the server mints the
+    /// root with `root_types` attached and registers it in one change.
+    /// Reply `{bundle: {id, rootId, roots, losers, derived},
+    /// installed}`. `derived: true` installs on the root DERIVED from
+    /// the bundle id — the same id on every device, computed offline,
+    /// so the install can never fork; the price is permanence (a
+    /// derived root is undeletable, so no uninstall). Without it the
+    /// root is created fresh and `rootId` is provisional until the
+    /// space syncs. 409 `bundle.not_ready` means a winner's tree hasn't
+    /// landed on this device yet (retryable).
     pub fn ensure_bundle(
         &self,
         space_id: &str,
@@ -685,10 +706,14 @@ impl Client {
     }
 
     // --- editor markdown (content, NOT markdown — wire landmine) ---
+    // The routes name the collection: the shared `editor_blocks` body
+    // an object holds while it carries `page` or a type with a shared
+    // editor part (ADR-027 §3). No write attaches a type: an object
+    // without one answers 400 `dataset.not_declared`.
     pub fn get_markdown(&self, space_id: &str, object_id: &str) -> Result<String, AnyError> {
         let reply = self.call(
             "GET",
-            &format!("/v1/spaces/{space_id}/objects/{object_id}/editor/markdown"),
+            &format!("/v1/spaces/{space_id}/objects/{object_id}/editor/{EDITOR_BLOCKS}/markdown"),
             None,
         )?;
         Ok(reply["content"].as_str().unwrap_or("").to_string())
@@ -702,17 +727,59 @@ impl Client {
     ) -> Result<Value, AnyError> {
         self.call(
             "PUT",
-            &format!("/v1/spaces/{space_id}/objects/{object_id}/editor/markdown"),
+            &format!("/v1/spaces/{space_id}/objects/{object_id}/editor/{EDITOR_BLOCKS}/markdown"),
             Some(&json!({"content": content})),
         )
     }
 
     // --- types & properties (catalog source) ---
+    /// GET /v1/spaces/{s}/types?includeHidden=true — every type,
+    /// hidden ones included: the harness types are hidden (ADR-027
+    /// §2) and the built-ins `page` / `miniapp` / `bin` / `dataview`
+    /// are hidden by construction, so a listing that omits them would
+    /// re-create what exists. Rows: `{id, xKey, name, hidden?,
+    /// builtIn?, weight?, layout?}`.
     pub fn list_types(&self, space_id: &str) -> Result<Vec<Value>, AnyError> {
         Ok(records_of(
-            self.call("GET", &format!("/v1/spaces/{space_id}/types"), None)?,
+            self.call(
+                "GET",
+                &format!("/v1/spaces/{space_id}/types?includeHidden=true"),
+                None,
+            )?,
             "types",
         ))
+    }
+
+    /// PATCH /v1/spaces/{s}/types/{t} — the type's rendering slice:
+    /// `hidden`, `weight`, `layout`, `meta`. 400 `type.registered` on
+    /// a built-in.
+    pub fn patch_type(
+        &self,
+        space_id: &str,
+        type_id: &str,
+        body: &Value,
+    ) -> Result<Value, AnyError> {
+        self.call(
+            "PATCH",
+            &format!("/v1/spaces/{space_id}/types/{type_id}"),
+            Some(body),
+        )
+    }
+
+    /// POST /v1/spaces/{s}/properties/{o}/attach/{t} — the object
+    /// gains the type (idempotent). The one way an object comes to
+    /// hold a type's collections after create.
+    pub fn attach_type(
+        &self,
+        space_id: &str,
+        object_id: &str,
+        type_id: &str,
+    ) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/properties/{object_id}/attach/{type_id}"),
+            None,
+        )
     }
 
     /// [{id, name, xKey, kind}] — the xKey↔propId catalog map.
@@ -865,8 +932,11 @@ impl Client {
         self.call("POST", &format!("/v1/spaces/{space_id}/types"), Some(body))
     }
 
-    /// GET /v1/spaces/{s}/types/{t}/datasets — the type's runtime
-    /// dataset definitions (ADR-016).
+    /// GET /v1/spaces/{s}/types/{t}/datasets — the type's datasets,
+    /// the flat compiled view: `[{id, key, collection, module, shared?,
+    /// partId, idRule, deleteBy, search?, fields, invalid?}]`. The
+    /// `collection` is the address every read and write carries; it is
+    /// read here, never composed (ADR-027 §2).
     pub fn list_datasets(&self, space_id: &str, type_id: &str) -> Result<Vec<Value>, AnyError> {
         Ok(records_of(
             self.call(
@@ -878,11 +948,16 @@ impl Client {
         ))
     }
 
-    /// POST /v1/spaces/{s}/types/{t}/datasets — declare a runtime
-    /// dataset schema (ADR-016/017). Behavioral parts (idRule,
-    /// deleteBy, fields) pin on first write; only the search.* leaves
-    /// stay mutable (PATCH).
-    pub fn create_dataset(
+    /// POST /v1/spaces/{s}/types/{t}/parts — declare a part and the
+    /// datasets under it in one change: `{key, name?, pos?, ui?,
+    /// datasets: [{key, module?, shared?, …records draft}]}` → `201
+    /// {partId}`. A records dataset lands in `<typeId>_<key>`, a
+    /// shared module dataset in the module's canonical collection.
+    /// Behavioral parts (module, shared, idRule, deleteBy, fields) pin
+    /// on first write; only the search.* leaves stay mutable (PATCH
+    /// …/datasets/:defId). 409 `dataset.key_conflict` on a key the
+    /// type already declares.
+    pub fn add_part(
         &self,
         space_id: &str,
         type_id: &str,
@@ -890,7 +965,7 @@ impl Client {
     ) -> Result<Value, AnyError> {
         self.call(
             "POST",
-            &format!("/v1/spaces/{space_id}/types/{type_id}/datasets"),
+            &format!("/v1/spaces/{space_id}/types/{type_id}/parts"),
             Some(draft),
         )
     }
@@ -957,16 +1032,18 @@ impl Client {
         )
     }
 
-    /// Objects that reference object_id through a links-format property.
-    /// Returns the `backlinks` list unwrapped from the envelope — each
-    /// `{objectId, typeId, propId}` (never null).
-    pub fn backlinks(&self, space_id: &str, object_id: &str) -> Result<Vec<Value>, AnyError> {
-        let reply = self.call(
+    /// GET /v1/spaces/{s}/objects/{o}/backlinks — the link index's
+    /// edges pointing at the object (`object`) and at its records or
+    /// property values (`parts`): `{object: [edge], parts: [edge],
+    /// truncated?}`, each edge `{source: {spaceId, objectId, dataset,
+    /// recordId, typeId?, field?}, kind, target: {uri, …}}`. 409
+    /// `index.disabled` when the search index is off.
+    pub fn backlinks(&self, space_id: &str, object_id: &str) -> Result<Value, AnyError> {
+        self.call(
             "GET",
             &format!("/v1/spaces/{space_id}/objects/{object_id}/backlinks"),
             None,
-        )?;
-        Ok(records_of(reply, "backlinks"))
+        )
     }
 
     // --- SSE subscribe (windowed query/subscribe primitive) ---
@@ -1393,11 +1470,12 @@ mod tests {
         assert_eq!(c.get_markdown("sp", "o").unwrap(), "# hi");
         c.put_markdown("sp", "o", "body").unwrap();
         let calls = log.lock().unwrap();
+        // the routes name the shared editor collection (ADR-027 §3)
         assert_eq!(
             calls[0],
             (
                 "GET".into(),
-                "/v1/spaces/sp/objects/o/editor/markdown".into(),
+                "/v1/spaces/sp/objects/o/editor/editor_blocks/markdown".into(),
                 None
             )
         );
@@ -1405,10 +1483,49 @@ mod tests {
             calls[1],
             (
                 "PUT".into(),
-                "/v1/spaces/sp/objects/o/editor/markdown".into(),
+                "/v1/spaces/sp/objects/o/editor/editor_blocks/markdown".into(),
                 Some(json!({"content": "body"}))
             )
         );
+    }
+
+    #[test]
+    fn catalog_types_and_attach_paths() {
+        let (c, log) = stub_client();
+        c.catalog_setup("general-chat", "sp").unwrap();
+        c.list_types("sp").unwrap();
+        c.patch_type("sp", "t1", &json!({"hidden": true})).unwrap();
+        c.attach_type("sp", "o1", "page").unwrap();
+        c.add_part(
+            "sp",
+            "t1",
+            &json!({"key": "entries", "datasets": [{"key": "entries", "idRule": "user"}]}),
+        )
+        .unwrap();
+        let calls = log.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            (
+                "POST".into(),
+                "/v1/catalog/general-chat/setup".into(),
+                Some(json!({"spaceId": "sp"}))
+            )
+        );
+        // hidden types (the harness's, the built-ins) must list
+        assert_eq!(calls[1].1, "/v1/spaces/sp/types?includeHidden=true");
+        assert_eq!(
+            calls[2],
+            (
+                "PATCH".into(),
+                "/v1/spaces/sp/types/t1".into(),
+                Some(json!({"hidden": true}))
+            )
+        );
+        assert_eq!(
+            (calls[3].0.as_str(), calls[3].1.as_str()),
+            ("POST", "/v1/spaces/sp/properties/o1/attach/page")
+        );
+        assert_eq!(calls[4].1, "/v1/spaces/sp/types/t1/parts");
     }
 
     #[test]
@@ -1422,7 +1539,8 @@ mod tests {
         c.backlinks("sp", "o").unwrap();
         c.bundle_child("sp", "bao/v1", "bao/config/v1", &["t1"])
             .unwrap();
-        c.create_dataset("sp", "t1", &json!({"name": "d"})).unwrap();
+        c.add_part("sp", "t1", &json!({"key": "d", "datasets": [{"key": "d"}]}))
+            .unwrap();
         c.list_datasets("sp", "t1").unwrap();
         let calls = log.lock().unwrap();
         let paths: Vec<(&str, &str)> = calls
@@ -1439,7 +1557,7 @@ mod tests {
                 ("POST", "/v1/spaces/sp/search"),
                 ("GET", "/v1/spaces/sp/objects/o/backlinks"),
                 ("POST", "/v1/spaces/sp/bundles/bao%2Fv1/children"),
-                ("POST", "/v1/spaces/sp/types/t1/datasets"),
+                ("POST", "/v1/spaces/sp/types/t1/parts"),
                 ("GET", "/v1/spaces/sp/types/t1/datasets"),
             ]
         );
@@ -1460,25 +1578,24 @@ mod tests {
     #[test]
     fn ensure_bundle_posts_id_verbatim_in_body() {
         let (c, log) = stub_client();
-        c.ensure_bundle("sp", "general-chat/v1", "General", &["chat"], true)
-            .unwrap();
         c.ensure_bundle("sp", "bao/v1", "bao", &["page"], false)
             .unwrap();
+        c.ensure_bundle("sp", "x/v1", "X", &[], true).unwrap();
         let calls = log.lock().unwrap();
         assert_eq!(calls[0].0, "POST");
         assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
         // the slash is part of the id — encoded only in PATH segments,
-        // verbatim in bodies
+        // verbatim in bodies; a created install carries no `derived`
+        // key at all
         assert_eq!(
             calls[0].2,
-            Some(json!({"id": "general-chat/v1", "name": "General",
-                        "rootTypes": ["chat"], "derived": true}))
-        );
-        // a created install carries no `derived` key at all
-        assert_eq!(
-            calls[1].2,
             Some(json!({"id": "bao/v1", "name": "bao",
                         "rootTypes": ["page"]}))
+        );
+        assert_eq!(
+            calls[1].2,
+            Some(json!({"id": "x/v1", "name": "X", "rootTypes": [],
+                        "derived": true}))
         );
     }
 
