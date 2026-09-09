@@ -296,7 +296,7 @@ chat found only through `general_chat`; bodies need `page` (handled by
 `list_apps`. `_core.md`, `_memory.md`, `_gmailSync.md`: dataset keys
 unchanged in spelling (§2). `_space_context.md`: the apps rule.
 `docs/debugging.md`, `docs/testing-agent-changes.md`,
-`docs/prod-repo-account.md`, `docs/api-parity.md` § C5,
+the local `docs/environments.md`, `docs/api-parity.md` § C5,
 `repos/CLAUDE.md`, `CLAUDE.md`: the catalog step, the rig, the new
 routes. Every doc states the contract; none narrates the move.
 

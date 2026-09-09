@@ -71,8 +71,8 @@ lookup no longer resolves: pass `--config-file configs/<name>.toml`
 every time, prod included.
 
 `any`-server data dirs live in `~/any/any/datadirs/` (also gitignored):
-`repo-prod` (:7003 repo account), `prod-test-user` (:7005),
-`staging-user` (:7134), `staging-repo` (:7021). The `any` configs are
+`repo-prod2` (:7004 repo account), `prod-test-user` (:7005),
+`staging` (:7134, owns its own repo spaces). The `any` configs are
 in `~/any/any/configs/` — `any-config.yml` (prod network) and
 `any-config-staging.yml` (staging); `staging.yml` stays at that repo's
 root because its e2e tests look for it there.
@@ -81,15 +81,15 @@ root because its e2e tests look for it there.
 
 The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
 dedicated **repo account** whose server runs locally at
-`http://127.0.0.1:7003` (data dir `~/any/any/datadirs/repo-prod`, prod network —
-full bring-up runbook: `docs/prod-repo-account.md`). The
+`http://127.0.0.1:7004` (data dir `~/any/any/datadirs/repo-prod2`, prod network —
+bring-up + ids: the local `docs/environments.md`). The
 `configs/anybao.toml` account only *joins* them as guest — `anyrt
 deploy --target agent` through it 403s (`space.read_only`). Deploy via
 the repo server, addressing the space by raw id (the ids live in
-`configs/anybao.toml [overlays]` and in the runbook):
+`configs/anybao.toml [overlays]`):
 
 ```
-anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
+anyrt deploy --addr http://127.0.0.1:7004 --source repos/_agent \
   --target <agent space id>          # same for repos/_connectors
 ```
 
@@ -100,17 +100,17 @@ clients (desktop app, browser UI) WITHOUT touching the prod overlays:
 a throwaway user account (`~/any/any/datadirs/prod-test-user`, server
 `127.0.0.1:7005`, control `7014`) runs a test bao against TEST copies
 of the repo spaces — `_agentrepo-test` / `_connectorsrepo-test`, owned
-by the same prod repo account (:7003) and joined via guest keys. The
+by the same prod repo account (:7004) and joined via guest keys. The
 staging rig (`configs/anybao.staging.toml`, server on the staging
 network via `--config configs/any-config-staging.yml`) is unreachable
 from prod clients; this one is not. Ids, commands and the browser
 recipe live in the toml's header
-and in `docs/prod-repo-account.md` § Test spaces. Deploy to it
-through :7003 by raw id, exactly like prod:
+and in the local `docs/environments.md`. Deploy to it
+through :7004 by raw id, exactly like prod:
 
 ```
-anyrt deploy --addr http://127.0.0.1:7003 --source repos/_agent \
-  --target bafyreigm425yqiipjfch27bfbtjufwvpaykhm2hyp4hyorrw3jrfg3qyai.36hw3g1lpszh6
+anyrt deploy --addr http://127.0.0.1:7004 --source repos/_agent \
+  --target <agentrepo-test id from configs/anybao.prod.test.toml>
 ```
 
 ## Skill: analyze a toolcaller run
