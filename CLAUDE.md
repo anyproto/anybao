@@ -63,15 +63,17 @@ buffer (a saved pretty-print breaks the parse).
 
 ## Local configs + data dirs (gitignored)
 
-Host configs live in `configs/` — `anybao.toml` (prod),
-`anybao.prod.test.toml`, `anybao.staging.toml`, plus the
-`.connectors.env*` files anyrt reads *beside the config file*. Nothing
-sits at the repo root any more, so `anyrt`'s default `./anybao.toml`
-lookup no longer resolves: pass `--config-file configs/<name>.toml`
-every time, prod included.
+The prod config `anybao.toml` is COMMITTED at the repo root — `anyrt
+serve` finds it by default; it carries only the server addr, the
+overlay space ids and their guest-invite tokens (no account key, no
+secrets). `configs/anybao.toml` is a symlink to it. The other configs
+(`anybao.prod.test.toml`, `anybao.staging.toml`) and the
+`.connectors.env*` files anyrt reads *beside the config file* stay in
+gitignored `configs/` and need `--config-file configs/<name>.toml`.
+Account mnemonics live OUTSIDE every repo dir, in `~/.any-accounts/`.
 
 `any`-server data dirs live in `~/any/any/datadirs/` (also gitignored):
-`repo-prod2` (:7004 repo account), `prod-test-user` (:7005),
+`repo-prod3` (:7004 repo account), `prod-test-user` (:7005),
 `staging` (:7134, owns its own repo spaces). The `any` configs are
 in `~/any/any/configs/` — `any-config.yml` (prod network) and
 `any-config-staging.yml` (staging); `staging.yml` stays at that repo's
@@ -81,7 +83,7 @@ root because its e2e tests look for it there.
 
 The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
 dedicated **repo account** whose server runs locally at
-`http://127.0.0.1:7004` (data dir `~/any/any/datadirs/repo-prod2`, prod network —
+`http://127.0.0.1:7004` (data dir `~/any/any/datadirs/repo-prod3`, prod network —
 bring-up + ids: the local `docs/environments.md`). The
 `configs/anybao.toml` account only *joins* them as guest — `anyrt
 deploy --target agent` through it 403s (`space.read_only`). Deploy via
