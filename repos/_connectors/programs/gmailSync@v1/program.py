@@ -40,9 +40,11 @@ _BOUNDARY = "anybao_gmail_sync"
 # ADR-016 §1 / ADR-027 §2: the mailbox type declares the email_messages
 # dataset (one part, key `email_messages`); one mailbox object per
 # synced address hosts the records, in the collection the declaration
-# reports — every read and write names the key.
+# reports — every read and write names the key. The type is LISTED
+# (not hidden): a mailbox is user data the client reaches through
+# Collections and opens as its inbox layout (ADR-016 §1).
 MAILBOX_TYPE = {
-    "name": "Mailbox", "xKey": "mailbox", "hidden": True,   # harness type (ADR-027 §2)
+    "name": "Mailbox", "xKey": "mailbox",
     "properties": [{"name": "address"}],
 }
 _DATASET = "email_messages"

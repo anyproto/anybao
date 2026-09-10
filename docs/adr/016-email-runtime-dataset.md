@@ -42,7 +42,13 @@ primitives, entirely in anybao.
 **Amended 2026-09-08 (ADR-027 §2):** `email_messages` is the dataset KEY of one part on the `mailbox` type (draft `key`, not `name`); records live in the collection the declaration reports, and every read and write names the key — resolved against the mailbox object's types by `any@v1`.
 
 A user type **`mailbox`** (xKey `mailbox`, property `address`), one
-object per synced address, ensure-created by gmailSync. On it, a
+object per synced address, ensure-created by gmailSync. The type is
+**listed, never `hidden`** (amended 2026-09-10): the client reaches a
+mailbox through Collections, favorites, search and links and opens the
+object as its inbox layout (any-ui `docs/email-dataset-ui.md`); a hidden
+type drops out of Collections and the corpus has no entry point left.
+Minting a listed type also installs the space's Collections app
+(ADR-027 §5), so a fresh space gets the surface with the mailbox. On it, a
 runtime dataset **`email_messages`** declared via
 `POST …/types/:mailbox/datasets`:
 

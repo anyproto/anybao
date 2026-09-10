@@ -144,12 +144,17 @@ value (`query`, `query/subscribe`, `modify`, `upsert`,
 **Harness types are hidden.** Every ensure PATCHes its type
 `hidden: true` (`PATCH …/types/:typeId`) so a client's type picker never
 offers `agent_config` or `agent_log`; the guest catalog lists types
-with `includeHidden=true` and resolves them as before. The twelve
+with `includeHidden=true` and resolves them as before. The eleven
 types: `program`, `agent_skill`, `agent_config`, `agent_secrets`,
-`agent_trigger`, `agent_brain`, `agent_log`, `mini_app`, `mailbox`,
+`agent_trigger`, `agent_brain`, `agent_log`, `mini_app`,
 `sync_state`, `enrichments`, `enrich_proposal`. None collides with the
 reserved built-ins (`page`, `miniapp`, `bin`, `dataview`, `any`,
-`type`, `spaceIndex`) or the catalog's handles.
+`type`, `spaceIndex`) or the catalog's handles. A store whose records
+the client renders is NOT a harness type: `mailbox` (ADR-016 §1) is
+listed, so it shows in Collections and its object opens as the inbox
+layout — the client has no other entry point to mail (any-ui PR #853
+retired the Mail mini-app and mailbox discovery). Hiding it takes the
+corpus dark.
 
 ### 3. Bodies live on `page`; the tree is the wiki usecase
 
