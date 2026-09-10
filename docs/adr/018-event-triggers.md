@@ -84,9 +84,12 @@ Consequences that follow, and are intended:
 - **Delivery**: the owning device maintains one SSE chat watch per
   distinct `objectId` across its enabled event triggers, alongside
   the ticker. A new
-  message fires the trigger's program with
+  message — an `added` record in the feed — fires the trigger's
+  program with
   `args ∪ {"event": {"space", "objectId", "messageId", "text",
-  "agent"?}}`. Self-authored messages (the agent's own name — the
+  "agent"?}}`. An `updated` record (a reaction toggle, a text edit)
+  is never input: not for event triggers, not for the chat
+  responder. Self-authored messages (the agent's own name — the
   ADR-009 §8 name-scoped rule) never fire.
 - **Missed-occurrence rule**: live-only, mirroring cron — a message
   that arrives while the owner is down or disconnected does not fire

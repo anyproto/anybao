@@ -2559,16 +2559,21 @@ fn preview(text: &str) -> String {
     text.chars().take(60).collect()
 }
 
+/// The NEW `chat_messages` records in a `changes` frame. Only `added`
+/// entries are input: an `updated` entry is a reaction toggle or a
+/// text edit on a message that already had its turn, and neither
+/// starts or injects a run (ADR-018 §2). Reading `updated` too made
+/// a reaction on a message older than the process — absent from the
+/// watcher's seen-set, which is seeded from the unanswered backlog
+/// only — look like a fresh message, and the agent re-answered it.
 fn records_in(data: &Value) -> Vec<Value> {
     let mut out = Vec::new();
     if let Some(batches) = data.as_array() {
         for batch in batches {
-            for key in ["added", "updated"] {
-                for entry in batch[key].as_array().unwrap_or(&Vec::new()) {
-                    let mut rec = entry["doc"].as_object().cloned().unwrap_or_default();
-                    rec.insert("id".into(), entry["id"].clone());
-                    out.push(Value::Object(rec));
-                }
+            for entry in batch["added"].as_array().unwrap_or(&Vec::new()) {
+                let mut rec = entry["doc"].as_object().cloned().unwrap_or_default();
+                rec.insert("id".into(), entry["id"].clone());
+                out.push(Value::Object(rec));
             }
         }
     }
@@ -3893,6 +3898,24 @@ mod tests {
             m["agent"] = json!({"name": "bao", "done": true});
         }
         m
+    }
+
+    #[test]
+    fn records_in_takes_added_only_a_reaction_or_edit_is_not_input() {
+        // a reaction toggle / text edit on an old message arrives as an
+        // `updated` entry; it must never reach the watcher as a message
+        // (it would Start a run for a message the agent already
+        // answered — the seen-set only knows the unanswered backlog)
+        let data = json!([{
+            "versionId": "v9",
+            "added": [{"id": "u7", "doc": {"text": "new question"}}],
+            "updated": [{"id": "u1", "doc": {"text": "old question",
+                "reactions": {"👍": {"acct": {"$date": "2026-09-10T10:00:00.000Z"}}}}}]
+        }]);
+        let recs = records_in(&data);
+        let ids: Vec<&str> = recs.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["u7"]);
+        assert_eq!(recs[0]["text"], "new question");
     }
 
     #[test]
