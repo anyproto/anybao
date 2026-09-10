@@ -54,6 +54,33 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C6. Drift refresh 2026-09-10 (pin → any ffd2147, scratch server on that build, `/v1/openapi.json`)
+
+any SYN-234 (PR #230): swag rendered every `json.RawMessage` as its
+underlying `[]byte`, so the spec described descriptors, raw records and
+record arrays as integer arrays; the server now describes them as
+objects (a root `.swaggo` override + `swaggertype:"object"` on the
+PATCH `set` maps, pinned by `TestSwaggerShapes`). 139 paths, none
+added or removed; 38 routes changed and every one of the 50 changed
+sites is that reshaping. Spec-only: the Go types and the wire did not
+move, the any client always read these as JSON values. Fingerprints
+refreshed, no mapping or exclusion touched.
+
+- **Descriptor / record fields** `[]integer` → `object` (34 sites):
+  `xFormat` (property create/list/get, dataset field add/list/patch),
+  `layout` (type list/get/create/patch, bundles ensure, catalog),
+  part `ui` (parts add/list/patch), `record` (object get, properties
+  get, local get/update, history record), dataset `schema`, event
+  `data`, history diff `before`/`after`. The free-form ones (event
+  data, diff leaves) now carry the SearchText-style note: the schema
+  shows the object form, the wire takes any JSON value.
+- **Record arrays** `[][]integer` → `[]object` (10 sites): every
+  `records` array on the query / aggregate responses (spaces, objects,
+  datasets, devices, the local store).
+- **PATCH `set` maps** drop the `[]integer` value schema (5 sites:
+  blocks, datasets, dataset fields, parts, properties); `PATCH
+  …/types/:typeId` `meta` becomes the same free bag as on create.
+
 ## C5. Drift refresh 2026-09-08 (pin → any 5d709c8, rig :7142 `/v1/openapi.json`)
 
 The parts / modules / catalog break (ADR-027; the port plan
