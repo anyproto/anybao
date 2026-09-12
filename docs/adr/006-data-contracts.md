@@ -505,6 +505,16 @@ against user types (`409 type.xkey_conflict`). Client contract:
   gets one `type.xkey` property write
   (`POST …/properties/{typeId}/set/type`) and is reused, never
   shadowed by a duplicate type.
+- **Amended 2026-09-12 (BOB-68).** The derived `any` props are
+  record-ROOT keys (`id`, `author`, `createdAt`, `modifiedAt`,
+  `modifiedBy`, `spaceId`), and a normalized read places every
+  user-type group at that same level under its xKey — so a type whose
+  xKey equals one of them shadows the record's own field, silently,
+  on read only. `create_type` refuses such an xKey (name slug or
+  explicit; the static set plus whatever the space's `any` catalog
+  reports as scope `derived`) with an error that keeps the display
+  name and asks for an explicit xKey (`author_type`). The server does
+  not collide (it keys groups by CID) and stays unchanged.
 
 **Amended 2026-08-27 (ADR-022).** The property handle is the xKey
 only when it is unique on its type and not any-ui's kind marker

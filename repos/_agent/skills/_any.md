@@ -69,6 +69,10 @@ fails in the standard overlay setup, ADR-004 §2):
   — `any`, `spaceIndex`, and `type` (the meta-type) — they describe
   the space itself, are never attachable to objects, and their
   handles are reserved: naming a new type after any builtin errors.
+  So are the record-root keys every object carries bare (`id`,
+  `author`, `createdAt`, `modifiedAt`, `modifiedBy`, `spaceId`): a
+  type named "Author" keeps its name and takes an explicit xKey
+  (`author_type`) — the xKey is a handle the user never sees.
 - `c.create_type(s, {"name", "hidden"?, "properties": [{"name",
   "kind"?, "xFormat"?}, …]})` — idempotent composite; xKeys auto-slug
   from names; result is immediately writable (never poll). Dates,
