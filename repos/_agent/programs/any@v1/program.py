@@ -284,6 +284,15 @@ def _trim_space_row(r):
 # like every builtin; `program` and `mini_app` are harness-declared
 # USER types (ADR-010 §5, ADR-008 §6): resolved by xKey like any other.
 _RESERVED_GROUPS = {"any", "_ver"}
+# The record-root keys the SDK stamps on every row beside `id`: the
+# `any` type's scope "derived" properties, carried BARE on the wire —
+# never under the `any` group (ADR-006 §6). A normalized read places
+# every user-type group at that same level under its xKey, so a type
+# whose xKey equals one of these shadows the record's own field
+# (BOB-68): create_type refuses the handle. The live catalog's derived
+# slice is unioned in, this set is the floor.
+_ROW_ROOT_KEYS = {"id", "author", "createdAt", "modifiedAt", "modifiedBy",
+                  "spaceId"}
 
 # Synthetic catalog rows: listed by GET /types in every space but not
 # attachable — no object carries them, and the meta-type's only
@@ -2061,7 +2070,13 @@ class _Client:
         MISSING properties are added. A name or xKey that collides with
         a builtin handle (any, spaceIndex, type, page, miniapp, bin,
         dataview) or a catalog type's ERRORS — those cannot be created
-        or reshaped. `hidden: True` keeps the type out of pickers (the
+        or reshaped. So does one equal to a record-root key (id,
+        author, createdAt, modifiedAt, modifiedBy, spaceId): every
+        object carries those bare, and a type group under the same
+        xKey would shadow them on normalized reads — keep the display
+        name, pass an explicit xKey (`author_type`); the xKey is a
+        programmatic handle the user never sees. `hidden: True` keeps
+        the type out of pickers (the
         harness types are). Minting a listed type also sets up the
         space's `collections` app (the client's types feature switch)
         when it lacks one, so the type and its objects show in the UI.
@@ -2085,6 +2100,14 @@ class _Client:
                 "— catalog types cannot be created or reshaped; `setup_app` "
                 "installs the app. Pick another name, or pass an explicit "
                 'non-catalog "xKey".')
+        rooted = self._row_root_keys(space)
+        if xkey in rooted:
+            raise ValueError(
+                f'"{xkey}" is a record-root key every object carries '
+                f'({", ".join(sorted(rooted))}) — a type group under it '
+                "would shadow the record's own field on normalized reads. "
+                f'Keep the name and pass an explicit xKey such as "{xkey}_type" '
+                "(the xKey is the programmatic handle, never shown to the user).")
         tid = row["id"] if row else None
         created = False
         if tid is None:
@@ -2111,6 +2134,14 @@ class _Client:
             self._ensure_collections_app(space)
         return {"typeId": tid, "xKey": xkey, "created": created,
                 "addedProps": added}
+
+    def _row_root_keys(self, space):
+        """The keys a record carries at its root beside the type groups:
+        the SDK's stamped fields (`_ROW_ROOT_KEYS`) plus whatever the
+        space's `any` catalog reports as scope "derived"."""
+        live = {p.get("id") for p in self._type_props(space, "any")
+                if p.get("scope") == "derived" and p.get("id")}
+        return _ROW_ROOT_KEYS | live
 
     def _ensure_collections_app(self, space):
         """A user type is invisible in the client until the space has

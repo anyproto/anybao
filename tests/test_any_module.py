@@ -209,6 +209,7 @@ def test_object_type_property_creation_paths():
         ("POST", "/v1/spaces/s1/objects"),
         ("GET", "/v1/spaces/s1/types"),          # idempotency probe
         ("GET", "/v1/catalog"),                  # catalog types are reserved (once per run)
+        ("GET", "/v1/spaces/s1/types/any/properties"),  # record-root keys are reserved (BOB-68)
         ("POST", "/v1/spaces/s1/types"),
         ("GET", "/v1/spaces/s1/bundles"),        # collections app probe (§5)
         ("POST", "/v1/catalog/collections/setup"),
@@ -325,6 +326,27 @@ def test_create_type_builtin_handle_errors():
     with pytest.raises(ValueError, match="builtin"):
         client(fx).create_type("s1", {"name": "My Meta", "xKey": "type"})
     assert [v for v, _, _ in fx.calls if v == "POST"] == []
+
+
+def test_create_type_row_root_key_errors():
+    # BOB-68: derived `any` props are row-root keys; a type group under
+    # the same xKey would shadow them on normalized reads.
+    fx = wire(replies={"/types": {"types": []}, "/types/any/properties": {
+        "properties": [{"id": "author", "scope": "derived"},
+                       {"id": "pinned", "scope": "derived"}]}})
+    with pytest.raises(ValueError, match='record-root.*"author_type"'):
+        client(fx).create_type("s1", {"name": "Author"})
+    with pytest.raises(ValueError, match="record-root"):
+        client(fx).create_type("s1", {"name": "Created", "xKey": "createdAt"})
+    with pytest.raises(ValueError, match="record-root"):   # live catalog slice
+        client(fx).create_type("s1", {"name": "Pinned"})
+    assert [v for v, _, _ in fx.calls if v == "POST"] == []
+    fx = wire(replies={"/types/any/properties": {},
+                       "/types": {"types": [], "typeId": "tA"}})
+    r = client(fx).create_type("s1", {"name": "Author", "xKey": "author_type"})
+    assert r["xKey"] == "author_type" and r["created"]
+    assert ("POST", "/v1/spaces/s1/types",
+            {"name": "Author", "xKey": "author_type"}) in fx.calls
 
 
 def test_create_object_rejects_synthetic_types():
