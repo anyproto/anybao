@@ -85,7 +85,7 @@ _HINTS = {
 # guest code writes memory/turns/chunks. Host-written stores
 # (config/secrets/triggers) are declared in anyrt.
 _MEM_MUTABLE = ("salience", "accessCount", "confidence", "importance",
-                "context", "body", "tags", "edges")
+                "context", "body", "tags", "edges", "validTo")
 _MEM_CREATE_ONLY = ("fromAgent", "category", "entities", "keywords",
                     "validFrom", "chatId", "source", "provenance")
 _MEM_DATASET = {
@@ -106,6 +106,9 @@ _MEM_DATASET = {
         {"key": "entities", "kind": "array"},
         {"key": "keywords", "kind": "array"},
         {"key": "validFrom", "kind": "datetime"},  # ADR-019 §2
+        # ADR-028 §4: set when a newer item supersedes this one — the
+        # closed fact stays for audit, recall reads live facts only
+        {"key": "validTo", "kind": "datetime", "mutableBy": "author"},
         {"key": "chatId", "kind": "string"},
         {"key": "fromAgent", "kind": "string"},
         {"key": "source", "kind": "string"},
@@ -2169,8 +2172,11 @@ class _Client:
         Idempotent by collection name: an existing def is reused, but
         the draft stays authoritative for the mutable search.* leaves
         — a drifted title/text/scope is PATCHed back (already-indexed
-        records keep their stored scope until they re-index) →
-        {"datasetDefId", "collection", "created", "patched"?: [paths]}.
+        records keep their stored scope until they re-index) — and for
+        the FIELD SET, additively: a declared field the live def lacks
+        is added (add_dataset_field, ADR-017 §1; never removed) →
+        {"datasetDefId", "collection", "created", "patched"?: [paths],
+        "added"?: [keys]}.
         Records live per host object in `collection` (the server's
         `<typeId>_<key>`): write with upsert_records, read with
         query(space, object_id, "<key>") — the key resolves against
@@ -2240,6 +2246,15 @@ class _Client:
                         f"/v1/spaces/{space}/types/{tid}/datasets/{d.get('id')}",
                         body)
                     out["patched"] = sorted(list(set_ops) + unset)
+                if isinstance(d.get("fields"), list):   # additive evolution
+                    live = {fd.get("key") for fd in d["fields"]}
+                    added = [fd["key"] for fd in (draft or {}).get("fields") or []
+                             if fd.get("key") and fd["key"] not in live]
+                    for key_ in added:
+                        fd = next(x for x in draft["fields"] if x.get("key") == key_)
+                        self.add_dataset_field(space, type_key, d.get("id"), fd)
+                    if added:
+                        out["added"] = added
                 return out
         # one part per store, the dataset inline under the same key
         self._call("post", f"/v1/spaces/{space}/types/{tid}/parts",
@@ -3086,9 +3101,10 @@ class _Client:
 
         modifiedAt is bumped by its stamp on apply. Mutable allow-list
         exactly `{salience, accessCount, confidence, importance,
-        context, body, tags, edges}` — anything else (including
-        source/provenance) raises; the declaration enforces the same
-        for other identities."""
+        context, body, tags, edges, validTo}` — anything else
+        (including source/provenance) raises; the declaration enforces
+        the same for other identities. `validTo` (an instant) closes
+        the item: recall reads live facts only (ADR-028 §4)."""
         f = dict(fields or {})
         unknown = sorted(set(f) - set(_MEM_MUTABLE))
         if unknown:
@@ -3099,6 +3115,10 @@ class _Client:
                                    and f["context"].strip()):
             raise AnyError(400, "request.invalid_field",
                            "context must stay a non-empty string")
+        if "validTo" in f and not _is_instant(f["validTo"]):
+            raise AnyError(400, "request.invalid_field",
+                           "validTo must be an instant — instant(seconds) "
+                           "(ADR-019 §2)")
         self._mem_check_ranges(f)
         brain = self.get_brain()["objectId"]
         ops = [{"type": "$set", "path": k, "value": v} for k, v in f.items()]

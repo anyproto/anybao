@@ -12,6 +12,8 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # dedup with a classify-tier judge, no similarity threshold; the
 # humble merge keeps machine re-sightings from blurring user-stated
 # text or lowering confidence. accessCount bump = §4.3, ships ON.
+# ADR-028 §4: supersede CLOSES the old item (validTo = new validFrom)
+# instead of leaving two live facts — nothing is deleted.
 # Policy only — all I/O flows through the injected any@v1 client,
 # the recall@v1 object, and the llm@v1 chat.
 
@@ -21,7 +23,7 @@ import re
 # Post-create mutable fields (author-only evolve allow-list,
 # docs/11-agent-memory.md) — the merge path evolves only these.
 MUTABLE_FIELDS = ("salience", "accessCount", "confidence", "importance",
-                  "context", "body", "tags", "edges")
+                  "context", "body", "tags", "edges", "validTo")
 
 _ACTIONS = ("merge", "supersede", "create")
 _MACHINE_SOURCES = ("extraction", "reflection")
@@ -153,12 +155,15 @@ class Memory:
         """The default save path — dedup via recall + judge.
 
         `candidate`: item fields (`category` + `context` required,
-        plus `body`, `tags`, `edges`, `confidence`, `source`, …);
-        `recall`: a recall@v1 object over the same space. Recall over
-        scope `agent` supplies dedup candidates, the classify-tier
-        judge decides merge | supersede | create (ADR-007 §2). Merge
-        is a SUCCESS, not an error: `{"deduplicated": True,
-        "mergedInto", "action"}`; otherwise `{"itemId", "action"}`."""
+        plus `body`, `tags`, `edges`, `confidence`, `source`,
+        `validFrom`, …); `recall`: a recall@v1 object over the same
+        space. Recall over scope `agent` supplies dedup candidates
+        (live items only — closed ones never compete), the
+        classify-tier judge decides merge | supersede | create
+        (ADR-007 §2). Merge is a SUCCESS, not an error:
+        `{"deduplicated": True, "mergedInto", "action"}`; otherwise
+        `{"itemId", "action"}`. Supersede closes the old item —
+        `validTo` = the new item's `validFrom` (ADR-028 §4)."""
         _require(candidate, "dedup candidate")
         hits = recall.search(candidate["context"], scopes=["agent"])
         verdict = self._judge(candidate, hits, recall)
@@ -186,11 +191,15 @@ class Memory:
                 self.evolve(merged_into, **updates)
             return {"deduplicated": True, "mergedInto": merged_into, "action": "merge"}
 
-        # supersede: new item carrying a `supersedes` edge to the old one
+        # supersede: new item carrying a `supersedes` edge to the old
+        # one, which closes at the instant the new fact holds from
         fields = dict(candidate)
         fields["edges"] = [*(fields.get("edges") or []),
                            {"to": merged_into, "type": "supersedes"}]
-        return {**self.add(**fields), "action": "supersede"}
+        fields.setdefault("validFrom", instant(now()))  # noqa: F821 - guest globals
+        out = {**self.add(**fields), "action": "supersede"}
+        self.evolve(merged_into, validTo=fields["validFrom"])
+        return out
 
 
 @span(kind="setup")  # noqa: F821 - guest global

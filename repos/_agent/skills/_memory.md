@@ -61,11 +61,41 @@ already-run `run_cell` (the recall idiom; `rec` stays bound for reuse)
 accessCount is the signal that keeps useful memories alive (auto-injected
 items are bumped for you).
 
+Closed items are excluded by default: a superseded fact carries
+`validTo` and `r.hydrate` / `r.by_period` drop it — pass
+`include_expired=True` only for history questions ("what did I
+believe in June"). When enumerating the brain dataset, filter
+`{"validTo": {"$exists": False}}` for what holds now.
+
+## Sources — memory learns from any dataset
+
+Extraction is one program over any dataset with an id, a time and
+text (ADR-028): chat turns run as the standing `extraction` trigger;
+a new source is ONE `agent_triggers` record (kind `"cron"`, program
+`"agent:extraction@v1"`) whose args name the dataset:
+
+```python
+{"space": s, "source": {
+    "objectId": mailbox_id, "dataset": "email_messages",
+    "text": ["from", "to", "subject", "body"], "time": "internalDate",
+    "author": "from", "self": [mailbox_address],   # the user's own words cap
+                                                   # at 6, others' claims at 4
+    "filter": {"labelIds": "SENT"}},               # start with what they WROTE
+ "batch": 20}
+```
+
+Registering a source is the user's consent — settle scope with them
+first (which mailbox, sent-only or wider, exclusions), exactly like a
+sync backfill. Widen by editing the record's `filter`; disable by
+the record's `enabled`. Every extracted item carries `provenance.uri`
+(the record it came from — open it with `c.query` when asked "why do
+you think that") and `validFrom` = the evidence's date.
+
 ## Evolving
 
 `mem.evolve(item_id, ...)` may change only: salience, accessCount,
-confidence, importance, context, body, tags, edges. Everything else is
-immutable after create.
+confidence, importance, context, body, tags, edges, validTo.
+Everything else is immutable after create.
 
 ## Graph write discipline
 

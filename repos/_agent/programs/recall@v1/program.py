@@ -12,7 +12,8 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # ADR-007 §5. The temporal sources live on different objects (memory
 # items on the brain — the bao space's, memory's only home (ADR-017
 # §0) — turns/chunks on the bound space's chat object); a None id
-# just skips that source.
+# just skips that source. ADR-028 §4: a memory item with `validTo` is
+# closed (superseded) — every read here drops it unless asked.
 
 _any = use("any@v1")  # noqa: F821 - guest global
 
@@ -67,12 +68,14 @@ class Recall:
         return reply.get("hits") or []
 
     @span(kind="getter")  # noqa: F821 - guest global
-    def hydrate(self, hits):
+    def hydrate(self, hits, include_expired=False):
         """Hit pointers → (hit, record) pairs, in one batched read.
 
         Hit order kept, missing records dropped; one `$in` query per
-        (object, dataset). The shared step under auto-recall rendering
-        and the dedup judge."""
+        (object, dataset). Closed memory items (`validTo` set —
+        superseded, ADR-028 §4) are dropped too unless
+        `include_expired=True` (history questions). The shared step
+        under auto-recall rendering and the dedup judge."""
         wanted = {}
         for h in hits:
             wanted.setdefault((h["objectId"], h["dataset"]), []).append(h["recordId"])
@@ -81,11 +84,12 @@ class Recall:
             for r in self._c.query(self._space, obj, ds, filter={"id": {"$in": ids}}):
                 recs[(ds, r.get("id"))] = r
         pairs = [(h, recs.get((h["dataset"], h["recordId"]))) for h in hits]
-        return [(h, r) for h, r in pairs if r is not None]
+        return [(h, r) for h, r in pairs
+                if r is not None and (include_expired or not r.get("validTo"))]
 
     # --- temporal ----------------------------------------------------------
     @span(kind="getter")  # noqa: F821 - guest global
-    def by_period(self, from_ts, to_ts):
+    def by_period(self, from_ts, to_ts, include_expired=False):
         """Everything in [from_ts, to_ts] (unix seconds or ISO strings,
         inclusive).
 
@@ -93,7 +97,10 @@ class Recall:
         period overlap — one instant range scan per source (ADR-019
         §3; the bounds go through instant()). Merged, time-sorted (the
         records' own instants via ts_s), each record tagged with
-        `source` ∈ memory/turn/chunk. The memory source self-resolves
+        `source` ∈ memory/turn/chunk. Closed memory items (`validTo`
+        set) are dropped unless `include_expired=True` — "what did I
+        believe then" wants them, "what holds" does not. The memory
+        source self-resolves
         via get_brain when the binder got no brain_object_id; raises
         when NO source is bound (a silent [] read as "nothing
         happened that week" — seen live, run_7318bebb61af44b0)."""
@@ -115,7 +122,8 @@ class Recall:
                 self._c.bao_space(), self._brain, "agent_memory_items",
                 filter={"validFrom": {"$gte": lo, "$lte": hi}},
                 sort=["validFrom"])
-            out += [{**r, "source": "memory"} for r in items]
+            out += [{**r, "source": "memory"} for r in items
+                    if include_expired or not r.get("validTo")]
         if self._chat:
             if self._log is None:
                 # turns/chunks live on the chat's log child (ADR-017)

@@ -9,9 +9,13 @@ import json
 from pathlib import Path
 
 import pytest
+from kernelenv import kernel_globals
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 SRC = (PROGRAMS_DIR / "memory@v1" / "program.py").read_text()
+
+NOW = 1_700_000_000.0
+_K = kernel_globals(now=NOW)
 
 
 def load(use=None):
@@ -19,6 +23,7 @@ def load(use=None):
         "effect": lambda name, payload: pytest.fail(f"unexpected effect {name!r}"),
         "span": lambda name=None, kind=None: (lambda f: f),
         "use": use or (lambda spec: pytest.fail(f"unexpected use({spec!r})")),
+        "instant": _K["instant"], "now": _K["now"],   # guest time globals (ADR-019)
     }
     exec(compile(SRC, "memory@v1.py", "exec"), g)
     return g
@@ -114,6 +119,15 @@ def test_evolve_sends_only_given_fields():
 def test_evolve_rejects_immutable_fields():
     with pytest.raises(ValueError, match="immutable/unknown.*category"):
         memory(FakeClient()).evolve("m1", category="insight")   # recategorize = new item
+    with pytest.raises(ValueError, match="immutable/unknown.*validFrom"):
+        memory(FakeClient()).evolve("m1", validFrom=_K["instant"](1))  # evidence date is fixed
+
+
+def test_evolve_may_close_an_item():
+    c = FakeClient()
+    when = _K["instant"](5)
+    assert memory(c).evolve("m1", validTo=when) == {"itemId": "m1"}
+    assert c.calls == [("evolve", "s1", "m1", {"validTo": when})]
 
 
 def test_evolve_needs_a_field():
@@ -182,7 +196,7 @@ def test_dedup_merge_evolves_existing_and_reports_success():
                     "tags": ["ui"], "confidence": 6}
 
 
-def test_dedup_supersede_creates_with_supersedes_edge():
+def test_dedup_supersede_creates_with_supersedes_edge_and_closes_old():
     c = FakeClient()
     got = memory(c, verdict_chat({"action": "supersede", "mergedInto": "old1"})) \
         .save_with_dedup(CANDIDATE, FakeRecall())
@@ -191,6 +205,21 @@ def test_dedup_supersede_creates_with_supersedes_edge():
     assert (kind, space) == ("create", "s1")
     assert body["edges"] == [{"to": "old1", "type": "supersedes"}]
     assert body["category"] == "preference"
+    # ADR-028 §4: the new fact holds from now; the old one closes at
+    # that same instant — nothing deleted, two live facts never coexist
+    assert body["validFrom"] == _K["instant"](NOW)
+    assert c.calls[1] == ("evolve", "s1", "old1", {"validTo": _K["instant"](NOW)})
+
+
+def test_dedup_supersede_closes_old_at_the_candidates_evidence_date():
+    # an extracted fact is dated by its evidence (ADR-028 §3): the old
+    # item closes when the NEW fact became true, not when we noticed
+    c = FakeClient()
+    when = _K["instant"](1_600_000_000)
+    memory(c, verdict_chat({"action": "supersede", "mergedInto": "old1"})) \
+        .save_with_dedup({**CANDIDATE, "validFrom": when}, FakeRecall())
+    assert c.calls[0][2]["validFrom"] == when
+    assert c.calls[1] == ("evolve", "s1", "old1", {"validTo": when})
 
 
 def test_dedup_supersede_appends_to_existing_edges():

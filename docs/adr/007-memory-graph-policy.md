@@ -65,7 +65,12 @@ the history channel's job). Each candidate passes the §2 dedup judge;
 survivors save with **provenance** (`fromSeq` pointer) and capped
 confidence (≤6 — machine-derived never outranks user-stated). Fully
 auditable via the trigger run log; re-derivable (turns are
-append-only). **ROI is measured, not assumed**: accessCount bumps on
+append-only). **Amended by ADR-028 (2026-09-06)**: the extractor runs
+over ANY dataset source, not turns alone; provenance is the record URI
+(`any://o/<space>/<object>/<dataset>/<record>`) replacing `fromSeq`;
+`validFrom` is the evidence's time; the ≤6 cap applies to the user's
+own words, a claim by someone else caps at 4.
+**ROI is measured, not assumed**: accessCount bumps on
 recall (§4), so extracted-but-never-recalled and
 injected-but-never-referenced rates tune or kill the extractor.
 Explicit `addMemory` (§1) remains the high-confidence path.
@@ -77,7 +82,10 @@ then a cheap judge (`classify` tier): *same fact?* → **merge** (evolve
 the existing item: context/tags/confidence, `modifiedAt` bumps) |
 **supersede** (new item + `supersedes` edge) | **create**. Returned as
 `{deduplicated: true, mergedInto}` — a success, not an error (v1
-convention). **Merge is humble (amended 2026-07-08, live-caught at the
+convention). **Amended by ADR-028 §4 (2026-09-06)**: supersede CLOSES
+the old item (`validTo` = the new item's `validFrom`) — the edge stays,
+nothing is deleted, and recall reads live facts only.
+**Merge is humble (amended 2026-07-08, live-caught at the
 cutover walk)**: a machine-sourced candidate (`extraction`/`reflection`)
 never overwrites the stored `context`/`body` — §1b's "machine-derived
 never outranks user-stated" applies to merges, not just creates; a
@@ -172,6 +180,9 @@ memory near the system prompt gets treated as ground truth) and §1a:
 The agent's explicit search remains for deliberate digging.
 Category-name inventory stays (cheap, cache-stable); a ranked "top
 memories" digest is deferred until scoring fields are consumed.
+**Amended by ADR-028 §4 (2026-09-06)**: `hydrate` and `by_period`
+drop closed items (`validTo` set) unless `include_expired=True`, so
+auto-recall, dedup candidates and the golden eval see live facts only.
 
 ### 6. Bird's-eye maintenance = the composition
 

@@ -41,6 +41,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 025 | Bao presence & status line over the event bus | Proposed |
 | 026 | Blobs — bytes as handles, a host-owned content-addressed store beside the trace | Accepted |
 | 027 | any parts, modules and the usecase catalog — stores as parts, the chat from the catalog, bodies on `page`, descriptors in `xFormat` | Accepted |
+| 028 | Memory sources — any dataset as extraction evidence | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the

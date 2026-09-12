@@ -734,6 +734,51 @@ def test_create_dataset_declares_one_part_per_store():
         c.create_dataset("s1", "mailbox", {"name": "x"})
 
 
+def test_create_dataset_adds_declared_fields_the_live_def_lacks():
+    # ADR-017 §1 additive evolution, driven from the ensure path
+    # (ADR-028 §4: `validTo` reaches brains declared before it existed):
+    # a declared key missing from the live def is POSTed as a field;
+    # live keys the draft dropped are never removed
+    fx = wire(replies={
+        "/types/mb/datasets": {"datasets": [
+            {"id": "d1", "key": "email_messages", "collection": "mb_email_messages",
+             "search": {"title": "subject", "text": "body", "scope": "email"},
+             "fields": [{"id": "f1", "key": "subject", "kind": "string"},
+                        {"id": "f2", "key": "legacy", "kind": "string"}]}]},
+        "/types": {"types": [{"id": "mb", "xKey": "mailbox"}]},
+        "/fields": {"fieldDefId": "f9"},
+    })
+    r = client(fx).create_dataset("s1", "mailbox", {
+        "key": "email_messages",
+        "search": {"title": "subject", "text": "body", "scope": "email"},
+        "fields": [{"key": "subject", "kind": "string"},
+                   {"key": "notes", "kind": "string", "mutableBy": "author"}]})
+    assert r == {"datasetDefId": "d1", "collection": "mb_email_messages",
+                 "created": False, "added": ["notes"]}
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts == [("/v1/spaces/s1/types/mb/datasets/d1/fields",
+                      {"key": "notes", "kind": "string", "mutableBy": "author"})]
+    assert not [c for c in fx.calls if c[0] == "DELETE"]
+
+
+def test_create_dataset_without_live_field_list_adds_nothing():
+    # an older server that omits `fields` from the def gives no basis
+    # to diff — the ensure stays a search-leaf reconcile only
+    fx = wire(replies={
+        "/types/mb/datasets": {"datasets": [
+            {"id": "d1", "key": "email_messages", "collection": "mb_email_messages",
+             "search": {"title": "subject", "text": "body", "scope": "email"}}]},
+        "/types": {"types": [{"id": "mb", "xKey": "mailbox"}]},
+    })
+    r = client(fx).create_dataset("s1", "mailbox", {
+        "key": "email_messages",
+        "search": {"title": "subject", "text": "body", "scope": "email"},
+        "fields": [{"key": "notes", "kind": "string"}]})
+    assert r == {"datasetDefId": "d1", "collection": "mb_email_messages",
+                 "created": False}
+    assert not [c for c in fx.calls if c[0] == "POST"]
+
+
 def test_turns_chunks_chat_paths():
     # ADR-017: turns/chunks land on the chat's log child (bao/log/v1 of
     # the chat's bundle) via upsert with a client-assigned seq; the
@@ -1168,6 +1213,18 @@ def test_memory_has_one_home():
     g = load(wire(config={"any.base_url": "http://any"}))
     with pytest.raises(ValueError, match="no bao space wired"):
         g["bao_space"]()
+
+
+def test_evolve_memory_may_close_an_item_with_an_instant():
+    # ADR-028 §4: validTo is evolvable and must be an instant
+    fx = wire(replies=_brain_wire())
+    c = client(fx, bao="s1")
+    with pytest.raises(Exception, match="validTo must be an instant"):
+        c.evolve_memory("m1", {"validTo": 1700000000})
+    c.evolve_memory("m1", {"validTo": {"$date": 1700000000000}})
+    closing = [b for v, p, b in fx.calls if p.endswith("/modify")][-1]
+    assert closing["records"][0]["ops"] == [
+        {"type": "$set", "path": "validTo", "value": {"$date": 1700000000000}}]
 
 
 def test_memory_validation_is_client_side():

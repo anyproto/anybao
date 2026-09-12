@@ -187,6 +187,18 @@ def test_hydrate_pairs_hits_with_records_one_in_query():
         "filter": {"id": {"$in": ["m1", "missing"]}}})]
 
 
+def test_hydrate_drops_closed_items_unless_asked():
+    # ADR-028 §4: a superseded item (validTo set) is not a live fact —
+    # dedup candidates and auto-recall never see it; history digs do
+    closed = {"id": "m1", "content": "old role", "validTo": at(500)}
+    live = {"id": "m2", "content": "new role"}
+    cap = []
+    r = recall(cap, memory=[closed, live])
+    hits = [HIT, {**HIT, "recordId": "m2"}]
+    assert [rec["id"] for _, rec in r.hydrate(hits)] == ["m2"]
+    assert [rec["id"] for _, rec in r.hydrate(hits, include_expired=True)] == ["m1", "m2"]
+
+
 # --- by_period ---------------------------------------------------------------
 
 def test_by_period_fans_out_merges_and_time_sorts():
@@ -199,6 +211,16 @@ def test_by_period_fans_out_merges_and_time_sorts():
     recs = r.by_period(100, 400)
     assert [(x["id"], x["source"]) for x in recs] == [
         ("t1", "turn"), ("c1", "chunk"), ("m1", "memory"), ("t2", "turn")]
+
+
+def test_by_period_drops_closed_memory_unless_asked():
+    cap = []
+    r = recall(cap,
+               memory=[{"id": "m1", "validFrom": at(200), "validTo": at(300)},
+                       {"id": "m2", "validFrom": at(250)}],
+               turns=[{"id": "t1", "createdAt": at(100)}])
+    assert [x["id"] for x in r.by_period(0, 400)] == ["t1", "m2"]
+    assert [x["id"] for x in r.by_period(0, 400, include_expired=True)] == ["t1", "m1", "m2"]
 
 
 def test_by_period_wire_filters():
