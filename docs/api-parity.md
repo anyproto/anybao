@@ -54,6 +54,42 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C5. Drift refresh 2026-09-08 (pin → any 5d709c8, rig :7142 `/v1/openapi.json`)
+
+The parts / modules / catalog break (ADR-027; the port plan
+`any-parts-catalog-port-plan.md`). 139 paths. `anyrt drift` is clean
+and `make api-drift` now runs in CI (the `runtime` job).
+
+- **Removed** (routes gone from the server, mappings dropped): the
+  eight pre-collection editor routes (`…/editor/markdown[/append]`,
+  `…/editor/blocks[/:id]`) and `POST …/types/:typeId/datasets`.
+- **Mapped**: the editor routes under `…/editor/{collection}/…` →
+  the same helpers as before (`anyclient.get_markdown` /
+  `put_markdown`, `helper.get_markdown` / `put_markdown` /
+  `edit_markdown` / `append_markdown` / `create_block` /
+  `patch_block` / `delete_block`); `POST …/types/:typeId/parts` →
+  `anyclient.add_part` / `helper._create_dataset` (one part per
+  store); `PATCH …/types/:typeId` → `anyclient.patch_type` (hidden
+  harness types); `POST /catalog/:usecaseId/setup` →
+  `anyclient.catalog_setup` / `helper.setup_app`; `GET /catalog` →
+  `helper.list_available_apps`; `GET …/objects/:o/links` →
+  `helper.links`; `GET /backlinks` → `helper.backlinks_everywhere`.
+- **Excluded**: `GET /catalog/:usecaseId` (the list carries every
+  usecase), `GET …/types/:typeId/parts` (the flat datasets listing is
+  the read), `PATCH` / `DELETE …/parts/:partId` and
+  `POST …/parts/:partId/datasets` (stores are declared inline and
+  additive), `PATCH …/datasets/:defId/fields/:fieldId` (pending a
+  helper).
+- **Changed contract, fingerprint refreshed**: 15 routes — object
+  delete (`object.derived_undeletable`), health (`crdtVersion`),
+  dataset discovery (`owners`/`module`/`shared` for `typeId`),
+  backlinks (`{object, parts}` edges), type list/get/create
+  (`hidden`, `weight`, `layout`, `includeHidden`), the datasets
+  listing (`key`, `collection`, `module`, `partId`), dataset field
+  add, property create (`xFormat`, no `format`/`xKind`/`meta.pos`),
+  bundles ensure (`parts`/`properties`/`xKey`/…), object create (no
+  `nav`), cancel-join.
+
 ## C4. Drift refresh 2026-09-04 (pin → any a176029, staging-clean :7141 `/v1/openapi.json`)
 
 Closes BOB-66 (the 30 routes C3 left untriaged) plus 13 routes new

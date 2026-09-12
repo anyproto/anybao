@@ -17,6 +17,8 @@ place.
 
 ### 0. Reuse the bao space; the derived general chat
 
+**Amended 2026-09-08 (ADR-027 §1): the general chat is the catalog's** — `POST /v1/catalog/general-chat/setup` returns the derived root (`system:general-chat/v1`); no registry read, no client ensure, no `general-chat/v1`. The turn log is the `bao/log/v1` child of that bundle.
+
 anybao adopts the EXISTING bao space (review 2026-07-07) — this keeps
 the per-space memory brain (shape unchanged), space identity, programs
 history. Mixed-shape safety comes one level down: `agent_turns`/
@@ -119,6 +121,11 @@ reads the registry.
   usage (dead fields today); plus `costUsd` (computed from tier
   pricing), `fuelUsed`, `cells` (count) — the ADR-003 metrics rollup at
   turn level.
+- **`llm` prompt provenance (ADR-005 §5, 2026-09-07)**:
+  `promptFingerprint` (16 hex — sha256 of the system block as sent) and
+  `soulFingerprint` (16 hex — sha256 of the identity body; absent when
+  the run composed no identity). Nested keys of the declared `object`
+  field — no dataset field is added (ADR-017 §1).
 - **`traceRef` replaces `debugRef`**: the trace (ADR-001 format, one
   object per run, spilled blobs as file attachments) is the single
   SOURCE OF TRUTH; "the debug log" becomes two VIEWS over it — agent-
@@ -282,7 +289,8 @@ another device is live for the next cell. A store hiccup fails that
 - `config.set {key, value}` — mutate, traced (ADR-002): upserts the
   row. Refuses the secret namespaces with `ConfigError`.
 - `runtime.get {key}` → `{value}` — runtime wiring (`any.base_url`,
-  `overlays.aliases`); `KeyError` otherwise.
+  `overlays.aliases`, `shell` — an object with the shell feature, `null`
+  without, ADR-024 §4); `KeyError` for an unknown key.
 - `config@v1` (`list/get/set/set_model`) is the agent's tool: `get`,
   `set`, `set_model` over the effects, `list` a plain dataset query
   through `any@v1` (the `bao/config/v1` child of the `bao/v1` bundle).
@@ -417,6 +425,8 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
 5. (Parallel, §4c): backlinks read surface.
 
 ### 6. xKey normalization at the client boundary (added 2026-07-17)
+
+**Amended 2026-09-08 (ADR-027 §2/§3):** the reserved groups are `any` and `_ver`; `nav` is gone; the hidden built-in types (`page`, `miniapp`, `bin`, `dataview`) resolve by their literal id; a dataset argument is a store KEY resolved against the host object's types to the server's collection (a canonical or already-resolved collection passes through; zero or several matches error).
 
 **Context.** The `any` server stores and validates typed values by
 content-id: a value lives at `record[typeId][propId]`, and

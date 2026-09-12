@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use crate::anyapi::{AnyError, Client};
-use crate::program_schema::{ProgramSchema, SOURCE_DATASET};
+use crate::program_schema::ProgramSchema;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,7 +175,7 @@ impl AnyModuleResolver {
                 "program not found: {spec} (space {space})"
             )));
         };
-        let src = self.client.query(space, oid, SOURCE_DATASET, &json!({}))?;
+        let src = self.client.query(space, oid, &s.source, &json!({}))?;
         let Some(main) = src.first() else {
             return Err(ResolveError::NotFound(format!(
                 "program {spec} has no source record"
@@ -348,14 +348,8 @@ mod tests {
             )
             .unwrap();
         let oid = res["objectId"].as_str().unwrap().to_string();
-        c.upsert_record(
-            space,
-            &oid,
-            "program_source",
-            "main",
-            &json!({"code": code}),
-        )
-        .unwrap();
+        c.upsert_record(space, &oid, &s.source, "main", &json!({"code": code}))
+            .unwrap();
     }
 
     #[test]
@@ -526,14 +520,9 @@ mod tests {
         let mut r = AnyModuleResolver::new(c.clone(), "cur", None, BTreeMap::new());
         assert_eq!(r.resolve("tool@v1", None).unwrap()["cache"], json!("miss"));
         // rewrite the source record — _addSeq bumps → new marker → miss
-        c.upsert_record(
-            "cur",
-            "obj1",
-            "program_source",
-            "main",
-            &json!({"code": "x = 2\n"}),
-        )
-        .unwrap();
+        let source = ProgramSchema::lookup(&c, "cur").unwrap().unwrap().source;
+        c.upsert_record("cur", "obj1", &source, "main", &json!({"code": "x = 2\n"}))
+            .unwrap();
         let out = r.resolve("tool@v1", None).unwrap();
         assert_eq!(out["cache"], json!("miss"));
         assert_eq!(out["marker"], json!(2));

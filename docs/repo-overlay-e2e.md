@@ -1,8 +1,7 @@
 # Two-account repo-overlay e2e (ADR-009 §8)
 
-> Current prod bring-up lives in
-> [`prod-repo-account.md`](prod-repo-account.md); this file is the
-> original point-in-time proof run.
+> Current prod bring-up lives in the local `docs/environments.md`
+> (not in git); this file is the original point-in-time proof run.
 
 Point-in-time runbook (2026-07-21): prove the space-resident agent
 against a REAL second account — a dedicated "repo" account publishes

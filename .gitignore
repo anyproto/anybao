@@ -11,7 +11,6 @@ bin/
 runtime/target/
 traces/
 *.log
-/anybao.toml
 traces-test/
 anybao.test.toml
 .connectors.env

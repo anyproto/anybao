@@ -59,8 +59,9 @@ class FakeGuest:
                 "created": True, "addedProps": {}}
 
     def _create_dataset(self, space, type_key, draft):
-        self.datasets.append({"type": type_key, "name": draft["name"]})
-        return {"datasetDefId": f"d-{draft['name']}", "created": True}
+        self.datasets.append({"type": type_key, "key": draft["key"]})
+        return {"datasetDefId": f"d-{draft['key']}",
+                "collection": f"{type_key}_{draft['key']}", "created": True}
 
     def query_objects(self, space, **opts):
         flt = opts.get("filter") or {}
@@ -228,9 +229,10 @@ def test_propose_maps_actions_to_sourced_items():
     # the existing hub was found (never re-created)
     assert [t["xKey"] for t in fake.created_types] == \
         ["enrichments", "enrich_proposal"]
+    # one part per store, addressed by key (ADR-027 §2)
     assert fake.datasets == [
-        {"type": "enrichments", "name": "enriched_data"},
-        {"type": "enrich_proposal", "name": "enrich_proposal_items"}]
+        {"type": "enrichments", "key": "enriched_data"},
+        {"type": "enrich_proposal", "key": "enrich_proposal_items"}]
 
     # proposal object: typed + named after the transcript, body written
     assert fake.created[0]["types"] == ["enrich_proposal"]

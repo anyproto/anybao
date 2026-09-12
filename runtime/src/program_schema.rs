@@ -1,15 +1,17 @@
 //! The `program` type as a harness-declared USER type (ADR-010 §5,
-//! ADR-017 §1): one type per space keyed by xKey `program`, four
-//! properties (`name`, `version`, `any_tool`, `summary` — none
-//! indexed) and two runtime datasets, `program_source` and
-//! `program_manifest` (single record "main"; declared WITHOUT a
-//! `search` mapping, so the server never indexes them — source is
-//! code, not knowledge).
+//! ADR-017 §1, ADR-027 §2/§3): one hidden type per space keyed by xKey
+//! `program`, four properties (`name`, `version`, `any_tool`,
+//! `summary` — none indexed), a shared editor part (`body` — the
+//! program object's docs body, held through the type) and two records
+//! datasets, `program_source` and `program_manifest` (single record
+//! "main"; declared WITHOUT a `search` mapping, so the server never
+//! indexes them — source is code, not knowledge). Their collections
+//! are read off the declaration (`source` / `manifest`), never
+//! composed.
 //!
-//! Deploy is the writer that ENSURES the store (`ensure`, idempotent —
-//! the same xKey re-claim contract as `skill_schema`); the module
-//! resolver only LOOKS it up (`lookup` — a space that never had a
-//! program deployed has no type, which is a plain miss, never an
+//! Deploy is the writer that ENSURES the store (`ensure`, idempotent);
+//! the module resolver only LOOKS it up (`lookup` — a space that never
+//! had a program deployed has no type, which is a plain miss, never an
 //! ensure). The raw host client keys property groups and filter paths
 //! by `<typeId>.<propId>` (only builtins have id == xKey), so every
 //! caller goes through `path`/`group`/`read` instead of literals.
@@ -22,8 +24,10 @@ use std::collections::BTreeMap;
 /// any-ui) resolve by; never a valid type id.
 pub const PROGRAM_TYPE_XKEY: &str = "program";
 pub const PROGRAM_TYPE_NAME: &str = "Program";
-pub const SOURCE_DATASET: &str = "program_source";
-pub const MANIFEST_DATASET: &str = "program_manifest";
+/// The two stores' dataset KEYS on the type; the collections are
+/// `ProgramSchema::source` / `::manifest`.
+pub const SOURCE_KEY: &str = "program_source";
+pub const MANIFEST_KEY: &str = "program_manifest";
 pub const MAIN_RECORD: &str = "main";
 
 /// (xKey, display name, kind) — the declared property set.
@@ -34,25 +38,33 @@ const PROPS: [(&str, &str, &str); 4] = [
     ("summary", "Summary", "string"),
 ];
 
-fn dataset_drafts() -> [Value; 2] {
+/// The parts the type declares: the shared body first (the docs body
+/// every program object holds through its type — no per-object
+/// attach), then one part per records store.
+fn part_drafts() -> [Value; 3] {
     [
-        json!({
-            "name": SOURCE_DATASET, "displayName": "Program Source",
+        json!({"key": "body", "datasets": [{"module": "editor", "shared": true}]}),
+        json!({"key": SOURCE_KEY, "datasets": [{
+            "key": SOURCE_KEY, "displayName": "Program Source",
             "idRule": "user", "deleteBy": "anyone", "dynamic": true,
-            "fields": [{"key": "code", "kind": "string", "mutableBy": "any"}]}),
-        json!({
-            "name": MANIFEST_DATASET, "displayName": "Program Manifest",
+            "fields": [{"key": "code", "kind": "string", "mutableBy": "any"}]}]}),
+        json!({"key": MANIFEST_KEY, "datasets": [{
+            "key": MANIFEST_KEY, "displayName": "Program Manifest",
             "idRule": "user", "deleteBy": "anyone", "dynamic": true,
-            "fields": [{"key": "manifest", "kind": "object", "mutableBy": "any"}]}),
+            "fields": [{"key": "manifest", "kind": "object", "mutableBy": "any"}]}]}),
     ]
 }
 
-/// One space's resolved `program` schema: the type id plus the
-/// xKey→propId map.
+/// One space's resolved `program` schema: the type id, the
+/// xKey→propId map and the two stores' collections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramSchema {
     pub type_id: String,
     props: BTreeMap<String, String>,
+    /// the `program_source` collection (`<typeId>_program_source`)
+    pub source: String,
+    /// the `program_manifest` collection
+    pub manifest: String,
 }
 
 impl ProgramSchema {
@@ -66,9 +78,16 @@ impl ProgramSchema {
         if PROPS.iter().any(|(k, _, _)| !props.contains_key(*k)) {
             return Ok(None);
         }
+        let colls = collections(c, space, &tid)?;
+        let (Some(source), Some(manifest)) = (colls.get(SOURCE_KEY), colls.get(MANIFEST_KEY))
+        else {
+            return Ok(None);
+        };
         Ok(Some(ProgramSchema {
             type_id: tid,
             props,
+            source: source.clone(),
+            manifest: manifest.clone(),
         }))
     }
 
@@ -78,9 +97,11 @@ impl ProgramSchema {
         let tid = match find_type(c, space)? {
             Some(t) => t,
             None => {
+                // hidden: never offered by a client's type picker (ADR-027 §2)
                 let res = c.create_type(
                     space,
-                    &json!({"name": PROGRAM_TYPE_NAME, "xKey": PROGRAM_TYPE_XKEY}),
+                    &json!({"name": PROGRAM_TYPE_NAME, "xKey": PROGRAM_TYPE_XKEY,
+                            "hidden": true}),
                 )?;
                 res["typeId"]
                     .as_str()
@@ -106,20 +127,25 @@ impl ProgramSchema {
                 .ok_or_else(|| anyhow::anyhow!("add_property reply has no propId: {res}"))?;
             props.insert(xkey.to_string(), pid.to_string());
         }
-        let have: Vec<String> = c
-            .list_datasets(space, &tid)?
-            .iter()
-            .filter_map(|d| d["name"].as_str().map(str::to_string))
-            .collect();
-        for draft in dataset_drafts() {
-            let name = draft["name"].as_str().unwrap_or_default();
-            if !have.iter().any(|h| h == name) {
-                c.create_dataset(space, &tid, &draft)?;
+        // idempotent by dataset KEY; the body part has none of its own
+        // (a shared editor dataset lists under the canonical key)
+        let mut have = collections(c, space, &tid)?;
+        for draft in part_drafts() {
+            let ds = &draft["datasets"][0];
+            let key = ds["key"].as_str().unwrap_or(crate::anyapi::EDITOR_BLOCKS);
+            if !have.contains_key(key) {
+                c.add_part(space, &tid, &draft)?;
             }
         }
+        have = collections(c, space, &tid)?;
+        let (Some(source), Some(manifest)) = (have.get(SOURCE_KEY), have.get(MANIFEST_KEY)) else {
+            anyhow::bail!("program stores declared but not listed on {tid}");
+        };
         Ok(ProgramSchema {
             type_id: tid,
             props,
+            source: source.clone(),
+            manifest: manifest.clone(),
         })
     }
 
@@ -161,27 +187,23 @@ impl ProgramSchema {
 }
 
 fn find_type(c: &Client, space: &str) -> Result<Option<String>, AnyError> {
-    let types = c.list_types(space)?;
-    for t in &types {
-        let key = t["xKey"].as_str().or_else(|| t["key"].as_str());
-        if key == Some(PROGRAM_TYPE_XKEY) {
-            return Ok(t["id"]
-                .as_str()
-                .or_else(|| t["typeId"].as_str())
-                .map(str::to_string));
-        }
-    }
-    // A pre-metatype "Program" (any PR #176) reads back with no xKey —
-    // re-claim the handle in place rather than duplicating it.
-    for t in &types {
-        if t["xKey"].as_str().unwrap_or_default().is_empty() && t["name"] == PROGRAM_TYPE_NAME {
-            if let Some(id) = t["id"].as_str() {
-                c.set_properties(space, id, "type", &json!({"xkey": PROGRAM_TYPE_XKEY}))?;
-                return Ok(Some(id.to_string()));
-            }
-        }
-    }
-    Ok(None)
+    Ok(c.list_types(space)?
+        .iter()
+        .find(|t| t["xKey"] == PROGRAM_TYPE_XKEY)
+        .and_then(|t| t["id"].as_str().map(str::to_string)))
+}
+
+/// dataset key → collection, read off the type's declarations.
+fn collections(c: &Client, space: &str, tid: &str) -> Result<BTreeMap<String, String>, AnyError> {
+    Ok(c.list_datasets(space, tid)?
+        .iter()
+        .filter_map(|d| {
+            Some((
+                d["key"].as_str()?.to_string(),
+                d["collection"].as_str()?.to_string(),
+            ))
+        })
+        .collect())
 }
 
 fn prop_map(c: &Client, space: &str, tid: &str) -> Result<BTreeMap<String, String>, AnyError> {
@@ -212,13 +234,25 @@ mod tests {
         assert_eq!(ProgramSchema::lookup(&c, "sp").unwrap(), Some(s.clone()));
         // idempotent: same ids, no duplicate type/props/datasets
         assert_eq!(ProgramSchema::ensure(&c, "sp").unwrap(), s);
-        assert_eq!(c.list_types("sp").unwrap().len(), 1);
+        let user_types: Vec<Value> = c
+            .list_types("sp")
+            .unwrap()
+            .into_iter()
+            .filter(|t| t["builtIn"] != json!(true))
+            .collect();
+        assert_eq!(user_types.len(), 1);
         assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 4);
         let ds = c.list_datasets("sp", &s.type_id).unwrap();
-        let names: Vec<&str> = ds.iter().filter_map(|d| d["name"].as_str()).collect();
-        assert_eq!(names, vec![SOURCE_DATASET, MANIFEST_DATASET]);
+        let keys: Vec<&str> = ds.iter().filter_map(|d| d["key"].as_str()).collect();
+        // the shared body (held through the type) + the two stores
+        assert_eq!(keys, vec!["editor_blocks", SOURCE_KEY, MANIFEST_KEY]);
         // never a search target
         assert!(ds.iter().all(|d| d.get("search").is_none()));
+        // the collections are the server's, read back — never composed
+        assert_eq!(s.source, format!("{}_{SOURCE_KEY}", s.type_id));
+        assert_eq!(s.manifest, format!("{}_{MANIFEST_KEY}", s.type_id));
+        // hidden from the first change
+        assert_eq!(user_types[0]["hidden"], json!(true));
     }
 
     #[test]
@@ -230,19 +264,5 @@ mod tests {
             s.group(&[("name", json!("t")), ("any_tool", json!(true))])});
         assert_eq!(s.read(&row), json!({"name": "t", "any_tool": true}));
         assert_eq!(s.read(&json!({"id": "o2"})), json!({}));
-    }
-
-    #[test]
-    fn ensure_reclaims_a_pre_metatype_program_type() {
-        let c = client();
-        c.create_type("sp", &json!({"name": PROGRAM_TYPE_NAME}))
-            .unwrap();
-        let s = ProgramSchema::ensure(&c, "sp").unwrap();
-        assert_eq!(c.list_types("sp").unwrap().len(), 1);
-        assert_eq!(
-            c.list_types("sp").unwrap()[0]["xKey"],
-            json!(PROGRAM_TYPE_XKEY)
-        );
-        assert_eq!(c.list_types("sp").unwrap()[0]["id"], json!(s.type_id));
     }
 }

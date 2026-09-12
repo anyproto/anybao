@@ -54,8 +54,8 @@ def main(args):
     min_cluster = args.get("minCluster", MIN_CLUSTER)
     cutoff = now() - args.get("minAgeDays", MIN_AGE_DAYS) * DAY_S  # noqa: F821
     c = use("any@v1")  # noqa: F821 - guest global
-    brain = c.get_brain(space)["objectId"]
-    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    brain = c.get_brain()["objectId"]   # the bao space's (ADR-017 §0)
+    mem = use("memory@v1").memory(c)  # noqa: F821 - guest global
     rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
     items = c.query(space, brain, "agent_memory_items",
                     filter={"accessCount": 0,

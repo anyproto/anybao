@@ -1,0 +1,9 @@
+# Prod config. Overlays = the prod repo account's spaces (server :7004,
+# data dir ~/any/any/datadirs/repo-prod3, account A6BkPDYvLFDe… on the PROD network —
+# created 2026-09-09 for ADR-027; the pre-port account stays on :7003 / repo-prod). Runbook: docs/environments.md (local)
+[agent]
+space = "bao"
+
+[overlays]
+agent = { space = "bafyreicbqmmvvfe3zl3xqrbksmdhwgwwuozwqcfdqb6jf4vbbg2kro2nh4.3irt51uvrnfyb", invite = "2gChBtaWg5EX1bmdUm6dLTXEkRXaXDfqJf8HoaN6V5iemJ6w9ZUXrqhJK8WBHGDMtmtFXgwPAt2cJJDKn6G3ENEj7mbyJLAA2mdiR7oyvsDCEgYFBURUWy3V14gj12gT4wpoFVbqB5rUBdqRWorsGTvCQYfnQ7uY5B6JXdFW55vGTCMk2gAw1dqCpK5FWVoWQ1m" }   # _agentrepo
+connectors = { space = "bafyreiaeedflttta2vwkylathdtvsstntnc4qy6ipnahnhwfkbl47qan7m.3irt51uvrnfyb", invite = "2gChBtaWg5EX19q82BMSNKvFMvy2Qn2FpDZJ6JC1tWmBXiknKPxDJLXjoYu1WYS7cfst6nnTCV7uMXP9f12T9Wjib5gykt6cqp5afb5eonqee6MTcX5bqmx3ZuuXGNQtZUg13mgrT13VdUEFX8AbCcDSPAcqDdkbXXw54Cwjm2xHJYEQBafeE2dFPMHwEopcwBe" }   # _connectorsrepo

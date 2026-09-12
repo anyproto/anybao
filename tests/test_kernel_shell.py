@@ -23,7 +23,7 @@ def test_without_the_feature_names_are_absent_and_probe_is_once():
     def eff(name, payload):
         if name == "runtime.get":
             probes.append(payload)
-            raise KeyError("no runtime value for \"shell\"")
+            return {"value": None}   # the key resolves, to null (ADR-024 §4)
         raise AssertionError(name)
 
     app = load_kernel(effect=eff)

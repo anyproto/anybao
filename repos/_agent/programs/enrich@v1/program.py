@@ -50,7 +50,7 @@ PROPOSAL_TYPE_XKEY = "enrich_proposal"
 # anyone); creator/time are server-stamped; text indexes under the
 # generic `basic` scope via the x-search mapping.
 ENRICHED_DATA_DATASET = {
-    "name": "enriched_data",
+    "key": "enriched_data",
     "displayName": "Enriched Data",
     "idRule": "auto",
     "deleteBy": "anyone",
@@ -71,7 +71,7 @@ ENRICHED_DATA_DATASET = {
 # scaffolding, deleted on apply; no search mapping, so items never
 # leak into recall.
 ENRICH_PROPOSAL_ITEMS_DATASET = {
-    "name": "enrich_proposal_items",
+    "key": "enrich_proposal_items",
     "displayName": "Enrich Proposal Items",
     "idRule": "auto",
     "deleteBy": "anyone",
@@ -234,11 +234,13 @@ def _ground(c, space, units, transcript_id, limit):
 
 
 def _type_catalog(c, space):
-    """User types (+ the editor builtin) as "xKey — name: description"
-    lines, so `new` actions name a real type."""
+    """User types (+ the built-in `page`) as "xKey — name: description"
+    lines, so `new` actions name a real type; hidden types stay out."""
     lines = []
     for t in c.list_types(space):
-        if t.get("builtIn") and t.get("xKey") != "editor":
+        if t.get("builtIn") and t.get("xKey") != "page":
+            continue
+        if t.get("hidden") and not t.get("builtIn"):
             continue
         key = t.get("xKey") or t.get("id")
         lines.append(f"{key} — {t.get('name')}: {t.get('description') or ''}")
@@ -252,13 +254,13 @@ def _ensure_store(c, space):
     an existing hub wins and duplicates are never auto-deleted (their
     records live on them)."""
     hub_type = c.create_type(space, {
-        "name": "Enrichments", "xKey": HUB_TYPE_XKEY,
+        "name": "Enrichments", "xKey": HUB_TYPE_XKEY, "hidden": True,
         "description": "Per-space enrichment store: sourced facts in "
                        "the enriched_data dataset, joined to enriched "
                        "objects by targetObjectId."})
     c._create_dataset(space, HUB_TYPE_XKEY, ENRICHED_DATA_DATASET)
     c.create_type(space, {
-        "name": "Enrich Proposal", "xKey": PROPOSAL_TYPE_XKEY,
+        "name": "Enrich Proposal", "xKey": PROPOSAL_TYPE_XKEY, "hidden": True,
         "description": "Ephemeral, reviewable enrichment plan: one "
                        "enrich_proposal_items record per proposed "
                        "item; deleted on apply."})
@@ -453,6 +455,15 @@ def apply(space, proposal_id):
     try:
         items = c.query(space, proposal_id, "enrich_proposal_items",
                         limit=1000)
+    except ValueError as e:
+        # the key→collection resolution (ADR-027 §2): a deleted or
+        # unknown proposal object declares no proposal dataset — the
+        # same "nothing to apply" as an empty draft. Any other
+        # resolution error (ambiguous declaration, bad space) surfaces.
+        if "carries no type declaring" not in str(e):
+            return {"ok": False, "proposalId": proposal_id,
+                    "error": f"apply failed: {e}"}
+        items = []
     except anymod.AnyError as e:
         return {"ok": False, "proposalId": proposal_id,
                 "error": f"apply failed: {e}"}

@@ -67,9 +67,9 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
 
     # the transcript: an object whose editor body holds the notes
     tr = client.create_object(sp, {
-        "types": [tid],
+        "types": [tid, "page"],          # the body needs page (ADR-027 §3)
         "initialProperties": {"any": {"name": "Weekly sync"}}})["objectId"]
-    client.call("PUT", f"/v1/spaces/{sp}/objects/{tr}/editor/markdown",
+    client.call("PUT", f"/v1/spaces/{sp}/objects/{tr}/editor/editor_blocks/markdown",
                 {"content": "Phoenix moves to beta\n\n"
                             "New workstream: billing revamp\n\n"
                             "Dana owns the billing revamp\n"})
@@ -112,7 +112,9 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
 
     # the draft: one enrich_proposal_items record per item, sources cite
     # the real blocks
-    items = client.query(sp, p["proposalId"], "enrich_proposal_items")
+    # the raw wire takes the collection, never the key (ADR-027 §2)
+    coll = client.collection(sp, "enrich_proposal", "enrich_proposal_items")
+    items = client.query(sp, p["proposalId"], coll)
     assert len(items) == 3
     by_outcome = {}
     for it in items:
@@ -130,9 +132,12 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
 
     # propose ensured ONE Enrichments hub; every fact rides it, joined
     # to its target by targetObjectId
-    hubs = client.query_objects(sp, filter={"any.name": "Enrichments"})
+    # (the hub TYPE is an object of the same name — skip type rows)
+    hubs = [h for h in client.query_objects(sp, filter={"any.name": "Enrichments"})
+            if "__type__" not in (h.get("any") or {}).get("types", [])]
     assert len(hubs) == 1
-    facts = client.query(sp, hubs[0]["id"], "enriched_data")
+    facts = client.query(sp, hubs[0]["id"],
+                         client.collection(sp, "enrichments", "enriched_data"))
     assert len(facts) == 3
     assert all(f.get("createdAt") and f.get("createdBy")
                for f in facts)  # schema-stamped
@@ -168,9 +173,9 @@ def test_propose_grounds_against_live_search(client, fresh_space,
     sp = fresh_space
     tid = client.create_type(sp, {"name": "Note", "xKey": "note"})["typeId"]
     tr = client.create_object(sp, {
-        "types": [tid],
+        "types": [tid, "page"],          # the body needs page (ADR-027 §3)
         "initialProperties": {"any": {"name": "call notes"}}})["objectId"]
-    client.call("PUT", f"/v1/spaces/{sp}/objects/{tr}/editor/markdown",
+    client.call("PUT", f"/v1/spaces/{sp}/objects/{tr}/editor/editor_blocks/markdown",
                 {"content": "zeppelin engineering review went well\n"})
     b1 = next(b["id"] for b in client.query(sp, tr, "editor_blocks")
               if (b.get("text") or "").strip())

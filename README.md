@@ -96,7 +96,7 @@ account (`:7005`, control `:7014`) against `_agentrepo-test` /
 prod repo account. Real prod clients can join it; deploy to it through
 `:7003` by raw id. Browser: `VITE_API_TARGET=http://127.0.0.1:7005
 VITE_ANYRT_TARGET=http://127.0.0.1:7014 pnpm dev`. See
-`docs/prod-repo-account.md` § Test spaces.
+the local `docs/environments.md`.
 
 ## Build
 

@@ -63,8 +63,11 @@ class FakeGuest:
         self.dedup_result = dedup_result or {"itemId": "new", "action": "create"}
 
     # --- ADR-017: deterministic resolvers ---
-    def get_brain(self, space):
+    def get_brain(self):   # no space: memory has one home (ADR-017 §0)
         return {"objectId": "brain1"}
+
+    def bao_space(self):
+        return "s1"
 
     def chat_log(self, space, chat_id):
         return {"objectId": chat_id}   # fake hosts both on one object
@@ -108,7 +111,7 @@ class FakeGuest:
         if spec == "llm@v1":
             return SimpleNamespace(chat=self.chat)
         if spec == "memory@v1":
-            return SimpleNamespace(memory=lambda client, space: self)
+            return SimpleNamespace(memory=lambda client: self)
         if spec == "recall@v1":
             return SimpleNamespace(recall=lambda client, space, **kw: self)
         raise AssertionError(f"unexpected module {spec}")
@@ -122,7 +125,7 @@ def turn(seq):
 # --- extraction ---------------------------------------------------------------
 
 EXT_ARGS = {"space": "s1", "chatId": "chat1", "brainId": "brain1"}
-CHAT_CURSOR = "extraction:chat1/agent_turns"   # ADR-027 §2: one cursor per source
+CHAT_CURSOR = "extraction:chat1/agent_turns"   # ADR-028 §2: one cursor per source
 
 
 def prompt_of(fake, i=0):
@@ -146,7 +149,7 @@ def test_extraction_enforces_shapes_confidence_cap_and_provenance():
     first, second = fake.saves
     assert first["confidence"] == 6                       # self-authored, capped ≤ 6
     assert first["source"] == "extraction"
-    # ADR-027 §3: provenance is the record URI; the fact is dated by
+    # ADR-028 §3: provenance is the record URI; the fact is dated by
     # its evidence (turn 2's createdAt), not by the sweep
     assert first["provenance"] == {"uri": "any://o/s1/chat1/agent_turns/00000002"}
     assert first["validFrom"] == at(1002)
@@ -179,7 +182,7 @@ def test_extraction_empty_scan_is_free():
 
 
 def test_extraction_seeds_the_chat_cursor_once_from_the_legacy_record():
-    # a rig upgraded across ADR-027 carries `extraction: {lastSeq}` —
+    # a rig upgraded across ADR-028 carries `extraction: {lastSeq}` —
     # the chat source starts where it left off, writes the new cursor
     # immediately, and never re-extracts old turns
     fake = FakeGuest(turns=[turn(1), turn(2), turn(3)],

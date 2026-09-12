@@ -10,17 +10,18 @@ read."""
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 # ADR-007 §5. The temporal sources live on different objects (memory
-# items on the brain, turns/chunks on the chat object) — a None id
-# just skips that source. ADR-027 §4: a memory item with `validTo` is
+# items on the brain — the bao space's, memory's only home (ADR-017
+# §0) — turns/chunks on the bound space's chat object); a None id
+# just skips that source. ADR-028 §4: a memory item with `validTo` is
 # closed (superseded) — every read here drops it unless asked.
 
 _any = use("any@v1")  # noqa: F821 - guest global
 
 DEFAULT_SCOPES = ("agent", "history", "basic", "email")
 
-# Reserved property groups (`any`, `nav`) are structural, not user
-# graph edges — neighbors skips them.
-RESERVED_GROUPS = {"any", "nav"}
+# Reserved property groups (`any`, the hidden built-ins' groups) are
+# structural, not user graph edges — neighbors skips them.
+RESERVED_GROUPS = {"any", "page", "miniapp", "bin", "dataview"}
 
 # by_period sorts the merged records by each source's natural time field.
 _TS_FIELD = {"memory": "validFrom", "turn": "createdAt", "chunk": "periodStart"}
@@ -60,7 +61,7 @@ class Recall:
             raise ValueError(
                 "search needs a non-empty query — the index has no "
                 "browse-all mode. To enumerate memory items: "
-                'a.query(space, a.get_brain(space)["objectId"], '
+                'a.query(a.bao_space(), a.get_brain()["objectId"], '
                 '"agent_memory_items"); for history use '
                 "history@v1 or by_period().")
         reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
@@ -72,7 +73,7 @@ class Recall:
 
         Hit order kept, missing records dropped; one `$in` query per
         (object, dataset). Closed memory items (`validTo` set —
-        superseded, ADR-027 §4) are dropped too unless
+        superseded, ADR-028 §4) are dropped too unless
         `include_expired=True` (history questions). The shared step
         under auto-recall rendering and the dedup judge."""
         wanted = {}
@@ -104,9 +105,9 @@ class Recall:
         when NO source is bound (a silent [] read as "nothing
         happened that week" — seen live, run_7318bebb61af44b0)."""
         if self._brain is None:
-            try:
-                self._brain = (self._c.get_brain(self._space) or {}).get("objectId")
-            except Exception:  # no agent data in this space — source stays off
+            try:   # the brain is the bao space's (ADR-017 §0)
+                self._brain = (self._c.get_brain() or {}).get("objectId")
+            except Exception:  # no bao space wired — source stays off
                 self._brain = ""
         if not self._brain and not self._chat:
             raise ValueError(
@@ -118,7 +119,7 @@ class Recall:
         lo, hi = instant(from_ts), instant(to_ts)  # noqa: F821 - guest globals
         if self._brain:
             items = self._c.query(
-                self._space, self._brain, "agent_memory_items",
+                self._c.bao_space(), self._brain, "agent_memory_items",
                 filter={"validFrom": {"$gte": lo, "$lte": hi}},
                 sort=["validFrom"])
             out += [{**r, "source": "memory"} for r in items
@@ -146,12 +147,14 @@ class Recall:
     def neighbors(self, object_id):
         """1-hop neighborhood: {"forward": [...], "backlinks": [...]}.
 
-        Forward = links-format property values on the object's row
-        (arrays of `any://<objectId>` URIs; edge label = property,
-        targetId a bare object id); each `{type, prop, targetId}`.
-        Backlinks = objects that reference it, from the server's
-        reverse read (`…/backlinks`); each `{sourceId, type, prop}`.
-        type/prop are xKeys — content ids never surface here."""
+        Forward = relation property values on the object's row
+        (arrays of `any://…` URIs; edge label = property, targetId a
+        bare object id); each `{type, prop, targetId}`. Backlinks =
+        the server's reverse read (`…/backlinks`), one per edge:
+        `{sourceId, kind}` plus `type` + `prop` for a relation edge
+        (kind "relation") or `dataset` (+ `recordId`) for a block/
+        message/record edge — index `type`/`prop` only after checking
+        `kind`. type/prop are xKeys — content ids never surface here."""
         forward = []
         # normalize=False: graph edges are identified by raw type/prop ids
         # on the wire (ADR-006 §6); resolved to xKeys before returning.
@@ -175,29 +178,33 @@ class Recall:
                                  "prop": link_props[prop_id],
                                  "targetId": t.removeprefix("any://")}
                                 for t in targets if isinstance(t, str) and t]
-        try:
-            raw = self._c.backlinks(self._space, object_id)
-        except _any.AnyError as e:
-            if e.code != "request.not_found":  # route absent = pre-backlinks server
-                raise
-            raw = []
-        backlinks = [{"sourceId": b["objectId"], "type": b["type"],
-                      "prop": b["prop"]} for b in raw]
+        # what links here: the link index's edges at the object itself
+        # (ADR-027 §5) — a relation value names "type.prop", a block or
+        # message names its collection
+        raw = self._c.backlinks(self._space, object_id)
+        backlinks = []
+        for b in raw.get("object") or []:
+            edge = {"sourceId": b["objectId"], "kind": b.get("kind")}
+            if b.get("prop"):
+                edge["type"], _, edge["prop"] = b["prop"].partition(".")
+            elif b.get("key"):
+                edge["dataset"] = b["key"]
+            backlinks.append(edge)
         return {"forward": forward, "backlinks": backlinks}
 
     def _link_props(self, type_id):
-        """{propId → prop xKey} for the type's links-format properties
-        (the object-reference convention, docs/03-api.md § Backlinks).
-        A group key that isn't a queryable type (e.g. a dataset
-        artifact) just yields no edges rather than failing the whole
-        read — list_properties raises ValueError on unknown keys."""
+        """{propId → prop xKey} for the type's relation properties (the
+        object-reference descriptor, ADR-027 §4). A group key that
+        isn't a queryable type (e.g. a dataset artifact) just yields no
+        edges rather than failing the whole read — list_properties
+        raises ValueError on unknown keys."""
         try:
             props = self._c.list_properties(self._space, type_id)
         except (_any.AnyError, ValueError):
             return {}
         return {p["id"]: p.get("xKey") or p.get("name") or p["id"]
                 for p in props
-                if (p.get("format") or {}).get("type") == "links"}
+                if ((p.get("xFormat") or {}).get("type") == "relation")}
 
 
 @span(kind="setup")  # noqa: F821 - guest global

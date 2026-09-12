@@ -104,25 +104,71 @@ class AnyHttp:
                       {"objectId": object_id, "dataset": dataset, **body})
         return r.get("records", [])
 
-    # --- types & properties ---
+    # --- types, parts, datasets (ADR-027 §2) ---
     def create_type(self, space: str, body: dict) -> dict:
         return self.call("POST", f"/v1/spaces/{space}/types", body)
 
     def add_property(self, space: str, type_id: str, body: dict) -> dict:
         return self.call("POST", f"/v1/spaces/{space}/types/{type_id}/properties", body)
 
-    # --- agent turns / chunks / memory ---
-    def append_turn(self, space: str, object_id: str, body: dict) -> dict:
-        return self.call("POST", f"/v1/spaces/{space}/objects/{object_id}/agent/turns", body)
+    def list_types(self, space: str) -> list[dict]:
+        return self.call("GET", f"/v1/spaces/{space}/types?includeHidden=true").get("types", [])
 
-    def create_chunk(self, space: str, object_id: str, body: dict) -> dict:
-        return self.call("POST", f"/v1/spaces/{space}/objects/{object_id}/agent/chunks", body)
+    def add_part(self, space: str, type_id: str, draft: dict) -> dict:
+        return self.call("POST", f"/v1/spaces/{space}/types/{type_id}/parts", draft)
 
-    def get_brain(self, space: str) -> dict:
-        return self.call("GET", f"/v1/spaces/{space}/agent/brain")
+    def list_datasets(self, space: str, type_id: str) -> list[dict]:
+        return self.call("GET", f"/v1/spaces/{space}/types/{type_id}/datasets").get("datasets", [])
 
-    def create_memory(self, space: str, fields: dict) -> dict:
-        return self.call("POST", f"/v1/spaces/{space}/agent/memory", fields)
+    def collection(self, space: str, type_xkey: str, key: str) -> str | None:
+        """The collection a type's dataset lives in — read off the
+        declaration, never composed."""
+        tid = next((t["id"] for t in self.list_types(space) if t.get("xKey") == type_xkey), None)
+        if not tid:
+            return None
+        return next((d.get("collection") for d in self.list_datasets(space, tid)
+                     if d.get("key") == key), None)
+
+    # --- catalog + bundles (ADR-027 §1) ---
+    def catalog_setup(self, usecase: str, space: str) -> dict:
+        return self.call("POST", f"/v1/catalog/{usecase}/setup", {"spaceId": space})
+
+    def general_chat(self, space: str) -> str:
+        b = self.catalog_setup("general-chat", space)["bundles"][0]["bundle"]
+        assert b.get("derived") is True, b
+        return b["rootId"]
+
+    def ensure_bundle(self, space: str, body: dict) -> dict:
+        return self.call("POST", f"/v1/spaces/{space}/bundles", body)
+
+    def bundle_child(self, space: str, bundle_id: str, seed: str, types=()) -> str:
+        enc = bundle_id.replace("/", "%2F").replace(":", "%3A")
+        body: dict = {"seed": seed}
+        if types:
+            body["types"] = list(types)
+        return self.call("POST", f"/v1/spaces/{space}/bundles/{enc}/children", body)["objectId"]
+
+    def attach_type(self, space: str, object_id: str, type_id: str) -> dict:
+        return self.call("POST", f"/v1/spaces/{space}/properties/{object_id}/attach/{type_id}")
+
+    def modify(self, space: str, body: dict) -> dict:
+        return self.call("POST", f"/v1/spaces/{space}/modify", body)
+
+    def upsert_record(self, space: str, object_id: str, collection: str,
+                      record_id: str, value: dict) -> dict:
+        return self.modify(space, {
+            "objectId": object_id, "dataset": collection,
+            "records": [{"id": record_id, "upsert": True,
+                         "ops": [{"type": "$set", "path": "", "value": value}]}]})
+
+    # --- editor ---
+    def get_markdown(self, space: str, object_id: str) -> str:
+        return self.call("GET", f"/v1/spaces/{space}/objects/{object_id}"
+                                "/editor/editor_blocks/markdown").get("content", "")
+
+    def put_markdown(self, space: str, object_id: str, content: str) -> dict:
+        return self.call("PUT", f"/v1/spaces/{space}/objects/{object_id}"
+                                "/editor/editor_blocks/markdown", {"content": content})
 
     # --- chat + search ---
     def chat_send(self, space: str, object_id: str, body: dict) -> dict:
@@ -138,9 +184,9 @@ class AnyHttp:
             body["mode"] = mode
         return self.call("POST", f"/v1/spaces/{space}/search", body)
 
-    def backlinks(self, space: str, object_id: str) -> list[dict]:
+    def backlinks(self, space: str, object_id: str) -> dict:
         reply = self.call("GET", f"/v1/spaces/{space}/objects/{object_id}/backlinks")
-        return reply.get("backlinks") or []
+        return {"object": reply.get("object") or [], "parts": reply.get("parts") or []}
 
 
 def _reachable(url: str) -> bool:
@@ -173,7 +219,27 @@ def fresh_space(client) -> str:
 
 
 @pytest.fixture
-def guest_use(any_server):
+def runtime_values(any_server) -> dict:
+    """What `runtime.get` answers in the guest shim: the server url,
+    plus `bao.space` once a test provisions a bao space (memory's
+    only home, ADR-017 §0) — serve wires the same two keys."""
+    return {"any.base_url": any_server}
+
+
+@pytest.fixture
+def bao_space(client, fresh_space, runtime_values) -> str:
+    """A throwaway space with what serve provisions before guest code
+    runs (ADR-017 §0): the catalog chat and the `bao/v1` bundle the
+    guest-owned stores (brain, chat log) derive their children from;
+    published to the guest as `bao.space`."""
+    client.general_chat(fresh_space)
+    client.ensure_bundle(fresh_space, {"id": "bao/v1", "name": "bao", "rootTypes": ["page"]})
+    runtime_values["bao.space"] = fresh_space
+    return fresh_space
+
+
+@pytest.fixture
+def guest_use(any_server, runtime_values):
     """Guest modules exec'd host-side over a REAL-http effect shim — the
     integration twin of the offline exec-with-fakes technique. `use(spec)`
     loads from programs/ and hits the live server. Self-contained: the
@@ -191,7 +257,9 @@ def guest_use(any_server):
                 json_body=payload.get("json"), body=payload.get("body"),
                 timeout=payload.get("timeout"))
         if name in ("config.get", "runtime.get"):
-            return {"value": {"any.base_url": any_server}[payload["key"]]}
+            if payload["key"] not in runtime_values:
+                raise KeyError(f"no runtime value for {payload['key']!r}")
+            return {"value": runtime_values[payload["key"]]}
         raise AssertionError(f"unexpected effect in guest shim: {name}")
 
     def use(spec):

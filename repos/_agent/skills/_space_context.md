@@ -60,4 +60,6 @@ it. When a rule changes, keep both forms at a high level:
   or discard them.
 - **Duplicate** facts across Main and a child — link, or lift into Main.
 - **Summarize** — space context is source of truth, not a summary.
-- **Enumerate objects** — Main is a nav map, not a catalogue.
+- **Enumerate objects** — Main is a map, not a catalogue.
+- **Assume apps** — which apps a space has (a wiki, contacts, a CRM)
+  is data: `c.list_apps(space)`, never Main and never a guess.

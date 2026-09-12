@@ -629,9 +629,11 @@ def _bind_shell(ns):
     are simply not in the namespace (ADR-024 §6)."""
     global _shell_info
     if _shell_info is None:
+        # the key always resolves: `{cwd, home, shell, os}` with the
+        # feature, null without (ADR-024 §4) — a clean read either way
         try:
-            _shell_info = _effect("runtime.get", {"key": "shell"})["value"] or {}
-        except EffectError:
+            _shell_info = _effect("runtime.get", {"key": "shell"})["value"] or False
+        except EffectError:   # no runtime namespace at all (a bare double)
             _shell_info = False
     if _shell_info is not False:
         ns["sh"] = _Shell(_shell_info)
@@ -924,6 +926,16 @@ def _help(obj):
     return text  # no cell printer (module top level): hand back the text
 
 
+def _module_print(*a, **kw):
+    """A program module's `print` — the ACTIVE cell's traced printer
+    (ADR-003 §3): a warning a module prints lands in the digest of the
+    cell that called it, like `help()`. Outside any cell it is a no-op
+    (a module's own top-level run has no digest to reach)."""
+    p = _ns.get("print")
+    if callable(p) and p is not _module_print:
+        p(*a, **kw)
+
+
 # ---- curated builtins (ADR-002 §3) -----------------------------------------
 
 _SAFE_NAMES = [
@@ -1184,6 +1196,7 @@ def _bound_use(owner):
         mod = types.ModuleType(spec.split("@")[0].split(":")[-1])
         mod.__dict__.update(_fresh_ns())
         mod.__dict__["use"] = _bound_use(r["objectId"])
+        mod.__dict__["print"] = _module_print
         exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
         _module_cache[ck] = mod
         return mod
@@ -1279,6 +1292,7 @@ def _run_cell(code: str, cell_id: str) -> dict:
     _ns["print"] = _print
     try:
         tree = ast.parse(code, mode="exec")
+        _guard_kernel_names(tree)
         last = None
         has_last = False
         tail = tree.body[-1] if tree.body else None
@@ -1306,12 +1320,78 @@ def _run_cell(code: str, cell_id: str) -> dict:
             "error": {
                 "type": type(e).__name__,
                 "message": str(e),
-                "traceback": traceback.format_exc(limit=8),
+                # a parse-time refusal is its own message; kernel frames
+                # would only be noise in the digest
+                "traceback": "" if isinstance(e, ReservedNameError)
+                else traceback.format_exc(limit=8),
             },
         }
     finally:
         if prev_print is not None:
             _ns["print"] = prev_print
+
+
+# The kernel names (ADR-003 §3): what every cell starts with. Rebinding
+# one at module scope (`effects = use(...)`) silently breaks every later
+# cell of the run and `del` cannot bring it back, so the parse step
+# refuses both. Derived from the namespace itself — no second list to
+# drift — plus the per-cell printer, the curated `help` builtin and the
+# shell globals a `--features shell` binary binds (ADR-024 §6).
+_KERNEL_NAMES: frozenset = frozenset(_fresh_ns()) | {
+    "print", "help", "sh", "fs", "ShellError",
+}
+_OWN_SCOPE = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+              ast.GeneratorExp, ast.ClassDef)
+
+
+class ReservedNameError(Exception):
+    """A cell tried to bind or delete a kernel name (ADR-003 §3)."""
+
+
+def _guard_kernel_names(tree):
+    """Refuse a cell that binds or deletes a kernel name where it would
+    reach the persistent namespace: any module-scope assignment, `del`,
+    `def`/`class`, import alias, `except … as`, `with … as`, `for`,
+    walrus or match capture — and a `global` declaration inside a def.
+    Function, lambda, class and comprehension bodies have their own
+    scope: a parameter or local called `values` is fine."""
+    def refuse(name, node, how):
+        if name in _KERNEL_NAMES:
+            raise ReservedNameError(
+                f"line {getattr(node, 'lineno', '?')}: cannot {how} `{name}` — a "
+                f"kernel name, bound by the runtime for every cell (rebinding "
+                f"it breaks the rest of the run); use another name")
+
+    def walk(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                refuse(child.name, child, "define")
+                for inner in ast.walk(child):   # only `global` escapes a def
+                    if isinstance(inner, ast.Global):
+                        for g in inner.names:
+                            refuse(g, inner, "declare global")
+                continue
+            if isinstance(child, ast.ClassDef):
+                refuse(child.name, child, "define")
+                continue
+            if isinstance(child, _OWN_SCOPE):
+                continue
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                refuse(child.id, child, "assign to")
+            elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Del):
+                refuse(child.id, child, "delete")
+            elif isinstance(child, ast.alias):
+                refuse(child.asname or child.name.split(".")[0], child, "import as")
+            elif isinstance(child, ast.ExceptHandler) and child.name:
+                refuse(child.name, child, "bind (except … as)")
+            elif isinstance(child, (ast.MatchAs, ast.MatchStar)) and child.name:
+                refuse(child.name, child, "capture (match)")
+            elif isinstance(child, ast.Global):
+                for g in child.names:
+                    refuse(g, child, "declare global")
+            walk(child)
+
+    walk(tree)
 
 
 class WitWorld:

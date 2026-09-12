@@ -64,7 +64,7 @@ def main(args):
     space = args["space"]
     tier = args.get("tier", TIER)
     c = use("any@v1")  # noqa: F821 - guest global
-    brain = c.get_brain(space)["objectId"]
+    brain = c.get_brain()["objectId"]   # the bao space's (ADR-017 §0)
     last = _state(c, space, brain)
     items = c.query(space, brain, "agent_memory_items",
                     filter={"modifiedAt": {"$gt": last}}, sort=["modifiedAt"],
@@ -73,7 +73,7 @@ def main(args):
     if not items:
         return {"swept": 0, "refreshed": 0, "errors": 0}
 
-    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
+    mem = use("memory@v1").memory(c)  # noqa: F821 - guest global
     by_id = {i["id"]: i for i in items}
     refreshed = errors = 0
     for item in linked:

@@ -1,6 +1,6 @@
 """Background memory extraction from a dataset source (cron).
 
-ADR-027: a source is a trigger record whose args name a dataset —
+ADR-028: a source is a trigger record whose args name a dataset —
 `{space, source: {objectId, dataset, text, time, author?, self?,
 filter?}, batch?, tier?}`; `{space, chatId}` is the chat sugar (the
 chat's log child, agent_turns). Off the hot path, at ADR-007 §1b's
@@ -8,7 +8,9 @@ HIGH bar: stable-fact shapes only, most batches yield nothing, every
 candidate through the §2 dedup judge. Enforced in code, not prompt
 trust: shape allow-list, confidence capped by authorship, provenance
 as the record URI, validFrom dated by the evidence, control/format
-character hygiene on untrusted text. Cursor per source on the brain.
+character hygiene on untrusted text. Cursor per source on the brain —
+the bao space's, memory's one home (ADR-017 §0); records stay where
+their source lives.
 """
 
 import json
@@ -16,12 +18,12 @@ import unicodedata
 
 SHAPES = ("preference", "decision", "lesson", "fact")
 SELF_CAP = 6     # ADR-007 §1b: machine-derived never outranks user-stated
-OTHER_CAP = 4    # ADR-027 §3: someone else's claim sits below the default 5
+OTHER_CAP = 4    # ADR-028 §3: someone else's claim sits below the default 5
 BATCH = 20
 TIER = "classify"
 FIELD_CHARS = 4000   # per rendered field — a batch stays bounded
 STATE_DATASET = "agent_job_state"
-LEGACY_STATE_ID = "extraction"   # the pre-ADR-027 chat cursor ({lastSeq}), seeded once
+LEGACY_STATE_ID = "extraction"   # the pre-ADR-028 chat cursor ({lastSeq}), seeded once
 
 # the chat sugar: `{space, chatId}` = this source on the chat's log child
 TURNS_SOURCE = {"dataset": "agent_turns", "text": ["userText", "replies"],
@@ -62,7 +64,7 @@ def resolve_source(c, space, args):
         s = dict(args["source"])
         missing = [k for k in ("objectId", "dataset", "text", "time") if not s.get(k)]
         if missing:
-            raise ValueError(f"source needs {missing} (ADR-027 §1)")
+            raise ValueError(f"source needs {missing} (ADR-028 §1)")
         return s
     log = c.chat_log(space, args["chatId"])["objectId"]
     return {**TURNS_SOURCE, "objectId": log}
@@ -105,16 +107,18 @@ def _date(v):
 
 # --- cursor -------------------------------------------------------------------
 
-def _cursor(c, space, brain, s):
-    """The newest processed record's time, or None. A chat source with
-    no cursor yet seeds ONCE from the pre-ADR-027 `{lastSeq}` record so
-    nothing re-extracts; the seed is persisted right away."""
-    rows = c.query(space, brain, STATE_DATASET, filter={"id": state_id(s)}, limit=1)
+def _cursor(c, bao, brain, space, s):
+    """The newest processed record's time, or None. State lives on the
+    brain in the bao space; the source's records in `space`. A chat
+    source with no cursor yet seeds ONCE from the pre-ADR-028
+    `{lastSeq}` record so nothing re-extracts; the seed is persisted
+    right away."""
+    rows = c.query(bao, brain, STATE_DATASET, filter={"id": state_id(s)}, limit=1)
     if rows:
         return rows[0].get("last")
     if s["dataset"] != TURNS_SOURCE["dataset"]:
         return None
-    legacy = c.query(space, brain, STATE_DATASET,
+    legacy = c.query(bao, brain, STATE_DATASET,
                      filter={"id": LEGACY_STATE_ID}, limit=1)
     seq = legacy[0].get("lastSeq") if legacy else None
     if not seq:
@@ -122,13 +126,13 @@ def _cursor(c, space, brain, s):
     turn = c.query(space, s["objectId"], s["dataset"], filter={"seq": seq}, limit=1)
     last = turn[0].get(s["time"]) if turn else None
     if last is not None:
-        _save_cursor(c, space, brain, s, last)
+        _save_cursor(c, bao, brain, s, last)
     return last
 
 
-def _save_cursor(c, space, brain, s, last):
+def _save_cursor(c, bao, brain, s, last):
     # stored verbatim — an instant or the source's own number (ADR-019 §2)
-    c.upsert_record(space, brain, STATE_DATASET, state_id(s), {"last": last})
+    c.upsert_record(bao, brain, STATE_DATASET, state_id(s), {"last": last})
 
 
 # --- candidates ---------------------------------------------------------------
@@ -152,7 +156,7 @@ def render(records, s):
 
 def clean(text):
     """False when the text carries format or control characters (Cf,
-    or Cc beyond ordinary whitespace) — ADR-027 §3's boundary on
+    or Cc beyond ordinary whitespace) — ADR-028 §3's boundary on
     untrusted text, checked in code."""
     return not any(unicodedata.category(ch) in ("Cf", "Cc") and ch not in "\n\r\t"
                    for ch in str(text))
@@ -167,7 +171,7 @@ def extract_candidates(records, s, tier):
 
 
 def normalize(candidate, records_by_id, newest, s, space):
-    """ADR-007 §1b / ADR-027 §3 discipline in code, not prompt trust:
+    """ADR-007 §1b / ADR-028 §3 discipline in code, not prompt trust:
     shape allow-list, hygiene, cap by authorship, URI provenance,
     validFrom = the evidence's time. None = skip."""
     if candidate.get("category") not in SHAPES:
@@ -195,11 +199,12 @@ def normalize(candidate, records_by_id, newest, s, space):
 
 
 def main(args):
-    space = args["space"]
+    space = args["space"]                 # where the source's records live
     c = use("any@v1")  # noqa: F821 - guest global
-    brain = c.get_brain(space)["objectId"]
+    bao = c.bao_space()                   # memory's one home (ADR-017 §0)
+    brain = c.get_brain()["objectId"]
     s = resolve_source(c, space, args)
-    last = _cursor(c, space, brain, s)
+    last = _cursor(c, bao, brain, space, s)
     flt = dict(s.get("filter") or {})
     if last is not None:
         flt[s["time"]] = {"$gt": last}
@@ -209,8 +214,8 @@ def main(args):
         return {"scanned": 0, "saved": 0, "deduplicated": 0, "skipped": 0,
                 "errors": 0}
 
-    mem = use("memory@v1").memory(c, space)  # noqa: F821 - guest global
-    rec = use("recall@v1").recall(c, space)  # noqa: F821 - guest global
+    mem = use("memory@v1").memory(c)  # noqa: F821 - guest global
+    rec = use("recall@v1").recall(c, bao)  # noqa: F821 - guest global (dedup over the brain)
     by_id = {str(r.get("id")): r for r in records}
     newest = records[-1]
     saved = deduped = skipped = errors = 0
@@ -227,6 +232,6 @@ def main(args):
                 saved += 1
         except Exception:
             errors += 1  # loud in the run record via counts; sweep continues
-    _save_cursor(c, space, brain, s, newest.get(s["time"]))
+    _save_cursor(c, bao, brain, s, newest.get(s["time"]))
     return {"scanned": len(records), "saved": saved, "deduplicated": deduped,
             "skipped": skipped, "errors": errors}

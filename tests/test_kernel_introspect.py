@@ -143,7 +143,7 @@ def test_tool_docs_composes_from_real_programs():
     assert ("search(*queries) [getter] — Run one or more web searches; "
             "one formatted string per query.") in docs
     assert "### memory" in docs
-    assert "memory(client, space, llm_chat=None) [setup]" in docs
+    assert "memory(client, llm_chat=None) [setup]" in docs
     # handle methods stay behind help(m) — no method line for them
     assert "  save_with_dedup(" not in docs
     assert "_provider" not in docs         # underscore names hidden
@@ -220,3 +220,19 @@ def test_span_name_derives_from_module_and_def():
                  "<c>", "exec"), g)
     g["solo"]()
     assert recorded[0][1]["name"] == "solo"
+
+
+def test_module_print_reaches_the_calling_cells_digest():
+    """ADR-003 §3 (2026-09-09): a program module's print() is the
+    active cell's printer; outside a cell it is a no-op."""
+    from kernelenv import load_kernel
+    src = 'def hi():\n    print("from module")\n    return 1\n' \
+          'print("at import")\n'
+    k = load_kernel(module_source=lambda spec: src if spec == "p@v1" else None)
+    r = k._run_cell('m = use("p@v1")\nm.hi()', "c1")
+    assert r["ok"], r["error"]
+    assert [p["repr"] for p in r["prints"]] == ["at import", "from module"]
+    r = k._run_cell("m.hi()", "c2")
+    assert [p["repr"] for p in r["prints"]] == ["from module"]
+    k._ns["print"]   # restored after the cell: a module print now goes nowhere
+    k._ns["m"].hi()

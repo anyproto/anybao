@@ -85,7 +85,7 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     ADR-004 §4), or None to fall through to programs_dir.
     `shell`, when given, is what `runtime.get("shell")` returns (the
     binary has the feature → `sh`/`fs` bound in cells, ADR-024 §6);
-    the default models a binary without it — the probe fails typed
+    the default models a binary without it — the probe reads null
     and the names stay out of the namespace — unless `effect` chooses
     to serve the key itself."""
     def host_effect(name, payload_json):
@@ -138,7 +138,7 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                 elif effect is not None:
                     out = effect(name, payload)
                 else:
-                    raise KeyError("no runtime value for \"shell\"")
+                    out = {"value": None}   # a binary without the feature
             elif effect is not None:
                 out = effect(name, payload)
             else:

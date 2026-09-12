@@ -43,16 +43,18 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
-    def create_memory(self, space, fields):
-        self.calls.append(("create", space, fields))
+    # the verbs take no space: memory has one home (ADR-017 §0); the
+    # capture keeps a fixed "s1" slot so the assertions read as before
+    def create_memory(self, fields):
+        self.calls.append(("create", "s1", fields))
         return {"versionId": "v1", "changeId": "c1", "recordIds": ["new1"]}
 
-    def evolve_memory(self, space, item_id, fields):
-        self.calls.append(("evolve", space, item_id, fields))
+    def evolve_memory(self, item_id, fields):
+        self.calls.append(("evolve", "s1", item_id, fields))
         return {}
 
-    def delete_memory(self, space, item_id):
-        self.calls.append(("delete", space, item_id))
+    def delete_memory(self, item_id):
+        self.calls.append(("delete", "s1", item_id))
         return {}
 
 
@@ -88,7 +90,7 @@ def verdict_chat(verdict):
 
 
 def memory(client, chat=None):
-    return MEM["memory"](client, "s1", llm_chat=chat or verdict_chat({"action": "create"}))
+    return MEM["memory"](client, llm_chat=chat or verdict_chat({"action": "create"}))
 
 
 # --- add / evolve / delete ----------------------------------------------------
@@ -158,7 +160,7 @@ def test_default_llm_chat_comes_from_llm_module():
 
     used = []
     g = load(use=lambda spec: used.append(spec) or FakeLlmModule())
-    mem = g["memory"](FakeClient(), "s1")
+    mem = g["memory"](FakeClient())
     mem.save_with_dedup(CANDIDATE, FakeRecall())
     assert used == ["llm@v1"] and seen == ["classify"]
 
@@ -203,14 +205,14 @@ def test_dedup_supersede_creates_with_supersedes_edge_and_closes_old():
     assert (kind, space) == ("create", "s1")
     assert body["edges"] == [{"to": "old1", "type": "supersedes"}]
     assert body["category"] == "preference"
-    # ADR-027 §4: the new fact holds from now; the old one closes at
+    # ADR-028 §4: the new fact holds from now; the old one closes at
     # that same instant — nothing deleted, two live facts never coexist
     assert body["validFrom"] == _K["instant"](NOW)
     assert c.calls[1] == ("evolve", "s1", "old1", {"validTo": _K["instant"](NOW)})
 
 
 def test_dedup_supersede_closes_old_at_the_candidates_evidence_date():
-    # an extracted fact is dated by its evidence (ADR-027 §3): the old
+    # an extracted fact is dated by its evidence (ADR-028 §3): the old
     # item closes when the NEW fact became true, not when we noticed
     c = FakeClient()
     when = _K["instant"](1_600_000_000)

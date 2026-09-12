@@ -130,6 +130,8 @@ warm start against a durable at-rest secret. Not worth it.
 
 ### 4. Host binding deferred; guest shape stays `{ref, header, prefix}` (resolves review Q4)
 
+**Amended 2026-09-08 (ADR-027 §2):** the broker's guest-read guard keys on the secrets store's COLLECTION — every space's is `<typeId>_agent_secrets`, so the `_agent_secrets` suffix is the invariant — plus the secrets object id as before.
+
 Today a guest payload carries `{ref, header, prefix}` and the broker
 injects wherever the guest says — any cell can send any secret to any
 host in any header, the filed gap (`broker.rs` `sys_http`, dev-space

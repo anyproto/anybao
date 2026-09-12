@@ -18,10 +18,10 @@ def test_date_property_round_trips_and_range_filters(client, fresh_space, guest_
     c = guest_use("any@v1")
     inst = guest_use("any@v1").instant
     c.create_type(fresh_space, {"name": "Event", "properties": [
-        {"name": "When", "format": {"type": "datetime"}},
-        {"name": "Day", "format": {"type": "date"}}]})
+        {"name": "When", "xFormat": {"type": "datetime"}},
+        {"name": "Day", "xFormat": {"type": "date"}}]})
     kinds = {p["xKey"]: p.get("kind") for p in c.list_properties(fresh_space, "event")}
-    assert kinds["when"] == "datetime" and kinds["day"] == "datetime"   # server-derived
+    assert kinds["when"] == "datetime" and kinds["day"] == "datetime"   # slug-derived
     t0 = 1_787_673_600            # 2026-08-25T16:00Z
     ids = {}
     for name, secs in (("early", t0 - 3600), ("late", t0 + 3600)):
@@ -41,31 +41,31 @@ def test_date_property_round_trips_and_range_filters(client, fresh_space, guest_
     # a bare number never reaches the wire
     with pytest.raises(ValueError, match="instant"):
         c.query_objects(fresh_space, filter={"event.when": {"$lt": t0}})
-    # …because server-side it silently matches EVERY row (type rank)
+    # …because server-side it silently matches NOTHING (comparisons are
+    # bracketed by type) — no error either way, hence the client guard
     pid = next(p["id"] for p in c.list_properties(fresh_space, "event") if p["xKey"] == "when")
     tid = next(t["id"] for t in c.list_types(fresh_space) if t.get("xKey") == "event")
     raw = client.call("POST", f"/v1/spaces/{fresh_space}/objects/query",
                       {"filter": {f"{tid}.{pid}": {"$gte": t0}}})
-    assert len(raw["records"]) == 2
+    assert raw["records"] == []
 
 
-def test_agent_stores_hold_instants_and_by_period_range_scans(client, fresh_space, guest_use):
+def test_agent_stores_hold_instants_and_by_period_range_scans(client, bao_space, guest_use):
+    fresh_space = bao_space
     c = guest_use("any@v1")
     inst, ts_s = c.instant, c.ts_s
-    c.ensure_bundle(fresh_space, "bao/v1", name="bao", derived=True)
-    chat = c.ensure_bundle(fresh_space, "general-chat/v1", name="General",
-                           root_types=["chat"], derived=True)["bundle"]["rootId"]
+    chat = c.general_chat(fresh_space)
     now = int(time.time())
     # memory: validFrom defaults to instant(now()); a number is refused
-    mid = c.create_memory(fresh_space,
-                          {"category": "lesson", "context": "instants"})["recordIds"][0]
-    brain = c.get_brain(fresh_space)["objectId"]
+    mid = c.create_memory({"category": "lesson", "context": "instants"})["recordIds"][0]
+    brain = c.get_brain()["objectId"]
     item = c.query(fresh_space, brain, "agent_memory_items", filter={"id": mid})[0]
     assert _instant(item["validFrom"]) and abs(ts_s(item["validFrom"]) - now) < 120
     assert _instant(item["createdAt"])
     with pytest.raises(AnyError, match="kind mismatch"):
         client.call("POST", f"/v1/spaces/{fresh_space}/modify", {
-            "objectId": brain, "dataset": "agent_memory_items",
+            "objectId": brain,
+            "dataset": client.collection(fresh_space, "agent_brain", "agent_memory_items"),
             "records": [{"id": "", "upsert": True, "ops": [
                 {"type": "$set", "path": "category", "value": "x"},
                 {"type": "$set", "path": "context", "value": "x"},

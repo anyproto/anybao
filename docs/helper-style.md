@@ -60,10 +60,12 @@ obj["book"]["author"]           # reads mirror the write shape
   /types/:id/properties` → `[{id,name,xKey,kind}]`).
 - **Cache keyed by RESOLVED spaceId**, TTL-bounded, invalidatable — a
   cross-space call must not read another space's catalog.
-- Conceptual keys (`"chat"`, user xKeys such as `"program"`) resolve to
-  real ids through the catalog. Built-in registered types have literal
-  string ids (`"chat"`, `"nav"`, `"editor"`); user types (including
-  `program` / `mini_app`) have `bafyrei…` hashes.
+- Conceptual keys (user xKeys such as `"program"`) resolve to real
+  ids through the catalog. The built-in registered types have literal
+  string ids (`"page"`, `"miniapp"`, `"bin"`, `"dataview"`); user
+  types (including `program` / `mini_app`) have `bafyrei…` hashes. A
+  dataset is named by its store KEY and resolved to the server's
+  collection against the host object's types (ADR-027 §2).
 
 ## 5. Space handling
 
@@ -74,10 +76,13 @@ obj["book"]["author"]           # reads mirror the write shape
 
 ## 6. Wire-format landmines (from any-api-gotchas — bake into the port)
 
-- `editor/markdown` uses `{"content": ...}`, NOT `{"markdown": ...}`.
+- `editor/editor_blocks/markdown` uses `{"content": ...}`, NOT
+  `{"markdown": ...}`; the object must carry `page` (or a type with a
+  shared editor part) first.
 - `POST /types` returns `{"typeId": ...}`, NOT `{"id": ...}`.
-- Property creation uses `kind` for plain values and `format` for
-  dates/links/selects (ADR-022), and `xKey` (not `key`).
+- Property creation uses `kind` for the value shape and `xFormat`
+  (`{"type": <slug>, …}`) for dates/relations/choices (ADR-027 §4) —
+  there is no `format` or `xKind` — and `xKey` (not `key`).
 - Registered handler types (`program`, `chat`, …) REJECT
   `POST /types/:id/properties` (500) — properties statically declared;
   only user types accept dynamic props.
