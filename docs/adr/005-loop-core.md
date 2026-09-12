@@ -507,6 +507,23 @@ effect of this amendment is measurable from traces by
 `soulFingerprint`: reply length, paragraph breaks and hedge density per
 identity, before any further mechanism is added.
 
+**Onboarding is a state, not a skill (amendment 2026-09-12).** The
+`_onboarding` `_` skill (the first-contact playbook: greet, one
+question, the mail offer with a role payoff, the first `sync_now`
+slice, the unattended backfill) composes into the band ONLY while the
+`onboarding.done` config row is not true — one recorded `config.get`
+per run; the row is seeded `false` by `config_defaults.json` on every
+space (ADR-006 §3 soft seed, so pre-existing spaces gain it at their
+next boot), and the skill sets it `true` itself through
+`config@v1.set` once the person's name and role are in memory and mail
+is connected or declined. A prose gate ("applies only while…") was
+rejected: the model would either probe every conversation or guess,
+and onboarding resurfaces in month six. An unreadable store composes
+WITHOUT the skill (a nag is the worse failure); quiet runs never carry
+it (ADR-008 §5). The greeting run itself is the host's (ADR-009 §8
+first contact); the rig that exercises it is `serve --fresh`
+(ADR-009 §5).
+
 **Recency anchor: not adopted (2026-09-08).** A fabricated
 user/assistant exchange written into the llm messages between the boot
 window and the current user message (identity pointer + one shape demo,

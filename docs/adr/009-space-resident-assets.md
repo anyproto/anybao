@@ -174,6 +174,20 @@ serve drops `--programs`/`--skills` and its startup auto-deploy.
 `anyrt deploy` is the only publish path. Workflow change: run
 `anyrt deploy` before the first `serve` against a fresh space.
 
+**The onboarding test rig (amended 2026-09-12): `anyrt serve --fresh`.**
+The working space is `<agent_space>-fresh`, a plain (never derived)
+space that serve DELETES and re-creates on every boot, so each start
+is a first login: no turns, no memory, no config beyond the seeds
+(`[config]` + `config_defaults.json`), no OAuth grant; API keys still
+arrive from `.connectors.env` (hard seeds), so the model runs without
+the provider chooser. Only spaces carrying exactly that name are ever
+deleted; the user's own space is untouched, and the derived `bao` space
+cannot be deleted at all. The rig is a CLI flag, never a toml setting:
+a fresh space per boot is a test posture, not a configuration. Repos
+(`[overlays]`) are joined as on any space, so `anyrt deploy` is not
+needed per boot — the fresh space reads the overlays; deploy only when
+the agent repo changed.
+
 ### 6. Lib mode: lib+bin split
 
 The crate becomes `[lib]` + `[[bin]]`; `main.rs` is a thin CLI (clap,
@@ -278,6 +292,26 @@ mechanics are:
   identity and the loop answers it with history in context. A future
   `source` field on chat messages can carry this distinction for UI
   rendering.
+- **First contact (amended 2026-09-12)**: a run starts only on an
+  added chat record, so a chat nobody has written to stays silent
+  until the person types — the first thing they see is an empty chat.
+  The host now starts ONE run on its own: when the watch feed's
+  snapshot carries no records at all (the chat has never held a
+  message — the agent's bubbles, credential cards and control records
+  all count as records), serve starts the greeting run through the
+  same path a chat message takes, with the fixed
+  `FIRST_CONTACT_TEXT` input ("[first contact] … greet them, in your
+  voice, and begin onboarding"). No chat record is written: the
+  person's first sight of the chat is the agent's greeting; the
+  persisted turn's `userText` is the opener, so the next boot window
+  shows how the conversation began. Once per process (a reconnect
+  snapshot must not start a second run while the first runs) and
+  never again after that: the reply, or the credential card a run
+  that died on a missing model key leaves behind, makes every later
+  snapshot non-empty. Readiness applies as to any message (deferred to
+  the backlog until overlays sync). What the greeting says is the
+  `_onboarding` skill's (ADR-005 §5), composed only while the
+  `onboarding.done` config row is false.
 - **Deferred messages (amended 2026-07-23)**: a message that would
   start a conversation while overlays are still pending is queued in
   memory and answered once ready (previously it was consumed and
