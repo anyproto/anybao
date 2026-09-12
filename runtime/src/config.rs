@@ -160,6 +160,10 @@ pub struct Config {
     /// explicit local kernel override (dev, ADR-009 §4);
     /// None = the kernel embedded in the binary
     pub kernel: Option<PathBuf>,
+    /// `serve --fresh` (ADR-009 §5): serve a throwaway working space
+    /// named `<agent_space>-fresh`, deleted and re-created on every
+    /// boot — the onboarding test rig, never the user's space.
+    pub fresh: bool,
     /// guest-visible config map (pre-`bootstrap`)
     pub config: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, String>,
@@ -197,6 +201,7 @@ impl Default for Config {
             retain_conversations_s: Some(60 * 86_400),
             retain_jobs_s: Some(30 * 86_400),
             kernel: None,
+            fresh: false,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
             secret_overrides: BTreeMap::new(),

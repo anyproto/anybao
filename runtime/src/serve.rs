@@ -70,6 +70,30 @@ pub fn ensure_space(c: &Client, name: &str) -> Result<String> {
     Ok(created["id"].as_str().unwrap_or_default().to_string())
 }
 
+/// The onboarding test rig (ADR-009 §5, `serve --fresh`): the working
+/// space is `<name>-fresh`, a plain (never derived) space that is
+/// DELETED and re-created on every boot, so each start is a first
+/// login — no turns, no memory, no config beyond the seeds, no OAuth
+/// grant. Only spaces carrying exactly that name are ever deleted; the
+/// user's own space is never touched.
+pub fn fresh_space(c: &Client, name: &str) -> Result<String> {
+    let fresh = format!("{name}-fresh");
+    for sp in c.list_spaces(None)? {
+        let active = sp.get("status").map(|s| s == "active").unwrap_or(true);
+        if sp["name"] == fresh && active {
+            let id = sp["id"].as_str().unwrap_or_default().to_string();
+            c.delete_space(&id)
+                .map_err(|e| anyhow::anyhow!(e))
+                .with_context(|| format!("deleting the previous fresh space {id}"))?;
+            info!("fresh: deleted previous space {fresh} ({id})");
+        }
+    }
+    let created = c.create_space(&fresh)?;
+    let id = created["id"].as_str().unwrap_or_default().to_string();
+    info!("fresh: created space {fresh} ({id}) — every boot starts as a first login");
+    Ok(id)
+}
+
 /// Strict lookup by name or id — `run --from-space` must not mint a
 /// space on a typo; ensure_space's create is serve/deploy-only.
 pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
@@ -919,6 +943,28 @@ struct Shared {
     /// The chat-responder record id (ADR-018 §3) — `chat-watch`, or a
     /// generation-suffixed reseed when the bare id was tombstoned.
     chat_watch_id: String,
+    /// First contact (ADR-009 §8): set once this process has started
+    /// the greeting run on an empty chat — a reconnect snapshot must
+    /// not start a second one while the first is still running.
+    first_contact_started: AtomicBool,
+}
+
+/// The input of the first-contact run (ADR-009 §8): the one run the
+/// host starts on its own, on a chat that has never carried a message.
+/// It is the persisted turn's `userText` (so the next boot window
+/// shows how the conversation began) and never a chat record — the
+/// person's first sight of the chat is the agent's greeting.
+pub const FIRST_CONTACT_TEXT: &str = "[first contact] This person just opened their space \
+for the first time; nobody has said anything yet. Greet them, in your voice, and begin \
+onboarding.";
+
+/// A snapshot frame with no records at all: the chat has never
+/// carried a message — first contact is due (ADR-009 §8). Anything in
+/// the window, the agent's own bubbles included, means it is not.
+pub fn first_contact_due(snapshot: &Value) -> bool {
+    snapshot["records"]
+        .as_array()
+        .is_some_and(|records| records.is_empty())
 }
 
 /// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
@@ -1297,7 +1343,11 @@ fn load_cage(cfg: &Config) -> Result<Arc<Cage>> {
 /// returns immediately with the handle (the lib-mode surface).
 pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let client = Arc::new(Client::new(&cfg.addr));
-    let space = ensure_space(&client, &cfg.agent_space)?;
+    let space = if cfg.fresh {
+        fresh_space(&client, &cfg.agent_space)?
+    } else {
+        ensure_space(&client, &cfg.agent_space)?
+    };
     let chat = general_chat(&client, &space)?;
     // ADR-017 §0: the bao/v1 bundle + the host-written store children
     // (config, secrets, triggers). The trigger anchor IS the triggers
@@ -1550,6 +1600,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         backlog: Mutex::new(Vec::new()),
         event_sources: Mutex::new(BTreeMap::new()),
         chat_watch_id,
+        first_contact_started: AtomicBool::new(false),
     });
 
     let ctx = Arc::new(RunCtx {
@@ -2418,6 +2469,27 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             // down or booting — are answered instead of dropped. The
             // watcher's seen-set dedups across reconnect snapshots.
             "snapshot" => {
+                // first contact (ADR-009 §8): a chat that has never
+                // carried a message gets the greeting run, once per
+                // process; the run's reply makes every later snapshot
+                // non-empty, so it never repeats
+                if first_contact_due(&frame.data)
+                    && !shared.first_contact_started.swap(true, Ordering::SeqCst)
+                {
+                    let input = ChatInput {
+                        text: FIRST_CONTACT_TEXT.to_string(),
+                        context: Value::Null,
+                    };
+                    note_chat_start(shared, ctx);
+                    if ctx.ensure_ready().is_ok() {
+                        info!("first contact: empty chat — starting the greeting run");
+                        start_or_inject(shared, ctx, input);
+                    } else {
+                        info!("first contact: empty chat — greeting deferred until ready");
+                        shared.backlog.lock().unwrap().push(input);
+                    }
+                    continue;
+                }
                 let backlog = snapshot_backlog(&frame.data, &ctx.cfg.agent_name);
                 if backlog.is_empty() {
                     continue;
@@ -3646,6 +3718,55 @@ mod tests {
             json!({"error": {"code": "request.not_found", "message": "Not Found"}}),
         )]);
         assert!(ensure_space(&c, "bao").is_err());
+    }
+
+    #[test]
+    fn fresh_space_deletes_the_previous_rig_and_creates_a_new_one() {
+        // ADR-009 §5: only spaces named exactly `<name>-fresh` go; the
+        // user's own space and a same-prefix stranger are never touched
+        let (c, log) = scripted(&[
+            spaces_reply(json!([
+                {"id": "mine", "name": "bao", "status": "active"},
+                {"id": "old-rig", "name": "bao-fresh", "status": "active"},
+                {"id": "gone", "name": "bao-fresh", "status": "deleted"},
+                {"id": "other", "name": "bao-fresh-2", "status": "active"},
+            ])),
+            (200, json!({})),
+            (200, json!({"id": "new-rig", "name": "bao-fresh"})),
+        ]);
+        assert_eq!(fresh_space(&c, "bao").unwrap(), "new-rig");
+        let calls: Vec<(String, String)> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, p, _)| (m.clone(), p.clone()))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                ("GET".to_string(), "/v1/spaces".to_string()),
+                ("DELETE".to_string(), "/v1/spaces/old-rig".to_string()),
+                ("POST".to_string(), "/v1/spaces".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn first_contact_is_due_only_on_a_chat_with_no_records() {
+        // ADR-009 §8: the agent's own bubble, a card, a user message —
+        // anything in the window means the chat has begun
+        assert!(first_contact_due(&json!({"records": []})));
+        assert!(!first_contact_due(
+            &json!({"records": [msg("a1", "hi", true)]})
+        ));
+        assert!(!first_contact_due(
+            &json!({"records": [msg("u1", "hey", false)]})
+        ));
+        assert!(
+            !first_contact_due(&json!({})),
+            "no records key: not a snapshot we trust"
+        );
+        assert!(FIRST_CONTACT_TEXT.starts_with("[first contact]"));
     }
 
     #[test]

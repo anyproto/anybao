@@ -1,4 +1,5 @@
 {
+  "onboarding.done": false,
     "llm.tier.codegen": {
         "provider": "anthropic",
         "model": "claude-sonnet-5",

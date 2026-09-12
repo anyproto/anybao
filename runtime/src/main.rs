@@ -70,6 +70,12 @@ enum Cmd {
         /// local kernel override (dev) [default: the embedded kernel]
         #[arg(long)]
         kernel: Option<PathBuf>,
+        /// onboarding test rig (ADR-009 §5): serve a throwaway space
+        /// `<space>-fresh`, deleted and re-created on every boot, so
+        /// each start is a first login — the greeting fires, nothing
+        /// is remembered, no mail is connected
+        #[arg(long)]
+        fresh: bool,
         /// [default: config paths.traces]
         #[arg(long)]
         traces_dir: Option<PathBuf>,
@@ -451,6 +457,7 @@ fn main() -> Result<()> {
             space,
             agent_name,
             kernel,
+            fresh,
             traces_dir,
             control_port,
             config_file,
@@ -466,6 +473,7 @@ fn main() -> Result<()> {
                 traces_dir,
             });
             cfg.kernel = kernel;
+            cfg.fresh = fresh;
             // guest cascade (ADR-009 §1): the [config] table already
             // seeded cfg.config; the --config JSON file shadows it
             for (k, v) in load_map(&config)? {
