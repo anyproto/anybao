@@ -25,8 +25,12 @@ def done_reply(text="done", usage=None):
 class World:
     """Every seam the toolcaller touches, recorded."""
 
-    def __init__(self, replies, cells=None, mailbox=None, hits=None, traits=None):
+    def __init__(self, replies, cells=None, mailbox=None, hits=None, traits=None,
+                 config=None):
         self.replies = list(replies)
+        # the config store as the guest reads it: the `onboarding.done`
+        # row is seeded false on every space (ADR-005 §5)
+        self.config = {"onboarding.done": False, **(config or {})}
         self.traits = {"system_role": "native", "tool_mode": "native",
                        "reasoning": "advisory", "thinking": "default", "cache": "auto",
                        "context_window": 128000, "max_output": 8192, "sampling": {},
@@ -59,6 +63,11 @@ class World:
         if name == "trace.effects_of":
             return {"records": [{"seq": 9, "effect": "http.post",
                                  "class": "mutate", "mocked": False, "error": None}]}
+        if name == "config.get":
+            key = payload["key"]
+            if key not in self.config:
+                raise RuntimeError(f"ConfigError: no config value for {key!r}")
+            return {"value": self.config[key]}
         raise AssertionError(f"unexpected effect {name}")
 
     def subcell(self, code, cell_id):
@@ -922,3 +931,50 @@ def test_bash_output_is_clipped_head_and_tail():
     assert text.startswith("A" * 12000 + marker)
     assert text.endswith("Z" * 4000 + "\n→ sh.last")
     assert "M" not in text
+
+
+# --- the onboarding gate (ADR-005 §5, amendment 2026-09-12) ---------------------
+
+
+class OnboardingWorld(World):
+    """A space that ships `_core` and `_onboarding` skill objects."""
+
+    def use(self, spec):
+        mod = super().use(spec)
+        if spec != "any@v1":
+            return mod
+        mod.list_types = lambda space: [{"id": "skillT", "xKey": "agent_skill"}]
+
+        def query_objects(space, filter=None, **kw):
+            if filter == {"any.types": "skillT"}:
+                return [{"id": "o_core", "any": {"name": "_core"}},
+                        {"id": "o_onb", "any": {"name": "_onboarding"}}]
+            return []
+        mod.query_objects = query_objects
+        mod.get_markdown = lambda space, oid: {
+            "o_core": "# Skill: _core\n\nYou act through one tool.",
+            "o_onb": "# Skill: _onboarding\n\nGreet them and offer mail."}[oid]
+        return mod
+
+
+def test_onboarding_composes_only_while_not_done():
+    w = OnboardingWorld([done_reply("hi")])
+    run(w)
+    assert "# Skill: _onboarding" in w.llm_calls[0]["system"]
+    assert w.llm_calls[0]["system"].index("# Skill: _core") < \
+        w.llm_calls[0]["system"].index("# Skill: _onboarding")
+    done = OnboardingWorld([done_reply("hi")], config={"onboarding.done": True})
+    run(done)
+    assert "_onboarding" not in done.llm_calls[0]["system"]
+    assert "# Skill: _core" in done.llm_calls[0]["system"]
+
+
+def test_onboarding_is_skipped_for_quiet_runs_and_an_unreadable_store():
+    quiet = OnboardingWorld([done_reply("report")])
+    run(quiet, quiet=True)
+    assert "_onboarding" not in quiet.llm_calls[0]["system"]
+    # no row at all (a store without the seed): compose without the skill
+    broken = OnboardingWorld([done_reply("hi")])
+    del broken.config["onboarding.done"]
+    run(broken)
+    assert "_onboarding" not in broken.llm_calls[0]["system"]

@@ -9,7 +9,7 @@ SKILLS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "skills"
 # The fixed lead order the composer honors (toolcaller SYSTEM_SKILL_ORDER);
 # `_soul` is the identity, outside the band (ADR-005 §5).
 SYSTEM_SKILL_ORDER = ("_core", "_any", "_coding", "_memory",
-                      "_space_context", "_meta_skill")
+                      "_space_context", "_meta_skill", "_onboarding")
 
 
 def load_skills_dir(path: Path) -> dict[str, str]:
@@ -63,3 +63,16 @@ def test_memory_skill_carries_the_save_table_and_vocabulary():
     for edge in ("relates_to", "caused_by", "supersedes", "decided_in",
                  "part_of", "owned_by", "discussed_in"):
         assert edge in mem
+
+
+def test_onboarding_names_its_gate_and_the_real_mail_flow():
+    # ADR-005 §5: gated by the config row it sets itself; the Google
+    # connection is managed OAuth (googleAuth.connect), the first slice
+    # is a bounded sync_now, the backfill goes unattended
+    ob = load_skills_dir(SKILLS_DIR)["_onboarding"]
+    assert ob.startswith("# Skill: _onboarding")
+    for needle in ("onboarding.done", 'use("connectors:googleAuth@v1").connect()',
+                   "sync_now(space, max_messages=50)", "start_backfill(space, agent_space)",
+                   'use("agent:config@v1").set("onboarding.done", True)', "[first contact]"):
+        assert needle in ob, f"_onboarding.md lost {needle!r}"
+    assert "the link and the field" not in ob     # the static-key card flow is not Gmail's

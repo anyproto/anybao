@@ -123,7 +123,12 @@ BASH_STDERR_CHARS = 3000
 # `_soul` is not in the band: it is the identity, rendered verbatim as
 # the first bytes of the system block (ADR-005 §5).
 SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory",
-                      "_space_context", "_meta_skill"]
+                      "_space_context", "_meta_skill", "_onboarding"]
+# The onboarding skill composes only while the person is new (ADR-005
+# §5): the gate is the `onboarding.done` config row (seeded false), set
+# by the skill itself once the person is known and mail is settled.
+ONBOARDING_SKILL = "_onboarding"
+ONBOARDING_DONE_KEY = "onboarding.done"
 IDENTITY_SKILL = "_soul"
 # a pasted essay must not eat the prompt: head kept, a marker names the cut
 IDENTITY_TOKEN_CAP = 2000
@@ -501,6 +506,17 @@ def _fingerprint(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _onboarding_pending():
+    """ADR-005 §5: `_onboarding` rides the prompt only while the
+    `onboarding.done` config row is not true. One recorded read per
+    run; an unreadable store composes WITHOUT the skill — a nag is the
+    worse failure."""
+    try:
+        return not effect("config.get", {"key": ONBOARDING_DONE_KEY})["value"]  # noqa: F821
+    except Exception:
+        return False
+
+
 def _compose_skills(skills, has_shell=False):
     """Fixed order (SYSTEM_SKILL_ORDER first, unknown _-skills sorted
     after), each trimmed, joined by blank lines. `_coding` rides only
@@ -666,6 +682,10 @@ def compose_system(c, space, code_space=None, overlays=None, style="full",
     soul = _identity(skills)          # always popped: never in the band
     if not identity:
         soul = ""
+    # onboarding is a state, not a skill: gated by config, and never in
+    # a delegated child's prompt (ADR-005 §5)
+    if ONBOARDING_SKILL in skills and (not identity or not _onboarding_pending()):
+        del skills[ONBOARDING_SKILL]
     parts = [soul,
              _compose_skills(skills, has_shell),
              _user_skills(c, space),

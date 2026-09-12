@@ -14,8 +14,11 @@ gmail.readonly; user-facing turns ONLY, never cron); on
 `consent_timeout` tell the user to finish in the browser and poll
 `googleAuth.status()` until connected. Re-probe, then arm.
 
-**Scope is a conversation, not a default.** Before arming an initial
-backfill, settle the flow with the user in ONE question: time window
+**Scope is a conversation, not a default.** (Exception: the first
+contact — `_onboarding` arms the defaults after one bounded
+`sync_now` slice and defers this question to after the first useful
+thing.) Before arming an initial backfill, settle the flow with the
+user in ONE question: time window
 (default `newer_than:1y`, whole history opt-in), exclusions (offer
 the usual noise — newsletter/notification senders — as `-from:x`
 negative terms; never `-category:` filters, categories overlap real
