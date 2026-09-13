@@ -179,6 +179,21 @@ body noise. Implementation hazard recorded from the probe: no nested
 quantifiers in cleanup regexes (a `(\s*\|\s*)+` pass went exponential
 on LinkedIn's empty-cell runs).
 
+The tree is **depth-bounded before conversion**. `markdownify` recurses
+two Python frames per element level under the kernel's 1000-frame
+limit, and `html.parser` has no implied end tags, so unclosed
+`<p>`/`<div>`/`<font>` runs (Word/Outlook exports, unmarked reply
+chains) nest hundreds deep in a few KB — the byte cap bounds nothing
+relevant. Two iterative passes run after table flattening: a
+wrapper-chain collapse (a `div`/`p`/`span`/`font` whose only child is a
+like wrapper unwraps — lossless for markdown), then a browser-style
+depth cap (`_MAX_DEPTH` = 200, Gecko's figure): an element at the cap
+keeps its leading text and its remaining content is lifted out as
+following siblings, order preserved. A `RecursionError` from the
+converter still degrades to bs4's iterative plain text rather than
+failing the message. Replacing the recursive converter with a
+streaming one is BOB-120.
+
 ### 5. People — one person spine, shared with any-ui
 
 There is no sync-private contact type. The person spine is the
