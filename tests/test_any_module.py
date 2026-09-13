@@ -316,6 +316,21 @@ def test_create_type_idempotent_adds_only_missing():
                  "addedProps": {"priority": "p2"}}
     posts = [p for v, p, _ in fx.calls if v == "POST"]
     assert posts == ["/v1/spaces/s1/types/t9/properties"]  # no type POST, one prop
+    # the record-root guard gates minting only: ensuring an existing type
+    # reads no `any` catalog (the fixture would 404 it)
+    assert "/v1/spaces/s1/types/any/properties" not in [p for _, p, _ in fx.calls]
+
+
+def test_create_type_existing_root_key_handle_is_reused():
+    # a type minted before the BOB-68 rule keeps its handle: ensure reuses
+    # it (and can still reshape it) instead of refusing
+    fx = wire(replies={
+        "/types": {"types": [{"id": "tA", "name": "Author", "xKey": "author"}]},
+        "/types/tA/properties": {"properties": [], "propId": "p1"}})
+    r = client(fx).create_type("s1", {"name": "Author",
+                                      "properties": [{"name": "bio"}]})
+    assert r == {"typeId": "tA", "xKey": "author", "created": False,
+                 "addedProps": {"bio": "p1"}}
 
 
 def test_create_type_builtin_handle_errors():
