@@ -2,7 +2,10 @@
 
 Status: **Accepted** (2026-08-26; §4 revised in review — the store is the
 source of truth, no runtime write surface; amended the same day: the
-value is **account-scoped**, not device-local)
+value is **account-scoped**, not device-local). **§7 + §8 accepted
+2026-09-14** (BOB-94: host binding shipped, declared refs, the open
+`local.key.*` namespace for agent-authored programs, host-only card
+types).
 Builds on: ADR-006 §3 (secrets on the derived object — the device-local
 scope of that section is superseded by §4 here),
 ADR-008 §1 (credential refs), ADR-011 §4 (host binding deferred to
@@ -64,18 +67,23 @@ the http payload. The guest credential shape becomes
            "note": "Repository: Issues, Pull requests, Contents, Metadata; …"}}
 ```
 
-`about` is optional (the six connectors and `llm@v1` add it; an
-agent-authored connector without it still works, the request is just
-terser). It is not a secret and is recorded in the trace like the rest
-of the payload. Each connector keeps it in one module constant
-(`_CRED`) — the same place `_NOT_CONNECTED` lives today, which shrinks
-to one line ("GitHub not connected — enter the token in the chat
-prompt above / Credentials").
+`about` is not a secret and is recorded in the trace like the rest of
+the payload. Where the host reads it from depends on the ref's
+namespace (§8.1): for the **declared** namespaces (`connector.key.*`,
+`llm.key.*`) the descriptor is the one the deployed module exports in
+`__any_credentials__` and deploy wrote into the overlay manifest — the
+payload's `about` is ignored; for the open `local.key.*` namespace the
+payload's `about` is the descriptor, taken once, when the row is
+created, and `hosts` is mandatory. Each connector keeps its descriptor
+in one module constant (`_CRED`, exported as `__any_credentials__ =
+[_CRED]`) — the same place `_NOT_CONNECTED` lives, which shrinks to
+one line ("GitHub not connected — enter the token in the chat prompt
+above / Credentials").
 
 `about.hosts` is **the** host-binding metadata ADR-011 §4 deferred
-here. In this ADR it is *shown* to the human at entry and persisted on
-the record (§2); enforcing it at hop zero is §7, a follow-on phase, so
-nothing here re-opens the "never patch an allowlist in passing" rule.
+here: shown to the human at entry, persisted on the record (§2), and
+enforced at hop zero (§7). It is a per-secret destination the human
+sees and can edit, not a host allowlist patched in passing.
 
 ### 2. Missing secret = a typed failure and a host-emitted request
 
@@ -93,7 +101,9 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
 (the phishing argument of ADR-011 §1 applied to secrets). Mechanism:
 
 1. The broker upserts the ref's `agent_secrets` row with synced,
-   non-secret metadata (no `localValue` touched):
+   non-secret metadata (no `localValue` touched; descriptor fields
+   follow the §8.4 stamp rule — a miss never rewrites the label or
+   hosts of a row that already exists):
    `{key, secret: true, status: "missing", label, hosts, help, note,
    requestedAt, requestedBy: <run id — the trace that missed it>,
    requestedIn: <chatId>}`. The dataset is declared, not dynamic (a
@@ -266,19 +276,190 @@ UI strips `value` at its read seam and only ever writes it, §4). Managed OAuth 
 `.granted_scopes` and a Connect/Disconnect that call `googleAuth`
 through the existing `POST /run` — no new surface.
 
-### 7. Host binding (follow-on phase, designed here)
+### 7. Host binding — enforced at hop zero (accepted 2026-09-14, with §8)
 
-With `hosts` on every row and shown at entry, enforcement is a broker
-check at hop zero: a credentialed request whose URL host is not in
-the row's `hosts` fails typed `secret_host_mismatch` (the same-origin
-redirect rule of ADR-011 §4 already covers later hops). Rows with no
-`hosts` (agent-authored connectors that gave no `about`) stay
-unbound until the human edits the hosts field in the dashboard —
-which is where "the design must also cover the flow where the agent
-authors a new connector" lands: the agent's connector requests the
-secret, the human sees "no host restriction" in red and types one.
-Not shipped in this ADR's first cut; it is listed so the record
-shape carries it from day one.
+A credentialed request whose URL host is not one of the row's `hosts`
+fails typed `secret_host_mismatch` **before** the header is attached;
+the same-origin redirect rule of ADR-011 §4 covers every later hop.
+A `hosts` entry is a host name, optionally with a port
+(`api.github.com`, `127.0.0.1:8737`): the host part is compared
+case-insensitively and exactly (no suffix matching — `api.github.com`
+does not admit `api.github.com.evil.io`); a declared port must match,
+an undeclared one admits any. The row is the single truth: what the
+card shows at entry is what the broker enforces, and the human edits
+it in the dashboard (§6).
+
+A row with no `hosts` is **unbound** and never injected:
+
+- a declared ref (§8.1) always has hosts — they come from the
+  manifest, stamped at boot, so an unbound declared row is a stale
+  row from before this section; boot re-stamps it;
+- a `local.key.*` request that names no `about.hosts` is refused at
+  the miss (`secret_hosts_required`) — no card is posted without a
+  destination, because the destination is the one thing the human
+  is asked to check.
+
+Enforcement is one check in the broker's credential injection
+(`resolve_static` → the request), reading `hosts` off the same row it
+reads the value from — no in-memory allowlist, nothing to keep in
+sync. It runs after the effect is recorded (§4: resolve-after-record)
+and before the request is sent, so the refusal is itself in the
+trace and replays deterministically.
+
+**The binding is per effect family.** http is the only carrier of a
+credential today, so the binding is `hosts`. A future carrier — a
+shell env value (ADR-024 masks credential-looking env today and
+injects nothing), a database or MCP effect — has its own notion of a
+destination and declares its own binding shape on the row
+(`{"sh": {...}}`, never a reuse of `hosts`). A row is injectable only
+through the families it names; every existing row names http
+implicitly and nothing else, so a new carrier injects nothing until
+the manifest (declared refs) or the human (open refs) grants it. The
+invariant is the one this section states: a secret leaves the host
+only toward a destination the human saw on the card.
+
+### 8. Trust model for agent-requested credentials — `local.key.*` (accepted 2026-09-14, BOB-94)
+
+#### 8.0 What the host can and cannot know
+
+Every program — a reviewed overlay module, a working-space program
+(ADR-013), an ad-hoc cell — runs in ONE guest interpreter. Guest-side
+attribution of an effect to its calling module is forgeable by model
+code: a function's `__code__` is assignable, so a frame's filename
+proves nothing; a loaded module's facades are plain attributes any
+cell can call; `span` names are a display override by contract
+(ADR-003 §4b). The host therefore **never asks who is calling**. The
+model rests on three host-verifiable facts: the ref's **namespace**,
+the request's **destination host** (§7), and the overlay **manifests
+deploy wrote** into spaces the guest cannot write (ADR-013 non-goal).
+
+Consequence, stated once: a per-secret "allowed program" field
+(BOB-109) cannot be enforced and is superseded by `hosts`.
+
+#### 8.1 Two namespaces, one of them open
+
+- **Declared refs — every namespace but `local.key.*`**
+  (`connector.key.*`, `llm.key.*`, `google.key.*` for the search
+  providers, the managed `connector.oauth.*` family of ADR-011 §3
+  whose descriptors are the provider table). A deployed
+  module lists the credentials it uses in a module-level
+  `__any_credentials__ = [{"ref", "about": {"label", "hosts",
+  "help"?, "note"?}}]` (the ADR-010 §1 self-documentation convention
+  extended by one name; connectors export their `_CRED`, `llm@v1` one
+  entry per SaaS provider of its backend table). `anyrt deploy`
+  validates the shape (ref in a declared namespace, `hosts`
+  non-empty) and writes the list into the overlay's manifest record
+  (the hash-gated record deploy already keeps). serve reads every
+  overlay's manifest at boot and on the hash-gated refresh into the
+  **declared table** `{ref → about}` and stamps each ref's row from
+  it (§8.4) — so the Credentials dashboard lists every connector's key
+  before any miss, and a stored key that was never described gets its
+  hosts. A miss on a ref outside `local.key.*` that is **not** in the
+  table is refused typed `secret_ref_undeclared` (a bare name, a
+  made-up namespace, a `connector.key.<x>` no overlay ships); the
+  message names `local.key.*` as the namespace for agent-authored
+  programs. The payload's `about` is ignored for declared refs.
+- **Open refs — `local.key.*`.** Any program may name one. The
+  descriptor is the payload's `about`, taken **once** when the row is
+  created; `hosts` is mandatory (§7). A later miss or rejection stamps
+  status only. Anything else the model could write onto the row it
+  could write today; nothing it writes changes where the secret goes,
+  because hosts are frozen at creation and editable by the human
+  only.
+`llm.key.*` for a **self-hosted** backend (`vllm`, `llama.cpp`,
+`ollama`, `generic`) cannot be declared with a host — the host is the
+tier's `base_url`, which the model may set through `config@v1`. Those
+refs resolve like `local.key.*`: hosts taken from the tier's
+`base_url` when the row is created, frozen, human-editable. A SaaS
+provider's ref (`llm.key.anthropic`, `.openai`, `.openrouter`,
+`.gemini`, …) is declared with its API host and cannot be redirected
+by a `base_url` edit — the mismatch is typed and visible.
+
+#### 8.2 The unreviewed card
+
+A `local.key.*` request posts the same `credential_request`
+attachment (§2) — one carrier, no new type — with text that carries
+the warning, because old clients render only the text:
+
+> ⚠ Code written by bao (reviewed by no one) asks for a credential:
+> {label} (`local.key.{name}`). It will be sent only to {hosts}.
+
+any-ui renders it as the credential card with a warning strip, the
+hosts in emphasis, and a link to the run that missed the ref
+(`requestedBy` — the trace shows the exact code, which is the only
+provenance the host can vouch for; §8.0). The card names no program:
+a name would be the requester's claim. The `agent` field of the
+message carries the run as `debugLink`, as error replies do.
+
+#### 8.3 What a reviewed key can do in unreviewed hands
+
+With §7 enforced, a reviewed ref's secret reaches only its declared
+hosts, whoever calls. A cell that calls `http.get` on `api.github.com`
+with the GitHub ref has exactly the power of the reviewed connector's
+raw `request()` — no new capability, and every such call is in the
+trace. ADR-013 §4 ("an authored program may *use* existing credential
+refs but cannot mint or read them") stands with this reading: use =
+send to its own host.
+
+#### 8.4 Store rules
+
+- **Stamp rule.** The miss/rejection stamp (`ServeSecretStore::stamp`)
+  writes descriptor fields (`label`, `hosts`, `help`, `note`) only
+  when it **creates** a `local.key.*` row. It never writes them onto
+  an existing row, and never for a declared ref (whose descriptor the
+  boot stamp owns). Status, `requestedBy`, `rejectedAt/With`,
+  `requestedIn/At` stamp as before.
+- **`lastUsedAt`** — stamped once per run per ref, at the first
+  successful injection (the audit column of §6; one write per run,
+  not per effect).
+- **Revocation** is the dashboard's Delete (§6) — unchanged; a deleted
+  `local.key.*` row re-asks on the next miss with a fresh descriptor,
+  which is the promotion path: the human ports the program into
+  `repos/`, declares the ref under `connector.key.*`, and the
+  `local.key.*` row is deleted by hand. The value does not migrate.
+
+#### 8.5 Resolved questions (from the BOB-94 draft)
+
+1. Loopback-only? **No.** Hosts are mandatory and enforced; the human
+   reads the host on the card. A loopback rule would exclude the next
+   integration without adding a check the human is not already asked
+   to make.
+2. Default expiry? **None in v1.** Revocation exists; expiry is a
+   policy knob for a later amendment if it earns its keep.
+3. Promotion? **Human, through deploy** (8.4); the key does not
+   survive it.
+4. A single "disable agent-initiated credential requests" setting?
+   **Deferred**: cheap once 8.1 exists (refuse every `local.key.*`
+   miss typed), not needed for the first cut.
+
+#### 8.6 The card is host-only, enforced
+
+§2 says only the host posts a `credential_request`; the code did not
+enforce it (found 2026-09-13): `any@v1.chat_send` passes
+`attachments` through verbatim and attachment `type` is an open enum
+server-side, so a cell could post a native-looking card for any ref —
+with `&setup=model` on the link — and the human would type a secret
+into a row the model chose. Host binding does not help there: the
+model picks the ref, the host later enforces hosts *it* stamped for
+that ref. The broker's guest guard (the same place that refuses the
+secrets dataset, ADR-011 §4) therefore refuses a guest chat write
+whose `attachments` carry a **host-only type** — `credential_request`
+and `credential_set` — typed `host_only`, message "credential cards
+are posted by the host". The onboarding marker is covered by the
+same rule: it rides that attachment's link. The card's creator field
+cannot serve as the check (host and guest post as the same account),
+so the boundary is the only place this can hold.
+
+#### 8.7 The guest surface says so
+
+`env(name)` reads the host's non-secret map (`Broker::env`) and is
+documented as never a credential; the kernel's `http` verbs document
+`credential=` (ref, header, prefix, about) in their docstrings so
+`help(http.get)` teaches the mechanism — the anyscribe run
+(BOB-87/102, 2026-09-13) showed bao reaching for `env()` because
+`help(http.get)` printed only `get(url, **kw)`. `_core` and
+`_meta_skill` teach `local.key.*` where programs are authored
+(ADR-010 §7).
 
 ## Out of scope
 
@@ -307,5 +488,13 @@ shape carries it from day one.
    "Help > Import connector keys" (`broker.rs:886`, `serve.rs:468`)
    get updated with it.
 5. any-ui: Credentials dashboard.
-6. Host binding enforcement (§7) — its own ADR amendment when picked
-   up.
+6. Kernel docstrings + skills (§8.7) — no contract change, ships
+   first.
+7. `__any_credentials__` on the connectors and `llm@v1`; deploy
+   validates and writes the manifest list (§8.1).
+8. Broker: declared table from the manifests, namespace rule,
+   host binding (§7), stamp rule + `lastUsedAt` (§8.4), host-only
+   attachment types on guest chat writes (§8.6).
+9. Run wrapper: the unreviewed card text + `debugLink` (§8.2).
+10. any-ui: warning strip, trace link, editable hosts, `lastUsedAt`
+    in the dashboard (§8.2, §6).
