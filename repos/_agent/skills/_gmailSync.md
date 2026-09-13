@@ -60,8 +60,8 @@ weeks — absence of older mail proves nothing). Asked for a window
 wider than `status().q` ⇒ re-arm `start_backfill` with the wider q.
 
 Watch progress with `status(space)` → `{q, cursor, pageToken,
-syncedCount, mailboxId, emailCount}` (empty pageToken = backlog
-drained, now ticking incrementally) or
+syncedCount, skippedCount, skipped, mailboxId, emailCount}` (empty
+pageToken = backlog drained, now ticking incrementally) or
 `use("agent:progress@v1").jobs(space)` (job `"gmail-backfill"`) — the
 UI renders the bar GLOBALLY (server process registry), whatever space
 is open.
@@ -69,6 +69,12 @@ Diagnosing a stalled chain: a trigger record's `lastStatus: "ok"`
 means the hop RAN, not that it synced — sync truth is `status(space)`
 and the failed process row (`use("agent:progress@v1").jobs(space)`,
 visible ~60s) — durable truth lives in `status(space)`.
+`skippedCount` = messages listed but NOT synced because the cleaner
+could not process them (one weird email never stops a slice or trips
+the breaker; `skipped` lists the newest with the reason). Tell the
+user the count when it is non-zero; `retry_skipped(space)` re-runs
+them through the current cleaner without re-listing the mailbox —
+worth a try after a runtime update, otherwise they stay listed.
 
 Reading the synced corpus (`email_messages` records on the `mailbox`
 object, thread queries, label filters — ADR-016) is the `_any`
