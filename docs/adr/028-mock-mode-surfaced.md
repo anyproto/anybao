@@ -167,8 +167,9 @@ effect outside the set is live by design. The predicate is
 - `anyrt trace diff <run_a> <run_b>` — effect-level set difference by
   `(effect, key)` plus changed outputs on shared keys (output hash).
   "Adjust code, compare" needs both views.
-- `anyrt trace show` marks mocked effect rows `~`, beside the existing
-  `*` for mutate.
+- `anyrt trace show` marks mocked effect rows `≈`, beside the existing
+  `*` for mutate (`~` stays the facade-span marker); a facade line
+  counts its served inner effects (`…, 2 mocked`).
 
 ### 7. Never mockable
 
@@ -215,7 +216,7 @@ unchanged): a denied effect is denied whether or not a mock exists.
   (effect) and the served count `mocked` (facade span) for the digest.
 - `runtime/src/main.rs`: `run_cmd(spec, args, RunOpts, RunHow)` behind
   `run --mock*` and `replay`; the run header carries `args` (+ `mock`,
-  or `replayOf`). `runtime/src/view.rs`: `~` / `[unmocked]`,
+  or `replayOf`). `runtime/src/view.rs`: `≈` / `[unmocked]`,
   `unmocked`, `diff`.
 - `repos/_agent/programs/toolcaller@v1.py`: `mock` / `mockref` on
   `run_cell`, `_mock_header`, mock-aware `_side_effects`, `MOCK_GUARD`;

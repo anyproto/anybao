@@ -220,11 +220,12 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
     let name = s(&r["effect"]);
     let class = s(&r["meta"]["class"]);
     let dur = r["meta"]["durMs"].as_i64().unwrap_or(0);
-    // `*` = a mutation that executed; `~` = served from a mock (ADR-028
-    // §6 — a mocked mutation did NOT execute, so it is never `*`)
+    // `*` = a mutation that executed; `≈` = served from a mock (ADR-028
+    // §6 — a mocked mutation did NOT execute, so it is never `*`; `~`
+    // is the facade-span marker)
     let mocked = r["meta"]["mocked"] == true;
     let mark = if mocked {
-        "~"
+        "≈"
     } else if class == "mutate" {
         "*"
     } else {
@@ -725,12 +726,15 @@ fn facade_block(
             format!("{}ms", e["meta"]["durMs"]),
             {
                 let m = e["meta"]["mutations"].as_i64().unwrap_or(0);
-                let eff = format!("{} effects", e["meta"]["effects"]);
+                let mut eff = format!("{} effects", e["meta"]["effects"]);
                 if m > 0 {
-                    format!("{eff}, {m} mutate")
-                } else {
-                    eff
+                    eff.push_str(&format!(", {m} mutate"));
                 }
+                // inner effects served from a mock (ADR-028 §6)
+                if let Some(k) = e["meta"]["mocked"].as_i64().filter(|k| *k > 0) {
+                    eff.push_str(&format!(", {k} mocked"));
+                }
+                eff
             },
         ),
         None => ("NO END (trap?)", "?".into(), "?".into()),
@@ -1775,7 +1779,7 @@ mod tests {
         // a mocked mutation did not execute: `~`, never `*`
         assert_eq!(
             effect_line(&base, 160, "  "),
-            "  ~ #4 kernel.boot (schema 2, kernel abcdef012345…)"
+            "  ≈ #4 kernel.boot (schema 2, kernel abcdef012345…)"
         );
         let mut live = base.clone();
         live["meta"] = json!({"class": "mutate", "mocked": false, "mock": {"unmatched": true}});
@@ -1868,7 +1872,7 @@ mod tests {
             "{u}"
         );
         assert!(
-            !u.contains("~ #1"),
+            !u.contains("≈ #1"),
             "served rows are not in the diff view: {u}"
         );
         let none = unmocked(&store, "run_1111111111111111").unwrap();
