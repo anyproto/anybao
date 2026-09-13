@@ -132,6 +132,19 @@ no successor armed — which covers both the hop already running when
 the stop lands and a superseded generation's hop firing late after a
 re-arm.
 
+**Per-message isolation** (amended 2026-09-13, BOB-98): a message the
+cleaner cannot process never fails its slice. `_record_of` runs
+isolated per message; a failure counts under `failed`, the id and
+reason land in `sync_state.skipped` (a JSON worklist, deduped by id,
+newest 1000 kept) and `skipped_count` (the outstanding total), and the
+batch goes on — so the breaker sees only systemic failure (dead
+credential, API down), never one weird email. `status` reports
+`skippedCount` beside `syncedCount` so "synced" stays honest.
+`retry_skipped(space)` is the retry path: it re-hydrates the worklist
+ids — no re-listing — through the current cleaner; successes land and
+leave the list, failures stay with the fresh reason, ids Gmail no
+longer has are dropped as gone.
+
 **Scope changes** (amended 2026-08-13): `sync_state` records the
 scope that minted its checkpoint (`last_q`). `start_backfill` with
 the same q resumes the checkpoint; with a *different* q it clears

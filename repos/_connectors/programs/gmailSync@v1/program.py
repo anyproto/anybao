@@ -9,7 +9,8 @@ Gmail message id, body = clean_html markdown (ADR-012 §4); the raw
 MIME stays in Gmail. Cron recipe: an agent_triggers record with kind
 "cron", program "connectors:gmailSync@v1", args {"space", "q"?}.
 Backlog: `start_backfill` arms a self-chaining once-trigger,
-`stop_backfill` disarms it (checkpoint kept), `status` reports.
+`stop_backfill` disarms it (checkpoint kept), `status` reports,
+`retry_skipped` re-runs the messages the cleaner could not process.
 """
 
 # ADR-012 (algorithm, clean_html, chain) + ADR-016 (dataset storage)
@@ -95,11 +96,14 @@ STATE_TYPE = {
         {"name": "chain_gen", "kind": "number"},
         {"name": "chain_processed", "kind": "number"},
         {"name": "last_q"},
+        {"name": "skipped"},      # JSON [{id, error}] — retry_skipped's worklist
+        {"name": "skipped_count", "kind": "number"},
         {"name": "mailbox_id"},   # resolved mailbox object (ADR-016 §1)
         {"name": "store"},        # migration marker (ADR-016 §5)
     ],
 }
 _MAX_CHAIN_FAILURES = 5
+_SKIPPED_KEEP = 1000      # newest skipped entries kept for retry_skipped
 _JOB = "gmail-backfill"   # progress@v1 job key (ADR-014)
 
 
@@ -492,6 +496,43 @@ def _upsert(out, space, mailbox_id, records):
     return rep
 
 
+def _record_or_skip(out, skipped, raw):
+    """`_record_of`, isolated per message (§2): a message the cleaner
+    cannot process is counted as failed, noted in `skipped` with the
+    reason, and the batch goes on — one weird email must never stop a
+    slice or trip the chain breaker. The work inside is pure compute
+    (trim + clean_html), so no server fault can hide here."""
+    try:
+        return _record_of(_trim_full(raw))
+    except Exception as e:  # noqa: BLE001 - isolate the one message
+        out["failed"] += 1
+        skipped.append({"id": raw.get("id"),
+                        "error": f"{type(e).__name__}: {e}"[:160]})
+        return None
+
+
+def _note_skipped(space, state_id, state, skipped, out):
+    """Land a slice's skipped messages in `sync_state`: `skipped` is the
+    JSON worklist (newest last, deduped by id, capped at _SKIPPED_KEEP)
+    and `skipped_count` the outstanding total — what `status` reports
+    beside syncedCount so "synced" stays honest. Written BEFORE the
+    checkpoint: a re-listed id re-skips and dedupes, nothing is lost."""
+    import json as _json
+
+    if not skipped:
+        return
+    have = _json.loads(state.get("skipped") or "[]")
+    known = {e.get("id") for e in have}
+    fresh = {e["id"] for e in skipped}
+    have = ([e for e in have if e.get("id") not in fresh] + skipped)[-_SKIPPED_KEEP:]
+    count = (int(state.get("skipped_count") or 0)
+             + sum(1 for e in skipped if e["id"] not in known))
+    state["skipped"], state["skipped_count"] = _json.dumps(have), count
+    _any.update_object(space, state_id, {"sync_state": {
+        "skipped": state["skipped"], "skipped_count": count}})
+    out["skippedMessages"] = [e["id"] for e in skipped]
+
+
 # --- the tick (§2) ---------------------------------------------------------
 
 def _full_slice(space, state_id, state, mailbox_id, q, cap):
@@ -505,7 +546,7 @@ def _full_slice(space, state_id, state, mailbox_id, q, cap):
         cursor = str(prof["body"].get("historyId") or "")  # BEFORE listing: no gap
     token = state.get("page_token") or None
     synced = int(state.get("synced_count") or 0)
-    ids = []
+    ids, skipped = [], []
     while len(ids) < cap and not _fuel_low():
         page = _gm.list_messages(q=q, max_results=min(100, cap - len(ids)),
                                  page_token=token)
@@ -536,7 +577,9 @@ def _full_slice(space, state_id, state, mailbox_id, q, cap):
                 if _fuel_low():
                     out["fuelStop"] = True
                     break
-                records.append(_record_of(_trim_full(raws[mid])))
+                rec = _record_or_skip(out, skipped, raws[mid])
+                if rec:
+                    records.append(rec)
             if records:
                 # a fuel-stopped chunk still lands what it built — the
                 # checkpoint stays honest (upsert precedes it)
@@ -545,6 +588,7 @@ def _full_slice(space, state_id, state, mailbox_id, q, cap):
             break
     out["done"] = token is None and not out.get("fuelStop")
     synced += out["made"]
+    _note_skipped(space, state_id, state, skipped, out)
     _checkpoint(space, state_id, cursor, "" if out["done"] else (token or ""),
                 synced)
     out["syncedCount"] = synced
@@ -633,7 +677,7 @@ def _incremental(space, state_id, state, mailbox_id, q):
         fresh = [m for m in added if m not in have]
         out["skipped"] += len(added) - len(fresh)
         raws = _batch_get(fresh, "full")
-        records = []
+        records, skipped = [], []
         for mid in fresh:
             if mid not in raws:
                 out["failed"] += 1
@@ -641,9 +685,12 @@ def _incremental(space, state_id, state, mailbox_id, q):
             if _fuel_low():
                 out["fuelStop"] = True
                 break
-            records.append(_record_of(_trim_full(raws[mid])))
+            rec = _record_or_skip(out, skipped, raws[mid])
+            if rec:
+                records.append(rec)
         if records:
             _upsert(out, space, mailbox_id, records)
+        _note_skipped(space, state_id, state, skipped, out)
         if out.get("fuelStop"):
             # cursor NOT advanced: this tick checkpoints nothing new,
             # the next one replays the history window and the
@@ -861,7 +908,10 @@ def sync_now(space, q=None, max_messages=None):
 
     First runs drain the backlog one bounded slice at a time (call
     again — or let the cron — until done: True); after that each call
-    is a coalesced history increment. q narrows the scope with Gmail
+    is a coalesced history increment. A message the cleaner cannot
+    process never fails the tick: it counts under `failed`, is listed
+    in `skippedMessages`, and waits in status().skipped for
+    retry_skipped. q narrows the scope with Gmail
     search syntax (exclusions are negative terms like -from:x; falls
     back to newer_than:1y ONLY on a never-armed sync — an existing
     sync's coverage is status().q). FUEL: each synced message costs ~0.3-0.6B of
@@ -981,10 +1031,61 @@ def stop_backfill(space, agent_space):
                     "resumes from here"}
 
 
+@span("gmailSync.retry_skipped", kind="mutator")  # noqa: F821 - guest global
+def retry_skipped(space):
+    """Re-process the messages earlier ticks skipped → {retried, made,
+    gone, stillSkipped, skippedCount, fuelStop?}.
+
+    The retry path for `status().skipped` (§2): hydrates those ids
+    again — no re-listing of the mailbox — and runs them through the
+    CURRENT cleaner. A message that now converts lands as a record and
+    leaves the list; one that still fails stays with the fresh reason;
+    one Gmail no longer has is dropped as gone. Bounded by the kept
+    worklist (newest 1000) and by fuel (fuelStop: True = call again)."""
+    import json as _json
+
+    space = _space_id(space)
+    state_id, state = _ensure_state(space)
+    entries = _json.loads(state.get("skipped") or "[]")
+    out = {"mode": "retry", "retried": 0, "made": 0, "skipped": 0,
+           "failed": 0, "gone": 0}
+    if not entries:
+        return {**out, "stillSkipped": 0, "skippedCount": 0,
+                "note": "nothing skipped — every listed message is synced"}
+    mailbox_id = _ensure_mailbox(space, state_id, state)
+    if not mailbox_id:
+        return {**out, "error": "gmail profile unavailable — dead credential? "
+                                "(googleAuth.status / connect)"}
+    still, ids = [], [e["id"] for e in entries]
+    for i in range(0, len(ids), _HYDRATE_CHUNK):
+        if _fuel_low():
+            out["fuelStop"] = True
+            still += entries[i:]          # untouched tail keeps its place
+            break
+        chunk = ids[i:i + _HYDRATE_CHUNK]
+        raws = _batch_get(chunk, "full")
+        records, again = [], []
+        for mid in chunk:
+            if mid not in raws:
+                out["gone"] += 1          # deleted in Gmail — nothing to sync
+                continue
+            out["retried"] += 1
+            rec = _record_or_skip(out, again, raws[mid])
+            if rec:
+                records.append(rec)
+        if records:
+            _upsert(out, space, mailbox_id, records)
+        still += again
+    _any.update_object(space, state_id, {"sync_state": {
+        "skipped": _json.dumps(still), "skipped_count": len(still),
+        "synced_count": int(state.get("synced_count") or 0) + out["made"]}})
+    return {**out, "stillSkipped": len(still), "skippedCount": len(still)}
+
+
 @span("gmailSync.status", kind="getter")  # noqa: F821 - guest global
 def status(space):
     """Sync bookkeeping → {q, cursor, pageToken, syncedCount,
-    mailboxId, emailCount}.
+    skippedCount, skipped, mailboxId, emailCount}.
 
     `q` is the COVERAGE: the Gmail query the last backfill listed
     (empty = never armed). The corpus contains that scope and nothing
@@ -993,7 +1094,10 @@ def status(space):
     wider ask ⇒ re-arm start_backfill with the wider q. emailCount is
     the live email_messages record count on the mailbox (server-side
     $count); a cursor with an empty pageToken means backlog drained,
-    ticking incrementally."""
+    ticking incrementally. skippedCount = messages listed but NOT
+    synced because the cleaner could not process them (so syncedCount
+    stays honest); `skipped` shows the newest 20 with the reason —
+    `retry_skipped(space)` re-runs them, no re-listing."""
     types = {t.get("xKey") for t in _any.list_types(space)}
     if "sync_state" not in types:
         return {"configured": False, "emailCount": 0}
@@ -1006,10 +1110,15 @@ def status(space):
                              object_id=mid, dataset=_DATASET)
         recs = (agg or {}).get("records") or []
         count = int((recs[0] or {}).get("n") or 0) if recs else 0
+    import json as _json
+
+    skipped = _json.loads(st.get("skipped") or "[]")
     return {"configured": bool(rows), "q": st.get("last_q") or "",
             "cursor": st.get("cursor") or "",
             "pageToken": st.get("page_token") or "",
             "syncedCount": int(st.get("synced_count") or 0),
+            "skippedCount": int(st.get("skipped_count") or 0),
+            "skipped": skipped[-20:],
             "mailboxId": mid, "emailCount": count}
 
 

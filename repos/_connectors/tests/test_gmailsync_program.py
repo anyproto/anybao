@@ -695,7 +695,90 @@ def test_status_reports_state_and_counts():
     # the state predates the arm (never-armed / legacy checkpoint)
     assert out == {"configured": True, "q": "newer_than:7d -from:x",
                    "cursor": "H9", "pageToken": "PT",
-                   "syncedCount": 1, "mailboxId": "mb1", "emailCount": 1}
+                   "syncedCount": 1, "skippedCount": 0, "skipped": [],
+                   "mailboxId": "mb1", "emailCount": 1}
+
+
+# --- per-message isolation + the skipped worklist (BOB-98) -------------------
+
+@pytest.fixture
+def cleaner_boom(monkeypatch):
+    """The real conversion path, failing only on bodies that carry BOOM —
+    the stand-in for a message shape the cleaner cannot handle."""
+    import markdownify
+    real = markdownify.markdownify
+
+    def boom(html, **kw):
+        if "BOOM" in html:
+            raise ValueError("cleaner choked")
+        return real(html, **kw)
+    monkeypatch.setattr(markdownify, "markdownify", boom)
+
+
+def test_full_slice_skips_an_unprocessable_message_and_goes_on(cleaner_boom):
+    raws = {"m1": raw_msg("m1"), "m2": raw_msg("m2", html="<p>BOOM</p>"),
+            "m3": raw_msg("m3")}
+    fake = FakeAny()
+    out = load(gmail_fx(raws, pages=[{"messages": ["m1", "m2", "m3"]}]),
+               fake).sync_now("sp")
+    assert "error" not in out and out["done"] is True      # the tick succeeded
+    assert out["made"] == 2 and out["failed"] == 1
+    assert out["skippedMessages"] == ["m2"]
+    assert set(fake.mail) == {"m1", "m3"}                  # m2 never landed
+    st = fake.state()
+    assert st["synced_count"] == 2 and st["skipped_count"] == 1
+    assert json.loads(st["skipped"]) == [
+        {"id": "m2", "error": "ValueError: cleaner choked"}]
+    out = load(gmail_fx({}), fake).status("sp")
+    assert out["syncedCount"] == 2 and out["skippedCount"] == 1
+    assert out["skipped"][0]["id"] == "m2" and "choked" in out["skipped"][0]["error"]
+
+
+def test_chain_hop_with_a_skipped_message_does_not_count_as_failure(cleaner_boom):
+    raws = {"m1": raw_msg("m1"), "m2": raw_msg("m2", html="<p>BOOM</p>")}
+    fake = FakeAny(states=[seeded_state(chain_gen=1, chain_failures=3)])
+    out = load(gmail_fx(raws, pages=[{"messages": ["m1", "m2"]}]),
+               fake).main(chain_args(hop=4, gen=1))
+    assert out["made"] == 1 and out["failed"] == 1 and "error" not in out
+    assert fake.state()["chain_failures"] == 0             # breaker reset, not tripped
+
+
+def test_incremental_skips_an_unprocessable_add_and_advances(cleaner_boom):
+    raws = {"m9": raw_msg("m9", html="<p>BOOM</p>"), "m8": raw_msg("m8")}
+    fake = FakeAny(states=[seeded_state(cursor="H100", synced_count=5,
+                                        skipped=json.dumps([{"id": "m9", "error": "old"}]),
+                                        skipped_count=1)])
+    history = {"historyId": "H200", "history": [
+        {"messagesAdded": [{"message": {"id": "m9"}}]},
+        {"messagesAdded": [{"message": {"id": "m8"}}]}]}
+    out = load(gmail_fx(raws, pages=[{"messages": ["m9", "m8"]}], history=history),
+               fake).sync_now("sp")
+    assert out["done"] is True and out["made"] == 1 and out["skippedMessages"] == ["m9"]
+    st = fake.state()
+    assert st["cursor"] == "H200"                          # the window advanced
+    assert st["skipped_count"] == 1                        # re-skip dedupes by id
+    assert json.loads(st["skipped"]) == [
+        {"id": "m9", "error": "ValueError: cleaner choked"}]   # reason refreshed
+
+
+def test_retry_skipped_lands_fixed_keeps_failing_drops_gone(cleaner_boom):
+    # m2 converts now, m3 still chokes, m4 is gone from Gmail
+    raws = {"m2": raw_msg("m2"), "m3": raw_msg("m3", html="<p>BOOM</p>")}
+    fake = FakeAny(states=[seeded_state(cursor="H100", synced_count=7, skipped=json.dumps([
+        {"id": "m2", "error": "old"}, {"id": "m3", "error": "old"},
+        {"id": "m4", "error": "old"}]), skipped_count=3)])
+    mod = load(gmail_fx(raws), fake)
+    out = mod.retry_skipped("sp")
+    assert out["retried"] == 2 and out["made"] == 1 and out["gone"] == 1
+    assert out["stillSkipped"] == 1 and out["skippedCount"] == 1
+    assert "m2" in fake.mail and "m3" not in fake.mail
+    st = fake.state()
+    assert st["synced_count"] == 8 and st["skipped_count"] == 1
+    assert json.loads(st["skipped"]) == [{"id": "m3", "error": "ValueError: cleaner choked"}]
+    assert st["cursor"] == "H100"                          # no re-list, cursor untouched
+    assert mod.retry_skipped("sp")["stillSkipped"] == 1    # idempotent
+    fake2 = FakeAny(states=[seeded_state(cursor="H100")])
+    assert load(gmail_fx({}), fake2).retry_skipped("sp")["retried"] == 0
 
 
 # --- backfill chain ----------------------------------------------------------
