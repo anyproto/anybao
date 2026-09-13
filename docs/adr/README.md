@@ -41,6 +41,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 025 | Bao presence & status line over the event bus | Accepted |
 | 026 | Blobs — bytes as handles, a host-owned content-addressed store beside the trace | Accepted |
 | 027 | any parts, modules and the usecase catalog — stores as parts, the chat from the catalog, bodies on `page`, descriptors in `xFormat` | Accepted |
+| 028 | Mock mode surfaced — the mock spec on `anyrt run` and `run_cell`, strict replay as a verb, traceDiff views | Proposed |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
