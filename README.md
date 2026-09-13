@@ -44,8 +44,9 @@ space = "bao"               # working space: chat, memory, your edits
 agent = { space = "bafyreibu6a7ewtk7t6lsnbmazazgcsfqx5efpmyycaycovbpzshvq2zrvy.1mmhvs7exubo9", invite = "2gChBtaWg5EX1PgV7SgXdJDtgszDPrSKcVmvvgUc1o8d16SRHrxMBkGyAQa2ZhUXua8r5gNF7bToC63m9yEGNkMfcXZCvimFtCgTqvAyZARnCWjEXvcYWQJ71ZibD6ZPZkNUghif5DHWJtLYawY2izi37Ng2MsGAwAzFcgASgzEbWW3uXMKemFcK5mRmZF7F6uh" }
 
 [paths]
-traces = "traces"           # raw-blob directory (ADR-026); traces
-                            # themselves live in the any local store
+traces = "traces"           # raw-blob directory (ADR-026), relative to
+                            # this file's dir (this is the default);
+                            # traces themselves live in the any local store
 ```
 
 ## Operations

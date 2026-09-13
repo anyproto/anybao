@@ -131,7 +131,13 @@ pub struct Config {
     pub control_port: u16,
     pub overlays: BTreeMap<String, Overlay>,
     /// `paths.traces`: the raw-blob directory (ADR-026 §1) — the bytes
-    /// behind `{__blob, bytes, mime}` refs sit at `<traces_dir>/blobs/`
+    /// behind `{__blob, bytes, mime}` refs sit at `<traces_dir>/blobs/`.
+    /// `load` makes it absolute: a relative value (the default
+    /// `traces` included) resolves against the config FILE's directory,
+    /// so a config with no `[paths]` is right from any cwd (a bundled
+    /// desktop app launches with cwd `/`). Builder-built configs keep
+    /// what the embedder set; serve resolves a relative one against its
+    /// cwd when it creates the directory.
     pub traces_dir: PathBuf,
     /// retention in seconds: chat-loop runs (default 60d) / every other
     /// program's runs (default 30d); `"never"` in the toml = keep
@@ -309,7 +315,9 @@ impl Config {
     /// `--config-file` that doesn't exist is an error; the implicit
     /// default is optional. A [`SECRETS_ENV_FILE`] sibling of the
     /// config file (or in cwd when no config path resolves) is parsed
-    /// into `secret_overrides` — the hard-seed rotation path.
+    /// into `secret_overrides` — the hard-seed rotation path. The same
+    /// directory anchors a relative `paths.traces` (ADR-026 §1): the
+    /// returned `traces_dir` is absolute.
     pub fn load(path: Option<&Path>) -> Result<Config> {
         let text = match path {
             Some(p) => Some(
@@ -325,14 +333,15 @@ impl Config {
             Some(t) => Config::from_toml(&t)?,
             None => Config::default(),
         };
-        let secrets_dir = path
+        let config_dir = path
             .and_then(Path::parent)
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let secrets_path = secrets_dir.join(SECRETS_ENV_FILE);
+        let secrets_path = config_dir.join(SECRETS_ENV_FILE);
         if let Ok(t) = std::fs::read_to_string(&secrets_path) {
             cfg.secret_overrides.append(&mut parse_secrets_env(&t));
         }
+        cfg.traces_dir = absolute(config_dir.join(&cfg.traces_dir));
         Ok(cfg)
     }
 
@@ -391,8 +400,19 @@ impl Config {
             self.control_port = port;
         }
         if let Some(traces) = o.traces_dir {
-            self.traces_dir = traces;
+            // typed on the command line: relative to the cwd, not the file
+            self.traces_dir = absolute(traces);
         }
+    }
+}
+
+/// `path` anchored at the cwd when relative (no canonicalize: the
+/// directory need not exist yet — serve creates it).
+fn absolute(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
     }
 }
 
@@ -548,6 +568,39 @@ traces = "t"
         assert!(c.overlays.is_empty());
         assert_eq!(c.traces_dir, PathBuf::from("traces"));
         assert_eq!(c.kernel, None); // no override: kernel comes from the space
+    }
+
+    /// `load` anchors `paths.traces` at the config file's directory —
+    /// the default included — so an embedder's config with no `[paths]`
+    /// section works from any cwd (BOB-112). Absolute stays absolute.
+    #[test]
+    fn load_anchors_traces_dir_at_the_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anybao.toml");
+
+        std::fs::write(&path, "").unwrap();
+        let c = Config::load(Some(&path)).unwrap();
+        assert_eq!(c.traces_dir, dir.path().join("traces"));
+
+        std::fs::write(&path, "[paths]\ntraces = \"t\"\n").unwrap();
+        let c = Config::load(Some(&path)).unwrap();
+        assert_eq!(c.traces_dir, dir.path().join("t"));
+
+        let abs = dir.path().join("elsewhere");
+        std::fs::write(&path, format!("[paths]\ntraces = {:?}\n", abs)).unwrap();
+        let c = Config::load(Some(&path)).unwrap();
+        assert_eq!(c.traces_dir, abs);
+
+        // a CLI --traces-dir is relative to the cwd, not the file
+        let mut c = Config::load(Some(&path)).unwrap();
+        c.apply(CliOverrides {
+            traces_dir: Some("cli-traces".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            c.traces_dir,
+            std::env::current_dir().unwrap().join("cli-traces")
+        );
     }
 
     #[test]

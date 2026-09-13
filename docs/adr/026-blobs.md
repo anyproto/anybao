@@ -65,6 +65,18 @@ collections keep what they keep today, the directory is `paths.traces`
 (its only content), and a full wipe of a rig's traces is "drop the
 three trace collections, remove the directory".
 
+The directory is anchored at the config file: a relative
+`paths.traces` — the default `traces` included — resolves against the
+directory the `anybao.toml` was loaded from, never the process cwd, so
+a config with no `[paths]` section is correct from any cwd (an
+embedder's managed config sits beside its own data, and a bundled
+desktop app launches with cwd `/`). A `--traces-dir` typed on the
+command line is relative to the cwd, as typed. Serve creates
+`<traces_dir>/blobs/` at boot and fails there when it cannot — a
+location that would drop every blob is a boot error naming the path,
+not a per-write warning that reads back as `blob_missing`. (Amended
+2026-09-13, BOB-112.)
+
 ### 2. Which spills go where (amends ADR-001 §7, ADR-023 §4)
 
 Two reference shapes, told apart by `mime`:
