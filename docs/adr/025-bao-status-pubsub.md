@@ -1,9 +1,9 @@
 # ADR-025: Bao presence & status line over the event bus
 
-Status: **Proposed** (2026-08-31), amended 2026-09-13 (§1/§2/§6: the
-beat carries the election role and the claim holder — a standby
-device beats like an active one and must never read as "bao is
-online", BOB-111)
+Status: **Accepted** (2026-08-31; shipped 2026-09-01, BOB-73),
+amended 2026-09-13 (§1/§2/§6: the beat carries the responder role
+and the election's claim holder — a standby device beats like an
+active one and must never read as "bao is online", BOB-111)
 Date: 2026-08-31
 Builds on: ADR-005 (progress bubbles — related family, NOT migrated
 here), ADR-014 (progress: a module owning its transport), ADR-015
@@ -49,7 +49,7 @@ Both ride one envelope:
   "data": {
     "identity":  "<peer id>",
     "state":     "boot" | "idle" | "working" | "shutdown",
-    "role":      "active" | "standby",   // the election verdict (ADR-015 §3)
+    "role":      "active" | "standby",   // answers chat here? (ADR-018 §3)
     "winner":    "<peer id>",            // the registry's claim holder; absent when none
     "run": {                             // iff working
       "id": "…", "title": "…", "startedAt": 123.0,
@@ -62,15 +62,25 @@ Both ride one envelope:
 }
 ```
 
-`state` describes the run loop; `role` says whether this device is
-the one that answers (the ADR-015 §3 gate). A standby serve beats
-too — `idle`, same cadence — so a consumer that reads liveness alone
-cannot tell it from the working agent; only `role` can. `winner` is
-the claim holder of the reconcile that produced the verdict (the
-same peer `GET /election` reports), so naming the device that
-answers costs no registry read on the beat path. Election disabled
-(server predates the registry) beats `active` with no `winner`; a
-pruned device beats `standby`.
+`state` describes the run loop; `role` says whether this device
+answers chat right now — it OWNS the enabled `chat-watch` record,
+the same check the chat watch connects on (ADR-018 §3). That is
+deliberately not the election gate: a paused responder or one
+repinned to a standby device leaves the election winner beating
+while nothing answers there, and the one question the UI asks is
+"will a message get answered". A standby serve beats too — `idle`,
+same cadence — so a consumer that reads liveness alone cannot tell
+it from the working agent; only `role` can. `winner` is the
+election's claim holder (ADR-015 §2) as of the reconcile that
+produced serve's one verdict snapshot — the same value `GET
+/election` reports, by construction — so naming the device that
+holds bao costs no registry read on the beat path. The two can
+differ: after a repin the responder beats `active` while `winner`
+names the election holder. Election disabled (server predates the
+registry) beats with no `winner`; a pruned device beats `standby`.
+A beat with no `role` at all comes from a serve built before this
+amendment and reads as `active` (it owned chat by being the only
+bao).
 
 Timestamps are unix seconds — staleness math is the consumer's job.
 At-most-once bus ⇒ the payload is an idempotent full-state write
@@ -178,12 +188,17 @@ a matter of course: every standby device (ADR-015 §3), plus
 pre-election overlap and the remote-runner future. The UI dedups by
 `identity` and keys "online" to the ROLE, never to liveness alone:
 
-- bao is online iff a fresh beat carries `role: "active"`;
-  working-state comes from that beat.
+- bao is online iff a fresh beat carries `role: "active"` (or no
+  `role` — a pre-amendment serve, §1).
+- working-state comes from ANY fresh beat that is `working`, not
+  only the active one: a standby device still runs the triggers
+  pinned to it (ADR-015 §3) and explicit control/CLI runs, and §5
+  makes the status bar the one place that activity shows.
 - fresh beats that are all `standby` mean "another device holds
   bao" — `winner` names it (the devices registry has its name,
-  ADR-015 §5) — and the active device is offline if it does not beat
-  itself. Never "online".
+  ADR-015 §5) — and that device is offline if it does not beat
+  itself. Never "online". A standby that names no `winner` is a
+  responder that is paused or pruned: nothing answers chat.
 - no fresh beat at all ⇒ offline.
 
 The switch is the user's, explicit, on the device they want (ADR-015
@@ -195,4 +210,5 @@ device" — BOB-117 owns that surface.
 Serve: `StubTransport` assertions on the publish sequence (boot →
 idle → working + run title → idle → shutdown; line set + decay;
 set republishes immediately; a role flip republishes within a poll,
-the envelope carries `role` + `winner`). UI: atom + staleness tests.
+the envelope carries `role` + `winner`; the not-answering repeat's
+clock). UI: atom + staleness tests.

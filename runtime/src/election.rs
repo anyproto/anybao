@@ -6,8 +6,6 @@
 
 use crate::anyapi::Client;
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use tracing::{info, warn};
 
 /// anybao's slug in the registry's `apps` map (ADR-015 §1) — constant:
@@ -27,6 +25,9 @@ pub enum Decision {
 /// One reconcile's outcome (ADR-015 §2): the gate value plus the
 /// registry's claim holder — the peer every presence beat names
 /// (ADR-025 §1 `winner`) and the standby log line points at (§5).
+/// Serve keeps exactly ONE of these (`RunCtx::verdict`), written as a
+/// whole after a takeover finishes re-arming, so a reader never sees
+/// the gate of one reconcile beside the winner of another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub active: bool,
@@ -36,6 +37,22 @@ pub struct Verdict {
 }
 
 impl Verdict {
+    /// The §4 degrade: no registry ⇒ gate permanently true, no winner.
+    pub fn disabled() -> Self {
+        Verdict {
+            active: true,
+            winner: None,
+        }
+    }
+
+    /// Permanent standby (pruned, §4): gate false, no winner known.
+    pub fn standby() -> Self {
+        Verdict {
+            active: false,
+            winner: None,
+        }
+    }
+
     fn of(active: bool, reply: &Value, app: &str) -> Self {
         Verdict {
             active,
@@ -55,37 +72,36 @@ impl Verdict {
     }
 }
 
-/// While standby, the election thread repeats its verdict every this
-/// many polls (§5): standby is a silent state — no chat watch, no
-/// runs — so one boot line cannot explain a long unanswered chat.
-/// 6 × `POLL` = once a minute.
-pub const STANDBY_LOG_EVERY: u32 = 6;
+/// While this device does not answer chat, the presence thread says
+/// why every this many seconds (§5): standby is a silent state — no
+/// chat watch, no runs — so one boot line cannot explain a long
+/// unanswered chat. Lives beside the beat, not in the election
+/// thread: it must keep talking while registry reads fail and on a
+/// pruned device, which runs no election thread at all.
+pub const STANDBY_LOG_S: f64 = 60.0;
 
-/// Boot-time election state (ADR-015): the gate flag (written only by
-/// the election thread after boot) + this device's registry identity.
-/// `enabled: false` = the server predates `/v1/devices` — gate
-/// permanently true, no thread (§4 degrade).
+/// Boot-time election state (ADR-015): the boot verdict (serve keeps
+/// it as `RunCtx::verdict`, rewritten only by the election thread) +
+/// this device's registry identity. `enabled: false` = the server
+/// predates `/v1/devices` — gate permanently true, no thread (§4
+/// degrade).
 pub struct Election {
     pub enabled: bool,
-    pub active: Arc<AtomicBool>,
+    pub verdict: Verdict,
     pub self_peer: Option<String>,
     /// Tombstoned device (§4): unlike plain standby — which still
     /// fires the triggers pinned to this device (ADR-006 §4) — a
     /// pruned device runs NOTHING.
     pub pruned: bool,
-    /// the registry's claim holder at boot (the `Verdict`'s `winner`);
-    /// None when disabled, pruned, or no claim exists yet
-    pub winner: Option<String>,
 }
 
 impl Election {
     fn disabled() -> Self {
         Election {
             enabled: false,
-            active: Arc::new(AtomicBool::new(true)),
+            verdict: Verdict::disabled(),
             self_peer: None,
             pruned: false,
-            winner: None,
         }
     }
 
@@ -94,10 +110,9 @@ impl Election {
     fn pruned() -> Self {
         Election {
             enabled: false,
-            active: Arc::new(AtomicBool::new(false)),
+            verdict: Verdict::standby(),
             self_peer: None,
             pruned: true,
-            winner: None,
         }
     }
 }
@@ -239,17 +254,13 @@ fn boot_with(client: &Client, version: &str, retry_delay: std::time::Duration) -
             last_err = "no self peer id in /v1/devices replies".into();
             continue;
         };
-        let verdict = reconcile(client, &peer, APP_SLUG).unwrap_or(Verdict {
-            active: true,
-            winner: None,
-        });
+        let verdict = reconcile(client, &peer, APP_SLUG).unwrap_or_else(Verdict::disabled);
         info!("election: peer {peer} — {}", verdict.describe());
         return Election {
             enabled: true,
-            active: Arc::new(AtomicBool::new(verdict.active)),
+            verdict,
             self_peer: Some(peer),
             pruned: false,
-            winner: verdict.winner,
         };
     }
     warn!("election: device registration failed ({last_err}) — election disabled this run");
@@ -260,7 +271,6 @@ fn boot_with(client: &Client, version: &str, retry_delay: std::time::Duration) -
 mod tests {
     use super::*;
     use crate::testutil::StubTransport;
-    use std::sync::atomic::Ordering;
 
     fn dev(peer: &str, apps: Value) -> Value {
         json!({"id": peer, "name": "host", "os": "linux", "apps": apps})
@@ -384,7 +394,7 @@ mod tests {
         )]);
         let e = boot(&c, "0.1.0");
         assert!(!e.enabled);
-        assert!(e.active.load(Ordering::Relaxed));
+        assert!(e.verdict.active);
         assert_eq!(e.self_peer, None);
         assert_eq!(log.lock().unwrap().len(), 1); // PUT only, no GET
     }
@@ -405,9 +415,9 @@ mod tests {
         ]);
         let e = boot(&c, "0.1.0");
         assert!(e.enabled);
-        assert!(!e.active.load(Ordering::Relaxed));
+        assert!(!e.verdict.active);
         assert_eq!(e.self_peer.as_deref(), Some("me"));
-        assert_eq!(e.winner.as_deref(), Some("mac")); // the beat names it
+        assert_eq!(e.verdict.winner.as_deref(), Some("mac")); // the beat names it
         let calls = log.lock().unwrap();
         let paths: Vec<&str> = calls.iter().map(|(_, p, _)| p.as_str()).collect();
         assert_eq!(paths, ["/v1/devices/me", "/v1/devices", "/v1/devices"]);
@@ -429,8 +439,8 @@ mod tests {
             (200, won),                 // GET (verify)
         ]);
         let e = boot(&c, "0.1.0");
-        assert!(e.enabled && e.active.load(Ordering::Relaxed));
-        assert_eq!(e.winner.as_deref(), Some("me"));
+        assert!(e.enabled && e.verdict.active);
+        assert_eq!(e.verdict.winner.as_deref(), Some("me"));
         let calls = log.lock().unwrap();
         assert_eq!(calls[3].0, "POST");
         assert_eq!(calls[3].1, "/v1/devices/activate");
@@ -495,7 +505,7 @@ mod tests {
         let (c, log) = scripted(&[pruned_reply()]);
         let e = boot(&c, "0.1.0");
         assert!(!e.enabled);
-        assert!(!e.active.load(Ordering::Relaxed)); // gate FALSE, unlike 404
+        assert!(!e.verdict.active); // gate FALSE, unlike 404
         assert_eq!(e.self_peer, None);
         assert_eq!(log.lock().unwrap().len(), 1); // no retries on pruned
     }
@@ -510,7 +520,7 @@ mod tests {
             (200, won),                 // GET (reconcile → Active)
         ]);
         let e = boot_with(&c, "0.1.0", std::time::Duration::ZERO);
-        assert!(e.enabled && e.active.load(Ordering::Relaxed));
+        assert!(e.enabled && e.verdict.active);
         assert_eq!(e.self_peer.as_deref(), Some("me"));
         assert_eq!(log.lock().unwrap().len(), 4);
     }
@@ -521,7 +531,7 @@ mod tests {
         let (c, log) = scripted(&[(500, json!({})), (500, json!({})), (500, json!({}))]);
         let e = boot_with(&c, "0.1.0", std::time::Duration::ZERO);
         assert!(!e.enabled);
-        assert!(e.active.load(Ordering::Relaxed));
+        assert!(e.verdict.active);
         assert_eq!(log.lock().unwrap().len(), 3);
     }
 

@@ -977,24 +977,77 @@ fn current_run(runs: &BTreeMap<String, crate::triggers::LiveRun>) -> Option<Valu
         })
 }
 
-/// The election's word on this serve, as the beat carries it (ADR-025
-/// §1 `role`/`winner`): the gate (ADR-015 §3) plus the registry's
-/// claim holder. `state` describes the run loop; `role` says whether
-/// this device is the one that answers — a standby beats too, as
-/// `idle`, and only `role` tells the two apart (BOB-111).
+/// What a beat says about this device (ADR-025 §1 `role`/`winner`).
+/// `responder` becomes `role`: does this device OWN the enabled
+/// chat-watch record — the check the chat watch itself connects on
+/// (ADR-018 §3) — so `role: active` means "chat is answered here",
+/// not "won the election": a paused or repinned responder leaves the
+/// election winner beating while nothing answers, which is the
+/// BOB-111 symptom. `winner` is the election's claim holder (ADR-015
+/// §2), for naming the device that holds bao when this one does not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BeatRole {
-    active: bool,
+    responder: bool,
     /// None when no claim exists, or the election is disabled/pruned
     winner: Option<String>,
 }
 
-/// The role a beat carries right now: the gate + the winner slot the
-/// election thread keeps current.
-fn beat_role(ctx: &RunCtx) -> BeatRole {
+/// The role a beat carries right now, read against a registry guard
+/// the caller already holds (the control API keeps it across a
+/// request) — the responder check is `answers_chat`'s.
+fn beat_role(shared: &Shared, reg: &BTreeMap<String, Trigger>, ctx: &RunCtx) -> BeatRole {
+    let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
     BeatRole {
-        active: ctx.active.load(Ordering::Relaxed),
-        winner: ctx.winner.lock().unwrap().clone(),
+        responder: owned_chat_watch(reg, &instance).is_some(),
+        winner: ctx.verdict.lock().unwrap().winner.clone(),
+    }
+}
+
+/// Why chat is not answered on this device, for the once-a-minute
+/// repeat (ADR-015 §5): a long unanswered chat has to be diagnosable
+/// from `agent.log` alone.
+fn not_answering_line(ctx: &RunCtx) -> String {
+    if ctx.pruned {
+        return "election: standby (this device was pruned from the registry) — \
+                nothing runs here"
+            .into();
+    }
+    let verdict = ctx.verdict.lock().unwrap().clone();
+    if verdict.active {
+        return "chat: this device is the active bao but does not own the enabled \
+                chat responder (paused, or pinned to another device) — \
+                chat is not answered here"
+            .into();
+    }
+    format!(
+        "election: {} — chat is not answered here",
+        verdict.describe()
+    )
+}
+
+/// The repeat's clock: fires when the device has not answered chat
+/// for `STANDBY_LOG_S` since the last line (or since boot — the boot
+/// line already said so), goes quiet the moment it answers again.
+#[derive(Default)]
+struct NotAnsweringRepeat {
+    last: Option<f64>,
+}
+
+impl NotAnsweringRepeat {
+    fn due(&mut self, responder: bool, now: f64) -> bool {
+        if responder {
+            self.last = None;
+            return false;
+        }
+        let Some(last) = self.last else {
+            self.last = Some(now);
+            return false;
+        };
+        if now - last < crate::election::STANDBY_LOG_S {
+            return false;
+        }
+        self.last = Some(now);
+        true
     }
 }
 
@@ -1016,7 +1069,7 @@ fn status_envelope(
     let mut data = json!({
         "identity": identity,
         "state": state,
-        "role": if role.active { "active" } else { "standby" },
+        "role": if role.responder { "active" } else { "standby" },
     });
     if let Some(w) = &role.winner {
         data["winner"] = json!(w);
@@ -1067,8 +1120,9 @@ struct PresenceLoop {
 
 /// What makes a beat DUE besides cadence: any change in what the beat
 /// would say — the line generation, which run is live, how far it
-/// has come, and the election role/winner. Run start/end, every new
-/// tool call and a takeover/stand-down republish within a poll (~1s),
+/// has come, and the role/winner. Run start/end, every new tool
+/// call, a responder flip (takeover, stand-down, pause, repin) and a
+/// winner change republish within a poll (~1s),
 /// which is what keeps the UI's working/idle flip, the call counter
 /// and the role live instead of up to a beat behind (ADR-025 §2).
 fn presence_sig(status: &PresenceState, run: Option<&Value>, role: &BeatRole) -> String {
@@ -1077,7 +1131,7 @@ fn presence_sig(status: &PresenceState, run: Option<&Value>, role: &BeatRole) ->
         status.line_gen(),
         run.and_then(|r| r["id"].as_str()).unwrap_or(""),
         run.and_then(|r| r["cells"].as_u64()).unwrap_or(0),
-        role.active,
+        role.responder,
         role.winner.as_deref().unwrap_or(""),
     )
 }
@@ -1118,9 +1172,21 @@ fn presence_pass(
 
 /// The presence thread: beats while serve lives, one `shutdown` beat
 /// on stop (the graceful path; a crash is covered by the beat TTL).
-fn presence_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+/// Also the home of the not-answering repeat (ADR-015 §5): it reads
+/// the same role the beat carries, so it keeps talking while registry
+/// reads fail and on a pruned device (no election thread there).
+fn presence_thread(
+    shared: Arc<Shared>,
+    ctx: Arc<RunCtx>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut st = PresenceLoop::default();
+        let mut repeat = NotAnsweringRepeat::default();
+        let role_now = || {
+            let reg = shared.triggers.lock().unwrap();
+            beat_role(&shared, &reg, &ctx)
+        };
         loop {
             sliced_sleep(Duration::from_secs_f64(STATUS_POLL_S), &stop);
             if stop.load(Ordering::Relaxed) {
@@ -1131,19 +1197,23 @@ fn presence_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::Join
                     &ctx.status,
                     None,
                     "shutdown",
-                    &beat_role(&ctx),
+                    &role_now(),
                     now_s(),
                 );
                 return;
             }
             let now = now_s();
+            let role = role_now();
+            if repeat.due(role.responder, now) {
+                info!("{}", not_answering_line(&ctx));
+            }
             let run = current_run(&ctx.live_runs.lock().unwrap());
             presence_pass(
                 &ctx.client,
                 &presence_identity(&ctx),
                 &ctx.status,
                 run,
-                &beat_role(&ctx),
+                &role,
                 &mut st,
                 now,
             );
@@ -1540,7 +1610,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         .self_peer
         .clone()
         .unwrap_or_else(|| format!("anyrt-{}", std::process::id()));
-    let boot_active = election.active.load(Ordering::Relaxed);
+    let boot_active = election.verdict.active;
     let mut sched = Scheduler::new(&instance, Box::new(now_s));
     sched.arm();
     let mut registry = BTreeMap::new();
@@ -1606,10 +1676,9 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         secret_store,
         config_store,
         runtime,
-        active: election.active.clone(),
+        verdict: Mutex::new(election.verdict.clone()),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
-        winner: Mutex::new(election.winner.clone()),
         live_runs: Mutex::new(BTreeMap::new()),
         status: Default::default(),
     });
@@ -1618,7 +1687,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
         retention_thread(ctx.clone(), shutdown.clone()),
-        presence_thread(ctx.clone(), shutdown.clone()),
+        presence_thread(shared.clone(), ctx.clone(), shutdown.clone()),
     ];
     if election.enabled {
         threads.push(election_thread(
@@ -1741,20 +1810,17 @@ pub struct RunCtx {
     /// built-ins idle — device-pinned triggers still fire, ADR-006
     /// §4). Written ONLY by the election thread after boot.
     /// `ctx.run()` itself is not gated — embedder/CLI runs are
-    /// explicit.
-    pub active: Arc<AtomicBool>,
+    /// explicit. Held with the claim holder as ONE snapshot (the
+    /// `Verdict` of the reconcile that produced it), written whole
+    /// after a takeover finishes re-arming: the beat's `winner`
+    /// (ADR-025 §1) and `GET /election` read this, never the registry.
+    pub verdict: Mutex<crate::election::Verdict>,
     /// this device's peer id in the devices registry; None = server
     /// predates /v1/devices (election disabled, gate permanently true)
     pub self_peer: Option<String>,
     /// tombstoned device (ADR-015 §4): unlike standby, a pruned device
     /// fires NOTHING — not even its pins
     pub pruned: bool,
-    /// the registry's claim holder as of the last reconcile (ADR-015
-    /// §2): rides every beat as `winner` (ADR-025 §1) so a consumer
-    /// can name the device that answers without a registry read.
-    /// Written by the election thread; None = no claim, or election
-    /// disabled/pruned.
-    pub winner: Mutex<Option<String>>,
     /// every run in flight on this serve, by run id — chat, trigger
     /// and control runs alike. The control API's `POST /break/<runId>`
     /// resolves here (ADR-005 §3); entries live exactly as long as
@@ -2664,7 +2730,7 @@ fn trigger_ticker(
                     }
                 }
             }
-            let active = ctx.active.load(Ordering::Relaxed);
+            let active = ctx.verdict.lock().unwrap().active;
             if answers_chat(&shared) {
                 // answer user messages deferred while overlays were syncing
                 let deferred: Vec<ChatInput> = std::mem::take(&mut *shared.backlog.lock().unwrap());
@@ -2927,7 +2993,7 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, space: &str, object_id: &str, recor
 
 /// The election reconcile loop (ADR-015 §3/§4): poll the registry,
 /// flip the gate on verdict transitions. The ONLY writer of
-/// `ctx.active` after boot, so load-then-store is race-free.
+/// `ctx.verdict` after boot, so read-then-store is race-free.
 fn election_thread(
     shared: Arc<Shared>,
     ctx: Arc<RunCtx>,
@@ -2937,7 +3003,7 @@ fn election_thread(
         let Some(peer) = ctx.self_peer.clone() else {
             return; // enabled implies a peer id; belt and braces
         };
-        let mut standby_polls: u32 = 0;
+        let mut read_failing = false;
         loop {
             sliced_sleep(crate::election::POLL, &stop);
             if stop.load(Ordering::Relaxed) {
@@ -2946,21 +3012,36 @@ fn election_thread(
             let Some(verdict) =
                 crate::election::reconcile(&ctx.client, &peer, crate::election::APP_SLUG)
             else {
-                continue; // transient read failure — keep the last state
+                // transient read failure — keep the last state, and say
+                // so once: a standby whose registry reads keep failing
+                // must not look like a healthy standby in the log
+                if !read_failing {
+                    warn!(
+                        "election: registry read failed — keeping the last verdict ({}) \
+                         until it recovers",
+                        ctx.verdict.lock().unwrap().describe()
+                    );
+                    read_failing = true;
+                }
+                continue;
             };
-            // the claim holder rides every beat (ADR-025 §1) — stored
-            // BEFORE the gate moves, so the takeover/stand-down beat
-            // already names the right device
-            *ctx.winner.lock().unwrap() = verdict.winner.clone();
-            let winner = verdict.winner.as_deref().unwrap_or("(none)");
-            match (verdict.active, ctx.active.load(Ordering::Relaxed)) {
+            if read_failing {
+                info!("election: registry reads recovered");
+                read_failing = false;
+            }
+            let was_active = ctx.verdict.lock().unwrap().active;
+            match (verdict.active, was_active) {
                 (true, false) => {
                     takeover(&shared, &ctx);
-                    ctx.active.store(true, Ordering::Relaxed); // AFTER re-arm
+                    // the snapshot moves AFTER re-arm, gate and winner
+                    // together: a beat in the takeover window still
+                    // says standby + the old winner, never standby
+                    // naming this very device
+                    *ctx.verdict.lock().unwrap() = verdict;
                     info!("election: TAKEOVER — this device is now the active bao");
                 }
                 (false, true) => {
-                    ctx.active.store(false, Ordering::Relaxed);
+                    *ctx.verdict.lock().unwrap() = verdict.clone();
                     // the new active device answers these; in-flight
                     // runs finish on their own (never interrupt a turn)
                     shared.backlog.lock().unwrap().clear();
@@ -2994,22 +3075,13 @@ fn election_thread(
                             &trigger_to_record(&t),
                         );
                     }
-                    info!("election: stand-down — the active bao is now peer {winner}");
+                    info!("election: stand-down — {}", verdict.describe());
                 }
-                (false, false) => {
-                    // standby is a SILENT state — no chat watch, no
-                    // runs — so it says so once a minute, naming the
-                    // winner: a long unanswered chat has to be
-                    // diagnosable from the log alone (ADR-015 §5)
-                    standby_polls += 1;
-                    if standby_polls.is_multiple_of(crate::election::STANDBY_LOG_EVERY) {
-                        info!("election: standby — the active bao is peer {winner}");
-                    }
-                }
-                (true, true) => {} // verdict matches the current state
-            }
-            if verdict.active {
-                standby_polls = 0;
+                // no gate change; the claim holder may still have moved
+                // (a switch between two OTHER devices) and rides the
+                // next beat. The standby repeat lives in the presence
+                // thread (ADR-015 §5), not here.
+                _ => *ctx.verdict.lock().unwrap() = verdict,
             }
         }
     })
@@ -3220,28 +3292,21 @@ fn handle_control(
             let run = current_run(&ctx.live_runs.lock().unwrap());
             let state = if run.is_some() { "working" } else { "idle" };
             Ok(json!({
-                "envelope": status_envelope(&presence_identity(ctx), &ctx.status, run, state, &beat_role(ctx), now_s()),
+                "envelope": status_envelope(&presence_identity(ctx), &ctx.status, run, state, &beat_role(shared, &reg, ctx), now_s()),
                 "beatSec": STATUS_BEAT_S,
             }))
         }
-        // election observability (ADR-015 §5); winner via a live
-        // registry read, null when unavailable
+        // election observability (ADR-015 §5): the verdict snapshot
+        // the beat carries — no live registry read, so the two can
+        // never disagree
         ("GET", ["election"]) => {
-            let winner = ctx
-                .self_peer
-                .as_ref()
-                .and_then(|_| ctx.client.list_devices().ok())
-                .and_then(|r| {
-                    r["active"][crate::election::APP_SLUG]
-                        .as_str()
-                        .map(str::to_string)
-                });
+            let verdict = ctx.verdict.lock().unwrap().clone();
             Ok(json!({
                 "app": crate::election::APP_SLUG,
                 "enabled": ctx.self_peer.is_some(),
-                "active": ctx.active.load(Ordering::Relaxed),
+                "active": verdict.active,
                 "peerId": ctx.self_peer,
-                "winner": winner,
+                "winner": verdict.winner,
             }))
         }
         // break a run in flight — ANY run: chat, trigger, control
@@ -3391,9 +3456,27 @@ mod tests {
     /// The single-device role every pre-BOB-111 sequence ran under.
     fn active() -> BeatRole {
         BeatRole {
-            active: true,
+            responder: true,
             winner: None,
         }
+    }
+
+    #[test]
+    fn not_answering_repeat_fires_once_a_minute_while_not_the_responder() {
+        // ADR-015 §5: silent while answering; one line per minute
+        // while not, the first a minute after the state began (the
+        // boot line already said so); quiet again the moment it answers
+        let mut r = NotAnsweringRepeat::default();
+        assert!(!r.due(true, 0.0));
+        assert!(!r.due(false, 1.0)); // state began — the boot line covers it
+        assert!(!r.due(false, 30.0));
+        assert!(r.due(false, 61.0));
+        assert!(!r.due(false, 100.0));
+        assert!(r.due(false, 121.0));
+        assert!(!r.due(true, 122.0)); // answering again ⇒ reset
+        assert!(!r.due(false, 123.0)); // a fresh silence starts its own minute
+        assert!(!r.due(false, 150.0));
+        assert!(r.due(false, 183.0));
     }
 
     fn status_calls(log: &crate::testutil::CallLog) -> Vec<Value> {
@@ -3419,15 +3502,16 @@ mod tests {
     }
 
     #[test]
-    fn status_envelope_carries_the_election_role() {
+    fn status_envelope_carries_the_responder_role() {
         // BOB-111: a standby beats too (state idle) — only `role`
-        // tells it from the device that answers, `winner` names that one
+        // tells it from the device that answers chat (the responder,
+        // not the election gate); `winner` names the election's holder
         let status: SharedPresence = Default::default();
         let v = status_envelope("peer1", &status, None, "idle", &active(), 100.0);
         assert_eq!(v["data"]["role"], "active");
         assert!(v["data"].get("winner").is_none(), "no claim known");
         let standby = BeatRole {
-            active: false,
+            responder: false,
             winner: Some("mac".into()),
         };
         let v = status_envelope("peer1", &status, None, "idle", &standby, 100.0);
@@ -3444,7 +3528,7 @@ mod tests {
         let status: SharedPresence = Default::default();
         let mut st = PresenceLoop::default();
         let standby = BeatRole {
-            active: false,
+            responder: false,
             winner: Some("mac".into()),
         };
         assert!(presence_pass(
@@ -3454,7 +3538,7 @@ mod tests {
             &c, "peer1", &status, None, &standby, &mut st, 1.0
         )); // not due
         let won = BeatRole {
-            active: true,
+            responder: true,
             winner: Some("peer1".into()),
         };
         assert!(presence_pass(
@@ -3555,34 +3639,13 @@ mod tests {
         let mut runs: BTreeMap<String, LiveRun> = BTreeMap::new();
         let mut st = PresenceLoop::default();
         let mut t = 0.0;
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t,
-        ); // boot beat at once
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t + 1.0,
-        ); // cadence: not due
+        let pass = |runs: &BTreeMap<String, LiveRun>, st: &mut PresenceLoop, t| {
+            presence_pass(&c, "peer1", &status, current_run(runs), &active(), st, t)
+        };
+        pass(&runs, &mut st, t); // boot beat at once
+        pass(&runs, &mut st, t + 1.0); // cadence: not due
         t += 10.0;
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t,
-        ); // idle
+        pass(&runs, &mut st, t); // idle
         runs.insert(
             "run_1".into(),
             LiveRun {
@@ -3591,68 +3654,20 @@ mod tests {
             },
         );
         // run start republishes within a poll — no cadence wait
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t + 1.0,
-        );
+        pass(&runs, &mut st, t + 1.0);
         runs.get("run_1")
             .unwrap()
             .activity
             .note_cell(Some("c.query(space)"));
         // ...and so does every tool call (the live counter)
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t + 2.0,
-        );
+        pass(&runs, &mut st, t + 2.0);
         status.set_line("greeting the user", t + 3.0);
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t + 3.0,
-        ); // immediate on set
+        pass(&runs, &mut st, t + 3.0); // immediate on set
         runs.remove("run_1");
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t + 4.0,
-        ); // immediate idle
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t + 5.0,
-        ); // no change: not due
+        pass(&runs, &mut st, t + 4.0); // immediate idle
+        pass(&runs, &mut st, t + 5.0); // no change: not due
         t += 95.0; // past the 90s decay from the line's set (ADR-025 §3)
-        presence_pass(
-            &c,
-            "peer1",
-            &status,
-            current_run(&runs),
-            &active(),
-            &mut st,
-            t,
-        ); // cadence, line gone
+        pass(&runs, &mut st, t); // cadence, line gone
         publish_status_beat(&c, "peer1", &status, None, "shutdown", &active(), t + 1.0);
         let mut i = status_calls(&log).into_iter();
         let boot = i.next().unwrap();
