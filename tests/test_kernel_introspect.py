@@ -236,3 +236,19 @@ def test_module_print_reaches_the_calling_cells_digest():
     assert [p["repr"] for p in r["prints"]] == ["from module"]
     k._ns["print"]   # restored after the cell: a module print now goes nowhere
     k._ns["m"].hi()
+
+
+def test_help_on_http_verbs_and_env_teaches_credential_injection():
+    """ADR-021 §8.7: `help(http.get)` names `credential=` and the
+    `local.key.*` namespace, `help(env)` says it is never a secret —
+    the anyscribe run (BOB-87) showed bao reaching for `env()` because
+    `help(http.get)` printed only the signature."""
+    app = load_kernel()
+    for verb in ("get", "post", "put", "patch", "delete", "head"):
+        out = app.describe(getattr(app.http, verb))
+        assert out.splitlines()[0].startswith(f"{verb}(url, **kw)"), out
+        assert "credential" in out and "local.key." in out, (verb, out)
+        assert "about" in out and "hosts" in out, (verb, out)
+    env_doc = app.describe(app.env)
+    assert "secrets never enter guest code" in env_doc, env_doc
+    assert "credential=" in env_doc, env_doc

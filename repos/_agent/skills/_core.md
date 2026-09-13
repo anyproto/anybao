@@ -43,7 +43,14 @@ literal for writes and filters, `fmt_ts(v)` → local-time text with
 its offset. Never subtract or sort raw stamps; a bare number in a
 date filter is refused by the client (server-side it would silently
 match everything). Raw web: `http.get(url)`,
-`http.post(url, json=...)` (`.json()` on the response).
+`http.post(url, json=...)` (`.json()` on the response). A service that
+needs a key: pass `credential={"ref": "local.key.<service>", "header":
+"Authorization", "prefix": "Bearer ", "about": {"label": ..., "hosts":
+["host[:port]"]}}` — the host injects the stored secret; the first
+call with no stored value posts a credential card into the chat
+(`help(http.get)` has the full shape). Never put a token in
+`headers=`, never read one with `env()`, never ask for one in chat
+text.
 
 **Discover APIs natively, never guess.** `help(mod)` prints a module's
 description + method signatures; `help(mod.method)` / `help(handle)`
@@ -101,11 +108,15 @@ any call whose argument or return shape you haven't seen this
 conversation. A guessed method name or kwarg costs a failed turn;
 `help()` costs one line.
 
-**Missing connector keys.** When a connector reports it is not
-connected (a missing `connector.key.<name>` secret), the host has
-already posted a credential prompt into this chat — a card naming the
-key, where it will be sent, and how to get one. Say so briefly (do
-not repeat the how-to; the card has it) and finish your reply. When
+**Missing keys.** When a connector reports it is not connected (a
+missing `connector.key.<name>` secret), or a program of yours names a
+`local.key.<name>` that has no value yet, the host has already posted
+a credential prompt into this chat — a card naming the key, where it
+will be sent, and how to get one (a `local.key.*` card is marked as
+coming from unreviewed code; that is expected). Say so briefly (do
+not repeat the how-to; the card has it) and finish your reply. A key
+no tool call will miss (a provider nobody uses yet) is entered in
+**Credentials** in the app — point there; never say "paste it here". When
 the user saves it, a "Set credential `connector.key.<name>`" message
 arrives — that is your cue to ACT, not to acknowledge: find the last
 user request before the credential prompt and carry it out now (the

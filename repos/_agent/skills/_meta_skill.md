@@ -51,6 +51,14 @@ your whole reasoning loop. `p = use("agent:programs@v1")`:
   `p.delete_program` removes it.
 - A failed post-save probe returns `{ok: false, saved: true, hint}` —
   the source IS saved; fix it with `edit_program`.
+- **Secrets**: a program never sees a key. It passes
+  `credential={"ref": "local.key.<service>", "header": ..., "prefix":
+  ..., "about": {"label": ..., "hosts": ["host[:port]"], "help": ...}}`
+  on each http call (`help(http.get)`); the first call with no stored
+  value posts a credential card and the human enters the key there.
+  `about.hosts` is mandatory — the only destination the key is ever
+  sent to. `connector.key.*` names are the reviewed connectors'; a
+  program of yours cannot use them for a new service.
 - Overlay-exported specs (agent:/connectors:) are refused — those
   change only through the deploy pipeline.
 
