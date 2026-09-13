@@ -2070,12 +2070,13 @@ class _Client:
         MISSING properties are added. A name or xKey that collides with
         a builtin handle (any, spaceIndex, type, page, miniapp, bin,
         dataview) or a catalog type's ERRORS — those cannot be created
-        or reshaped. So does one equal to a record-root key (id,
+        or reshaped. So does MINTING one under a record-root key (id,
         author, createdAt, modifiedAt, modifiedBy, spaceId): every
         object carries those bare, and a type group under the same
         xKey would shadow them on normalized reads — keep the display
         name, pass an explicit xKey (`author_type`); the xKey is a
-        programmatic handle the user never sees. `hidden: True` keeps
+        programmatic handle the user never sees. An existing type is
+        reused under whatever handle it has. `hidden: True` keeps
         the type out of pickers (the
         harness types are). Minting a listed type also sets up the
         space's `collections` app (the client's types feature switch)
@@ -2100,17 +2101,21 @@ class _Client:
                 "— catalog types cannot be created or reshaped; `setup_app` "
                 "installs the app. Pick another name, or pass an explicit "
                 'non-catalog "xKey".')
-        rooted = self._row_root_keys(space)
-        if xkey in rooted:
-            raise ValueError(
-                f'"{xkey}" is a record-root key every object carries '
-                f'({", ".join(sorted(rooted))}) — a type group under it '
-                "would shadow the record's own field on normalized reads. "
-                f'Keep the name and pass an explicit xKey such as "{xkey}_type" '
-                "(the xKey is the programmatic handle, never shown to the user).")
         tid = row["id"] if row else None
         created = False
         if tid is None:
+            # The record-root guard gates MINTING only: an existing type
+            # keeps its handle (refusing here would lock the agent out of
+            # reshaping a type minted before the rule), and the ensure
+            # path costs no catalog read.
+            rooted = self._row_root_keys(space)
+            if xkey in rooted:
+                raise ValueError(
+                    f'"{xkey}" is a record-root key every object carries '
+                    f'({", ".join(sorted(rooted))}) — a type group under it '
+                    "would shadow the record's own field on normalized reads. "
+                    f'Keep the name and pass an explicit xKey such as "{xkey}_type" '
+                    "(the xKey is the programmatic handle, never shown to the user).")
             req = {k: body[k] for k in ("name", "description", "iconCid",
                                         "hidden", "weight", "layout")
                    if k in body}

@@ -511,11 +511,15 @@ against user types (`409 type.xkey_conflict`). Client contract:
   `modifiedBy`, `spaceId`), and a normalized read places every
   user-type group at that same level under its xKey — so a type whose
   xKey equals one of them shadows the record's own field, silently,
-  on read only. `create_type` refuses such an xKey (name slug or
-  explicit; the static set plus whatever the space's `any` catalog
-  reports as scope `derived`) with an error that keeps the display
-  name and asks for an explicit xKey (`author_type`). The server does
-  not collide (it keys groups by CID) and stays unchanged.
+  on read only. `create_type` refuses to MINT a type under such an
+  xKey (name slug or explicit; the static set plus whatever the
+  space's `any` catalog reports as scope `derived`) with an error that
+  keeps the display name and asks for an explicit xKey
+  (`author_type`); an existing type is reused under whatever handle it
+  has — the guard is on the create path only, so ensuring a type never
+  reads the catalog and never locks a pre-rule type out of reshaping.
+  The server does not collide (it keys groups by CID) and stays
+  unchanged.
 
 **Amended 2026-08-27 (ADR-022).** The property handle is the xKey
 only when it is unique on its type and not any-ui's kind marker
