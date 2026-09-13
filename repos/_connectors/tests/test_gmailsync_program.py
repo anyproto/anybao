@@ -494,6 +494,20 @@ def test_clean_html_survives_unmarked_reply_chain(kernel_recursion_limit):
     assert md.startswith("latest")
     assert "reply 0" in md and "reply 399" in md
     assert "> reply 0" in md                       # shallow quoting kept
+    # quote depth capped: linear output, never more than 5 "> " per line
+    # (uncapped, 400 replies made 403 KB of markdown in the kernel)
+    assert len(md) < 30_000
+    assert re.search(r"^(> ){6}", md, re.M) is None
+    assert re.search(r"^(> ){5}reply 399", md, re.M)   # deep text still quoted, at the cap
+
+
+def test_clean_html_quote_cap_leaves_shallow_quotes_alone():
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    html = ("<blockquote><p>a</p><blockquote><p>b</p><blockquote><p>c</p>"
+            "</blockquote></blockquote></blockquote>")
+    md = mod.clean_html(html)["markdown"]
+    assert "> a" in md and "> > b" in md and "> > > c" in md
 
 
 def test_clean_html_depth_bound_keeps_shallow_structure():

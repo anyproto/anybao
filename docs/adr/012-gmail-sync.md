@@ -199,7 +199,11 @@ limit, and `html.parser` has no implied end tags, so unclosed
 chains) nest hundreds deep in a few KB — the byte cap bounds nothing
 relevant. Two iterative passes run after table flattening: a
 wrapper-chain collapse (a `div`/`p`/`span`/`font` whose only child is a
-like wrapper unwraps — lossless for markdown), then a browser-style
+like wrapper unwraps — lossless for markdown), a quote-depth cap
+(`_MAX_QUOTE_DEPTH` = 5: markdownify prefixes every line once per
+enclosing blockquote, so an unmarked reply chain N deep is N²/2 `> `
+marks — deeper blockquotes unwrap, their text stays quoted at the
+cap), then a browser-style
 depth cap (`_MAX_DEPTH` = 200, Gecko's figure): an element at the cap
 keeps its leading text and its remaining content is lifted out as
 following siblings, order preserved. A `RecursionError` from the

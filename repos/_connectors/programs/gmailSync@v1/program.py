@@ -128,6 +128,10 @@ _HIDDEN_STYLE = re.compile(r"display\s*:\s*none|max-height\s*:\s*0", re.I)
 # few KB. Browsers cap the tree the same way (Gecko 200, Blink 512):
 # elements deeper than this become siblings of the element at the cap.
 _MAX_DEPTH = 200
+# markdownify prefixes every line once per enclosing blockquote, so an
+# unmarked reply chain N deep costs N²/2 "> " marks (403 KB of markdown
+# for 400 replies, measured). Deeper quotes flatten to this level.
+_MAX_QUOTE_DEPTH = 5
 _BLOCK_WRAPPERS = {"div", "p", "center", "section", "article"}
 _INLINE_WRAPPERS = {"span", "font"}
 _BLOCKS = _BLOCK_WRAPPERS | {"blockquote", "ul", "ol", "li", "pre", "hr",
@@ -198,6 +202,24 @@ def _collapse_wrapper_chains(soup, Tag, Comment):
             tag.unwrap()
 
 
+def _cap_quote_depth(soup, Tag, cap=_MAX_QUOTE_DEPTH):
+    """§4: a blockquote nested deeper than `cap` quote levels unwraps —
+    its text stays, quoted at the cap. Collected on one explicit-stack
+    walk, unwrapped after (unwrap is local; the marks don't interact)."""
+    deep, stack = [], [(soup, 0)]
+    while stack:
+        node, q = stack.pop()
+        for c in node.contents:
+            if not isinstance(c, Tag):
+                continue
+            cq = q + 1 if c.name == "blockquote" else q
+            if cq > cap and c.name == "blockquote":
+                deep.append(c)
+            stack.append((c, cq))
+    for bq in deep:
+        bq.unwrap()
+
+
 def _cap_depth(soup, Tag, cap=_MAX_DEPTH):
     """§4: browser-style depth cap. An element `cap` levels down keeps
     its leading text; from its first element child on, its content is
@@ -227,7 +249,7 @@ def clean_html(html):
     tracking-pixel removal, link hygiene (tracker unwrap, utm strip),
     notification-footer trim, signature split (signatures are persona
     raw material, returned separately) — with the tree depth-bounded
-    (wrapper-chain collapse, then a browser-style cap) before the
+    (wrapper-chain collapse, quote-depth cap, browser-style depth cap) before the
     recursive markdown conversion, and plain text as the last resort.
     Pure compute — fuel-priced at ~15M/KB of input."""
     from bs4 import BeautifulSoup, Comment, Tag
@@ -280,6 +302,7 @@ def clean_html(html):
         scaffold.unwrap()
     # depth bound (after the table pass, so its div chains collapse too)
     _collapse_wrapper_chains(soup, Tag, Comment)
+    _cap_quote_depth(soup, Tag)
     _cap_depth(soup, Tag)
 
     try:
