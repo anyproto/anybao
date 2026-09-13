@@ -1,6 +1,6 @@
 # ADR-028: Mock mode surfaced — the mock spec on `anyrt run` and `run_cell`, strict replay as a verb, traceDiff views
 
-Status: **Proposed** (2026-09-14)
+Status: **Accepted** (2026-09-14)
 Date: 2026-09-14
 Builds on: ADR-001 §5 (two replay modes), ADR-002 §2 (the broker
 pipeline), ADR-003 §4 (guest trace views), ADR-005 §2 (the `run_cell`
@@ -205,9 +205,22 @@ unchanged): a denied effect is denied whether or not a mock exists.
   Toolcaller + `_core` change: deploy. No kernel change.
 - `from` may point at another program's run; records are effect-level.
 
-## Open questions
+## Implementation notes
 
-- Whether `mock` should be withheld from the tool schema in the first
-  cut (operator-only: CLI + explicit user ask in chat) and added once
-  §4 is in use. Leaning: ship §4/§6 first, §5 behind the same PR but
-  reviewable as its own commit.
+- `runtime/src/replay.rs`: `MockSpec`, `Unmatched`, `MockIndex::build`
+  (inline first, wildcard key, `repeat`), `glob_match`,
+  `never_mockable`. `runtime/src/broker.rs`: `span_mocks` (the
+  span-scoped stack), `build_mock_index`, the consult in `call`,
+  span-end `meta.mocked`; `trace.effects_of` rows lift `unmatched`
+  (effect) and the served count `mocked` (facade span) for the digest.
+- `runtime/src/main.rs`: `run_cmd(spec, args, RunOpts, RunHow)` behind
+  `run --mock*` and `replay`; the run header carries `args` (+ `mock`,
+  or `replayOf`). `runtime/src/view.rs`: `~` / `[unmocked]`,
+  `unmocked`, `diff`.
+- `repos/_agent/programs/toolcaller@v1.py`: `mock` / `mockref` on
+  `run_cell`, `_mock_header`, mock-aware `_side_effects`, `MOCK_GUARD`;
+  `repos/_agent/skills/_core.md` paragraph.
+- `mock` ships on the tool schema (the §5 question resolved at
+  acceptance): the runtime-side guards (header always first, `would
+  mutate`, the fixed closing sentence) are what make that safe, not
+  the prompt.

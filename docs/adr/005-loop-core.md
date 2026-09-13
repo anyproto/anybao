@@ -256,6 +256,20 @@ binding. Everything else in this section — spans, digests, the
 dangling calls — applies to `bash` calls unchanged. Without the
 feature the tool set is `run_cell` alone and nothing here changes.
 
+**`run_cell(code, mock=…, mockref=…)` (amendment 2026-09-14, ADR-028
+§5).** The tool takes an optional mock spec (`mockref` = sugar for
+`mock={"from": ref}`); the loop passes it as `input.mock` on the cell
+span, so the host serves that cell's effects per ADR-002 §2 and a
+rejected spec is an `is_error` ToolResult with no cell run. A mocked
+cell's digest keeps its shape and gains: a first line `[MOCK] N of M
+effects served from …` (always, `0 of M` included), a per-op suffix
+`(mocked)` / `(live)` / `(mixed: a mocked, b live)` in the side-effects
+summary, `would mutate … (mocked: NOT executed)` for a served
+mutation, and a fixed closing sentence saying the values are recorded,
+nothing mocked ran, re-run without `mock` for real. The `effects_of`
+rows feeding the digest carry `unmatched` (effect) and the served
+count `mocked` (facade span).
+
 Interim assistant text before tool calls surfaces as `done: false`
 progress bubbles (v1 behavior, kept). Errors: `is_error` ToolResult
 with the error digest — the model self-corrects; no fix-loop (settled).
