@@ -499,11 +499,21 @@ impl OauthState {
         }
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
         let connected = self.secret(&format!("{handle}.refresh")).is_some();
+        // pending = a flow entry whose outcome is not in yet. The receiver
+        // thread marks Done and notifies BEFORE it drops the map entry, so
+        // a status read right after connect() returns can still see the
+        // entry — that window is not "pending".
         let pending = self
             .flows
             .lock()
             .expect("oauth flows lock poisoned")
-            .contains_key(provider);
+            .get(provider)
+            .is_some_and(|f| {
+                matches!(
+                    *f.state.lock().expect("oauth flow lock poisoned"),
+                    FlowState::Pending
+                )
+            });
         let meta = self.meta.lock().expect("oauth meta lock poisoned");
         let scopes = meta
             .get(&format!("{handle}.granted_scopes"))
@@ -1328,6 +1338,36 @@ mod tests {
         assert_eq!(st["pending"], json!(false));
         assert_eq!(st["scopes"], json!(["s1", "s2"]));
         assert_eq!(st["account"], json!("u@example.com"));
+    }
+
+    #[test]
+    fn status_is_not_pending_once_the_flow_is_done() {
+        // the window the receiver thread leaves open: outcome stored and
+        // waiters notified, map entry not yet dropped (run_flow's order).
+        // connect() returns on the notify; a status read right after
+        // used to report pending: true from the lingering entry (CI
+        // flake in connect_full_flow, 2026-09-14).
+        let state = seeded_state("http://127.0.0.1:1/token", None);
+        state.flows.lock().unwrap().insert(
+            "testprov".into(),
+            Arc::new(ConsentFlow {
+                state: Mutex::new(FlowState::Done(Ok(FlowOutcome {
+                    granted_scopes: vec!["s1".into()],
+                    account: None,
+                }))),
+                cond: Condvar::new(),
+            }),
+        );
+        assert_eq!(state.status("testprov").unwrap()["pending"], json!(false));
+        // a flow still waiting on consent is the real pending
+        state.flows.lock().unwrap().insert(
+            "testprov".into(),
+            Arc::new(ConsentFlow {
+                state: Mutex::new(FlowState::Pending),
+                cond: Condvar::new(),
+            }),
+        );
+        assert_eq!(state.status("testprov").unwrap()["pending"], json!(true));
     }
 
     #[test]
