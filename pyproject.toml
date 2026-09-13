@@ -1,6 +1,17 @@
 # No Python packages live here anymore — the runtime is Rust (runtime/,
 # binary anyrt). Python remains only for the componentized guest kernel
 # build (componentize-py) and the guest-module + wire tests under tests/.
+# `[project]` exists so uv has a `requires-python` (without it, every
+# `uv run` / `uv sync` warns and defaults to `>=3.13` from the active
+# interpreter). `package = false` keeps this a non-package workspace.
+
+[project]
+name = "anybao"
+version = "0.0.0"
+requires-python = ">=3.13"
+
+[tool.uv]
+package = false
 
 [dependency-groups]
 dev = [
