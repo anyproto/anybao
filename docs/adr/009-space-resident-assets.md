@@ -342,6 +342,11 @@ lib API (the crate stays sync/thread-based).
    `recv_timeout(250ms)`. In-flight conversation threads are not
    joined by `stop()` — a running turn finishes on its own. Revisit
    with a stream read timeout only if heartbeat gaps bite in practice.
+   The one-shot JSON calls ARE bounded (connect 10s, request 5 min —
+   past every wait the server keeps, e.g. the 2-min bundle create):
+   a hung call fails its boot step instead of hanging serve silently
+   (BOB-113). Serve also logs each boot step with its elapsed time
+   (`boot: … (+Ns)`), so `agent.log` says where a slow boot went.
 4. ~~Bootstrap of a fresh overlay space: who mints the space id?~~
    **Resolved 2026-07-21**: not anyrt's job — spaces are created
    externally (any CLI); `--target` stays strict, no helper.
