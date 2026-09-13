@@ -1697,7 +1697,7 @@ impl Broker {
     /// With `filter`/`sort` (ADR-023 §5) the finder is an any-store
     /// query over the per-run summaries; `program` is sugar for a
     /// substring filter on the summary's program. A store without
-    /// summaries (file backend) derives the rows from the logs, and
+    /// summaries (the in-memory test double) derives the rows from the logs, and
     /// then only `program`/`limit` apply.
     fn sys_trace_runs(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let store = self.need_store()?;
@@ -2716,8 +2716,7 @@ mod tests {
     fn trace_views_read_a_past_run_through_the_store() {
         // ADR-003 §4: `run=` dereferences a traceRef — the same three
         // views over a persisted run, root-level = its turns.
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(crate::tracestore::FileTraceStore::new(dir.path()));
+        let store = Arc::new(crate::tracestore::MemTraceStore::new());
         // write a run: one llm.chat turn wrapping one cell span with an effect
         let mut past = make_broker("run_past");
         past.trace_store = Some(store.clone());

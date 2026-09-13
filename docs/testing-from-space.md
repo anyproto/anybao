@@ -23,9 +23,10 @@ do that, below.
 | config store | none — seeds + `--config`; `config.set` refused | the space's `agent_config` store when the space has `bao/v1` (read-through, `config.set` writes it; `--config` keys shadow reads this run) | the space's `agent_config` store (ADR-006 §3) |
 | good for | dev loop on local source | **testing the deployed form**, scripted | the full loop, end to end |
 
-Every mode records a full trace in `--traces-dir` (default `traces/`) —
-read it with `anyrt trace ls` / `trace show` (turns, cells, effects,
-`--stats`, `--boot`, `--seq` drill-down): see
+Every mode records a full trace in the local store of the run's space
+on `--addr` (`--from-space`, else `bao.space`; ADR-023 §1) — read it
+with `anyrt trace ls --addr …` / `trace show --addr …` (turns, cells,
+effects, `--stats`, `--boot`, `--seq` drill-down): see
 [`docs/debugging.md`](debugging.md).
 
 ## Path A — `anyrt run --from-space`: the deployed form, one-shot

@@ -2,8 +2,8 @@
 
 Status: **Accepted** (2026-08-29; user go-ahead on the proposal — implementation follows the sketch below, one topic per commit)
 Date: 2026-08-29
-Builds on: ADR-001 §8 (`TraceStore` — storage is one trait, the file
-layout is one impl), ADR-003 §4 (guest trace views, `run=`), ADR-017
+Builds on: ADR-001 §8 (`TraceStore` — storage is one trait, one
+store), ADR-003 §4 (guest trace views, `run=`), ADR-017
 (bundle-child stores for agent data), ADR-006 §4 (trigger records and
 their audit fields)
 Amends when accepted: ADR-001 §7 (blob sidecar → blob collection),
@@ -61,15 +61,18 @@ depend on it is not a new dependency.
 
 ## Decision
 
-### 1. Two stores behind one seam
+### 1. One store behind one seam
 
 - **Bodies — local, per device.** Trace records and blobs go to local
   collections scoped to the **bao space** (`scope: "space"`, so
-  `l_s_<baoSpace>_…`), through a second `TraceStore` impl,
+  `l_s_<baoSpace>_…`), through the one `TraceStore` impl,
   `AnyTraceStore`. The `TraceStore` contract (ADR-001 §8) does not
-  change; `FileTraceStore` stays for `anyrt run` offline, tests, and
-  replay fixtures. Serve defaults to `AnyTraceStore`;
-  `[traces] backend = "any" | "file"` in the host config selects.
+  change. There is no file store (amendment 2026-09-13): serve and
+  `anyrt run` both require the any server — `run` lands its trace in
+  the local store of the run's space (`--from-space`, else
+  `bao.space`) on `--addr` — and the trait's unit tests use an
+  in-memory double. `paths.traces` names only the raw-blob directory
+  (ADR-026 §1).
 - **Summaries — synced, one record per run.** A small `agent_runs`
   record per run (`{runId, program, device, startedAt, endedAt,
   durationMs, status, errorType, turns, cells, effects, mutations,
@@ -130,9 +133,7 @@ pinned by `header.schema` per run, as on disk.
   `list`/`trace ls`/`trace follow` show headers of the last 7 days
   that have no `trace_runs` row yet as `in-flight` rows built from
   the streamed log (program, turns so far, title). A summary-less
-  header older than that is a crash's leftover, not a run. The file
-  store never had the gap (a `.jsonl` lists as soon as it exists);
-  the local store had it from the migration until this amendment.
+  header older than that is a crash's leftover, not a run.
 
 ### 4. Blobs
 
@@ -196,20 +197,18 @@ the unreferenced), and marks the `trace_runs` mirror row `expired`. **Summaries
 are kept forever**, synced and mirrored — small, and what "did it run"
 questions and `traceRef` links resolve against after the body is gone
 (`effects.of/get/stats` on an expired run answer a typed error naming
-retention and pointing at `effects.runs`). The file backend has no
-retention (the jsonl dir is a dev/offline store).
+retention and pointing at `effects.runs`).
 
 ### 7. CLI and tooling
 
-`anyrt trace ls/show/follow/stats` take `--addr` (default from the
-config file, like `serve`) and read through `AnyTraceStore`; a path or
-`--traces-dir` argument selects `FileTraceStore` as today. `follow`
-polls `query` (no subscribe on local collections). `anyrt trace import
-<dir>` loads existing `.jsonl` files once (records + blobs + a
-synthesized summary) so history survives the switch, and copies the
-dir's `blobs/` along. Raw blobs resolve from the `traces_dir` of the
-config file the CLI reads `--addr` from — same machine as the serve;
-against a remote serve a raw ref renders unresolved (ADR-026 §7).
+`anyrt trace ls/show/follow/stats` read a server's local store
+through `AnyTraceStore`: `--addr` (default `http://127.0.0.1:7001`,
+the serve default) names the server, `--space` the bao space. There
+is nothing else to read — no directory or file argument. `follow`
+polls `query` (no subscribe on local collections). `show
+--traces-dir` (default `traces`) is the serve's raw-blob directory
+beside that server (ADR-026 §7); against a remote serve a raw ref
+renders as its stub. `anyrt trace blob <hash>` reads that directory.
 
 ### 8. Trigger audit fields become a view (ADR-006 §4 amendment)
 
@@ -262,9 +261,9 @@ property, not a capability grant.
 - `sdk.db` holds the traces; there is no backup story and a manual
   wipe of `sdk/` loses bodies (summaries survive). Same standing as
   the local store itself.
-- Two backends to keep green: the replay fixtures and offline `run`
-  pin `FileTraceStore`; serve pins `AnyTraceStore`; the trait's tests
-  run against both.
+- One store to keep green: serve and `run` pin `AnyTraceStore`; the
+  trait's consumers test against an in-memory double; the store
+  itself has a gated round-trip test against a live server.
 
 ## Open questions (to settle before Accepted)
 

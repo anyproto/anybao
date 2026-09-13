@@ -353,8 +353,7 @@ impl TraceWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracestore::FileTraceStore;
-    use std::fs;
+    use crate::tracestore::MemTraceStore;
 
     fn effect_rec(w: &mut TraceWriter, out: Value) {
         let key = input_key("x.y", &json!({"a": 1}));
@@ -372,16 +371,14 @@ mod tests {
 
     #[test]
     fn streaming_appends_per_record_and_matches_dump() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
-        let path = store.path_of("run_s");
+        let store = MemTraceStore::new();
         let mut w = TraceWriter::new(json!({"id": "run_s", "program": "p"}));
         w.stream_to(&store).unwrap();
-        // header lands before any effect — the file exists at run start
-        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
+        // header lands before any effect — the run exists at run start
+        assert_eq!(store.records("run_s").len(), 1);
         effect_rec(&mut w, json!({"ok": 1}));
         // record visible in-flight, not just at dump time
-        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
+        assert_eq!(store.records("run_s").len(), 2);
         effect_rec(&mut w, json!({"ok": 2}));
         w.cell("main", true, None, false, json!({"fuel_used": 1}));
 
@@ -396,37 +393,31 @@ mod tests {
         effect_rec(&mut twin, json!({"ok": 2}));
         twin.cell("main", true, None, false, json!({"fuel_used": 1}));
         twin.dump(&store).unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            fs::read_to_string(store.path_of("run_twin"))
-                .unwrap()
-                .replace("run_twin", "run_s")
-        );
+        let streamed = serde_json::to_string(&store.records("run_s")).unwrap();
+        let buffered = serde_json::to_string(&store.records("run_twin")).unwrap();
+        assert_eq!(streamed, buffered.replace("run_twin", "run_s"));
     }
 
     #[test]
-    fn streaming_writes_blob_sidecar_at_spill_time() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
-        let path = store.path_of("run_b");
+    fn streaming_writes_the_blob_at_spill_time() {
+        let store = MemTraceStore::new();
         let mut w = TraceWriter::new(json!({"id": "run_b", "program": "p"}));
         w.stream_to(&store).unwrap();
         let big = json!({"data": "z".repeat(BLOB_THRESHOLD + 1)});
         effect_rec(&mut w, big);
-        let side = fs::read_to_string(path.with_extension("jsonl.blobs")).unwrap();
-        assert_eq!(side.lines().count(), 1);
-        let entry: Value = serde_json::from_str(side.lines().next().unwrap()).unwrap();
-        assert_eq!(entry["hash"], json!(w.blobs[0].0));
+        use crate::tracestore::TraceStore as _;
+        assert_eq!(store.text_blob_count(), 1);
+        assert!(store.blobs("run_b").unwrap().contains_key(&w.blobs[0].0));
     }
 
     /// ADR-026 §2: a text spill over the request cap is written raw to
     /// the directory (same hash — the bytes are the text), the record
     /// carries the raw ref and lists it in `blobs`; a small spill stays
-    /// in the sidecar.
+    /// a text blob in the store.
     #[test]
     fn oversize_text_spills_raw_to_the_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
+        let store = MemTraceStore::with_blob_dir(dir.path());
         let mut w = TraceWriter::new(json!({"id": "run_r", "program": "p"}));
         w.stream_to(&store).unwrap();
         let big = json!({"data": "z".repeat(RAW_TEXT_CUTOFF + 1)});
@@ -435,10 +426,7 @@ mod tests {
         assert_eq!(rec["output"]["mime"], json!(JSON_MIME));
         let hash = rec["output"]["__blob"].as_str().unwrap().to_string();
         assert_eq!(rec["blobs"], json!([hash]));
-        assert!(!store
-            .path_of("run_r")
-            .with_extension("jsonl.blobs")
-            .exists());
+        assert_eq!(store.text_blob_count(), 0);
         let on_disk = store
             .blob_dir()
             .unwrap()

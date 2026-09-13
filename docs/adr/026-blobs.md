@@ -61,10 +61,9 @@ that ever appears in a trace record, a cell value, or an effect
 payload; the guest never sees a path.
 
 The `any` server holds nothing bao-specific for this: the local
-collections keep what they keep today, the directory is a sibling of
-the jsonl dir the file backend already uses, and a full wipe of a
-rig's traces is "drop the three trace collections, remove the
-directory".
+collections keep what they keep today, the directory is `paths.traces`
+(its only content), and a full wipe of a rig's traces is "drop the
+three trace collections, remove the directory".
 
 ### 2. Which spills go where (amends ADR-001 §7, ADR-023 §4)
 
@@ -72,8 +71,8 @@ Two reference shapes, told apart by `mime`:
 
 | shape | content | store |
 |---|---|---|
-| `{__blob, bytes}` | canonical JSON text of a value over the spill threshold (64 KB) | `trace_blobs` collection (any backend) / `.jsonl.blobs` sidecar (file backend) — as today |
-| `{__blob, bytes, mime}` | raw bytes | `<traces_dir>/blobs/<hex>`, both backends |
+| `{__blob, bytes}` | canonical JSON text of a value over the spill threshold (64 KB) | `trace_blobs` collection — as today |
+| `{__blob, bytes, mime}` | raw bytes | `<traces_dir>/blobs/<hex>` |
 
 A text spill that would not fit one local-store request (> 700 KB
 canonical) is written as a raw blob with `mime: "application/json"`
@@ -213,9 +212,7 @@ expiry: collect the hashes every surviving record lists in `blobs`
 (one `$exists` query, the shape that already protects `trace_blobs`),
 list the directory, unlink every file whose hash is not referenced. Raw blobs
 follow their runs' retention class; nothing is kept past the last
-record that names it. The file backend, which has no retention today
-(ADR-023 §6), gains none — its directory is swept by hand with its
-jsonl dir.
+record that names it.
 
 ### 7. Tooling (amends ADR-020 §6, ADR-023 §7)
 
@@ -223,11 +220,10 @@ jsonl dir.
   563619 bytes sha256:…>`, in http lines, inside llm requests, in cell
   values — never inline base64. `--seq N` prints the record with the
   ref; `anyrt trace blob <hash> [-o file]` writes the bytes.
-- The CLI resolves raw blobs from `traces_dir` of the config file it
-  reads `--addr` from — same machine as the serve. Against a serve on
+- The CLI resolves raw blobs from `show --traces-dir` (default
+  `traces`) — the serve's directory, same machine. Against a serve on
   another machine the ref shows unresolved; the local store is
   per-device already, this changes nothing about scope.
-- `anyrt trace import <dir>` copies a jsonl dir's `blobs/` along.
 
 ## Consequences
 

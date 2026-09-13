@@ -1,11 +1,10 @@
 //! Trace storage (ADR-001 §8) — the ONE seam between the trace log and
 //! wherever it persists. Every writer (`TraceWriter`) and every reader
 //! (`trace ls/show/stats`, the guest's `trace.*` syscalls, serve)
-//! goes through [`TraceStore`]; nothing else opens a run. Today the
-//! only implementation is [`FileTraceStore`] — one `run_<id>.jsonl`
-//! per run plus a `.jsonl.blobs` sidecar (§7) in a device-local dir.
-//! Moving traces elsewhere (a space, a database) is a second impl of
-//! this trait, not a rewrite of the readers.
+//! goes through [`TraceStore`]; nothing else opens a run. The one
+//! store is [`AnyTraceStore`] — local collections of the bao space on
+//! the any server (ADR-023 §1), raw blobs in a directory beside it
+//! (ADR-026 §1). Unit tests use the in-memory [`MemTraceStore`].
 //!
 //! The record shapes are the store's payload, never its concern:
 //! `load` returns the intact log exactly as written, and blob
@@ -17,12 +16,10 @@ use crate::trace::canonical_json;
 use crate::trace::SCHEMA;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// A run id as it appears in `traceRef` / `lastRunRef` and on disk.
+/// A run id as it appears in `traceRef` / `lastRunRef` and as the
+/// `runId` of every stored document.
 /// Guests hand these in — the check is what keeps `run` from naming
 /// anything but a run.
 pub fn valid_run_id(id: &str) -> bool {
@@ -111,14 +108,13 @@ pub trait TraceStore: Send + Sync {
     fn list(&self) -> anyhow::Result<Vec<RunMeta>>;
     /// Runs with a header but no summary yet: started, not ended (or
     /// never landed their end — a serve killed mid-run). Newest first.
-    /// The file store's `list` already shows every file; nothing to add.
     fn in_flight(&self) -> anyhow::Result<Vec<RunMeta>> {
         Ok(Vec::new())
     }
     /// The run finder over per-run summaries (ADR-023 §5): any-store
     /// `filter`/`sort`/`limit` on `trace_runs` rows. `None` = this
-    /// store keeps no summaries (the file store) — callers fall back
-    /// to deriving rows from the logs.
+    /// store keeps no summaries — callers fall back to deriving rows
+    /// from the logs.
     fn find_runs(
         &self,
         _filter: &Value,
@@ -131,9 +127,7 @@ pub trait TraceStore: Send + Sync {
     /// `coll` ∈ records | runs | blobs. Stores without a query engine
     /// answer a typed error.
     fn query(&self, coll: &str, _pipeline: &Value) -> anyhow::Result<Value> {
-        anyhow::bail!(
-            "trace.query over {coll}: this trace store has no query engine (file backend)"
-        )
+        anyhow::bail!("trace.query over {coll}: this trace store has no query engine")
     }
     /// The intact log (blob refs unresolved). Errors when the run is
     /// unknown or not a schema-2 trace.
@@ -162,7 +156,7 @@ pub trait TraceStore: Send + Sync {
     fn load_in_flight(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
         self.load(run_id)
     }
-    /// Just the header — cheap on a file store (first line).
+    /// Just the header.
     fn header(&self, run_id: &str) -> anyhow::Result<Value> {
         let records = self.load(run_id)?;
         Ok(records[0].clone())
@@ -187,16 +181,6 @@ pub trait TraceStore: Send + Sync {
     }
 }
 
-pub fn parse_records(text: &str, what: &str) -> anyhow::Result<Vec<Value>> {
-    let mut records: Vec<Value> = Vec::new();
-    for line in text.lines() {
-        if !line.trim().is_empty() {
-            records.push(serde_json::from_str(line)?);
-        }
-    }
-    validate_records(records, what)
-}
-
 /// Header-first + schema pin (ADR-001) over an already-parsed log.
 pub fn validate_records(records: Vec<Value>, what: &str) -> anyhow::Result<Vec<Value>> {
     let has_header = records
@@ -210,209 +194,6 @@ pub fn validate_records(records: Vec<Value>, what: &str) -> anyhow::Result<Vec<V
         records[0]["schema"]
     );
     Ok(records)
-}
-
-pub fn parse_blobs(text: &str) -> anyhow::Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let entry: Value = serde_json::from_str(line)?;
-        let hash = entry["hash"].as_str().unwrap_or("").to_string();
-        let data = entry["data"].as_str().unwrap_or("").to_string();
-        out.insert(hash, data);
-    }
-    Ok(out)
-}
-
-// --- the file store ----------------------------------------------------------
-
-/// `<dir>/<run_id>.jsonl` (+ `.jsonl.blobs`), the device-local layout.
-#[derive(Debug, Clone)]
-pub struct FileTraceStore {
-    dir: PathBuf,
-    blob_dir: BlobDir,
-}
-
-impl FileTraceStore {
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        let dir: PathBuf = dir.into();
-        let blob_dir = BlobDir::new(&dir);
-        FileTraceStore { dir, blob_dir }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    pub fn path_of(&self, run_id: &str) -> PathBuf {
-        self.dir.join(format!("{run_id}.jsonl"))
-    }
-
-    fn blob_path(path: &Path) -> PathBuf {
-        let mut os = path.as_os_str().to_os_string();
-        os.push(".blobs");
-        PathBuf::from(os)
-    }
-
-    /// CLI convenience: `trace show <file-or-run-id>` — an existing
-    /// path names its own store (parent dir + stem); anything else is a
-    /// run id in `default_dir`.
-    pub fn locate(arg: &Path, default_dir: &Path) -> (FileTraceStore, String) {
-        if arg.exists() {
-            let dir = arg
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            let id = arg
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            return (FileTraceStore::new(dir), id);
-        }
-        (
-            FileTraceStore::new(default_dir),
-            arg.to_string_lossy().into_owned(),
-        )
-    }
-}
-
-struct FileSink {
-    file: fs::File,
-    blob_path: PathBuf,
-}
-
-impl TraceSink for FileSink {
-    fn append(&mut self, record: &Value) -> anyhow::Result<()> {
-        writeln!(self.file, "{}", canonical_json(record))?;
-        self.file.flush()?;
-        Ok(())
-    }
-
-    fn append_blob(&mut self, hash: &str, data: &str) -> anyhow::Result<()> {
-        // sidecar appends in spill order — consumers key by hash
-        let line = canonical_json(&json!({"hash": hash, "data": data})) + "\n";
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.blob_path)?
-            .write_all(line.as_bytes())?;
-        Ok(())
-    }
-}
-
-impl TraceStore for FileTraceStore {
-    fn open_sink(&self, run_id: &str) -> anyhow::Result<Box<dyn TraceSink>> {
-        fs::create_dir_all(&self.dir)?;
-        let path = self.path_of(run_id);
-        let file = fs::File::create(&path)?;
-        Ok(Box::new(FileSink {
-            file,
-            blob_path: Self::blob_path(&path),
-        }))
-    }
-
-    fn write_run(
-        &self,
-        run_id: &str,
-        records: &[Value],
-        blobs: &[(String, String)],
-    ) -> anyhow::Result<()> {
-        fs::create_dir_all(&self.dir)?;
-        let path = self.path_of(run_id);
-        let mut text = String::new();
-        for r in records {
-            text.push_str(&canonical_json(r));
-            text.push('\n');
-        }
-        fs::write(&path, text)?;
-        if !blobs.is_empty() {
-            let mut sorted = blobs.to_vec();
-            sorted.sort();
-            let side: String = sorted
-                .iter()
-                .map(|(h, t)| canonical_json(&json!({"hash": h, "data": t})) + "\n")
-                .collect();
-            fs::write(Self::blob_path(&path), side)?;
-        }
-        Ok(())
-    }
-
-    fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
-        let mut rows: Vec<RunMeta> = fs::read_dir(&self.dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-            .filter_map(|p| {
-                let id = p.file_stem()?.to_string_lossy().into_owned();
-                let modified = p.metadata().and_then(|m| m.modified()).ok();
-                Some(RunMeta { id, modified })
-            })
-            .collect();
-        rows.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.id.cmp(&a.id)));
-        Ok(rows)
-    }
-
-    fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
-        let path = self.path_of(run_id);
-        // the guest sees this text: name the run, not the store's layout
-        let text = fs::read_to_string(&path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => anyhow::anyhow!("unknown run {run_id}"),
-            _ => anyhow::anyhow!("run {run_id}: {e}"),
-        })?;
-        parse_records(&text, run_id)
-    }
-
-    fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
-        let side = Self::blob_path(&self.path_of(run_id));
-        let mut out = if side.exists() {
-            parse_blobs(&fs::read_to_string(&side)?)?
-        } else {
-            BTreeMap::new()
-        };
-        // oversize text spills live in the directory (ADR-026 §2)
-        raw_text_fallback(&self.blob_dir, &self.load(run_id)?, &mut out)?;
-        Ok(out)
-    }
-
-    fn blob(&self, run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
-        let side = Self::blob_path(&self.path_of(run_id));
-        if side.exists() {
-            if let Some(t) = parse_blobs(&fs::read_to_string(&side)?)?.remove(hash) {
-                return Ok(Some(t));
-            }
-        }
-        self.blob_dir.read_string(hash)
-    }
-
-    fn blob_dir(&self) -> Option<&BlobDir> {
-        Some(&self.blob_dir)
-    }
-
-    fn load_in_flight(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
-        let text = fs::read_to_string(self.path_of(run_id))?;
-        // only complete lines — a partially-written tail waits for its \n
-        let complete = &text[..text.rfind('\n').map(|i| i + 1).unwrap_or(0)];
-        Ok(complete
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .collect())
-    }
-
-    fn header(&self, run_id: &str) -> anyhow::Result<Value> {
-        use std::io::BufRead;
-        let path = self.path_of(run_id);
-        let f = fs::File::open(&path)?;
-        let first = std::io::BufReader::new(f)
-            .lines()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("empty trace {}", path.display()))??;
-        let h: Value = serde_json::from_str(&first)?;
-        anyhow::ensure!(h["kind"] == "header", "not a trace: {}", path.display());
-        Ok(h)
-    }
 }
 
 // --- the any local-store backend (ADR-023) -----------------------------------
@@ -1099,9 +880,8 @@ mod tests {
     }
 
     #[test]
-    fn file_store_round_trips_records_and_blobs() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
+    fn mem_store_round_trips_records_and_blobs() {
+        let store = MemTraceStore::new();
         let records = vec![
             json!({"kind": "header", "schema": SCHEMA, "run": {"id": "run_a", "program": "p"}}),
             json!({"kind": "effect", "seq": 1, "effect": "x.y",
@@ -1176,18 +956,144 @@ mod tests {
             Some("$merge")
         );
     }
+}
 
-    #[test]
-    fn locate_splits_a_path_into_store_and_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run_q.jsonl");
-        fs::write(&path, "").unwrap();
-        let (store, id) = FileTraceStore::locate(&path, Path::new("traces"));
-        assert_eq!(store.dir(), dir.path());
-        assert_eq!(id, "run_q");
-        let (store, id) = FileTraceStore::locate(Path::new("run_bare"), dir.path());
-        assert_eq!(store.dir(), dir.path());
-        assert_eq!(id, "run_bare");
+// --- in-memory store: the unit tests' stand-in for a server -----------------
+
+/// A `TraceStore` in process memory — what the writer/view/broker unit
+/// tests stream into and read back. Not a storage option: bao's traces
+/// live in the any local store (ADR-023 §1), and this double exists so
+/// the trait's consumers test without a server.
+#[cfg(test)]
+#[derive(Default)]
+pub struct MemTraceStore {
+    runs: Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
+    text_blobs: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    blob_dir: Option<BlobDir>,
+}
+
+#[cfg(test)]
+impl MemTraceStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// With a raw-blob directory beside it (ADR-026 §1).
+    pub fn with_blob_dir(dir: &std::path::Path) -> Self {
+        Self {
+            blob_dir: Some(BlobDir::new(dir)),
+            ..Self::new()
+        }
+    }
+
+    /// The records of a run as stored (empty when unknown).
+    pub fn records(&self, run_id: &str) -> Vec<Value> {
+        self.runs
+            .lock()
+            .unwrap()
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn text_blob_count(&self) -> usize {
+        self.text_blobs.lock().unwrap().len()
+    }
+}
+
+#[cfg(test)]
+struct MemSink {
+    runs: Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
+    text_blobs: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    run_id: String,
+}
+
+#[cfg(test)]
+impl TraceSink for MemSink {
+    fn append(&mut self, record: &Value) -> anyhow::Result<()> {
+        self.runs
+            .lock()
+            .unwrap()
+            .entry(self.run_id.clone())
+            .or_default()
+            .push(record.clone());
+        Ok(())
+    }
+    fn append_blob(&mut self, hash: &str, data: &str) -> anyhow::Result<()> {
+        self.text_blobs
+            .lock()
+            .unwrap()
+            .insert(hash.to_string(), data.to_string());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl TraceStore for MemTraceStore {
+    fn open_sink(&self, run_id: &str) -> anyhow::Result<Box<dyn TraceSink>> {
+        Ok(Box::new(MemSink {
+            runs: self.runs.clone(),
+            text_blobs: self.text_blobs.clone(),
+            run_id: run_id.to_string(),
+        }))
+    }
+    fn write_run(
+        &self,
+        run_id: &str,
+        records: &[Value],
+        blobs: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        self.runs
+            .lock()
+            .unwrap()
+            .insert(run_id.to_string(), records.to_vec());
+        self.write_blobs(blobs)
+    }
+    fn write_blobs(&self, blobs: &[(String, String)]) -> anyhow::Result<()> {
+        self.text_blobs
+            .lock()
+            .unwrap()
+            .extend(blobs.iter().cloned());
+        Ok(())
+    }
+    fn blob_dir(&self) -> Option<&BlobDir> {
+        self.blob_dir.as_ref()
+    }
+    fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
+        Ok(self
+            .runs
+            .lock()
+            .unwrap()
+            .keys()
+            .rev()
+            .map(|id| RunMeta {
+                id: id.clone(),
+                modified: None,
+            })
+            .collect())
+    }
+    fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
+        let records = self
+            .runs
+            .lock()
+            .unwrap()
+            .get(run_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown run {run_id}"))?;
+        validate_records(records, run_id)
+    }
+    fn blobs(&self, _run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
+        Ok(self.text_blobs.lock().unwrap().clone())
+    }
+    fn blob(&self, _run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
+        if let Some(t) = self.text_blobs.lock().unwrap().get(hash) {
+            return Ok(Some(t.clone()));
+        }
+        // an oversize text spill is a raw blob in the directory (ADR-026 §2)
+        match &self.blob_dir {
+            Some(dir) => dir.read_string(hash),
+            None => Ok(None),
+        }
     }
 }
 

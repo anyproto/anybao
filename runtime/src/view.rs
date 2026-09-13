@@ -1605,7 +1605,7 @@ pub fn stats(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracestore::FileTraceStore;
+    use crate::tracestore::MemTraceStore;
 
     #[test]
     fn follow_lines_render_the_show_vocabulary() {
@@ -1747,8 +1747,7 @@ mod tests {
 
     #[test]
     fn stats_table_per_turn_attribution_and_pricing() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
+        let store = MemTraceStore::new();
         store.write_run("run_st", &two_turn_trace(), &[]).unwrap();
         let out = stats(&store, "run_st").unwrap();
         assert!(out.contains("claude-sonnet-5"), "{out}");
@@ -1778,8 +1777,7 @@ mod tests {
     fn stats_unknown_model_renders_dash_cost() {
         let mut records = two_turn_trace();
         records[2]["input"]["json"]["model"] = json!("thinkingmachines/Inkling");
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
+        let store = MemTraceStore::new();
         store.write_run("run_x", &records, &[]).unwrap();
         let out = stats(&store, "run_x").unwrap();
         assert!(
@@ -1856,8 +1854,7 @@ mod tests {
 
     #[test]
     fn openai_response_renders_tokens_cell_and_stop() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
+        let store = MemTraceStore::new();
         store
             .write_run("run_abc", &one_turn_openai_trace(), &[])
             .unwrap();
@@ -1886,23 +1883,22 @@ mod tests {
     }
 
     #[test]
-    fn ls_row_titles_spilled_input_via_sidecar() {
-        // A >64KB llm request is spilled to the .jsonl.blobs sidecar and
+    fn ls_row_titles_spilled_input_via_the_store() {
+        // A >64KB llm request is spilled to the store's text blobs and
         // replaced with a {__blob, bytes} ref — the title must survive
-        // by lazily resolving the sidecar (the 82-message boot windows
+        // by lazily resolving the blob (the 82-message boot windows
         // of 2026-08-06 hit exactly this).
         let mut records = one_turn_trace(true);
         let input = records[2]["input"].take();
         let text = input.to_string();
         records[2]["input"] = json!({"__blob": "sha256:t1", "bytes": text.len()});
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileTraceStore::new(dir.path());
+        let store = MemTraceStore::new();
         store
             .write_run("run_abc", &records, &[("sha256:t1".into(), text)])
             .unwrap();
         let row = ls_row(&records, Some((&store, "run_abc")));
         assert_eq!(row.title, "what's the weather in Berlin?");
-        // and without a sidecar the row still renders, just untitled
+        // and without a store the row still renders, just untitled
         assert_eq!(ls_row(&records, None).title, "");
     }
 

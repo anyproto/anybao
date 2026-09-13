@@ -268,21 +268,19 @@ recorded per call. Replaces v1's name-prefix mutation heuristic.
 ### 7. Large outputs spill out-of-line
 
 An output larger than a threshold (config, default ~64 KB) is replaced
-by `{"__blob": "sha256:...", "bytes": N}` and the bytes stored next to
-the trace (sidecar file / file attachment when the trace lives in a
-space object). Replay resolves refs transparently. Keeps JSONL lines
-bounded without truncating anything.
+by `{"__blob": "sha256:...", "bytes": N}` and the text stored next to
+the trace (the store's text blobs, ADR-023 §4). Replay resolves refs
+transparently. Keeps records bounded without truncating anything.
 
 **Two ref shapes (amendment 2026-09-04, ADR-026 §2).** A ref carrying
 `mime` — `{"__blob", "bytes", "mime"}` — is raw bytes at
-`<traces_dir>/blobs/<hex>` (hash over the bytes, same file in both
-backends); a ref without `mime` is the canonical JSON text of a
+`<traces_dir>/blobs/<hex>` (hash over the bytes); a ref without `mime` is the canonical JSON text of a
 spilled value, in the store's text-blob place (ADR-023 §4). A text
 spill too large for one store request is written as a raw blob
 (`mime: application/json`). A failed blob write records the ref and
 warns; it never fails the run.
 
-### 8. Storage is one trait, the file layout is one impl (amendment 2026-08-28)
+### 8. Storage is one trait, one store (amendment 2026-08-28, revised 2026-09-13)
 
 Where a run persists is a **storage** decision, not a format one.
 `anyrt::tracestore::TraceStore` is the single seam: `open_sink(run)`
@@ -292,11 +290,11 @@ wall-clock), `load` (the intact log), `blobs` (§7's spilled values),
 plus derived defaults `load_resolved` / `header` / `load_in_flight`.
 Every writer (`TraceWriter`) and every reader — `trace ls/show/
 follow/stats`, serve, the guest's `trace.*` syscalls — takes a
-`&dyn TraceStore`; nothing else opens a run. `FileTraceStore` is the
-only implementation: `<dir>/<run_id>.jsonl` + `.jsonl.blobs`, one
-store per anyrt instance (`paths.traces`). Traces in a space, or in a
-database, are a second impl behind the same trait — the readers and
-the record contract (§1–§7) don't move.
+`&dyn TraceStore`; nothing else opens a run. The one implementation is
+`AnyTraceStore` — the any server's local store (ADR-023); raw blobs
+sit in a directory beside it (`paths.traces`, ADR-026 §1). There is
+no file layout: a trace is a set of documents, and the record contract
+(§1–§7) is what those documents carry.
 
 Run ids are the store's keys and the guest's handles (`traceRef`,
 `lastRunRef`): `run_<[A-Za-z0-9_-]+>`, validated at the syscall

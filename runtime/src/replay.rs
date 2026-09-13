@@ -12,8 +12,6 @@
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 /// Strict replay only: the next call does not match the next record.
 /// The hard error IS the feature (determinism made testable); loose
@@ -55,22 +53,6 @@ impl fmt::Display for DivergenceError {
 }
 
 impl std::error::Error for DivergenceError {}
-
-/// Load a trace: JSONL, header on line 1, schema pinned (ADR-001).
-pub fn load_trace(path: &Path) -> anyhow::Result<Vec<Value>> {
-    crate::tracestore::parse_records(&fs::read_to_string(path)?, &path.display().to_string())
-}
-
-/// The `.jsonl.blobs` sidecar of a trace path (empty when absent).
-pub fn load_blobs(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
-    let mut os = path.as_os_str().to_os_string();
-    os.push(".blobs");
-    let side = PathBuf::from(os);
-    if !side.exists() {
-        return Ok(BTreeMap::new());
-    }
-    crate::tracestore::parse_blobs(&fs::read_to_string(&side)?)
-}
 
 /// Resolve a blob ref (`{"__blob": hash, "bytes": n}`, ADR-001 §7) back
 /// to its value. Non-refs — and refs whose blob is missing from the
@@ -442,47 +424,5 @@ mod tests {
         assert_eq!(resolve_blobs(rec["output"].clone(), &blobs), big);
         // non-refs (and missing blobs) pass through unchanged
         assert_eq!(resolve_blobs(json!({"a": 1}), &blobs), json!({"a": 1}));
-    }
-
-    #[test]
-    fn load_trace_roundtrip_with_sidecar() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::tracestore::FileTraceStore::new(dir.path());
-        let path = store.path_of("run_b2");
-        let mut w = TraceWriter::new(json!({"id": "run_b2"}));
-        let big = json!({"body": "y".repeat(100_000)});
-        let k = input_key("big", &json!({}));
-        w.effect(
-            "big",
-            None,
-            json!({}),
-            &k,
-            Some(big.clone()),
-            None,
-            json!({}),
-            None,
-        );
-        w.dump(&store).unwrap();
-
-        let records = load_trace(&path).unwrap();
-        assert_eq!(records[0]["kind"], "header");
-        assert_eq!(records[0]["schema"], crate::trace::SCHEMA);
-        let blobs = load_blobs(&path).unwrap();
-        assert_eq!(resolve_blobs(records[1]["output"].clone(), &blobs), big);
-    }
-
-    #[test]
-    fn load_trace_rejects_headerless_and_wrong_schema() {
-        let dir = tempfile::tempdir().unwrap();
-        let no_header = dir.path().join("x.jsonl");
-        std::fs::write(&no_header, "{\"kind\":\"effect\"}\n").unwrap();
-        assert!(load_trace(&no_header).is_err());
-
-        let wrong = dir.path().join("y.jsonl");
-        std::fs::write(&wrong, "{\"kind\":\"header\",\"schema\":1}\n").unwrap();
-        assert!(load_trace(&wrong).is_err());
-
-        let missing_sidecar = load_blobs(&no_header).unwrap();
-        assert!(missing_sidecar.is_empty());
     }
 }

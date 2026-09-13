@@ -1,6 +1,7 @@
 """The runtime binary end-to-end, OFFLINE: `anyrt run toolcaller@v1`
 as a subprocess against a stdlib fake serving BOTH backends (any server
-+ anthropic) on localhost. No project imports — the binary's CLI and
++ anthropic, the local store included — the trace lands there, ADR-023
+§1) on localhost. No project imports — the binary's CLI and
 the wire are the whole contract. Skips without the binary or kernel."""
 
 import json
@@ -38,11 +39,13 @@ class FakeBackends(BaseHTTPRequestHandler):
     turns: list = []
     chat_posts: list = []
     datasets: dict = {}
+    local: dict = {}          # local-store collections: name -> {id: doc}
 
     @classmethod
     def reset(cls, llm_replies):
         cls.llm_replies = list(llm_replies)
         cls.llm_requests, cls.turns, cls.chat_posts = [], [], []
+        cls.local = {}
         cls.datasets = {"agent_turns": cls.turns, "agent_chunks": [],
                         "agent_memory_items": [], "agent_roi_injections": []}
 
@@ -99,6 +102,43 @@ class FakeBackends(BaseHTTPRequestHandler):
                 "synced": True})
         return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
 
+    def do_PUT(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        if self.path.endswith("/v1/local/collections"):
+            return self._reply({})      # ensure: idempotent, nothing to say
+        return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
+
+    def _local(self, body):
+        """/v1/local/* — enough of the any local store (ADR-023 §2) for
+        a run to stream its trace and land its summary."""
+        cls = type(self)
+        coll = cls.local.setdefault(body["coll"]["name"], {})
+        op = self.path.rsplit("/", 1)[1]
+        if op == "upsert":
+            for d in body.get("docs") or []:
+                coll[d["id"]] = d
+            return self._reply({"ids": [d["id"] for d in body.get("docs") or []]})
+        if op == "get":
+            doc = coll.get(body["id"])
+            if doc is None:
+                return self._reply({"error": {"code": "local.doc_not_found",
+                                              "message": body["id"]}}, 404)
+            return self._reply({"record": doc})
+        if op == "query":
+            flt = body.get("filter") or {}
+            rows = [d for d in coll.values()
+                    if all(d.get(k) == v for k, v in flt.items()
+                           if not isinstance(v, dict))]
+            for key in reversed(body.get("sort") or []):
+                rows.sort(key=lambda d: d.get(key.lstrip("-")) or 0,
+                          reverse=key.startswith("-"))
+            off = body.get("offset") or 0
+            return self._reply({"records": rows[off:off + (body.get("limit") or len(rows))]})
+        if op == "aggregate":
+            return self._reply({"records": []})
+        return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
+
     @staticmethod
     def _store(collection):
         # the guest addresses a store by its collection `<typeId>_<key>`;
@@ -109,6 +149,8 @@ class FakeBackends(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         cls = type(self)
+        if "/v1/local/" in self.path:
+            return self._local(body)
         if self.path.endswith("/v1/messages"):
             assert self.headers.get("x-api-key") == "sk-test", "credential missing"
             cls.llm_requests.append(body)
@@ -202,10 +244,10 @@ def test_full_conversation_through_the_binary(backends):
     # turn + done bubble persisted through the any side
     assert FakeBackends.turns[0]["userText"] == "what is 40+2?"
     assert FakeBackends.chat_posts[-1]["agent"]["done"] is True
-    # the trace exists and speaks only syscalls
-    trace = next((scratch / "traces").glob("run_*.jsonl"))
-    effects = {json.loads(ln)["effect"] for ln in trace.read_text().splitlines()
-               if json.loads(ln).get("kind") == "effect"}
+    # the trace landed in the space's local store and speaks only syscalls
+    records = FakeBackends.local["trace_records"].values()
+    assert any(r.get("kind") == "header" for r in records)
+    effects = {r["effect"] for r in records if r.get("kind") == "effect"}
     assert all(e.split(".")[0] in
                ("http", "mailbox", "module", "kernel", "trace", "config", "runtime",
                 "time", "random", "env", "uuid4", "sleep", "batch")

@@ -3,7 +3,6 @@
 //! live here; everything else is `anyrt::*`.
 
 use anyhow::{Context, Result};
-use anyrt::tracestore::FileTraceStore;
 use anyrt::{anyapi, config, deploy, drift, oauth, resolver, runner, serve, stats, trace, view};
 use anyrt::{broker, routes};
 use clap::{Parser, Subcommand};
@@ -32,6 +31,8 @@ enum Cmd {
         kernel: Option<PathBuf>,
         #[arg(long, default_value = "repos/_agent/programs")]
         programs: PathBuf,
+        /// raw-blob directory (ADR-026 §1); the trace itself lands in
+        /// the local store of the run's space on --addr (ADR-023 §1)
         #[arg(long, default_value = "traces")]
         traces_dir: PathBuf,
         #[arg(long)]
@@ -110,7 +111,7 @@ enum Cmd {
         #[arg(long)]
         config_file: Option<PathBuf>,
     },
-    /// trace tooling over device-local run files
+    /// trace tooling over a serve's any local store (ADR-023 §7)
     Trace {
         #[command(subcommand)]
         cmd: TraceCmd,
@@ -132,12 +133,9 @@ enum Cmd {
 enum TraceCmd {
     /// list runs, newest first: status, duration, turns, turn-1 title
     Ls {
-        #[arg(default_value = "traces")]
-        dir: PathBuf,
-        /// read the any local store of this server instead of `dir`
-        /// (ADR-023) — the bao space's trace collections
-        #[arg(long)]
-        addr: Option<String>,
+        /// the any server whose local store holds the traces (ADR-023)
+        #[arg(long, default_value = config::DEFAULT_ADDR)]
+        addr: String,
         /// bao space name or id on --addr
         #[arg(long, default_value = "bao")]
         space: String,
@@ -150,8 +148,8 @@ enum TraceCmd {
     },
     /// human-side render of one run (turns = llm.chat spans)
     Show {
-        /// trace file, or a bare run id resolved against traces/
-        file: PathBuf,
+        /// run id (from `trace ls`)
+        run: String,
         /// lift every clip limit (full text, code, outputs)
         #[arg(long)]
         full: bool,
@@ -168,26 +166,25 @@ enum TraceCmd {
         /// dump one record by seq, blob-resolved, pretty-printed
         #[arg(long)]
         seq: Option<i64>,
-        /// read the any local store of this server (ADR-023); `file`
-        /// is then a bare run id
-        #[arg(long)]
-        addr: Option<String>,
+        #[arg(long, default_value = config::DEFAULT_ADDR)]
+        addr: String,
         #[arg(long, default_value = "bao")]
         space: String,
+        /// the serve's traces dir — raw blobs resolve from its blobs/
+        /// (ADR-026 §7); elsewhere a raw ref renders as its stub
+        #[arg(long, default_value = "traces")]
+        traces_dir: PathBuf,
     },
     /// live-render a run as records land (show's line format); exits
     /// when the run completes
     Follow {
-        /// trace file, or a bare run id resolved against traces/
-        /// [default: the newest run in --dir]
-        file: Option<PathBuf>,
-        #[arg(long, default_value = "traces")]
-        dir: PathBuf,
-        /// with no file: only runs whose program contains this
+        /// run id [default: the newest run on --addr]
+        run: Option<String>,
+        /// with no run: only runs whose program contains this
         #[arg(long)]
         program: Option<String>,
-        #[arg(long)]
-        addr: Option<String>,
+        #[arg(long, default_value = config::DEFAULT_ADDR)]
+        addr: String,
         #[arg(long, default_value = "bao")]
         space: String,
     },
@@ -201,70 +198,33 @@ enum TraceCmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// copy a jsonl traces directory into a server's local store
-    /// (ADR-023 §7) — records, blobs, and a summary per run; the raw
-    /// blobs/ dir is copied to --dest-dir/blobs (ADR-026 §7); idempotent
-    Import {
-        #[arg(default_value = "traces")]
-        dir: PathBuf,
-        #[arg(long)]
-        addr: String,
-        /// the serve's traces dir (raw blobs land in its blobs/)
-        #[arg(long, default_value = "traces")]
-        dest_dir: PathBuf,
-        #[arg(long, default_value = "bao")]
-        space: String,
-    },
-    /// distributions + tuning suggestions over a traces directory (or
-    /// a server's local store with --addr)
+    /// distributions + tuning suggestions over a server's local store
     Stats {
-        #[arg(default_value = "traces")]
-        dir: PathBuf,
-        #[arg(long)]
-        addr: Option<String>,
+        #[arg(long, default_value = config::DEFAULT_ADDR)]
+        addr: String,
         #[arg(long, default_value = "bao")]
         space: String,
     },
 }
 
-/// The trace store a `trace` subcommand reads (ADR-001 §8 / ADR-023):
-/// `--addr` = that server's local-store collections of `space`,
-/// otherwise the jsonl `dir`.
+/// The trace store a `trace` subcommand reads (ADR-023 §7): the
+/// local-store collections of `space` on `addr`. `traces_dir` is the
+/// serve's directory beside that server, whose blobs/ resolves raw
+/// refs (ADR-026 §7); None = raw refs render as stubs.
 fn trace_store(
-    addr: Option<&str>,
+    addr: &str,
     space: &str,
-    dir: &Path,
+    traces_dir: Option<&Path>,
 ) -> Result<Box<dyn anyrt::tracestore::TraceStore>> {
-    match addr {
-        Some(a) => {
-            let client = Arc::new(anyapi::Client::new(a));
-            let sid = serve::find_space(&client, space)?;
-            // raw blobs resolve from the dir beside the serve (ADR-026 §7)
-            Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
-                client,
-                &sid,
-                None,
-                Some(anyrt::blob::BlobDir::new(dir)),
-            )?))
-        }
-        None => Ok(Box::new(FileTraceStore::new(dir))),
-    }
-}
-
-/// `trace show run_x` — a bare run id resolves against the default
-/// traces dir, so `trace ls` output feeds straight into `show`; a path
-/// names its own store; with `--addr` the argument is a run id.
-fn resolve_trace(
-    file: PathBuf,
-    addr: Option<&str>,
-    space: &str,
-) -> Result<(Box<dyn anyrt::tracestore::TraceStore>, String)> {
-    if addr.is_some() {
-        let id = file.to_string_lossy().into_owned();
-        return Ok((trace_store(addr, space, Path::new("traces"))?, id));
-    }
-    let (store, id) = FileTraceStore::locate(&file, Path::new("traces"));
-    Ok((Box::new(store), id))
+    let client = Arc::new(anyapi::Client::new(addr));
+    let sid = serve::find_space(&client, space)
+        .with_context(|| format!("trace store: space {space:?} on {addr}"))?;
+    Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
+        client,
+        &sid,
+        None,
+        traces_dir.map(anyrt::blob::BlobDir::new),
+    )?))
 }
 
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
@@ -385,6 +345,29 @@ fn main() -> Result<()> {
                         serve::alias_map(&host.overlays, space_id),
                     )) as Box<dyn resolver::ModuleResolver + Send>
                 });
+            // the trace lands where serve's would (ADR-023 §1): the local
+            // store of the run's space — --from-space, else bao.space
+            let trace_space = match (&from, runtime.get("bao.space").and_then(Value::as_str)) {
+                (Some((_, sid)), _) => sid.clone(),
+                (None, Some(sid)) => sid.to_string(),
+                (None, None) => anyhow::bail!(
+                    "run: the trace lands in a space's local store (ADR-023 §1) — \
+                     pass --from-space, or bao.space in --config"
+                ),
+            };
+            let trace_client = match &from {
+                Some((client, _)) => client.clone(),
+                None => Arc::new(anyapi::Client::new(&any_base)),
+            };
+            let store = Arc::new(
+                anyrt::tracestore::AnyTraceStore::new(
+                    trace_client,
+                    &trace_space,
+                    None,
+                    Some(anyrt::blob::BlobDir::new(&traces_dir)),
+                )
+                .with_context(|| format!("trace store: space {trace_space} on {any_base}"))?,
+            );
             let any_base = Some(any_base);
             // kernel is embedded (ADR-009 §4); --kernel is a dev override
             let cage = match &kernel {
@@ -397,7 +380,6 @@ fn main() -> Result<()> {
             let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
             let mut writer = trace::TraceWriter::new(json!({
                 "id": run_id, "program": spec, "host": "rust"}));
-            let store = std::sync::Arc::new(FileTraceStore::new(&traces_dir));
             if let Err(e) = writer.stream_to(store.as_ref()) {
                 eprintln!("trace streaming unavailable ({e}); will write at run end");
             }
@@ -517,21 +499,20 @@ fn main() -> Result<()> {
         Cmd::Trace {
             cmd:
                 TraceCmd::Ls {
-                    dir,
                     program,
                     limit,
                     addr,
                     space,
                 },
         } => {
-            let store = trace_store(addr.as_deref(), &space, &dir)?;
+            let store = trace_store(&addr, &space, None)?;
             print!("{}", view::list(store.as_ref(), program.as_deref(), limit)?);
             Ok(())
         }
         Cmd::Trace {
             cmd:
                 TraceCmd::Show {
-                    file,
+                    run: id,
                     full,
                     system,
                     stats,
@@ -539,9 +520,10 @@ fn main() -> Result<()> {
                     seq,
                     addr,
                     space,
+                    traces_dir,
                 },
         } => {
-            let (store, id) = resolve_trace(file, addr.as_deref(), &space)?;
+            let store = trace_store(&addr, &space, Some(&traces_dir))?;
             let store = store.as_ref();
             match (seq, stats) {
                 (Some(n), _) => print!("{}", view::show_record(store, &id, n)?),
@@ -556,24 +538,23 @@ fn main() -> Result<()> {
         Cmd::Trace {
             cmd:
                 TraceCmd::Follow {
-                    file,
-                    dir,
+                    run,
                     program,
                     addr,
                     space,
                 },
         } => {
-            let (store, id) = match file {
-                Some(f) => resolve_trace(f, addr.as_deref(), &space)?,
+            let store = trace_store(&addr, &space, None)?;
+            let id = match run {
+                Some(id) => id,
                 None => {
-                    let store = trace_store(addr.as_deref(), &space, &dir)?;
                     let mut waited = false;
                     loop {
                         if let Some(p) = view::latest_run(store.as_ref(), program.as_deref()) {
-                            break (store, p);
+                            break p;
                         }
                         if !waited {
-                            eprintln!("waiting for a run in {}…", dir.display());
+                            eprintln!("waiting for a run on {addr}…");
                             waited = true;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -602,73 +583,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Trace {
-            cmd:
-                TraceCmd::Import {
-                    dir,
-                    addr,
-                    space,
-                    dest_dir,
-                },
+            cmd: TraceCmd::Stats { addr, space },
         } => {
-            use anyrt::tracestore::TraceStore;
-            let src = FileTraceStore::new(&dir);
-            let dst = trace_store(Some(&addr), &space, &dest_dir)?;
-            // raw blobs travel as files (ADR-026 §7)
-            let src_blobs = anyrt::blob::BlobDir::new(&dir);
-            let dst_blobs = anyrt::blob::BlobDir::new(&dest_dir);
-            if src_blobs.dir() != dst_blobs.dir() {
-                let mut copied = 0usize;
-                for h in src_blobs.list()? {
-                    if !dst_blobs.exists(&h) {
-                        if let Some(b) = src_blobs.read(&h)? {
-                            dst_blobs.put(&b, "application/octet-stream")?;
-                            copied += 1;
-                        }
-                    }
-                }
-                if copied > 0 {
-                    eprintln!("{copied} raw blobs → {}", dst_blobs.dir().display());
-                }
-            }
-            let runs = src.list()?;
-            let total = runs.len();
-            let mut done = 0usize;
-            let mut failed = 0usize;
-            for meta in runs.into_iter().rev() {
-                let (records, blobs) = match (src.load(&meta.id), src.blobs(&meta.id)) {
-                    (Ok(r), Ok(b)) => (r, b),
-                    (Err(e), _) | (_, Err(e)) => {
-                        eprintln!("{}: skipped ({e:#})", meta.id);
-                        failed += 1;
-                        continue;
-                    }
-                };
-                let blobs: Vec<(String, String)> = blobs.into_iter().collect();
-                let started = meta
-                    .modified
-                    .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs_f64())
-                    .unwrap_or(0.0);
-                if let Err(e) = dst
-                    .write_run(&meta.id, &records, &blobs)
-                    .and_then(|_| dst.finish(&meta.id, &records, &blobs, started, None))
-                {
-                    eprintln!("{}: not imported ({e:#})", meta.id);
-                    failed += 1;
-                    continue;
-                }
-                done += 1;
-                if done.is_multiple_of(50) {
-                    eprintln!("{done}/{total}…");
-                }
-            }
-            println!("imported {done} of {total} runs ({failed} failed) into {addr} space {space}");
-            Ok(())
-        }
-        Cmd::Trace {
-            cmd: TraceCmd::Stats { dir, addr, space },
-        } => {
-            let store = trace_store(addr.as_deref(), &space, &dir)?;
+            let store = trace_store(&addr, &space, None)?;
             print!("{}", stats::render(store.as_ref())?);
             Ok(())
         }

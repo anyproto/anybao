@@ -44,7 +44,8 @@ space = "bao"               # working space: chat, memory, your edits
 agent = { space = "bafyreibu6a7ewtk7t6lsnbmazazgcsfqx5efpmyycaycovbpzshvq2zrvy.1mmhvs7exubo9", invite = "2gChBtaWg5EX1PgV7SgXdJDtgszDPrSKcVmvvgUc1o8d16SRHrxMBkGyAQa2ZhUXua8r5gNF7bToC63m9yEGNkMfcXZCvimFtCgTqvAyZARnCWjEXvcYWQJ71ZibD6ZPZkNUghif5DHWJtLYawY2izi37Ng2MsGAwAzFcgASgzEbWW3uXMKemFcK5mRmZF7F6uh" }
 
 [paths]
-traces = "traces"
+traces = "traces"           # raw-blob directory (ADR-026); traces
+                            # themselves live in the any local store
 ```
 
 ## Operations
@@ -53,8 +54,8 @@ traces = "traces"
 |---|---|
 | `anyrt serve` | run the agent: watch the chat, run conversations + cron triggers |
 | `anyrt deploy --source repos/_agent --target <space\|overlay>` | publish a repo folder (`programs/`, `skills/`, `README.md`) to a space, hash-gated |
-| `anyrt run <name@vN>` | run one guest program from the local dir (offline dev) |
-| `anyrt trace ls --program toolcaller` | list runs, newest first |
+| `anyrt run <name@vN>` | run one guest program from the local dir (dev; the trace lands in the space's local store on `--addr`) |
+| `anyrt trace ls --program toolcaller` | list runs in a serve's local store, newest first (`--addr`, default `http://127.0.0.1:7001`) |
 | `anyrt trace show <run_id>` | render one run: turns, cells, effects (`--stats`, `--seq N`) |
 | `anyrt trace follow` | live-render the newest run as records land |
 

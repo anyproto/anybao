@@ -69,8 +69,8 @@ Conversation loop:
       (mailbox), not a second conversation.
 - [ ] Turn persisted to `agent_turns` (server-assigned seq, v2 fields:
       `traceRef`, `interrupted`, llm scalars).
-- [ ] Trace written device-local (`traces/run_*.jsonl` + blob sidecar);
-      `anyrt trace show traces/run_*.jsonl` renders it.
+- [ ] Trace written to the bao space's local store (ADR-023);
+      `anyrt trace show --addr … run_<id>` renders it.
 - [ ] Cell errors surface in the digest; the loop continues.
 - [ ] Ceilings produce a wrap-up reply, never a silent cut.
 

@@ -13,7 +13,7 @@ use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
-use crate::tracestore::{FileTraceStore, TraceStore};
+use crate::tracestore::TraceStore;
 use crate::triggers::{
     chat_watch_trigger, desired_event_sources, event_args, event_source, event_space, health_pass,
     is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
@@ -1478,24 +1478,18 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
 
     // trace storage (ADR-001 §8 / ADR-023 §1): local-store collections
-    // of the bao space by default, the jsonl dir on `traces.backend =
-    // "file"`; every writer and reader — serve, the guest's `trace.*`
+    // of the bao space, raw blobs in `traces_dir` beside them (ADR-026
+    // §1); every writer and reader — serve, the guest's `trace.*`
     // syscalls — goes through the trait
-    let traces: Arc<dyn TraceStore> = match cfg.trace_backend {
-        crate::config::TraceBackend::Any => Arc::new(
-            crate::tracestore::AnyTraceStore::new(
-                client.clone(),
-                &space,
-                election.self_peer.clone(),
-                Some(crate::blob::BlobDir::new(&cfg.traces_dir)),
-            )
-            .context("trace store: ensuring the bao space's local collections")?,
-        ),
-        crate::config::TraceBackend::File => {
-            std::fs::create_dir_all(&cfg.traces_dir)?;
-            Arc::new(FileTraceStore::new(&cfg.traces_dir))
-        }
-    };
+    let traces: Arc<dyn TraceStore> = Arc::new(
+        crate::tracestore::AnyTraceStore::new(
+            client.clone(),
+            &space,
+            election.self_peer.clone(),
+            Some(crate::blob::BlobDir::new(&cfg.traces_dir)),
+        )
+        .context("trace store: ensuring the bao space's local collections")?,
+    );
 
     // This device's trigger identity (ADR-006 §4): the registry peer
     // id — stable across restarts, so a pinned record survives them.

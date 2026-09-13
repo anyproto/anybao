@@ -121,9 +121,9 @@ anyrt deploy --addr http://127.0.0.1:7004 --source repos/_agent \
 is ONE `toolcaller@v1` trace (cron jobs — extraction/rollup/linkgen —
 outnumber conversations ~25:1, so always filter). A serve keeps
 traces in its any server's local store (ADR-023): pass that server's
-`--addr` (staging `http://127.0.0.1:7134`); `anyrt run` and
-`backend = "file"` rigs keep a jsonl dir instead (positional dir/file,
-no `--addr`):
+`--addr` (staging `http://127.0.0.1:7134`; default
+`http://127.0.0.1:7001`). There is no file store: `anyrt run` lands
+its trace in the same kind of store, on its `--addr`:
 
 ```
 anyrt trace ls --addr http://127.0.0.1:7134 --program toolcaller

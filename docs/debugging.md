@@ -14,25 +14,25 @@ Records stream **in-flight** (the header lands at run start, records
 flush at every span end / cell), so a crashed run leaves a partial
 trace (`trace show` reports `status: incomplete`). Bodies expire per
 `[traces] retain_conversations` (default 60d) / `retain_jobs` (30d);
-summaries stay. `anyrt run` and `[traces] backend = "file"` use the
-jsonl dir instead (`--traces-dir`, default `traces/`, one
-`run_<id>.jsonl` + `.blobs` sidecar) — the dev/offline store, no
-retention; `anyrt trace import <dir> --addr …` moves a dir into a
-server.
+summaries stay. `anyrt run` lands its trace the same way — in the
+local store of the run's space (`--from-space`, else `bao.space`) on
+`--addr`; there is no file store. `--traces-dir` (default `traces/`)
+is only the raw-blob directory (ADR-026 §1).
 
 Every `trace` subcommand takes `--addr <any url> [--space bao]` to
-read a server's store; without it, `dir`/`file` arguments read jsonl.
+read a server's store (default `http://127.0.0.1:7001`).
 
 ## The tools
 
 ```sh
-# the run finder: one row per run, newest first — time (file mtime),
+# the run finder: one row per run, newest first — time (run end, or
+# start while in flight),
 # run id, program, status, duration, turn count, and turn 1's user
 # text as the title. --program filters the cron noise out.
-anyrt trace ls --addr http://127.0.0.1:7134   # 30 newest, all programs (a server's store)
+anyrt trace ls --addr http://127.0.0.1:7134   # 30 newest, all programs (that server's store)
 anyrt trace ls --addr … --program toolcaller  # just conversations
 anyrt trace ls --addr … -n 0                  # everything
-anyrt trace ls traces-staging-7134            # a jsonl dir instead
+anyrt trace ls                                # --addr defaults to http://127.0.0.1:7001
 
 # human render, chronological — nothing in the trace is invisible:
 # status/fuel/wall-time header, a boot: line naming what turn 1 fed
@@ -44,14 +44,16 @@ anyrt trace ls traces-staging-7134            # a jsonl dir instead
 # (~ autorecall.plan, ~ memory.save_with_dedup) as a header line with
 # their effects + nested llm calls indented beneath. Errors are never
 # clipped.
-anyrt trace show --addr … run_<id>   # (every show flag takes --addr; a
-                                     # bare id without it resolves against traces/)
+anyrt trace show --addr … run_<id>   # (every show flag takes --addr;
+                                     # without it: http://127.0.0.1:7001)
 anyrt trace show run_<id> --full     # lift all clips (also inlines the
                                      # boot window at turn 1)
 anyrt trace show run_<id> --system   # + system prompt text
 anyrt trace show run_<id> --boot     # + boot window verbatim (history
                                      # tail + injected context)
 anyrt trace show run_<id> --seq 42   # one record, full, blob-resolved
+                                     # (raw blobs: --traces-dir, the
+                                     # serve's dir, default traces/)
 
 # per-RUN cost/usage table: one row per turn — stop, in, cacheRead,
 # cacheWrite, out, cells, effects, llm ms — with totals and costUsd.
@@ -60,9 +62,9 @@ anyrt trace show run_<id> --seq 42   # one record, full, blob-resolved
 # unknown models render '-').
 anyrt trace show run_<id> --stats
 
-# the metrics view over a DIRECTORY: fuel/duration/token
+# the metrics view over a STORE: fuel/duration/token
 # distributions (p50/p95), effect histogram, tuning suggestions
-anyrt trace stats --addr …           # (or a jsonl dir)
+anyrt trace stats --addr …
 ```
 
 Cross-run questions are queries, not file sweeps — the same surface
@@ -78,14 +80,10 @@ line prints its `#seq`, and result blocks name the record they were
 mined from (`result (mined from #77):` — the provider request right
 after the cell). Drill into any of them with `--seq N` (or jq below).
 
-Raw access to a jsonl-backed run is one record per line (never
-pretty-print the file itself):
-
-```sh
-jq . traces/run_<id>.jsonl | less
-jq 'select(.kind=="effect" and .meta.class=="mutate")' traces/run_<id>.jsonl
-jq 'select(.kind=="span" and .phase=="begin")' traces/run_<id>.jsonl
-```
+Raw access to a run is the store's query surface — the same one bao
+has (`effects.query`, ADR-023 §5): `$match {runId, kind: "effect",
+"meta.class": "mutate"}` over `trace_records`, or `--seq N` for one
+record.
 
 ## Chat reply → its trace
 

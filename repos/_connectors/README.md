@@ -53,8 +53,8 @@ cd ~/any/anybao && uv run pytest ../anybao-connectors/tests
 
 Against the persistent test rig (`anybao/docs/testing-agent-changes.md`):
 deploy as above, message bao in the rig chat to exercise the tool,
-then read the run: `anyrt trace ls traces-test --program toolcaller`,
-`anyrt trace show <run>`.
+then read the run: `anyrt trace ls --addr http://127.0.0.1:7134
+--program toolcaller`, `anyrt trace show --addr … <run>`.
 
 ## Auth
 

@@ -25,7 +25,7 @@ pub struct FileConfig {
     /// join invite (§8): `agent = { space = "…", invite = "…" }`.
     pub overlays: BTreeMap<String, OverlayEntry>,
     pub paths: PathsSection,
-    /// trace storage (ADR-023): backend + retention
+    /// trace storage (ADR-023): retention
     pub traces: TracesSection,
     /// guest-visible cascade layer: flat quoted dotted keys
     pub config: toml::Table,
@@ -34,31 +34,11 @@ pub struct FileConfig {
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct TracesSection {
-    /// "any" (local-store collections of the bao space, ADR-023) or
-    /// "file" (`paths.traces` jsonl, ADR-001 §8). Default: any.
-    pub backend: Option<String>,
     /// retention of chat-loop run bodies: "60d" (default), "never"
     pub retain_conversations: Option<String>,
     /// retention of every other program's run bodies: "30d" (default),
     /// "never"
     pub retain_jobs: Option<String>,
-}
-
-/// Where serve lands traces (ADR-023 §1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraceBackend {
-    Any,
-    File,
-}
-
-impl TraceBackend {
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        match s {
-            "any" => Ok(TraceBackend::Any),
-            "file" => Ok(TraceBackend::File),
-            other => anyhow::bail!("traces.backend must be \"any\" or \"file\", got {other:?}"),
-        }
-    }
 }
 
 /// A retention setting: a duration, or `"never"` = keep forever.
@@ -137,6 +117,7 @@ pub struct AgentSection {
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct PathsSection {
+    /// raw-blob root (ADR-026 §1): `<traces>/blobs/`
     pub traces: Option<PathBuf>,
 }
 
@@ -149,9 +130,9 @@ pub struct Config {
     pub agent_name: String,
     pub control_port: u16,
     pub overlays: BTreeMap<String, Overlay>,
+    /// `paths.traces`: the raw-blob directory (ADR-026 §1) — the bytes
+    /// behind `{__blob, bytes, mime}` refs sit at `<traces_dir>/blobs/`
     pub traces_dir: PathBuf,
-    /// trace storage backend (ADR-023 §1); file = `traces_dir`
-    pub trace_backend: TraceBackend,
     /// retention in seconds: chat-loop runs (default 60d) / every other
     /// program's runs (default 30d); `"never"` in the toml = keep
     /// forever (ADR-023 §6)
@@ -193,7 +174,6 @@ impl Default for Config {
             control_port: 7010,
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
-            trace_backend: TraceBackend::Any,
             retain_conversations_s: Some(60 * 86_400),
             retain_jobs_s: Some(30 * 86_400),
             kernel: None,
@@ -382,9 +362,6 @@ impl Config {
             .collect();
         if let Some(traces) = fc.paths.traces {
             c.traces_dir = traces;
-        }
-        if let Some(b) = fc.traces.backend {
-            c.trace_backend = TraceBackend::parse(&b)?;
         }
         if let Some(d) = fc.traces.retain_conversations {
             c.retain_conversations_s = parse_retention(&d)?;

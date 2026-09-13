@@ -57,7 +57,7 @@ agent = "bafy..."          #   values are STRICTLY space ids, never names.
 std = "bafy..."            #   `agent` = shipped programs + skills.
 
 [paths]
-traces = "traces"
+traces = "traces"          # raw-blob directory (ADR-026 §1)
 
 [config]                   # guest-visible cascade layer: FLAT quoted
 "llm.tier.chat" = { provider = "anthropic", model = "..." }  # dotted keys

@@ -20,7 +20,7 @@ spaces (so the overlay needs no guest-key invite, unlike prod):
 | serve control port | `7016` | `7010` |
 | overlay repo space | `_agentrepo` (programs + skills, ADR-009 §2) | `_agentrepo` |
 | working space | `bao` — chat/brain/memory only, created by serve | `bao` |
-| traces | the :7134 server's local store (`trace ls --addr http://127.0.0.1:7134`); `traces-staging-7134/` for `backend = "file"` | `traces/` |
+| traces | the :7134 server's local store (`trace ls --addr http://127.0.0.1:7134`) | the :7001 server's local store (`trace ls`) |
 | config | `configs/anybao.staging.toml` (gitignored — holds the account + space ids) | `configs/anybao.toml` |
 
 The account is persistent — data dir + mnemonic backup live in
@@ -69,8 +69,8 @@ cd ~/any/any-ui && VITE_API_TARGET=http://127.0.0.1:7134 pnpm dev --port 5175
 Then talk to bao in the test UI's `bao` chat and read the run:
 
 ```fish
-./runtime/target/release/anyrt trace ls traces-test --program toolcaller
-./runtime/target/release/anyrt trace show <run_id>   # + --stats / --seq N
+./runtime/target/release/anyrt trace ls --addr http://127.0.0.1:7134 --program toolcaller
+./runtime/target/release/anyrt trace show --addr http://127.0.0.1:7134 <run_id>   # + --stats / --seq N
 ```
 
 The edit loop is 2 → chat → trace: deploy is the only publish step
