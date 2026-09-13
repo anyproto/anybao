@@ -35,6 +35,10 @@ once, expensive to redo.
   system-nudge turn arrives in this chat: process it and REPLY with
   the one-message update it asks for (never chat_send it yourself —
   your reply is delivered automatically).
+- **"Stop the sync" → `stop_backfill(space, agent_space)`.** Disarms
+  the pending hop and closes the bar; the checkpoint stays, so a later
+  `start_backfill` with the same q resumes where it stopped (what was
+  synced stays synced). `stopped: False` = nothing was armed.
 - **Steady state → a cron trigger**: an `agent_triggers` record with
   kind `"cron"`, program `"connectors:gmailSync@v1"`, args
   `{"space", "q"?}` — each tick is one coalesced history increment.

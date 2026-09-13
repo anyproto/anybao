@@ -8,6 +8,8 @@ records on a per-address `mailbox` object (ADR-016), record id =
 Gmail message id, body = clean_html markdown (ADR-012 §4); the raw
 MIME stays in Gmail. Cron recipe: an agent_triggers record with kind
 "cron", program "connectors:gmailSync@v1", args {"space", "q"?}.
+Backlog: `start_backfill` arms a self-chaining once-trigger,
+`stop_backfill` disarms it (checkpoint kept), `status` reports.
 """
 
 # ADR-012 (algorithm, clean_html, chain) + ADR-016 (dataset storage)
@@ -664,6 +666,12 @@ def _trigger_anchor(agent_space):
                              "bao/triggers/v1")["objectId"]
 
 
+def _hop_prefix(space, gen):
+    # one generation's hop ids share this prefix — armed by _arm_hop,
+    # disarmed by stop_backfill
+    return f"gmailSyncBackfill-{_tid_frag(space)}-g{gen}-"
+
+
 def _arm_hop(agent_space, space, q, gen, hop):
     # gen (bumped on every start_backfill) keeps ids fresh across
     # re-arms: a fired once-trigger is consumed forever — the runner's
@@ -671,7 +679,7 @@ def _arm_hop(agent_space, space, q, gen, hop):
     # id from an earlier chain arms a dead trigger while reporting
     # armed (live: 08-13, hop-6 id reuse left the re-armed chain
     # silently inert).
-    tid = f"gmailSyncBackfill-{_tid_frag(space)}-g{gen}-h{hop}"
+    tid = f"{_hop_prefix(space, gen)}h{hop}"
     _any.upsert_record(agent_space, _trigger_anchor(agent_space),
                        "agent_triggers", tid, {
         "kind": "once", "spec": {"at": now()},  # noqa: F821 - past `at` fires late
@@ -703,6 +711,15 @@ def _notify_agent(agent_space, text):
 
 def _chain_hop(space, q, agent_space, hop, gen):
     state_id, state = _ensure_state(space)
+    cur_gen = int(state.get("chain_gen") or 0)
+    if cur_gen and gen != cur_gen:
+        # a hop from a superseded generation — stop_backfill bumped
+        # the gen, or a re-arm replaced the chain. Exit without a tick
+        # and without arming: the live generation owns the checkpoint.
+        return {"mode": "chain", "stale": True, "hop": hop, "gen": gen,
+                "chainGen": cur_gen, "done": False, "chainArmed": False,
+                "note": f"generation {gen} is stale (current {cur_gen}) "
+                        "— nothing run"}
     fails = int(state.get("chain_failures") or 0)
     if fails >= _MAX_CHAIN_FAILURES:
         # keep chain_hop truthful even on the breaker hop — a stale
@@ -847,6 +864,53 @@ def start_backfill(space, agent_space, q=None):
     return {"armed": True, "trigger": trigger,
             "estimatedTotal": total if token is None else None,
             "resumingFrom": int(state.get("synced_count") or 0)}
+
+
+@span("gmailSync.stop_backfill", kind="mutator")  # noqa: F821 - guest global
+def stop_backfill(space, agent_space):
+    """Stop a running backfill chain → {stopped, disarmed, gen,
+    syncedCount, pageToken}.
+
+    Disables the current generation's pending hop trigger(s) in place
+    (`enabled: false` — the fired hops stay behind as the audit trail)
+    and bumps `chain_gen`, so a hop already mid-run finishes its tick
+    and its successor exits as stale instead of continuing the chain.
+    The checkpoint (cursor, page token, synced count) survives:
+    `start_backfill` with the same q resumes exactly where the stop
+    landed; incremental ticks (sync_now / cron) keep working on what
+    was synced. The progress bar closes as failed with "stopped".
+    `stopped: False` means no chain was armed for this space."""
+    space, agent_space = _space_id(space), _space_id(agent_space)
+    state_id, state = _ensure_state(space)
+    gen = int(state.get("chain_gen") or 0)
+    if not gen:
+        return {"stopped": False, "disarmed": [], "gen": 0,
+                "note": "no backfill chain was ever armed for this space"}
+    anchor = _trigger_anchor(agent_space)
+    prefix = _hop_prefix(space, gen)
+    disarmed = []
+    for rec in _any.query(agent_space, anchor, "agent_triggers", limit=500):
+        tid = str(rec.get("id") or "")
+        if not tid.startswith(prefix) or not rec.get("enabled", True):
+            continue
+        _any.modify(agent_space, {
+            "objectId": anchor, "dataset": "agent_triggers",
+            "records": [{"id": tid, "ops": [
+                {"type": "$set", "path": "enabled", "value": False}]}]})
+        disarmed.append(tid)
+    # bump-after-disarm: the running hop (if any) already armed its
+    # successor — disabled above; anything it arms after this point
+    # carries the old gen and exits as stale (_chain_hop)
+    _any.update_object(space, state_id, {"sync_state": {
+        "chain_gen": gen + 1, "chain_failures": 0}})
+    _prog.fail(space, _JOB, error="backfill stopped",
+               detail=f"stopped at hop {int(state.get('chain_hop') or 0)} "
+                      f"— {len(disarmed)} pending hop(s) disarmed")
+    return {"stopped": True, "disarmed": disarmed, "gen": gen,
+            "syncedCount": int(state.get("synced_count") or 0),
+            "pageToken": state.get("page_token") or "",
+            "note": "checkpoint kept — start_backfill with the same q "
+                    "resumes from here"}
 
 
 @span("gmailSync.status", kind="getter")  # noqa: F821 - guest global

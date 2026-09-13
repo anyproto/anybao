@@ -48,6 +48,7 @@ class FakeAny:
         self.upserts = []                      # every upsert_records call
         self.updates = []
         self.records = []
+        self.trigger_patches = {}  # modify() $set ops on trigger records
         self.processes = {}      # process id -> registry row
         self.process_frames = []  # every register/progress/finish, in order
         self.chats = []          # chat_send calls (visible trigger nudges)
@@ -126,8 +127,32 @@ class FakeAny:
         self.records.append((space, object_id, dataset, record_id, value))
         return {}
 
+    def modify(self, space, body):
+        assert body["dataset"] == "agent_triggers"
+        for rec in body["records"]:
+            for op in rec["ops"]:
+                assert op["type"] == "$set" and op["path"]
+                self.trigger_patches.setdefault(rec["id"], {})[op["path"]] = op["value"]
+        return {}
+
+    def trigger(self, tid):
+        """The trigger record as the scheduler would read it."""
+        rows = self.query("agentsp", "anchor1", "agent_triggers")
+        return next(r for r in rows if r["id"] == tid)
+
     # -- dataset records (ADR-016)
     def query(self, space, object_id, dataset, filter=None, limit=None, **kw):
+        if dataset == "agent_triggers":
+            # the anchor's trigger records: every upsert_record that
+            # landed there, latest value per id, plus modify() ops
+            out = {}
+            for (sp, oid, ds, rid, val) in self.records:
+                if (sp, oid, ds) == (space, object_id, dataset):
+                    out[rid] = {"id": rid, **val}
+            for rid, patch in self.trigger_patches.items():
+                if rid in out:
+                    out[rid].update(patch)
+            return list(out.values())
         assert dataset == "email_messages"
         f = filter or {}
         rid = f.get("id")
@@ -674,3 +699,62 @@ def test_chain_circuit_breaker_stops_after_failed_hops_and_notifies():
     assert (space, chat) == ("agentsp", "chat1")
     assert body["agent"]["name"] == "trigger:gmail-backfill"
     assert "STOPPED" in body["text"] and out["notified"] == "msg1"
+
+
+def test_stop_backfill_disarms_pending_hop_keeps_checkpoint():
+    # a chain mid-drain: hop 3 fired and armed hop 4 (pending)
+    fake = FakeAny(states=[seeded_state(cursor="H1", page_token="p3",
+                                        synced_count=600, chain_gen=2,
+                                        chain_hop=3, chain_failures=0)])
+    mod = load(gmail_fx({}), fake)
+    prefix = "gmailSyncBackfill-sp-g2-"   # short names pass through _tid_frag whole
+    for hop, fired in ((3, True), (4, False)):
+        fake.upsert_record("agentsp", "anchor1", "agent_triggers",
+                           f"{prefix}h{hop}", {
+            "kind": "once", "program": "connectors:gmailSync@v1",
+            "args": chain_args(hop=hop, gen=2), "enabled": not fired})
+    fake.upsert_record("agentsp", "anchor1", "agent_triggers",
+                       "gmailSyncBackfill-other-g2-h4", {
+        "kind": "once", "enabled": True})   # another space's chain
+    out = mod.stop_backfill("sp", "agentsp")
+    assert out["stopped"] is True and out["disarmed"] == [f"{prefix}h4"]
+    assert fake.trigger(f"{prefix}h4")["enabled"] is False
+    assert fake.trigger("gmailSyncBackfill-other-g2-h4")["enabled"] is True
+    st = fake.state()
+    assert st["chain_gen"] == 3 and st["chain_failures"] == 0
+    assert (st["cursor"], st["page_token"], st["synced_count"]) == ("H1", "p3", 600)
+    assert out["syncedCount"] == 600 and out["pageToken"] == "p3"
+    prog = fake.processes["gmail-backfill.sp"]
+    assert prog["state"] == "failed" and "stopped" in prog["error"]["message"]
+    # no agent nudge: stop is a conversation action, the agent replies itself
+    assert fake.chats == []
+
+
+def test_stop_backfill_without_chain_is_a_noop():
+    fake = FakeAny(states=[seeded_state()])
+    mod = load(gmail_fx({}), fake)
+    out = mod.stop_backfill("sp", "agentsp")
+    assert out["stopped"] is False and out["disarmed"] == []
+    assert fake.state().get("chain_gen") is None
+    assert "gmail-backfill.sp" not in fake.processes
+
+
+def test_stale_generation_hop_exits_without_tick_or_arm():
+    # the hop a stop (or a re-arm) superseded fires late: it must
+    # neither list mail nor arm a successor — the live gen owns the chain
+    fake = FakeAny(states=[seeded_state(page_token="p1", chain_gen=3,
+                                        chain_hop=2)])
+    calls = []
+    def fx(name, payload):
+        calls.append(name)
+        return gmail_fx({}, pages=[{"messages": []}])(name, payload)
+    mod = load(fx, fake)
+    out = mod.main(chain_args(hop=3, gen=2))
+    assert out["stale"] is True and out["chainArmed"] is False
+    assert out["chainGen"] == 3
+    assert not any(r[3].startswith("gmailSyncBackfill") for r in fake.records)
+    assert not any(n.startswith("http") for n in calls)
+    assert fake.state()["chain_hop"] == 2     # bookkeeping untouched
+    # the live generation still runs
+    out = mod.main(chain_args(hop=3, gen=3))
+    assert "stale" not in out

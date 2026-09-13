@@ -121,6 +121,17 @@ outcome and posts the chat update itself, so an unattended sync never
 ends silently. The nudge is best-effort — a notification failure
 never fails the sync result.
 
+**Stopping a chain** (amended 2026-09-13, BOB-55):
+`stop_backfill(space, agent_space)` disables the current
+generation's pending hop trigger(s) in place (`enabled: false`; fired
+hops stay as the audit trail), bumps `chain_gen`, and closes the
+progress job as failed with "stopped". The checkpoint is untouched:
+`start_backfill` with the same q resumes from it. A hop whose `gen`
+no longer matches `sync_state.chain_gen` exits as stale — no tick,
+no successor armed — which covers both the hop already running when
+the stop lands and a superseded generation's hop firing late after a
+re-arm.
+
 **Scope changes** (amended 2026-08-13): `sync_state` records the
 scope that minted its checkpoint (`last_q`). `start_backfill` with
 the same q resumes the checkpoint; with a *different* q it clears
