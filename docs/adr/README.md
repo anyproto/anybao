@@ -38,7 +38,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 022 | Property formats — value resolution, hydration, option CRUD in `any@v1` | Accepted  |
 | 023 | Trace records in the `any` local store — bodies local, summaries synced, `effects.query` | Accepted  |
 | 024 | Shell effects — `sh.*`/`fs.*` syscalls + `bash` tool behind the `shell` feature, no restrictions yet | Accepted  |
-| 025 | Bao presence & status line over the event bus | Proposed |
+| 025 | Bao presence & status line over the event bus | Accepted |
 | 026 | Blobs — bytes as handles, a host-owned content-addressed store beside the trace | Accepted |
 | 027 | any parts, modules and the usecase catalog — stores as parts, the chat from the catalog, bodies on `page`, descriptors in `xFormat` | Accepted |
 

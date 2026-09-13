@@ -6,7 +6,10 @@ self-row writes is now PERMANENT STANDBY, never the disabled-active
 degrade; plus a brief boot retry now that registry unavailability is
 an error rather than an empty read), amended 2026-08-24 (§3: the gate
 narrowed for device-pinned triggers, ADR-006 §4 — standby no longer
-idles the whole ticker)
+idles the whole ticker), amended 2026-09-13 (§3/§5: one verdict
+snapshot; the claim holder rides the presence beat beside the
+responder role, and not answering chat repeats itself in the log,
+BOB-111)
 Date: 2026-08-17
 Builds on: ADR-006 §4 (triggers: single-owner, missed-occurrence
 rule), ADR-009 §6 (serve/lib surface), ADR-009 §8 (snapshot backlog —
@@ -77,8 +80,11 @@ row deletions move the winner (decision matrix, SYN-165).
 
 ### 3. The gate
 
-Serve carries one `active: AtomicBool` (on `RunCtx`), written ONLY by
-the election thread. Standby means:
+Serve carries one verdict snapshot (`RunCtx::verdict`: the gate +
+the claim holder of the reconcile that produced it), written ONLY by
+the election thread, as a whole, after a takeover has re-armed —
+never a gate from one reconcile beside a winner from another.
+Standby means:
 
 - **Chat watch disconnected** — not merely muted. Nothing lands in
   the watcher's seen-set, so takeover's reconnect snapshot yields the
@@ -148,8 +154,30 @@ Degrade, three distinct verdicts at boot:
 ### 5. Observability
 
 Control API `GET /election` →
-`{app, enabled, active, peerId, winner}` (winner via a live
-registry read, null when unavailable).
+`{app, enabled, active, peerId, winner}` — the verdict snapshot (§3),
+never a live registry read, so it always agrees with the beat.
+
+The presence beat carries `winner`, the snapshot's claim holder, and
+`role`, which is NOT the gate but chat-responder ownership (ADR-025
+§1; the gate does not address chat, ADR-018 §3) — so any bus
+consumer can tell the device that answers from one that does not
+without a registry read; `GET /status` shows the same envelope. A
+role or winner change republishes within the presence poll.
+
+Not answering chat is a silent state: no chat watch, no runs. So the
+log does not fall silent with it — the boot line names the winner
+(`election: peer … — standby (the active bao is peer …)`), and the
+presence thread repeats WHY once a minute for as long as this device
+does not own the enabled responder: `election: standby (the active
+bao is peer …) — chat is not answered here`, the pruned variant, or
+`chat: this device is the active bao but does not own the enabled
+chat responder (paused, or pinned to another device) …`. The repeat
+rides the presence poll, not the election thread, so it keeps
+talking while registry reads fail (those get one `election: registry
+read failed` warning and one recovery line) and on a pruned device,
+which runs no election thread. A long unanswered chat must be
+diagnosable from `agent.log` alone; one line at boot was not enough
+(BOB-111).
 
 Guest: `any@v1.list_devices()` (getter, public) is the registry read
 verbatim — `{self, active, devices}` — so bao can tell the user which
