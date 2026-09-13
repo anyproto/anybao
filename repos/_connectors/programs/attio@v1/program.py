@@ -25,9 +25,13 @@ _REQUIRED_SCOPES = ("record_permission:read, object_configuration:read, "
 _SCOPE_HINT = ("Attio tokens default to NO scopes — create/edit the integration "
                "under Workspace settings -> Developers and grant these read "
                "scopes: " + _REQUIRED_SCOPES + ".")
+# ADR-021 §8.1: the declared credential (JSON literal, read by deploy)
+__any_credentials__ = [{"ref": "connector.key.attio",
+                        "about": {"label": "Attio access token", "hosts": ["api.attio.com"],
+                                  "help": "https://developers.attio.com",
+                                  "note": "Attio tokens default to NO scopes — create/edit the integration under Workspace settings -> Developers and grant these read scopes: record_permission:read, object_configuration:read, list_entry:read, user_management:read, note:read."}}]  # noqa: E501
 _CRED = {"ref": "connector.key.attio", "header": "Authorization", "prefix": "Bearer ",
-         "about": {"label": "Attio access token", "hosts": ["api.attio.com"],
-                   "help": "https://developers.attio.com", "note": _SCOPE_HINT}}
+         "about": __any_credentials__[0]["about"]}
 
 # ADR-021: the host posts a credential prompt into the chat when the
 # ref is missing; the human enters the key there (or in Credentials).

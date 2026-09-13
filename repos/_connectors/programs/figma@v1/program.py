@@ -27,10 +27,14 @@ _MAX_RETRIES = 3
 _TIMEOUT_S = 60
 
 _SCOPES = "current_user:read, file_metadata:read, file_content:read, file_comments:read"
+# ADR-021 §8.1: the declared credential (JSON literal, read by deploy)
+__any_credentials__ = [{"ref": "connector.key.figma",
+                        "about": {"label": "Figma personal access token",
+                                  "hosts": ["api.figma.com"],
+                                  "help": "https://www.figma.com/settings (Security -> Personal access tokens)",  # noqa: E501
+                                  "note": "Tick the read scopes: current_user:read, file_metadata:read, file_content:read, file_comments:read"}}]  # noqa: E501
 _CRED = {"ref": "connector.key.figma", "header": "X-Figma-Token",
-         "about": {"label": "Figma personal access token",
-                   "hosts": ["api.figma.com"], "help": _TOKEN_URL,
-                   "note": "Tick the read scopes: " + _SCOPES}}
+         "about": __any_credentials__[0]["about"]}
 
 # ADR-021: the host posts a credential prompt into the chat when the
 # ref is missing; the human enters the key there (or in Credentials).

@@ -150,6 +150,112 @@ pub fn summary_of(docstring: &str) -> String {
 }
 
 /// The source declares itself an agent tool (ADR-010 §4).
+/// The refs a module declares it sends (ADR-021 §8.1): a module-level
+/// `__any_credentials__ = [{"ref", "about": {"label", "hosts", "help"?,
+/// "note"?}}]` written as a JSON literal (double quotes, no trailing
+/// comma — Python reads it, and so does this scanner without a Python).
+/// Ok(vec![]) when the module declares nothing; Err names the fix.
+/// `local.key.*` is the open namespace and is never declared.
+pub fn declared_credentials(code: &str) -> anyhow::Result<Vec<Value>> {
+    const MARKER: &str = "__any_credentials__";
+    let mut lines = code.lines();
+    let Some(first) = lines.find(|l| l.starts_with(MARKER)) else {
+        return Ok(vec![]);
+    };
+    let Some(rest) = first[MARKER.len()..].trim_start().strip_prefix('=') else {
+        anyhow::bail!("{MARKER} must be assigned a JSON list literal (ADR-021 §8.1)");
+    };
+    // accumulate the literal until brackets balance — strings skipped,
+    // trailing Python comments (`# noqa: E501` on a long note) dropped
+    let (mut text, mut depth) = strip_comment(rest.trim_start(), 0);
+    while depth > 0 {
+        let Some(line) = lines.next() else {
+            anyhow::bail!("{MARKER}: unbalanced brackets — the list literal never closes");
+        };
+        let (code, d) = strip_comment(line, depth);
+        text.push('\n');
+        text.push_str(&code);
+        depth = d;
+    }
+    let parsed: Value = serde_json::from_str(text.trim()).map_err(|e| {
+        anyhow::anyhow!(
+            "{MARKER} must be a JSON literal — double-quoted strings, no trailing \
+             comma, true/false/null, no names or concatenation ({e}; ADR-021 §8.1)"
+        )
+    })?;
+    let Some(entries) = parsed.as_array() else {
+        anyhow::bail!("{MARKER} must be a list of {{\"ref\", \"about\"}} objects");
+    };
+    for (i, e) in entries.iter().enumerate() {
+        let r = e.get("ref").and_then(Value::as_str).unwrap_or("");
+        if r.is_empty() {
+            anyhow::bail!("{MARKER}[{i}]: \"ref\" is required (a dotted credential ref)");
+        }
+        if r.starts_with(LOCAL_KEY_PREFIX) {
+            anyhow::bail!(
+                "{MARKER}[{i}]: {r:?} — `{LOCAL_KEY_PREFIX}*` is the open namespace and is \
+                 never declared (ADR-021 §8.1)"
+            );
+        }
+        let about = e.get("about").and_then(Value::as_object).ok_or_else(|| {
+            anyhow::anyhow!("{MARKER}[{i}] ({r}): \"about\" object is required")
+        })?;
+        if about.get("label").and_then(Value::as_str).is_none_or(str::is_empty) {
+            anyhow::bail!("{MARKER}[{i}] ({r}): about.label is required");
+        }
+        let hosts = about.get("hosts").and_then(Value::as_array);
+        let ok = hosts.is_some_and(|h| {
+            !h.is_empty() && h.iter().all(|x| x.as_str().is_some_and(|s| !s.trim().is_empty()))
+        });
+        if !ok {
+            anyhow::bail!(
+                "{MARKER}[{i}] ({r}): about.hosts must be a non-empty list of host[:port] \
+                 strings — the only destinations the secret is ever sent to (ADR-021 §7)"
+            );
+        }
+        for k in ["help", "note"] {
+            if about.get(k).is_some_and(|v| !v.is_string()) {
+                anyhow::bail!("{MARKER}[{i}] ({r}): about.{k} must be a string");
+            }
+        }
+    }
+    Ok(entries.clone())
+}
+
+/// The open credential namespace (ADR-021 §8.1).
+pub const LOCAL_KEY_PREFIX: &str = "local.key.";
+
+/// One line of the literal without its trailing Python comment, and
+/// the bracket depth after it (from `depth`); string contents, with
+/// escapes, count for neither.
+fn strip_comment(line: &str, mut depth: i32) -> (String, i32) {
+    let mut in_str = false;
+    let mut escape = false;
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        if in_str {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            out.push(c);
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth -= 1,
+            '#' => break,
+            _ => {}
+        }
+        out.push(c);
+    }
+    (out, depth)
+}
+
 pub fn has_any_tool_marker(code: &str) -> bool {
     code.lines()
         .any(|l| l.trim_start().starts_with("__any_tool__ = True"))
@@ -241,14 +347,24 @@ impl ProgramSource {
         has_any_tool_marker(&self.code)
     }
 
+    /// The `credentials` property value: the declared list as JSON text
+    /// (`"[]"` when none) — what serve reads into the declared table.
+    pub fn credentials_json(&self) -> String {
+        let list = declared_credentials(&self.code).unwrap_or_default();
+        serde_json::to_string(&Value::Array(list)).unwrap_or_else(|_| "[]".into())
+    }
+
     /// ADR-010 §4: a program marked `__any_tool__ = True` must carry
     /// the tool shape — module docstring within §1's caps and ≥1
     /// public `@span`-tagged def. Errors say what to fix.
     pub fn validate(&self) -> anyhow::Result<()> {
+        let spec = self.spec();
+        // ADR-021 §8.1: a declared credential is validated for every
+        // program, tool or not — a bad declaration never reaches a space
+        declared_credentials(&self.code).map_err(|e| anyhow::anyhow!("{spec}: {e}"))?;
         if !self.any_tool() {
             return Ok(());
         }
-        let spec = self.spec();
         let Some(doc) = module_docstring(&self.code) else {
             anyhow::bail!(
                 "{spec} declares __any_tool__ but has no module docstring — \
@@ -483,6 +599,7 @@ impl<'a> Deployer<'a> {
         }
 
         let (any_tool, summary) = (p.any_tool(), p.summary());
+        let credentials = p.credentials_json();
         let s = self.schema()?;
         let (oid, status) = match found {
             None => {
@@ -494,7 +611,8 @@ impl<'a> Deployer<'a> {
                         "any": {"name": p.name},
                         s.type_id.clone(): s.group(&[
                             ("name", json!(p.name)), ("version", json!(p.version)),
-                            ("any_tool", json!(any_tool)), ("summary", json!(summary))]),
+                            ("any_tool", json!(any_tool)), ("summary", json!(summary)),
+                            ("credentials", json!(credentials))]),
                     }}),
                 )?;
                 let oid = res["objectId"]
@@ -508,7 +626,8 @@ impl<'a> Deployer<'a> {
                     &self.space,
                     &existing,
                     &s.type_id,
-                    &s.group(&[("any_tool", json!(any_tool)), ("summary", json!(summary))]),
+                    &s.group(&[("any_tool", json!(any_tool)), ("summary", json!(summary)),
+                               ("credentials", json!(credentials))]),
                 )?;
                 (existing, "updated")
             }
@@ -1200,6 +1319,54 @@ mod tests {
             .query("agent", "obj1", &schema(&c, "agent").manifest, &json!({}))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn declared_credentials_parse_validate_and_deploy_as_a_property() {
+        let ok = concat!(
+            "\"\"\"Doc.\"\"\"\n",
+            "__any_credentials__ = [{\"ref\": \"connector.key.x\",\n",
+            "                        \"about\": {\"label\": \"X token\",  # [not a bracket]\n",
+            "                                  \"hosts\": [\"api.x.test\", \"127.0.0.1:8737\"],\n",
+            "                                  \"help\": \"https://x.test/keys\"}}]\n",
+            "_CRED = {\"ref\": \"connector.key.x\", \"header\": \"Authorization\",\n",
+            "         \"about\": __any_credentials__[0][\"about\"]}\n",
+        );
+        let got = declared_credentials(ok).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["ref"], "connector.key.x");
+        assert_eq!(got[0]["about"]["hosts"], json!(["api.x.test", "127.0.0.1:8737"]));
+        assert!(declared_credentials("def main(a):\n    return 1\n").unwrap().is_empty());
+
+        let err = |src: &str| declared_credentials(src).unwrap_err().to_string();
+        assert!(err("__any_credentials__ = [{'ref': 'connector.key.x'}]").contains("JSON literal"));
+        assert!(err("__any_credentials__ = [{\"ref\": \"local.key.x\", \"about\": {}}]")
+            .contains("open namespace"));
+        assert!(err("__any_credentials__ = [{\"ref\": \"connector.key.x\", \"about\": \
+                     {\"label\": \"X\", \"hosts\": []}}]")
+            .contains("about.hosts"));
+        assert!(err("__any_credentials__ = [{\"ref\": \"connector.key.x\", \"about\": \
+                     {\"hosts\": [\"a\"]}}]")
+            .contains("about.label"));
+        assert!(err("__any_credentials__ = [{\"ref\": \"connector.key.x\"").contains("never closes"));
+
+        // deploy refuses a bad declaration and writes a good one as the
+        // `credentials` property (JSON text), "[]" when none
+        let c = client();
+        let d = Deployer::new(&c, "agent");
+        let bad = ProgramSource::new("t", "v1", "__any_credentials__ = [1]\n");
+        assert!(d.deploy_one(&bad).unwrap_err().to_string().contains("t@v1"));
+        let p = ProgramSource::new("t", "v1", ok);
+        assert_eq!(d.deploy_one(&p).unwrap(), "created");
+        let s = schema(&c, "agent");
+        let rows = c.query_objects("agent", &json!({"filter": {s.path("name"): "t"}})).unwrap();
+        let creds: Value =
+            serde_json::from_str(s.read(&rows[0])["credentials"].as_str().unwrap()).unwrap();
+        assert_eq!(creds[0]["ref"], "connector.key.x");
+        let plain = ProgramSource::new("t", "v1", TOOL);
+        assert_eq!(d.deploy_one(&plain).unwrap(), "updated");
+        let rows = c.query_objects("agent", &json!({"filter": {s.path("name"): "t"}})).unwrap();
+        assert_eq!(s.read(&rows[0])["credentials"], json!("[]"));
     }
 
     #[test]

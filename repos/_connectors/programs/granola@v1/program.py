@@ -23,9 +23,12 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 _BASE = "https://public-api.granola.ai/v1"
 _KEY_PATH = "Granola desktop app -> Settings -> Connectors -> API keys"
+# ADR-021 §8.1: the declared credential (JSON literal, read by deploy)
+__any_credentials__ = [{"ref": "connector.key.granola",
+                        "about": {"label": "Granola API key", "hosts": ["public-api.granola.ai"],
+                                  "note": "Granola desktop app -> Settings -> Connectors -> API keys (Business or Enterprise plan)"}}]  # noqa: E501
 _CRED = {"ref": "connector.key.granola", "header": "Authorization", "prefix": "Bearer ",
-         "about": {"label": "Granola API key", "hosts": ["public-api.granola.ai"],
-                   "note": _KEY_PATH + " (Business or Enterprise plan)"}}
+         "about": __any_credentials__[0]["about"]}
 _DEFAULT_LIMIT = 25
 _MAX_LIMIT = 100
 _MAX_PAGES = 20

@@ -787,6 +787,37 @@ def _host(base_url):
     return base_url.split("//", 1)[-1].split("/", 1)[0]
 
 
+# ADR-021 §8.1: the SaaS providers' keys, declared with the one API host
+# each is ever sent to — a `base_url` edit cannot redirect them. A
+# self-hosted backend (vllm, llama.cpp, ollama, generic) has no fixed
+# host: its `llm.key.<name>` resolves like an open ref, bound to the
+# tier's base_url host when its row is created.
+__any_credentials__ = [
+    {"ref": "llm.key.anthropic",
+     "about": {"label": "Anthropic API key", "hosts": ["api.anthropic.com"],
+               "help": "https://platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace",  # noqa: E501
+               "note": "Create the key scoped to a single workspace: Console → Settings → API keys → Create key → choose a workspace. A key linked to your account with no workspace is rejected — the API then wants a workspace id on every request, which bao does not send."}},  # noqa: E501
+    {"ref": "llm.key.openai",
+     "about": {"label": "OpenAI API key", "hosts": ["api.openai.com"],
+               "help": "https://platform.openai.com/api-keys"}},
+    {"ref": "llm.key.openrouter",
+     "about": {"label": "OpenRouter API key", "hosts": ["openrouter.ai"],
+               "help": "https://openrouter.ai/settings/keys"}},
+    {"ref": "llm.key.gemini",
+     "about": {"label": "Google AI Studio API key", "hosts": ["generativelanguage.googleapis.com"],
+               "help": "https://aistudio.google.com/apikey"}},
+    {"ref": "llm.key.deepseek",
+     "about": {"label": "DeepSeek API key", "hosts": ["api.deepseek.com"],
+               "help": "https://platform.deepseek.com/api_keys"}},
+    {"ref": "llm.key.groq",
+     "about": {"label": "Groq API key", "hosts": ["api.groq.com"],
+               "help": "https://console.groq.com/keys"}},
+    {"ref": "llm.key.together",
+     "about": {"label": "Together API key", "hosts": ["api.together.xyz"],
+               "help": "https://api.together.ai/settings/api-keys"}}
+]
+
+
 def _backend_name(prov):
     name = prov.get("backend")
     if name:

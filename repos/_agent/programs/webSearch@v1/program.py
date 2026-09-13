@@ -55,6 +55,14 @@ def _host(base_url):
     return base_url.split("//", 1)[-1].split("/", 1)[0]
 
 
+# ADR-021 §8.1: the search tier's default key, declared with its host
+# (a tier re-pointed at another provider names that provider's ref)
+__any_credentials__ = [{"ref": "google.key.gemini",
+                        "about": {"label": "Gemini API key",
+                                  "hosts": ["generativelanguage.googleapis.com"],
+                                  "help": "https://aistudio.google.com/apikey"}}]
+
+
 def _parse(raw):
     """One batch item -> {ok, answer, sources, queries} | {ok: False, error}.
     Sources dedup by url; grounding-redirect urls resolve later, in one

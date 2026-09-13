@@ -37,10 +37,14 @@ _TOKEN_NOTE = (
 # `about` is the credential descriptor (ADR-021 §1): what the host
 # shows the human when the key is missing, and the destination hosts
 # the key is meant for.
+# ADR-021 §8.1: the declared credential (JSON literal, read by deploy)
+__any_credentials__ = [{"ref": "connector.key.github",
+                        "about": {"label": "GitHub personal access token",
+                                  "hosts": ["api.github.com"],
+                                  "help": "https://github.com/settings/tokens?type=beta",
+                                  "note": "Fine-grained PAT. Repository: Issues, Pull requests, Contents, Metadata; Account: Notifications for list_notifications. Read-only covers the wrapped getters; grant Read and write on Issues/Pull requests if you intend request() writes."}}]  # noqa: E501
 _CRED = {"ref": "connector.key.github", "header": "Authorization", "prefix": "Bearer ",
-         "about": {"label": "GitHub personal access token",
-                   "hosts": ["api.github.com"], "help": _TOKEN_URL,
-                   "note": _TOKEN_NOTE}}
+         "about": __any_credentials__[0]["about"]}
 _HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",

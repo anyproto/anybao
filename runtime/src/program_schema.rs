@@ -30,13 +30,21 @@ pub const SOURCE_KEY: &str = "program_source";
 pub const MANIFEST_KEY: &str = "program_manifest";
 pub const MAIN_RECORD: &str = "main";
 
-/// (xKey, display name, kind) — the declared property set.
+/// (xKey, display name, kind) — the declared property set a space
+/// must carry to resolve at all.
 const PROPS: [(&str, &str, &str); 4] = [
     ("name", "Name", "string"),
     ("version", "Version", "string"),
     ("any_tool", "Any Tool", "boolean"),
     ("summary", "Summary", "string"),
 ];
+
+/// The credentials a program declares (ADR-021 §8.1): the JSON text of
+/// its `__any_credentials__` list, derived by deploy — the host's only
+/// source for a declared ref's label and hosts. Ensured by deploy,
+/// OPTIONAL at lookup: a space deployed before this property still
+/// resolves (its programs simply declare nothing until redeployed).
+pub const CREDENTIALS_PROP: (&str, &str, &str) = ("credentials", "Credentials", "string");
 
 /// The parts the type declares: the shared body first (the docs body
 /// every program object holds through its type — no per-object
@@ -111,7 +119,7 @@ impl ProgramSchema {
             }
         };
         let mut props = prop_map(c, space, &tid)?;
-        for (xkey, name, kind) in PROPS {
+        for (xkey, name, kind) in PROPS.iter().copied().chain([CREDENTIALS_PROP]) {
             if props.contains_key(xkey) {
                 continue;
             }
@@ -160,6 +168,12 @@ impl ProgramSchema {
     /// Filter/sort path `<typeId>.<propId>`.
     pub fn path(&self, xkey: &str) -> String {
         format!("{}.{}", self.type_id, self.prop(xkey))
+    }
+
+    /// The optional `credentials` property's id (None on a space
+    /// deployed before ADR-021 §8.1 — nothing declared there).
+    pub fn credentials_prop(&self) -> Option<&str> {
+        self.props.get(CREDENTIALS_PROP.0).map(String::as_str)
     }
 
     /// The id-keyed property group `{propId: value}` for a write.
