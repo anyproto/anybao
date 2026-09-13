@@ -24,7 +24,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::caps::GrantSet;
 use crate::oauth::{OauthState, OAUTH_REF_PREFIX};
-use crate::replay::{resolve_blobs, DivergenceError, MockIndex, ReplayCursor};
+use crate::replay::{
+    never_mockable, resolve_blobs, DivergenceError, MockIndex, MockSpec, ReplayCursor, Unmatched,
+};
 
 pub type SharedMailbox = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Value>>>;
 
@@ -167,15 +169,6 @@ pub enum Mode {
     Mock,
 }
 
-/// Policy for a mock miss: fail (tests) or execute live (interactive —
-/// the executed call is traceDiff material, meta.mocked = false).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MockUnmatched {
-    Fail,
-    #[allow(dead_code)] // constructed by the mock wiring in main.rs (next round)
-    Live,
-}
-
 struct SpanFrame {
     id: String,
     name: String,
@@ -185,6 +178,11 @@ struct SpanFrame {
     t0: Instant,
     effects: u64,
     mutations: u64,
+    /// effects inside this span served from a mock (ADR-028 §5: the
+    /// digest's `(mocked)` / `(mixed …)` facade suffix reads this)
+    mocked: u64,
+    /// this span installed a span-scoped mock index (dropped on end)
+    owns_mock: bool,
 }
 
 /// The secrets store as the broker sees it (ADR-021 §4): the
@@ -309,8 +307,14 @@ pub struct Broker {
     run_cache: BTreeMap<String, Arc<Vec<Value>>>,
     pub mode: Mode,
     pub cursor: Option<ReplayCursor>,
+    /// Run-level mock index (`anyrt run --mock`, ADR-028 §4); consulted
+    /// under `Mode::Mock` when no span-scoped index is active.
     pub mock_index: Option<MockIndex>,
-    pub mock_unmatched: MockUnmatched,
+    /// Span-scoped indices (ADR-028 §3): installed by a `span.begin`
+    /// carrying `input.mock`, dropped by its `span.end`; the innermost
+    /// is consulted. Works in every mode — a mocked cell inside a live
+    /// conversation is the point.
+    span_mocks: Vec<MockIndex>,
     /// Sidecar of the trace being replayed (blob refs resolve here).
     pub blobs: BTreeMap<String, String>,
     /// None = permissive default profile (ADR-002 §2).
@@ -509,7 +513,7 @@ impl Broker {
             mode: Mode::Record,
             cursor: None,
             mock_index: None,
-            mock_unmatched: MockUnmatched::Fail,
+            span_mocks: Vec::new(),
             blobs: BTreeMap::new(),
             grants: None,
             secrets_guard: None,
@@ -556,6 +560,23 @@ impl Broker {
                 activity.note_cell(preview);
             }
         }
+        // ADR-028 §3: a spec on the span input installs a mock index
+        // for the span's lifetime — a bad spec fails the begin itself,
+        // before any effect of the span runs. The recorded input keeps
+        // the spec as given.
+        let owns_mock = match input.get("mock") {
+            Some(spec) if !spec.is_null() => {
+                let idx = self
+                    .build_mock_index(spec)
+                    .map_err(|message| EffectFailure {
+                        type_: "mock_spec".into(),
+                        message,
+                    })?;
+                self.span_mocks.push(idx);
+                true
+            }
+            _ => false,
+        };
         let parent = self.span_stack.last().map(|s| s.id.clone());
         let cell = self.current_cell.clone();
         self.writer
@@ -567,8 +588,29 @@ impl Broker {
             t0: Instant::now(),
             effects: 0,
             mutations: 0,
+            mocked: 0,
+            owns_mock,
         });
         Ok(sid)
+    }
+
+    /// A mock index from a spec value (ADR-028 §1): `from` runs load
+    /// blob-resolved through the trace store (this run's own log when
+    /// it names itself; the offline broker has no store → spec error).
+    pub fn build_mock_index(&mut self, spec: &Value) -> Result<MockIndex, String> {
+        let spec = MockSpec::parse(spec)?;
+        let own = self.writer.run_id();
+        let mut runs: BTreeMap<String, Arc<Vec<Value>>> = BTreeMap::new();
+        for run in &spec.from {
+            let records = if *run == own {
+                Arc::new(self.writer.records.clone())
+            } else {
+                self.trace_records(&json!({"run": run}))
+                    .map_err(|e| format!("mock.from {run}: {}", e.message))?
+            };
+            runs.insert(run.clone(), records);
+        }
+        MockIndex::build(spec, |run| Ok(runs[run].as_ref().clone()))
     }
 
     /// Record-mode convenience (infallible without a cursor); replay
@@ -597,11 +639,17 @@ impl Broker {
                 .expect("replay mode requires a cursor")
                 .expect_span_end(&top.name, ok)?;
         }
+        if top.owns_mock {
+            self.span_mocks.pop();
+        }
         let cell = self.current_cell.clone();
         let mut meta = json!({
             "durMs": top.t0.elapsed().as_millis() as i64,
             "effects": top.effects, "mutations": top.mutations,
         });
+        if top.mocked > 0 {
+            meta["mocked"] = json!(top.mocked);
+        }
         if let Some(k) = &top.kind {
             // narrative label (ADR-001 §4d); mutations stays the oracle
             meta.as_object_mut()
@@ -656,10 +704,17 @@ impl Broker {
 
     // span meta counters: one bump per record written
     fn bump(&mut self, class: &str) {
+        self.bump_mocked(class, false)
+    }
+
+    fn bump_mocked(&mut self, class: &str, mocked: bool) {
         for s in self.span_stack.iter_mut() {
             s.effects += 1;
             if class == "mutate" {
                 s.mutations += 1;
+            }
+            if mocked {
+                s.mocked += 1;
             }
         }
     }
@@ -814,30 +869,61 @@ impl Broker {
             };
         }
 
-        if self.mode == Mode::Mock {
-            let popped = self
-                .mock_index
-                .as_mut()
-                .expect("mock mode requires a mock index")
-                .pop(name, &key);
-            match popped {
-                Some(rec) => {
-                    self.bump(class);
-                    let mut meta = Map::new();
-                    meta.insert("mocked".into(), json!(true));
-                    meta.insert("class".into(), json!(class));
-                    return self.record_mocked(name, canonical, &key, span.as_deref(), &rec, meta);
-                }
-                None => match self.mock_unmatched {
-                    MockUnmatched::Fail => {
-                        return Err(EffectFailure {
-                            type_: "unmatched_mock".into(),
-                            message: format!("no recorded output for {name} {key}"),
-                        })
+        // Loose mock consult (ADR-028 §1/§3): the innermost span-scoped
+        // index, else the run-level one under Mode::Mock. Outside the
+        // mockable set the call is plainly live (no meta.mock at all);
+        // inside it a miss follows the spec's policy.
+        let mut unmatched_live = false;
+        if !never_mockable(name) {
+            let active = match self.span_mocks.last_mut() {
+                Some(idx) => Some(idx),
+                None if self.mode == Mode::Mock => self.mock_index.as_mut(),
+                None => None,
+            };
+            if let Some(idx) = active {
+                if idx.spec.mockable(name) {
+                    match idx.take(name, &key) {
+                        Some(entry) => {
+                            self.bump_mocked(class, true);
+                            let mut meta = Map::new();
+                            meta.insert("mocked".into(), json!(true));
+                            meta.insert("class".into(), json!(class));
+                            meta.insert("mock".into(), entry.provenance);
+                            return self.record_mocked(
+                                name,
+                                canonical,
+                                &key,
+                                span.as_deref(),
+                                &entry.rec,
+                                meta,
+                            );
+                        }
+                        None => match idx.spec.unmatched {
+                            Unmatched::Fail => {
+                                let message = format!("no mock for {name} (key {key})");
+                                self.bump(class);
+                                let cell = self.current_cell.clone();
+                                self.writer.effect(
+                                    name,
+                                    cell.as_deref(),
+                                    canonical,
+                                    &key,
+                                    None,
+                                    Some(json!({"type": "mock_unmatched", "message": message})),
+                                    json!({"mocked": false, "class": class,
+                                           "mock": {"unmatched": true}}),
+                                    span.as_deref(),
+                                );
+                                return Err(EffectFailure {
+                                    type_: "mock_unmatched".into(),
+                                    message,
+                                });
+                            }
+                            // executed live, stamped: the traceDiff view (§6)
+                            Unmatched::Live => unmatched_live = true,
+                        },
                     }
-                    // fall through: live execution (traceDiff view = mocked: false)
-                    MockUnmatched::Live => {}
-                },
+                }
             }
         }
 
@@ -849,6 +935,9 @@ impl Broker {
         meta.insert("durMs".into(), json!(dur_ms));
         meta.insert("mocked".into(), json!(false));
         meta.insert("class".into(), json!(class));
+        if unmatched_live {
+            meta.insert("mock".into(), json!({"unmatched": true}));
+        }
         if self.hosted > 0 {
             // ADR-011 §6: mark host-emitted records — replay drains on
             // this flag — and name the credential they serve
@@ -2141,6 +2230,123 @@ mod tests {
         )
     }
 
+    // --- span-scoped mocks (ADR-028 §3/§5/§8) ------------------------------------
+
+    fn span_with_mock(b: &mut Broker, spec: Value) -> String {
+        b.try_span_begin("cell", None, json!({"cell": "c1", "mock": spec}))
+            .unwrap()
+    }
+
+    #[test]
+    fn span_mock_serves_inline_records_and_drops_on_end() {
+        let mut b = make_broker("sm1");
+        span_with_mock(
+            &mut b,
+            json!({"records": [{"effect": "kernel.boot", "output": {"pin": "mocked"}}]}),
+        );
+        let out = b.call("kernel.boot", json!({"pin": 1})).unwrap();
+        assert_eq!(out, json!({"pin": "mocked"}));
+        let rec = b.writer.records.last().unwrap().clone();
+        assert_eq!(rec["meta"]["mocked"], true);
+        assert_eq!(rec["meta"]["mock"], json!({"inline": 0}));
+        // consumed: the same call inside the span now misses → fail, recorded
+        let err = b.call("kernel.boot", json!({"pin": 1})).unwrap_err();
+        assert_eq!(err.type_, "mock_unmatched");
+        assert_eq!(
+            b.writer.records.last().unwrap()["meta"]["mock"]["unmatched"],
+            true
+        );
+        b.span_end(true, None, None).unwrap();
+        let end = b.writer.records.last().unwrap().clone();
+        assert_eq!(end["kind"], "span");
+        assert_eq!(end["meta"]["mocked"], 1); // one served of two effects
+        assert_eq!(end["meta"]["effects"], 2);
+        // the spec is recorded as given, on the begin record
+        let begin = b
+            .writer
+            .records
+            .iter()
+            .find(|r| r["kind"] == "span" && r["phase"] == "begin")
+            .unwrap();
+        assert_eq!(
+            begin["input"]["mock"]["records"][0]["effect"],
+            "kernel.boot"
+        );
+        // outside the span: live, no meta.mock at all
+        let out = b.call("kernel.boot", json!({"pin": 1})).unwrap();
+        assert_eq!(out, json!({"pin": 1}));
+        let rec = b.writer.records.last().unwrap();
+        assert_eq!(rec["meta"]["mocked"], false);
+        assert!(rec["meta"].get("mock").is_none());
+    }
+
+    #[test]
+    fn span_mock_only_filter_leaves_the_rest_live_and_nested_spans_inherit() {
+        let mut b = make_broker("sm2");
+        span_with_mock(
+            &mut b,
+            json!({"only": ["http.*"],
+                   "records": [{"effect": "http.get", "output": {"status": 200}, "repeat": true}]}),
+        );
+        // outside the mockable set: plainly live, unmatched policy irrelevant
+        let out = b.call("kernel.boot", json!({"pin": 2})).unwrap();
+        assert_eq!(out, json!({"pin": 2}));
+        assert!(b.writer.records.last().unwrap()["meta"]
+            .get("mock")
+            .is_none());
+        // a nested span without its own spec inherits the enclosing index
+        b.try_span_begin("any.query", None, json!({"q": 1}))
+            .unwrap();
+        let out = b.call("http.get", json!({"url": "https://x"})).unwrap();
+        assert_eq!(out["status"], 200);
+        b.span_end(true, None, None).unwrap();
+        let inner = b.writer.records.last().unwrap().clone();
+        assert_eq!(inner["meta"]["mocked"], 1);
+        // the nested end did not drop the outer index
+        let out = b.call("http.get", json!({"url": "https://y"})).unwrap();
+        assert_eq!(out["status"], 200);
+        b.span_end(true, None, None).unwrap();
+        assert!(b.span_mocks.is_empty());
+    }
+
+    #[test]
+    fn span_mock_live_policy_stamps_tracediff_and_bad_spec_fails_begin() {
+        let mut b = make_broker("sm3");
+        span_with_mock(&mut b, json!({"unmatched": "live"}));
+        let out = b.call("kernel.boot", json!({"pin": 3})).unwrap();
+        assert_eq!(out, json!({"pin": 3}));
+        let rec = b.writer.records.last().unwrap();
+        assert_eq!(rec["meta"]["mocked"], false);
+        assert_eq!(rec["meta"]["mock"], json!({"unmatched": true}));
+        b.span_end(true, None, None).unwrap();
+
+        let err = b
+            .try_span_begin("cell", None, json!({"mock": {"from": "not-a-run"}}))
+            .unwrap_err();
+        assert_eq!(err.type_, "mock_spec");
+        assert!(b.span_mocks.is_empty());
+        assert!(b.span_stack.is_empty()); // the begin never opened
+                                          // an offline broker cannot load another run
+        let err = b
+            .try_span_begin("cell", None, json!({"mock": "run_0123456789abcdef"}))
+            .unwrap_err();
+        assert_eq!(err.type_, "mock_spec");
+        assert!(err.message.contains("no trace store"));
+    }
+
+    #[test]
+    fn span_mock_from_this_run_replays_its_own_records() {
+        let mut b = make_broker("run_cccccccccccccccc");
+        b.call("kernel.boot", json!({"pin": "live"})).unwrap();
+        span_with_mock(&mut b, json!({"from": "run_cccccccccccccccc"}));
+        let out = b.call("kernel.boot", json!({"pin": "live"})).unwrap();
+        assert_eq!(out, json!({"pin": "live"}));
+        let rec = b.writer.records.last().unwrap();
+        assert_eq!(rec["meta"]["mock"]["from"], "run_cccccccccccccccc");
+        assert_eq!(rec["meta"]["mock"]["seq"], b.writer.records[1]["seq"]);
+        b.span_end(true, None, None).unwrap();
+    }
+
     // --- bao.status syscall + PresenceState (ADR-025 §3) -----------------------
 
     #[test]
@@ -2886,21 +3092,27 @@ mod tests {
             .unwrap();
         assert_eq!(out["status"], 200);
         assert_eq!(b_fail.writer.records[1]["meta"]["mocked"], true);
+        assert_eq!(b_fail.writer.records[1]["meta"]["mock"]["from"], "rec");
         let err = b_fail
             .call("http.get", json!({"url": "https://new"}))
             .unwrap_err();
-        assert_eq!(err.type_, "unmatched_mock");
-        // an unmatched fail writes no record
-        assert_eq!(b_fail.writer.records.len(), 2);
+        assert_eq!(err.type_, "mock_unmatched");
+        // an unmatched fail IS recorded (ADR-028 §8): an error record,
+        // traceDiff-marked
+        assert_eq!(b_fail.writer.records.len(), 3);
+        assert_eq!(b_fail.writer.records[2]["error"]["type"], "mock_unmatched");
+        assert_eq!(b_fail.writer.records[2]["meta"]["mock"]["unmatched"], true);
 
         let mut b_live = make_broker("m2");
         b_live.mode = Mode::Mock;
-        b_live.mock_index = Some(MockIndex::new(&w1.records));
-        b_live.mock_unmatched = MockUnmatched::Live;
+        let mut idx = MockIndex::new(&w1.records);
+        idx.spec.unmatched = Unmatched::Live;
+        b_live.mock_index = Some(idx);
         // unmatched → executed live (kernel.boot echoes) → traceDiff material
         let out = b_live.call("kernel.boot", json!({"pin": 1})).unwrap();
         assert_eq!(out, json!({"pin": 1}));
         assert_eq!(b_live.writer.records[1]["meta"]["mocked"], false);
+        assert_eq!(b_live.writer.records[1]["meta"]["mock"]["unmatched"], true);
     }
 
     #[test]
