@@ -118,6 +118,17 @@ _TRACKING_PARAMS = re.compile(
     r"gclid|fbclid|mc_[ce]id|refId|trackingId|origin|si)=[^&#]*", re.I)
 _MAX_HREF = 300
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none|max-height\s*:\s*0", re.I)
+# §4 depth bound: markdownify recurses 2 Python frames per element level
+# under the kernel's 1000-frame limit (RecursionError at ~493 levels), and
+# bs4's html.parser has no implied end tags — Word/Outlook exports and
+# unmarked reply chains nest unclosed <p>/<div>/<font> hundreds deep in a
+# few KB. Browsers cap the tree the same way (Gecko 200, Blink 512):
+# elements deeper than this become siblings of the element at the cap.
+_MAX_DEPTH = 200
+_BLOCK_WRAPPERS = {"div", "p", "center", "section", "article"}
+_INLINE_WRAPPERS = {"span", "font"}
+_BLOCKS = _BLOCK_WRAPPERS | {"blockquote", "ul", "ol", "li", "pre", "hr",
+                             "h1", "h2", "h3", "h4", "h5", "h6"}
 _HEX2 = re.compile(r"[0-9a-fA-F]{2}")
 
 
@@ -156,6 +167,55 @@ def _unwrap_tracking(href):
     return href
 
 
+def _sole_tag_child(tag, Tag, Comment):
+    """The one element child of `tag` when every other child is
+    whitespace or a comment; None otherwise."""
+    sole = None
+    for c in tag.contents:
+        if isinstance(c, Tag):
+            if sole is not None:
+                return None
+            sole = c
+        elif not isinstance(c, Comment) and str(c).strip():
+            return None
+    return sole
+
+
+def _collapse_wrapper_chains(soup, Tag, Comment):
+    """§4: unwrap a wrapper whose only child is a like wrapper — block in
+    block (div>div>p), inline in inline (font>font>span). Lossless for
+    markdown (markdownify passes span/font through; a block child keeps
+    the block break) and iterative: find_all snapshots, unwrap is O(k)."""
+    for tag in soup.find_all(list(_BLOCK_WRAPPERS | _INLINE_WRAPPERS)):
+        child = _sole_tag_child(tag, Tag, Comment)
+        if child is None:
+            continue
+        like = _BLOCKS if tag.name in _BLOCK_WRAPPERS else _INLINE_WRAPPERS
+        if child.name in like:
+            tag.unwrap()
+
+
+def _cap_depth(soup, Tag, cap=_MAX_DEPTH):
+    """§4: browser-style depth cap. An element `cap` levels down keeps
+    its leading text; from its first element child on, its content is
+    lifted out as following siblings (document order preserved), so the
+    lifted elements sit at the cap and are bounded in turn. Explicit
+    stack, every element visited once, O(n)."""
+    stack = [(soup, 0)]
+    while stack:
+        node, d = stack.pop()
+        if d < cap:
+            stack.extend((c, d + 1) for c in node.contents if isinstance(c, Tag))
+            continue
+        first = next((i for i, c in enumerate(node.contents) if isinstance(c, Tag)), None)
+        if first is None:
+            continue
+        tail = node.contents[first:]
+        for c in reversed(tail):
+            node.insert_after(c)
+        stack.extend((c, d) for c in tail if isinstance(c, Tag))
+
+
 @span("gmailSync.clean_html", kind="getter")  # noqa: F821 - guest global
 def clean_html(html):
     """Email HTML → {markdown, signature} — the §4 named filter.
@@ -163,9 +223,11 @@ def clean_html(html):
     Five passes: layout-table flattening, quoted-chain + preheader +
     tracking-pixel removal, link hygiene (tracker unwrap, utm strip),
     notification-footer trim, signature split (signatures are persona
-    raw material, returned separately). Pure compute — fuel-priced at
-    ~15M/KB of input."""
-    from bs4 import BeautifulSoup
+    raw material, returned separately) — with the tree depth-bounded
+    (wrapper-chain collapse, then a browser-style cap) before the
+    recursive markdown conversion, and plain text as the last resort.
+    Pure compute — fuel-priced at ~15M/KB of input."""
+    from bs4 import BeautifulSoup, Comment, Tag
     from markdownify import markdownify as _md
 
     soup = BeautifulSoup((html or "")[:_HTML_CAP], "html.parser")
@@ -213,8 +275,14 @@ def clean_html(html):
         cell.name = "div"
     for scaffold in soup.find_all(["table", "tbody", "thead", "tfoot", "tr"]):
         scaffold.unwrap()
+    # depth bound (after the table pass, so its div chains collapse too)
+    _collapse_wrapper_chains(soup, Tag, Comment)
+    _cap_depth(soup, Tag)
 
-    text = _md(str(soup), heading_style="ATX", strip=["img"])
+    try:
+        text = _md(str(soup), heading_style="ATX", strip=["img"])
+    except RecursionError:
+        text = soup.get_text("\n")   # bs4 walks iteratively; never lose the mail
     # strong footer markers cut anywhere; weak ones only in the tail fifth
     m = re.search(r"^\s*(—\s*\n\s*)?(Reply to this email directly\b|"
                   r"You are receiving this (email )?because\b)", text, re.M)

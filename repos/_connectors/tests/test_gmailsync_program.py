@@ -13,6 +13,7 @@ import base64
 import json
 import re
 
+import pytest
 from connectorenv import connector_kernel
 
 # --- fakes -------------------------------------------------------------------
@@ -382,6 +383,73 @@ def test_clean_html_footer_trim_cuts_notification_tail():
     out = mod.clean_html(html)
     assert "PR #7 merged" in out["markdown"]
     assert "receiving this" not in out["markdown"]
+
+
+@pytest.fixture
+def kernel_recursion_limit():
+    # the wasm kernel runs CPython's default limit of 1000; pin the host to
+    # it so a raised host limit can't hide a depth regression
+    import sys
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    yield
+    sys.setrecursionlimit(old)
+
+
+def test_clean_html_survives_unclosed_tag_chains(kernel_recursion_limit):
+    # BOB-98: html.parser has no implied end tags — 494 unclosed <div>s
+    # (~2.5 KB, a Word/Outlook export shape) nest 494 deep and markdownify's
+    # 2-frames-per-level recursion died under the kernel's 1000-frame limit.
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    html = "<div>" * 1500 + "deep text" + "</div>" * 1500
+    md = mod.clean_html(html)["markdown"]
+    assert md == "deep text"                       # chain collapsed losslessly
+    html = "".join(f"<p>para {i}" for i in range(700))   # every p unclosed, own text
+    md = mod.clean_html(html)["markdown"]
+    for i in (0, 199, 200, 450, 699):
+        assert f"para {i}" in md
+    assert "para 698\n\npara 699" in md        # capped p's stay paragraphs, in order
+    html = "".join("<font face=Arial>" * 5 for _ in range(200)) + "inline"
+    assert mod.clean_html(html)["markdown"] == "inline"
+
+
+def test_clean_html_survives_unmarked_reply_chain(kernel_recursion_limit):
+    # a client without a recognised quote marker: each reply = div>blockquote
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    html = "<p>latest</p>" + "".join(
+        f"<div><blockquote><p>reply {i}</p>" for i in range(400)) + "</blockquote></div>" * 400
+    md = mod.clean_html(html)["markdown"]
+    assert md.startswith("latest")
+    assert "reply 0" in md and "reply 399" in md
+    assert "> reply 0" in md                       # shallow quoting kept
+
+
+def test_clean_html_depth_bound_keeps_shallow_structure():
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    md = mod.clean_html("<div><b>Hi</b></div><div><b>Bye</b></div>")["markdown"]
+    assert md == "**Hi**\n\n**Bye**"              # div>inline is NOT collapsed
+    md = mod.clean_html("<div><blockquote><p>quoted</p></blockquote></div>"
+                        "<p>after</p>")["markdown"]
+    assert md == "> quoted\n\nafter"              # blockquote itself never unwraps
+    md = mod.clean_html("<div><div><p>one</p><p>two</p></div></div>")["markdown"]
+    assert md == "one\n\ntwo"
+
+
+def test_clean_html_falls_back_to_text_on_recursion_error(monkeypatch):
+    # belt and braces: a shape neither pass anticipated still yields a record
+    fake = FakeAny()
+    mod = load(gmail_fx({}), fake)
+    import markdownify
+    def boom(*a, **k):
+        raise RecursionError("maximum recursion depth exceeded")
+    monkeypatch.setattr(markdownify, "markdownify", boom)
+    out = mod.clean_html("<p>still <b>here</b></p><p>--</p><p>Sig</p>")
+    assert "still" in out["markdown"] and "here" in out["markdown"]
+    assert "**" not in out["markdown"]             # plain text, not markdown
+    assert out["signature"] == "Sig"
 
 
 # --- full-sync slice ---------------------------------------------------------
