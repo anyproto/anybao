@@ -6,11 +6,10 @@ tick's real governor is fuel — it checkpoints and exits when the
 budget runs low. Mail lands as `email_messages` runtime-dataset
 records on a per-address `mailbox` object (ADR-016), record id =
 Gmail message id, body = clean_html markdown (ADR-012 §4); the raw
-MIME stays in Gmail. Cron recipe: an agent_triggers record with kind
-"cron", program "connectors:gmailSync@v1", args {"space", "q"?}.
-Backlog: `start_backfill` arms a self-chaining once-trigger,
-`stop_backfill` disarms it (checkpoint kept), `status` reports,
-`retry_skipped` re-runs the messages the cleaner could not process.
+MIME stays in Gmail. Cron: an agent_triggers record, kind "cron",
+program "connectors:gmailSync@v1", args {"space", "q"?}. Backlog:
+`start_backfill` arms a self-chaining once-trigger, `stop_backfill`
+disarms it (checkpoint kept), `retry_skipped` re-runs skipped mail.
 """
 
 # ADR-012 (algorithm, clean_html, chain) + ADR-016 (dataset storage)
