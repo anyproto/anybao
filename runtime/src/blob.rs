@@ -8,6 +8,7 @@
 //! guest never sees a path; the host never sees the guest hold bytes
 //! it did not ask for.
 
+use anyhow::Context;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -76,11 +77,27 @@ pub struct BlobDir {
 }
 
 impl BlobDir {
-    /// `<traces_dir>/blobs` — created on the first write.
+    /// `<traces_dir>/blobs` for a READER (`trace show/blob`): nothing is
+    /// created, a missing directory is a miss on every hash.
     pub fn new(traces_dir: &Path) -> Self {
         BlobDir {
             dir: traces_dir.join("blobs"),
         }
+    }
+
+    /// `<traces_dir>/blobs` for a WRITER (serve, `run`): the directory
+    /// is created here, up front, so an unwritable location fails the
+    /// boot with its path instead of a per-blob warning that reads back
+    /// as `blob_missing` minutes later (ADR-026 §1). A relative
+    /// `traces_dir` resolves against the cwd at this point.
+    pub fn create(traces_dir: &Path) -> anyhow::Result<Self> {
+        let dir = std::env::current_dir()
+            .unwrap_or_default()
+            .join(traces_dir)
+            .join("blobs");
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("creating the blob directory {}", dir.display()))?;
+        Ok(BlobDir { dir })
     }
 
     pub fn dir(&self) -> &Path {

@@ -364,7 +364,7 @@ fn main() -> Result<()> {
                     trace_client,
                     &trace_space,
                     None,
-                    Some(anyrt::blob::BlobDir::new(&traces_dir)),
+                    Some(anyrt::blob::BlobDir::create(&traces_dir)?),
                 )
                 .with_context(|| format!("trace store: space {trace_space} on {any_base}"))?,
             );

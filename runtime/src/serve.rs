@@ -1607,13 +1607,17 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // trace storage (ADR-001 §8 / ADR-023 §1): local-store collections
     // of the bao space, raw blobs in `traces_dir` beside them (ADR-026
     // §1); every writer and reader — serve, the guest's `trace.*`
-    // syscalls — goes through the trait
+    // syscalls — goes through the trait. The blob directory is created
+    // here, and an unwritable one fails the boot: a blob dropped later
+    // would only surface as `blob_missing` on read.
+    let blobs = crate::blob::BlobDir::create(&cfg.traces_dir)?;
+    step(&format!("blob directory {}", blobs.dir().display()));
     let traces: Arc<dyn TraceStore> = Arc::new(
         crate::tracestore::AnyTraceStore::new(
             client.clone(),
             &space,
             election.self_peer.clone(),
-            Some(crate::blob::BlobDir::new(&cfg.traces_dir)),
+            Some(blobs),
         )
         .context("trace store: ensuring the bao space's local collections")?,
     );
