@@ -1,13 +1,17 @@
 # ADR-025: Bao presence & status line over the event bus
 
-Status: **Proposed** (2026-08-31)
+Status: **Proposed** (2026-08-31), amended 2026-09-13 (§1/§2/§6: the
+beat carries the election role and the claim holder — a standby
+device beats like an active one and must never read as "bao is
+online", BOB-111)
 Date: 2026-08-31
 Builds on: ADR-005 (progress bubbles — related family, NOT migrated
 here), ADR-014 (progress: a module owning its transport), ADR-015
 (election identity), ADR-023 (run summaries — the fallback text
 source), any doc 21 (event bus envelope), api-parity.md's 2026-07-08
 pub/sub note
-Task: BOB-73
+Tasks: BOB-73; BOB-111 (`role`/`winner` in the beat), BOB-117 (the
+UI consumer of §6)
 
 ## Context
 
@@ -45,6 +49,8 @@ Both ride one envelope:
   "data": {
     "identity":  "<peer id>",
     "state":     "boot" | "idle" | "working" | "shutdown",
+    "role":      "active" | "standby",   // the election verdict (ADR-015 §3)
+    "winner":    "<peer id>",            // the registry's claim holder; absent when none
     "run": {                             // iff working
       "id": "…", "title": "…", "startedAt": 123.0,
       "cells": 12,                       // tool calls so far (cell+bash spans)
@@ -55,6 +61,16 @@ Both ride one envelope:
   }
 }
 ```
+
+`state` describes the run loop; `role` says whether this device is
+the one that answers (the ADR-015 §3 gate). A standby serve beats
+too — `idle`, same cadence — so a consumer that reads liveness alone
+cannot tell it from the working agent; only `role` can. `winner` is
+the claim holder of the reconcile that produced the verdict (the
+same peer `GET /election` reports), so naming the device that
+answers costs no registry read on the beat path. Election disabled
+(server predates the registry) beats `active` with no `winner`; a
+pruned device beats `standby`.
 
 Timestamps are unix seconds — staleness math is the consumer's job.
 At-most-once bus ⇒ the payload is an idempotent full-state write
@@ -82,8 +98,9 @@ no model in the loop, same rule as the rest of layer 1.
 
 Serve beats every 10s from a dedicated presence thread, and
 republishes within its 1s poll on ANY change in what the beat would
-say — a line set, a run starting or ending, a new tool call (the
-change signature). Working/idle flips and the call counter are
+say — a line set, a run starting or ending, a new tool call, a
+takeover or stand-down (the change signature). Working/idle flips,
+the call counter and the role are
 therefore ~1s behind reality, never a full beat; the cadence beat is
 the liveness floor. Budget: one event per tool call ≈ one per few
 seconds on a busy run — far under the bus's 30 msg/s cap. The UI
@@ -156,13 +173,26 @@ revisit (api-parity note).
 ### 6. Trust & multi-device
 
 `sender` is server-stamped (self: true, own account only) — no
-client-supplied identity on the wire. Pre-election overlap and the
-remote-runner future mean two serves may beat at once: the UI
-dedups by `identity`, shows online if ANY fresh beat exists, and
-working-state from whichever identity is freshest.
+client-supplied identity on the wire. Several serves beat at once as
+a matter of course: every standby device (ADR-015 §3), plus
+pre-election overlap and the remote-runner future. The UI dedups by
+`identity` and keys "online" to the ROLE, never to liveness alone:
+
+- bao is online iff a fresh beat carries `role: "active"`;
+  working-state comes from that beat.
+- fresh beats that are all `standby` mean "another device holds
+  bao" — `winner` names it (the devices registry has its name,
+  ADR-015 §5) — and the active device is offline if it does not beat
+  itself. Never "online".
+- no fresh beat at all ⇒ offline.
+
+The switch is the user's, explicit, on the device they want (ADR-015
+§2/§5): the UI names the offline claim holder and offers "use this
+device" — BOB-117 owns that surface.
 
 ### 7. Testing
 
 Serve: `StubTransport` assertions on the publish sequence (boot →
 idle → working + run title → idle → shutdown; line set + decay;
-set republishes immediately). UI: atom + staleness tests.
+set republishes immediately; a role flip republishes within a poll,
+the envelope carries `role` + `winner`). UI: atom + staleness tests.

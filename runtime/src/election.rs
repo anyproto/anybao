@@ -24,6 +24,43 @@ pub enum Decision {
     Claim,
 }
 
+/// One reconcile's outcome (ADR-015 §2): the gate value plus the
+/// registry's claim holder — the peer every presence beat names
+/// (ADR-025 §1 `winner`) and the standby log line points at (§5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    pub active: bool,
+    /// `active["bao"]` of the reply that produced the verdict; None
+    /// when the registry names no claim holder
+    pub winner: Option<String>,
+}
+
+impl Verdict {
+    fn of(active: bool, reply: &Value, app: &str) -> Self {
+        Verdict {
+            active,
+            winner: reply["active"][app].as_str().map(str::to_string),
+        }
+    }
+
+    /// The log-line form: `ACTIVE` / `standby (the active bao is peer …)`.
+    pub fn describe(&self) -> String {
+        if self.active {
+            return "ACTIVE".into();
+        }
+        match &self.winner {
+            Some(w) => format!("standby (the active bao is peer {w})"),
+            None => "standby (no claim holder in the registry)".into(),
+        }
+    }
+}
+
+/// While standby, the election thread repeats its verdict every this
+/// many polls (§5): standby is a silent state — no chat watch, no
+/// runs — so one boot line cannot explain a long unanswered chat.
+/// 6 × `POLL` = once a minute.
+pub const STANDBY_LOG_EVERY: u32 = 6;
+
 /// Boot-time election state (ADR-015): the gate flag (written only by
 /// the election thread after boot) + this device's registry identity.
 /// `enabled: false` = the server predates `/v1/devices` — gate
@@ -36,6 +73,9 @@ pub struct Election {
     /// fires the triggers pinned to this device (ADR-006 §4) — a
     /// pruned device runs NOTHING.
     pub pruned: bool,
+    /// the registry's claim holder at boot (the `Verdict`'s `winner`);
+    /// None when disabled, pruned, or no claim exists yet
+    pub winner: Option<String>,
 }
 
 impl Election {
@@ -45,6 +85,7 @@ impl Election {
             active: Arc::new(AtomicBool::new(true)),
             self_peer: None,
             pruned: false,
+            winner: None,
         }
     }
 
@@ -56,6 +97,7 @@ impl Election {
             active: Arc::new(AtomicBool::new(false)),
             self_peer: None,
             pruned: true,
+            winner: None,
         }
     }
 }
@@ -118,11 +160,11 @@ const PRUNED: &str = "device.pruned";
 /// One reconcile: fetch → decide → claim-and-verify. `None` on read
 /// failure — the caller keeps the last verdict (a transient error must
 /// not flap the gate, ADR-015 §4).
-pub fn reconcile(client: &Client, self_peer: &str, app: &str) -> Option<bool> {
+pub fn reconcile(client: &Client, self_peer: &str, app: &str) -> Option<Verdict> {
     let reply = client.list_devices().ok()?;
     match decide(&reply, self_peer, app) {
-        Decision::Active => Some(true),
-        Decision::Standby => Some(false),
+        Decision::Active => Some(Verdict::of(true, &reply, app)),
+        Decision::Standby => Some(Verdict::of(false, &reply, app)),
         Decision::Claim => {
             if let Err(e) = client.activate_device(app) {
                 // pruned mid-run: the claim can never land — stand
@@ -132,7 +174,7 @@ pub fn reconcile(client: &Client, self_peer: &str, app: &str) -> Option<bool> {
                         "election: this device was pruned from the registry — \
                          standing by (a fresh `any init` re-registers)"
                     );
-                    return Some(false);
+                    return Some(Verdict::of(false, &reply, app));
                 }
                 warn!("election: claim failed ({e}); keeping last state");
                 return None;
@@ -141,7 +183,8 @@ pub fn reconcile(client: &Client, self_peer: &str, app: &str) -> Option<bool> {
             // unsettled Claim verdict reads as active (optimistic, the
             // next poll reconciles)
             let reply = client.list_devices().ok()?;
-            Some(decide(&reply, self_peer, app) != Decision::Standby)
+            let active = decide(&reply, self_peer, app) != Decision::Standby;
+            Some(Verdict::of(active, &reply, app))
         }
     }
 }
@@ -196,16 +239,17 @@ fn boot_with(client: &Client, version: &str, retry_delay: std::time::Duration) -
             last_err = "no self peer id in /v1/devices replies".into();
             continue;
         };
-        let active = reconcile(client, &peer, APP_SLUG).unwrap_or(true);
-        info!(
-            "election: peer {peer} — {}",
-            if active { "ACTIVE" } else { "standby" }
-        );
+        let verdict = reconcile(client, &peer, APP_SLUG).unwrap_or(Verdict {
+            active: true,
+            winner: None,
+        });
+        info!("election: peer {peer} — {}", verdict.describe());
         return Election {
             enabled: true,
-            active: Arc::new(AtomicBool::new(active)),
+            active: Arc::new(AtomicBool::new(verdict.active)),
             self_peer: Some(peer),
             pruned: false,
+            winner: verdict.winner,
         };
     }
     warn!("election: device registration failed ({last_err}) — election disabled this run");
@@ -363,6 +407,7 @@ mod tests {
         assert!(e.enabled);
         assert!(!e.active.load(Ordering::Relaxed));
         assert_eq!(e.self_peer.as_deref(), Some("me"));
+        assert_eq!(e.winner.as_deref(), Some("mac")); // the beat names it
         let calls = log.lock().unwrap();
         let paths: Vec<&str> = calls.iter().map(|(_, p, _)| p.as_str()).collect();
         assert_eq!(paths, ["/v1/devices/me", "/v1/devices", "/v1/devices"]);
@@ -385,6 +430,7 @@ mod tests {
         ]);
         let e = boot(&c, "0.1.0");
         assert!(e.enabled && e.active.load(Ordering::Relaxed));
+        assert_eq!(e.winner.as_deref(), Some("me"));
         let calls = log.lock().unwrap();
         assert_eq!(calls[3].0, "POST");
         assert_eq!(calls[3].1, "/v1/devices/activate");
@@ -409,7 +455,24 @@ mod tests {
             json!({"bao": "mac"}),
         );
         let (c, _) = scripted(&[(200, no_winner), (200, json!({})), (200, lost)]);
-        assert_eq!(reconcile(&c, "me", "bao"), Some(false));
+        let v = reconcile(&c, "me", "bao").unwrap();
+        assert!(!v.active);
+        assert_eq!(v.winner.as_deref(), Some("mac")); // from the VERIFY read
+    }
+
+    #[test]
+    fn verdict_describe_names_the_winner() {
+        let won = reply(json!([dev("me", json!({"bao": {}}))]), json!({"bao": "me"}));
+        assert_eq!(Verdict::of(true, &won, "bao").describe(), "ACTIVE");
+        let lost = reply(json!([]), json!({"bao": "mac"}));
+        assert_eq!(
+            Verdict::of(false, &lost, "bao").describe(),
+            "standby (the active bao is peer mac)"
+        );
+        assert_eq!(
+            Verdict::of(false, &json!({}), "bao").describe(),
+            "standby (no claim holder in the registry)"
+        );
     }
 
     #[test]
@@ -468,6 +531,8 @@ mod tests {
         // the keep-last-state None
         let no_winner = reply(json!([dev("me", json!({"bao": {}}))]), json!({}));
         let (c, _) = scripted(&[(200, no_winner), pruned_reply()]);
-        assert_eq!(reconcile(&c, "me", "bao"), Some(false));
+        let v = reconcile(&c, "me", "bao").unwrap();
+        assert!(!v.active);
+        assert_eq!(v.winner, None);
     }
 }

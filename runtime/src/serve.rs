@@ -977,19 +977,50 @@ fn current_run(runs: &BTreeMap<String, crate::triggers::LiveRun>) -> Option<Valu
         })
 }
 
+/// The election's word on this serve, as the beat carries it (ADR-025
+/// §1 `role`/`winner`): the gate (ADR-015 §3) plus the registry's
+/// claim holder. `state` describes the run loop; `role` says whether
+/// this device is the one that answers — a standby beats too, as
+/// `idle`, and only `role` tells the two apart (BOB-111).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BeatRole {
+    active: bool,
+    /// None when no claim exists, or the election is disabled/pruned
+    winner: Option<String>,
+}
+
+/// The role a beat carries right now: the gate + the winner slot the
+/// election thread keeps current.
+fn beat_role(ctx: &RunCtx) -> BeatRole {
+    BeatRole {
+        active: ctx.active.load(Ordering::Relaxed),
+        winner: ctx.winner.lock().unwrap().clone(),
+    }
+}
+
 /// The full-state beat envelope (ADR-025 §1). `state` ∈ boot | idle |
-/// working | shutdown; `run` rides only while working (the caller
-/// passes `current_run`), the line only while fresh (decay:
-/// `PresenceState::line`). Timestamps are unix seconds (staleness
-/// math is the consumer's job, same as `AgentTypingRow`'s `sinceSec`).
+/// working | shutdown; `role` ∈ active | standby with `winner` beside
+/// it when the registry names one; `run` rides only while working
+/// (the caller passes `current_run`), the line only while fresh
+/// (decay: `PresenceState::line`). Timestamps are unix seconds
+/// (staleness math is the consumer's job, same as `AgentTypingRow`'s
+/// `sinceSec`).
 fn status_envelope(
     identity: &str,
     status: &PresenceState,
     run: Option<Value>,
     state: &str,
+    role: &BeatRole,
     now: f64,
 ) -> Value {
-    let mut data = json!({"identity": identity, "state": state});
+    let mut data = json!({
+        "identity": identity,
+        "state": state,
+        "role": if role.active { "active" } else { "standby" },
+    });
+    if let Some(w) = &role.winner {
+        data["winner"] = json!(w);
+    }
     if let Some(run) = run {
         data["run"] = run;
     }
@@ -1016,9 +1047,11 @@ fn publish_status_beat(
     status: &PresenceState,
     run: Option<Value>,
     state: &str,
+    role: &BeatRole,
     now: f64,
 ) {
-    if let Err(e) = client.publish_event(&status_envelope(identity, status, run, state, now)) {
+    if let Err(e) = client.publish_event(&status_envelope(identity, status, run, state, role, now))
+    {
         warn!("bao.status beat not published: {e}");
     }
 }
@@ -1033,30 +1066,35 @@ struct PresenceLoop {
 }
 
 /// What makes a beat DUE besides cadence: any change in what the beat
-/// would say — the line generation, which run is live, and how far it
-/// has come. Run start/end and every new tool call republish within a
-/// poll (~1s), which is what keeps the UI's working/idle flip and the
-/// call counter live instead of up to a beat behind (ADR-025 §2).
-fn presence_sig(status: &PresenceState, run: Option<&Value>) -> String {
+/// would say — the line generation, which run is live, how far it
+/// has come, and the election role/winner. Run start/end, every new
+/// tool call and a takeover/stand-down republish within a poll (~1s),
+/// which is what keeps the UI's working/idle flip, the call counter
+/// and the role live instead of up to a beat behind (ADR-025 §2).
+fn presence_sig(status: &PresenceState, run: Option<&Value>, role: &BeatRole) -> String {
     format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         status.line_gen(),
         run.and_then(|r| r["id"].as_str()).unwrap_or(""),
         run.and_then(|r| r["cells"].as_u64()).unwrap_or(0),
+        role.active,
+        role.winner.as_deref().unwrap_or(""),
     )
 }
 
 /// One poll pass: publish a beat if due (boot, cadence, or a change —
-/// line set, run start/end, tool call). Returns true when a beat went out.
+/// line set, run start/end, tool call, role flip). Returns true when a
+/// beat went out.
 fn presence_pass(
     client: &Client,
     identity: &str,
     status: &PresenceState,
     run: Option<Value>,
+    role: &BeatRole,
     st: &mut PresenceLoop,
     now: f64,
 ) -> bool {
-    let sig = presence_sig(status, run.as_ref());
+    let sig = presence_sig(status, run.as_ref(), role);
     let due = st.last_beat.is_none()
         || now - st.last_beat.unwrap() >= STATUS_BEAT_S
         || sig != st.last_sig;
@@ -1071,7 +1109,7 @@ fn presence_pass(
     } else {
         "idle"
     };
-    publish_status_beat(client, identity, status, run, state, now);
+    publish_status_beat(client, identity, status, run, state, role, now);
     st.last_beat = Some(now);
     st.last_sig = sig;
     st.booted = true;
@@ -1093,6 +1131,7 @@ fn presence_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::Join
                     &ctx.status,
                     None,
                     "shutdown",
+                    &beat_role(&ctx),
                     now_s(),
                 );
                 return;
@@ -1104,6 +1143,7 @@ fn presence_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::Join
                 &presence_identity(&ctx),
                 &ctx.status,
                 run,
+                &beat_role(&ctx),
                 &mut st,
                 now,
             );
@@ -1569,6 +1609,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         active: election.active.clone(),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
+        winner: Mutex::new(election.winner.clone()),
         live_runs: Mutex::new(BTreeMap::new()),
         status: Default::default(),
     });
@@ -1708,6 +1749,12 @@ pub struct RunCtx {
     /// tombstoned device (ADR-015 §4): unlike standby, a pruned device
     /// fires NOTHING — not even its pins
     pub pruned: bool,
+    /// the registry's claim holder as of the last reconcile (ADR-015
+    /// §2): rides every beat as `winner` (ADR-025 §1) so a consumer
+    /// can name the device that answers without a registry read.
+    /// Written by the election thread; None = no claim, or election
+    /// disabled/pruned.
+    pub winner: Mutex<Option<String>>,
     /// every run in flight on this serve, by run id — chat, trigger
     /// and control runs alike. The control API's `POST /break/<runId>`
     /// resolves here (ADR-005 §3); entries live exactly as long as
@@ -2890,20 +2937,29 @@ fn election_thread(
         let Some(peer) = ctx.self_peer.clone() else {
             return; // enabled implies a peer id; belt and braces
         };
+        let mut standby_polls: u32 = 0;
         loop {
             sliced_sleep(crate::election::POLL, &stop);
             if stop.load(Ordering::Relaxed) {
                 return;
             }
-            let verdict = crate::election::reconcile(&ctx.client, &peer, crate::election::APP_SLUG);
-            match verdict {
-                None => {} // transient read failure — keep the last state
-                Some(true) if !ctx.active.load(Ordering::Relaxed) => {
+            let Some(verdict) =
+                crate::election::reconcile(&ctx.client, &peer, crate::election::APP_SLUG)
+            else {
+                continue; // transient read failure — keep the last state
+            };
+            // the claim holder rides every beat (ADR-025 §1) — stored
+            // BEFORE the gate moves, so the takeover/stand-down beat
+            // already names the right device
+            *ctx.winner.lock().unwrap() = verdict.winner.clone();
+            let winner = verdict.winner.as_deref().unwrap_or("(none)");
+            match (verdict.active, ctx.active.load(Ordering::Relaxed)) {
+                (true, false) => {
                     takeover(&shared, &ctx);
                     ctx.active.store(true, Ordering::Relaxed); // AFTER re-arm
                     info!("election: TAKEOVER — this device is now the active bao");
                 }
-                Some(false) if ctx.active.load(Ordering::Relaxed) => {
+                (false, true) => {
                     ctx.active.store(false, Ordering::Relaxed);
                     // the new active device answers these; in-flight
                     // runs finish on their own (never interrupt a turn)
@@ -2938,9 +2994,22 @@ fn election_thread(
                             &trigger_to_record(&t),
                         );
                     }
-                    info!("election: stand-down — another device is the active bao");
+                    info!("election: stand-down — the active bao is now peer {winner}");
                 }
-                Some(_) => {} // verdict matches the current state
+                (false, false) => {
+                    // standby is a SILENT state — no chat watch, no
+                    // runs — so it says so once a minute, naming the
+                    // winner: a long unanswered chat has to be
+                    // diagnosable from the log alone (ADR-015 §5)
+                    standby_polls += 1;
+                    if standby_polls.is_multiple_of(crate::election::STANDBY_LOG_EVERY) {
+                        info!("election: standby — the active bao is peer {winner}");
+                    }
+                }
+                (true, true) => {} // verdict matches the current state
+            }
+            if verdict.active {
+                standby_polls = 0;
             }
         }
     })
@@ -3151,7 +3220,7 @@ fn handle_control(
             let run = current_run(&ctx.live_runs.lock().unwrap());
             let state = if run.is_some() { "working" } else { "idle" };
             Ok(json!({
-                "envelope": status_envelope(&presence_identity(ctx), &ctx.status, run, state, now_s()),
+                "envelope": status_envelope(&presence_identity(ctx), &ctx.status, run, state, &beat_role(ctx), now_s()),
                 "beatSec": STATUS_BEAT_S,
             }))
         }
@@ -3319,6 +3388,14 @@ mod tests {
 
     // --- bao.status beats (ADR-025 §7): StubTransport publish sequence --
 
+    /// The single-device role every pre-BOB-111 sequence ran under.
+    fn active() -> BeatRole {
+        BeatRole {
+            active: true,
+            winner: None,
+        }
+    }
+
     fn status_calls(log: &crate::testutil::CallLog) -> Vec<Value> {
         log.lock()
             .unwrap()
@@ -3331,7 +3408,7 @@ mod tests {
     #[test]
     fn status_envelope_shape_matches_the_adr() {
         let status: SharedPresence = Default::default();
-        let v = status_envelope("peer1", &status, None, "idle", 100.0);
+        let v = status_envelope("peer1", &status, None, "idle", &active(), 100.0);
         assert_eq!(v["type"], "bao.status");
         assert_eq!(v["scope"], "account");
         assert_eq!(v["target"], "peer1");
@@ -3342,11 +3419,64 @@ mod tests {
     }
 
     #[test]
+    fn status_envelope_carries_the_election_role() {
+        // BOB-111: a standby beats too (state idle) — only `role`
+        // tells it from the device that answers, `winner` names that one
+        let status: SharedPresence = Default::default();
+        let v = status_envelope("peer1", &status, None, "idle", &active(), 100.0);
+        assert_eq!(v["data"]["role"], "active");
+        assert!(v["data"].get("winner").is_none(), "no claim known");
+        let standby = BeatRole {
+            active: false,
+            winner: Some("mac".into()),
+        };
+        let v = status_envelope("peer1", &status, None, "idle", &standby, 100.0);
+        assert_eq!(v["data"]["state"], "idle");
+        assert_eq!(v["data"]["role"], "standby");
+        assert_eq!(v["data"]["winner"], "mac");
+    }
+
+    #[test]
+    fn presence_pass_republishes_on_a_role_flip() {
+        // a takeover/stand-down shows on the bus within a poll, not a
+        // full beat later (ADR-025 §2 change signature)
+        let (c, log) = scripted(&[]);
+        let status: SharedPresence = Default::default();
+        let mut st = PresenceLoop::default();
+        let standby = BeatRole {
+            active: false,
+            winner: Some("mac".into()),
+        };
+        assert!(presence_pass(
+            &c, "peer1", &status, None, &standby, &mut st, 0.0
+        )); // boot
+        assert!(!presence_pass(
+            &c, "peer1", &status, None, &standby, &mut st, 1.0
+        )); // not due
+        let won = BeatRole {
+            active: true,
+            winner: Some("peer1".into()),
+        };
+        assert!(presence_pass(
+            &c, "peer1", &status, None, &won, &mut st, 2.0
+        )); // flip ⇒ immediate
+        assert!(!presence_pass(
+            &c, "peer1", &status, None, &won, &mut st, 3.0
+        ));
+        let beats = status_calls(&log);
+        assert_eq!(beats.len(), 2);
+        assert_eq!(beats[0]["role"], "standby");
+        assert_eq!(beats[0]["winner"], "mac");
+        assert_eq!(beats[1]["role"], "active");
+        assert_eq!(beats[1]["winner"], "peer1");
+    }
+
+    #[test]
     fn status_envelope_working_carries_run_and_line() {
         let status: SharedPresence = Default::default();
         status.set_line("wiring the UI atom", 99.0);
         let run = json!({"id": "run_1", "title": "impl BOB-73", "startedAt": 1.0});
-        let v = status_envelope("peer1", &status, Some(run), "working", 100.0);
+        let v = status_envelope("peer1", &status, Some(run), "working", &active(), 100.0);
         assert_eq!(v["data"]["state"], "working");
         assert_eq!(v["data"]["run"]["id"], "run_1");
         assert_eq!(v["data"]["run"]["title"], "impl BOB-73");
@@ -3359,9 +3489,9 @@ mod tests {
         let status: SharedPresence = Default::default();
         status.set_line("stale soon", 100.0);
         let at = 100.0;
-        let v = status_envelope("peer1", &status, None, "idle", at + 90.0);
+        let v = status_envelope("peer1", &status, None, "idle", &active(), at + 90.0);
         assert_eq!(v["data"]["line"], "stale soon"); // fresh at the edge
-        let v = status_envelope("peer1", &status, None, "idle", at + 90.001);
+        let v = status_envelope("peer1", &status, None, "idle", &active(), at + 90.001);
         assert!(v["data"].get("line").is_none(), "decayed — machine truth");
     }
 
@@ -3425,10 +3555,34 @@ mod tests {
         let mut runs: BTreeMap<String, LiveRun> = BTreeMap::new();
         let mut st = PresenceLoop::default();
         let mut t = 0.0;
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t); // boot beat at once
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 1.0); // cadence: not due
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t,
+        ); // boot beat at once
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t + 1.0,
+        ); // cadence: not due
         t += 10.0;
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t); // idle
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t,
+        ); // idle
         runs.insert(
             "run_1".into(),
             LiveRun {
@@ -3437,21 +3591,69 @@ mod tests {
             },
         );
         // run start republishes within a poll — no cadence wait
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 1.0);
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t + 1.0,
+        );
         runs.get("run_1")
             .unwrap()
             .activity
             .note_cell(Some("c.query(space)"));
         // ...and so does every tool call (the live counter)
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 2.0);
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t + 2.0,
+        );
         status.set_line("greeting the user", t + 3.0);
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 3.0); // immediate on set
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t + 3.0,
+        ); // immediate on set
         runs.remove("run_1");
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 4.0); // immediate idle
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t + 5.0); // no change: not due
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t + 4.0,
+        ); // immediate idle
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t + 5.0,
+        ); // no change: not due
         t += 95.0; // past the 90s decay from the line's set (ADR-025 §3)
-        presence_pass(&c, "peer1", &status, current_run(&runs), &mut st, t); // cadence, line gone
-        publish_status_beat(&c, "peer1", &status, None, "shutdown", t + 1.0);
+        presence_pass(
+            &c,
+            "peer1",
+            &status,
+            current_run(&runs),
+            &active(),
+            &mut st,
+            t,
+        ); // cadence, line gone
+        publish_status_beat(&c, "peer1", &status, None, "shutdown", &active(), t + 1.0);
         let mut i = status_calls(&log).into_iter();
         let boot = i.next().unwrap();
         assert_eq!(boot["state"], "boot");
@@ -3485,10 +3687,34 @@ mod tests {
         let (c, _log) = scripted(&[]);
         let status: SharedPresence = Default::default();
         let mut st = PresenceLoop::default();
-        assert!(presence_pass(&c, "p", &status, None, &mut st, 0.0));
+        assert!(presence_pass(
+            &c,
+            "p",
+            &status,
+            None,
+            &active(),
+            &mut st,
+            0.0
+        ));
         status.set_line("x", 0.5);
-        assert!(presence_pass(&c, "p", &status, None, &mut st, 0.5));
-        assert!(!presence_pass(&c, "p", &status, None, &mut st, 1.0));
+        assert!(presence_pass(
+            &c,
+            "p",
+            &status,
+            None,
+            &active(),
+            &mut st,
+            0.5
+        ));
+        assert!(!presence_pass(
+            &c,
+            "p",
+            &status,
+            None,
+            &active(),
+            &mut st,
+            1.0
+        ));
     }
 
     #[test]

@@ -6,7 +6,8 @@ self-row writes is now PERMANENT STANDBY, never the disabled-active
 degrade; plus a brief boot retry now that registry unavailability is
 an error rather than an empty read), amended 2026-08-24 (§3: the gate
 narrowed for device-pinned triggers, ADR-006 §4 — standby no longer
-idles the whole ticker)
+idles the whole ticker), amended 2026-09-13 (§5: the verdict rides
+the presence beat and standby repeats itself in the log, BOB-111)
 Date: 2026-08-17
 Builds on: ADR-006 §4 (triggers: single-owner, missed-occurrence
 rule), ADR-009 §6 (serve/lib surface), ADR-009 §8 (snapshot backlog —
@@ -150,6 +151,20 @@ Degrade, three distinct verdicts at boot:
 Control API `GET /election` →
 `{app, enabled, active, peerId, winner}` (winner via a live
 registry read, null when unavailable).
+
+The presence beat carries the verdict — `role: active | standby` and
+`winner`, the claim holder of the reconcile that produced it
+(ADR-025 §1) — so any bus consumer can tell the device that answers
+from a standby without a registry read; `GET /status` shows the
+same envelope. A verdict flip republishes within the presence poll.
+
+Standby is a silent state: no chat watch, no runs. So the election
+thread does not fall silent with it — the boot line names the
+winner (`election: peer … — standby (the active bao is peer …)`),
+and while standby it repeats `election: standby — the active bao is
+peer …` every sixth poll (once a minute). A long unanswered chat
+must be diagnosable from `agent.log` alone; one line at boot was
+not enough (BOB-111).
 
 Guest: `any@v1.list_devices()` (getter, public) is the registry read
 verbatim — `{self, active, devices}` — so bao can tell the user which
