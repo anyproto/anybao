@@ -197,12 +197,28 @@ enum TraceCmd {
         /// dump one record by seq, blob-resolved, pretty-printed
         #[arg(long)]
         seq: Option<i64>,
+        /// the traceDiff view (ADR-028 §6): what a mocked run executed
+        /// live inside its mockable set
+        #[arg(long)]
+        unmocked: bool,
         #[arg(long, default_value = config::DEFAULT_ADDR)]
         addr: String,
         #[arg(long, default_value = "bao")]
         space: String,
         /// the serve's traces dir — raw blobs resolve from its blobs/
         /// (ADR-026 §7); elsewhere a raw ref renders as its stub
+        #[arg(long, default_value = "traces")]
+        traces_dir: PathBuf,
+    },
+    /// effect-level diff of two runs by (effect, input key): calls only
+    /// one made, shared calls whose outcome differs (ADR-028 §6)
+    Diff {
+        a: String,
+        b: String,
+        #[arg(long, default_value = config::DEFAULT_ADDR)]
+        addr: String,
+        #[arg(long, default_value = "bao")]
+        space: String,
         #[arg(long, default_value = "traces")]
         traces_dir: PathBuf,
     },
@@ -655,6 +671,7 @@ fn main() -> Result<()> {
                     stats,
                     boot,
                     seq,
+                    unmocked,
                     addr,
                     space,
                     traces_dir,
@@ -662,14 +679,29 @@ fn main() -> Result<()> {
         } => {
             let store = trace_store(&addr, &space, Some(&traces_dir))?;
             let store = store.as_ref();
-            match (seq, stats) {
-                (Some(n), _) => print!("{}", view::show_record(store, &id, n)?),
-                (None, true) => print!("{}", view::stats(store, &id)?),
-                (None, false) => print!(
+            match (seq, stats, unmocked) {
+                (Some(n), _, _) => print!("{}", view::show_record(store, &id, n)?),
+                (None, true, _) => print!("{}", view::stats(store, &id)?),
+                (None, false, true) => print!("{}", view::unmocked(store, &id)?),
+                (None, false, false) => print!(
                     "{}",
                     view::render(store, &id, &view::ShowOpts { full, system, boot })?
                 ),
             }
+            Ok(())
+        }
+        Cmd::Trace {
+            cmd:
+                TraceCmd::Diff {
+                    a,
+                    b,
+                    addr,
+                    space,
+                    traces_dir,
+                },
+        } => {
+            let store = trace_store(&addr, &space, Some(&traces_dir))?;
+            print!("{}", view::diff(store.as_ref(), &a, &b)?);
             Ok(())
         }
         Cmd::Trace {

@@ -220,12 +220,27 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
     let name = s(&r["effect"]);
     let class = s(&r["meta"]["class"]);
     let dur = r["meta"]["durMs"].as_i64().unwrap_or(0);
-    let mark = if class == "mutate" { "*" } else { " " };
+    // `*` = a mutation that executed; `~` = served from a mock (ADR-028
+    // §6 — a mocked mutation did NOT execute, so it is never `*`)
+    let mocked = r["meta"]["mocked"] == true;
+    let mark = if mocked {
+        "~"
+    } else if class == "mutate" {
+        "*"
+    } else {
+        " "
+    };
     let head = format!("{pad}{mark} #{}", r["seq"]);
     let full = limit == usize::MAX;
+    // executed live inside a mock's mockable set: the traceDiff row
+    let tail = if r["meta"]["mock"]["unmatched"] == true {
+        " [unmocked]"
+    } else {
+        ""
+    };
 
     if !r["error"].is_null() {
-        return format!("{head} {name} [{class}, {dur}ms] !! {}", r["error"]);
+        return format!("{head} {name} [{class}, {dur}ms] !! {}{tail}", r["error"]);
     }
     if let Some(rest) = name.strip_prefix("http.") {
         let path = short_path(r["input"]["url"].as_str().unwrap_or("?"));
@@ -253,18 +268,18 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
         } else if status >= 400 {
             line.push_str(&format!(" {body}"));
         }
-        return line;
+        return format!("{line}{tail}");
     }
     if name == "module.resolve" {
         return format!(
-            "{head} use {} ({})",
+            "{head} use {} ({}){tail}",
             s(&r["input"]["spec"]),
             s(&r["output"]["cache"])
         );
     }
     if name == "kernel.boot" {
         return format!(
-            "{head} kernel.boot (schema {}, kernel {})",
+            "{head} kernel.boot (schema {}, kernel {}){tail}",
             r["output"]["trace_schema"],
             clip(&s(&r["output"]["kernel_sha256"]), 12)
         );
@@ -272,12 +287,12 @@ fn effect_line(r: &Value, limit: usize, pad: &str) -> String {
     let output = elide_binary(&r["output"]);
     if full {
         return format!(
-            "{head} {name} [{class}, {dur}ms] ->\n{}",
+            "{head} {name} [{class}, {dur}ms]{tail} ->\n{}",
             pretty_json(&output, &format!("{pad}    "))
         );
     }
     format!(
-        "{head} {name} [{class}, {dur}ms] -> {}",
+        "{head} {name} [{class}, {dur}ms] -> {}{tail}",
         clip_loc(&output.to_string(), limit)
     )
 }
@@ -1111,6 +1126,116 @@ pub fn show_record(store: &dyn TraceStore, run_id: &str, seq: i64) -> anyhow::Re
     Ok(serde_json::to_string_pretty(&rec)? + "\n")
 }
 
+/// The traceDiff view (ADR-028 §6): the effects a mocked run executed
+/// live INSIDE its mockable set — `meta.mock.unmatched` — one show
+/// line each. A run with no mock spec has no such rows by definition.
+pub fn unmocked(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<String> {
+    let records = store.load_resolved(run_id)?;
+    let header = &records[0]["run"];
+    let mut out = format!("run {} — {}\n", s(&header["id"]), s(&header["program"]));
+    let spec = &header["mock"];
+    let rows: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "effect" && r["meta"]["mock"]["unmatched"] == true)
+        .collect();
+    let mocked = records
+        .iter()
+        .filter(|r| r["kind"] == "effect" && r["meta"]["mocked"] == true)
+        .count();
+    if spec.is_null() && mocked == 0 && rows.is_empty() {
+        out.push_str("no mock spec on this run (header) and no mocked cells: nothing to diff\n");
+        return Ok(out);
+    }
+    if !spec.is_null() {
+        out.push_str(&format!("mock: {spec}\n"));
+    }
+    out.push_str(&format!(
+        "{mocked} effects served from mocks; {} executed live inside the mockable set:\n",
+        rows.len()
+    ));
+    for r in rows {
+        out.push_str(&effect_line(r, 160, "  "));
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Effect-level diff of two runs (ADR-028 §6): by `(effect, key)` —
+/// calls only one run made, and shared calls whose recorded outcome
+/// differs. Order within a key is log order on both sides.
+pub fn diff(store: &dyn TraceStore, a: &str, b: &str) -> anyhow::Result<String> {
+    let ra = store.load_resolved(a)?;
+    let rb = store.load_resolved(b)?;
+    fn by_key(records: &[Value]) -> BTreeMap<(String, String), Vec<&Value>> {
+        let mut m: BTreeMap<(String, String), Vec<&Value>> = BTreeMap::new();
+        for r in records.iter().filter(|r| r["kind"] == "effect") {
+            m.entry((s(&r["effect"]), s(&r["key"])))
+                .or_default()
+                .push(r);
+        }
+        m
+    }
+    fn outcome(r: &Value) -> String {
+        if !r["error"].is_null() {
+            format!("!! {}", r["error"])
+        } else {
+            crate::trace::canonical_json(&r["output"])
+        }
+    }
+    let ka = by_key(&ra);
+    let kb = by_key(&rb);
+    let keys: std::collections::BTreeSet<&(String, String)> = ka.keys().chain(kb.keys()).collect();
+    let (mut only_a, mut only_b, mut changed) = (Vec::new(), Vec::new(), Vec::new());
+    let mut same = 0usize;
+    for k in keys {
+        let la = ka.get(k).map(|v| v.as_slice()).unwrap_or(&[]);
+        let lb = kb.get(k).map(|v| v.as_slice()).unwrap_or(&[]);
+        for (x, y) in la.iter().zip(lb.iter()) {
+            if outcome(x) == outcome(y) {
+                same += 1;
+            } else {
+                changed.push((*x, *y));
+            }
+        }
+        only_a.extend(la.iter().skip(lb.len()).copied());
+        only_b.extend(lb.iter().skip(la.len()).copied());
+    }
+    let seq = |r: &Value| r["seq"].as_i64().unwrap_or(0);
+    only_a.sort_by_key(|r| seq(r));
+    only_b.sort_by_key(|r| seq(r));
+    changed.sort_by_key(|(x, _)| seq(x));
+    let mut out = format!(
+        "diff {a} → {b}: {same} same, {} changed, {} only in {a}, {} only in {b}\n",
+        changed.len(),
+        only_a.len(),
+        only_b.len()
+    );
+    if !only_a.is_empty() {
+        out.push_str(&format!("only in {a}:\n"));
+        for r in only_a {
+            out.push_str(&effect_line(r, 160, "  "));
+            out.push('\n');
+        }
+    }
+    if !only_b.is_empty() {
+        out.push_str(&format!("only in {b}:\n"));
+        for r in only_b {
+            out.push_str(&effect_line(r, 160, "  "));
+            out.push('\n');
+        }
+    }
+    if !changed.is_empty() {
+        out.push_str("changed outcome (same effect + input):\n");
+        for (x, y) in changed {
+            out.push_str(&effect_line(x, 160, "  "));
+            out.push('\n');
+            out.push_str(&effect_line(y, 160, "  "));
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::Result<String> {
     let records = store.load_resolved(run_id)?;
     let lim = Limits::new(opts.full);
@@ -1639,6 +1764,126 @@ mod tests {
         assert_eq!(follow_line(&b).unwrap(), "▶ #5 cell");
     }
     use serde_json::json;
+
+    #[test]
+    fn effect_line_marks_mocked_and_unmocked_rows() {
+        let base = json!({"kind": "effect", "seq": 4, "effect": "kernel.boot",
+                          "error": null, "input": {}, "output": {"trace_schema": 2,
+                          "kernel_sha256": "abcdef0123456789xx"},
+                          "meta": {"class": "mutate", "mocked": true,
+                                   "mock": {"from": "run_a", "seq": 4}}});
+        // a mocked mutation did not execute: `~`, never `*`
+        assert_eq!(
+            effect_line(&base, 160, "  "),
+            "  ~ #4 kernel.boot (schema 2, kernel abcdef012345…)"
+        );
+        let mut live = base.clone();
+        live["meta"] = json!({"class": "mutate", "mocked": false, "mock": {"unmatched": true}});
+        assert_eq!(
+            effect_line(&live, 160, "  "),
+            "  * #4 kernel.boot (schema 2, kernel abcdef012345…) [unmocked]"
+        );
+        let mut plain = base.clone();
+        plain["meta"] = json!({"class": "read", "mocked": false});
+        assert_eq!(
+            effect_line(&plain, 160, "  "),
+            "    #4 kernel.boot (schema 2, kernel abcdef012345…)"
+        );
+    }
+
+    #[test]
+    fn unmocked_and_diff_views() {
+        use crate::trace::{input_key, TraceWriter};
+        let store = MemTraceStore::new();
+        let ka = input_key("http.get", &json!({"url": "https://a"}));
+        let kb = input_key("http.get", &json!({"url": "https://b"}));
+        // run 1: two live gets
+        let mut w1 = TraceWriter::new(json!({"id": "run_1111111111111111", "program": "p@v1"}));
+        w1.effect(
+            "http.get",
+            None,
+            json!({"url": "https://a"}),
+            &ka,
+            Some(json!({"status": 200})),
+            None,
+            json!({"class": "read", "mocked": false}),
+            None,
+        );
+        w1.effect(
+            "http.get",
+            None,
+            json!({"url": "https://b"}),
+            &kb,
+            Some(json!({"status": 200})),
+            None,
+            json!({"class": "read", "mocked": false}),
+            None,
+        );
+        w1.dump(&store).unwrap();
+        // run 2: mocked run — a served from run 1, b unmatched-live with a
+        // different status, plus a call run 1 never made
+        let mut w2 = TraceWriter::new(json!({"id": "run_2222222222222222", "program": "p@v1",
+                                             "mock": {"from": "run_1111111111111111",
+                                                      "unmatched": "live"}}));
+        w2.effect(
+            "http.get",
+            None,
+            json!({"url": "https://a"}),
+            &ka,
+            Some(json!({"status": 200})),
+            None,
+            json!({"class": "read", "mocked": true,
+                         "mock": {"from": "run_1111111111111111", "seq": 1}}),
+            None,
+        );
+        w2.effect(
+            "http.get",
+            None,
+            json!({"url": "https://b"}),
+            &kb,
+            Some(json!({"status": 500})),
+            None,
+            json!({"class": "read", "mocked": false, "mock": {"unmatched": true}}),
+            None,
+        );
+        w2.effect(
+            "kernel.boot",
+            None,
+            json!({"x": 1}),
+            "k3",
+            Some(json!({"x": 1})),
+            None,
+            json!({"class": "read", "mocked": false, "mock": {"unmatched": true}}),
+            None,
+        );
+        w2.dump(&store).unwrap();
+
+        let u = unmocked(&store, "run_2222222222222222").unwrap();
+        assert!(
+            u.contains("1 effects served from mocks; 2 executed live"),
+            "{u}"
+        );
+        assert!(
+            u.contains("GET https://b") && u.contains("500") && u.contains("[unmocked]"),
+            "{u}"
+        );
+        assert!(
+            !u.contains("~ #1"),
+            "served rows are not in the diff view: {u}"
+        );
+        let none = unmocked(&store, "run_1111111111111111").unwrap();
+        assert!(none.contains("nothing to diff"), "{none}");
+
+        let d = diff(&store, "run_1111111111111111", "run_2222222222222222").unwrap();
+        assert!(d.starts_with(
+            "diff run_1111111111111111 → run_2222222222222222: 1 same, 1 changed, 0 only in run_1111111111111111, 1 only in run_2222222222222222\n"
+        ), "{d}");
+        assert!(
+            d.contains("only in run_2222222222222222:\n") && d.contains("kernel.boot"),
+            "{d}"
+        );
+        assert!(d.contains("changed outcome"), "{d}");
+    }
 
     #[test]
     fn split_ui_context_peels_the_now_locator() {
