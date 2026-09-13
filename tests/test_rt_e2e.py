@@ -196,7 +196,9 @@ def backends():
     server.shutdown()
 
 
-def run_rt(base, spec, args):
+def run_rt(base, spec, args, extra=(), cmd="run"):
+    """`anyrt run <spec> --args …` (or `anyrt replay <run_id>` with
+    cmd="replay": `spec` is then the run id) against the fake."""
     scratch = Path(tempfile.mkdtemp())
     (scratch / "config.json").write_text(json.dumps({
         "any.base_url": base,
@@ -209,8 +211,9 @@ def run_rt(base, spec, args):
                               "api_key_ref": "llm.key"},
     }))
     (scratch / "secrets.env").write_text("llm.key=sk-test\n")
+    head = [spec, "--args", json.dumps(args)] if cmd == "run" else [spec]
     proc = subprocess.run(
-        [rt_binary(), "run", spec, "--args", json.dumps(args),
+        [rt_binary(), cmd, *head, *extra,
          "--kernel", KERNEL, "--programs", ROOT / "repos" / "_agent" / "programs",
          "--traces-dir", scratch / "traces",
          "--config", scratch / "config.json",
@@ -260,3 +263,87 @@ def test_error_status_on_guest_failure(backends):
                           {"space": "s1", "chatId": "c1", "userText": "hi"})
     assert proc.returncode == 1
     assert out["status"] == "error"
+
+
+REPLIES_42 = [
+    {"content": [{"type": "tool_use", "id": "t1", "name": "run_cell",
+                  "input": {"code": "x = 40 + 2\nprint(x)\nx"}}],
+     "stop_reason": "tool_use",
+     "usage": {"input_tokens": 10, "output_tokens": 5}},
+    {"content": [{"type": "text", "text": "It is 42."}],
+     "stop_reason": "end_turn",
+     "usage": {"input_tokens": 20, "output_tokens": 6}},
+]
+
+
+def _run_records(run_id):
+    return [r for r in FakeBackends.local["trace_records"].values()
+            if r.get("runId") == run_id]
+
+
+def test_mock_and_replay_serve_recorded_effects(backends):
+    """ADR-028 §4: `--mock <run>` serves every effect from the
+    recording (the model is never called again), `replay <run>` walks
+    it strictly, `--mock-except` keeps a glob live."""
+    FakeBackends.reset(REPLIES_42)
+    args = {"space": "s1", "chatId": "c1", "userText": "what is 40+2?"}
+    proc, out, _ = run_rt(backends, "toolcaller@v1", args)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    live = out["traceRef"]
+    live_calls = len(FakeBackends.llm_requests)
+    assert live_calls == 2
+    # the fake has no replies left: any live llm call would now fail
+    FakeBackends.llm_replies = []
+
+    proc, out, _ = run_rt(backends, "toolcaller@v1", args, extra=["--mock", live])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["value"]["replies"] == ["It is 42."]
+    assert len(FakeBackends.llm_requests) == live_calls
+    recs = _run_records(out["traceRef"])
+    header = next(r for r in recs if r.get("kind") == "header")
+    assert header["run"]["mock"] == {"from": live}
+    assert header["run"]["args"] == args
+    posts = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "http.post"]
+    assert posts
+    for r in posts:
+        assert r["meta"]["mocked"] is True
+        assert r["meta"]["mock"]["from"] == live
+        assert isinstance(r["meta"]["mock"]["seq"], int)
+    # the trace's own reads are never served from the mock (§7)
+    views = [r for r in recs if r.get("kind") == "effect" and r["effect"].startswith("trace.")]
+    assert views and all(r["meta"]["mocked"] is False and "mock" not in r["meta"]
+                         for r in views)
+
+    proc, out, _ = run_rt(backends, live, None, cmd="replay")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["value"]["replies"] == ["It is 42."]
+    assert len(FakeBackends.llm_requests) == live_calls
+    header = next(r for r in _run_records(out["traceRef"]) if r.get("kind") == "header")
+    assert header["run"]["replayOf"] == live
+    assert header["run"]["program"] == "toolcaller@v1"
+
+    # outside the mockable set the call is plainly live: the model IS
+    # called, and nothing on those records says mock
+    FakeBackends.llm_replies = list(REPLIES_42)
+    proc, out, _ = run_rt(backends, "toolcaller@v1", args,
+                          extra=["--mock", live, "--mock-except", "http.*"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(FakeBackends.llm_requests) == live_calls + 2
+    recs = _run_records(out["traceRef"])
+    assert next(r for r in recs if r.get("kind") == "header")["run"]["mock"] == {
+        "from": live, "except": ["http.*"]}
+    posts = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "http.post"]
+    assert posts and all(r["meta"]["mocked"] is False and "mock" not in r["meta"]
+                         for r in posts)
+    boots = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "kernel.boot"]
+    assert boots and boots[0]["meta"]["mocked"] is True
+
+
+def test_mock_spec_errors_before_the_run(backends):
+    FakeBackends.reset(REPLIES_42)
+    args = {"space": "s1", "chatId": "c1", "userText": "hi"}
+    proc, out, _ = run_rt(backends, "toolcaller@v1", args,
+                          extra=["--mock", "run_0000000000000000"])
+    assert proc.returncode != 0
+    assert "--mock" in proc.stderr and "run_0000000000000000" in proc.stderr
+    assert not FakeBackends.llm_requests
