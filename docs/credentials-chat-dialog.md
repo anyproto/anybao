@@ -43,8 +43,18 @@ intended fallback).
   card headline:
   - first ask: *"I need a credential to continue: {label} (`{ref}`, used for {hosts})."*
   - rejected key (the destination answered 401): *"The {label} was rejected by {hosts} (401) — please enter a new one (`{ref}`)."*
-- Only the runtime host posts these (never the model). One per
-  (chat, ref) until the value is set; a rejection re-asks.
+- Only the runtime host posts these (never the model): the broker
+  refuses a guest chat write carrying a `credential_request` or
+  `credential_set` attachment (ADR-021 §8.6). One per (chat, ref)
+  until the value is set; a rejection re-asks.
+- **Unreviewed request** (`local.key.*`, a program bao wrote — ADR-021
+  §8.2): the text opens with a warning and names no program —
+  *"⚠ Code written by bao (reviewed by no one) asks for a credential:
+  {label} (`local.key.{name}`). It will be sent only to {hosts}."* —
+  and the message's `agent.debugLink` is the run that missed the ref
+  (the trace shows the code). Render the warning prominently, the
+  hosts in emphasis, and link the run; the row's `hosts` is what the
+  runtime enforces, editable by the human in Credentials.
 - If the ref is still unanswered and bao is asked again, the runtime
   posts a plain agent message instead of a second card:
   *"Still waiting for `{ref}` — see the credential prompt above. Last attempt: {error}"*. Render it as a normal bubble.

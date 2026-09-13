@@ -197,15 +197,22 @@ pub fn declared_credentials(code: &str) -> anyhow::Result<Vec<Value>> {
                  never declared (ADR-021 §8.1)"
             );
         }
-        let about = e.get("about").and_then(Value::as_object).ok_or_else(|| {
-            anyhow::anyhow!("{MARKER}[{i}] ({r}): \"about\" object is required")
-        })?;
-        if about.get("label").and_then(Value::as_str).is_none_or(str::is_empty) {
+        let about = e
+            .get("about")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow::anyhow!("{MARKER}[{i}] ({r}): \"about\" object is required"))?;
+        if about
+            .get("label")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
             anyhow::bail!("{MARKER}[{i}] ({r}): about.label is required");
         }
         let hosts = about.get("hosts").and_then(Value::as_array);
         let ok = hosts.is_some_and(|h| {
-            !h.is_empty() && h.iter().all(|x| x.as_str().is_some_and(|s| !s.trim().is_empty()))
+            !h.is_empty()
+                && h.iter()
+                    .all(|x| x.as_str().is_some_and(|s| !s.trim().is_empty()))
         });
         if !ok {
             anyhow::bail!(
@@ -626,8 +633,11 @@ impl<'a> Deployer<'a> {
                     &self.space,
                     &existing,
                     &s.type_id,
-                    &s.group(&[("any_tool", json!(any_tool)), ("summary", json!(summary)),
-                               ("credentials", json!(credentials))]),
+                    &s.group(&[
+                        ("any_tool", json!(any_tool)),
+                        ("summary", json!(summary)),
+                        ("credentials", json!(credentials)),
+                    ]),
                 )?;
                 (existing, "updated")
             }
@@ -1335,20 +1345,33 @@ mod tests {
         let got = declared_credentials(ok).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["ref"], "connector.key.x");
-        assert_eq!(got[0]["about"]["hosts"], json!(["api.x.test", "127.0.0.1:8737"]));
-        assert!(declared_credentials("def main(a):\n    return 1\n").unwrap().is_empty());
+        assert_eq!(
+            got[0]["about"]["hosts"],
+            json!(["api.x.test", "127.0.0.1:8737"])
+        );
+        assert!(declared_credentials("def main(a):\n    return 1\n")
+            .unwrap()
+            .is_empty());
 
         let err = |src: &str| declared_credentials(src).unwrap_err().to_string();
         assert!(err("__any_credentials__ = [{'ref': 'connector.key.x'}]").contains("JSON literal"));
-        assert!(err("__any_credentials__ = [{\"ref\": \"local.key.x\", \"about\": {}}]")
-            .contains("open namespace"));
-        assert!(err("__any_credentials__ = [{\"ref\": \"connector.key.x\", \"about\": \
-                     {\"label\": \"X\", \"hosts\": []}}]")
-            .contains("about.hosts"));
-        assert!(err("__any_credentials__ = [{\"ref\": \"connector.key.x\", \"about\": \
-                     {\"hosts\": [\"a\"]}}]")
-            .contains("about.label"));
-        assert!(err("__any_credentials__ = [{\"ref\": \"connector.key.x\"").contains("never closes"));
+        assert!(
+            err("__any_credentials__ = [{\"ref\": \"local.key.x\", \"about\": {}}]")
+                .contains("open namespace")
+        );
+        assert!(err(
+            "__any_credentials__ = [{\"ref\": \"connector.key.x\", \"about\": \
+                     {\"label\": \"X\", \"hosts\": []}}]"
+        )
+        .contains("about.hosts"));
+        assert!(err(
+            "__any_credentials__ = [{\"ref\": \"connector.key.x\", \"about\": \
+                     {\"hosts\": [\"a\"]}}]"
+        )
+        .contains("about.label"));
+        assert!(
+            err("__any_credentials__ = [{\"ref\": \"connector.key.x\"").contains("never closes")
+        );
 
         // deploy refuses a bad declaration and writes a good one as the
         // `credentials` property (JSON text), "[]" when none
@@ -1359,13 +1382,17 @@ mod tests {
         let p = ProgramSource::new("t", "v1", ok);
         assert_eq!(d.deploy_one(&p).unwrap(), "created");
         let s = schema(&c, "agent");
-        let rows = c.query_objects("agent", &json!({"filter": {s.path("name"): "t"}})).unwrap();
+        let rows = c
+            .query_objects("agent", &json!({"filter": {s.path("name"): "t"}}))
+            .unwrap();
         let creds: Value =
             serde_json::from_str(s.read(&rows[0])["credentials"].as_str().unwrap()).unwrap();
         assert_eq!(creds[0]["ref"], "connector.key.x");
         let plain = ProgramSource::new("t", "v1", TOOL);
         assert_eq!(d.deploy_one(&plain).unwrap(), "updated");
-        let rows = c.query_objects("agent", &json!({"filter": {s.path("name"): "t"}})).unwrap();
+        let rows = c
+            .query_objects("agent", &json!({"filter": {s.path("name"): "t"}}))
+            .unwrap();
         assert_eq!(s.read(&rows[0])["credentials"], json!("[]"));
     }
 

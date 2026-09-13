@@ -73,6 +73,32 @@ read seam.
 `config.get` refuses the `connector.key.*`, `llm.key.*` and
 `connector.oauth.*` namespaces wholesale.
 
+## Which refs inject, and where (ADR-021 §7/§8)
+
+The broker injects a value only toward the row's `hosts` — exact
+host, port compared only when the row names one — and refuses
+anything else typed `secret_host_mismatch`. Where a row's hosts come
+from depends on the ref:
+
+- **Declared refs** — every namespace but `local.key.*`
+  (`connector.key.*`, `llm.key.*`, `google.key.*`, the managed
+  `connector.oauth.*`): the deployed module lists them in
+  `__any_credentials__`; serve reads every overlay's declarations at
+  boot and stamps label/hosts/help/note onto the rows, so the
+  Credentials dashboard lists every connector's key before any miss.
+  A ref no deployed program declares is refused typed
+  `secret_ref_undeclared` — a seeded `connector.key.<x>` with no
+  connector behind it is stored but never injected.
+- **Open refs** — `local.key.*` (a program bao wrote), and an
+  `llm.key.*` no overlay declares (a self-hosted backend): the
+  request's `about` becomes the row when the row is created, hosts
+  mandatory (`secret_hosts_required` otherwise); later misses never
+  rewrite it. Only the human edits hosts afterwards, in Credentials.
+
+`lastUsedAt` is stamped once per run at the first injection. A
+`local.key.*` card says in its text that unreviewed code asked, and
+links the run that missed the ref.
+
 `anyrt run` accepts the same `--secrets-file` (and reads
 `.connectors.env`), but a one-shot run has no store: seeds are this
 run's in-memory map only — nothing is persisted, and empty values are

@@ -108,8 +108,12 @@ model cannot fabricate a "paste your key" prompt for a ref it invented
    requestedAt, requestedBy: <run id — the trace that missed it>,
    requestedIn: <chatId>}`. The dataset is declared, not dynamic (a
    system dataset): these are declared fields — `hosts` an array,
-   the two timestamps `datetime` — and there is no reconcile for
-   pre-existing datasets (no backward compatibility: recreate).
+   the timestamps `datetime` (`requestedAt`, `rejectedAt`,
+   `lastUsedAt`) — and a field added to the declaration later is
+   reconciled ADDITIVELY at boot (`ensure_dataset` adds what the
+   existing definition lacks; nothing is removed or retyped) — a
+   stamp on an undeclared field is rejected by the server, so the
+   declaration and the writers move together.
    `status ∈ {missing, rejected, set}`; `set` is stamped by §4 and by
    `bootstrap_secrets` for every stored/seeded value at boot.
    **`rejected`**: the destination rejected the credential on a request
@@ -299,6 +303,14 @@ A row with no `hosts` is **unbound** and never injected:
   destination, because the destination is the one thing the human
   is asked to check.
 
+**No-store fallback (`anyrt run`, tests).** A broker with no declared
+table behind it — no overlays, a developer's one-shot run seeded from
+a `.connectors.env` — treats every ref as open and injects a ref with
+no known hosts unbound: the seed file is the developer's explicit
+grant for that run, and there is no human to show a card to. serve
+never takes this path — it always has a table, empty until its
+overlays sync, and an empty table refuses every non-open ref.
+
 Enforcement is one check in the broker's credential injection
 (`resolve_static` → the request), reading `hosts` off the same row it
 reads the value from — no in-memory allowlist, nothing to keep in
@@ -347,18 +359,23 @@ Consequence, stated once: a per-secret "allowed program" field
   "help"?, "note"?}}]` (the ADR-010 §1 self-documentation convention
   extended by one name; connectors export their `_CRED`, `llm@v1` one
   entry per SaaS provider of its backend table). `anyrt deploy`
-  validates the shape (ref in a declared namespace, `hosts`
-  non-empty) and writes the list into the overlay's manifest record
-  (the hash-gated record deploy already keeps). serve reads every
-  overlay's manifest at boot and on the hash-gated refresh into the
-  **declared table** `{ref → about}` and stamps each ref's row from
-  it (§8.4) — so the Credentials dashboard lists every connector's key
+  validates the shape (ref outside `local.key.*`, `about.label`,
+  `hosts` non-empty; a JSON literal, so deploy reads it without a
+  Python) and publishes the list as the program object's
+  `credentials` property (JSON text; ensured by deploy, optional at
+  lookup so older spaces keep resolving). serve reads every synced
+  overlay's program objects at boot into the **declared table**
+  `{ref → about}`, re-reads them on a miss (a redeploy while serve
+  runs), and stamps each ref's row from it (§8.4) — so the Credentials dashboard lists every connector's key
   before any miss, and a stored key that was never described gets its
   hosts. A miss on a ref outside `local.key.*` that is **not** in the
   table is refused typed `secret_ref_undeclared` (a bare name, a
   made-up namespace, a `connector.key.<x>` no overlay ships); the
   message names `local.key.*` as the namespace for agent-authored
-  programs. The payload's `about` is ignored for declared refs.
+  programs. The payload's `about` is ignored for declared refs. A
+  managed OAuth ref (`connector.oauth.<provider>`) is bound the same
+  way when its connector declares the API hosts (googleAuth does);
+  the token endpoint is host-side and never a guest destination.
 - **Open refs — `local.key.*`.** Any program may name one. The
   descriptor is the payload's `about`, taken **once** when the row is
   created; `hosts` is mandatory (§7). A later miss or rejection stamps

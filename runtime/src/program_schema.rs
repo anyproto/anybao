@@ -255,7 +255,9 @@ mod tests {
             .filter(|t| t["builtIn"] != json!(true))
             .collect();
         assert_eq!(user_types.len(), 1);
-        assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 4);
+        // the four required props + the optional `credentials` (ADR-021 §8.1)
+        assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 5);
+        assert!(s.credentials_prop().is_some());
         let ds = c.list_datasets("sp", &s.type_id).unwrap();
         let keys: Vec<&str> = ds.iter().filter_map(|d| d["key"].as_str()).collect();
         // the shared body (held through the type) + the two stores

@@ -993,6 +993,22 @@ impl Client {
         )
     }
 
+    /// Add one declared field to an existing dataset definition (the
+    /// additive reconcile of a harness store, ADR-021 §2).
+    pub fn add_dataset_field(
+        &self,
+        space_id: &str,
+        type_id: &str,
+        def_id: &str,
+        field: &Value,
+    ) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/types/{type_id}/datasets/{def_id}/fields"),
+            Some(field),
+        )
+    }
+
     pub fn add_property(
         &self,
         space_id: &str,

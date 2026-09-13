@@ -7,7 +7,9 @@
 //! shared cage.
 
 use crate::anyapi::Client;
-use crate::broker::{Broker, PresenceState, SharedMailbox, SharedPresence};
+use crate::broker::{
+    Broker, DeclaredCredentials, PresenceState, SecretSource, SharedMailbox, SharedPresence,
+};
 use crate::config::Config;
 use crate::resolver::AnyModuleResolver;
 use crate::routes::Classifier;
@@ -203,12 +205,47 @@ fn ensure_dataset(c: &Client, space: &str, type_id: &str, draft: &Value) -> Resu
         .as_str()
         .context("store draft carries no key")?
         .to_string();
-    if let Some(coll) = dataset_collection(c, space, type_id, &key)? {
-        return Ok(coll);
+    if let Some(existing) = c
+        .list_datasets(space, type_id)?
+        .into_iter()
+        .find(|d| d["key"] == key)
+    {
+        reconcile_fields(c, space, type_id, &existing, draft);
+        if let Some(coll) = existing["collection"].as_str() {
+            return Ok(coll.to_string());
+        }
     }
     c.add_part(space, type_id, &json!({"key": key, "datasets": [draft]}))?;
     dataset_collection(c, space, type_id, &key)?
         .with_context(|| format!("store {key} declared but not listed"))
+}
+
+/// Additive field reconcile of a declared (non-dynamic) store (ADR-021
+/// §2): a field the draft declares that the existing definition lacks
+/// is added; nothing is removed or retyped. Best-effort — a failure
+/// only means the newest stamps are rejected until the server catches
+/// up, and is logged as such.
+fn reconcile_fields(c: &Client, space: &str, type_id: &str, existing: &Value, draft: &Value) {
+    let Some(def_id) = existing["id"].as_str() else {
+        return;
+    };
+    let have: Vec<&str> = existing["fields"]
+        .as_array()
+        .map(|fs| fs.iter().filter_map(|f| f["key"].as_str()).collect())
+        .unwrap_or_default();
+    let key = draft["key"].as_str().unwrap_or("?");
+    for field in draft["fields"].as_array().into_iter().flatten() {
+        let Some(k) = field["key"].as_str() else {
+            continue;
+        };
+        if have.contains(&k) {
+            continue;
+        }
+        match c.add_dataset_field(space, type_id, def_id, field) {
+            Ok(_) => info!("store {key}: declared field {k} added"),
+            Err(e) => warn!("store {key}: could not add declared field {k} ({e})"),
+        }
+    }
 }
 
 /// bundle_child with the same brief `bundle.not_ready` retry policy as
@@ -317,6 +354,8 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             {"key": "requestedAt", "kind": "datetime", "mutableBy": "any"},
             {"key": "rejectedAt", "kind": "datetime", "mutableBy": "any"},
             {"key": "rejectedWith", "kind": "number", "mutableBy": "any"},
+            // ADR-021 §8.4: the audit stamp, once per run per ref
+            {"key": "lastUsedAt", "kind": "datetime", "mutableBy": "any"},
             // non-secret OAuth metadata rows (`.granted_scopes`, `.account`,
             // the bundled `.client_id`/`.client_secret`): `{value}`
             {"key": "meta", "kind": "object", "mutableBy": "any"},
@@ -798,13 +837,185 @@ fn upsert_secret_row(
             }
         }
     }
-    c.modify(
+    let reply = c.modify(
         space,
         &json!({
             "objectId": obj, "dataset": dataset,
             "records": [{"id": key, "upsert": true, "ops": ops}]}),
     )?;
+    // a 200 can still carry per-record rejections (a tombstoned id, an
+    // undeclared field) — the row did not change, say so
+    if let Some(rej) = reply["rejections"].as_array().filter(|r| !r.is_empty()) {
+        let reason = rej[0]["reason"]
+            .as_str()
+            .or_else(|| rej[0]["code"].as_str())
+            .unwrap_or("rejected");
+        anyhow::bail!("modify rejected {key}: {reason}");
+    }
     Ok(())
+}
+
+/// The patch a miss/rejection writes (ADR-021 §8.4): the status base
+/// always; the descriptor only when the row does not exist yet.
+fn descriptor_patch(exists: bool, about: &Value, base: Value) -> Value {
+    let mut patch = base.as_object().cloned().unwrap_or_default();
+    if !exists {
+        for k in ["label", "hosts", "help", "note"] {
+            if let Some(v) = about.get(k).filter(|v| !v.is_null()) {
+                patch.insert(k.into(), v.clone());
+            }
+        }
+    }
+    Value::Object(patch)
+}
+
+/// ADR-021 §8.1: the declared table — every `__any_credentials__` entry
+/// of every program in the configured overlay spaces, read off the
+/// program objects' `credentials` property (deploy-written, guest-
+/// unwritable). Refreshed at boot and, rate-limited, on a miss.
+pub struct DeclaredTable {
+    client: Arc<Client>,
+    spaces: Vec<String>,
+    table: Mutex<BTreeMap<String, Value>>,
+    refreshed: Mutex<Option<std::time::Instant>>,
+}
+
+impl DeclaredTable {
+    const MISS_REFRESH_EVERY: Duration = Duration::from_secs(10);
+
+    pub fn new(client: Arc<Client>, spaces: Vec<String>) -> Self {
+        DeclaredTable {
+            client,
+            spaces,
+            table: Mutex::new(BTreeMap::new()),
+            refreshed: Mutex::new(None),
+        }
+    }
+
+    /// Re-read every overlay's declarations. A space that is not synced
+    /// yet (no program type) contributes nothing until it is. Two
+    /// programs declaring one ref must agree; the first wins and a
+    /// conflict is logged.
+    pub fn refresh(&self) -> usize {
+        let mut fresh: BTreeMap<String, Value> = BTreeMap::new();
+        for space in &self.spaces {
+            let schema = match crate::program_schema::ProgramSchema::lookup(&self.client, space) {
+                Ok(Some(s)) => s,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!("credentials: cannot read programs in {space} ({e})");
+                    continue;
+                }
+            };
+            if schema.credentials_prop().is_none() {
+                continue; // deployed before ADR-021 §8.1: declares nothing
+            }
+            let rows = match self.client.query_objects(
+                space,
+                &json!({"filter": {"any.types": schema.type_id}, "limit": 500}),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("credentials: cannot list programs in {space} ({e})");
+                    continue;
+                }
+            };
+            for row in &rows {
+                let props = schema.read(row);
+                let Some(text) = props.get("credentials").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Ok(Value::Array(list)) = serde_json::from_str::<Value>(text) else {
+                    continue;
+                };
+                for entry in list {
+                    let Some(r) = entry.get("ref").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let about = entry.get("about").cloned().unwrap_or(Value::Null);
+                    let program = props.get("name").and_then(Value::as_str).unwrap_or("?");
+                    match fresh.get(r) {
+                        Some(prev) if *prev != about => warn!(
+                            "credentials: {r} declared twice with different descriptors \
+                             ({program} keeps the first)"
+                        ),
+                        Some(_) => {}
+                        None => {
+                            fresh.insert(r.to_string(), about);
+                        }
+                    }
+                }
+            }
+        }
+        let n = fresh.len();
+        *self.table.lock().expect("declared table poisoned") = fresh;
+        *self.refreshed.lock().expect("declared table poisoned") = Some(std::time::Instant::now());
+        n
+    }
+
+    pub fn snapshot(&self) -> BTreeMap<String, Value> {
+        self.table.lock().expect("declared table poisoned").clone()
+    }
+}
+
+impl DeclaredCredentials for DeclaredTable {
+    fn about(&self, key: &str) -> Option<Value> {
+        if let Some(a) = self.table.lock().expect("declared table poisoned").get(key) {
+            return Some(a.clone());
+        }
+        // a miss may be a redeploy while serve runs (or an overlay that
+        // synced after boot): re-read, at most every few seconds
+        let stale = self
+            .refreshed
+            .lock()
+            .expect("declared table poisoned")
+            .is_none_or(|t| t.elapsed() >= Self::MISS_REFRESH_EVERY);
+        if stale {
+            self.refresh();
+            return self
+                .table
+                .lock()
+                .expect("declared table poisoned")
+                .get(key)
+                .cloned();
+        }
+        None
+    }
+}
+
+/// Boot stamp (ADR-021 §8.1/§8.4): every declared ref's row carries the
+/// declared descriptor — the manifest is the authority for label and
+/// hosts, so an existing row is overwritten here (and only here); a
+/// row that did not exist is created `missing`, so the Credentials
+/// dashboard lists every connector's key before any miss.
+fn stamp_declared(c: &Client, space: &str, obj: &str, dataset: &str, table: &DeclaredTable) {
+    let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
+    let mut stamped = 0;
+    for (key, about) in table.snapshot() {
+        let existing = rows
+            .iter()
+            .find(|r| r.get("key").and_then(Value::as_str) == Some(key.as_str()));
+        let mut patch = Map::new();
+        for k in ["label", "hosts", "help", "note"] {
+            match about.get(k).filter(|v| !v.is_null()) {
+                Some(v) => {
+                    patch.insert(k.into(), v.clone());
+                }
+                None if existing.is_some_and(|r| r.get(k).is_some()) => {
+                    patch.insert(k.into(), Value::Null); // dropped from the declaration
+                }
+                None => {}
+            }
+        }
+        if existing.is_none() {
+            patch.insert("status".into(), json!("missing"));
+        }
+        match upsert_secret_row(c, space, obj, dataset, &key, &Value::Object(patch)) {
+            Ok(()) => stamped += 1,
+            Err(e) => warn!("credentials: could not stamp declared {key} ({e})"),
+        }
+    }
+    info!("credentials: {stamped} declared refs stamped from the overlays");
 }
 
 fn now_rfc3339() -> String {
@@ -851,23 +1062,47 @@ impl crate::broker::SecretSource for ServeSecretStore {
                    "requestedIn": Value::Null}),
         );
     }
-}
 
-impl ServeSecretStore {
-    fn stamp(&self, key: &str, about: &Value, base: Value) {
-        let mut patch = base.as_object().cloned().unwrap_or_default();
-        for k in ["label", "hosts", "help", "note"] {
-            if let Some(v) = about.get(k).filter(|v| !v.is_null()) {
-                patch.insert(k.into(), v.clone());
-            }
-        }
+    fn read_row(&self, key: &str) -> Result<Option<Value>, String> {
+        let rows = self
+            .client
+            .query(&self.space, &self.obj, &self.dataset, &json!({}))
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .into_iter()
+            .find(|r| r.get("key").and_then(Value::as_str) == Some(key)))
+    }
+
+    fn mark_used(&self, key: &str) {
+        let patch = json!({"lastUsedAt": {"$date": now_rfc3339()}});
         if let Err(e) = upsert_secret_row(
             &self.client,
             &self.space,
             &self.obj,
             &self.dataset,
             key,
-            &Value::Object(patch),
+            &patch,
+        ) {
+            warn!("secrets: could not stamp lastUsedAt for {key} ({e})");
+        }
+    }
+}
+
+impl ServeSecretStore {
+    /// ADR-021 §8.4 stamp rule: descriptor fields (`label`, `hosts`,
+    /// `help`, `note`) are written only when this stamp CREATES the row
+    /// — never onto an existing one, so a later miss or a 401 cannot
+    /// move where the secret goes; status fields stamp as before.
+    fn stamp(&self, key: &str, about: &Value, base: Value) {
+        let exists = self.read_row(key).ok().flatten().is_some();
+        let patch = descriptor_patch(exists, about, base);
+        if let Err(e) = upsert_secret_row(
+            &self.client,
+            &self.space,
+            &self.obj,
+            &self.dataset,
+            key,
+            &patch,
         ) {
             warn!("secrets: could not stamp {key} ({e})");
         }
@@ -1498,6 +1733,18 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             dataset: stores.secrets_ds.clone(),
         })
     });
+    // The declared table (ADR-021 §8.1): what the overlays' programs say
+    // they send, read off deploy-written objects; the rows of every
+    // declared ref carry that descriptor from boot on (§8.4)
+    let declared = Arc::new(DeclaredTable::new(
+        client.clone(),
+        cfg.overlays.values().map(|o| o.space.clone()).collect(),
+    ));
+    let n_declared = declared.refresh();
+    step(&format!("credentials declared ({n_declared} refs)"));
+    if let Some(sobj) = &secrets_obj {
+        stamp_declared(&client, &space, sobj, &stores.secrets_ds, &declared);
+    }
     let persist: Option<Box<dyn crate::oauth::SecretPersist>> = secrets_obj.as_ref().map(|obj| {
         Box::new(ServeSecretStore {
             client: client.clone(),
@@ -1696,6 +1943,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         secrets_guard,
         oauth,
         secret_store,
+        declared,
         config_store,
         runtime,
         verdict: Mutex::new(election.verdict.clone()),
@@ -1823,6 +2071,8 @@ pub struct RunCtx {
     /// the secrets store (ADR-021 §4) — None on a server without the
     /// secrets object (seeds-only degraded mode)
     pub secret_store: Option<Arc<ServeSecretStore>>,
+    /// the declared table (ADR-021 §8.1) — threaded into every Broker
+    pub declared: Arc<DeclaredTable>,
     /// the agent-config store (ADR-006 §3) — read through, no cache
     pub config_store: Option<Arc<ServeConfigStore>>,
     /// runtime wiring for `runtime.get` (`any.base_url`,
@@ -1954,6 +2204,7 @@ impl RunCtx {
             .config_store
             .clone()
             .map(|s| s as Arc<dyn crate::broker::ConfigStore>);
+        b.declared = Some(self.declared.clone() as Arc<dyn DeclaredCredentials>);
         b.runtime = self.runtime.clone();
         b.presence = Some(self.status.clone());
         b.resolver = Some(Box::new(AnyModuleResolver::new(
@@ -2205,7 +2456,22 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
                         .flatten()
                 })
             });
-        let text = if status == "rejected" {
+        let unreviewed = r.starts_with(crate::broker::LOCAL_KEY_PREFIX);
+        let text = if unreviewed && status != "rejected" {
+            // ADR-021 §8.2: the warning is in the TEXT (old clients render
+            // only that); no program is named — a name would be the
+            // requester's claim; the run is the provenance the host vouches for
+            format!(
+                "⚠ Code written by {} (reviewed by no one) asks for a credential: {label} \
+                 (`{r}`). It will be sent only to {}.",
+                ctx.cfg.agent_name,
+                if hosts.is_empty() {
+                    "nowhere".to_string()
+                } else {
+                    hosts.join(", ")
+                }
+            )
+        } else if status == "rejected" {
             let code = row
                 .and_then(|row| row.get("rejectedWith"))
                 .and_then(|v| v.as_u64())
@@ -2224,12 +2490,20 @@ fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
             format!("I need a credential to continue: {label} (`{r}`{used_for}).")
         };
         let marker = if setup_model { "&setup=model" } else { "" };
+        let mut agent = json!({"name": ctx.cfg.agent_name, "done": true});
+        if let Some(run) = row
+            .and_then(|row| row.get("requestedBy"))
+            .and_then(Value::as_str)
+            .filter(|_| unreviewed)
+        {
+            agent["debugLink"] = json!(run); // §8.2: the trace shows the code
+        }
         let sent = ctx.client.chat_send(
             &ctx.space,
             &ctx.chat,
             &json!({
                 "text": text,
-                "agent": {"name": ctx.cfg.agent_name, "done": true},
+                "agent": agent,
                 "attachments": {"credreq": {
                     "type": "credential_request",
                     "link": format!("any://o/{}?key={r}{marker}", store.obj)}}}),

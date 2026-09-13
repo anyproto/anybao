@@ -30,7 +30,13 @@ URL): GET → read; any-API POST `/query`, `/objects/query`, `/search`,
 Credential injection: `credential: {ref, header, prefix?}` — the host
 resolves `ref` and sets the header AFTER the payload is recorded;
 values never reach guest memory or the trace. Static refs
-(`connector.key.*`, `llm.key.*`) read the stored secret as-is; managed
-refs (`connector.oauth.<provider>`) resolve through the host-held
-token lifecycle — cached access token, refresh-at-injection with a
-120s margin (ADR-011 §6).
+(`connector.key.*`, `llm.key.*`, `local.key.*`) read the stored secret
+as-is; managed refs (`connector.oauth.<provider>`) resolve through the
+host-held token lifecycle — cached access token, refresh-at-injection
+with a 120s margin (ADR-011 §6). Every injection is bound (ADR-021
+§7/§8): the request host must be one of the row's `hosts`
+(`secret_host_mismatch`), a ref outside `local.key.*` must be declared
+by a deployed program (`secret_ref_undeclared`), an open ref must name
+`about.hosts` (`secret_hosts_required`). A guest chat write carrying a
+`credential_request` / `credential_set` attachment is refused
+(`host_only`, §8.6).
