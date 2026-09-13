@@ -113,6 +113,7 @@ fn general_chat(c: &Client, space: &str) -> Result<String> {
                 return Ok(root.to_string());
             }
             Err(e) if e.status == 409 => {
+                info!("boot: general chat not ready ({e}) — retrying in 2s");
                 last_err = Some(e);
                 std::thread::sleep(Duration::from_secs(2));
             }
@@ -255,6 +256,7 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
                 break;
             }
             Err(e) if e.status == 409 => {
+                info!("boot: bao/v1 bundle not ready ({e}) — retrying in 2s");
                 last_err = Some(e);
                 std::thread::sleep(Duration::from_secs(2));
             }
@@ -1296,13 +1298,23 @@ fn load_cage(cfg: &Config) -> Result<Arc<Cage>> {
 /// Everything serve does up to the watch loop, which is spawned —
 /// returns immediately with the handle (the lib-mode surface).
 pub fn start(mut cfg: Config) -> Result<AgentHandle> {
+    // Boot is serial, every step below can wait on the server (a
+    // registry convergence, a space still syncing), and nothing shows
+    // — no control port, no presence beat — until all of it is done.
+    // Each step logs its elapsed time so `agent.log` says where a slow
+    // boot went (BOB-113).
+    let boot = std::time::Instant::now();
+    let step = |what: &str| info!("boot: {what} (+{:.1}s)", boot.elapsed().as_secs_f64());
     let client = Arc::new(Client::new(&cfg.addr));
     let space = ensure_space(&client, &cfg.agent_space)?;
+    step(&format!("bao space {space}"));
     let chat = general_chat(&client, &space)?;
+    step("general chat ready");
     // ADR-017 §0: the bao/v1 bundle + the host-written store children
     // (config, secrets, triggers). The trigger anchor IS the triggers
     // child — deterministic, no name-scan.
     let stores = provision_agent_stores(&client, &space)?;
+    step("agent stores provisioned");
     let anchor = stores.triggers.clone();
     let runs_anchor = stores.runs.clone();
 
@@ -1428,6 +1440,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         }
     }
 
+    step("config + secrets seeded");
+
     // serve is space-only (ADR-009 §5): programs, skills, and the kernel
     // are already IN the space(s) — `anyrt deploy` is the publish step.
     // The system prompt is composed guest-side (toolcaller@v1) from the
@@ -1445,6 +1459,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
             pending.insert(name.clone(), overlay.space.clone());
         }
     }
+    step(&format!("overlays probed ({} pending)", pending.len()));
     let aliases = alias_map(&cfg.overlays, &space);
     let code_space = aliases["agent"].clone();
     // runtime wiring the guest reads via `runtime.get` (ADR-006 §3):
@@ -1464,6 +1479,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // kernel is embedded (ADR-009 §4) — the cage always boots eagerly;
     // pending overlays only gate program resolution
     let cage = load_cage(&cfg)?;
+    step("kernel compiled");
     if !pending.is_empty() {
         info!(
             "overlays still joining/syncing: {:?} — will answer with status until synced",
@@ -1476,6 +1492,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // chat watch and ticker stay idle (and the standing-trigger records
     // below aren't stamped) until the election thread flips the gate.
     let election = crate::election::boot(&client, env!("CARGO_PKG_VERSION"));
+    step("election settled");
 
     // trace storage (ADR-001 §8 / ADR-023 §1): local-store collections
     // of the bao space, raw blobs in `traces_dir` beside them (ADR-026
@@ -1490,6 +1507,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         )
         .context("trace store: ensuring the bao space's local collections")?,
     );
+    step("trace store ready");
 
     // This device's trigger identity (ADR-006 §4): the registry peer
     // id — stable across restarts, so a pinned record survives them.
@@ -1587,8 +1605,9 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         ));
     }
     info!(
-        "anyrt serving space={space} chat={chat} control=127.0.0.1:{}",
-        ctx.cfg.control_port
+        "anyrt serving space={space} chat={chat} control=127.0.0.1:{} boot={:.1}s",
+        ctx.cfg.control_port,
+        boot.elapsed().as_secs_f64()
     );
 
     {

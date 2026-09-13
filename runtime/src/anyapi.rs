@@ -10,6 +10,7 @@
 use serde_json::{json, Map, Value};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read};
+use std::time::Duration;
 
 /// Error envelope of the `any` server: `{"error": {code, message}}`
 /// mapped from any >= 400 status. Transport-level failures surface as
@@ -149,24 +150,49 @@ fn transport_err(e: impl fmt::Display) -> AnyError {
     }
 }
 
+/// Bounds on the one-shot calls (ADR-009 §8 q.3). The server is
+/// local, so a connect that does not land in 10s is a port nobody
+/// serves, and 5 min per request sits past every wait the server
+/// itself keeps (the 30s registry convergence, the 2-min bundle
+/// create): a hung call fails the boot step it belongs to instead of
+/// hanging serve with nothing in the log (BOB-113). The SSE stream
+/// keeps NO read bound — the server heartbeats, a dead peer FINs.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// ureq-backed transport against a base URL (localhost `any` server).
 pub struct HttpTransport {
     base: String,
     agent: ureq::Agent,
+    request_timeout: Duration,
 }
 
 impl HttpTransport {
     pub fn new(base_url: &str) -> Self {
+        Self::with_timeouts(base_url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// `connect` bounds every dial; `request` bounds each one-shot
+    /// call end to end (the stream is exempt).
+    pub fn with_timeouts(base_url: &str, connect: Duration, request: Duration) -> Self {
         HttpTransport {
             base: base_url.trim_end_matches('/').to_string(),
-            agent: ureq::agent(),
+            agent: ureq::AgentBuilder::new().timeout_connect(connect).build(),
+            request_timeout: request,
         }
     }
 
+    /// An unbounded request — the stream's; one-shot calls go through
+    /// `bounded`.
     fn request(&self, method: &str, path: &str) -> ureq::Request {
         self.agent
             .request(method, &format!("{}{}", self.base, path))
             .set("Content-Type", "application/json")
+    }
+
+    /// A one-shot request under `REQUEST_TIMEOUT`.
+    fn bounded(&self, method: &str, path: &str) -> ureq::Request {
+        self.request(method, path).timeout(self.request_timeout)
     }
 
     fn dispatch(req: ureq::Request, body: Option<&Value>) -> Result<ureq::Response, AnyError> {
@@ -212,7 +238,7 @@ impl Transport for HttpTransport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<(u16, Value), AnyError> {
-        let resp = Self::dispatch(self.request(method, path), body)?;
+        let resp = Self::dispatch(self.bounded(method, path), body)?;
         json_response(resp)
     }
 
@@ -237,10 +263,7 @@ impl Transport for HttpTransport {
         body: &[u8],
         content_type: &str,
     ) -> Result<(u16, Value), AnyError> {
-        let req = self
-            .agent
-            .request(method, &format!("{}{}", self.base, path))
-            .set("Content-Type", content_type);
+        let req = self.bounded(method, path).set("Content-Type", content_type);
         let resp = match req.send_bytes(body) {
             Ok(r) => r,
             Err(ureq::Error::Status(_, r)) => r, // error envelope is data
@@ -250,7 +273,7 @@ impl Transport for HttpTransport {
     }
 
     fn read_raw(&self, path: &str) -> Result<Vec<u8>, AnyError> {
-        let resp = Self::dispatch(self.request("GET", path), None)?;
+        let resp = Self::dispatch(self.bounded("GET", path), None)?;
         let status = resp.status();
         if status >= 400 {
             let (_, data) = json_response(resp)?;
@@ -1641,5 +1664,37 @@ mod tests {
             calls[0].2,
             Some(json!({"objectId": "chat", "dataset": "chat_messages", "limit": 64}))
         );
+    }
+
+    /// A one-shot call against a server that accepts and never answers
+    /// fails within the request bound instead of hanging the caller
+    /// (BOB-113): the boot step that made it can report and move on.
+    #[test]
+    fn http_transport_bounds_a_hung_call() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            // hold the accepted socket open, silent, until the test ends
+            let held = listener.accept().ok();
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            drop(held);
+        });
+        let transport = HttpTransport::with_timeouts(
+            &format!("http://{addr}"),
+            Duration::from_secs(2),
+            Duration::from_millis(300),
+        );
+        let started = std::time::Instant::now();
+        let err = transport
+            .send("GET", "/v1/spaces", None)
+            .expect_err("a silent server must not answer");
+        let _ = release_tx.send(());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "bounded call took {:?}: {err}",
+            started.elapsed()
+        );
+        assert_eq!(err.code, "transport");
     }
 }
