@@ -100,6 +100,20 @@ the `agent_runs` dataset on the bao space's `bao/runs/v1` bundle child
 `c.query(..., "agent_runs", filter=...)`) — that is where another
 device's runs show up.
 
+**A cell can run against recorded effects instead of live ones.**
+`run_cell(code, mockref="run_…")` serves every effect the cell makes
+from that past run's records (same input → recorded output, nothing
+executed; a call the run never made fails); `mock={from, only,
+except, records, unmatched}` narrows it (`only: ["http.*"]` keeps
+`any.*` live), scripts answers nobody has recorded (`records:
+[{effect, input?, output|error}]`), or lets misses run live
+(`unmatched: "live"`). Use it to rework a program's parsing against
+the data a live run already fetched, to rehearse a mutating flow
+with nothing firing, or to re-run a past cell exactly. Keys are
+input-shaped: an edit that keeps the same call inputs still hits the
+recording — a mocked result is NEVER a live verification, and the
+digest says so; run it for real before reporting that it works.
+
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo
 connector, a space program), `help(mod)` it in the same cell that

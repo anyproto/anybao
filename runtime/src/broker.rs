@@ -2092,6 +2092,8 @@ fn immediate_children(records: &[Value], cell: Option<&str>, span: Option<&str>)
                 "seq": r["seq"], "effect": r["effect"],
                 "class": r["meta"].get("class").cloned().unwrap_or(Value::Null),
                 "mocked": r["meta"].get("mocked").cloned().unwrap_or(Value::Null),
+                // executed live inside a mock's mockable set (ADR-028 §6)
+                "unmatched": r["meta"]["mock"]["unmatched"] == true,
                 "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
                 "span": r.get("span").cloned().unwrap_or(Value::Null),
             })),
@@ -2106,6 +2108,9 @@ fn immediate_children(records: &[Value], cell: Option<&str>, span: Option<&str>)
                     "class": if muts > 0 { json!("mutate") } else { json!("read") },
                     "ok": r["ok"], "mutations": muts,
                     "effects": r["meta"].get("effects").cloned().unwrap_or(json!(0)),
+                    // inner effects served from a mock (ADR-028 §5: the
+                    // digest's (mocked) / (mixed …) facade suffix)
+                    "mocked": r["meta"].get("mocked").cloned().unwrap_or(json!(0)),
                     "error": r["error"].get("type").cloned().unwrap_or(Value::Null),
                 }))
             }

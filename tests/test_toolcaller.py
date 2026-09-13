@@ -22,6 +22,10 @@ def done_reply(text="done", usage=None):
             "usage": usage or {"in": 5, "out": 2}}
 
 
+class EffectError(Exception):
+    """The kernel's typed effect failure, as `effect()` raises it."""
+
+
 class World:
     """Every seam the toolcaller touches, recorded."""
 
@@ -41,6 +45,7 @@ class World:
         self.roi = []
         self.spans = []
         self.span_ends = []
+        self.span_inputs = []
         self.preludes = []
         self.plan_hits = hits or {"messages": [], "injected": []}
 
@@ -50,13 +55,20 @@ class World:
             items, self.mail = self.mail, []
             return {"items": items}
         if name == "span.begin":
+            mock = (payload.get("input") or {}).get("mock")
+            if mock is not None and getattr(self, "reject_mock", None):
+                # the host rejects the spec: the span never opens
+                raise EffectError(f"mock_spec: {self.reject_mock}")
             self.spans.append(("begin", payload["name"]))
+            self.span_inputs.append(payload.get("input") or {})
             return {"span": f"s{len(self.spans)}"}
         if name == "span.end":
             self.spans.append(("end", payload["ok"]))
             self.span_ends.append(payload)
             return None
         if name == "trace.effects_of":
+            if getattr(self, "effect_rows", None) is not None:
+                return {"records": list(self.effect_rows)}
             return {"records": [{"seq": 9, "effect": "http.post",
                                  "class": "mutate", "mocked": False, "error": None}]}
         raise AssertionError(f"unexpected effect {name}")
@@ -151,7 +163,8 @@ class World:
 
 def run(world, **args):
     g = {"effect": world.effect, "use": world.use, "subcell": world.subcell,
-         "values": getattr(world, "values", None), **kernel_globals(now=1234)}
+         "values": getattr(world, "values", None), "EffectError": EffectError,
+         **kernel_globals(now=1234)}
     exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
     return g["main"]({"space": "s1", "chatId": "c1", "userText": "go",
                       "traceRef": "run_x", **args})
@@ -922,3 +935,111 @@ def test_bash_output_is_clipped_head_and_tail():
     assert text.startswith("A" * 12000 + marker)
     assert text.endswith("Z" * 4000 + "\n→ sh.last")
     assert "M" not in text
+
+
+# --- run_cell mock / mockref (ADR-028 §5) -----------------------------------
+
+def mock_reply(mock=None, mockref=None, code="r = http.get(u)", cid="cell_m"):
+    args = {"code": code}
+    if mock is not None:
+        args["mock"] = mock
+    if mockref is not None:
+        args["mockref"] = mockref
+    return {"parts": [{"type": "tool_call", "id": cid, "name": "run_cell", "args": args}],
+            "stop": "tool", "usage": {"in": 10, "out": 5}}
+
+
+MOCKED_ROWS = [
+    {"seq": 11, "effect": "http.get", "class": "read", "mocked": True,
+     "unmatched": False, "error": None},
+    {"seq": 12, "effect": "http.get", "class": "read", "mocked": True,
+     "unmatched": False, "error": None},
+    # a facade whose inner effects all came from the mock: a mutation
+    # that did NOT execute
+    {"seq": 15, "name": "any.modify", "class": "mutate", "mutations": 1,
+     "effects": 2, "mocked": 2, "error": None},
+    # executed live inside the mockable set: the traceDiff row
+    {"seq": 16, "effect": "any.query", "class": "read", "mocked": False,
+     "unmatched": True, "error": None},
+    # the digest's own read is never counted
+    {"seq": 17, "effect": "trace.effects_of", "class": "read", "mocked": False,
+     "unmatched": False, "error": None},
+]
+
+
+def test_mockref_rides_the_cell_span_and_the_digest_says_mocked():
+    w = World([mock_reply(mockref="run_abc"), done_reply("ok")])
+    w.effect_rows = MOCKED_ROWS
+    run(w)
+    # the spec crossed on the cell span input, sugar expanded
+    cell_inputs = [i for i in w.span_inputs if i.get("cell") == "cell_m"]
+    assert cell_inputs == [{"cell": "cell_m", "preview": "r = http.get(u)",
+                            "mock": {"from": "run_abc"}}]
+    part = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert part["is_error"] is False
+    text = part["content"]
+    lines = text.split("\n")
+    # header ALWAYS first: served / total, sources, per-op, the live list
+    assert lines[0] == ("[MOCK] 4 of 5 effects served from run_abc "
+                        "(any.modify ×1, http.get ×2); 1 live: any.query #16"), lines[0]
+    assert "any.modify ×1 (mocked)" in text
+    assert "any.query ×1 (live)" in text
+    assert "http.get ×2 (mocked)" in text
+    assert "would mutate any.modify #15 (mocked: NOT executed)" in text
+    assert "  mutate any.modify" not in text
+    # the fixed guard closes every mocked result
+    assert text.endswith("Re-run without `mock` to do it for real.")
+
+
+def test_mock_spec_with_zero_hits_is_visible_and_live_cells_are_untouched():
+    w = World([mock_reply(mock={"only": ["http.*"], "records": [
+        {"effect": "http.get", "output": {"status": 200}}]}), done_reply("ok")])
+    w.effect_rows = [{"seq": 21, "effect": "any.query", "class": "read", "mocked": False,
+                      "unmatched": False, "error": None}]
+    run(w)
+    text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert text.startswith("[MOCK] 0 of 1 effects served from 1 inline record(s)"), text
+    assert "any.query ×1 (live)" in text
+    assert text.endswith("Re-run without `mock` to do it for real.")
+
+    # an ordinary cell: no header, no suffixes, no guard
+    w = World([tool_reply(), done_reply("ok")])
+    run(w)
+    text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert "[MOCK]" not in text and "(live)" not in text and "Re-run without" not in text
+    assert "mutate http.post #9" in text
+
+
+def test_mixed_facade_and_multi_row_ops_render_their_split():
+    rows = [
+        {"seq": 31, "name": "any.create_object", "class": "mutate", "mutations": 1,
+         "effects": 3, "mocked": 2, "error": None},
+        {"seq": 32, "effect": "http.get", "class": "read", "mocked": True,
+         "unmatched": False, "error": None},
+        {"seq": 33, "effect": "http.get", "class": "read", "mocked": False,
+         "unmatched": True, "error": None},
+    ]
+    w = World([mock_reply(mock={"from": ["run_a", "run_b"], "unmatched": "live"}),
+               done_reply("ok")])
+    w.effect_rows = rows
+    run(w)
+    text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert text.startswith("[MOCK] 3 of 5 effects served from run_a, run_b (http.get ×1)"
+                           "; 1 live: http.get #33"), text
+    assert "any.create_object ×1 (mixed: 2 mocked, 1 live)" in text
+    assert "http.get ×2 (mixed)" in text
+    # a mixed facade still did not fully execute its mutation
+    assert "would mutate any.create_object #31 (mocked: NOT executed)" in text
+
+
+def test_bad_mock_spec_is_an_error_result_before_any_cell():
+    w = World([mock_reply(mock={"from": "nope"}), done_reply("ok")])
+    w.reject_mock = "mock.from: not a run id: \"nope\""
+    out = run(w)
+    assert out["stop"] == "done"
+    part = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert part["is_error"] is True
+    assert part["content"].startswith("Error: mock spec rejected — mock_spec: mock.from")
+    # the span never opened, so no cell ran (the rejected call still
+    # counts as a tool result, like a malformed call)
+    assert ("begin", "cell") not in w.spans

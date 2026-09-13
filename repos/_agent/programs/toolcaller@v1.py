@@ -62,6 +62,23 @@ RUN_CELL_TOOL = {
                 "description": "Python source: top-level statements; the "
                                "last expression is captured as the value.",
             },
+            "mockref": {
+                "type": "string",
+                "description": "Run this cell against the effects recorded in "
+                               "that past run (a run id from effects.runs) "
+                               "instead of live ones: same inputs → recorded "
+                               "outputs, nothing executed; a call the run never "
+                               "made fails. Sugar for mock={\"from\": ref}.",
+            },
+            "mock": {
+                "type": "object",
+                "description": "Recorded/scripted effects for this cell only: "
+                               "{from: run id(s), only: [effect globs], except: "
+                               "[globs], records: [{effect, input?, output|error, "
+                               "repeat?}], unmatched: fail|live}. Effects outside "
+                               "only/except run live. The result is NOT a live "
+                               "verification — it says so.",
+            },
         },
         "required": ["code"],
     },
@@ -233,30 +250,111 @@ def _op_name(e):
     return e.get("name") or e.get("effect")
 
 
-def _side_effects(entries):
-    entries = [e for e in entries
-               if e.get("effect") not in ("trace.effects_of", "trace.effect_get",
-                                          "trace.runs", "trace.stats", "trace.query")]
+_TRACE_VIEWS = ("trace.effects_of", "trace.effect_get", "trace.runs", "trace.stats",
+                "trace.query")
+
+
+def _mock_state(e):
+    """A digest row's mock state (ADR-028 §5): an effect row is `mocked`
+    or `live` (its `mocked` flag); a facade span row is `mocked` when
+    every inner effect was served, `live` when none, else `mixed`, from
+    the served count `mocked` over `effects`."""
+    if e.get("effect"):
+        return "mocked" if e.get("mocked") is True else "live"
+    served = e.get("mocked") or 0
+    total = e.get("effects") or 0
+    if not served:
+        return "live"
+    return "mocked" if served >= total else "mixed"
+
+
+def _mock_suffix(e):
+    st = _mock_state(e)
+    if st == "mixed":
+        served = e.get("mocked") or 0
+        return f" (mixed: {served} mocked, {(e.get('effects') or 0) - served} live)"
+    return f" ({st})"
+
+
+def _side_effects(entries, mocked=False):
+    entries = [e for e in entries if e.get("effect") not in _TRACE_VIEWS]
     if not entries:
         return ""
     counts = {}
+    states = {}
     mutations = []
     failures = []
     for e in entries:
         name = _op_name(e)
         counts[name] = counts.get(name, 0) + 1
+        states.setdefault(name, set()).add(_mock_state(e))
         # `class` is boundary truth for both rows: a raw mutate effect, or a
         # span whose inner effects mutated (meta.mutations) — not meta.kind.
         if e.get("class") == "mutate":
             mutations.append(e)
         if e.get("error"):
             failures.append(e)
-    lines = [f"{name} ×{n}" for name, n in sorted(counts.items())]
+    if mocked:
+        # one suffix per op: a lone row says its own state (a facade's
+        # mixed count included); several rows agree, or the op is mixed
+        def suffix(name):
+            rows = [e for e in entries if _op_name(e) == name]
+            if len(rows) == 1:
+                return _mock_suffix(rows[0])
+            st = states[name]
+            return f" ({st.pop()})" if len(st) == 1 else " (mixed)"
+        lines = [f"{name} ×{n}{suffix(name)}" for name, n in sorted(counts.items())]
+    else:
+        lines = [f"{name} ×{n}" for name, n in sorted(counts.items())]
     for m in mutations[:MAX_SIDE_EFFECT_LINES]:
-        lines.append(f"  mutate {_op_name(m)} #{m['seq']}")
+        if mocked and _mock_state(m) != "live":
+            # a mocked mutation was served, not executed — never `mutate`
+            lines.append(f"  would mutate {_op_name(m)} #{m['seq']} (mocked: NOT executed)")
+        else:
+            lines.append(f"  mutate {_op_name(m)} #{m['seq']}")
     for f in failures[:MAX_SIDE_EFFECT_LINES]:
         lines.append(f"  failed {_op_name(f)} #{f['seq']}: {f['error']}")
     return "Side effects: " + ", ".join(lines[:MAX_SIDE_EFFECT_LINES])
+
+
+def _mock_header(entries, mock):
+    """The line a mocked cell's digest ALWAYS opens with (ADR-028 §5) —
+    including `0 of N`: a wrong glob or stale keys must be visible."""
+    rows = [e for e in entries if e.get("effect") not in _TRACE_VIEWS]
+    served = [e for e in rows if _mock_state(e) == "mocked"]
+    n_served = sum((e.get("mocked") or 0) if not e.get("effect") else 1
+                   for e in rows if _mock_state(e) != "live")
+    n_total = sum((e.get("effects") or 0) if not e.get("effect") else 1 for e in rows)
+    sources = []
+    if mock.get("from"):
+        refs = mock["from"] if isinstance(mock["from"], list) else [mock["from"]]
+        sources.append(", ".join(refs))
+    if mock.get("records"):
+        sources.append(f"{len(mock['records'])} inline record(s)")
+    counts = {}
+    for e in served:
+        counts[_op_name(e)] = counts.get(_op_name(e), 0) + 1
+    by_op = ", ".join(f"{k} ×{v}" for k, v in sorted(counts.items()))
+    line = (f"[MOCK] {n_served} of {n_total} effects served from "
+            f"{' + '.join(sources) or 'nothing'}" + (f" ({by_op})" if by_op else ""))
+    live = [e for e in rows if e.get("effect") and e.get("unmatched")]
+    if live:
+        line += "; " + f"{len(live)} live: " + ", ".join(
+            f"{_op_name(e)} #{e['seq']}" for e in live[:MAX_SIDE_EFFECT_LINES])
+    return line
+
+
+MOCK_GUARD = ("Values above came from recorded effects, not live data. Nothing marked "
+              "mocked was executed or written. Re-run without `mock` to do it for real.")
+
+
+def _mock_spec(args):
+    """`mock` (the spec) or `mockref` (sugar for {from: ref}); None when
+    neither — the tool's ordinary live cell."""
+    mock = args.get("mock")
+    if mock is None and args.get("mockref"):
+        mock = {"from": args["mockref"]}
+    return mock if isinstance(mock, dict) and mock else None
 
 
 def _hints(entries):
@@ -322,20 +420,24 @@ def render_bash(cr, res, bound):
     return "\n".join(parts)
 
 
-def render_digest(cell_id, cr, entries):
+def render_digest(cell_id, cr, entries, mock=None):
     parts = []
+    if mock is not None:
+        parts.append(_mock_header(entries, mock))
     if cr["prints"]:
         parts.append("Output:\n" + "\n".join(
             f"#{i} {_render_value(cell_id, m, i)}" for i, m in enumerate(cr["prints"])))
     if cr["last"] is not None:
         parts.append("Last value: " + _render_value(cell_id, cr["last"], "last"))
-    se = _side_effects(entries)
+    se = _side_effects(entries, mocked=mock is not None)
     if se:
         parts.append(se)
     if cr["error"]:
         tb = "\n" + cr["error"].get("traceback", "") if cr["error"].get("traceback") else ""
         parts.append(f"Error: {cr['error']['type']}: {cr['error']['message']}{tb}")
     parts.extend(_hints(entries))
+    if mock is not None:
+        parts.append(MOCK_GUARD)
     return "\n\n".join(parts) or "(no output)"
 
 
@@ -428,10 +530,21 @@ def _run_model_cells(parts, results):
         code = part["args"].get("code", "")
         # `preview` rides into presence beats (ADR-025 §1 run.cell): the
         # status surfaces show what the cell is doing, one collapsed line
-        sid = effect("span.begin",  # noqa: F821 - guest global
-                     {"name": "cell",
-                      "input": {"cell": cid,
-                                "preview": " ".join(code.split())[:48]}})["span"]
+        span_input = {"cell": cid, "preview": " ".join(code.split())[:48]}
+        # a mock spec rides the cell span (ADR-028 §3): the host installs
+        # the index for the span's lifetime; a bad spec fails the begin
+        # itself — the model gets the error, no cell runs
+        mock = _mock_spec(part["args"])
+        if mock is not None:
+            span_input["mock"] = mock
+        try:
+            sid = effect("span.begin",  # noqa: F821 - guest global
+                         {"name": "cell", "input": span_input})["span"]
+        except EffectError as e:  # noqa: F821 - guest global
+            results.append({"type": "tool_result", "call_id": cid,
+                            "content": f"Error: mock spec rejected — {e}",
+                            "is_error": True})
+            continue
         cr = subcell(code, cid)  # noqa: F821
         # the cell's failure rides its span-end record (ADR-003 §4b) —
         # type + message like @span; the traceback stays digest text
@@ -442,7 +555,7 @@ def _run_model_cells(parts, results):
         entries = effect("trace.effects_of",  # noqa: F821
                          {"span": sid})["records"]
         results.append({"type": "tool_result", "call_id": cid,
-                        "content": render_digest(cid, cr, entries),
+                        "content": render_digest(cid, cr, entries, mock),
                         "is_error": not cr["ok"]})
     return malformed
 
