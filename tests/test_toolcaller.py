@@ -1032,6 +1032,22 @@ def test_mixed_facade_and_multi_row_ops_render_their_split():
     assert "would mutate any.create_object #31 (mocked: NOT executed)" in text
 
 
+def test_string_mock_spec_is_rejected_not_run_live():
+    # F1 (questionary 09-14): the model passed the spec as a JSON string;
+    # dropping it silently ran the cell live under a request for
+    # recorded effects
+    spec = '{"records": [{"effect": "http.get", "output": {"status": 200}}]}'
+    w = World([mock_reply(mock=spec), mock_reply(mockref=["run_a"], cid="cell_n"),
+               done_reply("ok")])
+    run(w)
+    first = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert first["is_error"] is True
+    assert "mock must be a JSON object, got str" in first["content"]
+    second = w.llm_calls[2]["messages"][-1]["parts"][0]
+    assert second["is_error"] is True and "mockref must be a run id string" in second["content"]
+    assert ("begin", "cell") not in w.spans   # neither cell ran
+
+
 def test_bad_mock_spec_is_an_error_result_before_any_cell():
     w = World([mock_reply(mock={"from": "nope"}), done_reply("ok")])
     w.reject_mock = "mock.from: not a run id: \"nope\""

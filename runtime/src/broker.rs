@@ -2247,25 +2247,31 @@ mod tests {
         let mut b = make_broker("sm1");
         span_with_mock(
             &mut b,
-            json!({"records": [{"effect": "kernel.boot", "output": {"pin": "mocked"}}]}),
+            json!({"records": [{"effect": "time.now", "output": {"epoch": 1.0}}]}),
         );
-        let out = b.call("kernel.boot", json!({"pin": 1})).unwrap();
-        assert_eq!(out, json!({"pin": "mocked"}));
+        let out = b.call("time.now", json!({})).unwrap();
+        assert_eq!(out, json!({"epoch": 1.0}));
         let rec = b.writer.records.last().unwrap().clone();
         assert_eq!(rec["meta"]["mocked"], true);
         assert_eq!(rec["meta"]["mock"], json!({"inline": 0}));
         // consumed: the same call inside the span now misses → fail, recorded
-        let err = b.call("kernel.boot", json!({"pin": 1})).unwrap_err();
+        let err = b.call("time.now", json!({})).unwrap_err();
         assert_eq!(err.type_, "mock_unmatched");
         assert_eq!(
             b.writer.records.last().unwrap()["meta"]["mock"]["unmatched"],
             true
         );
+        // kernel plumbing is never consulted, even under `fail` (§7)
+        let out = b.call("kernel.boot", json!({"pin": 1})).unwrap();
+        assert_eq!(out, json!({"pin": 1}));
+        assert!(b.writer.records.last().unwrap()["meta"]
+            .get("mock")
+            .is_none());
         b.span_end(true, None, None).unwrap();
         let end = b.writer.records.last().unwrap().clone();
         assert_eq!(end["kind"], "span");
-        assert_eq!(end["meta"]["mocked"], 1); // one served of two effects
-        assert_eq!(end["meta"]["effects"], 2);
+        assert_eq!(end["meta"]["mocked"], 1); // one served of three effects
+        assert_eq!(end["meta"]["effects"], 3);
         // the spec is recorded as given, on the begin record
         let begin = b
             .writer
@@ -2273,13 +2279,10 @@ mod tests {
             .iter()
             .find(|r| r["kind"] == "span" && r["phase"] == "begin")
             .unwrap();
-        assert_eq!(
-            begin["input"]["mock"]["records"][0]["effect"],
-            "kernel.boot"
-        );
+        assert_eq!(begin["input"]["mock"]["records"][0]["effect"], "time.now");
         // outside the span: live, no meta.mock at all
-        let out = b.call("kernel.boot", json!({"pin": 1})).unwrap();
-        assert_eq!(out, json!({"pin": 1}));
+        let out = b.call("time.now", json!({})).unwrap();
+        assert!(out["epoch"].as_f64().unwrap() > 1.0);
         let rec = b.writer.records.last().unwrap();
         assert_eq!(rec["meta"]["mocked"], false);
         assert!(rec["meta"].get("mock").is_none());
@@ -2294,8 +2297,8 @@ mod tests {
                    "records": [{"effect": "http.get", "output": {"status": 200}, "repeat": true}]}),
         );
         // outside the mockable set: plainly live, unmatched policy irrelevant
-        let out = b.call("kernel.boot", json!({"pin": 2})).unwrap();
-        assert_eq!(out, json!({"pin": 2}));
+        let out = b.call("time.now", json!({})).unwrap();
+        assert!(out["epoch"].as_f64().unwrap() > 1.0);
         assert!(b.writer.records.last().unwrap()["meta"]
             .get("mock")
             .is_none());
@@ -2318,8 +2321,8 @@ mod tests {
     fn span_mock_live_policy_stamps_tracediff_and_bad_spec_fails_begin() {
         let mut b = make_broker("sm3");
         span_with_mock(&mut b, json!({"unmatched": "live"}));
-        let out = b.call("kernel.boot", json!({"pin": 3})).unwrap();
-        assert_eq!(out, json!({"pin": 3}));
+        let out = b.call("uuid4", json!({})).unwrap();
+        assert!(out["hex"].is_string());
         let rec = b.writer.records.last().unwrap();
         assert_eq!(rec["meta"]["mocked"], false);
         assert_eq!(rec["meta"]["mock"], json!({"unmatched": true}));
@@ -2342,10 +2345,10 @@ mod tests {
     #[test]
     fn span_mock_from_this_run_replays_its_own_records() {
         let mut b = make_broker("run_cccccccccccccccc");
-        b.call("kernel.boot", json!({"pin": "live"})).unwrap();
+        let first = b.call("uuid4", json!({})).unwrap();
         span_with_mock(&mut b, json!({"from": "run_cccccccccccccccc"}));
-        let out = b.call("kernel.boot", json!({"pin": "live"})).unwrap();
-        assert_eq!(out, json!({"pin": "live"}));
+        let out = b.call("uuid4", json!({})).unwrap();
+        assert_eq!(out, first); // the recorded value, not a fresh one
         let rec = b.writer.records.last().unwrap();
         assert_eq!(rec["meta"]["mock"]["from"], "run_cccccccccccccccc");
         assert_eq!(rec["meta"]["mock"]["seq"], b.writer.records[1]["seq"]);
@@ -3113,11 +3116,15 @@ mod tests {
         let mut idx = MockIndex::new(&w1.records);
         idx.spec.unmatched = Unmatched::Live;
         b_live.mock_index = Some(idx);
-        // unmatched → executed live (kernel.boot echoes) → traceDiff material
-        let out = b_live.call("kernel.boot", json!({"pin": 1})).unwrap();
-        assert_eq!(out, json!({"pin": 1}));
+        // unmatched → executed live → traceDiff material
+        let out = b_live.call("uuid4", json!({})).unwrap();
+        assert!(out["hex"].is_string());
         assert_eq!(b_live.writer.records[1]["meta"]["mocked"], false);
         assert_eq!(b_live.writer.records[1]["meta"]["mock"]["unmatched"], true);
+        // kernel plumbing: plainly live even under mock mode (§7)
+        let out = b_live.call("kernel.boot", json!({"pin": 1})).unwrap();
+        assert_eq!(out, json!({"pin": 1}));
+        assert!(b_live.writer.records[2]["meta"].get("mock").is_none());
     }
 
     #[test]

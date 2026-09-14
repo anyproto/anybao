@@ -174,9 +174,14 @@ effect outside the set is live by design. The predicate is
 ### 7. Never mockable
 
 `span.*` and `trace.*` are the trace's own machinery; a mocked trace
-view would lie about the run it is in. They execute live regardless of
-the spec. Everything else, including `time.now`, `config.get` and
-`llm.*`, is mockable: nondeterminism is exactly what a mock replaces.
+view would lie about the run it is in. The kernel's plumbing —
+`module.resolve`, `kernel.boot`, `runtime.get`, `mailbox.drain`,
+`fuel.state` — is nothing anyone rehearses, and under `unmatched:
+fail` a mockable `module.resolve` kills the cell on its first `use()`
+before the rehearsed call is reached. All of these execute live
+regardless of the spec and carry no `meta.mock`. Everything else,
+including `time.now`, `config.get` and `llm.*`, is mockable:
+nondeterminism is exactly what a mock replaces.
 
 ### 8. Provenance
 

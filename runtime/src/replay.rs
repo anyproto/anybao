@@ -340,10 +340,19 @@ impl MockSpec {
     }
 }
 
-/// The trace's own machinery is never served from a mock: a mocked
-/// trace view would lie about the run it is in (ADR-028 §7).
+/// Never served from a mock (ADR-028 §7): the trace's own machinery
+/// (a mocked trace view would lie about the run it is in) and the
+/// kernel's plumbing — module resolution, boot pins, runtime wiring,
+/// the mailbox, the fuel gauge — which nobody rehearses and which an
+/// `unmatched: fail` spec would otherwise kill a cell on (`use()`
+/// failing typed mock_unmatched before the rehearsed call is reached).
 pub fn never_mockable(effect: &str) -> bool {
-    effect.starts_with("span.") || effect.starts_with("trace.")
+    effect.starts_with("span.")
+        || effect.starts_with("trace.")
+        || matches!(
+            effect,
+            "module.resolve" | "kernel.boot" | "runtime.get" | "mailbox.drain" | "fuel.state"
+        )
 }
 
 /// `*` matches any run of characters (including none); everything else
@@ -737,6 +746,10 @@ mod spec_tests {
         assert!(!s.mockable("any.query"));
         assert!(!s.mockable("trace.effects_of"));
         assert!(!s.mockable("span.begin"));
+        assert!(!s.mockable("module.resolve"));
+        assert!(!s.mockable("kernel.boot"));
+        assert!(MockSpec::default().mockable("time.now"));
+        assert!(MockSpec::default().mockable("config.get"));
         // recorded shape re-parses to itself
         assert_eq!(MockSpec::parse(&s.to_value()).unwrap(), s);
     }

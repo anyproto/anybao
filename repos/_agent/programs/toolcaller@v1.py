@@ -348,13 +348,28 @@ MOCK_GUARD = ("Values above came from recorded effects, not live data. Nothing m
               "mocked was executed or written. Re-run without `mock` to do it for real.")
 
 
+class MockArgError(ValueError):
+    """The tool call's mock arguments are malformed — an is_error
+    result, never a silent live cell (ADR-028 §5)."""
+
+
 def _mock_spec(args):
     """`mock` (the spec) or `mockref` (sugar for {from: ref}); None when
-    neither — the tool's ordinary live cell."""
+    neither — the tool's ordinary live cell. A `mock` that is not an
+    object (a JSON string, a list) or a `mockref` that is not a string
+    raises MockArgError: dropping it would run the cell live under a
+    request for recorded effects."""
     mock = args.get("mock")
-    if mock is None and args.get("mockref"):
-        mock = {"from": args["mockref"]}
-    return mock if isinstance(mock, dict) and mock else None
+    ref = args.get("mockref")
+    if mock is not None and not isinstance(mock, dict):
+        raise MockArgError(f"mock must be a JSON object, got {type(mock).__name__}"
+                           + (" (a JSON string — pass the object itself)"
+                              if isinstance(mock, str) else ""))
+    if ref is not None and not isinstance(ref, str):
+        raise MockArgError(f"mockref must be a run id string, got {type(ref).__name__}")
+    if mock is None and ref:
+        mock = {"from": ref}
+    return mock or None
 
 
 def _hints(entries):
@@ -534,7 +549,13 @@ def _run_model_cells(parts, results):
         # a mock spec rides the cell span (ADR-028 §3): the host installs
         # the index for the span's lifetime; a bad spec fails the begin
         # itself — the model gets the error, no cell runs
-        mock = _mock_spec(part["args"])
+        try:
+            mock = _mock_spec(part["args"])
+        except MockArgError as e:
+            results.append({"type": "tool_result", "call_id": cid,
+                            "content": f"Error: mock spec rejected — {e}",
+                            "is_error": True})
+            continue
         if mock is not None:
             span_input["mock"] = mock
         try:
