@@ -1,4 +1,4 @@
-.PHONY: api-drift kernel runtime runtime-shell runtime-check test test-integration lint
+.PHONY: api-drift kernel runtime runtime-shell runtime-check test test-runtime test-integration lint
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
@@ -28,11 +28,18 @@ runtime-check: kernel     ## clippy + fmt gate for runtime/ (both feature sets)
 	cargo clippy --features shell --manifest-path runtime/Cargo.toml -- -D warnings
 	cargo fmt --manifest-path runtime/Cargo.toml --check
 
+# Runtime unit tests for one feature set: `make test-runtime` (default
+# features) or `make test-runtime FEATURES=shell` (the shell effects +
+# their tests, ADR-024). CI runs both legs; `test` below runs the shell
+# one, the superset.
+test-runtime: kernel
+	cargo test $(if $(FEATURES),--features $(FEATURES)) --manifest-path runtime/Cargo.toml
+
 # Full offline suite: build the kernel, cargo unit tests, then the
 # guest-module + wire pytest (rt_e2e needs the release binary — build it
 # with `make runtime` first).
 test: kernel
-	cargo test --features shell --manifest-path runtime/Cargo.toml
+	$(MAKE) test-runtime FEATURES=shell
 	uv run pytest
 
 # Integration tests against a real any server (skipped without one).

@@ -53,7 +53,9 @@ uv run pytest          # guest-module + wire tests; rt_e2e skips w/o kernel+bina
 uv run ruff check .
 ```
 
-`make test` chains kernel + cargo test + pytest; `make lint` = ruff +
+`make test` chains kernel + cargo test (shell features) + pytest;
+`make test-runtime [FEATURES=shell]` is one cargo leg — CI runs both;
+`make lint` = ruff +
 runtime-check (clippy -D warnings + fmt --check). CI runs these through
 the flake.
 
