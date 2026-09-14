@@ -416,13 +416,25 @@ def _batch(name, payloads):
     return resolved
 
 
+_HTTP_WIRE_DOC = """
+
+    A non-2xx status does NOT raise: check `.status` yourself; only a
+    transport failure raises EffectError. The recorded effect is
+    `http.{verb}` with output `{{status, headers, url, body}}` — `body`
+    is the response TEXT (a raw ref for bytes). That is the shape a
+    mock record must supply (ADR-028 §1): `{{"effect": "http.{verb}",
+    "input": {{"url": ...}}, "output": {{"status": 500, "body": "boom"}}}}`
+    (not `status_code`, not `text`)."""
+
+
 class _Http:
     def _call(self, verb, url, **kw):
         return Response(_effect(f"http.{verb}", {"url": url, **kw}))
 
     def get_many(self, items, **common):
         """items: list of urls or {url, ...} dicts. One crossing, host
-        concurrency, results in input order (ADR-002 resolved Q3)."""
+        concurrency, results in input order (ADR-002 resolved Q3); each
+        result is a Response or an EffectError (see `help(http.get)`)."""
         payloads = [
             {"url": it, **common} if isinstance(it, str) else {**common, **it}
             for it in items
@@ -447,6 +459,8 @@ class _Http:
         `connector.key.*` / `llm.key.*`."""
         return self._call("get", url, **kw)
 
+    get.__doc__ += _HTTP_WIRE_DOC.format(verb="get")
+
     def head(self, url, **kw):
         """HEAD `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
@@ -463,6 +477,8 @@ class _Http:
         destination the key will ever be sent to); reviewed connectors own
         `connector.key.*` / `llm.key.*`."""
         return self._call("head", url, **kw)
+
+    head.__doc__ += _HTTP_WIRE_DOC.format(verb="head")
 
     def post(self, url, **kw):
         """POST `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
@@ -481,6 +497,8 @@ class _Http:
         `connector.key.*` / `llm.key.*`."""
         return self._call("post", url, **kw)
 
+    post.__doc__ += _HTTP_WIRE_DOC.format(verb="post")
+
     def put(self, url, **kw):
         """PUT `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
@@ -497,6 +515,8 @@ class _Http:
         destination the key will ever be sent to); reviewed connectors own
         `connector.key.*` / `llm.key.*`."""
         return self._call("put", url, **kw)
+
+    put.__doc__ += _HTTP_WIRE_DOC.format(verb="put")
 
     def patch(self, url, **kw):
         """PATCH `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
@@ -515,6 +535,8 @@ class _Http:
         `connector.key.*` / `llm.key.*`."""
         return self._call("patch", url, **kw)
 
+    patch.__doc__ += _HTTP_WIRE_DOC.format(verb="patch")
+
     def delete(self, url, **kw):
         """DELETE `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
@@ -531,6 +553,8 @@ class _Http:
         destination the key will ever be sent to); reviewed connectors own
         `connector.key.*` / `llm.key.*`."""
         return self._call("delete", url, **kw)
+
+    delete.__doc__ += _HTTP_WIRE_DOC.format(verb="delete")
 
 
 http = _Http()

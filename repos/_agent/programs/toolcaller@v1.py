@@ -83,6 +83,9 @@ RUN_CELL_TOOL = {
                                "Globs in only/except match both; except: [\"any.*\"] "
                                "keeps every any call live. To rehearse a write use "
                                "unmatched: fail — with live, an unmatched write EXECUTES. "
+                               "A record's output is the RECORDED shape: for http.* that is "
+                               "{status, headers, url, body} (body = text; not status_code/"
+                               "text) — help(http.get) states it. "
                                "The result is NOT a live verification — it says so.",
             },
         },
