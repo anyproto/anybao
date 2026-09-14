@@ -1,6 +1,10 @@
-# Prod config. Overlays = the prod repo account's spaces (server :7004,
-# data dir ~/any/any/datadirs/repo-prod3, account A6BkPDYvLFDe… on the PROD network —
-# created 2026-09-09 for ADR-027; the pre-port account stays on :7003 / repo-prod). Runbook: docs/environments.md (local)
+# Host config for `anyrt serve` and `anyrt deploy` (ADR-009 §1). CLI flags
+# override these values; secrets never live here (see docs/config-secrets.md).
+# `addr` defaults to http://127.0.0.1:7001, the local `any` server.
+#
+# The overlays are the published bao repos: the agent (programs + skills)
+# and the service connectors. The invite tokens are public read-only
+# guest keys: serve joins both spaces on first boot and imports from them.
 [agent]
 space = "bao"
 

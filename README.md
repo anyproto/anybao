@@ -1,128 +1,234 @@
 # anybao
 
-A space-resident AI agent and its runtime, **anyrt**. The agent — its
-programs, skills, memory, chat — lives in [`any`](../any) spaces; the
-runtime is a Rust host that cages a componentized CPython guest in wasm
-and lets nothing escape except through a recorded effect boundary.
-Every run writes a trace; a trace replays bit-exact. The respawn of the
-bobrik harness — design and rationale in
-[`docs/00-plan.md`](docs/00-plan.md).
+**bao** is a personal AI agent that lives inside your
+[`any`](https://github.com/anyproto/any) spaces, and **anyrt** is the
+runtime that runs it. Your chat, memory, config, and the agent's own
+code are objects in a local-first, end-to-end encrypted space that syncs
+between your devices. The agent process holds no state of its own: stop
+it, start it elsewhere, and it picks up where it left off.
 
-## Two modes
+> **Alpha software.** Data shapes change without migration, and the
+> local `any` server trusts every process on your machine. Use a
+> dedicated account for experiments.
 
-**Embedded (Rust library)** — apps run the agent in-process. The
-any-ui desktop (Tauri) app bundles anyrt exactly this way: a Cargo
-path dep on `../anybao/runtime`, the wasm kernel compiled into the
-crate — no agent binary, no asset tree to ship. Build order matters:
-`make kernel` before any cargo build of a consumer:
+## Why it is built this way
+
+**Nothing escapes the cage.** The agent's code runs as CPython compiled
+to wasm inside a [wasmtime](https://wasmtime.dev) sandbox. No sockets
+and no filesystem are linked into the guest, and its clock is virtual,
+so a run is deterministic by construction. The only way out is
+one host function that hands a named effect (`http.get`, `llm.chat`,
+`any.query`, ...) to the broker, which checks it, executes it, and
+records it. Credentials are injected by the host after the record is
+written, so a key never reaches the model, the guest, or a trace.
+
+**If it isn't in the trace, it didn't happen.** Every effect lands in
+an append-only log in execution order, with its inputs, outputs,
+timing, and read/mutate class. A trace replays a run bit-exact, feeds a
+mock run ("same effects, edited code", or "mock the third-party API,
+keep everything else live"), and answers "why did bao do that?" without
+guesswork:
+
+```sh
+anyrt trace ls --program toolcaller      # conversations, newest first
+anyrt trace show run_<id>                # turns, cells, effects, results
+anyrt trace show run_<id> --stats        # tokens, cache hits, cost per turn
+anyrt replay run_<id>                    # strict replay; a divergence is the finding
+```
+
+**One tool, a persistent kernel.** The model gets a single tool,
+`run_cell`, and writes Python against facades it pulls in with
+`use("any@v1")`, `use("memory@v1")`, or a connector, in a kernel that
+keeps variables, helpers, and imports alive across cells. Large results
+come back as short stubs the model can drill into, so context stays
+small. `help(http.get)` prints the real docstring: the code is the
+documentation.
+
+**The agent is space-resident.** Programs and skills are published to a
+space with `anyrt deploy` and resolved live from there. Editing the
+agent is a deploy, never a restart. The shipped agent is one such repo
+that your account joins read-only; your own space can shadow any unit
+by name, and bao can write programs for itself.
+
+**Memory that does not depend on model initiative.** Distilled facts go
+into a small, high-signal memory graph in your space. Background jobs
+extract, roll up, decay, and link; recall is injected automatically at
+the start of every conversation, so the agent remembers without being
+asked.
+
+**Runs on its own schedule.** Cron and event triggers are objects in the
+space too, pinned to the device that owns them. With several devices
+online, an election picks the one that answers as bao.
+
+**Model-agnostic.** Anthropic and any OpenAI-compatible backend
+(OpenRouter, DeepSeek, Ollama, vLLM, ...) through one adapter layer with
+per-model profiles. Switching models is a config row, not a code change.
+
+**Designed in the open.** Every contract is an accepted ADR in
+[`docs/adr/`](docs/adr/README.md), and no code lands ahead of its ADR.
+
+## Getting started
+
+You need two processes: an `any` server (your account and spaces) and
+`anyrt serve` (the agent). Both stay on `127.0.0.1`.
+
+### 1. Run `any` and sign in
+
+Build the `any` binary from the
+[`any` repository](https://github.com/anyproto/any) (its README has
+the build steps). Then create an account and start the server:
+
+```sh
+any init      # creates ~/.any and a fresh account; prints the mnemonic ONCE
+any run       # foreground server on http://127.0.0.1:7001
+```
+
+Save the mnemonic somewhere safe: it is the account. A fresh data
+directory has no account, so `any run` without a prior `any init` starts
+unauthorized and every data route answers `401 auth.required` until you
+sign in from another shell:
+
+```sh
+any auth login                      # generate a new account in place
+any auth login --mnemonic-stdin     # or restore an existing one (paste the phrase)
+any auth status
+```
+
+To add a second device later, restore from the mnemonic on that device.
+Never copy `wallet.key` between machines.
+
+### 2. Build anyrt
+
+The canonical environment is the nix dev shell (`nix develop`, or
+`direnv allow`). Without nix you need a recent stable Rust, Python 3.13,
+and [`uv`](https://docs.astral.sh/uv/).
+
+```sh
+uv sync
+make kernel     # componentized CPython guest -> bin/kernel.wasm
+make runtime    # runtime/target/release/anyrt (embeds the kernel)
+```
+
+### 3. Give bao a model key
+
+Secrets never go in the config file. Put a dotenv-style
+`.connectors.env` next to `anybao.toml` (it is gitignored); serve seeds
+it into the account-scoped secrets store on every boot:
+
+```
+llm.key.anthropic=sk-ant-...
+```
+
+Use an Anthropic key scoped to a single workspace (Console > Settings >
+API keys > Create key > choose a workspace). Other providers and how to
+pick a model per tier: [`docs/llm-models.md`](docs/llm-models.md).
+Connector keys (`connector.key.github=...`, `connector.key.linear=...`)
+go in the same file. Details: [`docs/config-secrets.md`](docs/config-secrets.md).
+
+### 4. Start the agent
+
+```sh
+./runtime/target/release/anyrt serve
+```
+
+The committed [`anybao.toml`](anybao.toml) points at the local server
+and at the published bao repos (the agent and the connectors). On first
+boot serve creates your `bao` working space, joins both repo spaces
+read-only through their public guest keys, and waits for them to sync.
+Watch the log for:
+
+```
+anyrt serving space=<bao space id> chat=<chat id> control=127.0.0.1:7010
+overlays synced — agent ready
+```
+
+A message sent before the sync lands gets a "Not ready yet" status
+reply instead of an answer.
+
+### 5. Talk to bao
+
+The `bao` space has one chat. Its ids are in the `anyrt serving` line
+above:
+
+```sh
+any chat send <bao space id> <chat id> --text "hi, what can you do?"
+any chat list <bao space id> <chat id> --limit 5
+```
+
+Then read the run it produced:
+
+```sh
+./runtime/target/release/anyrt trace ls --program toolcaller
+./runtime/target/release/anyrt trace show run_<id>
+```
+
+## Running your own agent code
+
+The agent is just a repo folder: [`repos/_agent`](repos/_agent)
+(the conversation loop, tool and cron programs, skills) and
+[`repos/_connectors`](repos/_connectors) (GitHub, Linear, Gmail, Google
+Calendar/Drive/Sheets, Granola, Attio, Figma, Intercom). To run a
+modified copy, publish it to a space you own and point the overlay at
+it:
+
+```sh
+REPO=$(curl -s -X POST http://127.0.0.1:7001/v1/spaces -d '{"name":"_agentrepo"}' | jq -r .id)
+./runtime/target/release/anyrt deploy --source repos/_agent --target $REPO
+```
+
+```toml
+# anybao.toml
+[overlays]
+agent = "<that space id>"        # your own space: no invite needed
+```
+
+Deploys are hash-gated and picked up by a running serve on its next
+conversation. Restart only for anyrt binary or kernel changes.
+Authoring rules for programs and skills: [`repos/CLAUDE.md`](repos/CLAUDE.md).
+
+## Embedding the runtime
+
+`anyrt` is a library with a thin CLI on top. A Rust app can run the
+agent in-process, with the kernel compiled into the crate (build
+`make kernel` before the consumer's cargo build):
 
 ```rust
 let mut cfg = anyrt::Config::builder()
     .addr("http://127.0.0.1:7001")
     .agent_space("bao")
-    .overlay_with_invite("agent", "<repoSpaceId>", "<inviteToken>")
+    .overlay_with_invite("agent", "<repo space id>", "<invite token>")
     .build();
-anyrt::config::bootstrap(&mut cfg);       // llm-tier defaults + env keys
-let agent = anyrt::serve::start(cfg)?;    // non-blocking; threads inside
-// … agent.stop() on shutdown
+anyrt::config::bootstrap(&mut cfg);
+let agent = anyrt::serve::start(cfg)?;   // non-blocking
+// ... agent.stop() on shutdown
 ```
 
-Logs ride `tracing` — install a subscriber or get silence.
-
-**Standalone (`anyrt serve`)** — the same agent as a process next to an
-any server, configured by `anybao.toml`:
-
-```toml
-addr = "http://127.0.0.1:7001"
-
-[agent]
-space = "bao"               # working space: chat, memory, your edits
-
-[overlays]                  # program repos (values are space IDs);
-                            # invite ⇒ join on boot. This is the
-                            # staging-env agent repo space:
-agent = { space = "bafyreibu6a7ewtk7t6lsnbmazazgcsfqx5efpmyycaycovbpzshvq2zrvy.1mmhvs7exubo9", invite = "2gChBtaWg5EX1PgV7SgXdJDtgszDPrSKcVmvvgUc1o8d16SRHrxMBkGyAQa2ZhUXua8r5gNF7bToC63m9yEGNkMfcXZCvimFtCgTqvAyZARnCWjEXvcYWQJ71ZibD6ZPZkNUghif5DHWJtLYawY2izi37Ng2MsGAwAzFcgASgzEbWW3uXMKemFcK5mRmZF7F6uh" }
-
-[paths]
-traces = "traces"           # raw-blob directory (ADR-026), relative to
-                            # this file's dir (this is the default);
-                            # traces themselves live in the any local store
-```
-
-## Operations
+## Commands
 
 | command | what it does |
 |---|---|
-| `anyrt serve` | run the agent: watch the chat, run conversations + cron triggers |
-| `anyrt deploy --source repos/_agent --target <space\|overlay>` | publish a repo folder (`programs/`, `skills/`, `README.md`) to a space, hash-gated |
-| `anyrt run <name@vN>` | run one guest program from the local dir (dev; the trace lands in the space's local store on `--addr`) |
-| `anyrt trace ls --program toolcaller` | list runs in a serve's local store, newest first (`--addr`, default `http://127.0.0.1:7001`) |
-| `anyrt trace show <run_id>` | render one run: turns, cells, effects (`--stats`, `--seq N`) |
-| `anyrt trace follow` | live-render the newest run as records land |
+| `anyrt serve` | run the agent: watch the chat, run conversations and triggers |
+| `anyrt deploy --source <repo> --target <space\|overlay>` | publish `programs/`, `skills/`, `README.md` to a space, hash-gated |
+| `anyrt run <name@vN>` | run one guest program once (dev loop; `--from-space` runs the deployed form) |
+| `anyrt trace ls\|show\|follow` | list, render, or tail runs from the server's local store |
+| `anyrt replay run_<id>` | strict replay of a recorded run |
+| `anyrt drift` | check the vendored `any` OpenAPI pin against the coverage manifest |
 
-Programs and skills load from **spaces, not the filesystem** — `deploy`
-is the only publish step; a running serve picks changes up on its next
-conversation. The agent's code comes from the `agent` overlay (a repo
-space joined read-only); your own space can shadow it by name
-(ADR-004/ADR-009).
+`make runtime-shell` builds a variant with shell and filesystem effects
+and a `bash` tool for coding tasks. It is off by default.
 
-## Standalone stack: any + anyrt + browser UI
+## Develop
 
-The dedicated (non-Tauri) way to run the whole thing — one any server,
-one agent process, the UI in a browser:
-
-```fish
-# 1. the any server (needs a real nodeconf for sharing/guest joins —
-#    without one it boots the sanitized embedded fallback and joins NO
-#    network):
-cd ~/any/any && ./bin/any run --config ./configs/any-config.yml   # 127.0.0.1:7001
-
-# 2. the agent (this repo; anybao.toml carries space + agent overlay):
-make runtime && ./runtime/target/release/anyrt serve
-#   first run on a fresh space: ANTHROPIC_API_KEY=... anyrt serve
-#   (key persists device-locally after — docs/config-secrets.md)
-
-# 3. the UI, in a browser (any-ui repo): vite proxies /v1 to the server
-cd ~/any/any-ui && pnpm dev            # VITE_API_TARGET overrides the
-# open http://localhost:5173           # default http://127.0.0.1:7001
+```sh
+make test       # kernel + cargo tests (shell feature) + pytest
+make lint       # clippy -D warnings, fmt --check, ruff
 ```
 
-Browser mode has NO embedded agent — `anyrt serve` IS the agent. Don't
-also run the desktop app against the same working space: two agents on
-one chat means doubled replies.
+Read [`docs/adr/README.md`](docs/adr/README.md) first: it is the index
+of every contract and the working rules. Then the ADR for whatever you
+are touching, and [`docs/debugging.md`](docs/debugging.md) for reading
+a trace. Point-in-time notes and runbooks live under `docs/`.
 
-**Prod-network test environment**: `configs/anybao.prod.test.toml` (untracked,
-header documents everything) runs a test bao on a throwaway prod-network
-account (`:7005`, control `:7014`) against `_agentrepo-test` /
-`_connectorsrepo-test` — test copies of the repo spaces owned by the
-prod repo account. Real prod clients can join it; deploy to it through
-`:7003` by raw id. Browser: `VITE_API_TARGET=http://127.0.0.1:7005
-VITE_ANYRT_TARGET=http://127.0.0.1:7014 pnpm dev`. See
-the local `docs/environments.md`.
+## License
 
-## Build
-
-```
-nix develop           # canonical env (or: direnv allow)
-uv sync
-make kernel           # componentized CPython → bin/kernel.wasm —
-                      #   REQUIRED before any cargo build: the kernel
-                      #   embeds into the binary/lib (ADR-009 §4)
-make runtime          # runtime/target/release/anyrt
-make test             # kernel + cargo tests + pytest
-make lint             # clippy -D warnings + fmt + ruff
-```
-
-## Docs
-
-- [`docs/adr/README.md`](docs/adr/README.md) — the ADR index: every
-  contract + the working rules (**no code lands ahead of its accepted
-  ADR**). Start with
-  [ADR-009](docs/adr/009-space-resident-assets.md) for config,
-  overlays, kernel embedding, lib mode.
-- [`docs/debugging.md`](docs/debugging.md) — "why did bao do that?":
-  trace analysis.
-- [`docs/repo-overlay-e2e.md`](docs/repo-overlay-e2e.md) — two-account
-  setup: a repo account publishes code, a user account joins read-only.
-- [`docs/config-secrets.md`](docs/config-secrets.md) — API keys: seeded
-  once (env), persisted device-local in the space, never synced.
+[MIT](LICENSE)
