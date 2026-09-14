@@ -628,7 +628,7 @@ impl Broker {
         ok: bool,
         output: Option<Value>,
         error: Option<Value>,
-    ) -> Result<(), EffectFailure> {
+    ) -> Result<Value, EffectFailure> {
         let top = self.span_stack.pop().ok_or(EffectFailure {
             type_: "no_open_span".into(),
             message: "span.end without span.begin".into(),
@@ -639,9 +639,13 @@ impl Broker {
                 .expect("replay mode requires a cursor")
                 .expect_span_end(&top.name, ok)?;
         }
-        if top.owns_mock {
-            self.span_mocks.pop();
-        }
+        // the owning span's end carries the filter hit counts (ADR-028
+        // §5): a glob that matched nothing becomes a digest warning
+        let filter = if top.owns_mock {
+            self.span_mocks.pop().and_then(|idx| idx.filter_hits())
+        } else {
+            None
+        };
         let cell = self.current_cell.clone();
         let mut meta = json!({
             "durMs": top.t0.elapsed().as_millis() as i64,
@@ -650,15 +654,25 @@ impl Broker {
         if top.mocked > 0 {
             meta["mocked"] = json!(top.mocked);
         }
+        if let Some(f) = filter {
+            meta["mockFilter"] = f;
+        }
         if let Some(k) = &top.kind {
             // narrative label (ADR-001 §4d); mutations stays the oracle
             meta.as_object_mut()
                 .unwrap()
                 .insert("kind".into(), json!(k));
         }
-        self.writer
-            .span_end(&top.id, &top.name, cell.as_deref(), ok, output, error, meta);
-        Ok(())
+        self.writer.span_end(
+            &top.id,
+            &top.name,
+            cell.as_deref(),
+            ok,
+            output,
+            error,
+            meta.clone(),
+        );
+        Ok(meta)
     }
 
     /// Cell lifecycle record (ADR-001 §4b). In strict replay the
@@ -875,13 +889,15 @@ impl Broker {
         // inside it a miss follows the spec's policy.
         let mut unmatched_live = false;
         if !never_mockable(name) {
+            // the globs see the enclosing facades too (ADR-028 §1)
+            let facades: Vec<&str> = self.span_stack.iter().map(|s| s.name.as_str()).collect();
             let active = match self.span_mocks.last_mut() {
                 Some(idx) => Some(idx),
                 None if self.mode == Mode::Mock => self.mock_index.as_mut(),
                 None => None,
             };
             if let Some(idx) = active {
-                if idx.spec.mockable(name) {
+                if idx.decide(name, &facades).mockable() {
                     match idx.take(name, &key) {
                         Some(entry) => {
                             self.bump_mocked(class, true);
@@ -2315,6 +2331,53 @@ mod tests {
         assert_eq!(out["status"], 200);
         b.span_end(true, None, None).unwrap();
         assert!(b.span_mocks.is_empty());
+    }
+
+    #[test]
+    fn span_mock_globs_match_enclosing_facades_and_count_hits() {
+        // F2 (questionary 09-14): `except: ["any.*"]` must mean the any
+        // server's http traffic — effects under any.* facades
+        let mut b = make_broker("sm4");
+        span_with_mock(
+            &mut b,
+            json!({"except": ["any.*"],
+                   "records": [{"effect": "http.get", "output": {"status": 200}, "repeat": true}]}),
+        );
+        // bare http.get (httpbin): mocked
+        let out = b
+            .call("http.get", json!({"url": "https://httpbin.org/uuid"}))
+            .unwrap();
+        assert_eq!(out["status"], 200);
+        assert_eq!(b.writer.records.last().unwrap()["meta"]["mocked"], true);
+        // the same effect under an any.* facade: excepted → runs live
+        // (offline broker: the live http fails, which proves it was not served)
+        b.try_span_begin("any.list_types", None, json!({})).unwrap();
+        let err = b
+            .call("http.get", json!({"url": "http://127.0.0.1:1/v1/types"}))
+            .unwrap_err();
+        assert_ne!(err.type_, "mock_unmatched");
+        let rec = b.writer.records.last().unwrap();
+        assert_eq!(rec["meta"]["mocked"], false);
+        assert!(rec["meta"].get("mock").is_none());
+        b.span_end(true, None, None).unwrap();
+        let end = b.span_end(true, None, None).unwrap();
+        assert_eq!(end["mockFilter"], json!({"except": 1}));
+
+        // a glob that matches nothing: counted as zero → the digest warns
+        let mut b = make_broker("sm5");
+        span_with_mock(&mut b, json!({"only": ["any.*"], "unmatched": "live"}));
+        let out = b.call("time.now", json!({})).unwrap();
+        assert!(out["epoch"].is_number());
+        assert!(b.writer.records.last().unwrap()["meta"]
+            .get("mock")
+            .is_none());
+        let end = b.span_end(true, None, None).unwrap();
+        assert_eq!(end["mockFilter"], json!({"only": 0}));
+        // no filter in the spec → no counts on the record
+        let mut b = make_broker("sm6");
+        span_with_mock(&mut b, json!({"unmatched": "live"}));
+        let end = b.span_end(true, None, None).unwrap();
+        assert!(end.get("mockFilter").is_none());
     }
 
     #[test]

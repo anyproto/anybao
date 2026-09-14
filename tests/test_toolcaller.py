@@ -65,7 +65,10 @@ class World:
         if name == "span.end":
             self.spans.append(("end", payload["ok"]))
             self.span_ends.append(payload)
-            return None
+            # the end meta comes back; a World may script mockFilter
+            f = getattr(self, "mock_filter", None)
+            return {"durMs": 1, "effects": 0, "mutations": 0,
+                    **({"mockFilter": f} if f is not None else {})}
         if name == "trace.effects_of":
             if getattr(self, "effect_rows", None) is not None:
                 return {"records": list(self.effect_rows)}
@@ -1046,6 +1049,34 @@ def test_string_mock_spec_is_rejected_not_run_live():
     second = w.llm_calls[2]["messages"][-1]["parts"][0]
     assert second["is_error"] is True and "mockref must be a run id string" in second["content"]
     assert ("begin", "cell") not in w.spans   # neither cell ran
+
+
+def test_zero_match_glob_warns_in_the_header():
+    # F2 (questionary 09-14): `only: ["any.*"]` used to be a silent no-op
+    rows = [{"seq": 41, "effect": "http.post", "class": "mutate", "mocked": False,
+             "unmatched": False, "error": None}]
+    w = World([mock_reply(mock={"only": ["any.*"], "unmatched": "fail"}), done_reply("ok")])
+    w.effect_rows = rows
+    w.mock_filter = {"only": 0}
+    run(w)
+    text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    lines = text.split("\n")
+    assert lines[0] == "[MOCK] 0 of 1 effects served from nothing", lines[0]
+    assert lines[1].startswith(
+        'WARNING: only: ["any.*"] matched no call in this cell — every effect ran live'), lines[1]
+    # a glob that did match: no warning
+    w = World([mock_reply(mock={"except": ["any.*"], "mockref": None}), done_reply("ok")])
+    w.effect_rows = rows
+    w.mock_filter = {"except": 1}
+    run(w)
+    text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert "WARNING" not in text
+    # a cell with no effects at all: nothing to warn about
+    w = World([mock_reply(mock={"only": ["any.*"]}), done_reply("ok")])
+    w.effect_rows = []
+    w.mock_filter = {"only": 0}
+    run(w)
+    assert "WARNING" not in w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
 
 
 def test_bad_mock_spec_is_an_error_result_before_any_cell():

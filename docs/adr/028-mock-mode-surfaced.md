@@ -56,11 +56,18 @@ mock = {
 
 Sources and filter are separate concerns:
 
-- **`only` / `except`** decide the *mockable set* by effect-name glob
-  (`only` narrows, `except` subtracts; both absent = everything mockable
-  but §7). An effect outside the set is never consulted and always
+- **`only` / `except`** decide the *mockable set* by glob (`only`
+  narrows, `except` subtracts; both absent = everything mockable but
+  §7). A glob matches the **effect name or any enclosing facade (span)
+  name**: the any server's traffic is `http.*` effects under `any.*`
+  spans, connector calls sit under `github.*` and the like, so
+  `except: ["any.*"]` keeps every any call live while a bare
+  `http.get` replays, and `only: ["any.create_object"]` rehearses one
+  write. An effect outside the set is never consulted and always
   executes live, whatever `unmatched` says. This is how "part of a
-  run" is expressed — never by record sequence numbers.
+  run" is expressed — never by record sequence numbers. A URL pattern
+  for `http.*` (two bare hosts in one cell, no facade between them) is
+  deferred until it shows up in practice.
 - **`from`** folds the referenced runs' effect records into the index in
   log order (ADR-001 §5 v1 pop semantics), read from the trace store on
   the run's server (ADR-023 §4; the guest reads its own store, the CLI
@@ -137,7 +144,14 @@ mocked was executed or written. Re-run without `mock` to do it for real.
 
 - The header is **always first** when a spec is present, including
   `0 of N effects mocked`: a wrong glob or stale keys must be visible,
-  never inferred.
+  never inferred. A **second line warns** when an `only` / `except`
+  glob matched no call in the cell (`WARNING: only: ["any.*"] matched
+  no call in this cell — every effect ran live`): the span-scoped index
+  counts the calls `only` admitted and `except` removed, the cell
+  span's end record carries them as `meta.mockFilter`, and the
+  `span.end` effect returns that meta to the loop. A narrowing glob
+  that matches nothing would otherwise silently widen to "everything
+  live" — on a rehearsal, that is the write executing.
 - Prints and last value are unchanged. That is the feature.
 - Side-effect rows carry `(mocked)`, `(live)`, or, for a span facade
   whose inner effects split, `(mixed: 2 mocked, 1 live)`. A mocked
@@ -213,7 +227,7 @@ unchanged): a denied effect is denied whether or not a mock exists.
 
 ## Implementation notes
 
-- `runtime/src/replay.rs`: `MockSpec`, `Unmatched`, `MockIndex::build`
+- `runtime/src/replay.rs`: `MockSpec::decide` (effect + facade globs), `Unmatched`, `MockIndex::build`
   (inline first, wildcard key, `repeat`), `glob_match`,
   `never_mockable`. `runtime/src/broker.rs`: `span_mocks` (the
   span-scoped stack), `build_mock_index`, the consult in `call`,

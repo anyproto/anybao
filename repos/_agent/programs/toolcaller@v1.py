@@ -18,6 +18,7 @@ caller (the subagent@v1 wrapper).
 """
 
 import hashlib
+import json
 import re
 
 # markdown-link destinations in a reply: [Name](any://…) — the source
@@ -73,11 +74,14 @@ RUN_CELL_TOOL = {
             "mock": {
                 "type": "object",
                 "description": "Recorded/scripted effects for this cell only: "
-                               "{from: run id(s), only: [effect globs], except: "
-                               "[globs], records: [{effect, input?, output|error, "
-                               "repeat?}], unmatched: fail|live}. Effects outside "
-                               "only/except run live. The result is NOT a live "
-                               "verification — it says so.",
+                               "{from: run id(s), only: [globs], except: [globs], "
+                               "records: [{effect, input?, output|error, repeat?}], "
+                               "unmatched: fail|live}. Globs match effect names "
+                               "(http.get, time.now) AND the facade the call runs "
+                               "under (any.*, github.*): except: [\"any.*\"] keeps "
+                               "every any call live. Outside only/except a call "
+                               "runs live. The result is NOT a live verification "
+                               "— it says so.",
             },
         },
         "required": ["code"],
@@ -317,9 +321,12 @@ def _side_effects(entries, mocked=False):
     return "Side effects: " + ", ".join(lines[:MAX_SIDE_EFFECT_LINES])
 
 
-def _mock_header(entries, mock):
+def _mock_header(entries, mock, filter_hits=None):
     """The line a mocked cell's digest ALWAYS opens with (ADR-028 §5) —
-    including `0 of N`: a wrong glob or stale keys must be visible."""
+    including `0 of N`: a wrong glob or stale keys must be visible. A
+    second line WARNS when an only/except glob matched no call in the
+    cell (`filter_hits` = the span end's `mockFilter` counts): a
+    narrowing glob that matches nothing silently widens to everything."""
     rows = [e for e in entries if e.get("effect") not in _TRACE_VIEWS]
     served = [e for e in rows if _mock_state(e) == "mocked"]
     n_served = sum((e.get("mocked") or 0) if not e.get("effect") else 1
@@ -341,6 +348,13 @@ def _mock_header(entries, mock):
     if live:
         line += "; " + f"{len(live)} live: " + ", ".join(
             f"{_op_name(e)} #{e['seq']}" for e in live[:MAX_SIDE_EFFECT_LINES])
+    hits = filter_hits or {}
+    for key in ("only", "except"):
+        if mock.get(key) and n_total and hits.get(key) == 0:
+            line += (f"\nWARNING: {key}: {json.dumps(mock[key])} matched no call in this "
+                     f"cell — " + ("every effect ran live" if key == "only"
+                                   else "nothing was kept live by it")
+                     + " (globs match effect names and facade names like any.*)")
     return line
 
 
@@ -435,10 +449,10 @@ def render_bash(cr, res, bound):
     return "\n".join(parts)
 
 
-def render_digest(cell_id, cr, entries, mock=None):
+def render_digest(cell_id, cr, entries, mock=None, filter_hits=None):
     parts = []
     if mock is not None:
-        parts.append(_mock_header(entries, mock))
+        parts.append(_mock_header(entries, mock, filter_hits))
     if cr["prints"]:
         parts.append("Output:\n" + "\n".join(
             f"#{i} {_render_value(cell_id, m, i)}" for i, m in enumerate(cr["prints"])))
@@ -570,13 +584,16 @@ def _run_model_cells(parts, results):
         # the cell's failure rides its span-end record (ADR-003 §4b) —
         # type + message like @span; the traceback stays digest text
         err = cr["error"]
-        effect("span.end", {"ok": cr["ok"],  # noqa: F821
-                            "error": ({"type": err["type"], "message": err["message"]}
-                                      if err else None)})
+        # the end record's meta comes back: `mockFilter` = only/except hit
+        # counts for the zero-match warning (ADR-028 §5)
+        end = effect("span.end", {"ok": cr["ok"],  # noqa: F821
+                                  "error": ({"type": err["type"], "message": err["message"]}
+                                            if err else None)}) or {}
         entries = effect("trace.effects_of",  # noqa: F821
                          {"span": sid})["records"]
         results.append({"type": "tool_result", "call_id": cid,
-                        "content": render_digest(cid, cr, entries, mock),
+                        "content": render_digest(cid, cr, entries, mock,
+                                                 end.get("mockFilter")),
                         "is_error": not cr["ok"]})
     return malformed
 

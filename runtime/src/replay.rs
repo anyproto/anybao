@@ -304,13 +304,33 @@ impl MockSpec {
     }
 
     /// Everything mockable when `only` is empty; `except` subtracts;
-    /// `span.*` / `trace.*` never are (ADR-028 §7).
-    pub fn mockable(&self, effect: &str) -> bool {
+    /// never-mockable effects (§7) never are. Globs match the effect
+    /// name OR any enclosing facade (span) name (ADR-028 §1): the any
+    /// server's traffic is `http.*` effects under `any.*` spans, and
+    /// `except: ["any.*"]` means exactly that traffic. Returns the
+    /// decision plus which filter decided it, for the zero-match
+    /// warning (§5).
+    pub fn decide(&self, effect: &str, facades: &[&str]) -> Decision {
         if never_mockable(effect) {
-            return false;
+            return Decision::Plumbing;
         }
-        let in_only = self.only.is_empty() || self.only.iter().any(|g| glob_match(g, effect));
-        in_only && !self.except.iter().any(|g| glob_match(g, effect))
+        let hit = |g: &String| glob_match(g, effect) || facades.iter().any(|f| glob_match(g, f));
+        if self.except.iter().any(hit) {
+            return Decision::Excepted;
+        }
+        if self.only.is_empty() {
+            return Decision::Mockable;
+        }
+        if self.only.iter().any(hit) {
+            Decision::Admitted
+        } else {
+            Decision::OutsideOnly
+        }
+    }
+
+    /// The unit-test shape: no enclosing facades.
+    pub fn mockable(&self, effect: &str) -> bool {
+        self.decide(effect, &[]).mockable()
     }
 
     /// The spec as recorded (run header / cell span input) — the
@@ -337,6 +357,27 @@ impl MockSpec {
             }),
         );
         Value::Object(m)
+    }
+}
+
+/// What the mockable set said about one call (ADR-028 §1/§5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// `only` is empty and nothing excepted it
+    Mockable,
+    /// a non-empty `only` admitted it
+    Admitted,
+    /// `except` removed it — plainly live
+    Excepted,
+    /// a non-empty `only` did not admit it — plainly live
+    OutsideOnly,
+    /// never-mockable plumbing (§7) — plainly live, uncounted
+    Plumbing,
+}
+
+impl Decision {
+    pub fn mockable(self) -> bool {
+        matches!(self, Decision::Mockable | Decision::Admitted)
     }
 }
 
@@ -405,6 +446,11 @@ pub const WILDCARD_KEY: &str = "*";
 pub struct MockIndex {
     queues: HashMap<(String, String), VecDeque<MockEntry>>,
     pub spec: MockSpec,
+    /// Calls a non-empty `only` admitted / calls `except` removed —
+    /// a glob that matched nothing is a visible warning, not a silent
+    /// no-op (ADR-028 §5).
+    pub only_hits: u64,
+    pub except_hits: u64,
 }
 
 impl MockIndex {
@@ -421,6 +467,8 @@ impl MockIndex {
         let mut idx = MockIndex {
             queues: HashMap::new(),
             spec: MockSpec::default(),
+            only_hits: 0,
+            except_hits: 0,
         };
         idx.fold_run(&run, records);
         idx
@@ -436,6 +484,8 @@ impl MockIndex {
         let mut idx = MockIndex {
             queues: HashMap::new(),
             spec: spec.clone(),
+            only_hits: 0,
+            except_hits: 0,
         };
         for (i, r) in spec.records.iter().enumerate() {
             let effect = r["effect"].as_str().unwrap_or("").to_string();
@@ -482,6 +532,33 @@ impl MockIndex {
                     });
             }
         }
+    }
+
+    /// The mockable-set decision for one call, counted (ADR-028 §5).
+    pub fn decide(&mut self, effect: &str, facades: &[&str]) -> Decision {
+        let d = self.spec.decide(effect, facades);
+        match d {
+            Decision::Admitted => self.only_hits += 1,
+            Decision::Excepted => self.except_hits += 1,
+            _ => {}
+        }
+        d
+    }
+
+    /// `{only, except}` hit counts when the spec has that filter — the
+    /// cell span's end record carries them for the digest.
+    pub fn filter_hits(&self) -> Option<Value> {
+        if self.spec.only.is_empty() && self.spec.except.is_empty() {
+            return None;
+        }
+        let mut m = serde_json::Map::new();
+        if !self.spec.only.is_empty() {
+            m.insert("only".into(), json!(self.only_hits));
+        }
+        if !self.spec.except.is_empty() {
+            m.insert("except".into(), json!(self.except_hits));
+        }
+        Some(Value::Object(m))
     }
 
     /// Exact key first, then the wildcard; a `repeat` entry is peeked.
@@ -752,6 +829,23 @@ mod spec_tests {
         assert!(MockSpec::default().mockable("config.get"));
         // recorded shape re-parses to itself
         assert_eq!(MockSpec::parse(&s.to_value()).unwrap(), s);
+        // globs match enclosing facade names too (ADR-028 §1)
+        let s = MockSpec::parse(&json!({"except": ["any.*"]})).unwrap();
+        assert_eq!(s.decide("http.get", &["cell"]), Decision::Mockable);
+        assert_eq!(
+            s.decide("http.get", &["cell", "any.list_types"]),
+            Decision::Excepted
+        );
+        let s = MockSpec::parse(&json!({"only": ["any.*"]})).unwrap();
+        assert_eq!(
+            s.decide("http.post", &["cell", "any.create_object"]),
+            Decision::Admitted
+        );
+        assert_eq!(s.decide("http.get", &["cell"]), Decision::OutsideOnly);
+        assert_eq!(
+            s.decide("module.resolve", &["cell", "any.query"]),
+            Decision::Plumbing
+        );
     }
 
     #[test]

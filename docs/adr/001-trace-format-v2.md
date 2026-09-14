@@ -254,9 +254,12 @@ is driven by one spec, `{from, only, except, records, unmatched}`:
 `from` runs fold into the index in log order; inline `records` sit at
 the front of their key's queue, an input-less record takes the
 wildcard key `(effect, "*")` consulted after the exact key, `repeat`
-peeks instead of popping; `only`/`except` (effect-name globs) define
-the mockable set — a call outside it is plainly live and carries no
-`meta.mock`. Every consulted record carries provenance: served →
+peeks instead of popping; `only`/`except` (globs over the effect name
+and the enclosing facade span names) define the mockable set — a call
+outside it is plainly live and carries no `meta.mock`; the owning
+span's end record carries `meta.mockFilter: {only?, except?}` hit
+counts.
+Every consulted record carries provenance: served →
 `meta.mocked: true`, `meta.mock: {from, seq} | {inline: i}`; a miss
 executed live → `meta.mock: {unmatched: true}`; a miss under `fail` →
 an error record, `error.type: "mock_unmatched"`, `meta.mock:

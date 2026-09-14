@@ -104,8 +104,10 @@ device's runs show up.
 `run_cell(code, mockref="run_…")` serves every effect the cell makes
 from that past run's records (same input → recorded output, nothing
 executed; a call the run never made fails); `mock={from, only,
-except, records, unmatched}` narrows it (`only: ["http.*"]` keeps
-`any.*` live), scripts answers nobody has recorded (`records:
+except, records, unmatched}` narrows it — globs match effect names
+AND the facade a call runs under, so `except: ["any.*"]` keeps every
+any call live while a bare `http.get` replays; the digest warns when
+a glob matched nothing — scripts answers nobody has recorded (`records:
 [{effect, input?, output|error}]`), or lets misses run live
 (`unmatched: "live"`). Use it to rework a program's parsing against
 the data a live run already fetched, to rehearse a mutating flow

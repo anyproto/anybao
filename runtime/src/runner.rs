@@ -149,14 +149,13 @@ impl crate::bindings::KernelImports for &mut Host {
                     let kind = p.get("kind").and_then(|k| k.as_str()).map(String::from);
                     Ok(json!({"span": self.broker.try_span_begin(&n, kind, input)?}))
                 }
-                "span.end" => {
-                    self.broker.span_end(
-                        p["ok"].as_bool().unwrap_or(false),
-                        p.get("output").filter(|v| !v.is_null()).cloned(),
-                        p.get("error").filter(|v| !v.is_null()).cloned(),
-                    )?;
-                    Ok(Value::Null)
-                }
+                // the end record's meta comes back (the toolcaller reads
+                // `mockFilter` off its cell span, ADR-028 §5)
+                "span.end" => self.broker.span_end(
+                    p["ok"].as_bool().unwrap_or(false),
+                    p.get("output").filter(|v| !v.is_null()).cloned(),
+                    p.get("error").filter(|v| !v.is_null()).cloned(),
+                ),
                 _ => self.broker.call(&name, p),
             }
         })();
