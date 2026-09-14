@@ -75,6 +75,13 @@ normalize → key → capability check → replay/mock consult → execute → r
   free.
 - **Replay/mock consult** per ADR-001 §5 (strict cursor / loose FIFO).
   Mocked calls skip execute but still record (`mocked: true`).
+  The loose index is either run-level (`anyrt run --mock`) or
+  **span-scoped** (amendment 2026-09-14, ADR-028 §3): a `span.begin`
+  whose input carries `mock` installs an index for the span's
+  lifetime, its `span.end` drops it, nested spans inherit the innermost;
+  a bad spec fails the begin itself. `span.*` and `trace.*` are never
+  served from a mock (ADR-028 §7) — the trace's own machinery must not
+  lie about the run it is in.
 - **Record always** — success, error, denial, mock. If it isn't in the
   trace, it didn't happen; corollary: if it happened, it's in the trace.
 - Effect failures return as **data** in the record AND raise a typed

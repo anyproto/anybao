@@ -7,11 +7,11 @@
 //! broker) so the record-mode binary's module tree stays untouched;
 //! the serve/replay wiring in main.rs lifts it to a top-level module
 //! when it lands.
-#![allow(dead_code)] // consumed by the main.rs replay wiring (next round); unit tests below
 
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
+use std::sync::Arc;
 
 /// Strict replay only: the next call does not match the next record.
 /// The hard error IS the feature (determinism made testable); loose
@@ -196,33 +196,473 @@ impl ReplayCursor {
     }
 }
 
-/// Loose mock mode: (effect, key) → FIFO output queue (queue order =
-/// log order — v1 pop semantics on sturdier keys). Unmatched policy is
-/// the caller's ("fail" under tests, "live" interactively).
+/// The mock spec (ADR-028 §1) — sources (`from` runs, inline
+/// `records`), the mockable set (`only`/`except` effect-name globs)
+/// and the miss policy. One shape on `anyrt run --mock` and on the
+/// toolcaller's cell span (`span.begin` `input.mock`, ADR-028 §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MockSpec {
+    pub from: Vec<String>,
+    pub only: Vec<String>,
+    pub except: Vec<String>,
+    pub records: Vec<Value>,
+    pub unmatched: Unmatched,
+}
+
+/// A miss inside the mockable set: `fail` raises a typed
+/// `mock_unmatched` into the guest (recorded as an error record);
+/// `live` executes and records `meta.mock.unmatched` — the traceDiff
+/// predicate (ADR-028 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unmatched {
+    Fail,
+    Live,
+}
+
+impl Default for MockSpec {
+    /// Everything mockable, no sources, miss = fail.
+    fn default() -> Self {
+        MockSpec {
+            from: vec![],
+            only: vec![],
+            except: vec![],
+            records: vec![],
+            unmatched: Unmatched::Fail,
+        }
+    }
+}
+
+impl MockSpec {
+    /// A bare run id is sugar for `{"from": id}`; `from` may be one id
+    /// or a list. Shape errors are the caller's spec error — raised
+    /// before anything runs (ADR-028 §5).
+    pub fn parse(v: &Value) -> Result<MockSpec, String> {
+        let v = match v {
+            Value::String(run) => json!({"from": run}),
+            Value::Object(_) => v.clone(),
+            other => return Err(format!("mock: expected an object or a run id, got {other}")),
+        };
+        const KNOWN: [&str; 5] = ["from", "only", "except", "records", "unmatched"];
+        for k in v.as_object().unwrap().keys() {
+            if !KNOWN.contains(&k.as_str()) {
+                return Err(format!("mock: unknown key {k:?}"));
+            }
+        }
+        let strings = |key: &str| -> Result<Vec<String>, String> {
+            match v.get(key) {
+                None | Some(Value::Null) => Ok(vec![]),
+                Some(Value::String(s)) => Ok(vec![s.clone()]),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|x| {
+                        x.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("mock.{key}: expected strings, got {x}"))
+                    })
+                    .collect(),
+                Some(other) => Err(format!(
+                    "mock.{key}: expected a string or list, got {other}"
+                )),
+            }
+        };
+        let from = strings("from")?;
+        for r in &from {
+            if !crate::tracestore::valid_run_id(r) {
+                return Err(format!("mock.from: not a run id: {r:?}"));
+            }
+        }
+        let records = match v.get("records") {
+            None | Some(Value::Null) => vec![],
+            Some(Value::Array(a)) => a.clone(),
+            Some(other) => return Err(format!("mock.records: expected a list, got {other}")),
+        };
+        for (i, r) in records.iter().enumerate() {
+            let effect = r.get("effect").and_then(|e| e.as_str()).unwrap_or("");
+            if effect.is_empty() {
+                return Err(format!("mock.records[{i}]: missing effect"));
+            }
+            let has_out = r.get("output").is_some_and(|o| !o.is_null());
+            let has_err = r.get("error").is_some_and(|e| e.is_object());
+            if has_out == has_err {
+                return Err(format!(
+                    "mock.records[{i}] ({effect}): exactly one of output / error"
+                ));
+            }
+        }
+        let unmatched = match v.get("unmatched") {
+            None | Some(Value::Null) => Unmatched::Fail,
+            Some(Value::String(s)) if s == "fail" => Unmatched::Fail,
+            Some(Value::String(s)) if s == "live" => Unmatched::Live,
+            Some(other) => return Err(format!("mock.unmatched: expected fail|live, got {other}")),
+        };
+        Ok(MockSpec {
+            from,
+            only: strings("only")?,
+            except: strings("except")?,
+            records,
+            unmatched,
+        })
+    }
+
+    /// Everything mockable when `only` is empty; `except` subtracts;
+    /// never-mockable effects (§7) never are. Globs match the effect
+    /// name OR any enclosing facade (span) name (ADR-028 §1): the any
+    /// server's traffic is `http.*` effects under `any.*` spans, and
+    /// `except: ["any.*"]` means exactly that traffic. Returns the
+    /// decision plus which filter decided it, for the zero-match
+    /// warning (§5).
+    pub fn decide(&self, effect: &str, facades: &[&str]) -> Decision {
+        if never_mockable(effect) {
+            return Decision::Plumbing;
+        }
+        let hit = |g: &String| glob_match(g, effect) || facades.iter().any(|f| glob_match(g, f));
+        if self.except.iter().any(hit) {
+            return Decision::Excepted;
+        }
+        if self.only.is_empty() {
+            return Decision::Mockable;
+        }
+        if self.only.iter().any(hit) {
+            Decision::Admitted
+        } else {
+            Decision::OutsideOnly
+        }
+    }
+
+    /// The unit-test shape: no enclosing facades.
+    pub fn mockable(&self, effect: &str) -> bool {
+        self.decide(effect, &[]).mockable()
+    }
+
+    /// The spec as recorded (run header / cell span input) — the
+    /// parsed shape, so a recorded spec re-parses to itself.
+    pub fn to_value(&self) -> Value {
+        let mut m = serde_json::Map::new();
+        if !self.from.is_empty() {
+            m.insert("from".into(), json!(self.from));
+        }
+        if !self.only.is_empty() {
+            m.insert("only".into(), json!(self.only));
+        }
+        if !self.except.is_empty() {
+            m.insert("except".into(), json!(self.except));
+        }
+        if !self.records.is_empty() {
+            m.insert("records".into(), json!(self.records));
+        }
+        m.insert(
+            "unmatched".into(),
+            json!(match self.unmatched {
+                Unmatched::Fail => "fail",
+                Unmatched::Live => "live",
+            }),
+        );
+        Value::Object(m)
+    }
+}
+
+/// What the mockable set said about one call (ADR-028 §1/§5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// `only` is empty and nothing excepted it
+    Mockable,
+    /// a non-empty `only` admitted it
+    Admitted,
+    /// `except` removed it — plainly live
+    Excepted,
+    /// a non-empty `only` did not admit it — plainly live
+    OutsideOnly,
+    /// never-mockable plumbing (§7) — plainly live, uncounted
+    Plumbing,
+}
+
+impl Decision {
+    pub fn mockable(self) -> bool {
+        matches!(self, Decision::Mockable | Decision::Admitted)
+    }
+}
+
+/// Never served from a mock (ADR-028 §7): the trace's own machinery
+/// (a mocked trace view would lie about the run it is in) and the
+/// kernel's plumbing — module resolution, boot pins, runtime wiring,
+/// the mailbox, the fuel gauge — which nobody rehearses and which an
+/// `unmatched: fail` spec would otherwise kill a cell on (`use()`
+/// failing typed mock_unmatched before the rehearsed call is reached).
+pub fn never_mockable(effect: &str) -> bool {
+    effect.starts_with("span.")
+        || effect.starts_with("trace.")
+        || matches!(
+            effect,
+            "module.resolve" | "kernel.boot" | "runtime.get" | "mailbox.drain" | "fuel.state"
+        )
+}
+
+/// `*` matches any run of characters (including none); everything else
+/// is literal: `http.*`, `any.*`, `*`, `sh.run`.
+pub fn glob_match(pattern: &str, s: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), s.chars().collect());
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star, mut mark): (Option<usize>, usize) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == t[ti] {
+            pi += 1;
+            ti += 1;
+        } else if let Some(sp) = star {
+            pi = sp + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// One queued answer: the record shape the broker consumes (`output` /
+/// `error`, `ok` for a facade), where it came from (`meta.mock`,
+/// ADR-028 §8), and whether it is consumed on use. `rec` is cloned out
+/// of the index on take — the only per-serve copy.
+#[derive(Debug, Clone)]
+pub struct MockEntry {
+    pub rec: Value,
+    pub provenance: Value,
+    pub repeat: bool,
+}
+
+/// Where a queued answer lives: an inline record (owned), or one
+/// record of a loaded run held by reference — a `from` run costs one
+/// load per broker and no copies per install (ADR-028 consequences).
+#[derive(Debug, Clone)]
+enum Slot {
+    Inline {
+        i: usize,
+        rec: Value,
+        repeat: bool,
+    },
+    Run {
+        run: String,
+        records: Arc<Vec<Value>>,
+        idx: usize,
+    },
+}
+
+pub const WILDCARD_KEY: &str = "*";
+
+/// Loose mock: `effect → key → FIFO output queue` folded from the log
+/// in one pass (ADR-001 §5; queue order = log order — v1 pop semantics
+/// on sturdier keys). Inline records sit at the FRONT of their key's
+/// queue (they override a `from` record for the same call); a record
+/// without `input` takes the wildcard key `(effect, "*")`, consulted
+/// after the exact key misses (ADR-028 §1). A run's span-end records
+/// fold in too, under `(facade name, begin key)` — served whole at
+/// `span.begin` (ADR-028 §3a). The mockable set and the miss policy
+/// ride along in `spec`.
 pub struct MockIndex {
-    queues: HashMap<(String, String), VecDeque<Value>>,
+    queues: HashMap<(String, String), VecDeque<Slot>>,
+    pub spec: MockSpec,
+    /// Calls a non-empty `only` admitted / calls `except` removed —
+    /// a glob that matched nothing is a visible warning, not a silent
+    /// no-op (ADR-028 §5).
+    pub only_hits: u64,
+    pub except_hits: u64,
+    /// per inline record: how often it was served (a never-served
+    /// record is named in the same warning)
+    inline_hits: Vec<u64>,
 }
 
 impl MockIndex {
+    /// The whole log of one run, everything mockable, miss = fail —
+    /// the unit-test shape. Provenance names the header's run id.
     pub fn new(records: &[Value]) -> Self {
-        let mut queues: HashMap<(String, String), VecDeque<Value>> = HashMap::new();
-        for r in records {
-            if r["kind"] == "effect" {
-                let effect = r["effect"].as_str().unwrap_or("").to_string();
-                let key = r["key"].as_str().unwrap_or("").to_string();
-                queues
-                    .entry((effect, key))
-                    .or_default()
-                    .push_back(r.clone());
-            }
-        }
-        MockIndex { queues }
+        let run = records
+            .first()
+            .and_then(|h| h.get("run"))
+            .and_then(|r| r.get("id"))
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut idx = MockIndex {
+            queues: HashMap::new(),
+            spec: MockSpec::default(),
+            only_hits: 0,
+            except_hits: 0,
+            inline_hits: vec![],
+        };
+        idx.fold_run(&run, Arc::new(records.to_vec()));
+        idx
     }
 
+    /// Build from a spec: inline records first, then each `from` run
+    /// in list order through `load` (one run's blob-resolved records,
+    /// shared by reference; an unknown run or a missing blob is the
+    /// caller's spec error).
+    pub fn build(
+        spec: MockSpec,
+        mut load: impl FnMut(&str) -> Result<Arc<Vec<Value>>, String>,
+    ) -> Result<Self, String> {
+        let mut idx = MockIndex {
+            queues: HashMap::new(),
+            spec: spec.clone(),
+            only_hits: 0,
+            except_hits: 0,
+            inline_hits: vec![0; spec.records.len()],
+        };
+        for (i, r) in spec.records.iter().enumerate() {
+            let effect = r["effect"].as_str().unwrap_or("").to_string();
+            let key = match r.get("input") {
+                Some(input) if !input.is_null() => crate::trace::input_key(&effect, input),
+                _ => WILDCARD_KEY.to_string(),
+            };
+            let mut rec = json!({});
+            if let Some(o) = r.get("output").filter(|o| !o.is_null()) {
+                rec["output"] = o.clone();
+            }
+            if let Some(e) = r.get("error").filter(|e| e.is_object()) {
+                rec["error"] = e.clone();
+            }
+            idx.queues
+                .entry((effect, key))
+                .or_default()
+                .push_back(Slot::Inline {
+                    i,
+                    rec,
+                    repeat: r.get("repeat").and_then(|b| b.as_bool()).unwrap_or(false),
+                });
+        }
+        for run in &spec.from {
+            let records = load(run)?;
+            idx.fold_run(run, records);
+        }
+        Ok(idx)
+    }
+
+    fn fold_run(&mut self, run: &str, records: Arc<Vec<Value>>) {
+        // a span's key is on its begin record; the outcome on its end
+        let mut begin_keys: HashMap<String, (String, String)> = HashMap::new();
+        for (idx, r) in records.iter().enumerate() {
+            let slot = || Slot::Run {
+                run: run.to_string(),
+                records: records.clone(),
+                idx,
+            };
+            match r["kind"].as_str() {
+                Some("effect") => {
+                    let effect = r["effect"].as_str().unwrap_or("").to_string();
+                    let key = r["key"].as_str().unwrap_or("").to_string();
+                    self.queues
+                        .entry((effect, key))
+                        .or_default()
+                        .push_back(slot());
+                }
+                Some("span") if r["phase"] == "begin" => {
+                    if let Some(id) = r["span"].as_str() {
+                        begin_keys.insert(
+                            id.to_string(),
+                            (
+                                r["name"].as_str().unwrap_or("").to_string(),
+                                r["key"].as_str().unwrap_or("").to_string(),
+                            ),
+                        );
+                    }
+                }
+                Some("span") => {
+                    if let Some(k) = r["span"].as_str().and_then(|id| begin_keys.remove(id)) {
+                        self.queues.entry(k).or_default().push_back(slot());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The mockable-set decision for one call, counted (ADR-028 §5).
+    pub fn decide(&mut self, effect: &str, facades: &[&str]) -> Decision {
+        let d = self.spec.decide(effect, facades);
+        match d {
+            Decision::Admitted => self.only_hits += 1,
+            Decision::Excepted => self.except_hits += 1,
+            _ => {}
+        }
+        d
+    }
+
+    /// `{only?, except?, records?}` — the filter hit counts when the
+    /// spec has that filter, and the inline records never served —
+    /// the cell span's end record carries them for the digest.
+    pub fn filter_hits(&self) -> Option<Value> {
+        let unserved: Vec<usize> = self
+            .inline_hits
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == 0)
+            .map(|(i, _)| i)
+            .collect();
+        if self.spec.only.is_empty() && self.spec.except.is_empty() && unserved.is_empty() {
+            return None;
+        }
+        let mut m = serde_json::Map::new();
+        if !self.spec.only.is_empty() {
+            m.insert("only".into(), json!(self.only_hits));
+        }
+        if !self.spec.except.is_empty() {
+            m.insert("except".into(), json!(self.except_hits));
+        }
+        if !unserved.is_empty() {
+            m.insert("records".into(), json!(unserved));
+        }
+        Some(Value::Object(m))
+    }
+
+    /// Exact key first, then the wildcard; a `repeat` entry is peeked.
+    /// The served record is the one clone this makes.
+    pub fn take(&mut self, effect: &str, key: &str) -> Option<MockEntry> {
+        for k in [key, WILDCARD_KEY] {
+            let Some(q) = self.queues.get_mut(&(effect.to_string(), k.to_string())) else {
+                continue;
+            };
+            let Some(front) = q.front() else { continue };
+            let (entry, repeat) = match front {
+                Slot::Inline { i, rec, repeat } => (
+                    MockEntry {
+                        rec: rec.clone(),
+                        provenance: json!({"inline": i}),
+                        repeat: *repeat,
+                    },
+                    *repeat,
+                ),
+                Slot::Run { run, records, idx } => {
+                    let r = &records[*idx];
+                    (
+                        MockEntry {
+                            rec: r.clone(),
+                            provenance: json!({"from": run, "seq": r.get("seq").cloned().unwrap_or(Value::Null)}),
+                            repeat: false,
+                        },
+                        false,
+                    )
+                }
+            };
+            if let Slot::Inline { i, .. } = front {
+                self.inline_hits[*i] += 1;
+            }
+            if !repeat {
+                q.pop_front();
+            }
+            return Some(entry);
+        }
+        None
+    }
+
+    /// The unit-test shape: the consumed record alone.
     pub fn pop(&mut self, effect: &str, key: &str) -> Option<Value> {
-        self.queues
-            .get_mut(&(effect.to_string(), key.to_string()))
-            .and_then(|q| q.pop_front())
+        self.take(effect, key).map(|e| e.rec)
     }
 }
 
@@ -385,18 +825,22 @@ mod tests {
     }
 
     #[test]
-    fn mock_index_ignores_span_records() {
+    fn mock_index_folds_span_ends_under_the_begin_key() {
+        // ADR-028 §3a: a facade's recorded outcome is served whole at
+        // span.begin; its inner effects stay for the effect-level consult
         let w = make_span_trace();
         let mut idx = MockIndex::new(&w.records);
         assert!(idx
             .pop("any.modify", &input_key("any.modify", &json!({"n": 1})))
             .is_some());
-        assert!(idx
+        let facade = idx
             .pop(
                 "linear.createTask",
                 &input_key("linear.createTask", &json!({"kwargs": {"title": "t"}})),
             )
-            .is_none());
+            .unwrap();
+        assert_eq!(facade["phase"], "end");
+        assert_eq!(facade["name"], "linear.createTask");
     }
 
     #[test]
@@ -424,5 +868,148 @@ mod tests {
         assert_eq!(resolve_blobs(rec["output"].clone(), &blobs), big);
         // non-refs (and missing blobs) pass through unchanged
         assert_eq!(resolve_blobs(json!({"a": 1}), &blobs), json!({"a": 1}));
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+    use crate::trace::input_key;
+
+    #[test]
+    fn glob_matches_prefix_star_and_literal() {
+        assert!(glob_match("http.*", "http.get"));
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("sh.run", "sh.run"));
+        assert!(!glob_match("sh.run", "sh.runx"));
+        assert!(!glob_match("http.*", "any.query"));
+        assert!(glob_match("*.get", "config.get"));
+    }
+
+    #[test]
+    fn spec_parses_sugar_and_rejects_bad_shapes() {
+        let s = MockSpec::parse(&json!("run_0123456789abcdef")).unwrap();
+        assert_eq!(s.from, vec!["run_0123456789abcdef"]);
+        assert_eq!(s.unmatched, Unmatched::Fail);
+        assert!(MockSpec::parse(&json!({"frmo": "x"}))
+            .unwrap_err()
+            .contains("unknown key"));
+        assert!(MockSpec::parse(&json!({"from": "nope"}))
+            .unwrap_err()
+            .contains("not a run id"));
+        assert!(
+            MockSpec::parse(&json!({"records": [{"effect": "http.get"}]}))
+                .unwrap_err()
+                .contains("exactly one of output / error")
+        );
+        assert!(MockSpec::parse(&json!({"unmatched": "maybe"})).is_err());
+        let s = MockSpec::parse(&json!({"only": ["http.*"], "except": "http.post",
+                                        "unmatched": "live"}))
+        .unwrap();
+        assert_eq!(s.unmatched, Unmatched::Live);
+        assert!(s.mockable("http.get"));
+        assert!(!s.mockable("http.post"));
+        assert!(!s.mockable("any.query"));
+        assert!(!s.mockable("trace.effects_of"));
+        assert!(!s.mockable("span.begin"));
+        assert!(!s.mockable("module.resolve"));
+        assert!(!s.mockable("kernel.boot"));
+        assert!(MockSpec::default().mockable("time.now"));
+        assert!(MockSpec::default().mockable("config.get"));
+        // recorded shape re-parses to itself
+        assert_eq!(MockSpec::parse(&s.to_value()).unwrap(), s);
+        // globs match enclosing facade names too (ADR-028 §1)
+        let s = MockSpec::parse(&json!({"except": ["any.*"]})).unwrap();
+        assert_eq!(s.decide("http.get", &["cell"]), Decision::Mockable);
+        assert_eq!(
+            s.decide("http.get", &["cell", "any.list_types"]),
+            Decision::Excepted
+        );
+        let s = MockSpec::parse(&json!({"only": ["any.*"]})).unwrap();
+        assert_eq!(
+            s.decide("http.post", &["cell", "any.create_object"]),
+            Decision::Admitted
+        );
+        assert_eq!(s.decide("http.get", &["cell"]), Decision::OutsideOnly);
+        assert_eq!(
+            s.decide("module.resolve", &["cell", "any.query"]),
+            Decision::Plumbing
+        );
+    }
+
+    #[test]
+    fn build_puts_inline_first_then_wildcard_and_repeat() {
+        let k = input_key("http.get", &json!({"url": "https://a"}));
+        let run = vec![
+            json!({"kind": "run", "run": {"id": "run_aaaaaaaaaaaaaaaa"}}),
+            json!({"kind": "effect", "seq": 1, "effect": "http.get", "key": k,
+                   "output": {"status": 200, "body": "recorded"}}),
+        ];
+        let spec = MockSpec::parse(&json!({
+        "from": "run_aaaaaaaaaaaaaaaa",
+        "records": [
+            {"effect": "http.get", "input": {"url": "https://a"},
+             "output": {"status": 200, "body": "inline"}},
+            {"effect": "http.post", "output": {"status": 201}, "repeat": true},
+            {"effect": "http.put", "error": {"type": "http", "message": "401"}},
+        ]}))
+        .unwrap();
+        let mut idx = MockIndex::build(spec, |_| Ok(Arc::new(run.clone()))).unwrap();
+        let e = idx.take("http.get", &k).unwrap();
+        assert_eq!(e.rec["output"]["body"], "inline");
+        assert_eq!(e.provenance, json!({"inline": 0}));
+        let e = idx.take("http.get", &k).unwrap();
+        assert_eq!(e.rec["output"]["body"], "recorded");
+        assert_eq!(
+            e.provenance,
+            json!({"from": "run_aaaaaaaaaaaaaaaa", "seq": 1})
+        );
+        assert!(idx.take("http.get", &k).is_none());
+        // wildcard + repeat: any input, never consumed
+        for _ in 0..3 {
+            let e = idx.take("http.post", "sha256:whatever").unwrap();
+            assert_eq!(e.rec["output"]["status"], 201);
+        }
+        let e = idx.take("http.put", "sha256:x").unwrap();
+        assert_eq!(e.rec["error"]["type"], "http");
+        assert!(idx.take("http.put", "sha256:x").is_none());
+        // an unknown run is the caller's error
+        let spec = MockSpec::parse(&json!({"from": "run_bbbbbbbbbbbbbbbb"})).unwrap();
+        assert!(MockIndex::build(spec, |r| Err(format!("unknown run {r}"))).is_err());
+    }
+
+    #[test]
+    fn build_folds_facade_ends_and_names_unserved_inline_records() {
+        let kb = input_key("any.create_object", &json!({"body": {"name": "x"}}));
+        let run = vec![
+            json!({"kind": "run", "run": {"id": "run_aaaaaaaaaaaaaaaa"}}),
+            json!({"kind": "span", "seq": 1, "phase": "begin", "span": "s1",
+                   "name": "any.create_object", "key": kb, "input": {"body": {"name": "x"}}}),
+            json!({"kind": "effect", "seq": 2, "effect": "http.post", "key": "sha256:inner",
+                   "span": "s1", "output": {"status": 201}}),
+            json!({"kind": "span", "seq": 3, "phase": "end", "span": "s1",
+                   "name": "any.create_object", "ok": true, "output": {"objectId": "o1"}}),
+        ];
+        let spec = MockSpec::parse(&json!({
+            "from": "run_aaaaaaaaaaaaaaaa",
+            "records": [{"effect": "github.issues", "output": {"items": []}},
+                        {"effect": "http.get", "output": {"status": 200}}]}))
+        .unwrap();
+        let mut idx = MockIndex::build(spec, |_| Ok(Arc::new(run.clone()))).unwrap();
+        // the facade's END outcome, under (name, begin key), by reference
+        let e = idx.take("any.create_object", &kb).unwrap();
+        assert_eq!(e.rec["output"], json!({"objectId": "o1"}));
+        assert_eq!(e.rec["ok"], true);
+        assert_eq!(
+            e.provenance,
+            json!({"from": "run_aaaaaaaaaaaaaaaa", "seq": 3})
+        );
+        // the inner effect is still there for effect-level consult
+        assert!(idx.take("http.post", "sha256:inner").is_some());
+        // inline record 1 served, record 0 never → named in the hits
+        assert!(idx.take("http.get", "sha256:whatever").is_some());
+        assert_eq!(idx.filter_hits(), Some(json!({"records": [0]})));
+        let _ = idx.take("github.issues", "sha256:any").unwrap();
+        assert_eq!(idx.filter_hits(), None);
     }
 }

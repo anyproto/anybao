@@ -159,6 +159,12 @@ never hit the 1 MiB body cap.
 - `effects.of/get/runs/stats` keep their shapes (ADR-003 §4).
   `load(run)` = `query {filter: {runId}, sort: {seq: 1}, limit: 1000}`
   with offset paging; `list()` = `trace_runs` sorted by `startedAt`.
+  The same blob-resolved load is a **mock source** (amendment
+  2026-09-14, ADR-028 §1): `mock.from` runs are read through it —
+  `anyrt run --mock` from `--addr`'s store, a `run_cell` spec from the
+  serving broker's store (its own in-flight log when it names itself);
+  an unknown run or an unresolvable blob is a spec error before
+  anything runs.
 - `effects.runs(filter=…, sort=…, limit=…)` gains the any-store
   filter form over the summary (`{"program": "extraction", "startedAt":
   {"$gte": …}, "mutations": {"$gt": 0}}`); the substring `program`

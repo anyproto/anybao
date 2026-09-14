@@ -249,6 +249,27 @@ the intact log unchanged.
   live (or fail, per option) and are flagged `mocked: false` — the
   **traceDiff** view is exactly these records.
 
+**The mock spec (amendment 2026-09-14, ADR-028 §1/§8).** Loose mode
+is driven by one spec, `{from, only, except, records, unmatched}`:
+`from` runs fold into the index in log order; inline `records` sit at
+the front of their key's queue, an input-less record takes the
+wildcard key `(effect, "*")` consulted after the exact key, `repeat`
+peeks instead of popping; `only`/`except` (globs over the effect name
+and the enclosing facade span names) define the mockable set — a call
+outside it is plainly live and carries no `meta.mock`; the owning
+span's end record carries `meta.mockFilter: {only?, except?}` hit
+counts.
+Every consulted record carries provenance: served →
+`meta.mocked: true`, `meta.mock: {from, seq} | {inline: i}`; a miss
+executed live → `meta.mock: {unmatched: true}`; a miss under `fail` →
+an error record, `error.type: "mock_unmatched"`, `meta.mock:
+{unmatched: true}`. **The traceDiff predicate is `meta.mock.unmatched`**
+(not `mocked: false`, which a call outside the mockable set shares). A
+span-end record carries `meta.mocked` = the served count inside it. A
+run header records its spec as `run.mock`; a strict replay's header is
+the original's (seed, startedAt) plus `replayOf`, and every header
+carries `args`.
+
 **How matching works over a log.** The log is the source of truth;
 matching structures are derived from it at replay setup. Loose mode
 folds the log in one O(n) pass into exactly the v1 shape —

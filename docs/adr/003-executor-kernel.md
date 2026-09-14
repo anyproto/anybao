@@ -292,6 +292,21 @@ doc; author keeps the two in sync, the same accepted
 description-in-two-places drift as tool docs (schema vs code) — no
 runtime path reads one from the other.
 
+**A span can be served from a mock (amendment 2026-09-14, ADR-028
+§3a).** The host answers `span.begin` with `{span}` — or, when a
+span-scoped mock index (ADR-028 §3) holds a record keyed by this
+facade's name (exact input key, then the wildcard), with
+`{span, mock: {ok, output?, error?}}`. The decorator then does NOT run
+the body: it emits `span.end` with the served outcome and
+`mocked: true`, returns `output` or raises `EffectError` from `error`,
+and none of the facade's inner effects happen. This is the only way a
+facade as a whole can be substituted — its value is computed by guest
+code the host never runs, so the effect-level consult (ADR-002 §2) can
+at best fail its first inner effect. The loop's structural spans
+(`cell`, `bash`) are never substituted; a run-level `--mock` index
+(ADR-028 §4) does not substitute spans at all — there the program's
+structure is what is under test.
+
 **Name defaults to the anchor (amendment 2026-08-14, with ADR-013).**
 `span(name=None, kind=None)`: when `name` is omitted, the recorded
 name is `<module>.<function>` read off the decorated def at decoration
