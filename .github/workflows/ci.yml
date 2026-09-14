@@ -39,14 +39,8 @@ jobs:
             runtime/target
           key: cargo-test-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: nix develop -c make test-runtime FEATURES=${{ matrix.features }}
-      # the default leg also carries the guest-module + wire pytest
-      # (rt_e2e needs the release binary, else it skips) and ruff
       - if: matrix.name == 'default'
         run: nix develop -c uv run ruff check .
-      - if: matrix.name == 'default'
-        run: nix develop -c make runtime
-      - if: matrix.name == 'default'
-        run: nix develop -c uv run pytest
 
   runtime:
     runs-on: ubuntu-latest
@@ -65,3 +59,8 @@ jobs:
       - run: nix develop -c make runtime
       # the vendored any spec vs the coverage manifest (ADR-002 §2)
       - run: nix develop -c make api-drift
+      # guest-module + wire pytest; rt_e2e drives the release binary
+      # built above (it skips without one). Lives here rather than in a
+      # test leg so no job carries a debug test tree AND a release tree:
+      # that pair overflowed the runner disk while tarring the cache.
+      - run: nix develop -c uv run pytest
