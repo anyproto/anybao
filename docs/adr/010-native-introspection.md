@@ -63,6 +63,11 @@ Docstrings are the ONLY authored program documentation.
 - **Visibility**: public `def` = visible; leading underscore =
   hidden. `main` is the run entry point, not a method — method
   listings exclude it.
+- **Credentials** (ADR-021 §8.1, 2026-09-14): a module that
+  sends a `connector.key.*` / `llm.key.*` ref declares it in a
+  module-level `__any_credentials__ = [{"ref", "about"}]`; deploy
+  validates the list and publishes it in the overlay manifest, which
+  is where the host learns a ref's label and hosts.
 
 ### 2. Kernel introspection surface
 

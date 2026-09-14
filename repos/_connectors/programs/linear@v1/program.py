@@ -21,9 +21,15 @@ import json
 
 _ENDPOINT = "https://api.linear.app/graphql"
 _KEY_URL = "https://linear.app/settings/api"
+# ADR-021 §8.1: the declared credential — a JSON literal deploy reads
+# (label + the only hosts the key is ever sent to); `about` on the
+# request is this same descriptor.
+__any_credentials__ = [{"ref": "connector.key.linear",
+                        "about": {"label": "Linear personal API key",
+                                  "hosts": ["api.linear.app"],
+                                  "help": "https://linear.app/settings/api"}}]
 _CRED = {"ref": "connector.key.linear", "header": "Authorization",
-         "about": {"label": "Linear personal API key",
-                   "hosts": ["api.linear.app"], "help": _KEY_URL}}
+         "about": __any_credentials__[0]["about"]}
 _DEFAULT_FIRST = 25
 _MAX_FIRST = 100
 _TIMEOUT_S = 60

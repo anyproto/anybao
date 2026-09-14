@@ -11,7 +11,7 @@ use crate::trace::{input_key, TraceWriter};
 use crate::tracestore::{valid_run_id, TraceStore};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -218,6 +218,42 @@ pub trait SecretSource: Send + Sync {
     /// value is wrong. Stamp `status: "rejected"` so the
     /// same request bubble asks for a replacement (ADR-021 §2).
     fn mark_rejected(&self, key: &str, about: &Value, run_id: &str, http_status: u16);
+    /// The whole row (value + the binding the human saw — `hosts`,
+    /// ADR-021 §7), one read per credentialed effect. Default: the
+    /// value alone, for stores that keep no metadata.
+    fn read_row(&self, key: &str) -> Result<Option<Value>, String> {
+        Ok(self.read(key)?.map(|value| json!({"value": value})))
+    }
+    /// `lastUsedAt` — the audit stamp (ADR-021 §8.4), once per run per
+    /// ref (the broker dedups). Default: nothing.
+    fn mark_used(&self, _key: &str) {}
+}
+
+/// ADR-021 §8.1: the declared table — every ref a deployed overlay
+/// module lists in `__any_credentials__`, read by serve from the
+/// program objects' `credentials` property (spaces the guest cannot
+/// write). `about(ref)` = its descriptor, the host's only source for
+/// a declared ref's label and hosts; None = undeclared. An
+/// implementation may refresh from the overlays on a miss (a redeploy
+/// while serve runs).
+pub trait DeclaredCredentials: Send + Sync {
+    fn about(&self, key: &str) -> Option<Value>;
+}
+
+/// The open credential namespace (ADR-021 §8.1): any program may name
+/// one; its descriptor is taken once, at row creation, hosts mandatory.
+pub const LOCAL_KEY_PREFIX: &str = crate::deploy::LOCAL_KEY_PREFIX;
+
+/// How a static ref resolves under the trust model (ADR-021 §8.1).
+enum RefKind {
+    /// Listed by a deployed overlay: descriptor = the declared one, the
+    /// payload's `about` is ignored.
+    Declared(Value),
+    /// `local.key.*`, or an `llm.key.*` no overlay declares (a
+    /// self-hosted backend): the payload's `about` describes it.
+    Open,
+    /// Outside the open namespaces and not declared: refused.
+    Undeclared,
 }
 
 pub struct Broker {
@@ -302,6 +338,14 @@ pub struct Broker {
     /// or rejected (401) by their destination — in first-event order
     /// (ADR-021 §2); the run wrapper posts the request bubbles.
     pub missing_secrets: Vec<String>,
+    /// The declared table (ADR-021 §8.1). None = no overlays behind this
+    /// broker (`anyrt run`, tests): every ref is open and a ref with no
+    /// known hosts is injected unbound — the seed file is the
+    /// developer's explicit grant for that one-shot run (§7).
+    pub declared: Option<Arc<dyn DeclaredCredentials>>,
+    /// Refs injected at least once this run — `lastUsedAt` stamps once
+    /// (ADR-021 §8.4).
+    used_refs: BTreeSet<String>,
     /// Host-emit depth (ADR-011 §6): >0 while a syscall re-enters
     /// `call` to record its own nested effect (`oauth.refresh`).
     hosted: u32,
@@ -474,6 +518,8 @@ impl Broker {
             secret_store: None,
             config_store: None,
             missing_secrets: Vec::new(),
+            declared: None,
+            used_refs: BTreeSet::new(),
             hosted: 0,
             span_stack: Vec::new(),
             span_n: 0,
@@ -1093,31 +1139,119 @@ impl Broker {
         })
     }
 
-    /// A static ref (`connector.key.*`, `llm.key.*`): the store row if
-    /// there is a store, else the seeded map (ADR-021 §4). A miss is
-    /// typed `SecretMissing` — the message stays byte-identical to what
+    /// Where a static ref's descriptor comes from (ADR-021 §8.1). With no
+    /// declared table every ref is open (developer mode).
+    fn ref_kind(&self, r: &str) -> RefKind {
+        let Some(table) = &self.declared else {
+            return RefKind::Open;
+        };
+        if let Some(about) = table.about(r) {
+            return RefKind::Declared(about);
+        }
+        if r.starts_with(LOCAL_KEY_PREFIX) || r.starts_with("llm.key.") {
+            RefKind::Open
+        } else {
+            RefKind::Undeclared
+        }
+    }
+
+    /// A static ref (`connector.key.*`, `llm.key.*`, `local.key.*`): the
+    /// store row if there is a store, else the seeded map (ADR-021 §4),
+    /// under the trust model of ADR-021 §7/§8 — an undeclared ref is
+    /// refused, an open ref needs a destination, and the value is
+    /// injected only toward the hosts the human saw. A miss is typed
+    /// `SecretMissing` — the message stays byte-identical to what
     /// connectors string-match — and is remembered for the run wrapper.
-    fn resolve_static(&mut self, r: &str, about: Option<&Value>) -> Result<String, EffectFailure> {
-        let from_store = match &self.secret_store {
-            Some(store) => store.read(r).map_err(|e| EffectFailure {
+    /// Returns the value and the descriptor the store was stamped with
+    /// (the declared one, or the payload's for an open ref).
+    fn resolve_static(
+        &mut self,
+        r: &str,
+        about: Option<&Value>,
+        url: &str,
+    ) -> Result<(String, Value), EffectFailure> {
+        let guest_about = about.cloned().unwrap_or(Value::Null);
+        let kind = self.ref_kind(r);
+        let descriptor = match &kind {
+            RefKind::Declared(a) => a.clone(),
+            RefKind::Open => guest_about.clone(),
+            RefKind::Undeclared => {
+                return Err(EffectFailure {
+                    type_: "secret_ref_undeclared".into(),
+                    message: format!(
+                        "credential ref {r:?} is not declared by any deployed connector — \
+                         a program you write names its own key as `{LOCAL_KEY_PREFIX}<service>` \
+                         (with about.hosts); connector.key.* belongs to the reviewed \
+                         connectors (ADR-021 §8.1)"
+                    ),
+                })
+            }
+        };
+        let row = match &self.secret_store {
+            Some(store) => store.read_row(r).map_err(|e| EffectFailure {
                 type_: "RuntimeError".into(),
                 message: format!("secret store unreachable resolving {r:?}: {e}"),
             })?,
             None => None,
         };
-        if let Some(v) = from_store.or_else(|| self.secrets.get(r).cloned()) {
-            return Ok(v);
+        let value = row
+            .as_ref()
+            .and_then(|row| row.get("value"))
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.secrets.get(r).cloned());
+        // the binding (§7): declared hosts, else the row's (frozen at
+        // creation, human-edited), else the payload's — which is also what
+        // a fresh open row is stamped with
+        let declared_hosts = matches!(kind, RefKind::Declared(_))
+            .then(|| hosts_of(&descriptor))
+            .filter(|h| !h.is_empty());
+        let hosts = declared_hosts
+            .or_else(|| row.as_ref().map(hosts_of).filter(|h| !h.is_empty()))
+            .unwrap_or_else(|| hosts_of(&guest_about));
+        let strict = self.declared.is_some();
+        if hosts.is_empty() && strict {
+            // an open ref with no destination anywhere: no card, no
+            // injection — the destination is what the human is asked to check
+            return Err(EffectFailure {
+                type_: "secret_hosts_required".into(),
+                message: format!(
+                    "credential ref {r:?} names no destination — pass about.hosts \
+                     (the host[:port] the key is sent to) on the request, or set hosts \
+                     for it in Credentials (ADR-021 §7)"
+                ),
+            });
         }
-        if !self.missing_secrets.iter().any(|m| m == r) {
-            self.missing_secrets.push(r.to_string());
+        let Some(value) = value else {
+            if !self.missing_secrets.iter().any(|m| m == r) {
+                self.missing_secrets.push(r.to_string());
+                if let Some(store) = &self.secret_store {
+                    store.mark_missing(r, &descriptor, &self.writer.run_id());
+                }
+            }
+            return Err(EffectFailure {
+                type_: "SecretMissing".into(),
+                message: format!("no secret for credential ref {r:?}"),
+            });
+        };
+        if !hosts.is_empty() && !host_allowed(url, &hosts) {
+            return Err(EffectFailure {
+                type_: "secret_host_mismatch".into(),
+                message: format!(
+                    "credential ref {r:?} is bound to {} — it is never sent to {} \
+                     (ADR-021 §7; the human can edit the hosts in Credentials)",
+                    hosts.join(", "),
+                    url_host(url).unwrap_or_else(|| url.to_string())
+                ),
+            });
+        }
+        if self.used_refs.insert(r.to_string()) {
             if let Some(store) = &self.secret_store {
-                store.mark_missing(r, about.unwrap_or(&Value::Null), &self.writer.run_id());
+                store.mark_used(r);
             }
         }
-        Err(EffectFailure {
-            type_: "SecretMissing".into(),
-            message: format!("no secret for credential ref {r:?}"),
-        })
+        Ok((value, descriptor))
     }
 
     fn sys_http(&mut self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
@@ -1175,11 +1309,34 @@ impl Broker {
                     .unwrap_or("")
                     .to_string();
                 let value = if r.starts_with(OAUTH_REF_PREFIX) {
-                    self.resolve_managed(&r)?
+                    let value = self.resolve_managed(&r)?;
+                    // a managed ref is bound when its connector declares
+                    // the API hosts (ADR-021 §8.1, googleAuth); the token
+                    // endpoint is host-side and never a guest destination
+                    if let Some(hosts) = self
+                        .declared
+                        .as_ref()
+                        .and_then(|d| d.about(&r))
+                        .map(|a| hosts_of(&a))
+                        .filter(|h| !h.is_empty())
+                    {
+                        if !host_allowed(&url, &hosts) {
+                            return Err(EffectFailure {
+                                type_: "secret_host_mismatch".into(),
+                                message: format!(
+                                    "credential ref {r:?} is bound to {} — it is never sent \
+                                     to {} (ADR-021 §7)",
+                                    hosts.join(", "),
+                                    url_host(&url).unwrap_or_else(|| url.clone())
+                                ),
+                            });
+                        }
+                    }
+                    value
                 } else {
-                    static_ref =
-                        Some((r.clone(), cred.get("about").cloned().unwrap_or(Value::Null)));
-                    self.resolve_static(&r, cred.get("about"))?
+                    let (value, descriptor) = self.resolve_static(&r, cred.get("about"), &url)?;
+                    static_ref = Some((r.clone(), descriptor));
+                    value
                 };
                 Some((header, format!("{prefix}{value}")))
             }
@@ -1358,6 +1515,31 @@ impl Broker {
     /// it, and a benign body that merely MENTIONS the words in text
     /// fields passes.
     fn secrets_read_guard(&self, url: &str, payload: &Value) -> Result<(), EffectFailure> {
+        // ADR-021 §8.6: a credential card is the host's statement — a guest
+        // chat write (any verb, any path under chat/messages, batch items
+        // included since they re-enter `call`) carrying a host-only
+        // attachment type is refused before it leaves
+        if url.contains("/chat/messages") {
+            let types = payload
+                .get("json")
+                .and_then(|b| b.get("attachments"))
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|atts| atts.values())
+                .filter_map(|a| a.get("type").and_then(Value::as_str));
+            for ty in types {
+                if HOST_ONLY_ATTACHMENTS.contains(&ty) {
+                    return Err(EffectFailure {
+                        type_: "host_only".into(),
+                        message: format!(
+                            "credential cards are posted by the host — a `{ty}` attachment \
+                             never comes from guest code (ADR-021 §8.6); a missing key posts \
+                             its own card when a credentialed request misses it"
+                        ),
+                    });
+                }
+            }
+        }
         let forbidden = |what: &str| EffectFailure {
             type_: "forbidden".into(),
             message: format!(
@@ -1847,6 +2029,57 @@ fn immediate_children(records: &[Value], cell: Option<&str>, span: Option<&str>)
 /// when the target stays on the SAME ORIGIN (scheme + host + port). A
 /// credentialed request must never carry its header to another origin —
 /// a cross-origin 3xx goes back to the guest as data (ADR-011 §4).
+/// Chat attachment types only the host may author (ADR-021 §8.6).
+const HOST_ONLY_ATTACHMENTS: [&str; 2] = ["credential_request", "credential_set"];
+
+/// The `hosts` list of a descriptor or row (`about.hosts` / row
+/// `hosts`): trimmed, lowercased, empties dropped.
+fn hosts_of(v: &Value) -> Vec<String> {
+    v.get("hosts")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `host[:port]` of a url as the binding compares it (port only when
+/// explicit).
+fn url_host(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    let host = u.host_str()?.to_ascii_lowercase();
+    Some(match u.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host,
+    })
+}
+
+/// ADR-021 §7: the request's host is one of the binding's — exact host
+/// (case-insensitive, no suffix matching), a declared port must match,
+/// an undeclared one admits any.
+fn host_allowed(url: &str, hosts: &[String]) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = u.host_str().map(|h| h.to_ascii_lowercase()) else {
+        return false;
+    };
+    let port = u.port_or_known_default();
+    hosts.iter().any(|allowed| {
+        let (ah, ap) = match allowed.rsplit_once(':') {
+            Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !h.is_empty() => {
+                (h, p.parse::<u16>().ok())
+            }
+            _ => (allowed.as_str(), None),
+        };
+        ah == host && ap.is_none_or(|p| Some(p) == port)
+    })
+}
+
 fn same_origin_target(current: &str, location: &str) -> Option<String> {
     let base = url::Url::parse(current).ok()?;
     let next = base.join(location).ok()?;
@@ -2934,6 +3167,9 @@ mod tests {
     struct MemStore {
         rows: BTreeMap<String, String>,
         missing: Mutex<Vec<(String, Value)>>,
+        /// the row's `hosts` (ADR-021 §7) for every key, when set
+        hosts: Mutex<Option<Value>>,
+        used: Mutex<Vec<String>>,
     }
     impl SecretSource for MemStore {
         fn read(&self, key: &str) -> Result<Option<String>, String> {
@@ -2951,6 +3187,19 @@ mod tests {
                 .unwrap()
                 .push((format!("{key}#{status}"), about.clone()));
         }
+        fn read_row(&self, key: &str) -> Result<Option<Value>, String> {
+            let Some(value) = self.rows.get(key) else {
+                return Ok(None);
+            };
+            let mut row = json!({"key": key, "value": value});
+            if let Some(h) = self.hosts.lock().unwrap().clone() {
+                row["hosts"] = h;
+            }
+            Ok(Some(row))
+        }
+        fn mark_used(&self, key: &str) {
+            self.used.lock().unwrap().push(key.into());
+        }
     }
 
     #[test]
@@ -2962,6 +3211,8 @@ mod tests {
         let store = Arc::new(MemStore {
             rows: [("connector.key.x".to_string(), "sk-wrong".to_string())].into(),
             missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
         });
         b.secret_store = Some(store.clone());
         let out = b
@@ -2984,6 +3235,8 @@ mod tests {
         let store = Arc::new(MemStore {
             rows: [("connector.key.x".to_string(), "sk-ant-unscoped".to_string())].into(),
             missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
         });
         b.secret_store = Some(store.clone());
         let out = b
@@ -3008,6 +3261,8 @@ mod tests {
         let store = Arc::new(MemStore {
             rows: [("connector.key.x".to_string(), "sk-wrong".to_string())].into(),
             missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
         });
         b.secret_store = Some(store.clone());
         let out = b
@@ -3026,6 +3281,8 @@ mod tests {
         let store = Arc::new(MemStore {
             rows: [("connector.key.x".to_string(), "sk-ok".to_string())].into(),
             missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
         });
         b.secret_store = Some(store.clone());
         b.call("http.get", cred_payload(format!("{base}/a")))
@@ -3052,6 +3309,8 @@ mod tests {
         let store = Arc::new(MemStore {
             rows: [("connector.key.x".to_string(), "sk-store".to_string())].into(),
             missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
         });
         b.secret_store = Some(store.clone());
         let out = b
@@ -3071,6 +3330,8 @@ mod tests {
         let store = Arc::new(MemStore {
             rows: BTreeMap::new(),
             missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
         });
         b.secret_store = Some(store.clone());
         let mut payload = cred_payload("http://127.0.0.1:9/never".into());
@@ -3088,6 +3349,267 @@ mod tests {
         assert_eq!(marked.len(), 1);
         assert_eq!(marked[0].0, "connector.key.x");
         assert_eq!(marked[0].1["hosts"], json!(["api.x.test"]));
+    }
+
+    /// ADR-021 §8.1: a declared table over a fixed map.
+    struct Table(BTreeMap<String, Value>);
+    impl DeclaredCredentials for Table {
+        fn about(&self, key: &str) -> Option<Value> {
+            self.0.get(key).cloned()
+        }
+    }
+    fn declared_github() -> Arc<Table> {
+        Arc::new(Table(
+            [(
+                "connector.key.github".to_string(),
+                json!({"label": "GitHub token", "hosts": ["api.github.com"]}),
+            )]
+            .into(),
+        ))
+    }
+
+    #[test]
+    fn host_binding_compares_exact_host_and_optional_port() {
+        let h = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(host_allowed(
+            "https://api.github.com/repos",
+            &h(&["api.github.com"])
+        ));
+        assert!(host_allowed(
+            "https://API.GitHub.com/x",
+            &h(&["api.github.com"])
+        ));
+        assert!(!host_allowed(
+            "https://api.github.com.evil.io/x",
+            &h(&["api.github.com"])
+        ));
+        assert!(!host_allowed(
+            "https://evil.io/api.github.com",
+            &h(&["api.github.com"])
+        ));
+        assert!(host_allowed(
+            "http://127.0.0.1:8737/meetings",
+            &h(&["127.0.0.1:8737"])
+        ));
+        assert!(!host_allowed(
+            "http://127.0.0.1:9999/meetings",
+            &h(&["127.0.0.1:8737"])
+        ));
+        assert!(host_allowed(
+            "http://127.0.0.1:9999/meetings",
+            &h(&["127.0.0.1"])
+        ));
+        assert!(host_allowed("https://api.x.test/", &h(&["api.x.test:443"])));
+        assert!(!host_allowed("not a url", &h(&["api.x.test"])));
+    }
+
+    #[test]
+    fn undeclared_ref_is_refused_under_a_declared_table() {
+        let mut b = make_broker("run_adr021_undeclared");
+        b.declared = Some(declared_github());
+        b.secrets.insert("connector.key.bogus".into(), "sk".into());
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:1/x", "credential":
+                    {"ref": "connector.key.bogus", "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "secret_ref_undeclared");
+        assert!(err.message.contains("local.key.<service>"));
+        // never marked missing — the ref does not exist as a card
+        assert!(b.missing_secrets.is_empty());
+    }
+
+    #[test]
+    fn declared_ref_ignores_guest_about_and_binds_to_declared_hosts() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen2 = seen.clone();
+        let base = fake_server(1, move |req| {
+            let tok = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("authorization"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            seen2.lock().unwrap().push(tok);
+            let _ = req.respond(tiny_http::Response::from_string("ok"));
+        });
+        let mut b = make_broker("run_adr021_bound");
+        b.declared = Some(declared_github());
+        b.secrets
+            .insert("connector.key.github".into(), "ghp_live".into());
+        // a guest `about` claiming the local server as a host is ignored:
+        // the declared binding says api.github.com, the request goes to
+        // 127.0.0.1 — refused before the header is attached
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": format!("{base}/exfil"), "credential":
+                    {"ref": "connector.key.github", "header": "Authorization",
+                     "about": {"label": "GitHub", "hosts": ["127.0.0.1"]}}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "secret_host_mismatch");
+        assert!(err.message.contains("api.github.com"));
+        assert!(seen.lock().unwrap().is_empty(), "nothing was sent");
+        // the refusal is the recorded fact: no value in the trace
+        let dump = serde_json::to_string(&b.writer.records).unwrap();
+        assert!(!dump.contains("ghp_live"));
+    }
+
+    #[test]
+    fn open_ref_needs_hosts_then_binds_to_its_row_and_stamps_used_once() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen2 = seen.clone();
+        let base = fake_server(2, move |req| {
+            let tok = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("authorization"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            seen2.lock().unwrap().push(tok);
+            let _ = req.respond(tiny_http::Response::from_string("ok"));
+        });
+        let port = url::Url::parse(&base).unwrap().port().unwrap();
+        let mut b = make_broker("run_adr021_open");
+        b.declared = Some(declared_github());
+        // no hosts anywhere → typed, no card, no injection
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": format!("{base}/m"), "credential":
+                    {"ref": "local.key.anyscribe", "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "secret_hosts_required");
+        assert!(b.missing_secrets.is_empty());
+        // the row carries the binding the human saw; the payload's hosts
+        // are irrelevant once a row exists
+        let store = Arc::new(MemStore {
+            rows: [("local.key.anyscribe".to_string(), "asc_live".to_string())].into(),
+            missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        *store.hosts.lock().unwrap() = Some(json!([format!("127.0.0.1:{port}")]));
+        let ok = b
+            .call(
+                "http.get",
+                json!({"url": format!("{base}/m"), "credential":
+                    {"ref": "local.key.anyscribe", "header": "Authorization", "prefix": "Bearer ",
+                     "about": {"label": "x", "hosts": ["evil.example"]}}}),
+            )
+            .unwrap();
+        assert_eq!(ok["status"], json!(200));
+        let _ = b
+            .call(
+                "http.get",
+                json!({"url": format!("{base}/m2"), "credential":
+                    {"ref": "local.key.anyscribe", "header": "Authorization", "prefix": "Bearer "}}),
+            )
+            .unwrap();
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["Bearer asc_live", "Bearer asc_live"]
+        );
+        assert_eq!(
+            *store.used.lock().unwrap(),
+            vec!["local.key.anyscribe".to_string()]
+        );
+        // another host than the row's → refused
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "https://evil.example/m", "credential":
+                    {"ref": "local.key.anyscribe", "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "secret_host_mismatch");
+    }
+
+    #[test]
+    fn open_ref_miss_is_marked_with_the_payload_descriptor_and_posts_a_card() {
+        let mut b = make_broker("run_adr021_open_miss");
+        b.declared = Some(declared_github());
+        let store = Arc::new(MemStore {
+            rows: BTreeMap::new(),
+            missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:8737/m", "credential":
+                    {"ref": "local.key.anyscribe", "header": "Authorization",
+                     "about": {"label": "Anyscribe token", "hosts": ["127.0.0.1:8737"]}}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "SecretMissing");
+        assert_eq!(b.missing_secrets, vec!["local.key.anyscribe".to_string()]);
+        let marked = store.missing.lock().unwrap();
+        assert_eq!(marked[0].1["hosts"], json!(["127.0.0.1:8737"]));
+        // an undeclared llm ref (a self-hosted backend) is open too
+        drop(marked);
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": "http://127.0.0.1:11434/v1/chat/completions", "credential":
+                    {"ref": "llm.key.ollama", "header": "Authorization",
+                     "about": {"label": "Ollama API key", "hosts": ["127.0.0.1:11434"]}}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "SecretMissing");
+    }
+
+    #[test]
+    fn guest_chat_writes_never_carry_host_only_attachment_types() {
+        let mut b = make_broker("run_adr021_hostonly");
+        let chat = "http://127.0.0.1:1/v1/spaces/s/objects/chat1/chat/messages";
+        for ty in ["credential_request", "credential_set"] {
+            let err = b
+                .call(
+                    "http.post",
+                    json!({"url": chat, "json": {"text": "I need a credential to continue",
+                        "attachments": {"credreq": {"type": ty,
+                            "link": "any://o/sec?key=connector.key.github&setup=model"}}}}),
+                )
+                .unwrap_err();
+            assert_eq!(err.type_, "host_only", "{ty}");
+            assert!(err.message.contains(ty));
+        }
+        // a patch of an existing message is the same write
+        let err = b
+            .call(
+                "http.patch",
+                json!({"url": format!("{chat}/m1"), "json": {"attachments":
+                    {"a": {"type": "credential_request", "link": "any://o/x?key=y"}}}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "host_only");
+        // a batch item re-enters `call`: refused per item, as data
+        let out = b
+            .call(
+                "batch",
+                json!({"name": "http.post", "payloads": [
+                    {"url": chat, "json": {"attachments": {"a": {"type": "credential_set"}}}}]}),
+            )
+            .unwrap();
+        assert_eq!(out["results"][0]["error"]["type"], "host_only");
+        // every other attachment type passes the guard (fails later on
+        // the unreachable port, which proves the guard let it through)
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": chat, "json": {"text": "see", "attachments":
+                    {"a": {"type": "link", "link": "any://o/sp/obj"}}}}),
+            )
+            .unwrap_err();
+        assert_ne!(err.type_, "host_only");
     }
 
     #[test]

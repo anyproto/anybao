@@ -23,9 +23,13 @@ import json
 _BASE = "https://api.intercom.io"
 _TOKEN_PATH = ("Developer Hub: Settings -> Developers -> your app -> Configure "
                "-> Authentication")
+# ADR-021 §8.1: the declared credential (JSON literal, read by deploy)
+__any_credentials__ = [{"ref": "connector.key.intercom",
+                        "about": {"label": "Intercom access token", "hosts": ["api.intercom.io"],
+                                  "help": "https://developers.intercom.com",
+                                  "note": "Developer Hub: Settings -> Developers -> your app -> Configure -> Authentication"}}]  # noqa: E501
 _CRED = {"ref": "connector.key.intercom", "header": "Authorization", "prefix": "Bearer ",
-         "about": {"label": "Intercom access token", "hosts": ["api.intercom.io"],
-                   "help": "https://developers.intercom.com", "note": _TOKEN_PATH}}
+         "about": __any_credentials__[0]["about"]}
 _HEADERS = {"Accept": "application/json", "Intercom-Version": "2.15"}
 _MAX_RETRIES = 3
 _TIMEOUT_S = 60

@@ -54,6 +54,14 @@ def _request(prov, question):
     }
 
 
+# ADR-021 §8.1: the same declared ref as webSearch@v1 (one descriptor,
+# two declarers — identical entries merge)
+__any_credentials__ = [{"ref": "google.key.gemini",
+                        "about": {"label": "Gemini API key",
+                                  "hosts": ["generativelanguage.googleapis.com"],
+                                  "help": "https://aistudio.google.com/apikey"}}]
+
+
 def _domain(url):
     rest = url.split("://", 1)[-1]
     return rest.split("/", 1)[0]

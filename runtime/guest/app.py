@@ -181,6 +181,11 @@ def rand():
 
 
 def env(name, default=None):
+    """A host-provided, NON-secret environment value (the runtime's
+    `env` map — rig wiring, feature flags) or `default`. Never a
+    credential: secrets never enter guest code (ADR-021 §8.7). A
+    service that needs a key gets it injected by the host — pass
+    `credential={"ref": ...}` on the http call (`help(http.get)`)."""
     out = _effect("env.get", {"name": name})
     return out["value"] if out["present"] else default
 
@@ -426,21 +431,105 @@ class _Http:
                 for r in _batch("http.get", payloads)]
 
     def get(self, url, **kw):
+        """GET `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
+        `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
+        `response="text"`, and `credential` — the host injects a stored
+        secret AFTER recording, so it never enters guest memory or the
+        trace (ADR-021):
+          credential={"ref": "local.key.<service>", "header": "Authorization",
+                      "prefix": "Bearer ", "about": {"label": "<Service> API token",
+                      "hosts": ["api.service.com"], "help": "<where to get it>"}}
+        A missing ref posts a credential card into the chat and the human
+        enters the key there — never ask for it in chat text, never put a
+        token in `headers=`, never read one with `env()`. Programs you
+        write use `local.key.*` with `about.hosts` (mandatory: the only
+        destination the key will ever be sent to); reviewed connectors own
+        `connector.key.*` / `llm.key.*`."""
         return self._call("get", url, **kw)
 
     def head(self, url, **kw):
+        """HEAD `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
+        `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
+        `response="text"`, and `credential` — the host injects a stored
+        secret AFTER recording, so it never enters guest memory or the
+        trace (ADR-021):
+          credential={"ref": "local.key.<service>", "header": "Authorization",
+                      "prefix": "Bearer ", "about": {"label": "<Service> API token",
+                      "hosts": ["api.service.com"], "help": "<where to get it>"}}
+        A missing ref posts a credential card into the chat and the human
+        enters the key there — never ask for it in chat text, never put a
+        token in `headers=`, never read one with `env()`. Programs you
+        write use `local.key.*` with `about.hosts` (mandatory: the only
+        destination the key will ever be sent to); reviewed connectors own
+        `connector.key.*` / `llm.key.*`."""
         return self._call("head", url, **kw)
 
     def post(self, url, **kw):
+        """POST `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
+        `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
+        `response="text"`, and `credential` — the host injects a stored
+        secret AFTER recording, so it never enters guest memory or the
+        trace (ADR-021):
+          credential={"ref": "local.key.<service>", "header": "Authorization",
+                      "prefix": "Bearer ", "about": {"label": "<Service> API token",
+                      "hosts": ["api.service.com"], "help": "<where to get it>"}}
+        A missing ref posts a credential card into the chat and the human
+        enters the key there — never ask for it in chat text, never put a
+        token in `headers=`, never read one with `env()`. Programs you
+        write use `local.key.*` with `about.hosts` (mandatory: the only
+        destination the key will ever be sent to); reviewed connectors own
+        `connector.key.*` / `llm.key.*`."""
         return self._call("post", url, **kw)
 
     def put(self, url, **kw):
+        """PUT `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
+        `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
+        `response="text"`, and `credential` — the host injects a stored
+        secret AFTER recording, so it never enters guest memory or the
+        trace (ADR-021):
+          credential={"ref": "local.key.<service>", "header": "Authorization",
+                      "prefix": "Bearer ", "about": {"label": "<Service> API token",
+                      "hosts": ["api.service.com"], "help": "<where to get it>"}}
+        A missing ref posts a credential card into the chat and the human
+        enters the key there — never ask for it in chat text, never put a
+        token in `headers=`, never read one with `env()`. Programs you
+        write use `local.key.*` with `about.hosts` (mandatory: the only
+        destination the key will ever be sent to); reviewed connectors own
+        `connector.key.*` / `llm.key.*`."""
         return self._call("put", url, **kw)
 
     def patch(self, url, **kw):
+        """PATCH `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
+        `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
+        `response="text"`, and `credential` — the host injects a stored
+        secret AFTER recording, so it never enters guest memory or the
+        trace (ADR-021):
+          credential={"ref": "local.key.<service>", "header": "Authorization",
+                      "prefix": "Bearer ", "about": {"label": "<Service> API token",
+                      "hosts": ["api.service.com"], "help": "<where to get it>"}}
+        A missing ref posts a credential card into the chat and the human
+        enters the key there — never ask for it in chat text, never put a
+        token in `headers=`, never read one with `env()`. Programs you
+        write use `local.key.*` with `about.hosts` (mandatory: the only
+        destination the key will ever be sent to); reviewed connectors own
+        `connector.key.*` / `llm.key.*`."""
         return self._call("patch", url, **kw)
 
     def delete(self, url, **kw):
+        """DELETE `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
+        `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
+        `response="text"`, and `credential` — the host injects a stored
+        secret AFTER recording, so it never enters guest memory or the
+        trace (ADR-021):
+          credential={"ref": "local.key.<service>", "header": "Authorization",
+                      "prefix": "Bearer ", "about": {"label": "<Service> API token",
+                      "hosts": ["api.service.com"], "help": "<where to get it>"}}
+        A missing ref posts a credential card into the chat and the human
+        enters the key there — never ask for it in chat text, never put a
+        token in `headers=`, never read one with `env()`. Programs you
+        write use `local.key.*` with `about.hosts` (mandatory: the only
+        destination the key will ever be sent to); reviewed connectors own
+        `connector.key.*` / `llm.key.*`."""
         return self._call("delete", url, **kw)
 
 

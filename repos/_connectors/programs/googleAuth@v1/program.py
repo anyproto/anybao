@@ -28,6 +28,13 @@ _PROVIDER = "google"
 # override is a `connector.oauth.google.client_id` row in Credentials.
 _CLIENT_ID = "519847309896-if7o0qblp6dr4d5elr1ibuhkge8c2mc3.apps.googleusercontent.com"
 _CLIENT_SECRET = "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"
+# ADR-021 §8.1: the managed ref's declared destinations — the Google
+# API hosts the family (gmail/calendar/drive/sheets) sends the access
+# token to; the token endpoint is host-side and not listed here
+__any_credentials__ = [{"ref": "connector.oauth.google",
+                        "about": {"label": "Google account (OAuth)",
+                                  "hosts": ["www.googleapis.com", "gmail.googleapis.com",
+                                            "sheets.googleapis.com", "meet.googleapis.com"]}}]
 _CRED = {"ref": "connector.oauth.google", "header": "Authorization", "prefix": "Bearer "}
 
 _CONFIGURE_HINT = (

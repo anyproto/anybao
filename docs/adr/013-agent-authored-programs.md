@@ -151,7 +151,11 @@ half-bound tool.
 Authored programs run in the same kernel, through the same effect
 boundary, under the same fuel governor as deployed ones (ADR-002/003
 inherited). Secrets stay host-side; an authored program may *use*
-existing credential refs but cannot mint or read them (ADR-011).
+existing credential refs but cannot mint or read them (ADR-011) —
+"use" means send to the ref's declared hosts, nowhere else (ADR-021
+§7/§8.3). A credential of its own it requests under `local.key.*`
+with a mandatory destination (ADR-021 §8.1); the human sees an
+unreviewed card (§8.2).
 It may self-register `agent_triggers` records — the designed way to
 make an authored watch periodic. Subagent recursion stays governed by
 `subagent@v1`'s existing rules.
@@ -181,3 +185,4 @@ spaces (non-goal).
 | 002 §4 | `ast` joins the tier-1 import allowlist — pure, deterministic, already interpreter-resident (the kernel itself parses cells with it); it is the write path's syntax gate and source scanner. `compile`/`exec` stay out of the curated builtins |
 | 003 §4b | `span(name=None, kind=None)` — name defaults to the decorated def's `<module>.<function>`; explicit name = deliberate display override. Motivated by this ADR: the first agent-authored write path immediately produced drifted span names |
 | 010 §7 | the `create_program` pre-commitment is DELIVERED: `programs@v1` validates the deploy convention at write time |
+| 021 §7/§8 | (accepted 2026-09-14) authored programs request their own secrets as `local.key.*` with mandatory hosts; existing refs are usable only toward their declared hosts — the trust model never attributes a call to a program (§8.0) |
