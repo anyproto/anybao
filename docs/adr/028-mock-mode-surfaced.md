@@ -7,9 +7,9 @@ pipeline), ADR-003 §4 (guest trace views), ADR-005 §2 (the `run_cell`
 tool), ADR-023 (trace records in the `any` local store)
 Amends when accepted: ADR-001 §5 (the spec shape, `meta.mock`
 provenance, wildcard keys, the traceDiff predicate), ADR-002 §2
-(span-scoped index, the mockable set, non-mockable syscalls), ADR-005
-§2 (`mock` on `run_cell`, the digest header), ADR-023 §4 (a run's
-records as a mock source)
+(span-scoped index, the mockable set, non-mockable syscalls), ADR-003
+§4b (a span served from a mock), ADR-005 §2 (`mock` on `run_cell`,
+the digest header), ADR-023 §4 (a run's records as a mock source)
 Tracks: Linear BOB-121
 
 ## Context
@@ -80,7 +80,14 @@ Sources and filter are separate concerns:
   consulted after the exact key misses. `repeat: true` peeks instead
   of popping. `error` instead of `output` scripts a failure: the call
   raises the typed `EffectError` and records an error record, exactly
-  as a live failure would (ADR-002 §2).
+  as a live failure would (ADR-002 §2). `effect` may name a **facade**
+  (`any.create_object`, `github.issues`): such a record is served at
+  the facade's `span.begin` (§3a) — `output` is the facade's return
+  value, `error` raises from the call, nothing inside runs. A `from`
+  run contributes its facade records too: every span end folds in
+  under `(name, begin key)`, so an edited cell that makes the same
+  facade call with the same arguments gets the facade's recorded
+  outcome whole, not its inner effects replayed one by one.
 - Inline records sit at the **front** of their key's queue, so they
   override a `from` record for the same call.
 - **`unmatched`** is the only knob shared by both surfaces. `fail`
@@ -108,6 +115,23 @@ and a mocked cell cannot leak into the next. A run-level index (CLI)
 and a span-scoped one may coexist; the span-scoped one is consulted
 first. Nested cell spans each carry their own; a nested span without
 `input.mock` inherits the enclosing one.
+
+### 3a. Facades are substituted at `span.begin`
+
+A span-scoped index is consulted twice per facade call: once at
+`span.begin`, keyed by the facade name and its input key (then the
+wildcard), and, when that misses, per inner effect as §1. A hit at
+`span.begin` returns `{span, mock: {ok, output?, error?}}` and the
+kernel's `span` decorator skips the body (ADR-003 §4b). The mockable
+set (§1) applies to the facade name the same way it applies to effect
+names, so `except: ["any.*"]` keeps a facade live whole. The begin
+and end records of a served span carry `meta.mocked: true` and
+`meta.mock` provenance (§8); its end record has `effects: 0` and
+`mutations: 0` (nothing ran) plus `mockedSpan: true`, and the enclosing
+spans count it as one served effect. A served `mutator` facade renders
+in the digest as `would mutate … (mocked: NOT executed)` (§5). The
+loop's own structural spans (`cell`, `bash`) are never substituted;
+the run-level index (§4) substitutes no spans.
 
 ### 4. CLI
 
@@ -163,8 +187,14 @@ mocked was executed or written. Re-run without `mock` to do it for real.
 - A bad spec (unknown run, unparseable glob, inline record with
   neither `output` nor `error`, unresolvable blob) is an `is_error`
   tool result **before** any cell span opens.
+- The header's warning line also names inline records that matched no
+  call (`records[0] (any.create_object) matched no call`): the index
+  counts hits per inline record and the owning span's end carries the
+  unmatched indices in `meta.mockFilter.records`.
 - The trailing sentence is fixed text on every mocked result. It is
-  the guard against a stale-mock pass being reported as verification.
+  the guard against a stale-mock pass being reported as verification —
+  and it defers to the user: when they asked for no live calls, the
+  model does not re-run live to "verify".
 
 Where the model learns about it: the `run_cell` tool schema plus one
 paragraph in `_core` (the always-composed skill). Not `_coding`: that
@@ -202,7 +232,8 @@ nondeterminism is exactly what a mock replaces.
 Every consulted effect record carries:
 
 - served: `meta.mocked: true`, `meta.mock: {from: run_id, seq}` or
-  `meta.mock: {inline: i}`;
+  `meta.mock: {inline: i}` — on an effect record, or on both records of
+  a substituted span (§3a);
 - unmatched-live: `meta.mocked: false`, `meta.mock: {unmatched: true}`;
 - unmatched-fail: an error record, `error.type: "mock_unmatched"`,
   `meta.mock: {unmatched: true}`;
@@ -222,7 +253,14 @@ unchanged): a denied effect is denied whether or not a mock exists.
 - Keys are input-shaped: an edit that keeps the same effect inputs
   still hits the mock. That is the feature; `_core` says so.
 - Runtime change (broker, CLI): `anyrt` rebuild + serve restart.
-  Toolcaller + `_core` change: deploy. No kernel change.
+  Toolcaller + `_core` change: deploy. Span substitution (§3a) is a
+  kernel change: `make kernel` + rebuild.
+- The index holds a loaded run by reference (`Arc`) and clones only
+  the served record on take: a `from` run costs one load per broker,
+  no copies per cell install. What crosses the boundary is exactly
+  what the live call would have returned; raw bodies stay host-side
+  blobs (ADR-026) under a mock as they do live, and a served facade
+  crosses once where live its inner bodies would have crossed too.
 - `from` may point at another program's run; records are effect-level.
 
 ## Implementation notes
