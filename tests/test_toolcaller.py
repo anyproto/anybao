@@ -991,7 +991,7 @@ def test_mockref_rides_the_cell_span_and_the_digest_says_mocked():
     assert "would mutate any.modify #15 (mocked: NOT executed)" in text
     assert "  mutate any.modify" not in text
     # the fixed guard closes every mocked result
-    assert text.endswith("Re-run without `mock` to do it for real.")
+    assert text.endswith("then report it as mocked and stop.")
 
 
 def test_mock_spec_with_zero_hits_is_visible_and_live_cells_are_untouched():
@@ -1003,7 +1003,7 @@ def test_mock_spec_with_zero_hits_is_visible_and_live_cells_are_untouched():
     text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
     assert text.startswith("[MOCK] 0 of 1 effects served from 1 inline record(s)"), text
     assert "any.query ×1 (live)" in text
-    assert text.endswith("Re-run without `mock` to do it for real.")
+    assert text.endswith("then report it as mocked and stop.")
 
     # an ordinary cell: no header, no suffixes, no guard
     w = World([tool_reply(), done_reply("ok")])
@@ -1077,6 +1077,33 @@ def test_zero_match_glob_warns_in_the_header():
     w.mock_filter = {"only": 0}
     run(w)
     assert "WARNING" not in w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+
+
+def test_served_facade_renders_as_would_mutate_and_unserved_records_warn():
+    # ADR-028 §3a: a facade served whole at span.begin is one served
+    # unit, a mutator facade is "would mutate", nothing inside ran
+    rows = [
+        {"seq": 51, "name": "any.create_object", "kind": "mutator", "class": "mutate",
+         "mutations": 0, "effects": 0, "mocked": True, "mockedSpan": True, "error": None},
+        {"seq": 52, "effect": "time.now", "class": "read", "mocked": False,
+         "unmatched": False, "error": None},
+    ]
+    spec = {"records": [{"effect": "any.create_object", "output": {"objectId": "x"}},
+                        {"effect": "github.issues", "output": {"items": []}}],
+            "unmatched": "fail"}
+    w = World([mock_reply(mock=spec), done_reply("ok")])
+    w.effect_rows = rows
+    w.mock_filter = {"records": [1]}
+    run(w)
+    text = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    lines = text.split("\n")
+    assert lines[0] == ("[MOCK] 1 of 2 effects served from 2 inline record(s) "
+                        "(any.create_object ×1)"), lines[0]
+    assert lines[1].startswith("WARNING: records[1] (github.issues) matched no call"), lines[1]
+    assert "any.create_object ×1 (mocked)" in text
+    assert "would mutate any.create_object #51 (mocked: NOT executed)" in text
+    assert "time.now ×1 (live)" in text
+    assert text.endswith("then report it as mocked and stop.")
 
 
 def test_bad_mock_spec_is_an_error_result_before_any_cell():

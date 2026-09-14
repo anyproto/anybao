@@ -183,6 +183,14 @@ struct SpanFrame {
     mocked: u64,
     /// this span installed a span-scoped mock index (dropped on end)
     owns_mock: bool,
+    /// served whole from a facade-keyed record (ADR-028 §3a): the
+    /// guest skips the body; `{ok, output?, error?}` + provenance
+    served: Option<(Value, Value)>,
+}
+
+/// The loop's structural spans are never substituted (ADR-028 §3a).
+fn never_substituted(span: &str) -> bool {
+    matches!(span, "cell" | "bash")
 }
 
 /// The secrets store as the broker sees it (ADR-021 §4): the
@@ -577,6 +585,36 @@ impl Broker {
             }
             _ => false,
         };
+        // ADR-028 §3a: a facade is served whole when the span-scoped
+        // index (never the run-level one) holds a record under its
+        // name — the mockable set applies to the facade name as well
+        let served = if !owns_mock && !never_substituted(name) {
+            let facades: Vec<&str> = self.span_stack.iter().map(|s| s.name.as_str()).collect();
+            match self.span_mocks.last_mut() {
+                Some(idx) => idx
+                    .decide(name, &facades)
+                    .mockable()
+                    .then(|| idx.take(name, &key))
+                    .flatten()
+                    .map(|e| {
+                        let mut outcome = json!({"ok": e.rec["error"].is_null()});
+                        if let Some(o) = e.rec.get("output").filter(|o| !o.is_null()) {
+                            outcome["output"] = o.clone();
+                        }
+                        if let Some(err) = e.rec.get("error").filter(|x| x.is_object()) {
+                            outcome["error"] = err.clone();
+                            outcome["ok"] = json!(false);
+                        }
+                        if let Some(ok) = e.rec.get("ok").and_then(|o| o.as_bool()) {
+                            outcome["ok"] = json!(ok);
+                        }
+                        (outcome, e.provenance)
+                    }),
+                None => None,
+            }
+        } else {
+            None
+        };
         let parent = self.span_stack.last().map(|s| s.id.clone());
         let cell = self.current_cell.clone();
         self.writer
@@ -590,8 +628,19 @@ impl Broker {
             mutations: 0,
             mocked: 0,
             owns_mock,
+            served,
         });
         Ok(sid)
+    }
+
+    /// The served outcome of the span just begun (ADR-028 §3a), for
+    /// the `span.begin` reply: `{ok, output?, error?}` — the guest
+    /// skips the body on it. None = run the body.
+    pub fn span_served(&self) -> Option<Value> {
+        self.span_stack
+            .last()
+            .and_then(|s| s.served.as_ref())
+            .map(|(outcome, _)| outcome.clone())
     }
 
     /// A mock index from a spec value (ADR-028 §1): `from` runs load
@@ -610,7 +659,7 @@ impl Broker {
             };
             runs.insert(run.clone(), records);
         }
-        MockIndex::build(spec, |run| Ok(runs[run].as_ref().clone()))
+        MockIndex::build(spec, |run| Ok(runs[run].clone()))
     }
 
     /// Record-mode convenience (infallible without a cursor); replay
@@ -656,6 +705,14 @@ impl Broker {
         }
         if let Some(f) = filter {
             meta["mockFilter"] = f;
+        }
+        if let Some((_, provenance)) = &top.served {
+            // served whole (ADR-028 §3a): nothing inside ran; the
+            // enclosing spans count it as one served effect
+            meta["mockedSpan"] = json!(true);
+            meta["mocked"] = json!(true);
+            meta["mock"] = provenance.clone();
+            self.bump_mocked("read", true);
         }
         if let Some(k) = &top.kind {
             // narrative label (ADR-001 §4d); mutations stays the oracle
@@ -2115,13 +2172,18 @@ fn immediate_children(records: &[Value], cell: Option<&str>, span: Option<&str>)
             })),
             Some("span") if r["phase"] == "end" && direct(parent_of(r)) => {
                 let muts = r["meta"]["mutations"].as_u64().unwrap_or(0);
+                // served whole (ADR-028 §3a): nothing ran, so a mutator
+                // facade's class is what it WOULD have done
+                let served = r["meta"]["mockedSpan"] == true;
+                let would_mutate = served && r["meta"]["kind"] == "mutator";
                 Some(json!({
                     // a span row is a collapsed op: `name` (not `effect`),
                     // narrative `kind`, and a boundary-backed `class` from
                     // the inner mutate count so the digest marks mutations.
                     "seq": r["seq"], "span": r["span"], "name": r["name"],
                     "kind": r["meta"].get("kind").cloned().unwrap_or(Value::Null),
-                    "class": if muts > 0 { json!("mutate") } else { json!("read") },
+                    "class": if muts > 0 || would_mutate { json!("mutate") } else { json!("read") },
+                    "mockedSpan": served,
                     "ok": r["ok"], "mutations": muts,
                     "effects": r["meta"].get("effects").cloned().unwrap_or(json!(0)),
                     // inner effects served from a mock (ADR-028 §5: the
@@ -2361,7 +2423,8 @@ mod tests {
         assert!(rec["meta"].get("mock").is_none());
         b.span_end(true, None, None).unwrap();
         let end = b.span_end(true, None, None).unwrap();
-        assert_eq!(end["mockFilter"], json!({"except": 1}));
+        // counted twice: the facade at its own begin (§3a) and its inner effect
+        assert_eq!(end["mockFilter"], json!({"except": 2}));
 
         // a glob that matches nothing: counted as zero → the digest warns
         let mut b = make_broker("sm5");
@@ -2378,6 +2441,90 @@ mod tests {
         span_with_mock(&mut b, json!({"unmatched": "live"}));
         let end = b.span_end(true, None, None).unwrap();
         assert!(end.get("mockFilter").is_none());
+    }
+
+    #[test]
+    fn span_mock_serves_a_facade_whole_at_begin() {
+        // G2 (questionary 09-14): a facade-keyed record substitutes the
+        // whole span — output returned, error raised, nothing inside runs
+        let mut b = make_broker("sm7");
+        span_with_mock(
+            &mut b,
+            json!({"records": [
+                {"effect": "any.create_object", "output": {"objectId": "rehearsed"}},
+                {"effect": "any.modify", "error": {"type": "RehearsalBlock", "message": "no"}}]}),
+        );
+        assert!(b.span_served().is_none()); // the installing cell span itself
+        b.try_span_begin(
+            "any.create_object",
+            Some("mutator".into()),
+            json!({"body": 1}),
+        )
+        .unwrap();
+        assert_eq!(
+            b.span_served(),
+            Some(json!({"ok": true, "output": {"objectId": "rehearsed"}}))
+        );
+        let end = b
+            .span_end(true, Some(json!({"objectId": "rehearsed"})), None)
+            .unwrap();
+        assert_eq!(end["mockedSpan"], true);
+        assert_eq!(end["mock"], json!({"inline": 0}));
+        assert_eq!(end["effects"], 0);
+        b.try_span_begin("any.modify", Some("mutator".into()), json!({"x": 1}))
+            .unwrap();
+        let served = b.span_served().unwrap();
+        assert_eq!(served["ok"], false);
+        assert_eq!(served["error"]["type"], "RehearsalBlock");
+        b.span_end(false, None, Some(served["error"].clone()))
+            .unwrap();
+        // a facade with no record runs its body: begin says so
+        b.try_span_begin("any.query", None, json!({})).unwrap();
+        assert!(b.span_served().is_none());
+        b.span_end(true, None, None).unwrap();
+        // the cell span counted the two served facades as served effects
+        let end = b.span_end(true, None, None).unwrap();
+        assert_eq!(end["mocked"], 2);
+        assert_eq!(end["effects"], 2);
+        assert!(end.get("mockFilter").is_none()); // every inline record served
+    }
+
+    #[test]
+    fn span_mock_facade_from_a_run_and_the_mockable_set_gate_it() {
+        let mut b = make_broker("run_dddddddddddddddd");
+        // live: a facade whose body makes one effect
+        b.try_span_begin("any.list_types", None, json!({"space": "s"}))
+            .unwrap();
+        b.call("time.now", json!({})).unwrap();
+        b.span_end(true, Some(json!({"types": 13})), None).unwrap();
+        // replayed from this run: the facade's recorded outcome, whole
+        span_with_mock(&mut b, json!({"from": "run_dddddddddddddddd"}));
+        b.try_span_begin("any.list_types", None, json!({"space": "s"}))
+            .unwrap();
+        let served = b.span_served().unwrap();
+        assert_eq!(served, json!({"ok": true, "output": {"types": 13}}));
+        b.span_end(true, Some(json!({"types": 13})), None).unwrap();
+        let end = b.writer.records.last().unwrap();
+        assert_eq!(end["meta"]["mock"]["from"], "run_dddddddddddddddd");
+        b.span_end(true, None, None).unwrap();
+        // excepted by the mockable set: the facade runs live
+        span_with_mock(
+            &mut b,
+            json!({"from": "run_dddddddddddddddd", "except": ["any.*"], "unmatched": "live"}),
+        );
+        b.try_span_begin("any.list_types", None, json!({"space": "s"}))
+            .unwrap();
+        assert!(b.span_served().is_none());
+        b.span_end(true, None, None).unwrap();
+        b.span_end(true, None, None).unwrap();
+        // structural spans and the run-level index never substitute
+        b.mode = Mode::Mock;
+        let recs = b.writer.records.clone();
+        b.mock_index = Some(MockIndex::new(&recs));
+        b.try_span_begin("any.list_types", None, json!({"space": "s"}))
+            .unwrap();
+        assert!(b.span_served().is_none());
+        b.span_end(true, None, None).unwrap();
     }
 
     #[test]

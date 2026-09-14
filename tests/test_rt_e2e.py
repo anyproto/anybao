@@ -335,8 +335,12 @@ def test_mock_and_replay_serve_recorded_effects(backends):
     posts = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "http.post"]
     assert posts and all(r["meta"]["mocked"] is False and "mock" not in r["meta"]
                          for r in posts)
+    # a mockable non-http effect IS served; kernel plumbing never is (§7)
+    clocks = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "time.now"]
+    assert clocks and all(r["meta"]["mocked"] is True for r in clocks)
     boots = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "kernel.boot"]
-    assert boots and boots[0]["meta"]["mocked"] is True
+    assert boots and all(r["meta"]["mocked"] is False and "mock" not in r["meta"]
+                         for r in boots)
 
 
 def test_mock_spec_errors_before_the_run(backends):

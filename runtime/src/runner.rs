@@ -147,7 +147,13 @@ impl crate::bindings::KernelImports for &mut Host {
                     let n = p["name"].as_str().unwrap_or("").to_string();
                     let input = p.get("input").cloned().unwrap_or(json!({}));
                     let kind = p.get("kind").and_then(|k| k.as_str()).map(String::from);
-                    Ok(json!({"span": self.broker.try_span_begin(&n, kind, input)?}))
+                    let sid = self.broker.try_span_begin(&n, kind, input)?;
+                    // ADR-028 §3a: a served facade — the guest skips the body
+                    let mut reply = json!({"span": sid});
+                    if let Some(m) = self.broker.span_served() {
+                        reply["mock"] = m;
+                    }
+                    Ok(reply)
                 }
                 // the end record's meta comes back (the toolcaller reads
                 // `mockFilter` off its cell span, ADR-028 §5)

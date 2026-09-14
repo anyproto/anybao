@@ -76,12 +76,14 @@ RUN_CELL_TOOL = {
                 "description": "Recorded/scripted effects for this cell only: "
                                "{from: run id(s), only: [globs], except: [globs], "
                                "records: [{effect, input?, output|error, repeat?}], "
-                               "unmatched: fail|live}. Globs match effect names "
-                               "(http.get, time.now) AND the facade the call runs "
-                               "under (any.*, github.*): except: [\"any.*\"] keeps "
-                               "every any call live. Outside only/except a call "
-                               "runs live. The result is NOT a live verification "
-                               "— it says so.",
+                               "unmatched: fail|live}. Names are effect names "
+                               "(http.get, time.now) OR facade names (any.create_object, "
+                               "github.issues): a facade record is served whole — its "
+                               "output is the call's return value, nothing inside runs. "
+                               "Globs in only/except match both; except: [\"any.*\"] "
+                               "keeps every any call live. To rehearse a write use "
+                               "unmatched: fail — with live, an unmatched write EXECUTES. "
+                               "The result is NOT a live verification — it says so.",
             },
         },
         "required": ["code"],
@@ -265,6 +267,8 @@ def _mock_state(e):
     the served count `mocked` over `effects`."""
     if e.get("effect"):
         return "mocked" if e.get("mocked") is True else "live"
+    if e.get("mockedSpan"):   # served whole at span.begin (ADR-028 §3a)
+        return "mocked"
     served = e.get("mocked") or 0
     total = e.get("effects") or 0
     if not served:
@@ -329,9 +333,15 @@ def _mock_header(entries, mock, filter_hits=None):
     narrowing glob that matches nothing silently widens to everything."""
     rows = [e for e in entries if e.get("effect") not in _TRACE_VIEWS]
     served = [e for e in rows if _mock_state(e) == "mocked"]
-    n_served = sum((e.get("mocked") or 0) if not e.get("effect") else 1
+
+    def units(e):   # a served facade is one unit; an executed one is its effects
+        if e.get("effect") or e.get("mockedSpan"):
+            return 1
+        return e.get("effects") or 0
+
+    n_served = sum(1 if e.get("mockedSpan") or e.get("effect") else (e.get("mocked") or 0)
                    for e in rows if _mock_state(e) != "live")
-    n_total = sum((e.get("effects") or 0) if not e.get("effect") else 1 for e in rows)
+    n_total = sum(units(e) for e in rows)
     sources = []
     if mock.get("from"):
         refs = mock["from"] if isinstance(mock["from"], list) else [mock["from"]]
@@ -355,11 +365,21 @@ def _mock_header(entries, mock, filter_hits=None):
                      f"cell — " + ("every effect ran live" if key == "only"
                                    else "nothing was kept live by it")
                      + " (globs match effect names and facade names like any.*)")
+    # inline records never served: a misnamed effect/facade, or a call
+    # the cell never made — never silent (the miss policy decided instead)
+    unserved = [i for i in (hits.get("records") or [])
+                if isinstance(i, int) and i < len(mock.get("records") or [])]
+    if unserved and n_total:
+        names = ", ".join(f"records[{i}] ({mock['records'][i].get('effect')})" for i in unserved)
+        line += (f"\nWARNING: {names} matched no call in this cell — check the name "
+                 "(an effect like http.get, or a facade like any.create_object) and "
+                 "the input; the miss policy (unmatched) decided those calls instead")
     return line
 
 
 MOCK_GUARD = ("Values above came from recorded effects, not live data. Nothing marked "
-              "mocked was executed or written. Re-run without `mock` to do it for real.")
+              "mocked was executed or written. Re-run without `mock` to do it for real — "
+              "unless the user asked for no live calls; then report it as mocked and stop.")
 
 
 class MockArgError(ValueError):

@@ -1247,7 +1247,19 @@ def span(name=None, kind=None):
                        "input": _span_input(argnames, drop_self, args, kwargs)}
             if kind is not None:
                 payload["kind"] = kind
-            _effect("span.begin", payload)
+            begun = _effect("span.begin", payload) or {}
+            served = begun.get("mock")
+            if served is not None:
+                # served whole from a mock (ADR-003 §4b / ADR-028 §3a):
+                # the body does not run, none of its effects happen
+                err = served.get("error")
+                _effect("span.end", {"ok": bool(served.get("ok")) and not err,
+                                     "output": served.get("output"),
+                                     "error": err, "mocked": True})
+                if err:
+                    raise EffectError(f"{err.get('type', 'EffectError')}: "
+                                      f"{err.get('message', '')}")
+                return served.get("output")
             try:
                 out = fn(*args, **kwargs)
             except BaseException as e:
