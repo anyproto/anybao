@@ -50,3 +50,24 @@ tempfile = "3"
 
 [profile.release]
 strip = true
+
+# Three unit tests compile the 23 MB CPython kernel through cranelift
+# (`Cage::embedded`); unoptimized cranelift needs minutes of CPU per cold
+# compile, which held CI's test job for ~7 min. Optimize only the codegen
+# crates in dev/test builds — the runtime itself stays debuggable.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3

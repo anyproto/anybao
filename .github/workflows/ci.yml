@@ -5,8 +5,27 @@ on:
     branches: [main]
   pull_request:
 
+# Every cargo step goes through a Makefile target that depends on
+# `kernel`, so bin/kernel.wasm (include_bytes! into the binary) is built
+# exactly when needed and never as a step of its own. `uv run` syncs the
+# venv itself.
+#
+# Cargo caches are keyed per job (and per feature leg): actions/cache
+# never rewrites an existing key, so a key shared between jobs froze
+# whichever job saved first — the runtime job's clippy+release tree —
+# and the test job recompiled every crate on every run.
+
 jobs:
   test:
+    name: test-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            features: ""
+          - name: shell
+            features: shell
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,14 +37,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
-      - run: nix develop -c uv sync
-      - run: nix develop -c make kernel
-      - run: nix develop -c uv run ruff check .
-      - run: nix develop -c cargo test --manifest-path runtime/Cargo.toml
-      # build the binary so the rt_e2e subprocess test runs (else it skips)
-      - run: nix develop -c make runtime
-      - run: nix develop -c uv run pytest
+          key: cargo-test-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+      - run: nix develop -c make test-runtime FEATURES=${{ matrix.features }}
+      # the default leg also carries the guest-module + wire pytest
+      # (rt_e2e needs the release binary, else it skips) and ruff
+      - if: matrix.name == 'default'
+        run: nix develop -c uv run ruff check .
+      - if: matrix.name == 'default'
+        run: nix develop -c make runtime
+      - if: matrix.name == 'default'
+        run: nix develop -c uv run pytest
 
   runtime:
     runs-on: ubuntu-latest
@@ -39,7 +60,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+          key: cargo-runtime-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: nix develop -c make runtime-check
       - run: nix develop -c make runtime
       # the vendored any spec vs the coverage manifest (ADR-002 §2)
