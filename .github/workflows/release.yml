@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: verify tag is on main
@@ -43,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Stock toolchains, deliberately NOT `nix develop`: linking inside
       # the devshell bakes /nix/store/... install names (libiconv) into
       # the darwin binary, and dyld aborts on user machines where no
@@ -51,7 +51,7 @@ jobs:
       # (componentize-py -> kernel.wasm) and the rust channel pinned in
       # rust-toolchain.toml — rustls-only, no native libs, kernel
       # embedded via include_bytes!.
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.13"
       - id: rust
@@ -59,7 +59,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.rust.outputs.toolchain }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

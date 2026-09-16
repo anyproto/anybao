@@ -11,6 +11,11 @@ on:
 # dev shell; both it and the workflows take the rust channel from
 # rust-toolchain.toml, so the two can't drift apart silently.
 #
+# Action majors: checkout v7 / cache v6 / setup-uv v10 are the node24
+# builds (older majors are forced onto node24 by the runner and warn on
+# every step). setup-uv publishes no floating major tag since v8 — pin
+# the full version and bump it by hand.
+#
 # Every cargo step goes through a Makefile target that depends on
 # `kernel`, so bin/kernel.wasm (include_bytes! into the binary) is built
 # exactly when needed and never as a step of its own. `uv run` syncs the
@@ -37,8 +42,8 @@ jobs:
             features: shell
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.13"
           enable-cache: true
@@ -47,7 +52,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.rust.outputs.toolchain }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -61,8 +66,8 @@ jobs:
   runtime:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.13"
           enable-cache: true
@@ -72,7 +77,7 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.toolchain }}
           components: clippy, rustfmt
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
