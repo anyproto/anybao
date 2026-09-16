@@ -72,14 +72,6 @@ impl Verdict {
     }
 }
 
-/// While this device does not answer chat, the presence thread says
-/// why every this many seconds (§5): standby is a silent state — no
-/// chat watch, no runs — so one boot line cannot explain a long
-/// unanswered chat. Lives beside the beat, not in the election
-/// thread: it must keep talking while registry reads fail and on a
-/// pruned device, which runs no election thread at all.
-pub const STANDBY_LOG_S: f64 = 60.0;
-
 /// Boot-time election state (ADR-015): the boot verdict (serve keeps
 /// it as `RunCtx::verdict`, rewritten only by the election thread) +
 /// this device's registry identity. `enabled: false` = the server

@@ -210,5 +210,5 @@ device" — BOB-117 owns that surface.
 Serve: `StubTransport` assertions on the publish sequence (boot →
 idle → working + run title → idle → shutdown; line set + decay;
 set republishes immediately; a role flip republishes within a poll,
-the envelope carries `role` + `winner`; the not-answering repeat's
-clock). UI: atom + staleness tests.
+the envelope carries `role` + `winner`; the not-answering log's
+change gate). UI: atom + staleness tests.

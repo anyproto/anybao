@@ -9,7 +9,9 @@ narrowed for device-pinned triggers, ADR-006 §4 — standby no longer
 idles the whole ticker), amended 2026-09-13 (§3/§5: one verdict
 snapshot; the claim holder rides the presence beat beside the
 responder role, and not answering chat repeats itself in the log,
-BOB-111)
+BOB-111), amended 2026-09-16 (§5: the log speaks only on a change of
+chat ownership — the once-a-minute repeat is gone; the role is
+visible in the UI and on `GET /status`, BOB-143 follow-up)
 Date: 2026-08-17
 Builds on: ADR-006 §4 (triggers: single-owner, missed-occurrence
 rule), ADR-009 §6 (serve/lib surface), ADR-009 §8 (snapshot backlog —
@@ -164,20 +166,24 @@ consumer can tell the device that answers from one that does not
 without a registry read; `GET /status` shows the same envelope. A
 role or winner change republishes within the presence poll.
 
-Not answering chat is a silent state: no chat watch, no runs. So the
-log does not fall silent with it — the boot line names the winner
-(`election: peer … — standby (the active bao is peer …)`), and the
-presence thread repeats WHY once a minute for as long as this device
-does not own the enabled responder: `election: standby (the active
-bao is peer …) — chat is not answered here`, the pruned variant, or
+Not answering chat is a silent state: no chat watch, no runs. The
+log records every transition of it and nothing while it holds: the
+boot line names the winner (`election: peer … — standby (the active
+bao is peer …)`), and the presence thread logs one line each time
+the REASON this device does not own the enabled responder changes —
+`election: standby (the active bao is peer …) — chat is not answered
+here` (a new line when the winner moves), the pruned variant, or
 `chat: this device is the active bao but does not own the enabled
-chat responder (paused, or pinned to another device) …`. The repeat
-rides the presence poll, not the election thread, so it keeps
-talking while registry reads fail (those get one `election: registry
-read failed` warning and one recovery line) and on a pruned device,
-which runs no election thread. A long unanswered chat must be
-diagnosable from `agent.log` alone; one line at boot was not enough
-(BOB-111).
+chat responder (paused, or pinned to another device) …` — and one
+line when it answers again (`chat: answered here — this device owns
+the enabled chat responder`). The first observation after boot is
+the baseline, not logged: the boot line already said it. A state
+that holds is never repeated — the role is live in the UI (BOB-134)
+and on `GET /status`, so the log's job is the history of flips, not
+a heartbeat. The line rides the presence poll, not the election
+thread, so a flip still lands while registry reads fail (those get
+one `election: registry read failed` warning and one recovery line)
+and on a pruned device, which runs no election thread.
 
 Guest: `any@v1.list_devices()` (getter, public) is the registry read
 verbatim — `{self, active, devices}` — so bao can tell the user which

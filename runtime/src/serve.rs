@@ -1240,9 +1240,10 @@ fn beat_role(shared: &Shared, reg: &BTreeMap<String, Trigger>, ctx: &RunCtx) -> 
     }
 }
 
-/// Why chat is not answered on this device, for the once-a-minute
-/// repeat (ADR-015 §5): a long unanswered chat has to be diagnosable
-/// from `agent.log` alone.
+/// Why chat is not answered on this device, for the change-gated log
+/// line (ADR-015 §5): every transition of chat ownership is in
+/// `agent.log`, so an unanswered chat is diagnosable from the log
+/// alone without the log repeating itself.
 fn not_answering_line(ctx: &RunCtx) -> String {
     if ctx.pruned {
         return "election: standby (this device was pruned from the registry) — \
@@ -1262,29 +1263,39 @@ fn not_answering_line(ctx: &RunCtx) -> String {
     )
 }
 
-/// The repeat's clock: fires when the device has not answered chat
-/// for `STANDBY_LOG_S` since the last line (or since boot — the boot
-/// line already said so), goes quiet the moment it answers again.
+/// The line for the flip back: this device answers chat again.
+const ANSWERING_LINE: &str = "chat: answered here — this device owns the enabled chat responder";
+
+/// The log's change gate (ADR-015 §5): one line when the reason this
+/// device does not answer chat changes (standby naming a winner, the
+/// winner moving, pruned, active-but-not-the-responder), one when it
+/// answers again; nothing while the state holds. The first
+/// observation is the baseline and is not logged — the boot line
+/// already said it.
 #[derive(Default)]
-struct NotAnsweringRepeat {
-    last: Option<f64>,
+struct NotAnsweringLog {
+    /// the last observed reason; `""` = answering; `None` = unobserved
+    last: Option<String>,
 }
 
-impl NotAnsweringRepeat {
-    fn due(&mut self, responder: bool, now: f64) -> bool {
-        if responder {
-            self.last = None;
-            return false;
-        }
-        let Some(last) = self.last else {
-            self.last = Some(now);
-            return false;
+impl NotAnsweringLog {
+    /// `reason` is why chat is not answered here, `None` while it is.
+    /// Returns the line to log, when the state changed.
+    fn note(&mut self, reason: Option<String>) -> Option<String> {
+        let now = reason.unwrap_or_default();
+        let changed = match &self.last {
+            None => false,
+            Some(last) => *last != now,
         };
-        if now - last < crate::election::STANDBY_LOG_S {
-            return false;
+        self.last = Some(now.clone());
+        if !changed {
+            return None;
         }
-        self.last = Some(now);
-        true
+        Some(if now.is_empty() {
+            ANSWERING_LINE.to_string()
+        } else {
+            now
+        })
     }
 }
 
@@ -1409,9 +1420,10 @@ fn presence_pass(
 
 /// The presence thread: beats while serve lives, one `shutdown` beat
 /// on stop (the graceful path; a crash is covered by the beat TTL).
-/// Also the home of the not-answering repeat (ADR-015 §5): it reads
-/// the same role the beat carries, so it keeps talking while registry
-/// reads fail and on a pruned device (no election thread there).
+/// Also the home of the chat-ownership log line (ADR-015 §5): it
+/// reads the same role the beat carries, so a flip still lands in the
+/// log while registry reads fail and on a pruned device (no election
+/// thread there).
 fn presence_thread(
     shared: Arc<Shared>,
     ctx: Arc<RunCtx>,
@@ -1419,7 +1431,7 @@ fn presence_thread(
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut st = PresenceLoop::default();
-        let mut repeat = NotAnsweringRepeat::default();
+        let mut answering = NotAnsweringLog::default();
         let role_now = || {
             let reg = shared.triggers.lock().unwrap();
             beat_role(&shared, &reg, &ctx)
@@ -1441,8 +1453,9 @@ fn presence_thread(
             }
             let now = now_s();
             let role = role_now();
-            if repeat.due(role.responder, now) {
-                info!("{}", not_answering_line(&ctx));
+            let reason = (!role.responder).then(|| not_answering_line(&ctx));
+            if let Some(line) = answering.note(reason) {
+                info!("{line}");
             }
             let run = current_run(&ctx.live_runs.lock().unwrap());
             presence_pass(
@@ -3759,21 +3772,38 @@ mod tests {
     }
 
     #[test]
-    fn not_answering_repeat_fires_once_a_minute_while_not_the_responder() {
-        // ADR-015 §5: silent while answering; one line per minute
-        // while not, the first a minute after the state began (the
-        // boot line already said so); quiet again the moment it answers
-        let mut r = NotAnsweringRepeat::default();
-        assert!(!r.due(true, 0.0));
-        assert!(!r.due(false, 1.0)); // state began — the boot line covers it
-        assert!(!r.due(false, 30.0));
-        assert!(r.due(false, 61.0));
-        assert!(!r.due(false, 100.0));
-        assert!(r.due(false, 121.0));
-        assert!(!r.due(true, 122.0)); // answering again ⇒ reset
-        assert!(!r.due(false, 123.0)); // a fresh silence starts its own minute
-        assert!(!r.due(false, 150.0));
-        assert!(r.due(false, 183.0));
+    fn not_answering_log_speaks_only_when_the_state_changes() {
+        // ADR-015 §5: the first observation is the baseline (the boot
+        // line said it); then one line per change of the reason, one
+        // for the flip back to answering, nothing while a state holds
+        let standby = || {
+            Some(
+                "election: standby (the active bao is peer A) — chat is not answered here"
+                    .to_string(),
+            )
+        };
+        let moved = || {
+            Some(
+                "election: standby (the active bao is peer B) — chat is not answered here"
+                    .to_string(),
+            )
+        };
+        let mut l = NotAnsweringLog::default();
+        assert_eq!(l.note(standby()), None); // baseline, boot line covers it
+        assert_eq!(l.note(standby()), None);
+        assert_eq!(l.note(standby()), None); // however long it holds
+        assert_eq!(l.note(moved()), moved()); // the winner moved
+        assert_eq!(l.note(moved()), None);
+        assert_eq!(l.note(None), Some(ANSWERING_LINE.to_string())); // answers again
+        assert_eq!(l.note(None), None);
+        assert_eq!(l.note(standby()), standby()); // a fresh silence is logged once
+        assert_eq!(l.note(standby()), None);
+
+        // an answering boot is silent until something changes
+        let mut l = NotAnsweringLog::default();
+        assert_eq!(l.note(None), None);
+        assert_eq!(l.note(None), None);
+        assert_eq!(l.note(standby()), standby());
     }
 
     fn status_calls(log: &crate::testutil::CallLog) -> Vec<Value> {
