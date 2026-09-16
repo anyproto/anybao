@@ -47,6 +47,9 @@ jobs:
         with:
           python-version: "3.13"
           enable-cache: true
+          # one uv cache per leg: three jobs saving the same key at once
+          # race, and the losers warn "Unable to reserve cache"
+          cache-suffix: ${{ matrix.name }}
       - id: rust
         run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
