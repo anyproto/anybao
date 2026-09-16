@@ -19,7 +19,10 @@ on:
 # Cargo caches are keyed per job (and per feature leg): actions/cache
 # never rewrites an existing key, so a key shared between jobs froze
 # whichever job saved first — the runtime job's clippy+release tree —
-# and the test job recompiled every crate on every run.
+# and the test job recompiled every crate on every run. The `stock-`
+# salt keeps them apart from the trees the nix-develop era saved:
+# those build scripts were linked against the /nix/store loader and
+# ENOENT on a bare runner even though cargo's fingerprints match.
 
 jobs:
   test:
@@ -50,7 +53,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/target
-          key: cargo-test-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+          key: cargo-stock-test-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: make test-runtime FEATURES=${{ matrix.features }}
       - if: matrix.name == 'default'
         run: uv run ruff check .
@@ -75,7 +78,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/target
-          key: cargo-runtime-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+          key: cargo-stock-runtime-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: make runtime-check
       - run: make runtime
       # the vendored any spec vs the coverage manifest (ADR-002 §2)
