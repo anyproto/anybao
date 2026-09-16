@@ -106,6 +106,34 @@ any run in this bao's trace store, not just the current one — so
 asking bao "why did you do that?" about an earlier reply works: it
 dereferences that reply's `traceRef`.
 
+## A reporter's export
+
+Traces are local-store collections of the bao space (ADR-023) on the
+reporter's own any server — not files. The desktop's Help ▸ "Export
+anybao Data…" ships them as `traces.anyenc.gz`: the any server's
+collection export (any docs/26-local-store.md § Export and import —
+`trace_runs`, `trace_records`, `trace_blobs`, one gzip'd anyenc
+stream). Load it into any server you run and read it with the same
+tools; the reporter's bao space id is in the file (and in their
+`anybao.toml` next to it in the zip):
+
+```sh
+any --addr 127.0.0.1:7199 local import traces.anyenc.gz   # prints the collections + counts
+anyrt trace ls   --addr http://127.0.0.1:7199 --space <their bao space id> --program toolcaller
+anyrt trace show --addr http://127.0.0.1:7199 --space <their bao space id> run_<id>
+any --addr 127.0.0.1:7199 local aggregate trace_records --space <their bao space id> --pipeline '[…]'
+```
+
+`--space` takes the raw id: the space does not exist on your server,
+only its trace collections do (`trace ls/show` fall back to a space
+id whose `trace_runs` collection is present on `--addr`). Raw blobs
+(`{__blob}` refs: fetched images, PDFs — ADR-026) are files under the
+zip's `traces/blobs/`; point `--traces-dir` at that unpacked directory
+so `show --seq` resolves them. Importing the same file twice is a
+no-op; a newer export of the same bao overlays the older. The CLI
+export for your own rig is `any local export --space <id> --names
+trace_runs,trace_records,trace_blobs --out traces.anyenc.gz`.
+
 ## Record kinds (ADR-001)
 
 - `header` — run id, program, schema.

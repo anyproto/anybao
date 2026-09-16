@@ -519,14 +519,32 @@ fn trace_store(
     traces_dir: Option<&Path>,
 ) -> Result<Box<dyn anyrt::tracestore::TraceStore>> {
     let client = Arc::new(anyapi::Client::new(addr));
-    let sid = serve::find_space(&client, space)
-        .with_context(|| format!("trace store: space {space:?} on {addr}"))?;
-    Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
-        client,
-        &sid,
-        None,
-        traces_dir.map(anyrt::blob::BlobDir::new),
-    )?))
+    let blob_dir = traces_dir.map(anyrt::blob::BlobDir::new);
+    match serve::find_space(&client, space) {
+        Ok(sid) => Ok(Box::new(anyrt::tracestore::AnyTraceStore::new(
+            client, &sid, None, blob_dir,
+        )?)),
+        // an imported store (`any local import` of a reporter's export,
+        // docs/debugging.md § A reporter's export): the trace
+        // collections are on --addr, the space is not — a raw id whose
+        // run summaries exist there names that store, attached without
+        // the ensure (a write the server would refuse for that space)
+        Err(e) => {
+            let imported = client
+                .local_collections(Some("space"), Some(space))
+                .unwrap_or_default()
+                .iter()
+                .any(|c| c["name"] == anyrt::tracestore::RUNS_COLL);
+            if !imported {
+                return Err(e.context(format!(
+                    "trace store: space {space:?} on {addr} (neither a space here nor an imported trace store)"
+                )));
+            }
+            Ok(Box::new(anyrt::tracestore::AnyTraceStore::attach(
+                client, space, blob_dir,
+            )))
+        }
+    }
 }
 
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
