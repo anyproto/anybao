@@ -350,6 +350,14 @@ pub struct Broker {
     /// or rejected (401) by their destination — in first-event order
     /// (ADR-021 §2); the run wrapper posts the request bubbles.
     pub missing_secrets: Vec<String>,
+    /// Space-backed program specs the run could not resolve on this
+    /// device, as `(space, name@vN)` in first-miss order (ADR-009 §8):
+    /// serve waits for them to sync before re-running the message.
+    pub missing_programs: Vec<(String, String)>,
+    /// Run-level mutate count — the whole run's oracle for "did this
+    /// run change anything", independent of the span stack (ADR-009
+    /// §8: a miss-deferred message is re-run only when this is 0).
+    pub mutations: u64,
     /// The declared table (ADR-021 §8.1). None = no overlays behind this
     /// broker (`anyrt run`, tests): every ref is open and a ref with no
     /// known hosts is injected unbound — the seed file is the
@@ -530,6 +538,8 @@ impl Broker {
             secret_store: None,
             config_store: None,
             missing_secrets: Vec::new(),
+            missing_programs: Vec::new(),
+            mutations: 0,
             declared: None,
             used_refs: BTreeSet::new(),
             hosted: 0,
@@ -779,6 +789,9 @@ impl Broker {
     }
 
     fn bump_mocked(&mut self, class: &str, mocked: bool) {
+        if class == "mutate" {
+            self.mutations += 1;
+        }
         for s in self.span_stack.iter_mut() {
             s.effects += 1;
             if class == "mutate" {
@@ -1867,9 +1880,17 @@ impl Broker {
             // space-backed resolution (serve); the local dir below is
             // the `run` subcommand's offline path
             let frm = payload.get("frm").and_then(|f| f.as_str());
-            return resolver.resolve(spec, frm).map_err(|e| EffectFailure {
-                type_: "KeyError".into(),
-                message: e.to_string(),
+            return resolver.resolve(spec, frm).map_err(|e| {
+                if let crate::resolver::ResolveError::Missing { space, spec, .. } = &e {
+                    let key = (space.clone(), spec.clone());
+                    if !self.missing_programs.contains(&key) {
+                        self.missing_programs.push(key);
+                    }
+                }
+                EffectFailure {
+                    type_: "KeyError".into(),
+                    message: e.to_string(),
+                }
             });
         }
         let cache_state = if self.resolve_cache.contains_key(spec) {
