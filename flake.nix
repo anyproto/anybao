@@ -19,9 +19,10 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "clippy" "rustfmt" "rust-analyzer" ];
-        };
+        # channel + components come from ./rust-toolchain.toml — the one
+        # pin CI and release install too, so the shell never drifts from
+        # what the workflows build with
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
         devShells.default = pkgs.mkShell {

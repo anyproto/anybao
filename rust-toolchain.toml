@@ -1,0 +1,8 @@
+# The ONE rust pin. The flake's dev shell reads it
+# (rust-bin.fromRustupToolchainFile), CI + release install exactly this
+# channel, and rustup honours it on any machine. Lives at the repo root
+# (not runtime/) because rustup resolves it from the cwd and every make
+# target runs cargo from here with --manifest-path.
+[toolchain]
+channel = "1.96.1"
+components = ["rust-src", "clippy", "rustfmt", "rust-analyzer"]
