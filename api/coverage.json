@@ -97,12 +97,12 @@
     },
     "GET /catalog": {
       "excluded": null,
-      "fingerprint": "sha256:5c8f5416337b8f68",
+      "fingerprint": "sha256:b3b5210800b2f5ee",
       "helper": "helper.list_available_apps (ADR-027 §5)"
     },
     "GET /catalog/{usecaseId}": {
       "excluded": "the list carries every usecase whole; no single-usecase consumer",
-      "fingerprint": "sha256:a0d667014247b6b5",
+      "fingerprint": "sha256:f2ff5f42b38d8217",
       "helper": null
     },
     "GET /datasets": {
@@ -132,7 +132,7 @@
     },
     "GET /health": {
       "excluded": "harness lifecycle",
-      "fingerprint": "sha256:cf47f4365e16544a",
+      "fingerprint": "sha256:6f732bf38591cabd",
       "helper": null
     },
     "GET /identities": {
@@ -153,6 +153,11 @@
     "GET /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
       "fingerprint": "sha256:ecdd2e785bb8cdae",
+      "helper": null
+    },
+    "GET /local/export": {
+      "excluded": "low-level (harness) — the trace store's export (BOB-80): host anyapi `local_export` + `any local import`, no guest route",
+      "fingerprint": "sha256:fd8a909303e59996",
       "helper": null
     },
     "GET /local/meta": {
@@ -420,6 +425,11 @@
       "fingerprint": "sha256:507d5d6c3826c7ca",
       "helper": null
     },
+    "POST /account/access-code": {
+      "excluded": "client onboarding (alpha invite code redemption, any 6f14041); no agent use case",
+      "fingerprint": "sha256:df25cac084e14c54",
+      "helper": null
+    },
     "POST /auth": {
       "excluded": "harness auth/boot",
       "fingerprint": "sha256:5e605158b4ea29d6",
@@ -473,6 +483,11 @@
     "POST /local/get": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
       "fingerprint": "sha256:b6e0018d2673bfe7",
+      "helper": null
+    },
+    "POST /local/import": {
+      "excluded": "low-level (harness) — the trace store's export (BOB-80): host anyapi `local_export` + `any local import`, no guest route",
+      "fingerprint": "sha256:8a75af0a18bbf763",
       "helper": null
     },
     "POST /local/indexes": {
@@ -617,7 +632,7 @@
     },
     "POST /spaces/{spaceId}/bundles": {
       "excluded": null,
-      "fingerprint": "sha256:680d74f63352c53e",
+      "fingerprint": "sha256:151bc0e8b896d40f",
       "helper": "helper.ensure_bundle"
     },
     "POST /spaces/{spaceId}/bundles/{bundleId}/children": {
@@ -782,7 +797,7 @@
     },
     "POST /spaces/{spaceId}/search": {
       "excluded": null,
-      "fingerprint": "sha256:f7cc412b682c6277",
+      "fingerprint": "sha256:89d13b3fe7a3acf9",
       "helper": "helper.search"
     },
     "POST /spaces/{spaceId}/sync": {

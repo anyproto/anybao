@@ -54,6 +54,17 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C7. Drift refresh 2026-09-16 (pin → any feat/syn-252-local-export, scratch server on that build, `/v1/openapi.json`)
+
+any SYN-252: the local store exports named collections as one file
+and imports them (`GET /v1/local/export`, `POST /v1/local/import`) —
+the trace store's way off a reporter's machine (BOB-80). 142 paths, 3
+added: the two export routes (excluded — host `anyapi::local_export`
+for the desktop's diagnostics zip + `any local import`; no guest
+route) and `POST /account/access-code` (client onboarding, excluded).
+5 pre-existing routes refreshed with the same reshaping class as C6
+(catalog, health, bundles, search — spec-only, no client change).
+
 ## C6. Drift refresh 2026-09-10 (pin → any ffd2147, scratch server on that build, `/v1/openapi.json`)
 
 any SYN-234 (PR #230): swag rendered every `json.RawMessage` as its
