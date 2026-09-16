@@ -822,33 +822,124 @@ impl Watcher {
         Value::Object(out)
     }
 
-    /// The record's text, attributed and attachment-aware: a
-    /// foreign-agent message (a `trigger:*` nudge, a peer) gets a
+    /// Resolve the message this one replies to (the server's
+    /// `replyToMessageId`, set by the client when the user replies to
+    /// a bubble) into a `replyTo` group on the record — BEFORE the
+    /// watcher reads it, so the inject and the start paths see the
+    /// same text (ADR-005 §5). `lookup` is the host's chat read (a
+    /// `chat_messages` query by id, deleted rows included); it answers
+    /// `None` when the target is not in this chat (or the read failed).
+    /// A record without a reply id passes through untouched.
+    ///
+    /// The group carries what the fold needs and nothing more:
+    /// `{text, from, createdAt?}` for a live target (`from` = the
+    /// target's `agent.name`, or `"user"`), `{deleted: true}` for a
+    /// tombstone, `{missing: true}` when nothing came back.
+    pub fn with_reply(mut record: Value, lookup: impl FnOnce(&str) -> Option<Value>) -> Value {
+        let Some(id) = record
+            .get("replyToMessageId")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+        else {
+            return record;
+        };
+        let group = match lookup(&id) {
+            None => json!({"missing": true}),
+            Some(t) if t.get("_deletedAt").is_some_and(|d| !d.is_null()) => {
+                json!({"deleted": true})
+            }
+            Some(t) => {
+                let from = t
+                    .get("agent")
+                    .filter(|a| !a.is_null())
+                    .and_then(|a| a.get("name"))
+                    .and_then(|n| n.as_str())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("user");
+                let mut g = json!({
+                    "text": t.get("text").and_then(|x| x.as_str()).unwrap_or(""),
+                    "from": from});
+                if let Some(at) = t
+                    .get("createdAt")
+                    .and_then(|c| c.get("$date").or(Some(c)))
+                    .and_then(|c| c.as_str())
+                {
+                    g["createdAt"] = json!(at);
+                }
+                g
+            }
+        };
+        if let Some(obj) = record.as_object_mut() {
+            obj.insert("replyTo".into(), group);
+        }
+        record
+    }
+
+    /// The `[in reply to …]` line for a resolved `replyTo` group, or
+    /// None when the record carries none. The quote is whitespace-
+    /// collapsed and head-capped: the line locates the referent, the
+    /// full bubble is in the boot window.
+    fn reply_line(record: &Value) -> Option<String> {
+        const QUOTE_CAP: usize = 300;
+        let g = record.get("replyTo")?.as_object()?;
+        if g.get("deleted").and_then(|d| d.as_bool()) == Some(true) {
+            return Some("[in reply to a message that has since been deleted]".into());
+        }
+        if g.get("missing").and_then(|d| d.as_bool()) == Some(true) {
+            return Some("[in reply to a message not found in this chat]".into());
+        }
+        let from = g.get("from").and_then(|f| f.as_str()).unwrap_or("user");
+        let who = if from == "user" {
+            "the user's message".to_string()
+        } else {
+            format!("agent \"{from}\"'s message")
+        };
+        let when = g
+            .get("createdAt")
+            .and_then(|c| c.as_str())
+            .map(|c| format!(" from {c}"))
+            .unwrap_or_default();
+        let text = g.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        let mut quote: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if quote.chars().count() > QUOTE_CAP {
+            quote = quote.chars().take(QUOTE_CAP).collect::<String>() + "…";
+        }
+        Some(format!("[in reply to {who}{when}: \"{quote}\"]"))
+    }
+
+    /// The record's text, attributed, reply-aware and attachment-aware:
+    /// a foreign-agent message (a `trigger:*` nudge, a peer) gets a
     /// harness-authored `[from agent …]` line derived from the
     /// record's `agent.name` METADATA — the model's knowledge of the
     /// sender no longer rests on a spoofable convention inside the
-    /// message text. Human messages pass through untouched. The
-    /// record's `attachments` map ({id: {type, link}}, create-only)
+    /// message text. Human messages pass through untouched. A reply
+    /// (`replyTo` group, resolved by `with_reply`) gets an
+    /// `[in reply to …: "<quote>"]` line ahead of the text — the
+    /// referent is the message's context, so it precedes the words.
+    /// The record's `attachments` map ({id: {type, link}}, create-only)
     /// folds in as `[attachment <type>: <link>]` lines — links are the
     /// doc-19 typed URIs any-ui sends (objects `any://o/<sid>/<oid>`,
     /// files `any://f/<sid>/<fileId>`), which the model resolves via
-    /// any@v1. Folded into the TEXT (not an arg) so both attribution
+    /// any@v1. Folded into the TEXT (not an arg) so attribution, reply
     /// and attachments survive into the persisted turn and every
     /// future boot window unchanged.
     pub fn attributed_text(record: &Value) -> String {
         let text = record.get("text").and_then(|t| t.as_str()).unwrap_or("");
-        let mut out = match record
+        let from_line = record
             .get("agent")
             .filter(|a| !a.is_null())
             .and_then(|a| a.get("name"))
             .and_then(|n| n.as_str())
             .filter(|n| !n.is_empty())
-        {
-            Some(name) => {
-                format!("[from agent \"{name}\" — automated message, not the user]\n{text}")
-            }
-            None => text.to_string(),
-        };
+            .map(|name| format!("[from agent \"{name}\" — automated message, not the user]"));
+        let mut lines: Vec<String> = Vec::new();
+        lines.extend(from_line);
+        lines.extend(Self::reply_line(record));
+        if !text.is_empty() {
+            lines.push(text.to_string());
+        }
+        let mut out = lines.join("\n");
         if let Some(atts) = record.get("attachments").and_then(|a| a.as_object()) {
             let mut keys: Vec<&String> = atts.keys().collect();
             keys.sort(); // map order is arbitrary; stable lines for the turn log
@@ -1492,6 +1583,68 @@ mod tests {
         assert_eq!(
             Watcher::attributed_text(&only_att),
             "[attachment link: any://o/sp1/obj2]"
+        );
+    }
+
+    #[test]
+    fn a_reply_folds_its_target_ahead_of_the_text() {
+        // BOB-65: the client sets replyToMessageId; the host resolves it
+        // into a replyTo group and the text opens with the referent
+        let rec = json!({"id": "r1", "text": "this one", "replyToMessageId": "t1"});
+        let target = json!({"id": "t1", "text": "You are Bao.\n\nYou live   here.",
+            "agent": {"name": "bao"}, "createdAt": {"$date": "2026-09-14T13:49:57.000Z"}});
+        let resolved = Watcher::with_reply(rec.clone(), |id| {
+            assert_eq!(id, "t1");
+            Some(target.clone())
+        });
+        assert_eq!(
+            resolved["replyTo"],
+            json!({"text": "You are Bao.\n\nYou live   here.", "from": "bao",
+                   "createdAt": "2026-09-14T13:49:57.000Z"})
+        );
+        assert_eq!(
+            Watcher::attributed_text(&resolved),
+            "[in reply to agent \"bao\"'s message from 2026-09-14T13:49:57.000Z: \
+             \"You are Bao. You live here.\"]\nthis one"
+        );
+        // a human target; the quote is head-capped
+        let long = "x".repeat(400);
+        let human = Watcher::with_reply(rec.clone(), |_| {
+            Some(json!({"id": "t1", "text": long, "creator": "A1"}))
+        });
+        let line = Watcher::attributed_text(&human);
+        assert!(line.starts_with("[in reply to the user's message: \"xxx"));
+        assert!(line.contains("x…\"]\nthis one"), "{line}");
+        assert_eq!(line.chars().filter(|c| *c == 'x').count(), 300);
+        // tombstone / not found — a marker, never a failed run
+        let gone = Watcher::with_reply(rec.clone(), |_| {
+            Some(json!({"id": "t1", "text": "", "_deletedAt": {"$date": "2026-09-15T00:00:00Z"}}))
+        });
+        assert_eq!(
+            Watcher::attributed_text(&gone),
+            "[in reply to a message that has since been deleted]\nthis one"
+        );
+        let missing = Watcher::with_reply(rec.clone(), |_| None);
+        assert_eq!(
+            Watcher::attributed_text(&missing),
+            "[in reply to a message not found in this chat]\nthis one"
+        );
+        // no reply id: the lookup never runs, the record is untouched
+        let plain = json!({"id": "p1", "text": "hi"});
+        let same = Watcher::with_reply(plain.clone(), |_| panic!("no lookup"));
+        assert_eq!(same, plain);
+        // the from-agent line stays first; attachments stay last
+        let nudge = Watcher::with_reply(
+            json!({"id": "n1", "text": "done", "replyToMessageId": "t1",
+                   "agent": {"name": "trigger:x"},
+                   "attachments": {"a0": {"type": "link", "link": "any://o/sp1/o1"}}}),
+            |_| Some(json!({"id": "t1", "text": "go"})),
+        );
+        assert_eq!(
+            Watcher::attributed_text(&nudge),
+            "[from agent \"trigger:x\" — automated message, not the user]\n\
+             [in reply to the user's message: \"go\"]\ndone\n\
+             [attachment link: any://o/sp1/o1]"
         );
 
         let mut w = Watcher::new("bao");

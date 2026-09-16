@@ -2841,6 +2841,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                 }
                 let ready = ctx.ensure_ready().is_ok();
                 for record in backlog {
+                    let record = resolve_reply(ctx, record);
                     let action = shared
                         .watcher
                         .lock()
@@ -2878,6 +2879,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             }
             "changes" => {
                 for record in records_in(&frame.data) {
+                    let record = resolve_reply(ctx, record);
                     let action = shared
                         .watcher
                         .lock()
@@ -2983,6 +2985,29 @@ fn preview(text: &str) -> String {
 /// a reaction on a message older than the process — absent from the
 /// watcher's seen-set, which is seeded from the unanswered backlog
 /// only — look like a fresh message, and the agent re-answered it.
+/// A reply's referent, read from the chat before the watcher sees the
+/// record (ADR-005 §5, BOB-65): deleted rows included so a tombstone
+/// folds as such; a failed read folds as "not found" — a reply never
+/// stalls on its target. Not an effect: like the record itself, it is
+/// host-side input; the folded text is what the trace records.
+fn resolve_reply(ctx: &RunCtx, record: Value) -> Value {
+    Watcher::with_reply(record, |id| {
+        match ctx.client.query(
+            &ctx.space,
+            &ctx.chat,
+            "chat_messages",
+            &json!({"filter": {"id": id}, "includeDeleted": true, "limit": 1}),
+        ) {
+            Ok(mut rows) if !rows.is_empty() => Some(rows.remove(0)),
+            Ok(_) => None,
+            Err(e) => {
+                warn!("reply target {id}: {e}");
+                None
+            }
+        }
+    })
+}
+
 fn records_in(data: &Value) -> Vec<Value> {
     let mut out = Vec::new();
     if let Some(batches) = data.as_array() {

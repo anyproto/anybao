@@ -425,6 +425,25 @@ the user was, durable in the chat and self-describing in every trace.
 Cron/trigger runs carry no view. The write side (`any@v1.open_in_ui`)
 is unchanged.
 
+**The reply rides the message (amendment 2026-09-15).** A user who
+replies to a bubble sets the chat message's `replyToMessageId` (server
+field, chat handler-validated). The referent is context the model must
+see with the words: the host resolves the id against the chat
+(`chat_messages` query by id, deleted rows included) before the
+watcher reads the record, and `attributed_text` opens the user turn
+with `[in reply to <agent "name"'s | the user's> message from
+<createdAt>: "<quote>"]` — whitespace-collapsed, head-capped at 300
+chars; a tombstone folds as `[in reply to a message that has since
+been deleted]`, a target the chat does not hold (or a failed read) as
+`[in reply to a message not found in this chat]`. The line sits after
+the `[from agent …]` attribution and before the text; attachments stay
+last. Folded into the TEXT, like attribution and attachments, so the
+persisted turn and every future boot window carry it unchanged; the
+inject and the start paths see the same text because the resolution
+happens on the record, ahead of both. The lookup is host-side input,
+not an effect: the folded text is what the trace records. Nothing is
+written to the chat.
+
 **Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
 cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,
 `values`, `effects`) must be taught, but split by reach-frequency so
