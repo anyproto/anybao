@@ -2,7 +2,8 @@
 
 Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
 embedded, §8), 2026-07-23 (§4 compile cache, §8 snapshot backlog +
-deferred messages)
+deferred messages), 2026-09-16 (§8 readiness = usable, miss-driven
+program waits)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -223,7 +224,7 @@ grants bind to content hashes (ADR-008). Gating overlay imports later
 over the frame chain (ADR-004 §5) — overlay maps are host config, so
 enforcement needs no resolver change. Explicitly out of scope here.
 
-### 8. Overlay membership: join-on-boot + reader approval (interim, amended 2026-07-21, 2026-07-23)
+### 8. Overlay membership: join-on-boot + reader approval (interim, amended 2026-07-21, 2026-07-23, 2026-09-16)
 
 An overlay published by another account must be *joined* before its
 space syncs to this device. Until guest-key spaces land, the interim
@@ -302,6 +303,52 @@ record, and every conversation start counts on the record's rollup.
 Everything above about the snapshot backlog, the deferred-boot bubble,
 dedup and the name-scoped self-skip is unchanged — it is the native
 handler behind `program: internal:chat-watch`, never a program run.
+
+**Amended 2026-09-16 (BOB-133) — readiness is "usable", never "up to
+date".** The space-list probe above answers only *membership*: a
+freshly joined guest space turns `active` when its header trees land,
+and its objects trickle in afterwards. Treating `active` as ready let
+the first message start a run that resolved `toolcaller@v1` and died
+on `llm@v1` — and the message was consumed. Nor is the server's
+`/sync-status` a readiness signal: its counts cover the trees the
+device already holds, so a cold join reports "synced" early; and a
+device whose local set is complete but *older* (offline, changes
+pending, a local LLM) must run regardless — that is what local-first
+means. The host therefore never predicts completeness; it reacts to
+what a run actually needed:
+
+- **The wait set** replaces "pending overlays": the configured spaces
+  this account cannot read yet (join pending / still loading — no
+  deadline, the join is the only cure) plus the programs a run asked
+  for and did not find, as `(space, name@vN)`. `ensure_ready` re-probes
+  both (the space list; the run's own resolver by raw space id) — from
+  the trigger ticker each 5s while anything is waiting, and before
+  every run.
+- **A miss is a wait, not a failure to show.** The resolver reports a
+  space-backed miss structurally (`ResolveError::Missing {space, spec}`),
+  the broker records every one on the run, and the chat wrapper, for a
+  run that died on such a miss, posts one status bubble ("Still
+  fetching my agent code: `llm@v1` hasn't synced to this device yet…"),
+  adds the misses to the wait set and puts the message back on the
+  backlog. The ticker re-runs it when the program resolves. The same
+  path covers a redeploy that adds a program a device hasn't received.
+- **Re-run only what changed nothing.** The trace is the oracle: a run
+  whose mutate count is non-zero is not replayed — it fails visibly
+  like any error, with the miss in the text. In practice `toolcaller`
+  takes its imports before its first effect, but the rule comes from
+  the trace, not from that layout.
+- **Bounded, once.** A missed program and a program that was never
+  deployed look identical from the device, so the wait gives up after
+  `PROGRAM_MISS_PATIENCE` (10 min) and a message is deferred at most
+  once — a phantom `use()` costs one bubble and one delayed failure,
+  never a wedged loop. Standing triggers pause while anything waits
+  (they would miss on the same program and trip their breakers).
+- **No manifest, no completeness signal.** A deploy-written index would
+  be one more synced record racing the programs it lists; a
+  space-index-aware completeness flag on `/sync-status` would be the
+  right *informational* signal for onboarding UI, and is an upstream
+  ask — but it must never gate a run, exactly because "changes pending"
+  is the normal offline state.
 
 ### 9. Non-goals
 

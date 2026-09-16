@@ -11,7 +11,7 @@ use crate::broker::{
     Broker, DeclaredCredentials, PresenceState, SecretSource, SharedMailbox, SharedPresence,
 };
 use crate::config::Config;
-use crate::resolver::AnyModuleResolver;
+use crate::resolver::{AnyModuleResolver, ModuleResolver};
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
 use crate::trace::TraceWriter;
@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 /// The chat loop's program spec — the "conversation" class for
@@ -1145,9 +1145,10 @@ struct Shared {
     triggers: Mutex<BTreeMap<String, Trigger>>,
     scheduler: Mutex<Scheduler>,
     watcher: Mutex<Watcher>,
-    /// User texts awaiting readiness (ADR-009 §8): snapshot backlog and
-    /// live messages that arrived while overlays were pending. Drained
-    /// by the trigger ticker once ensure_ready clears.
+    /// User texts awaiting readiness (ADR-009 §8): snapshot backlog,
+    /// live messages that arrived while an overlay was unreadable, and
+    /// messages deferred on a program miss. Drained by the trigger
+    /// ticker once ensure_ready clears.
     backlog: Mutex<Vec<ChatInput>>,
     /// Live event sources (ADR-018 §2): `(space, chat object id)` → the
     /// stop flag of the thread watching it. Converged on the registry
@@ -1576,6 +1577,95 @@ pub enum OverlayMembership {
     Pending,
 }
 
+/// How long serve waits for a missed program to sync before calling it
+/// absent (ADR-009 §8): long enough for a cold guest join over a slow
+/// link, short enough that a phantom `use()` cannot wedge the loop.
+pub const PROGRAM_MISS_PATIENCE: Duration = Duration::from_secs(600);
+
+/// What serve is waiting for before it runs (ADR-009 §8). Readiness is
+/// "usable", never "up to date": a device with a complete-but-older
+/// program set runs (offline included); only a configured space it
+/// cannot read yet, or a program a run asked for and did not find,
+/// holds the loop — and the program wait is bounded.
+#[derive(Default)]
+pub struct WaitSet {
+    /// overlay name → space id: configured overlays this account can't
+    /// read yet (join pending / still loading). No deadline — nothing
+    /// resolves without them, and the join is the only cure.
+    overlays: BTreeMap<String, String>,
+    /// `(space, name@vN)` → first miss: programs a run asked for that
+    /// weren't on this device. A deploy that hasn't synced here yet
+    /// and a program that was never deployed look the same, so the
+    /// wait gives up after `PROGRAM_MISS_PATIENCE`.
+    programs: BTreeMap<(String, String), Instant>,
+}
+
+impl WaitSet {
+    pub fn overlays(pending: BTreeMap<String, String>) -> Self {
+        WaitSet {
+            overlays: pending,
+            ..Default::default()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.overlays.is_empty() && self.programs.is_empty()
+    }
+
+    /// Register a run's misses; returns how many were new.
+    pub fn wait_for_programs(&mut self, missed: &[(String, String)], now: Instant) -> usize {
+        let mut added = 0;
+        for key in missed {
+            if let std::collections::btree_map::Entry::Vacant(e) = self.programs.entry(key.clone())
+            {
+                e.insert(now);
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Re-probe every item and drop what is there now (or what the
+    /// wait has given up on). `Ok` = nothing left. The error text is
+    /// user-facing status: the watcher bubbles it into the chat.
+    pub fn settle(
+        &mut self,
+        overlay_ok: impl Fn(&str) -> bool,
+        program_ok: impl Fn(&str, &str) -> bool,
+        now: Instant,
+    ) -> Result<()> {
+        self.overlays.retain(|_, sid| !overlay_ok(sid));
+        self.programs.retain(|(space, spec), since| {
+            if program_ok(space, spec) {
+                info!("program `{spec}` arrived (space `{space}`)");
+                return false;
+            }
+            if now.duration_since(*since) >= PROGRAM_MISS_PATIENCE {
+                warn!(
+                    "program `{spec}` (space `{space}`) did not arrive in {}s — giving up the \
+                     wait; the next run fails on it",
+                    PROGRAM_MISS_PATIENCE.as_secs()
+                );
+                return false;
+            }
+            true
+        });
+        if self.is_empty() {
+            return Ok(());
+        }
+        let list = self
+            .overlays
+            .iter()
+            .map(|(name, sid)| format!("overlay `{name}` (space `{sid}`) still joining/syncing"))
+            .chain(self.programs.keys().map(|(space, spec)| {
+                format!("program `{spec}` hasn't synced to this device yet (space `{space}`)")
+            }))
+            .collect::<Vec<_>>()
+            .join("; ");
+        anyhow::bail!("{list}")
+    }
+}
+
 /// The overlay space's status in THIS account's space list (a local
 /// read — deliberately NOT `get_space`, which for a never-tracked id
 /// sends the server on an unbounded remote load that can wedge the
@@ -1847,7 +1937,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     runtime.insert("shell".into(), crate::shell_runtime_value());
 
     // kernel is embedded (ADR-009 §4) — the cage always boots eagerly;
-    // pending overlays only gate program resolution
+    // the wait set (§8) only gates program runs
     let cage = load_cage(&cfg)?;
     step("kernel compiled");
     if !pending.is_empty() {
@@ -1940,7 +2030,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
 
     let ctx = Arc::new(RunCtx {
         cage,
-        pending_overlays: Mutex::new(pending),
+        waiting: Mutex::new(WaitSet::overlays(pending)),
         client: client.clone(),
         cfg,
         traces,
@@ -2049,9 +2139,9 @@ fn sliced_sleep(total: Duration, stop: &AtomicBool) {
 
 pub struct RunCtx {
     pub cage: Arc<Cage>,
-    /// overlays whose spaces haven't synced yet (ADR-009 §8):
-    /// name → space id — gates program resolution, not the cage
-    pub pending_overlays: Mutex<BTreeMap<String, String>>,
+    /// what the loop is waiting for (ADR-009 §8): unreadable overlays
+    /// and missed programs — gates program runs, never the cage
+    pub waiting: Mutex<WaitSet>,
     pub client: Arc<Client>,
     pub cfg: Config,
     /// trace storage (ADR-001 §8) — threaded into every Broker so the
@@ -2125,30 +2215,35 @@ impl RunCtx {
     /// Cheap readiness check (no network, never clears pending —
     /// that's `ensure_ready`'s probe).
     pub fn is_ready(&self) -> bool {
-        self.pending_overlays.lock().unwrap().is_empty()
+        self.waiting.lock().unwrap().is_empty()
     }
 
-    /// Re-probe pending overlays (ADR-009 §8). The error text is
-    /// user-facing status — the watcher bubbles it into the chat while
-    /// not ready.
+    /// Re-probe the wait set (ADR-009 §8): an overlay clears when the
+    /// space list shows it active, a missed program when it resolves.
+    /// The error text is user-facing status — the watcher bubbles it
+    /// into the chat while not ready.
     pub fn ensure_ready(&self) -> Result<()> {
-        let mut pending = self.pending_overlays.lock().unwrap();
-        if pending.is_empty() {
+        let mut waiting = self.waiting.lock().unwrap();
+        if waiting.is_empty() {
             return Ok(());
         }
-        pending.retain(|_, sid| {
-            !matches!(tracked_status(&self.client, sid), Ok(Some(ref st)) if st == "active")
-        });
-        if pending.is_empty() {
-            info!("overlays synced — agent ready");
-            return Ok(());
+        let settled = waiting.settle(
+            |sid| matches!(tracked_status(&self.client, sid), Ok(Some(ref st)) if st == "active"),
+            |space, spec| self.program_present(space, spec),
+            Instant::now(),
+        );
+        if settled.is_ok() {
+            info!("wait set clear — agent ready");
         }
-        let list = pending
-            .iter()
-            .map(|(name, sid)| format!("overlay `{name}` (space `{sid}`)"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!("{list} still joining/syncing — waiting for the publisher's approval")
+        settled
+    }
+
+    /// Does `name@vN` resolve in `space` on this device right now? The
+    /// same resolver a run uses, addressed by raw space id (strict).
+    fn program_present(&self, space: &str, spec: &str) -> bool {
+        AnyModuleResolver::new(self.client.clone(), &self.space, None, self.aliases.clone())
+            .resolve(&format!("{space}:{spec}"), None)
+            .is_ok()
     }
 
     /// The synced per-run summary (ADR-023 §1): one `agent_runs` record
@@ -2292,6 +2387,8 @@ impl RunCtx {
                 fuel: Some(outcome.fuel_used as i64),
                 error: outcome.error.map(|e| e.to_string()),
                 missing_secrets: outcome.broker.missing_secrets.clone(),
+                missing_programs: outcome.broker.missing_programs.clone(),
+                mutated: outcome.broker.mutations > 0,
             },
         ))
     }
@@ -2746,7 +2843,43 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     "agent": {"name": ctx.cfg.agent_name, "done": true}}),
                 );
             }
-            if rr.status == "interrupted" {
+            // ADR-009 §8: a run that died asking for a program this
+            // device hasn't synced yet is a WAIT, not a failure to
+            // show: the miss joins the wait set, the message goes back
+            // on the backlog (once), and the ticker re-runs it when the
+            // program arrives. Only a run that changed nothing is safe
+            // to re-run — the trace's mutate count is the oracle; a
+            // second miss, or a miss after a mutation, fails loudly
+            // below like any other error.
+            let program_gap = rr.status == "error" && !rr.missing_programs.is_empty();
+            if program_gap && !died_on_miss && !rr.mutated && input.deferrals == 0 {
+                let added = ctx
+                    .waiting
+                    .lock()
+                    .unwrap()
+                    .wait_for_programs(&rr.missing_programs, Instant::now());
+                let specs = rr
+                    .missing_programs
+                    .iter()
+                    .map(|(_, spec)| format!("`{spec}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                warn!("deferred on a program miss ({specs}, {added} new) — re-run once it syncs");
+                let _ = ctx.client.chat_send(
+                    &ctx.space,
+                    &ctx.chat,
+                    &json!({
+                    "text": format!(
+                        "Still fetching my agent code: {specs} hasn't synced to this device yet. \
+                         I'll answer as soon as it arrives."
+                    ),
+                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
+                );
+                shared.backlog.lock().unwrap().push(ChatInput {
+                    deferrals: input.deferrals + 1,
+                    ..input.clone()
+                });
+            } else if rr.status == "interrupted" {
                 // a hard break (ADR-005 §3): the host says the one thing
                 // the guest no longer can — the run is over
                 let _ = ctx.client.chat_send(
@@ -2807,6 +2940,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     ChatInput {
                         text: item["text"].as_str().unwrap_or_default().to_string(),
                         context: item["context"].clone(),
+                        deferrals: 0,
                     },
                 );
             }
@@ -3175,6 +3309,8 @@ fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Val
             fuel: None,
             error: Some(e.to_string()),
             missing_secrets: Vec::new(),
+            missing_programs: Vec::new(),
+            mutated: false,
         })
 }
 
@@ -4440,39 +4576,80 @@ mod tests {
         assert!(err.to_string().contains("[overlays]"), "{err}");
     }
 
-    /// The readiness core, minus RunCtx plumbing (a real Cage needs
-    /// wasm) — same retain-probe + status text as ensure_ready.
-    fn recheck(client: &Client, pending: &mut BTreeMap<String, String>) -> Result<()> {
-        pending.retain(|_, sid| client.get_space(sid).is_err());
-        if pending.is_empty() {
-            return Ok(());
-        }
-        let list = pending
-            .iter()
-            .map(|(name, sid)| format!("overlay `{name}` (space `{sid}`)"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!("{list} still joining/syncing — waiting for the publisher's approval")
+    // --- the wait set (ADR-009 §8): ensure_ready minus RunCtx plumbing
+    // (a real Cage needs wasm) — the probes are closures here, the
+    // space-list read and the resolver in serve.
+
+    fn overlay_wait() -> WaitSet {
+        WaitSet::overlays([("agent".to_string(), "repo".to_string())].into())
+    }
+
+    fn missed(space: &str, spec: &str) -> Vec<(String, String)> {
+        vec![(space.to_string(), spec.to_string())]
     }
 
     #[test]
     fn readiness_reports_pending_overlay_status() {
-        // FakeSpace has no get_space route → the space is still unseen
-        let c = Client::with_transport(Box::new(crate::testutil::FakeSpace::new()));
-        let mut pending: BTreeMap<String, String> =
-            [("agent".to_string(), "repo".to_string())].into();
-        let err = recheck(&c, &mut pending).expect_err("must be pending");
+        let mut w = overlay_wait();
+        let err = w
+            .settle(|_| false, |_, _| true, Instant::now())
+            .expect_err("must be pending");
         assert!(err.to_string().contains("overlay `agent`"), "{err}");
         assert!(err.to_string().contains("still joining/syncing"), "{err}");
     }
 
     #[test]
     fn readiness_clears_once_spaces_are_visible() {
-        let (c, _) = scripted(&[spaces_reply(json!([{"id": "repo", "status": "active"}]))]);
-        let mut pending: BTreeMap<String, String> =
-            [("agent".to_string(), "repo".to_string())].into();
-        recheck(&c, &mut pending).unwrap();
-        assert!(pending.is_empty());
+        let mut w = overlay_wait();
+        w.settle(|sid| sid == "repo", |_, _| true, Instant::now())
+            .unwrap();
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn a_missed_program_holds_the_loop_until_it_resolves() {
+        // BOB-133: the space is active but `llm@v1` hasn't landed —
+        // the run's miss is a wait, cleared the moment it resolves
+        let mut w = WaitSet::default();
+        let t0 = Instant::now();
+        assert_eq!(w.wait_for_programs(&missed("repo", "llm@v1"), t0), 1);
+        assert_eq!(w.wait_for_programs(&missed("repo", "llm@v1"), t0), 0); // dedup
+        let err = w.settle(|_| true, |_, _| false, t0).expect_err("must wait");
+        assert!(err.to_string().contains("program `llm@v1`"), "{err}");
+        assert!(err.to_string().contains("hasn't synced"), "{err}");
+        w.settle(
+            |_| true,
+            |space, spec| space == "repo" && spec == "llm@v1",
+            t0,
+        )
+        .unwrap();
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn a_program_wait_gives_up_after_patience() {
+        // a phantom `use()` must not wedge serve: the wait is bounded,
+        // and the next run fails on it like any error
+        let mut w = WaitSet::default();
+        let t0 = Instant::now();
+        w.wait_for_programs(&missed("repo", "ghost@v9"), t0);
+        let just_before = t0 + PROGRAM_MISS_PATIENCE - Duration::from_secs(1);
+        assert!(w.settle(|_| true, |_, _| false, just_before).is_err());
+        w.settle(|_| true, |_, _| false, t0 + PROGRAM_MISS_PATIENCE)
+            .unwrap();
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn readiness_status_lists_overlays_and_programs() {
+        let mut w = overlay_wait();
+        w.wait_for_programs(&missed("other", "x@v1"), Instant::now());
+        let err = w
+            .settle(|_| false, |_, _| false, Instant::now())
+            .expect_err("both pending");
+        let text = err.to_string();
+        assert!(text.contains("overlay `agent`"), "{text}");
+        assert!(text.contains("program `x@v1`"), "{text}");
     }
 
     fn msg(id: &str, text: &str, agent: bool) -> Value {

@@ -69,6 +69,13 @@ pub struct RunResult {
     /// Static credential refs the run resolved to nothing (ADR-021
     /// §2) — the chat wrapper posts a request bubble per ref.
     pub missing_secrets: Vec<String>,
+    /// Space-backed programs the run could not resolve here, as
+    /// `(space, name@vN)` (ADR-009 §8) — the chat wrapper defers the
+    /// message until they sync.
+    pub missing_programs: Vec<(String, String)>,
+    /// Whether the run recorded any mutating effect — a miss-deferred
+    /// message is re-run only when it did not (ADR-009 §8).
+    pub mutated: bool,
 }
 
 pub struct Scheduler {
@@ -662,6 +669,9 @@ pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger
 pub struct ChatInput {
     pub text: String,
     pub context: Value,
+    /// How many times this message was deferred on a program miss
+    /// (ADR-009 §8): at most one deferral, then the failure is final.
+    pub deferrals: u32,
 }
 
 /// Pure decision logic: dedup by message id, SELF-message skip, and
@@ -795,6 +805,7 @@ impl Watcher {
         ChatInput {
             text: Self::attributed_text(record),
             context: Self::view_context(record),
+            deferrals: 0,
         }
     }
 
@@ -1477,6 +1488,8 @@ mod tests {
             fuel: None,
             error: Some("boom".into()),
             missing_secrets: Vec::new(),
+            missing_programs: Vec::new(),
+            mutated: false,
         };
         for _ in 0..3 {
             sched.record_run(&mut tr, &fail);

@@ -78,9 +78,12 @@ Serve does NOT block on the join (ADR-009 §8 — no polling). Watch for:
 
 If you message bao BEFORE the sync lands, it answers with a status
 bubble (`Not ready yet: overlay `agent` (space …) still joining/
-syncing …`). The first message AFTER the space syncs logs
-`overlays synced — agent ready` and is answered normally (the kernel
-is embedded — nothing to download).
+syncing …`) and is answered once the space arrives. A space that is
+`active` but still receiving its objects is the subtler case (BOB-133):
+the run starts, misses a program (`llm@v1`), posts `Still fetching my
+agent code: …` and the message is re-run when the program resolves —
+the log shows `program `llm@v1` arrived` then `wait set clear — agent
+ready` (the kernel is embedded — nothing to download).
 
 The recreated bao space stays EMPTY of programs/skills — serve is
 space-only and must not bootstrap it (nothing deploys at serve start).

@@ -28,6 +28,16 @@ pub enum ResolveError {
     UnknownAlias(String),
     /// program (or its source record) not found
     NotFound(String),
+    /// a space-backed miss (ADR-009 §8): `name@vN` is not in `space`
+    /// on THIS device — a deploy that hasn't synced here yet, or a
+    /// program that was never deployed; the host cannot tell which,
+    /// so serve waits for it (bounded) before calling it absent.
+    /// `spec` is the bare `name@vN`; `msg` the user-facing text.
+    Missing {
+        space: String,
+        spec: String,
+        msg: String,
+    },
     /// any-server call failed
     Api(AnyError),
 }
@@ -38,6 +48,7 @@ impl fmt::Display for ResolveError {
             ResolveError::BadSpec(s) => write!(f, "bad module spec (need name@vN): {s:?}"),
             ResolveError::UnknownAlias(a) => write!(f, "unknown alias in spec: {a:?}"),
             ResolveError::NotFound(m) => write!(f, "{m}"),
+            ResolveError::Missing { msg, .. } => write!(f, "{msg}"),
             ResolveError::Api(e) => write!(f, "{e}"),
         }
     }
@@ -160,8 +171,13 @@ impl AnyModuleResolver {
         spec: &str,
     ) -> Result<Value, ResolveError> {
         // no `program` type in the space = nothing was ever deployed there
+        let missing = |msg: String| ResolveError::Missing {
+            space: space.to_string(),
+            spec: format!("{name}@{version}"),
+            msg,
+        };
         let Some(s) = self.schema_in(space)? else {
-            return Err(ResolveError::NotFound(format!(
+            return Err(missing(format!(
                 "program not found: {spec} (space {space} has no programs)"
             )));
         };
@@ -171,7 +187,7 @@ impl AnyModuleResolver {
                     "limit": 1}),
         )?;
         let Some(oid) = recs.first().and_then(|r| r["id"].as_str()) else {
-            return Err(ResolveError::NotFound(format!(
+            return Err(missing(format!(
                 "program not found: {spec} (space {space})"
             )));
         };
@@ -230,12 +246,14 @@ impl ModuleResolver for AnyModuleResolver {
         // current space → private fallback
         let base = self.current.clone();
         match self.resolve_in(&base, &name, &version, spec) {
-            Err(ResolveError::NotFound(msg)) => match self.private.clone().filter(|p| *p != base) {
-                Some(p) => self
-                    .resolve_in(&p, &name, &version, spec)
-                    .map_err(|e| self.alias_hint(e, &name, &version)),
-                None => Err(self.alias_hint(ResolveError::NotFound(msg), &name, &version)),
-            },
+            Err(e @ ResolveError::Missing { .. }) => {
+                match self.private.clone().filter(|p| *p != base) {
+                    Some(p) => self
+                        .resolve_in(&p, &name, &version, spec)
+                        .map_err(|e| self.alias_hint(e, &name, &version)),
+                    None => Err(self.alias_hint(e, &name, &version)),
+                }
+            }
             other => other,
         }
     }
@@ -246,7 +264,7 @@ impl AnyModuleResolver {
     /// its alias (E10: `use("any@v1")` where `use("agent:any@v1")` was
     /// meant) — teach the fix in the error instead of costing a turn.
     fn alias_hint(&self, err: ResolveError, name: &str, version: &str) -> ResolveError {
-        let ResolveError::NotFound(msg) = err else {
+        let ResolveError::Missing { space, spec, msg } = err else {
             return err;
         };
         let mut aliases: Vec<&str> = self.aliases.keys().map(String::as_str).collect();
@@ -254,15 +272,19 @@ impl AnyModuleResolver {
             aliases.push("private");
         }
         if aliases.is_empty() {
-            return ResolveError::NotFound(msg);
+            return ResolveError::Missing { space, spec, msg };
         }
-        ResolveError::NotFound(format!(
-            "{msg} — unqualified specs resolve in the current space only; \
-             overlay modules need their alias, e.g. use(\"{first}:{name}@{version}\") \
-             (available aliases: {all})",
-            first = aliases[0],
-            all = aliases.join(", "),
-        ))
+        ResolveError::Missing {
+            space,
+            spec,
+            msg: format!(
+                "{msg} — unqualified specs resolve in the current space only; \
+                 overlay modules need their alias, e.g. use(\"{first}:{name}@{version}\") \
+                 (available aliases: {all})",
+                first = aliases[0],
+                all = aliases.join(", "),
+            ),
+        }
     }
 }
 
@@ -409,15 +431,16 @@ mod tests {
             r.resolve("agent:tool@v1", None).unwrap()["spaceId"],
             json!("overlay")
         );
-        // aliased miss does NOT fall back to private
+        // aliased miss does NOT fall back to private — and names where
+        // it looked, so serve can wait for exactly that (ADR-009 §8)
         assert!(matches!(
             r.resolve("agent:other@v1", None),
-            Err(ResolveError::NotFound(_))
+            Err(ResolveError::Missing { space, spec, .. }) if space == "overlay" && spec == "other@v1"
         ));
         // unknown alias without private → raw spaceId, strict
         assert!(matches!(
             r.resolve("someSpaceId:tool@v1", None),
-            Err(ResolveError::NotFound(_))
+            Err(ResolveError::Missing { space, .. }) if space == "someSpaceId"
         ));
     }
 
@@ -432,7 +455,7 @@ mod tests {
         let mut r = AnyModuleResolver::new(std::sync::Arc::new(c), "user", None, aliases);
         assert!(matches!(
             r.resolve("tool@v1", None),
-            Err(ResolveError::NotFound(_))
+            Err(ResolveError::Missing { space, .. }) if space == "user"
         ));
         assert_eq!(
             r.resolve("agent:tool@v1", None).unwrap()["spaceId"],
@@ -474,7 +497,7 @@ mod tests {
         let tc_oid = tc["objectId"].as_str().unwrap().to_string();
         assert!(matches!(
             r.resolve("helper@v1", Some(&tc_oid)),
-            Err(ResolveError::NotFound(_))
+            Err(ResolveError::Missing { space, spec, .. }) if space == "code" && spec == "helper@v1"
         ));
         // while cell code (no frame) still reaches the user-space helper
         assert_eq!(
