@@ -1758,21 +1758,32 @@ class _Client:
 
     def list_devices(self):
         """The account's device registry (ADR-015) → {self, active,
-        devices}.
+        devices}, each device row flagged `self` / `active` / `bao`.
 
         `self` = this server's peerId; `active` = {appSlug: peerId},
         the server-computed winner per app ("bao" is the agent; a
         client app registers under its own slug); `devices` = [{peerId,
         name, os, version, apps: {slug: presence}, activeClaims:
-        {slug: {seq, at}}}] — every device that has registered, live
-        or not (presence is the app's last heartbeat under `apps`).
-        Read-only: the winner rule is server-side and a switch is
-        MANUAL — the user activates bao on the device they want (the
-        standby serves notice within one 10 s poll). Use it to tell
-        the user which device answers right now, which others exist,
-        and where to switch — never to claim from here. A server
-        without the registry 404s (request.not_found)."""
-        return self._call("get", "/v1/devices")
+        {slug: {seq, at}}, self, active, bao}] — every device that has
+        registered, live or not. Per row: `self` = the device THIS run
+        executes on, `active` = holds the bao claim (the device that
+        answers chat), `bao` = has ever run bao (`apps.bao` present;
+        its `version` sits there). Read-only: the winner rule is
+        server-side and a switch is MANUAL — the user clicks "Use this
+        device" in Settings ▸ Agent ▸ Devices ON the device they want
+        (the standby serves notice within one 10 s poll). Use it to
+        tell the user which device answers right now, which others
+        exist, and where to switch — never to claim from here. A
+        server without the registry 404s (request.not_found)."""
+        reg = self._call("get", "/v1/devices")
+        me = reg.get("self")
+        winner = (reg.get("active") or {}).get("bao")
+        for row in reg.get("devices") or []:
+            peer = row.get("peerId")
+            row["self"] = peer is not None and peer == me
+            row["active"] = peer is not None and peer == winner
+            row["bao"] = "bao" in (row.get("apps") or {})
+        return reg
 
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress

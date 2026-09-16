@@ -193,10 +193,21 @@ Spaces:
   object — use it when the user asks to "open"/"show" something, or
   right after creating what they'll want to look at. Fire-and-forget:
   `subscribers: 0` just means no window is connected, nothing queues.
-- **Devices**: `c.list_devices()` → `{self, active, devices}` — which
-  device runs bao right now (`active["bao"]`), which others are
-  registered and when they were last seen. Switching is the USER's
-  act on the device they want; tell them where, never try to claim.
+- **Devices**: `c.list_devices()` → `{self, active, devices}`; each
+  row carries `name`, `os`, `self` (the device THIS run executes on),
+  `active` (holds the bao claim — the device that answers chat) and
+  `bao` (has run bao). "Where are you running?", "answer from my
+  laptop instead", "why did I get two replies?": name the active
+  device, list the others that run bao, and point to the switch —
+  Settings ▸ Agent ▸ Devices ▸ "Use this device", clicked ON the
+  device they want (the dot on bao's face says where chat is
+  answered: this device / another / nowhere). A device can only
+  claim for itself, so never try to claim from here and never
+  promise a switch you have not seen in `active`. What to expect,
+  said plainly: the new device takes over within ~10 s; switching
+  back and forth within seconds can get one message answered twice
+  (each device notices on its own clock) — that is the hand-off
+  window, not a fault in the message.
 - Types and xKeys are **per-space**: resolve against the target space
   before typed writes there.
 

@@ -1305,16 +1305,33 @@ def test_list_programs_tools_only_filters():
 
 # --- flat module surface (ADR-010 §8) ------------------------------------------
 
-def test_list_devices_is_the_registry_read():
-    # ADR-015 §5: the guest reads the registry as-is — self, the
-    # server-computed winners, every registered device
+def test_list_devices_is_the_registry_read_with_row_flags():
+    # ADR-015 §5: the guest reads the registry — self, the
+    # server-computed winners, every registered device — and each row
+    # is flagged self / active / bao so bao never joins peer ids by hand
     reg = {"self": "p1", "active": {"bao": "p2"},
            "devices": [{"peerId": "p1", "name": "laptop", "os": "linux", "apps": {"bao": {}}},
                        {"peerId": "p2", "name": "mac", "os": "darwin", "apps": {"bao": {}},
-                        "activeClaims": {"bao": {"seq": 3, "at": 1}}}]}
+                        "activeClaims": {"bao": {"seq": 3, "at": 1}}},
+                       {"peerId": "p3", "name": "phone", "os": "ios", "apps": {}}]}
     fx = wire(replies={"/v1/devices": reg})
-    assert client(fx).list_devices() == reg
+    out = client(fx).list_devices()
+    assert (out["self"], out["active"]) == ("p1", {"bao": "p2"})
+    assert [(r["name"], r["self"], r["active"], r["bao"]) for r in out["devices"]] == [
+        ("laptop", True, False, True),
+        ("mac", False, True, True),
+        ("phone", False, False, False),
+    ]
+    assert out["devices"][1]["activeClaims"] == {"bao": {"seq": 3, "at": 1}}  # raw fields stay
     assert fx.calls == [("GET", "/v1/devices", None)]
+
+
+def test_list_devices_flags_survive_a_registry_without_a_claim():
+    # no claim holder at all (fresh account, or the winner's row deleted)
+    reg = {"self": "p1", "active": {}, "devices": [{"peerId": "p1", "apps": {"bao": {}}}]}
+    out = client(wire(replies={"/v1/devices": reg})).list_devices()
+    assert out["devices"] == [{"peerId": "p1", "apps": {"bao": {}},
+                               "self": True, "active": False, "bao": True}]
 
 
 def test_dataset_field_helpers_hit_the_field_routes():
