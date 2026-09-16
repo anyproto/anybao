@@ -44,16 +44,21 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      # Stock toolchains, deliberately NOT `nix develop` (unlike ci.yml):
-      # linking inside the devshell bakes /nix/store/... install names
-      # (libiconv) into the darwin binary, and dyld aborts on user machines
-      # where no store exists (#2). The build needs only uv + python 3.13
-      # (componentize-py -> kernel.wasm) and stable rust — rustls-only, no
-      # native libs, kernel embedded via include_bytes!.
+      # Stock toolchains, deliberately NOT `nix develop`: linking inside
+      # the devshell bakes /nix/store/... install names (libiconv) into
+      # the darwin binary, and dyld aborts on user machines where no
+      # store exists (#2). The build needs only uv + python 3.13
+      # (componentize-py -> kernel.wasm) and the rust channel pinned in
+      # rust-toolchain.toml — rustls-only, no native libs, kernel
+      # embedded via include_bytes!.
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"
-      - uses: dtolnay/rust-toolchain@stable
+      - id: rust
+        run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
       - uses: actions/cache@v4
         with:
           path: |

@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Stock toolchains, not `nix develop` (same as release.yml): the tree
+# needs only uv + python 3.13 (componentize-py -> kernel.wasm) and
+# stable rust — rustls-only, no native libs. The flake stays the local
+# dev shell; both it and the workflows take the rust channel from
+# rust-toolchain.toml, so the two can't drift apart silently.
+#
 # Every cargo step goes through a Makefile target that depends on
 # `kernel`, so bin/kernel.wasm (include_bytes! into the binary) is built
 # exactly when needed and never as a step of its own. `uv run` syncs the
@@ -28,9 +34,16 @@ jobs:
             features: shell
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - id: rust
+        run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
       - uses: actions/cache@v4
         with:
           path: |
@@ -38,16 +51,24 @@ jobs:
             ~/.cargo/git
             runtime/target
           key: cargo-test-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
-      - run: nix develop -c make test-runtime FEATURES=${{ matrix.features }}
+      - run: make test-runtime FEATURES=${{ matrix.features }}
       - if: matrix.name == 'default'
-        run: nix develop -c uv run ruff check .
+        run: uv run ruff check .
 
   runtime:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - id: rust
+        run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+          components: clippy, rustfmt
       - uses: actions/cache@v4
         with:
           path: |
@@ -55,12 +76,12 @@ jobs:
             ~/.cargo/git
             runtime/target
           key: cargo-runtime-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
-      - run: nix develop -c make runtime-check
-      - run: nix develop -c make runtime
+      - run: make runtime-check
+      - run: make runtime
       # the vendored any spec vs the coverage manifest (ADR-002 §2)
-      - run: nix develop -c make api-drift
+      - run: make api-drift
       # guest-module + wire pytest; rt_e2e drives the release binary
       # built above (it skips without one). Lives here rather than in a
       # test leg so no job carries a debug test tree AND a release tree:
       # that pair overflowed the runner disk while tarring the cache.
-      - run: nix develop -c uv run pytest
+      - run: uv run pytest
