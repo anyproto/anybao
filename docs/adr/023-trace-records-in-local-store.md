@@ -216,6 +216,17 @@ polls `query` (no subscribe on local collections). `show
 beside that server (ADR-026 §7); against a remote serve a raw ref
 renders as its stub. `anyrt trace blob <hash>` reads that directory.
 
+**Off-box.** The collections leave a machine as the any server's
+local-store export (`GET /v1/local/export`, any docs/26-local-store.md
+§ Export and import — `trace_runs`, `trace_records`, `trace_blobs` as
+one gzip'd anyenc stream; the desktop's diagnostics zip carries it as
+`traces.anyenc.gz`, read through `Client::local_export`) and land on
+any server with `any local import`. That server has the collections
+but not the space, so `--space` takes the raw id and the CLI attaches
+without the ensure (`AnyTraceStore::attach`; the server's space
+pre-flight is write-only). Raw blobs travel beside it as files
+(ADR-026), never inside. docs/debugging.md § A reporter's export.
+
 ### 8. Trigger audit fields become a view (ADR-006 §4 amendment)
 
 `lastStatus / lastRunAt / lastRunRef / consecutiveFailures` on a

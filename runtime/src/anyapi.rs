@@ -910,6 +910,22 @@ impl Client {
         Ok(reply.get("record").cloned().unwrap_or(Value::Null))
     }
 
+    /// GET /v1/local/export — a space's local collections as one file
+    /// (gzip around an anyenc value stream; any docs/26-local-store.md
+    /// § Export and import), every collection of the space when
+    /// `names` is empty. The bytes the desktop's diagnostics zip ships
+    /// as `traces.anyenc.gz` (BOB-80); `any local import` on any server
+    /// recreates the collections and `trace ls/show --space <id>` reads
+    /// them there.
+    pub fn local_export(&self, space_id: &str, names: &[&str]) -> Result<Vec<u8>, AnyError> {
+        let mut path = format!("/v1/local/export?scope=space&spaceId={space_id}");
+        if !names.is_empty() {
+            path.push_str("&names=");
+            path.push_str(&names.join(","));
+        }
+        self.transport.read_raw(&path)
+    }
+
     /// POST /v1/local/query — `opts`: filter/sort/limit/offset/
     /// includeTotal (limit default 100, cap 1000). Returns the whole
     /// reply `{records, total?, hasNext?}` so callers can page.

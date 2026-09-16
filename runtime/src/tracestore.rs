@@ -371,6 +371,23 @@ impl AnyTraceStore {
         })
     }
 
+    /// The store of a space this server does not have: an imported
+    /// export (`any local import`, docs/debugging.md § A reporter's
+    /// export). The collections are here, the space is not, so the
+    /// ensure `new` runs would 404 on the server's space pre-flight
+    /// (a write). Nothing is created; a missing collection surfaces on
+    /// the first read as the server's error.
+    pub fn attach(client: Arc<Client>, space_id: &str, blob_dir: Option<BlobDir>) -> Self {
+        AnyTraceStore {
+            client,
+            records: Client::local_coll(space_id, RECORDS_COLL),
+            blobs: Client::local_coll(space_id, BLOBS_COLL),
+            runs: Client::local_coll(space_id, RUNS_COLL),
+            device: None,
+            blob_dir,
+        }
+    }
+
     /// The document a record becomes: the record itself + `runId` +
     /// the sortable id. The header has no seq — it sorts first as 0.
     fn doc_of(run_id: &str, rec: &Value) -> Value {
