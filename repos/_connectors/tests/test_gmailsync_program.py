@@ -113,14 +113,14 @@ class FakeAny:
     # -- objects
     def query_objects(self, space, filter=None, limit=None, **kw):
         f = filter or {}
-        if f.get("any.types") == "sync_state":
+        if f.get("any.type") == "sync_state":
             return list(self.states)
         if "mailbox.address" in f:
             return [r for r in self.mailboxes
                     if r["mailbox"]["address"] == f["mailbox.address"]]
         return []
 
-    def bundle_child(self, space, bundle_id, seed, types=None):
+    def bundle_child(self, space, bundle_id, seed, type_key=None, collections=None):
         assert (bundle_id, seed) == ("bao/v1", "bao/triggers/v1")
         return {"objectId": "anchor1"}
 

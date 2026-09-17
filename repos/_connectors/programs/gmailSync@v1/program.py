@@ -400,7 +400,7 @@ def _ensure_state(space):
     """The sync_state object: last-modified wins, stale ones deleted
     (query-then-create races mint duplicates — a tick must never
     follow a stale cursor). Returns (objectId, state-dict)."""
-    rows = _any.query_objects(space, filter={"any.types": "sync_state"},
+    rows = _any.query_objects(space, filter={"any.type": "sync_state"},
                               limit=10)
     rows.sort(key=lambda r: ts_s(r.get("modifiedAt")) or 0, reverse=True)  # noqa: F821
     if rows:
@@ -423,7 +423,7 @@ def _ensure_state(space):
     fresh = {"cursor": "", "page_token": "", "synced_count": 0,
              "store": _DATASET}
     made = _any.create_object(space, {
-        "types": ["sync_state"], "name": "gmail sync state",
+        "type": "sync_state", "name": "gmail sync state",
         "initialProperties": {"sync_state": dict(fresh)}})
     return made["objectId"], fresh
 
@@ -433,7 +433,7 @@ def _ensure_mailbox(space, state_id, state):
 
     Resolution: sync_state.mailbox_id → query by address (oldest wins;
     duplicates are NEVER auto-deleted — deleting a mailbox deletes its
-    records) → create with the type attached. Returns the object id,
+    records) → create as the mailbox type. Returns the object id,
     or None when the profile call fails (dead credential)."""
     mid = state.get("mailbox_id")
     if mid:
@@ -449,7 +449,7 @@ def _ensure_mailbox(space, state_id, state):
         mid = rows[0]["id"]
     else:
         made = _any.create_object(space, {
-            "types": ["mailbox"], "name": addr,
+            "type": "mailbox", "name": addr,
             "initialProperties": {"mailbox": {"address": addr}}})
         mid = made["objectId"]
     state["mailbox_id"] = mid
@@ -1123,7 +1123,7 @@ def status(space):
     types = {t.get("xKey") for t in _any.list_types(space)}
     if "sync_state" not in types:
         return {"configured": False, "emailCount": 0}
-    rows = _any.query_objects(space, filter={"any.types": "sync_state"}, limit=10)
+    rows = _any.query_objects(space, filter={"any.type": "sync_state"}, limit=10)
     rows.sort(key=lambda r: ts_s(r.get("modifiedAt")) or 0, reverse=True)  # noqa: F821
     st = dict(rows[0].get("sync_state") or {}) if rows else {}
     count, mid = 0, st.get("mailbox_id") or ""
