@@ -635,7 +635,7 @@ def _skills_in(c, space):
     if not type_id:
         return {}
     out = {}
-    for o in c.query_objects(space, filter={"any.types": type_id}):
+    for o in c.query_objects(space, filter={"any.type": type_id}):
         name = (o.get("any") or {}).get("name") or ""
         if name.startswith("_"):
             out[name] = c.get_markdown(space, o["id"])
@@ -764,7 +764,7 @@ def _user_skills(c, space):
     if not type_id:
         return ""
     lines = []
-    for o in c.query_objects(space, filter={"any.types": type_id}):
+    for o in c.query_objects(space, filter={"any.type": type_id}):
         meta = o.get("any") or {}
         name = meta.get("name") or ""
         if not name or name.startswith("_"):

@@ -383,7 +383,7 @@ def create_program(spaceConfig, body):
     _shadow_guard(sid, name, version)
     _ensure_store(sid)
     oid = _any().create_object(sid, {
-        "types": ["program"],
+        "type": "program",
         "name": name,
         "initialProperties": {"program": {"name": name, "version": version,
                                           "any_tool": False,

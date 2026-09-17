@@ -59,7 +59,7 @@ module — a repo connector included — and on bound handles. Docstrings
 are the single doc source; there is no separate schema to fetch.
 
 **Discover DATA shapes the same way.** `inferSchema(value)` renders
-any value's shape (`{id:str, any:{name:str, types:list[3 × str]}}`) —
+any value's shape (`{id:str, any:{name:str, type:str, collections:list[2 × str]}}`) —
 the shape you see in large-value stubs, callable on anything. Before
 writing a filter or nested write against records you haven't seen this
 conversation, fetch ONE row and `print(inferSchema(row))` — every

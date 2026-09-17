@@ -141,6 +141,8 @@ value (`query`, `query/subscribe`, `modify`, `upsert`,
 - **Time-key guard** (ADR-019 §4) keys its declared-datetime map by
   collection, filled from the same resolution.
 
+**Amended 2026-09-17 (ADR-029 §7):** `program` and `agent_skill` leave the hidden set — they carry a body and are classes a user may open, so their ensures mint them listed and heal `hidden: false` onto a hidden row. The nine store types below stay hidden.
+
 **Harness types are hidden.** Every ensure PATCHes its type
 `hidden: true` (`PATCH …/types/:typeId`) so a client's type picker never
 offers `agent_config` or `agent_log`; the guest catalog lists types
@@ -157,6 +159,8 @@ retired the Mail mini-app and mailbox discovery). Hiding it takes the
 corpus dark.
 
 ### 3. Bodies live on `page`; the tree is the wiki usecase
+
+**Amended 2026-09-17 (ADR-029 §3/§5):** a body lives on the object's ONE type — `page` (the default type) or a type with an editor part, which `create_type` declares on every type it mints and heals onto an existing one (`"body": false` opts a store out); `create_object` never adds `page` to a typed object, and a body write on a type without one errors naming the fix. The wiki is a COLLECTION: setup answers `collectionId`, placement values live under it, `move_object` files with the collection route, "out of the wiki" is `remove_from_collection`.
 
 The editor routes carry the collection: `…/editor/editor_blocks/markdown`
 (`GET`/`PUT`/`PATCH`), `…/editor/editor_blocks/markdown/append`,
@@ -254,6 +258,8 @@ nothing — it is left as it is (clean cut), the user re-creates it.
 
 ### 5. Links, discovery, and the apps a space has
 
+**Amended 2026-09-17 (ADR-029 §6):** the sidebar is `{"any.collections": "miniapp"}` minus `bin`, sorted on `miniapp.pos`; `list_programs` is `{"any.type": "program"}` minus `bin` (a definition never matches its members, no marker clause); `setup_app` echoes `collectionId` beside `typeId`; the reserved-handle guard reads the catalog's type AND collection xKeys.
+
 - `backlinks(space, object)` returns the server's edges normalized:
   `{objectId, dataset?, recordId?, kind, typeId?/type, prop?}` from
   `{object, parts}`; new `links(space, object)` (forward edges) and
@@ -278,6 +284,8 @@ nothing — it is left as it is (clean cut), the user re-creates it.
   catalog stamps `any.description`, the join above is the source.
 
 ### 6. Fleet, pin, cutover
+
+**Amended 2026-09-17 (ADR-029 §8):** the pin is any b5be51c (`api/openapi.vendored.json` from a scratch server on that build, 146 paths; `api/coverage.json` gains the collection and membership endpoints mapped to ADR-029 §4 and loses attach / detach). The one-way door now also means FRESH ACCOUNTS: mark 2 leaves old rows without `any.type`, so every environment restarts on a new account and new repo spaces, and no shared server moves before any-ui's port is on main — the order is ADR-029 §8.
 
 - Pin moves to any 5d709c8 (the docs commit on top of the v0.3.3
   bump); `api/openapi.vendored.json` re-vendored from the rig,

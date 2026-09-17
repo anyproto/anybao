@@ -1,4 +1,4 @@
-"""programs/miniapp@v1 — the runtime-script guard (ADR-008 §6),
+"""programs/applet@v1 — the runtime-script guard (ADR-008 §6),
 tested host-side by exec-ing the guest source with the `use`/`span`
 globals stubbed. Only the pure normalization is covered here; the
 object/dataset surface goes through the live server."""
@@ -6,7 +6,7 @@ object/dataset surface goes through the live server."""
 from pathlib import Path
 
 SRC = (Path(__file__).resolve().parents[1]
-       / "repos" / "_agent" / "programs" / "miniapp@v1" / "program.py").read_text()
+       / "repos" / "_agent" / "programs" / "applet@v1" / "program.py").read_text()
 
 CANONICAL = ('<script src="./react.js"></script>\n'
              '<script src="./react-dom.js"></script>\n'
@@ -16,7 +16,7 @@ CANONICAL = ('<script src="./react.js"></script>\n'
 def guard(html):
     g = {"use": lambda spec: None,
          "span": lambda *a, **k: (lambda fn: fn)}
-    exec(compile(SRC, "miniapp@v1/program.py", "exec"), g)
+    exec(compile(SRC, "applet@v1/program.py", "exec"), g)
     return g["_guard"](html)
 
 

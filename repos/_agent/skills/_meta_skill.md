@@ -16,7 +16,7 @@ c.get_markdown(s, skill_id)
 You can author skills yourself when the user asks you to capture a
 workflow:
 
-- **Create**: `c.create_object(s, {"types": ["agent_skill"],
+- **Create**: `c.create_object(s, {"type": "agent_skill",
   "initialProperties": {"any": {"name": "<title>"}}})`, then write the
   body with `c.put_markdown`.
 - **Update (surgical)**: `c.edit_markdown(s, skill_id, [{"oldText":

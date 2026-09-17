@@ -65,7 +65,7 @@ class FakeGuest:
 
     def query_objects(self, space, **opts):
         flt = opts.get("filter") or {}
-        if "any.types" in flt:
+        if "any.type" in flt:
             return list(self.hubs)
         if "id" in flt:
             return [o for o in self.objects if o.get("id") == flt["id"]]
@@ -235,7 +235,7 @@ def test_propose_maps_actions_to_sourced_items():
         {"type": "enrich_proposal", "key": "enrich_proposal_items"}]
 
     # proposal object: typed + named after the transcript, body written
-    assert fake.created[0]["types"] == ["enrich_proposal"]
+    assert fake.created[0]["type"] == "enrich_proposal"
     name = fake.created[0]["initialProperties"]["any"]["name"]
     assert name == "Enrichment proposal — Weekly sync"
     assert fake.markdowns[0]["objectId"] == "obj1"
@@ -349,7 +349,7 @@ def test_apply_is_deterministic_and_hub_joined():
     assert fake.updates == [{"objectId": "obj9",
                              "body": {"project": {"status": "sqlite chosen"}}}]
     # ONE minted object for the grouped facets
-    minted = [b for b in fake.created if b.get("types") == ["pages"]]
+    minted = [b for b in fake.created if b.get("type") == "pages"]
     assert len(minted) == 1 and minted[0]["name"] == "Billing revamp"
     # every fact rides the hub, joined to its target by targetObjectId
     assert all(m["objectId"] == "hub1" and m["dataset"] == "enriched_data"

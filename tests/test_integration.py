@@ -66,7 +66,7 @@ def test_dataset_declared_as_a_part_lives_in_the_reported_collection(client, fre
         client.add_part(fresh_space, tid, {"key": "agent_turns",
                                            "datasets": [{"key": "agent_turns"}]})
     assert ei.value.code == "dataset.key_conflict"
-    host = client.create_object(fresh_space, {"types": [tid]})["objectId"]
+    host = client.create_object(fresh_space, {"type": tid})["objectId"]
     client.upsert_record(fresh_space, host, d["collection"], "00000001", {"seq": 1})
     [row] = client.query(fresh_space, host, d["collection"])
     assert row["seq"] == 1 and "createdAt" in row and "_addSeq" in row
@@ -75,8 +75,8 @@ def test_dataset_declared_as_a_part_lives_in_the_reported_collection(client, fre
         client.upsert_record(fresh_space, host, "agent_turns", "00000002", {"seq": 2})
     assert ei.value.code == "dataset.unknown"
     assert client.query(fresh_space, host, "agent_turns") == []
-    # a host without the declaring type is refused
-    other = client.create_object(fresh_space, {})["objectId"]
+    # a host whose type does not declare the dataset is refused
+    other = client.create_object(fresh_space, {"type": "page"})["objectId"]
     with pytest.raises(AnyError) as ei:
         client.upsert_record(fresh_space, other, d["collection"], "x", {"seq": 3})
     assert ei.value.code == "dataset.not_declared"
@@ -112,8 +112,8 @@ def test_guest_stores_resolve_keys_turns_and_memory_land(client, bao_space, gues
     assert item["context"] == "teal"
     mcoll = client.collection(bao_space, "agent_brain", "agent_memory_items")
     assert client.query(bao_space, brain, mcoll, filter={"id": mid})
-    # a key none of the object's types declare errors client-side
-    with pytest.raises(ValueError, match="no type declaring"):
+    # a key the object's type does not declare errors client-side
+    with pytest.raises(ValueError, match='declares no dataset "agent_turns"'):
         c.query(bao_space, brain, "agent_turns")
 
 
@@ -126,7 +126,7 @@ def test_trigger_datasets_persist_and_read_back(client, bao_space, guest_use):
         c._create_dataset(bao_space, "agent_trigger", {
             "key": key, "idRule": "user", "deleteBy": "anyone", "dynamic": True, "fields": []})
     tid = next(t["id"] for t in client.list_types(bao_space) if t.get("xKey") == "agent_trigger")
-    anchor = client.bundle_child(bao_space, "bao/v1", "bao/triggers/v1", [tid])
+    anchor = client.bundle_child(bao_space, "bao/v1", "bao/triggers/v1", tid)
     definition = {"name": "memory sweep", "kind": "cron",
                   "spec": {"cron": "0 * * * *"}, "program": "evolve@v1",
                   "args": {"space": bao_space}, "owner": "inst-A",
@@ -145,21 +145,30 @@ def test_trigger_datasets_persist_and_read_back(client, bao_space, guest_use):
                         client.collection(bao_space, "agent_trigger", "agent_triggers"))
 
 
-# --- bodies on page, the wiki tree (§3) -------------------------------------
+# --- bodies on the type, the wiki collection (ADR-029 §3/§5) ----------------
 
-def test_body_needs_page_and_the_guest_attaches_it(client, fresh_space, guest_use):
-    bare = client.create_object(fresh_space,
-                                {"initialProperties": {"any": {"name": "n"}}})["objectId"]
+def test_body_needs_the_type_to_declare_it(client, fresh_space, guest_use):
+    # a raw type without an editor part cannot hold a body; the guest
+    # refuses before the wire with the fix, and create_type heals the
+    # part onto the type (the default-type rule)
+    tid = client.create_type(fresh_space, {"name": "Memo", "xKey": "memo"})["typeId"]
+    bare = client.create_object(fresh_space, {
+        "type": tid, "initialProperties": {"any": {"name": "n"}}})["objectId"]
     with pytest.raises(AnyError) as ei:
         client.put_markdown(fresh_space, bare, "# no")
     assert ei.value.code == "dataset.not_declared"
     c = guest_use("any@v1")
-    c.put_markdown(fresh_space, bare, "# yes")             # attaches page first
+    with pytest.raises(ValueError, match='type "memo" declares no body'):
+        c.put_markdown(fresh_space, bare, "# yes")
+    c.create_type(fresh_space, {"name": "Memo", "xKey": "memo"})   # heals the body part
+    c.put_markdown(fresh_space, bare, "# yes")
     assert client.get_markdown(fresh_space, bare) == "# yes"
     row = client.query_objects(fresh_space, filter={"id": bare})[0]
-    assert "page" in row["any"]["types"]
+    assert row["any"]["type"] == tid                       # never retyped
+    # no type = a page, the plain document
     oid = c.create_object(fresh_space, {"name": "Doc", "markdown": "# doc\n\nbody"})["objectId"]
     assert client.get_markdown(fresh_space, oid) == "# doc\n\nbody"
+    assert client.query_objects(fresh_space, filter={"id": oid})[0]["any"]["type"] == "page"
 
 
 def test_parent_places_objects_in_the_wiki_tree(client, fresh_space, guest_use):
@@ -173,7 +182,8 @@ def test_parent_places_objects_in_the_wiki_tree(client, fresh_space, guest_use):
     wiki = next(b for b in client.call("GET", f"/v1/spaces/{fresh_space}/bundles")["bundles"]
                 if b["id"] == "system:wiki/v1")
     row = client.query_objects(fresh_space, filter={"id": kid})[0]
-    assert wiki["rootId"] in row["any"]["types"] and "page" in row["any"]["types"]
+    # filed under the wiki COLLECTION; the type is the default page
+    assert wiki["rootId"] in row["any"]["collections"] and row["any"]["type"] == "page"
     c.move_object(fresh_space, kid2, "")
     assert [r["id"] for r in c.list_children(fresh_space, "")] == [top, kid2]
     # the sidebar: wiki + chat are apps with descriptions from the catalog

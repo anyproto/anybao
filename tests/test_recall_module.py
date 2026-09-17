@@ -29,7 +29,7 @@ HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",
 # hidden built-ins' groups are reserved and must be skipped.
 OBJ_ROW = {
     "id": "obj1",
-    "any": {"name": "Dune", "types": ["t1", "page"]},
+    "any": {"name": "Dune", "type": "t1"},
     "page": {},
     "t1": {"p_ref": "any://target1", "p_refs": ["any://target2", "any://target3"],
            "p_str": "prose"},
@@ -42,7 +42,7 @@ T1_PROPS = [
 ]
 # the store hosts and the types they carry (the key → collection
 # resolution reads them; collections equal their keys in this rig)
-HOST_TYPES = {"brain1": ["br"], "brainX": ["br"], "chat1": ["lg"], "chat9": ["lg"]}
+HOST_TYPES = {"brain1": "br", "brainX": "br", "chat1": "lg", "chat9": "lg"}
 
 
 def _reply(status, data):
@@ -62,6 +62,8 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
             return _reply(200, {"spaces": []})   # uncaptured, indices stable
         # ADR-017 / ADR-027 store plumbing — uncaptured so dataset-call
         # indices stay stable across tests
+        if path.endswith("/collections"):   # the second catalog surface (ADR-029)
+            return _reply(200, {"collections": []})
         if path.endswith("/bundles"):
             # every chat in the fixtures is a bundle root
             return _reply(200, {"bundles": [
@@ -82,8 +84,8 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
         if path.endswith("/objects/query") and isinstance((body or {}).get("filter"), dict) \
                 and isinstance(body["filter"].get("id"), str) \
                 and body["filter"]["id"] in HOST_TYPES:
-            oid = body["filter"]["id"]   # a store host's carried types
-            return _reply(200, {"records": [{"id": oid, "any": {"types": HOST_TYPES[oid]}}]})
+            oid = body["filter"]["id"]   # a store host's ONE type
+            return _reply(200, {"records": [{"id": oid, "any": {"type": HOST_TYPES[oid]}}]})
         if path.endswith("/catalog"):
             return _reply(200, {"usecases": []})
         if path.endswith("/children"):

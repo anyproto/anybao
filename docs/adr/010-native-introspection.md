@@ -139,6 +139,8 @@ convention anyway.
 
 ### 5. Program objects carry source, nothing else
 
+**Amended 2026-09-17 (ADR-029 §7):** `program` is a LISTED type — minted without `hidden`, and `hidden: false` healed onto a row an older writer minted hidden — so a client's picker offers it like any class with a body. A hand-made Program object is inert: deploy's hash gate and the resolver read only well-formed rows.
+
 - `program` is a **harness-declared user type** (amended 2026-08-26;
   the server builtin `internal/program/` is deleted — the server has
   no reason to know what a program is, ADR-017's stance): xKey
@@ -214,6 +216,8 @@ through the same prompt that carries everything else:
   are indistinguishable to every consumer.
 
 ### 8. Flat tool surface — spaceConfig (2026-08-04)
+
+**Amended 2026-09-17 (ADR-029 §3/§4):** `create_object` takes `type` (default `page`) and `collections`; the membership verbs `set_type`, `add_to_collection`, `remove_from_collection`, `trash`, `restore`; `list_collections` and `create_collection` (the tag composite); `list_types` hides the meta rows; the property surface (`list_properties`, `add_property`, `patch_property`, `set_option`, `remove_option`, `reorder_property`, `delete_property`) takes a type OR a collection; `attach_type` / `detach_type` are gone; `ensure_bundle(root_type=, root_collections=)`, `bundle_child(type_key=, collections=)`.
 
 **Amended 2026-09-08 (ADR-027 §3/§5):** `create_object(…, parent=, folder=)`, `move_object`, `list_children` (the wiki tree); `list_apps`, `list_available_apps`, `setup_app` (the catalog); `links`, `backlinks_everywhere`; `collection`; `list_properties` loses `include_archived`, `archive_property` is gone. The toolcaller's runtime context carries the installed apps of the agent space and of `currentUserSpace`.
 

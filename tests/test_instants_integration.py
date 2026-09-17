@@ -26,16 +26,16 @@ def test_date_property_round_trips_and_range_filters(client, fresh_space, guest_
     ids = {}
     for name, secs in (("early", t0 - 3600), ("late", t0 + 3600)):
         ids[name] = c.create_object(fresh_space, {
-            "types": ["event"], "name": name,
+            "type": "event", "name": name,
             "initialProperties": {"event": {"when": inst(secs),
                                             "day": inst("2026-08-25")}}})["objectId"]
-    rows = {r["id"]: r for r in c.query_objects(fresh_space, filter={"any.types": "event"})}
+    rows = {r["id"]: r for r in c.query_objects(fresh_space, filter={"any.type": "event"})}
     when = rows[ids["early"]]["event"]["when"]
     assert _instant(when) and when["$date"].startswith("2026-08-25T15:00:00")
     assert rows[ids["early"]]["event"]["day"]["$date"].startswith("2026-08-25T00:00:00")
     assert _instant(rows[ids["early"]]["createdAt"])
     # a wrapped range literal is a real subset
-    hit = c.query_objects(fresh_space, filter={"any.types": "event",
+    hit = c.query_objects(fresh_space, filter={"any.type": "event",
                                               "event.when": {"$lt": inst(t0)}})
     assert [r["id"] for r in hit] == [ids["early"]]
     # a bare number never reaches the wire

@@ -613,7 +613,7 @@ impl<'a> Deployer<'a> {
                 let res = self.client.create_object(
                     &self.space,
                     &json!({
-                    "types": [s.type_id],
+                    "type": s.type_id,
                     "initialProperties": {
                         "any": {"name": p.name},
                         s.type_id.clone(): s.group(&[
@@ -707,7 +707,7 @@ pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyho
     let rows = c.query_objects(
         space,
         &json!({
-        "filter": {"any.name": name, "any.types": type_id}, "limit": 50}),
+        "filter": {"any.name": name, "any.type": type_id}, "limit": 50}),
     )?;
     let winner = rows.iter().min_by_key(|r| {
         let created = instant_ms(&r["createdAt"]).unwrap_or(i64::MIN);
@@ -719,7 +719,7 @@ pub fn ensure_typed(c: &Client, space: &str, name: &str, type_id: &str) -> anyho
     let created = c.create_object(
         space,
         &json!({
-        "types": [type_id],
+        "type": type_id,
         "initialProperties": {"any": {"name": name}}}),
     )?;
     Ok(created["objectId"].as_str().unwrap_or_default().to_string())
@@ -814,20 +814,18 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
 /// namePropId). Live-caught constraints: a fresh user type has no
 /// schema (property writes rejected until one is defined), and
 /// raw-client writes key type groups by typeID, not xKey (only
-/// builtins have id == xKey). Hidden: never offered by a picker.
+/// builtins have id == xKey). Listed, like `program`: a class with a
+/// body a picker may offer (ADR-029 §7).
 fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)> {
     let tid = match client
         .list_types(space)?
-        .iter()
+        .into_iter()
         .find(|t| t["xKey"] == SKILL_TYPE)
-        .and_then(|t| t["id"].as_str().map(str::to_string))
     {
-        Some(t) => t,
+        Some(row) => crate::program_schema::listed_type_id(client, space, &row)?,
         None => {
-            let res = client.create_type(
-                space,
-                &json!({"name": "Agent Skill", "xKey": SKILL_TYPE, "hidden": true}),
-            )?;
+            let res =
+                client.create_type(space, &json!({"name": "Agent Skill", "xKey": SKILL_TYPE}))?;
             res["typeId"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("create_type reply has no typeId: {res}"))?
@@ -913,7 +911,7 @@ impl<'a> SkillDeployer<'a> {
         let (tid, prop) = self.ensure_type()?;
         let res = self.client.create_object(
             &self.space,
-            &json!({"types": [tid],
+            &json!({"type": tid,
                     "initialProperties": {"any": {"name": name}, tid: {prop: name}}}),
         )?;
         let oid = res["objectId"]
@@ -993,14 +991,14 @@ mod tests {
             "sp",
             "zzz-older",
             json!({
-            "any": {"name": "agent-triggers", "types": ["anchor"]},
+            "any": {"name": "agent-triggers", "type": "anchor"},
             "createdAt": {"$date": "2026-08-01T00:00:00Z"}}),
         );
         fake.seed_object(
             "sp",
             "aaa-newer",
             json!({
-            "any": {"name": "agent-triggers", "types": ["anchor"]},
+            "any": {"name": "agent-triggers", "type": "anchor"},
             "createdAt": {"$date": 1787673600000i64}}),
         );
         let c = Client::with_transport(Box::new(fake));
@@ -1229,7 +1227,7 @@ mod tests {
         let s = schema(&c, "agent");
         // the object carries the RESOLVED type id, never the xKey literal
         let rows = c.query_objects("agent", &json!({})).unwrap();
-        assert_eq!(rows[0]["any"]["types"], json!([s.type_id]));
+        assert_eq!(rows[0]["any"]["type"], json!(s.type_id));
     }
 
     #[test]
@@ -1501,5 +1499,24 @@ mod tests {
         assert_eq!(parse_name_version("bad@vx"), None);
         assert_eq!(parse_name_version("bad@v"), None);
         assert_eq!(parse_name_version("@v1"), None);
+    }
+    #[test]
+    fn skill_schema_lists_a_type_minted_hidden() {
+        // ADR-029 §7: agent_skill is a listed class; a row an older
+        // deploy minted hidden is healed with one PATCH
+        let c = client();
+        c.create_type(
+            "sp",
+            &json!({"name": "Agent Skill", "xKey": SKILL_TYPE, "hidden": true}),
+        )
+        .unwrap();
+        let (tid, _) = skill_schema(&c, "sp").unwrap();
+        let row = c
+            .list_types("sp")
+            .unwrap()
+            .into_iter()
+            .find(|t| t["id"] == tid)
+            .unwrap();
+        assert_eq!(row["hidden"], json!(false));
     }
 }

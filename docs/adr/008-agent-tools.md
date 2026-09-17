@@ -126,6 +126,8 @@ subPages, answer, sources, searchQueries, timing, usage}`.
 
 ### 6. `miniapp@v1` (folder tool)
 
+**Amended 2026-09-17 (ADR-029 §7, BOB-146):** the program is `applet@v1` and its type / dataset xKey is `applet` — renamed from `mini_app` so the word never collides with the server's `miniapp` collection (the sidebar: the catalog apps a space installs, which users name — wiki, collections, tasks). Hidden and bodiless (`"body": false`); every write sends `type: applet`.
+
 **Amended 2026-09-08 (ADR-027 §2):** `mini_app` is a hidden type; its dataset is one part keyed `mini_app`, addressed by key.
 
 Over the harness-declared `mini_app` user type (amended 2026-08-26;

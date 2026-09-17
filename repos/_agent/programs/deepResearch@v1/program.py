@@ -156,13 +156,14 @@ def _decompose(llm, question, answer):
 
 
 def _page_type(c, space):
-    """The built-in `page`: every document carries it (ADR-027 §3)."""
+    """The built-in `page`: the default type, a plain document with a
+    body (ADR-029 §3)."""
     return "page"
 
 
 def _create_page(c, space, type_key, name, markdown):
     return c.create_object(space, {
-        "types": [type_key], "name": name, "markdown": markdown})["objectId"]
+        "type": type_key, "name": name, "markdown": markdown})["objectId"]
 
 
 def _sources_md(sources):

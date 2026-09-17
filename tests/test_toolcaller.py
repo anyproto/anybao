@@ -505,7 +505,7 @@ class TwoSpaces:
                 {"id": "progT", "xKey": "program"}]
 
     def query_objects(self, space, filter=None, limit=None, **kw):
-        if filter == {"any.types": "skillT"}:
+        if filter == {"any.type": "skillT"}:
             return [{"id": oid, "any": {"name": name}}
                     for oid, name, _ in self.skills.get(space, [])]
         if filter == {"program.any_tool": True}:
@@ -604,7 +604,7 @@ class Souled(World):
             mod.list_types = lambda space: [{"id": "skillT", "xKey": "agent_skill"}]
             mod.query_objects = (lambda space, filter=None, **kw:
                                  [{"id": "o1", "any": {"name": "_soul"}}]
-                                 if filter == {"any.types": "skillT"} else [])
+                                 if filter == {"any.type": "skillT"} else [])
             mod.get_markdown = lambda space, oid: SOUL
         return mod
 

@@ -31,7 +31,8 @@ def test_search_finds_written_content(client, fresh_space, guest_use):
     # agent-data datasets are excluded from indexing today, so an object
     # name is the reliable searchable write.
     token = f"zanzibar{uuid.uuid4().hex[:8]}"
-    client.create_object(fresh_space, {"initialProperties": {"any": {"name": f"note {token}"}}})
+    client.create_object(fresh_space, {"type": "page",
+                                       "initialProperties": {"any": {"name": f"note {token}"}}})
 
     r = guest_use("recall@v1").recall(guest_use("any@v1"), fresh_space)
     try:
@@ -80,9 +81,9 @@ def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
         "name": "Relates To", "xKey": "relates_to", "kind": "array",
         "xFormat": {"type": "relation", "relation": {"targetTypes": ["note"]}}})["propId"]
     target = client.create_object(fresh_space, {
-        "types": [tid], "initialProperties": {"any": {"name": "target"}}})["objectId"]
+        "type": tid, "initialProperties": {"any": {"name": "target"}}})["objectId"]
     source = client.create_object(fresh_space, {
-        "types": [tid],
+        "type": tid,
         "initialProperties": {"any": {"name": "source"},
                               tid: {pid: [f"any://{target}"]}}})["objectId"]
 

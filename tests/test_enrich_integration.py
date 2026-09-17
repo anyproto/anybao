@@ -61,13 +61,15 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
     pid = client.add_property(sp, tid, {"name": "Status", "xKey": "status",
                                         "kind": "string"})["propId"]
     target = client.create_object(sp, {
-        "types": [tid],
+        "type": tid,
         "initialProperties": {"any": {"name": "Project Phoenix"}}},
     )["objectId"]
 
-    # the transcript: an object whose editor body holds the notes
+    # the transcript: an object whose editor body holds the notes — the
+    # body is declared on its ONE type (ADR-029 §3)
+    client.add_part(sp, tid, {"key": "body", "datasets": [{"module": "editor", "shared": True}]})
     tr = client.create_object(sp, {
-        "types": [tid, "page"],          # the body needs page (ADR-027 §3)
+        "type": tid,
         "initialProperties": {"any": {"name": "Weekly sync"}}})["objectId"]
     client.call("PUT", f"/v1/spaces/{sp}/objects/{tr}/editor/editor_blocks/markdown",
                 {"content": "Phoenix moves to beta\n\n"
@@ -134,7 +136,7 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
     # to its target by targetObjectId
     # (the hub TYPE is an object of the same name — skip type rows)
     hubs = [h for h in client.query_objects(sp, filter={"any.name": "Enrichments"})
-            if "__type__" not in (h.get("any") or {}).get("types", [])]
+            if (h.get("any") or {}).get("type") != "__type__"]
     assert len(hubs) == 1
     facts = client.query(sp, hubs[0]["id"],
                          client.collection(sp, "enrichments", "enriched_data"))
@@ -172,8 +174,9 @@ def test_propose_grounds_against_live_search(client, fresh_space,
     not asserted (indexing is async) — only the wire shape."""
     sp = fresh_space
     tid = client.create_type(sp, {"name": "Note", "xKey": "note"})["typeId"]
+    client.add_part(sp, tid, {"key": "body", "datasets": [{"module": "editor", "shared": True}]})
     tr = client.create_object(sp, {
-        "types": [tid, "page"],          # the body needs page (ADR-027 §3)
+        "type": tid,                     # the body is the type's (ADR-029 §3)
         "initialProperties": {"any": {"name": "call notes"}}})["objectId"]
     client.call("PUT", f"/v1/spaces/{sp}/objects/{tr}/editor/editor_blocks/markdown",
                 {"content": "zeppelin engineering review went well\n"})

@@ -141,15 +141,20 @@ class AnyHttp:
     def ensure_bundle(self, space: str, body: dict) -> dict:
         return self.call("POST", f"/v1/spaces/{space}/bundles", body)
 
-    def bundle_child(self, space: str, bundle_id: str, seed: str, types=()) -> str:
+    def bundle_child(self, space: str, bundle_id: str, seed: str, type_id: str = "page",
+                     collections=()) -> str:
         enc = bundle_id.replace("/", "%2F").replace(":", "%3A")
-        body: dict = {"seed": seed}
-        if types:
-            body["types"] = list(types)
+        body: dict = {"seed": seed, "type": type_id}
+        if collections:
+            body["collections"] = list(collections)
         return self.call("POST", f"/v1/spaces/{space}/bundles/{enc}/children", body)["objectId"]
 
-    def attach_type(self, space: str, object_id: str, type_id: str) -> dict:
-        return self.call("POST", f"/v1/spaces/{space}/properties/{object_id}/attach/{type_id}")
+    def set_type(self, space: str, object_id: str, type_id: str) -> dict:
+        return self.call("POST", f"/v1/spaces/{space}/properties/{object_id}/type/{type_id}")
+
+    def add_to_collection(self, space: str, object_id: str, collection_id: str) -> dict:
+        return self.call(
+            "POST", f"/v1/spaces/{space}/properties/{object_id}/collections/{collection_id}")
 
     def modify(self, space: str, body: dict) -> dict:
         return self.call("POST", f"/v1/spaces/{space}/modify", body)
@@ -233,7 +238,7 @@ def bao_space(client, fresh_space, runtime_values) -> str:
     guest-owned stores (brain, chat log) derive their children from;
     published to the guest as `bao.space`."""
     client.general_chat(fresh_space)
-    client.ensure_bundle(fresh_space, {"id": "bao/v1", "name": "bao", "rootTypes": ["page"]})
+    client.ensure_bundle(fresh_space, {"id": "bao/v1", "name": "bao", "rootType": "page"})
     runtime_values["bao.space"] = fresh_space
     return fresh_space
 

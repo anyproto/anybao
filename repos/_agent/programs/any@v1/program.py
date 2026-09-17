@@ -1,15 +1,14 @@
 """The `any` server client — read and write everything in a space.
 
-Everything is a typed object. Flat surface: every space-scoped
-function takes `spaceConfig` FIRST (cross-space is normal) — a space
-NAME or id string (names resolve against the live space list; an
-unknown or ambiguous name errors listing every space), or a mapping
-with `spaceId`/`id` (a `list_spaces()` row, the bound
-`currentUserSpace` / `baoSpaceConfig` cell globals). Account-level
-calls (`list_spaces`, `create_space`) take none. Types and properties
+An object IS one type (its class: body, parts, fields; `page` is the
+default) and is FILED UNDER any number of collections (tags; supertags
+when they carry columns). Flat surface: every space-scoped function
+takes `spaceConfig` FIRST — a space NAME or id, or a mapping with
+`spaceId`/`id` (`currentUserSpace`, `baoSpaceConfig`, a `list_spaces()`
+row); account-level calls take none. Types, collections and properties
 are named by xKey — resolved to content ids both ways; rows come back
-xKey-nested. Errors raise `AnyError` ({code, message} from the
-wire); a bad spaceConfig is a TypeError naming the accepted forms."""
+xKey-nested. Errors raise `AnyError` ({code, message} from the wire);
+a bad spaceConfig is a TypeError naming the accepted forms."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -277,12 +276,14 @@ def _trim_space_row(r):
 
 
 # Builtin group namespaces whose group + property keys are already
-# literal handles (`any.name`, `any.types`). They are never reverse-
-# mapped on read nor xKey-resolved on write — see the xKey
-# normalization contract in ADR-006 §6. The hidden built-in TYPES
-# (`page`, `miniapp`, `bin`, `dataview`) resolve by their literal id
-# like every builtin; `program` and `mini_app` are harness-declared
-# USER types (ADR-010 §5, ADR-008 §6): resolved by xKey like any other.
+# literal handles (`any.name`). They are never reverse-mapped on read
+# nor xKey-resolved on write — see the xKey normalization contract in
+# ADR-006 §6; the membership slots `any.type` / `any.collections`
+# speak xKeys both ways (ADR-029 §2). The hidden built-in TYPES
+# (`page`, `dataview`) and COLLECTIONS (`miniapp`, `bin`) resolve by
+# their literal id like every builtin; `program` and `applet` are
+# harness-declared USER types (ADR-010 §5, ADR-008 §6): resolved by
+# xKey like any other.
 _RESERVED_GROUPS = {"any", "_ver"}
 # The record-root keys the SDK stamps on every row beside `id`: the
 # `any` type's scope "derived" properties, carried BARE on the wire —
@@ -294,20 +295,34 @@ _RESERVED_GROUPS = {"any", "_ver"}
 _ROW_ROOT_KEYS = {"id", "author", "createdAt", "modifiedAt", "modifiedBy",
                   "spaceId"}
 
-# Synthetic catalog rows: listed by GET /types in every space but not
-# attachable — no object carries them, and the meta-type's only
-# property (`type.xkey`) is writable solely on type rows.
-_SYNTHETIC_TYPES = {"any", "spaceIndex", "type"}
-# The one built-in every document carries: the shared editor body
-# (`editor_blocks`) — attached by create_object / update_object on a
-# body write, since no write attaches a type (ADR-027 §3).
+# Synthetic catalog rows: the meta rows GET /types (and, for
+# `collection`, GET /collections) list in every space. No object has
+# one as its type or is filed under one; the meta-type's property
+# (`type.xkey`) is writable solely on definition rows. Hidden from
+# `list_types` / `list_collections` and refused in both slots
+# (ADR-029 §4).
+_SYNTHETIC_TYPES = {"any", "spaceIndex", "type", "collection"}
+# The default type (ADR-029 §3): a plain document — no fields, one
+# body (the shared `editor_blocks`). A create that names no type is a
+# page; a body needs the object's ONE type to declare an editor part.
 _PAGE_TYPE = "page"
-# The sidebar marker (ADR-027 §5): a root carrying it with `bundle` is
-# an installed app; without one, an object the user pinned.
-_MINIAPP_TYPE = "miniapp"
-_BIN_TYPE = "bin"
+# The two built-in COLLECTIONS (ADR-029 §4/§6): the sidebar (a root
+# filed under it with `bundle` is an installed app; without one, an
+# object the user pinned) and the bin (trash / restore).
+_MINIAPP = "miniapp"
+_BIN = "bin"
 # the hidden built-in types every space has: their id is their handle
-_BUILTIN_TYPE_IDS = frozenset({_PAGE_TYPE, _MINIAPP_TYPE, _BIN_TYPE, "dataview"})
+_BUILTIN_TYPE_IDS = frozenset({_PAGE_TYPE, "dataview"})
+_BUILTIN_COLLECTION_IDS = frozenset({_MINIAPP, _BIN})
+# the definition markers a definition row carries in `any.type`
+_DEF_MARKERS = ("__type__", "__collection__")
+# the shared body part every type bao mints declares (ADR-029 §3)
+_BODY_PART = {"key": "body", "datasets": [{"module": "editor", "shared": True}]}
+_ANY_TYPES_ERR = (
+    'there is no "any.types": an object has exactly ONE type — filter it '
+    'with {"any.type": "<type xKey>"} (or {"$in": [...]}) — and any number '
+    'of collections — {"any.collections": "<collection xKey>"} ($in / $nin '
+    '/ $all). The server would answer "any.types" with a silent empty list.')
 
 # --- ADR-027 §4: property descriptors (`xFormat`), handles, options ---------
 # A definition is {name, xKey, kind, xFormat?, meta?}: `kind` is the
@@ -445,18 +460,18 @@ class _Client:
         # (one cell). Resolves xKey<->id both ways so the agent reads/writes
         # types and properties by their stable xKey slug, never raw content
         # ids — ADR-006 §6. Invalidated after create_type / add_property.
-        self._types_cache = {}   # space -> {"by_id", "by_xkey", "rows"}
-        self._props_cache = {}   # (space, type_id) -> [prop rows]
+        self._types_cache = {}   # space -> {"by_id", "by_xkey", "rows", "crows"}
+        self._props_cache = {}   # (space, owner_id) -> [prop rows]
         # dataset name -> instant keys (ADR-019 §4); drafts add to it
         self._dataset_time_keys = {k: set(v) for k, v in _DATASET_TIME_KEYS.items()}
         self._spaces_cache = None   # space rows for name resolution (§8)
         self._bundle_children = {}  # (space, bundleId, seed) -> objectId
         self._ensured_stores = {}   # (space, xKey) -> {key: collection}
-        self._stub_cache = {}   # space -> {objectId: {id, name, types}} (ADR-022 §3)
+        self._stub_cache = {}   # space -> {objectId: {id, name, type, collections}}
         self._type_datasets = {}   # (space, typeId) -> [dataset rows]
-        self._object_types = {}    # (space, objectId) -> [type ids]
+        self._object_owners = {}   # (space, objectId) -> {"type", "collections"}
         self._chat_cache = {}      # space -> the general chat's root id
-        self._wiki_cache = {}      # space -> {typeId, parentId, pos, folder}
+        self._wiki_cache = {}      # space -> {collectionId, parentId, pos, folder}
         self._catalog_cache = None  # the server's usecase catalog
         self._collections_ready = set()   # spaces whose collections app is set up
 
@@ -594,30 +609,63 @@ class _Client:
                 f"space must be a space id string, got {type(space).__name__}"
                 " — pick one id from list_spaces()")
 
+    def _list_types_raw(self, space):
+        return self._call("get", f"/v1/spaces/{space}/types?includeHidden=true"
+                          ).get("types", [])
+
+    def _list_collections_raw(self, space):
+        return self._call("get",
+                          f"/v1/spaces/{space}/collections?includeHidden=true"
+                          ).get("collections", [])
+
+    def _list_defs(self, space):
+        """Both definition surfaces, each row tagged `kind` ("type" |
+        "collection"); one handle namespace (ADR-029 §2). The meta
+        `collection` row lists on both — the type listing's copy wins."""
+        out, seen = [], set()
+        for kind, rows in (("type", self._list_types_raw(space)),
+                           ("collection", self._list_collections_raw(space))):
+            for t in rows:
+                if not isinstance(t, dict) or not t.get("id") or t["id"] in seen:
+                    continue
+                seen.add(t["id"])
+                out.append({**t, "kind": kind})
+        return out
+
     def _catalog(self, space):
         self._check_space(space)
         cat = self._types_cache.get(space)
         if cat is None:
-            by_id, by_xkey, rows = {}, {}, []
-            for t in self.list_types(space):
-                tid = t.get("id")
-                if not tid or tid in by_id:
-                    continue
-                by_id[tid] = t
+            by_id, by_xkey, rows, crows = {}, {}, [], []
+            for t in self._list_defs(space):
+                by_id[t["id"]] = t
                 if t.get("xKey"):
-                    by_xkey.setdefault(t["xKey"], tid)
-                rows.append(t)
-            cat = {"by_id": by_id, "by_xkey": by_xkey, "rows": rows}
+                    by_xkey.setdefault(t["xKey"], t["id"])
+                (rows if t["kind"] == "type" else crows).append(t)
+            cat = {"by_id": by_id, "by_xkey": by_xkey, "rows": rows, "crows": crows}
             self._types_cache[space] = cat
         return cat
 
-    def _type_props(self, space, type_id):
+    def _def_kind(self, space, def_id):
+        """"type" | "collection" for a definition id (builtins included)."""
+        row = self._catalog(space)["by_id"].get(def_id)
+        if row:
+            return row["kind"]
+        return "collection" if def_id in _BUILTIN_COLLECTION_IDS else "type"
+
+    def _props_path(self, space, owner_id):
+        # one property surface behind the owner's kind (ADR-029 §4)
+        route = "collections" if self._def_kind(space, owner_id) == "collection" else "types"
+        return f"/v1/spaces/{space}/{route}/{owner_id}/properties"
+
+    def _type_props(self, space, owner_id):
+        """The property definitions of an owner — a type or a collection."""
         self._check_space(space)
-        key = (space, type_id)
+        key = (space, owner_id)
         props = self._props_cache.get(key)
         if props is None:
             props = _assign_handles([dict(p) for p in
-                                     self._fetch_props(space, type_id)
+                                     self._fetch_props(space, owner_id)
                                      if isinstance(p, dict)])
             self._props_cache[key] = props
         return props
@@ -632,26 +680,34 @@ class _Client:
             self._props_cache.pop(k, None)
 
     @staticmethod
-    def _is_user_type(row):
-        # Builtins report xKey == id (page, miniapp, bin, dataview, any,
-        # type, spaceIndex) and `builtIn`; user types have a CID id and
-        # a slug xKey — only those are (reverse-)mapped.
+    def _is_user_def(row):
+        # Builtins report xKey == id (page, dataview, miniapp, bin, any,
+        # type, collection, spaceIndex) and `builtIn`; user definitions
+        # (types and collections alike) have a CID id and a slug xKey —
+        # only those are (reverse-)mapped.
         return (bool(row) and row.get("id") and row.get("id") != row.get("xKey")
                 and not row.get("builtIn"))
 
-    def _resolve_type_seg(self, space, seg, _retried=False):
-        """A type xKey or id -> type id (or None). Refreshes the catalog once
-        on miss so a freshly-created type resolves."""
+    def _resolve_def(self, space, seg, _retried=False):
+        """An xKey or id on EITHER surface -> definition id (or None).
+        Refreshes the catalog once on miss so a fresh definition
+        resolves."""
         cat = self._catalog(space)
-        if seg in cat["by_id"] or seg in _BUILTIN_TYPE_IDS:
+        if (seg in cat["by_id"] or seg in _BUILTIN_TYPE_IDS
+                or seg in _BUILTIN_COLLECTION_IDS):
             return seg
-        tid = cat["by_xkey"].get(seg)
-        if tid:
-            return tid
+        did = cat["by_xkey"].get(seg)
+        if did:
+            return did
         if not _retried:
             self._cat_invalidate(space)
-            return self._resolve_type_seg(space, seg, True)
+            return self._resolve_def(space, seg, True)
         return None
+
+    def _resolve_type_seg(self, space, seg):
+        """A type xKey or id -> type id; None when unknown OR a collection."""
+        did = self._resolve_def(space, seg)
+        return did if did and self._def_kind(space, did) == "type" else None
 
     def _resolve_prop_seg(self, space, type_id, seg, _retried=False):
         """A prop id, handle, name, or xKey under type_id -> prop id (or
@@ -700,22 +756,27 @@ class _Client:
         for k in [k for k in self._type_datasets
                   if k[0] == space and (type_id is None or k[1] == type_id)]:
             self._type_datasets.pop(k, None)
-        for k in [k for k in self._object_types
+        for k in [k for k in self._object_owners
                   if k[0] == space and (object_id is None or k[1] == object_id)]:
-            self._object_types.pop(k, None)
+            self._object_owners.pop(k, None)
 
-    def _types_of_object(self, space, object_id):
+    def _owners_of_object(self, space, object_id):
+        """The object's ONE type and its collections, as ids:
+        {"type": <id or marker or None>, "collections": [ids]}."""
         key = (space, object_id)
-        types = self._object_types.get(key)
-        if types is None:
+        owners = self._object_owners.get(key)
+        if owners is None:
             rows = self._call("post", f"/v1/spaces/{space}/objects/query",
                               {"filter": {"id": object_id}, "limit": 1}
                               ).get("records") or []
             anyg = (rows[0].get("any") if rows and isinstance(rows[0], dict)
                     else None) or {}
-            types = [t for t in (anyg.get("types") or []) if isinstance(t, str)]
-            self._object_types[key] = types
-        return types
+            t = anyg.get("type")
+            owners = {"type": t if isinstance(t, str) else None,
+                      "collections": [c for c in (anyg.get("collections") or [])
+                                      if isinstance(c, str)]}
+            self._object_owners[key] = owners
+        return owners
 
     def _is_collection(self, space, dataset):
         # a collection the server minted: `<typeId>_<key>` where the
@@ -724,38 +785,41 @@ class _Client:
             return False
         return dataset.split("_", 1)[0] in self._catalog(space)["by_id"]
 
+    def _dataset_hosts(self, space, object_id):
+        """The definitions whose datasets the object holds: its ONE type
+        — or, for a definition row (`__type__` in the slot), itself: a
+        definition hosts its own datasets (the general-chat root)."""
+        t = self._owners_of_object(space, object_id)["type"]
+        if t == "__type__":
+            return [object_id]
+        return [t] if t and t not in _DEF_MARKERS else []
+
     def _collection(self, space, object_id, dataset, _retried=False):
         """The collection for a dataset argument on `object_id`: a
         canonical or already-resolved collection passes through; a
-        store KEY resolves against the datasets the object's types
-        declare — exactly one match, else an error naming the object's
-        types and their keys (never first-match)."""
+        store KEY resolves against the datasets the object's type
+        declares (ADR-029 §2), else an error naming the type and its
+        keys."""
         if not isinstance(dataset, str) or not dataset:
             raise ValueError("dataset must be a non-empty string (a store key)")
         if dataset in _CANONICAL_COLLECTIONS or self._is_collection(space, dataset):
             return dataset
-        types = self._types_of_object(space, object_id)
-        hits = []
-        for tid in types:
-            for d in self._datasets_of(space, tid):
+        hosts = self._dataset_hosts(space, object_id)
+        for h in hosts:
+            for d in self._datasets_of(space, h):
                 if d.get("key") == dataset and d.get("collection"):
-                    hits.append((tid, d["collection"]))
-        if len(hits) == 1:
-            return hits[0][1]
-        if len(hits) > 1:
-            cands = ", ".join(f"{self._dexify(space, t)} ({c})" for t, c in hits)
-            raise ValueError(
-                f'dataset "{dataset}" is declared by {len(hits)} types the '
-                f"object carries — pass the collection: {cands}")
+                    return d["collection"]
         if not _retried:
             self._ds_invalidate(space, object_id=object_id)
             return self._collection(space, object_id, dataset, True)
-        keys = sorted({d.get("key") for t in types
-                       for d in self._datasets_of(space, t) if d.get("key")})
+        keys = sorted({d.get("key") for h in hosts
+                       for d in self._datasets_of(space, h) if d.get("key")})
+        t = self._owners_of_object(space, object_id)["type"]
         raise ValueError(
-            f'object {object_id} carries no type declaring a dataset '
-            f'"{dataset}" — its types: {self._dexify(space, types)}; '
-            f"their datasets: {keys or 'none'}")
+            f'object {object_id} (type {self._dexify(space, t) if t else "unknown"}) '
+            f'declares no dataset "{dataset}" — its type\'s datasets: '
+            f"{keys or 'none'}. A store is declared on the object's ONE "
+            "type.")
 
     @staticmethod
     def _collection_key(collection):
@@ -779,15 +843,50 @@ class _Client:
 
     def _type_handles(self, space):
         return ", ".join(f'"{t.get("xKey") or t.get("id")}" ({t.get("name")})'
-                         for t in self._catalog(space)["rows"])
+                         for t in self._catalog(space)["rows"]
+                         if t.get("id") not in _SYNTHETIC_TYPES)
+
+    def _collection_handles(self, space):
+        return ", ".join(f'"{t.get("xKey") or t.get("id")}" ({t.get("name")})'
+                         for t in self._catalog(space)["crows"]
+                         if t.get("id") not in _SYNTHETIC_TYPES)
 
     def _resolve_type_or_raise(self, space, seg):
-        tid = self._resolve_type_seg(space, seg)
-        if not tid:
+        did = self._resolve_def(space, seg)
+        if did is None:
             raise ValueError(
                 f'type "{seg}" doesn\'t exist. Available types: '
                 f"{self._type_handles(space)}")
-        return tid
+        if self._def_kind(space, did) != "type":
+            raise ValueError(
+                f'"{seg}" is a collection, not a type — an object IS one type '
+                'and is FILED UNDER collections: pass it in "collections" '
+                f'(create_object) or add_to_collection(space, object_id, "{seg}")')
+        return did
+
+    def _resolve_collection_or_raise(self, space, seg):
+        did = self._resolve_def(space, seg)
+        if did is None:
+            raise ValueError(
+                f'collection "{seg}" doesn\'t exist. Available collections: '
+                f"{self._collection_handles(space) or 'none'} — "
+                "create_collection(space, {\"name\": …}) makes one")
+        if self._def_kind(space, did) != "collection":
+            raise ValueError(
+                f'"{seg}" is a type, not a collection — an object IS one type '
+                f'(set_type(space, object_id, "{seg}") / create_object '
+                '{"type": …}) and is FILED UNDER collections')
+        return did
+
+    def _resolve_owner_or_raise(self, space, seg):
+        """A property owner — a type or a collection — by xKey or id."""
+        did = self._resolve_def(space, seg)
+        if did is None:
+            raise ValueError(
+                f'"{seg}" is neither a type nor a collection. Types: '
+                f"{self._type_handles(space)}; collections: "
+                f"{self._collection_handles(space) or 'none'}")
+        return did
 
     def _resolve_prop_groups(self, space, groups, ctx=None):
         """Nested write groups {typeXKey: {propXKey: val}} -> the id-keyed
@@ -802,17 +901,19 @@ class _Client:
             if gk in _RESERVED_GROUPS:
                 out[gk] = gv
                 continue
-            tid = self._resolve_type_or_raise(space, gk)
+            # the owner of a value group is the object's type or one of
+            # its collections (ADR-029 §2)
+            tid = self._resolve_owner_or_raise(space, gk)
             if not isinstance(gv, dict):
                 raise ValueError(
-                    f'value for type group "{gk}" must be a {{prop: value}} '
+                    f'value for group "{gk}" must be a {{prop: value}} '
                     f"object, got {type(gv).__name__}")
             resolved = {}
             for pk, pv in gv.items():
                 pid = self._resolve_prop_seg(space, tid, pk)
                 if not pid:
                     raise ValueError(
-                        f'unknown property "{pk}" on type "{gk}". Its '
+                        f'unknown property "{pk}" on "{gk}". Its '
                         f"properties: {self._prop_handles(space, tid)}")
                 pdef = self._prop_def(space, tid, pid) or {}
                 if ctx is None:
@@ -905,9 +1006,11 @@ class _Client:
             for r in rows:
                 if isinstance(r, dict) and r.get("id"):
                     anyg = r.get("any") or {}
+                    t = anyg.get("type")
                     stubs[r["id"]] = {
                         "id": r["id"], "name": anyg.get("name"),
-                        "types": self._dexify(space, anyg.get("types") or [])}
+                        "type": self._dexify(space, t) if isinstance(t, str) else None,
+                        "collections": self._dexify(space, anyg.get("collections") or [])}
         missing = [i for i in ids if i not in stubs]
         if missing:
             raise ValueError(
@@ -977,7 +1080,7 @@ class _Client:
         targets = [t for t in rel.get("targetTypes") or []
                    if isinstance(t, str) and self._resolve_type_seg(space, t)]
         if targets:
-            clauses.append({"any.types": {"$in": [
+            clauses.append({"any.type": {"$in": [
                 self._resolve_type_seg(space, t) for t in targets]}})
         if len(clauses) > 1:
             filt = {"$and": clauses}
@@ -992,7 +1095,7 @@ class _Client:
                 f'"{pdef.get("handle")}" — search(space, "{name}") for '
                 "the id, or create the object first (relations never mint)")
         cands = "; ".join(
-            f'{r["id"]} ({", ".join(self._dexify(space, (r.get("any") or {}).get("types") or []))})'
+            f'{r["id"]} ({self._dexify(space, (r.get("any") or {}).get("type") or "?")})'
             for r in rows)
         raise ValueError(
             f'"{name}" names {len(rows)} objects — pass an id: {cands}')
@@ -1104,6 +1207,10 @@ class _Client:
         both halves of that contract ours, reads like writes)."""
         if not isinstance(path, str) or "." not in path:
             return path
+        if path == "any.types":
+            raise ValueError(_ANY_TYPES_ERR)
+        if path in ("any.type", "any.collections"):
+            return path   # the membership slots; values resolve separately
         head, _, tail = path.partition(".")
         if head == "_ver":
             return path
@@ -1124,18 +1231,19 @@ class _Client:
             if head == "any" and p.get("scope") == "derived":
                 return p["id"]
             return f"{head}.{p['id']}"
-        tid = self._resolve_type_seg(space, head)
+        tid = self._resolve_def(space, head)
         if tid is None:
             raise ValueError(
-                f'type "{head}" doesn\'t exist (filter/sort key "{path}"). '
-                f"Available types: {self._type_handles(space)}")
+                f'"{head}" is neither a type nor a collection (filter/sort '
+                f'key "{path}"). Types: {self._type_handles(space)}; '
+                f"collections: {self._collection_handles(space) or 'none'}")
         row = self._catalog(space)["by_id"].get(tid)
-        if not self._is_user_type(row):
+        if not self._is_user_def(row):
             return path
         pid = self._resolve_prop_seg(space, tid, tail)
         if pid is None:
             raise ValueError(
-                f'unknown property "{tail}" on type "{head}" '
+                f'unknown property "{tail}" on "{head}" '
                 f'(filter/sort key "{path}")')
         return f"{tid}.{pid}"
 
@@ -1150,18 +1258,30 @@ class _Client:
                      if p.get("id") == pid), None)
 
     def _resolve_type_value(self, space, v):
-        """Resolve type xKeys appearing as an `any.types` filter VALUE
+        """Resolve type xKeys appearing as an `any.type` filter VALUE
         (string, list, or operator dict like {$in:[...]}) so the agent can
         filter by type xKey. An unknown handle ERRORS with the catalog —
         forwarding it would only ever match the empty set."""
         if isinstance(v, str):
-            if v == "__type__":
-                return v   # the type-definition marker, not a type
+            if v in _DEF_MARKERS:
+                return v   # a definition marker, not a type
             return self._resolve_type_or_raise(space, v)
         if isinstance(v, list):
             return [self._resolve_type_value(space, x) for x in v]
         if isinstance(v, dict):
             return {op: self._resolve_type_value(space, iv)
+                    for op, iv in v.items()}
+        return v
+
+    def _resolve_collection_value(self, space, v):
+        """Collection xKeys in an `any.collections` filter VALUE (a
+        membership test: scalar, $in / $nin / $all lists)."""
+        if isinstance(v, str):
+            return self._resolve_collection_or_raise(space, v)
+        if isinstance(v, list):
+            return [self._resolve_collection_value(space, x) for x in v]
+        if isinstance(v, dict):
+            return {op: self._resolve_collection_value(space, iv)
                     for op, iv in v.items()}
         return v
 
@@ -1174,8 +1294,10 @@ class _Client:
                 out[k] = [self._resolve_filter(space, sub) for sub in v]
                 continue
             rk = self._resolve_path(space, k)
-            if k == "any.types":
+            if k == "any.type":
                 v = self._resolve_type_value(space, v)
+            elif k == "any.collections":
+                v = self._resolve_collection_value(space, v)
             else:
                 v = self._encode_filter_value(space, rk, v)
             out[rk] = v
@@ -1233,9 +1355,11 @@ class _Client:
 
     def _normalize_record(self, space, rec):
         """Reverse-map a raw wire record to the readable xKey-nested shape:
-        record[typeId][propId] -> out[typeXKey][propXKey]. Builtin groups
-        (any, the hidden built-in types) and scalars (id, …) pass through
-        verbatim — their keys are already literal handles. `_ver` (CRDT
+        record[ownerId][propId] -> out[ownerXKey][propXKey] for every
+        owner (the type, each collection). Builtin groups (any, the
+        meta rows, the built-ins) and scalars (id, …) pass through
+        verbatim — their keys are already literal handles; `any.type`
+        and `any.collections` VALUES become xKeys. `_ver` (CRDT
         version noise) is DROPPED — tokens the model can't use;
         normalize=False keeps it."""
         if not isinstance(rec, dict):
@@ -1254,7 +1378,7 @@ class _Client:
             if k == "_ver":
                 continue  # B5: version-vector noise, raw via normalize=False
             row = cat["by_id"].get(k)
-            if not self._is_user_type(row) or not isinstance(v, dict):
+            if not self._is_user_def(row) or not isinstance(v, dict):
                 out[k] = v
                 continue
             defs = {p["id"]: p for p in self._type_props(space, k)
@@ -1267,13 +1391,16 @@ class _Client:
                     continue
                 grp[pdef["handle"]] = self._display_value(pdef, pv)
             out[row.get("xKey") or k] = grp
-        # `any.types` VALUES are type ids on the wire — speak xKeys
-        # (builtins already are; unknown ids pass through)
+        # the membership slots carry ids on the wire — speak xKeys
+        # (builtins and markers already are; unknown ids pass through)
         any_group = out.get("any")
-        if isinstance(any_group, dict) and isinstance(any_group.get("types"), list):
-            out["any"] = {**any_group, "types": [
-                ((cat["by_id"].get(t) or {}).get("xKey") or t)
-                for t in any_group["types"]]}
+        if isinstance(any_group, dict):
+            ag = dict(any_group)
+            if isinstance(ag.get("type"), str):
+                ag["type"] = self._dexify(space, ag["type"])
+            if isinstance(ag.get("collections"), list):
+                ag["collections"] = self._dexify(space, ag["collections"])
+            out["any"] = ag
         return out
 
     # --- ADR-022 §3: hydrated reads -------------------------------------------
@@ -1293,8 +1420,9 @@ class _Client:
 
     def _hydrate_links(self, space, recs):
         """Replace relation values in normalized records with
-        [{id, name, types}] stubs — ONE batched $in query per page
-        (cap 200 ids; the tail stays raw), memoized per client."""
+        [{id, name, type, collections}] stubs (xKeys) — ONE batched $in
+        query per page (cap 200 ids; the tail stays raw), memoized per
+        client."""
         cat = self._catalog(space)
         slots = []   # (group dict, key, [uris])
         for rec in recs:
@@ -1324,11 +1452,14 @@ class _Client:
             for r in rows:
                 if isinstance(r, dict) and r.get("id"):
                     anyg = r.get("any") or {}
+                    t = anyg.get("type")
                     stubs[r["id"]] = {
                         "id": r["id"], "name": anyg.get("name"),
-                        "types": self._dexify(space, anyg.get("types") or [])}
+                        "type": self._dexify(space, t) if isinstance(t, str) else None,
+                        "collections": self._dexify(space, anyg.get("collections") or [])}
             for oid in want[:200]:
-                stubs.setdefault(oid, {"id": oid, "name": None, "types": []})
+                stubs.setdefault(oid, {"id": oid, "name": None, "type": None,
+                                       "collections": []})
         for grp, key, uris in slots:
             out = []
             for u in uris:
@@ -1337,12 +1468,13 @@ class _Client:
             grp[key] = out
 
     def _dexify(self, space, v):
-        """Deep-map USER-type ids -> xKeys anywhere in a result payload
-        (strings, list items, dict keys/values). Builtins are already
-        their own xKey; unknown strings pass through untouched."""
+        """Deep-map user definition ids (types AND collections) -> xKeys
+        anywhere in a result payload (strings, list items, dict keys/
+        values). Builtins are already their own xKey; unknown strings
+        pass through untouched."""
         if isinstance(v, str):
             row = self._catalog(space)["by_id"].get(v)
-            return (row.get("xKey") or v) if self._is_user_type(row) else v
+            return (row.get("xKey") or v) if self._is_user_def(row) else v
         if isinstance(v, list):
             return [self._dexify(space, x) for x in v]
         if isinstance(v, dict):
@@ -1353,24 +1485,30 @@ class _Client:
     # --- objects -------------------------------------------------------------
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
-        """Create a typed object; returns {"objectId", "resolved"?,
+        """Create an object; returns {"objectId", "resolved"?,
         "createdOptions"?, "warnings"?}.
 
-        Top-level `name` / `description` route into the `any` group and
-        `markdown` (alias `body`) becomes the editor body — one call
-        creates the page: the built-in `page` type is added to `types`
-        (the body lives on it; no write attaches a type) and the body
-        is PUT after the create. `parent=` puts the object in the
-        space's page tree (the wiki app): `""` for the top level or a
-        parent object id — the object gains the wiki type with
-        `parentId` and a position after the last sibling; `folder=True`
-        marks it a folder. Without `parent` the object is outside every
-        tree, reachable by search, links and queries. Everything else:
-        `types` entries and `initialProperties` group + property keys
-        are given as handles (or ids) and resolved to the content-ids
-        the server writes by; the `any` group passes through literal.
-        Unknown type/property keys — and unknown TOP-LEVEL keys, which
-        the wire would silently drop — error — ADR-006 §6.
+        body: {"type"?, "collections"?, "initialProperties"?, "name"?,
+        "description"?, "markdown"?}. An object IS exactly one `type`
+        (its class — body, parts, fields; default `page`, the plain
+        document) and is FILED UNDER any number of `collections` (tags;
+        columns when they carry properties). Top-level `name` /
+        `description` route into the `any` group; `markdown` (alias
+        `body`) becomes the editor body, PUT after the create — the
+        object's TYPE must declare a body (`page` does; every type
+        `create_type` mints does; a type without one errors here with
+        the fix, nothing is retyped). `parent=` puts the object in the
+        space's page tree (the wiki app, a collection): `""` for the
+        top level or a parent object id — the object is filed under
+        the wiki with `parentId` and a position after the last
+        sibling; `folder=True` marks it a folder. Without `parent` the
+        object is outside every tree, reachable by search, links and
+        queries. `type`, `collections` entries and `initialProperties`
+        group + property keys are handles (or ids) resolved to the
+        content-ids the server writes by — a group is keyed by its
+        owner, the type or one of the collections; the `any` group
+        passes through literal. Unknown keys — and unknown TOP-LEVEL
+        keys, which the wire would silently drop — error — ADR-006 §6.
         VALUES are encoded against each property's definition
         (ADR-022 §2): select/multiselect take option NAMES or keys — a
         missing option is created (any-ui style key/color/pos; pass
@@ -1382,14 +1520,19 @@ class _Client:
         string are kind-checked. `resolved` echoes every value that
         changed on the way to the wire."""
         body = dict(body or {})
-        unknown = set(body) - {"types", "initialProperties",
+        if "types" in body:
+            raise ValueError(
+                'create_object: there is no "types" — an object IS exactly one '
+                '"type" (default "page") and is FILED UNDER any number of '
+                '"collections": {"type": "book", "collections": ["reading_list"]}')
+        unknown = set(body) - {"type", "collections", "initialProperties",
                                "name", "description", "markdown", "body"}
         if unknown:
             raise ValueError(
                 f"create_object: unknown top-level key(s) {sorted(unknown)} "
-                "would be rejected by the wire (it accepts types/"
+                "would be rejected by the wire (it accepts type/collections/"
                 "initialProperties). Properties go in initialProperties "
-                'keyed by type xKey — {"any": {"name": ...}} — or pass '
+                'keyed by owner xKey — {"any": {"name": ...}} — or pass '
                 "name/description/markdown at top level; parent= places "
                 "the object in the page tree.")
         markdown = body.pop("markdown", None)
@@ -1404,16 +1547,25 @@ class _Client:
                 grp.setdefault("name", name)
             if description is not None:
                 grp.setdefault("description", description)
-        if isinstance(body.get("types"), list):
-            bad = [t for t in body["types"] if t in _SYNTHETIC_TYPES]
-            if bad:
-                raise ValueError(
-                    f"type(s) {bad} are synthetic catalog rows "
-                    "(any/spaceIndex/type) — they describe the space and "
-                    "are not attachable to objects. Use a user type, or "
-                    "omit types for a plain object.")
-            body["types"] = [self._resolve_type_or_raise(space, t)
-                             for t in body["types"]]
+        tkey = body.pop("type", None)
+        if tkey is None:
+            tkey = _PAGE_TYPE   # the default type: a plain document (ADR-029 §3)
+        ckeys = body.pop("collections", None) or []
+        if not isinstance(ckeys, list):
+            raise ValueError('"collections" must be a list of collection xKeys')
+        bad = [k for k in [tkey, *ckeys] if k in _SYNTHETIC_TYPES]
+        if bad:
+            raise ValueError(
+                f"{bad} are synthetic catalog rows (any/spaceIndex/type/"
+                "collection) — they describe the space; no object has one as "
+                'its type or is filed under one. Use "page" (a plain '
+                "document) or a user type, and user collections.")
+        tid = self._resolve_type_or_raise(space, tkey)
+        cids = []
+        for ck in ckeys:
+            cid = self._resolve_collection_or_raise(space, ck)
+            if cid not in cids:
+                cids.append(cid)
         ctx = self._write_ctx(create_options)
         if isinstance(body.get("initialProperties"), dict):
             body["initialProperties"] = self._resolve_prop_groups(
@@ -1422,27 +1574,28 @@ class _Client:
             for g in list(body["initialProperties"]):
                 if not body["initialProperties"][g]:
                     del body["initialProperties"][g]
-        types = list(body.get("types") or [])
-        if markdown is not None and _PAGE_TYPE not in types \
-                and not self._declares_body(space, types):
-            types.append(_PAGE_TYPE)   # the body lives on `page` (ADR-027 §3)
+        if markdown is not None:
+            self._require_body(space, tid)   # never a silent retype (ADR-029 §3)
         if parent is not None:
             wiki = self._wiki(space)
-            if wiki["typeId"] not in types:
-                types.append(wiki["typeId"])
+            wcid = wiki["collectionId"]
+            if wcid not in cids:
+                cids.append(wcid)
             placement = {wiki["parentId"]: parent,
                          wiki["pos"]: self._next_tree_pos(space, wiki, parent)}
             if folder is not None:
                 placement[wiki["folder"]] = bool(folder)
             groups = body.setdefault("initialProperties", {})
-            groups[wiki["typeId"]] = {**groups.get(wiki["typeId"], {}), **placement}
-        if types:
-            body["types"] = types
+            groups[wcid] = {**groups.get(wcid, {}), **placement}
+        body["type"] = tid
+        if cids:
+            body["collections"] = cids
         self._apply_option_patches(space, ctx)   # options before the value
         res = self._call("post", f"/v1/spaces/{space}/objects", body)
         object_id = res.get("objectId")
         if object_id:
-            self._object_types[(space, object_id)] = list(types)
+            self._object_owners[(space, object_id)] = {"type": tid,
+                                                       "collections": list(cids)}
         if markdown is not None and object_id:
             self.put_markdown(space, object_id, markdown)
         return self._write_result(object_id, ctx)
@@ -1452,64 +1605,81 @@ class _Client:
         return any(d.get("collection") == "editor_blocks"
                    for tid in type_ids for d in self._datasets_of(space, tid))
 
-    def _ensure_body(self, space, object_id):
-        """A body write needs a declaring type on the object (no write
-        attaches one): attach `page` unless a carried type declares
-        the shared editor collection."""
-        types = self._types_of_object(space, object_id)
-        if _PAGE_TYPE in types or self._declares_body(space, types):
+    def _require_body(self, space, type_id):
+        """A body needs the object's ONE type to declare an editor part
+        (`page` does; every type bao mints does). Otherwise: an error
+        naming the type and the fix — never a silent retype."""
+        if not type_id or type_id == _PAGE_TYPE or type_id in _DEF_MARKERS \
+                or self._declares_body(space, [type_id]):
             return
-        self._call("post",
-                   f"/v1/spaces/{space}/properties/{object_id}/attach/{_PAGE_TYPE}")
-        self._ds_invalidate(space, object_id=object_id)
+        xkey = self._dexify(space, type_id)
+        raise ValueError(
+            f'type "{xkey}" declares no body (no editor part), so its objects '
+            'cannot hold markdown. create_type(space, {"name": …, "xKey": '
+            f'"{xkey}"}}) once adds the shared body part to the type (every '
+            'type bao mints has one) — then write again. A plain document is '
+            'type "page".')
 
-    # --- the page tree (the catalog's wiki usecase, ADR-027 §3) --------------
+    def _check_body(self, space, object_id):
+        """The body gate for a write on an existing object: its type
+        must declare the shared editor collection (no write sets a
+        type — ADR-029 §3)."""
+        self._require_body(space, self._owners_of_object(space, object_id)["type"])
+
+    # --- the page tree (the catalog's wiki usecase — a COLLECTION) ------------
     def _wiki(self, space):
-        """The wiki type and its three property ids, set up once per
-        space per run (the catalog setup is idempotent)."""
+        """The wiki collection and its three property ids, set up once
+        per space per run (the catalog setup is idempotent)."""
         w = self._wiki_cache.get(space)
         if w is None:
             r = self._call("post", "/v1/catalog/wiki/setup", {"spaceId": space})
             b = next((b for b in r.get("bundles") or []
                       if b.get("id") == _WIKI_BUNDLE), None) or {}
             props = b.get("properties") or {}
-            if not b.get("typeId") or not all(k in props for k in ("parentId", "pos", "folder")):
+            if not b.get("collectionId") or not all(
+                    k in props for k in ("parentId", "pos", "folder")):
                 raise AnyError(500, "catalog.bad_reply",
-                               f"wiki setup reply carries no type/properties: {r}")
-            w = {"typeId": b["typeId"], **{k: props[k] for k in ("parentId", "pos", "folder")}}
+                               f"wiki setup reply carries no collection/properties: {r}")
+            w = {"collectionId": b["collectionId"],
+                 **{k: props[k] for k in ("parentId", "pos", "folder")}}
             self._wiki_cache[space] = w
-            self._cat_invalidate(space)   # the wiki type is new to the catalog
+            self._cat_invalidate(space)   # the wiki collection is new to the catalog
         return w
 
     def _next_tree_pos(self, space, wiki, parent):
         """A lexid after the last sibling under `parent` (the client
         allocates positions; the server orders nothing)."""
+        wcid = wiki["collectionId"]
         rows = self._call("post", f"/v1/spaces/{space}/objects/query", {
-            "filter": {f'{wiki["typeId"]}.{wiki["parentId"]}': parent},
-            "sort": [f'-{wiki["typeId"]}.{wiki["pos"]}'], "limit": 1,
+            "filter": {f'{wcid}.{wiki["parentId"]}': parent},
+            "sort": [f'-{wcid}.{wiki["pos"]}'], "limit": 1,
         }).get("records") or []
         last = ""
         if rows and isinstance(rows[0], dict):
-            last = ((rows[0].get(wiki["typeId"]) or {}).get(wiki["pos"]) or "")
+            last = ((rows[0].get(wcid) or {}).get(wiki["pos"]) or "")
         return _lexid_after(last)
 
     def move_object(self, space, object_id, parent, folder=None):
         """Place an object in the page tree (or move it): `parent` is
-        `""` for the top level or a parent object id; the object gains
-        the wiki type if it lacks it, `parentId` is set and a position
-        after the last sibling allocated; `folder=True/False` sets the
-        folder flag. Returns {"objectId", "parentId", "pos"}."""
+        `""` for the top level or a parent object id; the object is
+        filed under the wiki collection if it is not yet, `parentId`
+        is set and a position after the last sibling allocated;
+        `folder=True/False` sets the folder flag. Its type is
+        untouched. "Take it out of the wiki" is
+        `remove_from_collection(space, object_id, "wiki")`. Returns
+        {"objectId", "parentId", "pos"}."""
         wiki = self._wiki(space)
-        if wiki["typeId"] not in self._types_of_object(space, object_id):
+        wcid = wiki["collectionId"]
+        if wcid not in self._owners_of_object(space, object_id)["collections"]:
             self._call("post",
-                       f"/v1/spaces/{space}/properties/{object_id}/attach/{wiki['typeId']}")
+                       f"/v1/spaces/{space}/properties/{object_id}/collections/{wcid}")
             self._ds_invalidate(space, object_id=object_id)
         pos = self._next_tree_pos(space, wiki, parent)
         patch = {wiki["parentId"]: parent, wiki["pos"]: pos}
         if folder is not None:
             patch[wiki["folder"]] = bool(folder)
         self._call("post",
-                   f"/v1/spaces/{space}/properties/{object_id}/set/{wiki['typeId']}",
+                   f"/v1/spaces/{space}/properties/{object_id}/set/{wcid}",
                    {"patch": patch})
         return {"objectId": object_id, "parentId": parent, "pos": pos}
 
@@ -1520,18 +1690,21 @@ class _Client:
         if not any(b.get("id") == _WIKI_BUNDLE for b in self.list_bundles(space)):
             return []
         wiki = self._wiki(space)
+        wcid = wiki["collectionId"]
         return self.query_objects(
             space,
-            filter={f'{wiki["typeId"]}.{wiki["parentId"]}': parent},
-            sort=[f'{wiki["typeId"]}.{wiki["pos"]}'])
+            filter={f'{wcid}.{wiki["parentId"]}': parent},
+            sort=[f'{wcid}.{wiki["pos"]}'])
 
     def update_object(self, space, object_id, body, create_options=True):
         """Update an object's name / editor body / properties by handle.
 
         `body`: {"name"?, "description"?, "markdown"?/"body"?,
-        "<typeXKey>": {prop: value}, …} — same nested type-group shape as
-        create_object (top-level name/description route into the `any`
-        group, parity with create_object). Property keys resolve to ids;
+        "<ownerXKey>": {prop: value}, …} — same nested group shape as
+        create_object, a group keyed by the object's type or one of its
+        collections (top-level name/description route into the `any`
+        group). A markdown write needs the object's type to declare a
+        body (see create_object). Property keys resolve to ids;
         groups are resolved and every value encoded against its
         definition BEFORE any write so a bad key or value can't land a
         partial update (value rules: see create_object — option names,
@@ -1588,11 +1761,17 @@ class _Client:
         # in `normalize` and silently drop the caller's filter — a query
         # for everything where a filtered query was intended.
         """Cross-object query over the per-space objects collection. `filter`
-        / `sort` accept readable dotted xKey paths (`task.status`) and an
-        `any.types` xKey value, resolved to the server's id paths; an
-        UNKNOWN type or property key errors with the catalog (a typo'd
-        key would otherwise silently match nothing) — the builtin group
-        (`any.*`) included. Derived `any` props
+        / `sort` accept readable dotted xKey paths (`task.status`,
+        `reading_list.order` — the owner is a type or a collection),
+        `{"any.type": "<type xKey>"}` (the object's ONE type; `$in` for
+        several) and `{"any.collections": "<collection xKey>"}`
+        (membership; `$in` / `$nin` / `$all` — `{"$nin": ["bin"]}`
+        excludes trashed objects), resolved to the server's id paths;
+        an UNKNOWN type, collection or property key errors with the
+        catalog (a typo'd key would otherwise silently match nothing)
+        — the builtin group (`any.*`) included; "any.types" is an
+        error. A definition's own row never matches its members
+        (its slot holds a marker). Derived `any` props
         resolve to the bare top-level record keys (`any.id` → `id`,
         `any.createdAt` → `createdAt`). Records come back
         NORMALIZED (user-type groups keyed by type xKey, props by prop
@@ -1637,9 +1816,8 @@ class _Client:
         if self._resolve_type_seg(space, "program") is None:
             return []   # no program type = nothing was ever deployed here
         for p in self.query_objects(
-                space, filter={"$and": [{"any.types": "program"},
-                                        {"any.types": {"$ne": "__type__"}},
-                                        {"any.types": {"$nin": [_BIN_TYPE]}}]},
+                space, filter={"$and": [{"any.type": "program"},
+                                        {"any.collections": {"$nin": [_BIN]}}]},
                 limit=200):
             prog = p.get("program") or {}
             if tools_only and not prog.get("any_tool"):
@@ -1685,11 +1863,11 @@ class _Client:
 
         `dataset` is the store KEY the owning program declared
         (agent_memory_items, email_messages, …), resolved against the
-        types the host object carries — the object must carry the
-        declaring type in `any.types` (400 dataset.not_declared
-        otherwise; a key none of its types declare errors here with
-        the list). A store that was never declared cannot be written:
-        keep ad-hoc state as object properties. For bulk ingest into an
+        datasets the host object's ONE type declares — the object must
+        be of the declaring type (400 dataset.not_declared otherwise;
+        a key its type does not declare errors here with the list). A
+        store that was never declared cannot be written: keep ad-hoc
+        state as object properties. For bulk ingest into an
         idRule: user dataset prefer upsert_records (idempotent, diffs
         mutable fields server-side)."""
         return self.modify(space, {
@@ -1709,8 +1887,8 @@ class _Client:
         Returns {created, updated, skipped, rejections: [{index, id,
         code, reason}], pages} — 200 even with rejections, so CHECK
         rejections. One CRDT change per page (page_size default 500).
-        The owning program declares the dataset; put the owning
-        type on the host object at create ({"types": [...]})."""
+        The owning program declares the dataset; the host object is
+        created with that type ({"type": "<xKey>"})."""
         body = {"objectId": object_id,
                 "dataset": self._collection(space, object_id, dataset),
                 "records": records}
@@ -1801,7 +1979,7 @@ class _Client:
 
         Stages: $match, $group (_id + accumulators: {"$sum": 1},
         {"$count": {}}), $sort, $count. Field refs take xKeys like
-        everywhere else — "$book.rating", "$any.types" — resolved in
+        everywhere else — "$book.rating", "$any.type" — resolved in
         $match/$sort keys and $group refs; unknown ones error with the
         catalog. Avg rating per genre: [{"$group": {"_id":
         "$book.genre", "avg": {"$avg": "$book.rating"}}}]. Returns
@@ -1828,7 +2006,7 @@ class _Client:
     def _resolve_pipeline(self, space, pipeline):
         """xKey field refs -> wire ids, only in the grammatically
         unambiguous positions: $match bodies resolve like query filters
-        (keys + any.types values, unknown keys error — A4), $sort dict
+        (keys + any.type / any.collections values, unknown keys error — A4), $sort dict
         keys via _resolve_path, "$type.prop" strings under $group.
         Value-position literals are never touched ($literal ambiguity)."""
         if not isinstance(pipeline, list):
@@ -1854,7 +2032,7 @@ class _Client:
 
     def _resolve_field_refs(self, space, v):
         """'$typeXKey.propXKey' -> '$typeId.propId' inside $group values
-        (dicts/lists recursed); reserved heads ("$any.types") and
+        (dicts/lists recursed); reserved heads ("$any.type") and
         single-segment refs ("$creator") pass through literal."""
         if isinstance(v, str) and v.startswith("$") and "." in v:
             return "$" + self._resolve_path(space, v[1:])
@@ -1866,9 +2044,10 @@ class _Client:
 
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
     # The routes name the collection: the shared body `editor_blocks`
-    # an object holds while it carries `page` or a type with a shared
-    # editor part (ADR-027 §3). A write attaches `page` when the object
-    # carries no declaring type — no write attaches one server-side.
+    # an object holds while its ONE type declares a shared editor part
+    # (`page`, or a type with a body — ADR-029 §3). A write on an
+    # object whose type declares none errors with the fix; no write
+    # sets a type.
     def _md_path(self, space, object_id, tail=""):
         return f"/v1/spaces/{space}/objects/{object_id}/editor/editor_blocks/markdown{tail}"
 
@@ -1883,7 +2062,7 @@ class _Client:
         `any://` link in the body whose space segment is not a space id
         (a NAME, or missing) is reported under `warnings` (and printed),
         never rewritten — fix the text and write again."""
-        self._ensure_body(space, object_id)
+        self._check_body(space, object_id)
         r = self._call("put", self._md_path(space, object_id),
                        {"content": content})
         return self._warned(r, self._link_warnings(content))
@@ -1913,7 +2092,7 @@ class _Client:
         No read-modify-write, so it can't clobber the body the way a
         get+put race can. Returns the api.MarkdownSetResponse dict, plus
         `warnings` for a mis-shaped `any://` link (see put_markdown)."""
-        self._ensure_body(space, object_id)
+        self._check_body(space, object_id)
         r = self._call("post", self._md_path(space, object_id, "/append"),
                        {"content": content})
         return self._warned(r, self._link_warnings(content))
@@ -2018,18 +2197,36 @@ class _Client:
         return self._call("post", "/v1/events",
                           {"type": etype, "scope": "device", "data": data})
 
-    # --- types & properties (catalog source) ----------------------------------
+    # --- types, collections & properties (catalog source) ---------------------
     def list_types(self, space):
-        """Every type in the space: rows of {id, xKey, name, hidden?,
-        builtIn?, weight?, layout?} — hidden ones included (the built-in
-        `page`/`miniapp`/`bin`/`dataview`, the harness types, the
-        catalog's hidden types such as the wiki)."""
-        return self._call("get", f"/v1/spaces/{space}/types?includeHidden=true"
-                          ).get("types", [])
+        """Every type in the space — what an object can BE: rows of
+        {id, xKey, name, hidden?, builtIn?, layout?}, hidden ones
+        included (the built-in `page` — the default, a plain document —
+        and `dataview`; bao's store types; a catalog app's hidden
+        types). The meta rows (any, spaceIndex, type, collection) are
+        not listed: nothing has them as a type. Collections (what an
+        object is FILED UNDER: the wiki, contact, miniapp, bin, a user's
+        tags) are `list_collections`."""
+        return [t for t in self._list_types_raw(space)
+                if t.get("id") not in _SYNTHETIC_TYPES]
+
+    def list_collections(self, space):
+        """Every collection a space has — what an object can be FILED
+        UNDER: rows of {id, xKey, name, hidden?, builtIn?}. A collection
+        is a tag; with properties (`list_properties(space, "<xKey>")`)
+        a supertag whose columns its members carry. Included: the
+        catalog's (`wiki`, `contact`, `investor`, …) and the user's;
+        omitted: the meta row `collection` and the built-ins `miniapp`
+        (the sidebar) / `bin` (the trash) — reachable by name
+        (`trash` / `restore`, `list_apps`), never listed as tags."""
+        return [c for c in self._list_collections_raw(space)
+                if c.get("id") not in _SYNTHETIC_TYPES
+                and c.get("id") not in _BUILTIN_COLLECTION_IDS]
 
     def list_properties(self, space, type_key):
-        """A type's property definitions, in display order: [{handle,
-        id, name, xKey, kind, scope, xFormat?, options?, meta?}].
+        """The property definitions of a type OR a collection, in
+        display order: [{handle, id, name, xKey, kind, scope, xFormat?,
+        options?, meta?}].
 
         `handle` is THE key to read/write the property by (the xKey,
         else the name). `kind` is the storage shape (string | number |
@@ -2047,10 +2244,10 @@ class _Client:
         property without a descriptor is its plain kind. `options` is
         the ordered [{key, name, color}] of a choice. `scope` is the
         write/sync class (local-scope props exist only per-peer).
-        `type_key` is the type's xKey (builtins: xKey == id); an
-        unknown key ERRORS with the catalog — the server would answer
-        a nonexistent id with a silent []."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        `type_key` is the owner's xKey — a type's or a collection's
+        (builtins: xKey == id); an unknown key ERRORS with the catalog
+        — the server would answer a nonexistent id with a silent []."""
+        tid = self._resolve_owner_or_raise(space, type_key)
         self._props_cache.pop((space, tid), None)   # a listing reads fresh
         rows = []
         for p in sorted(self._type_props(space, tid), key=_prop_sort_key):
@@ -2061,81 +2258,66 @@ class _Client:
             rows.append(row)
         return rows
 
-    def _fetch_props(self, space, type_id):
+    def _fetch_props(self, space, owner_id):
         # wire read by resolved id — internals (catalog, normalize) call
-        # this directly so resolution can't recurse into itself
-        r = self._call("get", f"/v1/spaces/{space}/types/{type_id}/properties")
+        # this directly so resolution can't recurse into itself; the
+        # route follows the owner's kind (a type or a collection)
+        r = self._call("get", self._props_path(space, owner_id))
         return r.get("properties", r) if isinstance(r, dict) else r
 
-    def create_type(self, space, body):
-        """Create a type, then add each property (composite ensure-type).
-
-        body: {"name", "xKey"?, "description"?, "hidden"?, "weight"?,
-        "layout"?, "properties"?: [{"name", "xKey"?, "kind"?,
-        "xFormat"?}]}. kind ∈ string | number | boolean | array |
-        object | datetime — NOTHING else ("text" and "date" are
-        descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}}
-        (see add_property for the slug table); with a slug the kind
-        may be omitted. xKeys default to a slug of the name.
-        Idempotent: an existing USER type (by xKey) is reused, only
-        MISSING properties are added. A name or xKey that collides with
-        a builtin handle (any, spaceIndex, type, page, miniapp, bin,
-        dataview) or a catalog type's ERRORS — those cannot be created
-        or reshaped. So does MINTING one under a record-root key (id,
-        author, createdAt, modifiedAt, modifiedBy, spaceId): every
-        object carries those bare, and a type group under the same
-        xKey would shadow them on normalized reads — keep the display
-        name, pass an explicit xKey (`author_type`); the xKey is a
-        programmatic handle the user never sees. An existing type is
-        reused under whatever handle it has. `hidden: True` keeps
-        the type out of pickers (the
-        harness types are). Minting a listed type also sets up the
-        space's `collections` app (the client's types feature switch)
-        when it lacks one, so the type and its objects show in the UI.
-        Returns {"typeId", "xKey", "created", "addedProps": {xKey:
-        propId}} — reference everything by xKey afterwards."""
-        body = dict(body or {})
-        props = body.pop("properties", None) or []
-        xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
-        rows = self.list_types(space)
-        row = next((t for t in rows
+    def _definition_guards(self, space, xkey, want):
+        """The shared handle rules of the two definition surfaces (one
+        namespace, ADR-029 §2): a handle held by the OTHER kind, a
+        builtin, a catalog app's, or a record-root key is refused; an
+        existing user definition of the same kind is returned for
+        reuse. → (row or None)."""
+        row = next((t for t in self._list_defs(space)
                     if t.get("xKey") == xkey or t.get("id") == xkey), None)
-        if row is not None and not self._is_user_type(row):
+        other = "collection" if want == "type" else "type"
+        if row is not None and row["kind"] != want:
+            fix = (f'reshape it with add_property(space, "{xkey}", …); an object is '
+                   'FILED UNDER it (add_to_collection)'
+                   if row["kind"] == "collection" else
+                   'an object IS it (create_object {"type": …}, set_type)')
             raise ValueError(
-                f'"{xkey}" is the handle of the builtin type '
+                f'"{xkey}" is already the handle of the {other} '
+                f'"{row.get("name")}" — types and collections share one '
+                f"namespace, so a {want} cannot take it: {fix}. Pick another "
+                'name, or pass an explicit "xKey".')
+        if row is not None and not self._is_user_def(row):
+            raise ValueError(
+                f'"{xkey}" is the handle of the builtin {row["kind"]} '
                 f'"{row.get("name")}" — builtins cannot be created or '
                 "reshaped. Pick another name, or pass an explicit "
                 'non-reserved "xKey".')
-        if xkey in self._catalog_type_xkeys():
+        if xkey in _SYNTHETIC_TYPES:
             raise ValueError(
-                f'"{xkey}" is the type of a catalog app (`list_available_apps`) '
-                "— catalog types cannot be created or reshaped; `setup_app` "
-                "installs the app. Pick another name, or pass an explicit "
-                'non-catalog "xKey".')
-        tid = row["id"] if row else None
-        created = False
-        if tid is None:
-            # The record-root guard gates MINTING only: an existing type
-            # keeps its handle (refusing here would lock the agent out of
-            # reshaping a type minted before the rule), and the ensure
-            # path costs no catalog read.
+                f'"{xkey}" is a synthetic catalog row — pick another name, or '
+                'pass an explicit "xKey".')
+        if xkey in self._catalog_handles():
+            raise ValueError(
+                f'"{xkey}" is the {want if row is None else row["kind"]} of a '
+                "catalog app (`list_available_apps`) — catalog definitions "
+                "cannot be created or reshaped; `setup_app` installs the app. "
+                'Pick another name, or pass an explicit non-catalog "xKey".')
+        if row is None:
+            # The record-root guard gates MINTING only: an existing
+            # definition keeps its handle (refusing here would lock the
+            # agent out of reshaping one minted before the rule).
             rooted = self._row_root_keys(space)
             if xkey in rooted:
                 raise ValueError(
                     f'"{xkey}" is a record-root key every object carries '
-                    f'({", ".join(sorted(rooted))}) — a type group under it '
+                    f'({", ".join(sorted(rooted))}) — a group under it '
                     "would shadow the record's own field on normalized reads. "
-                    f'Keep the name and pass an explicit xKey such as "{xkey}_type" '
+                    f'Keep the name and pass an explicit xKey such as "{xkey}_{want}" '
                     "(the xKey is the programmatic handle, never shown to the user).")
-            req = {k: body[k] for k in ("name", "description", "iconCid",
-                                        "hidden", "weight", "layout")
-                   if k in body}
-            req["xKey"] = xkey
-            tid = self._call("post", f"/v1/spaces/{space}/types", req)["typeId"]
-            created = True
+        return row
+
+    def _add_missing_props(self, space, owner_id, props):
         added = {}
         if props:
-            have = {p.get("xKey") for p in self._fetch_props(space, tid)}
+            have = {p.get("xKey") for p in self._fetch_props(space, owner_id)}
             for p in props:
                 pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
                 if pxkey in have:
@@ -2144,11 +2326,120 @@ class _Client:
                                            "description") if k in p}
                 extra["name"] = p.get("name") or pxkey
                 extra["xKey"] = pxkey
-                added[pxkey] = self._post_property(space, tid, extra)["propId"]
+                added[pxkey] = self._post_property(space, owner_id, extra)["propId"]
+        return added
+
+    def create_type(self, space, body):
+        """Create a type — a CLASS: what an object IS — then add each
+        property (composite ensure-type).
+
+        body: {"name", "xKey"?, "description"?, "hidden"?, "layout"?,
+        "body"?: false, "properties"?: [{"name", "xKey"?, "kind"?,
+        "xFormat"?}]}. kind ∈ string | number | boolean | array |
+        object | datetime — NOTHING else ("text" and "date" are
+        descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}}
+        (see add_property for the slug table); with a slug the kind
+        may be omitted. xKeys default to a slug of the name.
+        Idempotent: an existing USER type (by xKey) is reused, only
+        MISSING properties are added. **Every type has a body**: the
+        shared editor part is declared on a new type and healed onto
+        an existing one that lacks it, so a user type is "page plus
+        fields" — its objects hold markdown like a page does (ADR-029
+        §3); `"body": false` opts out (bao's hidden stores). A name or
+        xKey that collides with a builtin handle (any, spaceIndex,
+        type, collection, page, dataview, miniapp, bin), a catalog
+        definition's (wiki, person, contact, …) or an existing
+        COLLECTION's ERRORS — types and collections share one handle
+        namespace. So does MINTING one under a record-root key (id,
+        author, createdAt, modifiedAt, modifiedBy, spaceId): every
+        object carries those bare, and a group under the same xKey
+        would shadow them on normalized reads — keep the display
+        name, pass an explicit xKey (`author_type`); the xKey is a
+        programmatic handle the user never sees. `hidden: True` keeps
+        the type out of pickers (bao's stores are). Minting a listed
+        type also sets up the space's `collections` app (the client's
+        types feature switch) when it lacks one, so the type and its
+        objects show in the UI. Returns {"typeId", "xKey", "created",
+        "addedProps": {xKey: propId}} — reference everything by xKey
+        afterwards. A TAG — what an object is filed under — is
+        `create_collection`."""
+        body = dict(body or {})
+        props = body.pop("properties", None) or []
+        want_body = body.pop("body", True)
+        if "weight" in body:
+            raise ValueError(
+                '"weight" does not exist: an object has exactly one type, '
+                "nothing ranks them")
+        xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        row = self._definition_guards(space, xkey, "type")
+        tid = row["id"] if row else None
+        created = False
+        if tid is None:
+            req = {k: body[k] for k in ("name", "description", "iconCid",
+                                        "hidden", "layout")
+                   if k in body}
+            req["xKey"] = xkey
+            tid = self._call("post", f"/v1/spaces/{space}/types", req)["typeId"]
+            created = True
+        added = self._add_missing_props(space, tid, props)
+        if want_body:
+            self._ensure_body_part(space, tid)
         self._cat_invalidate(space)   # freshly (re)shaped type -> refresh xKey map
         if created and not body.get("hidden"):
             self._ensure_collections_app(space)
         return {"typeId": tid, "xKey": xkey, "created": created,
+                "addedProps": added}
+
+    def _ensure_body_part(self, space, type_id):
+        """Declare the shared editor body on a type that lacks it (the
+        default-type rule, ADR-029 §3). True when added."""
+        if self._declares_body(space, [type_id]):
+            return False
+        self._call("post", f"/v1/spaces/{space}/types/{type_id}/parts", _BODY_PART)
+        self._ds_invalidate(space, type_id=type_id)
+        return True
+
+    def create_collection(self, space, body):
+        """Create a collection — a TAG: what an object is FILED UNDER —
+        then add each property (composite ensure).
+
+        body: {"name", "xKey"?, "description"?, "hidden"?,
+        "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?}]} (the
+        property drafts of create_type). An empty collection is a
+        plain tag; with properties it is a supertag: its members carry
+        those columns under the collection's group (`{"reading_list":
+        {"order": 1}}` in create_object / update_object) and lose them
+        from view when unfiled (values stay). No layout, no body, no
+        datasets — a collection has no behaviour; what an object IS is
+        its type. Idempotent by xKey; the same handle rules as
+        create_type (one namespace with types, builtins, the catalog's
+        `wiki` / `contact` / …, record-root keys). Returns
+        {"collectionId", "xKey", "created", "addedProps"}. File objects
+        with `add_to_collection` / `{"collections": [...]}` on create;
+        list members with `{"any.collections": "<xKey>"}`."""
+        body = dict(body or {})
+        props = body.pop("properties", None) or []
+        xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        row = self._definition_guards(space, xkey, "collection")
+        cid = row["id"] if row else None
+        created = False
+        if cid is None:
+            req = {k: body[k] for k in ("name", "description", "iconCid", "hidden")
+                   if k in body}
+            req["xKey"] = xkey
+            cid = self._call("post", f"/v1/spaces/{space}/collections", req)["collectionId"]
+            created = True
+            # the property route needs the owner's KIND before any
+            # listing catches up: seed the catalog with what was minted
+            cat = self._catalog(space)
+            row = {"id": cid, "xKey": xkey, "name": body.get("name"),
+                   "kind": "collection"}
+            cat["by_id"][cid] = row
+            cat["by_xkey"].setdefault(xkey, cid)
+            cat["crows"].append(row)
+        added = self._add_missing_props(space, cid, props)
+        self._cat_invalidate(space)
+        return {"collectionId": cid, "xKey": xkey, "created": created,
                 "addedProps": added}
 
     def _row_root_keys(self, space):
@@ -2345,8 +2636,8 @@ class _Client:
             f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
 
     def add_property(self, space, type_key, body):
-        """POST one property onto a type (named by xKey — unknown keys
-        error with the catalog). body: {"name", "xKey"?, "kind"?,
+        """POST one property onto a type or a collection (named by xKey
+        — unknown keys error with the catalog). body: {"name", "xKey"?, "kind"?,
         "xFormat"?, "scope"?, "description"?, "meta"?}. kind ∈ string
         | number | boolean | array | object | datetime (default from
         the slug, else "string"). `xFormat` is the descriptor:
@@ -2361,9 +2652,10 @@ class _Client:
         `duration` (number), `checkbox` (boolean), `period` `money`
         `geo` (object). `meta` takes only `index` (a search scope, or
         "none"). `scope` ∈ synced (default) | account | local — pinned
-        like kind. The property is appended to the type's display
-        order (xFormat.pos). Returns {"propId"}."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        like kind. The property is appended to the owner's display
+        order (xFormat.pos). `type_key` names a type OR a collection
+        (a column on a supertag). Returns {"propId"}."""
+        tid = self._resolve_owner_or_raise(space, type_key)
         return self._post_property(space, tid, body)
 
     def _post_property(self, space, type_id, body):
@@ -2411,8 +2703,7 @@ class _Client:
                     f"meta takes only \"index\" (a search scope or \"none\"); "
                     f"{sorted(extra)} belong under xFormat")
             body["meta"] = {k: str(v) for k, v in meta.items()}
-        res = self._call("post",
-                         f"/v1/spaces/{space}/types/{type_id}/properties", body)
+        res = self._call("post", self._props_path(space, type_id), body)
         self._cat_invalidate(space)   # new prop -> refresh the propId map
         return res
 
@@ -2436,8 +2727,9 @@ class _Client:
         are pinned — refused here (define a new property instead). A
         `set` must hit a LEAF (never an object — containers are
         unset-only); `unset` may name a container (unsetting
-        `xFormat.options.<key>` deletes the option). Returns {}."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        `xFormat.options.<key>` deletes the option). `type_key` is the
+        owner — a type or a collection. Returns {}."""
+        tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         body = {}
         for path in list((set or {}).keys()) + list(unset or []):
@@ -2458,8 +2750,7 @@ class _Client:
             body["unset"] = list(unset)
         if not body:
             raise ValueError("patch_property: nothing to set or unset")
-        self._call("patch",
-                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}", body)
+        self._call("patch", f"{self._props_path(space, tid)}/{pid}", body)
         self._props_cache.pop((space, tid), None)
         return {}
 
@@ -2472,7 +2763,7 @@ class _Client:
         default picked) and appended `pos`. Rename with `name=`,
         recolor with `color=`. Returns {"key", "name", "color",
         "created"}."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         pdef = self._prop_def(space, tid, pid) or {}
         if _slug(pdef) != "choice":
@@ -2497,8 +2788,7 @@ class _Client:
         if pos is not None:
             sets[f"xFormat.options.{key}.pos"] = pos
         if sets:
-            self._call("patch",
-                       f"/v1/spaces/{space}/types/{tid}/properties/{pid}",
+            self._call("patch", f"{self._props_path(space, tid)}/{pid}",
                        {"set": sets})
             self._props_cache.pop((space, tid), None)
         return {"key": key, "name": name or cur.get("name") or key,
@@ -2508,13 +2798,12 @@ class _Client:
         """Delete an option (by key or name). Values still holding the
         key stay as dangling keys — by design; rewrite them first if
         that matters. Returns {"key"}."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         pdef = self._prop_def(space, tid, pid) or {}
         ctx = self._write_ctx(False)
         key = self._option_key(space, tid, pdef, option, ctx)
-        self._call("patch",
-                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}",
+        self._call("patch", f"{self._props_path(space, tid)}/{pid}",
                    {"unset": [f"xFormat.options.{key}"]})
         self._props_cache.pop((space, tid), None)
         return {"key": key}
@@ -2525,7 +2814,7 @@ class _Client:
         = last. Re-expresses xFormat.pos for the whole type (sequential
         writes — the server serializes schema edits). Returns {"order":
         [handles]}."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         rows = sorted(self._type_props(space, tid), key=_prop_sort_key)
         target = next(p for p in rows if p["id"] == pid)
@@ -2542,8 +2831,7 @@ class _Client:
         for p in rest:
             pos = _lexid_after(pos)
             if _xformat(p).get("pos") != pos:
-                self._call("patch",
-                           f"/v1/spaces/{space}/types/{tid}/properties/{p['id']}",
+                self._call("patch", f"{self._props_path(space, tid)}/{p['id']}",
                            {"set": {"xFormat.pos": pos}})
         self._props_cache.pop((space, tid), None)
         return {"order": [p["handle"] for p in rest]}
@@ -2551,32 +2839,61 @@ class _Client:
     def delete_property(self, space, type_key, prop_key):
         """PERMANENTLY tombstone a property definition (CRDT — the id
         never comes back; stored values stay as orphans). Confirm with
-        the user first. Returns {}."""
-        tid = self._resolve_type_or_raise(space, type_key)
+        the user first. `type_key` is the owner — a type or a
+        collection. Returns {}."""
+        tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
-        self._call("delete",
-                   f"/v1/spaces/{space}/types/{tid}/properties/{pid}")
+        self._call("delete", f"{self._props_path(space, tid)}/{pid}")
         self._props_cache.pop((space, tid), None)
         return {}
 
-    def attach_type(self, space, object_id, type_key):
-        """Add a type to an object (`any.types`) — the membership route
-        the UI uses to put an object in a collection. Idempotent;
-        unknown type/object 404. Returns {}."""
+    # --- membership: the one type, the collections (ADR-029 §4) ---------------
+    def set_type(self, space, object_id, type_key):
+        """Change what an object IS: replace its one type. Values under
+        the old type stay stored as orphans (and show again if the
+        type comes back); the new type's body / fields apply from now
+        on. There is no "unset" — every object has a type ("page" for
+        a plain document). Returns {}."""
         tid = self._resolve_type_or_raise(space, type_key)
         self._call("post",
-                   f"/v1/spaces/{space}/properties/{object_id}/attach/{tid}")
+                   f"/v1/spaces/{space}/properties/{object_id}/type/{tid}")
         self._ds_invalidate(space, object_id=object_id)
         return {}
 
-    def detach_type(self, space, object_id, type_key):
-        """Remove a type from an object's `any.types`. Values under that
-        type stay as orphans and come back on re-attach. Returns {}."""
-        tid = self._resolve_type_seg(space, type_key) or type_key
+    def add_to_collection(self, space, object_id, collection_key):
+        """File an object under a collection (a tag; a supertag's
+        columns become writable on it). Idempotent; the type is
+        untouched. Unknown collection errors with the list; a TYPE
+        handle here is refused (that is `set_type`). Returns {}."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
         self._call("post",
-                   f"/v1/spaces/{space}/properties/{object_id}/detach/{tid}")
+                   f"/v1/spaces/{space}/properties/{object_id}/collections/{cid}")
         self._ds_invalidate(space, object_id=object_id)
         return {}
+
+    def remove_from_collection(self, space, object_id, collection_key):
+        """Unfile an object from a collection. Idempotent; the values it
+        held under that collection stay stored (back in view if
+        refiled); the type is untouched. `"wiki"` takes a page out of
+        the page tree. Returns {}."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
+        self._call("delete",
+                   f"/v1/spaces/{space}/properties/{object_id}/collections/{cid}")
+        self._ds_invalidate(space, object_id=object_id)
+        return {}
+
+    def trash(self, space, object_id):
+        """Move an object to the bin (file it under the built-in `bin`
+        collection): it leaves every ordinary listing — `{"any.
+        collections": {"$nin": ["bin"]}}` — and keeps everything else;
+        the server stamps `bin.movedAt` / `movedBy`. Reversible
+        (`restore`); prefer it over `delete_object`, which is
+        permanent. Returns {}."""
+        return self.add_to_collection(space, object_id, _BIN)
+
+    def restore(self, space, object_id):
+        """Bring an object back from the bin, as it was. Returns {}."""
+        return self.remove_from_collection(space, object_id, _BIN)
 
     # --- bundles (SYN-163 / ADR-017 §0) ----------------------------------------
     def _bundle_path(self, space, bundle_id, tail=""):
@@ -2586,16 +2903,18 @@ class _Client:
         enc = bundle_id.replace("/", "%2F").replace(":", "%3A")
         return f"/v1/spaces/{space}/bundles/{enc}{tail}"
 
-    def ensure_bundle(self, space, bundle_id, name=None, root_types=None,
-                      root_properties=None, derived=False):
+    def ensure_bundle(self, space, bundle_id, name=None, root_type=None,
+                      root_collections=None, root_properties=None, derived=False):
         """Adopt-or-install a bundle → {bundle: {id, name, rootId,
         roots, losers, derived}, installed}.
 
         A bundle is one install: one root object registered under a
         permanent id in the space's bundles registry. With a winner
         already registered this is a local read (installed: False);
-        otherwise the root is minted with root_types attached and
-        registered in one change. derived=True installs on the root
+        otherwise the root is minted with its ONE type `root_type`
+        ("page" when omitted — every object has a type), filed under
+        `root_collections`, and registered in one change. derived=True
+        installs on the root
         DERIVED from the bundle id — the same id on every device,
         computed offline, so the install can never fork; the price is
         permanence (a derived root is undeletable, so no uninstall).
@@ -2613,11 +2932,13 @@ class _Client:
                 f"{_BAO_BUNDLE} is the harness bundle — serve registers it in "
                 "the bao space only; memory lives there (get_brain() / "
                 "create_memory() take no space), never in a user space")
-        body = {"id": bundle_id}
+        body = {"id": bundle_id,
+                "rootType": self._resolve_type_or_raise(space, root_type or _PAGE_TYPE)}
         if name:
             body["name"] = name
-        if root_types:
-            body["rootTypes"] = list(root_types)
+        if root_collections:
+            body["rootCollections"] = [self._resolve_collection_or_raise(space, c)
+                                       for c in root_collections]
         if root_properties:
             body["rootProperties"] = root_properties
         if derived:
@@ -2640,25 +2961,32 @@ class _Client:
         row = r.get("bundle") if isinstance(r.get("bundle"), dict) else r
         return {**row, "synced": r.get("synced", True)}
 
-    def bundle_child(self, space, bundle_id, seed, types=None):
+    def bundle_child(self, space, bundle_id, seed, type_key=None,
+                     collections=None):
         """Derive a setup object under the bundle's winner → {objectId}.
 
         Deterministic per (space, root, seed) — the same id on every
-        device, materialized on first call, cascade-deleted with the
-        root. Seeds are permanent. 409 bundle.not_ready until the
-        winner's tree is local (retryable). Cached per run."""
+        device, materialized on first call with its ONE type
+        (`type_key`, "page" when omitted; ignored once it exists) and
+        its collections, cascade-deleted with the root. Seeds are
+        permanent. 409 bundle.not_ready until the winner's tree is
+        local (retryable). Cached per run."""
         key = (space, bundle_id, seed)
         if key not in self._bundle_children:
-            body = {"seed": seed}
-            if types:
-                body["types"] = list(types)
+            tid = self._resolve_type_or_raise(space, type_key or _PAGE_TYPE)
+            cids = [self._resolve_collection_or_raise(space, c)
+                    for c in (collections or [])]
+            body = {"seed": seed, "type": tid}
+            if cids:
+                body["collections"] = cids
             r = self._call("post",
                            self._bundle_path(space, bundle_id, "/children"),
                            body)
             self._bundle_children[key] = r.get("objectId") or ""
-            if self._bundle_children[key] and types:
-                # the child carries exactly the types it was derived with
-                self._object_types[(space, self._bundle_children[key])] = list(types)
+            if self._bundle_children[key] and type_key:
+                # the child carries exactly the type it was derived with
+                self._object_owners[(space, self._bundle_children[key])] = {
+                    "type": tid, "collections": cids}
         return {"objectId": self._bundle_children[key]}
 
     def resolve_loser(self, space, bundle_id, loser_root_id):
@@ -2694,8 +3022,7 @@ class _Client:
                                "no log child (ADR-017 §0a)")
             self._ensure_store(space, "agent_log", "Agent Log",
                                [_TURNS_DATASET, _CHUNKS_DATASET])
-            tid = self._resolve_type_or_raise(space, "agent_log")
-            child = self.bundle_child(space, row["id"], "bao/log/v1", [tid])
+            child = self.bundle_child(space, row["id"], "bao/log/v1", "agent_log")
             self._bundle_children[key] = child["objectId"]
         return self._bundle_children[key]
 
@@ -2782,9 +3109,10 @@ class _Client:
         store key inside it — `agent_memory_items`, `chat_messages`,
         …), objectId, recordId, scope, score}`. With enrich=True
         (default) every hit also gets `title`
-        (the object's any.name) and `type` (its primary type's display
-        name) — and prop-dataset hits gain `prop` ("book.author": which
-        property matched, as xKeys) — resolved in ONE batch query. Pass
+        (the object's any.name) and `type` (its type's display name) —
+        and prop-dataset hits gain `prop` ("book.author": which
+        property matched, as xKeys, under the type or a collection) —
+        resolved in ONE batch query. Pass
         enrich=False to skip the extra query when you only need
         objectIds."""
         body = {"query": query}
@@ -2829,8 +3157,8 @@ class _Client:
 
     def _enrich_hits(self, space, hits):
         """Add `title` + `type` to each search hit in place, best-effort:
-        one $in query resolves object names/types, list_types maps the
-        primary type id to its display name. Never raises — enrichment is
+        one $in query resolves object names/types, the catalog maps the
+        one type to its display name. Never raises — enrichment is
         additive, a failure leaves the raw hits untouched."""
         ids = list({h["objectId"] for h in hits if h.get("objectId")})
         if not ids:
@@ -2850,24 +3178,20 @@ class _Client:
                 continue
             meta = obj.get("any") or {}
             h["title"] = meta.get("name")
-            types = meta.get("types") or []
-            # primary type = the first listed user type; the hidden
-            # built-ins (page, miniapp, bin) and `__type__` never win
-            primary = next((t for t in types
-                            if t not in (_PAGE_TYPE, _MINIAPP_TYPE, _BIN_TYPE,
-                                         "dataview", "__type__")),
-                           types[0] if types else None)
-            h["type"] = type_name.get(primary, primary)
+            tkey = meta.get("type")   # normalized rows carry xKeys (A3)
+            h["type"] = type_name.get(tkey, tkey)
             # prop-dataset hits carry a raw propId as recordId — name the
-            # matched property as "typeXKey.propXKey" (builtin name/
-            # description recordIds are already readable)
+            # matched property as "ownerXKey.propXKey" under whichever
+            # owner declares it (builtin name/description recordIds are
+            # already readable)
             rid = h.get("recordId")
             if h.get("dataset") == "prop" and rid not in ("name",
                                                           "description"):
-                for tkey in types:   # normalized rows carry xKeys (A3)
-                    tid = self._resolve_type_seg(space, tkey)
+                owners = [tkey, *(meta.get("collections") or [])]
+                for okey in owners:
+                    tid = self._resolve_def(space, okey) if isinstance(okey, str) else None
                     row = self._catalog(space)["by_id"].get(tid or "")
-                    if not self._is_user_type(row):
+                    if not self._is_user_def(row):
                         continue
                     p = next((p for p in self._type_props(space, tid)
                               if p.get("id") == rid), None)
@@ -2894,7 +3218,8 @@ class _Client:
             if src.get("recordId"):
                 out["recordId"] = src["recordId"]
         elif ds == "prop":
-            tid, pid = src.get("typeId"), src.get("recordId")
+            tid = src.get("ownerId") or src.get("typeId")
+            pid = src.get("recordId")
             row = self._catalog(space)["by_id"].get(tid) if tid else None
             prop = pid
             if row:
@@ -2949,17 +3274,23 @@ class _Client:
             self._catalog_cache = self._call("get", "/v1/catalog").get("usecases") or []
         return self._catalog_cache
 
-    def _catalog_type_xkeys(self):
-        """The xKeys of the types the catalog's apps bring (wiki, person,
-        …) — reserved handles a user type may not take. One read per
-        run; a server without a catalog reserves nothing."""
+    def _catalog_handles(self):
+        """The handles the catalog's apps bring — types (person, deal, …)
+        AND collections (wiki, contact, …) — reserved: a user definition
+        of either kind may not take one. One read per run; a server
+        without a catalog reserves nothing."""
         try:
             usecases = self._catalog_usecases()
         except AnyError:
             return set()
-        return {(b.get("type") or {}).get("xKey")
-                for u in usecases for b in u.get("bundles") or []
-                if (b.get("type") or {}).get("xKey")}
+        out = set()
+        for u in usecases:
+            for b in u.get("bundles") or []:
+                for slot in ("type", "collection"):
+                    xk = (b.get(slot) or {}).get("xKey")
+                    if xk:
+                        out.add(xk)
+        return out
 
     def _usecase_of_bundle(self, bundle_id):
         for u in self._catalog_usecases():
@@ -2972,23 +3303,27 @@ class _Client:
         """The apps a space has — what shows in its sidebar → [{name,
         bundleId?, rootId, usecase?, description, hidden, pinned}].
 
-        Apps are DATA: every installed app is an object carrying the
-        `miniapp` marker with `bundle` = the install's id (the wiki is
-        `system:wiki/v1`, the chat `system:general-chat/v1`, contacts,
-        CRM, …); a row without a bundle is an object the user pinned.
+        Apps are DATA: every installed app is an object filed under the
+        built-in `miniapp` collection with `bundle` = the install's id
+        (the wiki is `system:wiki/v1`, the chat `system:general-chat/v1`,
+        contacts, CRM, …); a row without a bundle is an object the user
+        pinned. These are the server's apps — each space installs its
+        own set from the catalog, and the user names them (wiki,
+        collections, tasks, …); bao's agent-authored applets are a
+        different thing (`applet@v1`).
         `usecase` and `description` come from the server's catalog for
         its own apps (the root's own `any.description` wins when set).
         Never assume a wiki or contacts exists — read this. To offer
         more, `list_available_apps`; to install, `setup_app`."""
         rows = self.query_objects(
             space, normalize=False,
-            filter={"$and": [{"any.types": _MINIAPP_TYPE},
-                             {"any.types": {"$nin": [_BIN_TYPE]}}]},
-            sort=[f"{_MINIAPP_TYPE}.pos"])
+            filter={"$and": [{"any.collections": _MINIAPP},
+                             {"any.collections": {"$nin": [_BIN]}}]},
+            sort=[f"{_MINIAPP}.pos"])
         out = []
         for r in rows:
             anyg = r.get("any") or {}
-            mini = r.get(_MINIAPP_TYPE) or {}
+            mini = r.get(_MINIAPP) or {}
             bundle = mini.get("bundle")
             row = {"name": anyg.get("name"), "rootId": r.get("id"),
                    "description": anyg.get("description") or "",
@@ -3020,9 +3355,13 @@ class _Client:
     def setup_app(self, space, usecase):
         """Install (or adopt) one of the catalog's apps in a space,
         dependencies first → [{usecase, bundleId, rootId, installed,
-        typeId?, properties?}] — `properties` is the type's xKey →
-        propId map. Idempotent: run it again and everything adopts.
-        The user's call — offer, then install on a yes."""
+        typeId?, collectionId?, properties?}] — a bundle declares a
+        TYPE (person, deal, journal: what its objects are) or a
+        COLLECTION (wiki, contact, investor: what objects are filed
+        under — a contact is a `person` filed under `contact`);
+        `properties` is that definition's xKey → propId map.
+        Idempotent: run it again and everything adopts. The user's
+        call — offer, then install on a yes."""
         r = self._call("post", f"/v1/catalog/{usecase}/setup", {"spaceId": space})
         self._cat_invalidate(space)
         out = []
@@ -3032,6 +3371,8 @@ class _Client:
                    "installed": bool(b.get("installed"))}
             if b.get("typeId"):
                 row["typeId"] = b["typeId"]
+            if b.get("collectionId"):
+                row["collectionId"] = b["collectionId"]
             if b.get("properties"):
                 row["properties"] = b["properties"]
             out.append(row)
@@ -3040,13 +3381,15 @@ class _Client:
     # --- agent memory (write path; reads go through /query on the brain) --------
     def _ensure_store(self, space, xkey, name, datasets):
         """Lazily provision a guest-owned agent store (ADR-017 §1,
-        ADR-027 §2): ensure the hidden user type by xKey + one part per
-        dataset draft. Idempotent; the dataset ensure reconciles
-        mutable search.* leaves. Cached per run → {key: collection}."""
+        ADR-027 §2): ensure the hidden, bodiless user type by xKey +
+        one part per dataset draft. Idempotent; the dataset ensure
+        reconciles mutable search.* leaves. Cached per run → {key:
+        collection}."""
         key = (space, xkey)
         if key in self._ensured_stores:
             return self._ensured_stores[key]
-        self.create_type(space, {"name": name, "xKey": xkey, "hidden": True})
+        self.create_type(space, {"name": name, "xKey": xkey, "hidden": True,
+                                 "body": False})
         colls = {}
         for d in datasets:
             colls[d["key"]] = self.create_dataset(space, xkey, d)["collection"]
@@ -3075,8 +3418,7 @@ class _Client:
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
                             _ROI_DATASET])
-        tid = self._resolve_type_or_raise(space, "agent_brain")
-        return self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", [tid])
+        return self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
 
     def collection(self, space, type_key, dataset_key):
         """The collection a type's dataset lives in (`<typeId>_<key>`),
@@ -3503,10 +3845,11 @@ def general_chat(spaceConfig):
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def ensure_bundle(spaceConfig, bundle_id, name=None, root_types=None,
-                  root_properties=None, derived=False):
+def ensure_bundle(spaceConfig, bundle_id, name=None, root_type=None,
+                  root_collections=None, root_properties=None, derived=False):
     return _c().ensure_bundle(_space(spaceConfig), bundle_id, name,
-                              root_types, root_properties, derived)
+                              root_type, root_collections, root_properties,
+                              derived)
 
 
 @span(kind="getter")  # noqa: F821 - guest global
@@ -3520,8 +3863,9 @@ def get_bundle(spaceConfig, bundle_id):
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def bundle_child(spaceConfig, bundle_id, seed, types=None):
-    return _c().bundle_child(_space(spaceConfig), bundle_id, seed, types)
+def bundle_child(spaceConfig, bundle_id, seed, type_key=None, collections=None):
+    return _c().bundle_child(_space(spaceConfig), bundle_id, seed, type_key,
+                             collections)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
@@ -3583,13 +3927,39 @@ def delete_property(spaceConfig, type_key, prop_key):
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def attach_type(spaceConfig, object_id, type_key):
-    return _c().attach_type(_space(spaceConfig), object_id, type_key)
+def set_type(spaceConfig, object_id, type_key):
+    return _c().set_type(_space(spaceConfig), object_id, type_key)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
-def detach_type(spaceConfig, object_id, type_key):
-    return _c().detach_type(_space(spaceConfig), object_id, type_key)
+def add_to_collection(spaceConfig, object_id, collection_key):
+    return _c().add_to_collection(_space(spaceConfig), object_id, collection_key)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def remove_from_collection(spaceConfig, object_id, collection_key):
+    return _c().remove_from_collection(_space(spaceConfig), object_id,
+                                       collection_key)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def trash(spaceConfig, object_id):
+    return _c().trash(_space(spaceConfig), object_id)
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def restore(spaceConfig, object_id):
+    return _c().restore(_space(spaceConfig), object_id)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def list_collections(spaceConfig):
+    return _c().list_collections(_space(spaceConfig))
+
+
+@span(kind="mutator")  # noqa: F821 - guest global
+def create_collection(spaceConfig, body):
+    return _c().create_collection(_space(spaceConfig), body)
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
@@ -3624,7 +3994,7 @@ def search(spaceConfig, query, scopes=None, limit=None, mode=None,
         raise TypeError(
             f"search() got unexpected keyword(s) {sorted(kw)} — search has "
             "no type filter. List objects of a type with "
-            "query_objects(spaceConfig, filter={'any.types': '<xKey>'}), "
+            "query_objects(spaceConfig, filter={'any.type': '<xKey>'}), "
             "or post-filter hits on h['type'].")
     return _c().search(_space(spaceConfig), query, scopes, limit, mode, enrich)
 
@@ -3703,7 +4073,8 @@ for _f in (create_object, move_object, list_children, update_object,
            create_space, open_in_ui, list_types,
            list_properties, patch_property, set_option, remove_option,
            reorder_property, delete_property,
-           attach_type, detach_type,
+           set_type, add_to_collection, remove_from_collection, trash, restore,
+           list_collections, create_collection,
            create_type, add_property, append_turn, create_chunk,
            chat_send, search, backlinks, links, backlinks_everywhere,
            list_apps, list_available_apps, setup_app, collection,

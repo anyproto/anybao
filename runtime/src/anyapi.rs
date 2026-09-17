@@ -478,7 +478,9 @@ impl Client {
     /// verbatim in bodies; ids under `system:` are the catalog's, 409
     /// `bundle.reserved`). With a winner already registered this is a
     /// local read (`installed: false`); otherwise the server mints the
-    /// root with `root_types` attached and registers it in one change.
+    /// root of type `root_type` (every object has exactly one; `page`
+    /// for a plain document — ADR-029 §7), filed under
+    /// `root_collections`, and registers it in one change.
     /// Reply `{bundle: {id, rootId, roots, losers, derived},
     /// installed}`. `derived: true` installs on the root DERIVED from
     /// the bundle id — the same id on every device, computed offline,
@@ -492,10 +494,14 @@ impl Client {
         space_id: &str,
         id: &str,
         name: &str,
-        root_types: &[&str],
+        root_type: &str,
+        root_collections: &[&str],
         derived: bool,
     ) -> Result<Value, AnyError> {
-        let mut body = json!({"id": id, "name": name, "rootTypes": root_types});
+        let mut body = json!({"id": id, "name": name, "rootType": root_type});
+        if !root_collections.is_empty() {
+            body["rootCollections"] = json!(root_collections);
+        }
         if derived {
             body["derived"] = json!(true);
         }
@@ -519,20 +525,23 @@ impl Client {
     /// POST /v1/spaces/{s}/bundles/{id}/children — derive a setup
     /// object under the bundle's winner: deterministic per (space,
     /// root, seed), same id on every device, cascade-deleted with the
-    /// root. `types` are type ids attached on first materialization
-    /// (ignored after). Seeds are permanent. 409 `bundle.not_ready`
-    /// until the winner's tree is local (retryable).
+    /// root. `type_id` is the child's one type (required — the server
+    /// stamps none) and `collections` the collections it is filed
+    /// under, both set on first materialization (ignored after). Seeds
+    /// are permanent. 409 `bundle.not_ready` until the winner's tree
+    /// is local (retryable).
     pub fn bundle_child(
         &self,
         space_id: &str,
         bundle_id: &str,
         seed: &str,
-        types: &[&str],
+        type_id: &str,
+        collections: &[&str],
     ) -> Result<Value, AnyError> {
         let enc = bundle_id.replace('/', "%2F");
-        let mut body = json!({"seed": seed});
-        if !types.is_empty() {
-            body["types"] = json!(types);
+        let mut body = json!({"seed": seed, "type": type_id});
+        if !collections.is_empty() {
+            body["collections"] = json!(collections);
         }
         self.call(
             "POST",
@@ -755,13 +764,14 @@ impl Client {
         )
     }
 
-    // --- types & properties (catalog source) ---
+    // --- types, collections & properties (catalog source) ---
     /// GET /v1/spaces/{s}/types?includeHidden=true — every type,
-    /// hidden ones included: the harness types are hidden (ADR-027
-    /// §2) and the built-ins `page` / `miniapp` / `bin` / `dataview`
-    /// are hidden by construction, so a listing that omits them would
-    /// re-create what exists. Rows: `{id, xKey, name, hidden?,
-    /// builtIn?, weight?, layout?}`.
+    /// hidden ones included: the store types are hidden (ADR-027 §2,
+    /// ADR-029 §7) and the built-ins `page` / `dataview` are hidden by
+    /// construction, so a listing that omits them would re-create
+    /// what exists. Rows: `{id, xKey, name, hidden?, builtIn?,
+    /// layout?}`; the four synthetic rows (`any`, `spaceIndex`,
+    /// `type`, `collection`) come first.
     pub fn list_types(&self, space_id: &str) -> Result<Vec<Value>, AnyError> {
         Ok(records_of(
             self.call(
@@ -773,9 +783,9 @@ impl Client {
         ))
     }
 
-    /// PATCH /v1/spaces/{s}/types/{t} — the type's rendering slice:
-    /// `hidden`, `weight`, `layout`, `meta`. 400 `type.registered` on
-    /// a built-in.
+    /// PATCH /v1/spaces/{s}/types/{t} — the type's display slice:
+    /// `name`, `description`, `iconCid`, `hidden`, `layout`, `meta`.
+    /// 400 `type.registered` on a built-in.
     pub fn patch_type(
         &self,
         space_id: &str,
@@ -789,20 +799,20 @@ impl Client {
         )
     }
 
-    /// POST /v1/spaces/{s}/properties/{o}/attach/{t} — the object
-    /// gains the type (idempotent). The one way an object comes to
-    /// hold a type's collections after create.
-    pub fn attach_type(
-        &self,
-        space_id: &str,
-        object_id: &str,
-        type_id: &str,
-    ) -> Result<Value, AnyError> {
-        self.call(
-            "POST",
-            &format!("/v1/spaces/{space_id}/properties/{object_id}/attach/{type_id}"),
-            None,
-        )
+    /// GET /v1/spaces/{s}/collections?includeHidden=true — every
+    /// collection (ADR-029 §2): the synthetic meta row `collection`,
+    /// the hidden built-ins `miniapp` / `bin`, then the space's own.
+    /// Rows: `{id, xKey, name, hidden?, builtIn?}`. Types and
+    /// collections share one handle namespace.
+    pub fn list_collections(&self, space_id: &str) -> Result<Vec<Value>, AnyError> {
+        Ok(records_of(
+            self.call(
+                "GET",
+                &format!("/v1/spaces/{space_id}/collections?includeHidden=true"),
+                None,
+            )?,
+            "collections",
+        ))
     }
 
     /// [{id, name, xKey, kind}] — the xKey↔propId catalog map.
@@ -1545,12 +1555,12 @@ mod tests {
     }
 
     #[test]
-    fn catalog_types_and_attach_paths() {
+    fn catalog_types_and_collections_paths() {
         let (c, log) = stub_client();
         c.catalog_setup("general-chat", "sp").unwrap();
         c.list_types("sp").unwrap();
         c.patch_type("sp", "t1", &json!({"hidden": true})).unwrap();
-        c.attach_type("sp", "o1", "page").unwrap();
+        c.list_collections("sp").unwrap();
         c.add_part(
             "sp",
             "t1",
@@ -1576,9 +1586,10 @@ mod tests {
                 Some(json!({"hidden": true}))
             )
         );
+        // hidden collections (`miniapp`, `bin`) must list too
         assert_eq!(
             (calls[3].0.as_str(), calls[3].1.as_str()),
-            ("POST", "/v1/spaces/sp/properties/o1/attach/page")
+            ("GET", "/v1/spaces/sp/collections?includeHidden=true")
         );
         assert_eq!(calls[4].1, "/v1/spaces/sp/types/t1/parts");
     }
@@ -1592,7 +1603,7 @@ mod tests {
         c.list_spaces(Some("active")).unwrap();
         c.search("sp", "q", &json!({"limit": 3})).unwrap();
         c.backlinks("sp", "o").unwrap();
-        c.bundle_child("sp", "bao/v1", "bao/config/v1", &["t1"])
+        c.bundle_child("sp", "bao/v1", "bao/config/v1", "t1", &[])
             .unwrap();
         c.add_part("sp", "t1", &json!({"key": "d", "datasets": [{"key": "d"}]}))
             .unwrap();
@@ -1624,33 +1635,36 @@ mod tests {
             Some(json!({"name": "bao"}))
         );
         assert_eq!(calls[4].2, Some(json!({"query": "q", "limit": 3})));
+        // one type per child, always named; no collections key when
+        // it is filed under none
         assert_eq!(
             calls[6].2,
-            Some(json!({"seed": "bao/config/v1", "types": ["t1"]}))
+            Some(json!({"seed": "bao/config/v1", "type": "t1"}))
         );
     }
 
     #[test]
     fn ensure_bundle_posts_id_verbatim_in_body() {
         let (c, log) = stub_client();
-        c.ensure_bundle("sp", "bao/v1", "bao", &["page"], false)
+        c.ensure_bundle("sp", "bao/v1", "bao", "page", &[], false)
             .unwrap();
-        c.ensure_bundle("sp", "x/v1", "X", &[], true).unwrap();
+        c.ensure_bundle("sp", "x/v1", "X", "page", &["miniapp"], true)
+            .unwrap();
         let calls = log.lock().unwrap();
         assert_eq!(calls[0].0, "POST");
         assert_eq!(calls[0].1, "/v1/spaces/sp/bundles");
         // the slash is part of the id — encoded only in PATH segments,
         // verbatim in bodies; a created install carries no `derived`
-        // key at all
+        // key at all, and no `rootCollections` when filed under none
         assert_eq!(
             calls[0].2,
             Some(json!({"id": "bao/v1", "name": "bao",
-                        "rootTypes": ["page"]}))
+                        "rootType": "page"}))
         );
         assert_eq!(
             calls[1].2,
-            Some(json!({"id": "x/v1", "name": "X", "rootTypes": [],
-                        "derived": true}))
+            Some(json!({"id": "x/v1", "name": "X", "rootType": "page",
+                        "rootCollections": ["miniapp"], "derived": true}))
         );
     }
 

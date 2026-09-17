@@ -267,12 +267,12 @@ def _ensure_store(c, space):
     c._create_dataset(space, PROPOSAL_TYPE_XKEY,
                      ENRICH_PROPOSAL_ITEMS_DATASET)
     hubs = c.query_objects(space,
-                           filter={"any.types": hub_type["typeId"]},
+                           filter={"any.type": hub_type["typeId"]},
                            limit=1)
     if hubs:
         return hubs[0]["id"]
     return c.create_object(space, {
-        "types": [HUB_TYPE_XKEY], "name": "Enrichments"})["objectId"]
+        "type": HUB_TYPE_XKEY, "name": "Enrichments"})["objectId"]
 
 
 def _source(space, transcript_id, blocks):
@@ -375,7 +375,7 @@ def propose(space, transcript_id, opts=None):
             name = rows[0]["any"]["name"]
         prop_name = f"Enrichment proposal — {name}"
         pid = c.create_object(space, {
-            "types": ["enrich_proposal"],
+            "type": "enrich_proposal",
             "initialProperties": {"any": {"name": prop_name}}})["objectId"]
     except anymod.AnyError as e:
         return {"ok": False, "error": f"create proposal failed: {e}"}
@@ -456,11 +456,11 @@ def apply(space, proposal_id):
         items = c.query(space, proposal_id, "enrich_proposal_items",
                         limit=1000)
     except ValueError as e:
-        # the key→collection resolution (ADR-027 §2): a deleted or
-        # unknown proposal object declares no proposal dataset — the
-        # same "nothing to apply" as an empty draft. Any other
-        # resolution error (ambiguous declaration, bad space) surfaces.
-        if "carries no type declaring" not in str(e):
+        # the key→collection resolution (ADR-027 §2, ADR-029 §2): a
+        # deleted or unknown proposal object has no type declaring the
+        # proposal dataset — the same "nothing to apply" as an empty
+        # draft. Any other resolution error (bad space) surfaces.
+        if "declares no dataset" not in str(e):
             return {"ok": False, "proposalId": proposal_id,
                     "error": f"apply failed: {e}"}
         items = []
@@ -491,7 +491,7 @@ def apply(space, proposal_id):
                     continue
                 if key not in minted:
                     minted[key] = c.create_object(space, {
-                        "types": [key[0]], "name": key[1]})["objectId"]
+                        "type": key[0], "name": key[1]})["objectId"]
                     created += 1
                 target = minted[key]
             is_prop = (it.get("targetKind") or "") == "property"

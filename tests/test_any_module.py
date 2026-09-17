@@ -150,7 +150,7 @@ _TRG = {
     "/types/bafyTRG/datasets": {"datasets": [
         {"id": "d1", "key": "agent_triggers", "collection": "bafyTRG_agent_triggers",
          "module": "records", "partId": "p1"}]},
-    "/objects/query": {"records": [{"id": "obj1", "any": {"types": ["bafyTRG"]}}]},
+    "/objects/query": {"records": [{"id": "obj1", "any": {"type": "bafyTRG"}}]},
 }
 
 
@@ -165,8 +165,8 @@ def test_dataset_keys_resolve_to_the_objects_collection():
     # an already-resolved collection passes through
     c.query("s1", "obj1", "bafyTRG_agent_triggers")
     assert fx.calls[-1][2]["dataset"] == "bafyTRG_agent_triggers"
-    # a key none of the object's types declare errors with the list
-    with pytest.raises(ValueError, match='no type declaring a dataset "ghost".*agent_triggers'):
+    # a key the object's type does not declare errors with the list
+    with pytest.raises(ValueError, match='declares no dataset "ghost".*agent_triggers'):
         c.query("s1", "obj1", "ghost")
     assert c.collection("s1", "agent_trigger", "agent_triggers") == "bafyTRG_agent_triggers"
     assert c.collection("s1", "agent_trigger", "nope") is None
@@ -205,17 +205,27 @@ def test_object_type_property_creation_paths():
     c.create_object("s1", {})
     c.create_type("s1", {"name": "T"})
     c.add_property("s1", "t1", {"name": "P"})
+    # the catalog spans BOTH definition surfaces (one handle namespace,
+    # ADR-029 §2): every catalog read is a types + a collections GET
     assert [(v, p) for v, p, _ in fx.calls] == [
+        ("GET", "/v1/spaces/s1/types"),          # the default type `page` resolves
+        ("GET", "/v1/spaces/s1/collections"),
         ("POST", "/v1/spaces/s1/objects"),
-        ("GET", "/v1/spaces/s1/types"),          # idempotency probe
-        ("GET", "/v1/catalog"),                  # catalog types are reserved (once per run)
+        ("GET", "/v1/spaces/s1/types"),          # idempotency probe, both surfaces
+        ("GET", "/v1/spaces/s1/collections"),
+        ("GET", "/v1/catalog"),                  # catalog handles are reserved (once per run)
         ("GET", "/v1/spaces/s1/types/any/properties"),  # record-root keys are reserved (BOB-68)
         ("POST", "/v1/spaces/s1/types"),
+        ("GET", "/v1/spaces/s1/types/t2/datasets"),     # the default type: a body (ADR-029 §3)
+        ("POST", "/v1/spaces/s1/types/t2/parts"),
         ("GET", "/v1/spaces/s1/bundles"),        # collections app probe (§5)
         ("POST", "/v1/catalog/collections/setup"),
-        ("GET", "/v1/spaces/s1/types"),          # add_property xKey resolution
+        ("GET", "/v1/spaces/s1/types"),          # add_property owner resolution
+        ("GET", "/v1/spaces/s1/collections"),
         ("GET", "/v1/spaces/s1/types/t1/properties"),   # xFormat.pos append (ADR-027 §4)
         ("POST", "/v1/spaces/s1/types/t1/properties")]
+    part = next(b for v, p, b in fx.calls if p.endswith("/parts"))
+    assert part == {"key": "body", "datasets": [{"module": "editor", "shared": True}]}
 
 
 # --- create_type: the anyHelper composite --------------------------------------
@@ -315,7 +325,22 @@ def test_create_type_idempotent_adds_only_missing():
     assert r == {"typeId": "t9", "xKey": "task", "created": False,
                  "addedProps": {"priority": "p2"}}
     posts = [p for v, p, _ in fx.calls if v == "POST"]
-    assert posts == ["/v1/spaces/s1/types/t9/properties"]  # no type POST, one prop
+    # no type POST, one prop; the body part is healed onto the existing
+    # type that lacks it (ADR-029 §3)
+    assert posts == ["/v1/spaces/s1/types/t9/properties", "/v1/spaces/s1/types/t9/parts"]
+    # a type that already declares a body is left alone
+    fx2 = wire(replies={
+        "/types": {"types": [{"id": "t9", "name": "Task", "xKey": "task"}]},
+        "/types/t9/datasets": _TASK_BODY,
+        "/types/t9/properties": {"properties": [{"id": "p1", "xKey": "status"}]}})
+    client(fx2).create_type("s1", {"name": "Task", "properties": [{"name": "status"}]})
+    assert not [p for v, p, _ in fx2.calls if v == "POST"]
+    # `"body": False` keeps a store bodiless (no datasets read at all)
+    fx3 = wire(replies={"/types": {"types": [], "typeId": "t1"},
+                        "/types/any/properties": {}})
+    client(fx3).create_type("s1", {"name": "Agent Log", "xKey": "agent_log",
+                                   "hidden": True, "body": False})
+    assert not any(p.endswith("/datasets") or p.endswith("/parts") for _, p, _ in fx3.calls)
     # the record-root guard gates minting only: ensuring an existing type
     # reads no `any` catalog (the fixture would 404 it)
     assert "/v1/spaces/s1/types/any/properties" not in [p for _, p, _ in fx.calls]
@@ -367,9 +392,9 @@ def test_create_type_row_root_key_errors():
 def test_create_object_rejects_synthetic_types():
     fx = wire()
     with pytest.raises(ValueError, match="synthetic"):
-        client(fx).create_object("s1", {"types": ["type"]})
+        client(fx).create_object("s1", {"type": "type"})
     with pytest.raises(ValueError, match="synthetic"):
-        client(fx).create_object("s1", {"types": ["page", "spaceIndex"]})
+        client(fx).create_object("s1", {"type": "page", "collections": ["spaceIndex"]})
     assert fx.calls == []
 
 
@@ -393,10 +418,16 @@ _ANY_PROPS = {"properties": [
     {"id": "name", "name": "Name", "kind": "string", "scope": "synced"},
     {"id": "description", "kind": "string", "scope": "synced"},
     {"id": "types", "kind": "array", "scope": "synced"}]}
+# `task` has a body: every type bao mints declares the shared editor
+# part (ADR-029 §3)
+_TASK_BODY = {"datasets": [
+    {"id": "dBODY", "key": "editor_blocks", "collection": "editor_blocks",
+     "module": "editor", "shared": True, "partId": "pBODY"}]}
 _CAT = {
     "/types": {"types": [
         {"id": "bafyTASK", "name": "Task", "xKey": "task"},
         {"id": "page", "name": "page", "xKey": "page", "hidden": True, "builtIn": True}]},
+    "/types/bafyTASK/datasets": _TASK_BODY,
     "/types/any/properties": _ANY_PROPS,
     "/types/bafyTASK/properties": {"properties": [
         {"id": "bafySTATUS", "name": "Status", "xKey": "status"},
@@ -405,23 +436,23 @@ _CAT = {
 
 def test_query_objects_normalizes_user_groups_keeps_builtins():
     fx = wire(replies={**_CAT, "/objects/query": {"records": [
-        {"id": "o1", "any": {"name": "Ship", "types": ["bafyTASK", "page"]},
+        {"id": "o1", "any": {"name": "Ship", "type": "bafyTASK"},
          "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}]}})
-    [rec] = client(fx).query_objects("s1", filter={"any.types": "task"})
-    # user group + its props rekeyed to xKeys; any.types VALUES too;
+    [rec] = client(fx).query_objects("s1", filter={"any.type": "task"})
+    # user group + its props rekeyed to xKeys; the any.type VALUE too;
     # builtins (page, id) verbatim
-    assert rec == {"id": "o1", "any": {"name": "Ship", "types": ["task", "page"]},
+    assert rec == {"id": "o1", "any": {"name": "Ship", "type": "task"},
                    "task": {"status": "open", "priority": 3}}
 
 
 def test_query_objects_resolves_filter_and_sort_xkey_paths():
     fx = wire(replies={**_CAT, "/objects/query": {"records": []}})
-    client(fx).query_objects("s1", filter={"any.types": "task",
+    client(fx).query_objects("s1", filter={"any.type": "task",
                                            "task.status": "open"},
                              sort=["-task.priority"])
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
-    # any.types VALUE + dotted xKey paths resolved to server ids; builtin passthrough
-    assert body["filter"] == {"any.types": "bafyTASK",
+    # any.type VALUE + dotted xKey paths resolved to server ids; builtin passthrough
+    assert body["filter"] == {"any.type": "bafyTASK",
                               "bafyTASK.bafySTATUS": "open"}
     assert body["sort"] == ["-bafyTASK.bafyPRIO"]
 
@@ -429,20 +460,21 @@ def test_query_objects_resolves_filter_and_sort_xkey_paths():
 def test_create_object_resolves_types_and_property_groups():
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
     client(fx).create_object("s1", {
-        "types": ["task"],
+        "type": "task",
         "initialProperties": {"any": {"name": "Ship it"},
                               "task": {"status": "open", "priority": 3}}})
     body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
-    assert body == {"types": ["bafyTASK"], "initialProperties": {
+    # one type, no collections key when filed under none
+    assert body == {"type": "bafyTASK", "initialProperties": {
         "any": {"name": "Ship it"},                    # reserved: literal
         "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}}
 
 
 def test_create_object_unknown_property_raises_never_drops():
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
-    with pytest.raises(ValueError, match='unknown property "nope" on type "task"'):
+    with pytest.raises(ValueError, match='unknown property "nope" on "task"'):
         client(fx).create_object("s1", {
-            "types": ["task"], "initialProperties": {"task": {"nope": 1}}})
+            "type": "task", "initialProperties": {"task": {"nope": 1}}})
     # nothing was written — the object POST never fired
     assert not any(p == "/v1/spaces/s1/objects" for v, p, _ in fx.calls)
 
@@ -450,7 +482,7 @@ def test_create_object_unknown_property_raises_never_drops():
 def test_create_object_unknown_type_lists_available():
     fx = wire(replies=_CAT)
     with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
-        client(fx).create_object("s1", {"types": ["ghost"]})
+        client(fx).create_object("s1", {"type": "ghost"})
 
 
 def test_space_argument_must_be_a_string():
@@ -458,7 +490,7 @@ def test_space_argument_must_be_a_string():
     # fail at the boundary, not frames deep as an unhashable dict key
     fx = wire(replies=_CAT)
     with pytest.raises(TypeError, match="space must be a space id string"):
-        client(fx).query_objects(["s1"], filter={"any.types": "task"})
+        client(fx).query_objects(["s1"], filter={"any.type": "task"})
 
 
 _CHAT_SETUP = {"usecase": "general-chat", "bundles": [{
@@ -510,7 +542,7 @@ def test_delete_object_wire_path():
 
 def test_create_object_routes_top_level_name_and_description():
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
-    client(fx).create_object("s1", {"types": ["task"], "name": "Dune",
+    client(fx).create_object("s1", {"type": "task", "name": "Dune",
                                     "description": "a note"})
     body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
     assert body["initialProperties"]["any"] == {"name": "Dune",
@@ -519,12 +551,12 @@ def test_create_object_routes_top_level_name_and_description():
 
 
 def test_create_object_markdown_writes_the_body_after_create():
-    # one call creates a page: the body lives on the built-in `page`
-    # (added to `types` — no write attaches a type, ADR-027 §3) and
-    # markdown (alias `body`) rides as a put_markdown after the create
+    # one call creates a typed page: the object's ONE type declares the
+    # body (ADR-029 §3) and markdown (alias `body`) rides as a
+    # put_markdown after the create
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"},
                        "/editor/editor_blocks/markdown": {}})
-    client(fx).create_object("s1", {"types": ["task"], "name": "Dune",
+    client(fx).create_object("s1", {"type": "task", "name": "Dune",
                                     "markdown": "# Dune\n\nsand"})
     paths = [(v, p) for v, p, _ in fx.calls]
     i_create = paths.index(("POST", "/v1/spaces/s1/objects"))
@@ -532,50 +564,105 @@ def test_create_object_markdown_writes_the_body_after_create():
     assert i_create < i_md
     body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
     assert "markdown" not in body
-    assert body["types"] == ["bafyTASK", "page"]
+    assert body["type"] == "bafyTASK" and "collections" not in body
     md = next(b for v, p, b in fx.calls if p.endswith("/editor/editor_blocks/markdown"))
     assert md["content"] == "# Dune\n\nsand"
-    # no attach round-trip: the create already carried `page`
-    assert not any("/attach/" in p for _, p, _ in fx.calls)
+    # no membership round-trip: the type carries the body
+    assert not any("/properties/" in p for _, p, _ in fx.calls)
+
+
+def test_create_object_defaults_to_page_and_refuses_the_old_shape():
+    # no `type` = a plain document (ADR-029 §3); `types` is a hard
+    # error naming the two slots — the wire would 400 anyway, but only
+    # after the handles resolved
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
+    c = client(fx)
+    c.create_object("s1", {"name": "Note", "markdown": "hi"})
+    body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
+    assert body == {"type": "page", "initialProperties": {"any": {"name": "Note"}}}
+    with pytest.raises(ValueError, match='no "types".*"collections"'):
+        c.create_object("s1", {"types": ["task"]})
+
+
+def test_create_object_files_under_collections_and_guards_the_slots():
+    # a contact is a person FILED UNDER contact (ADR-029 §6): the type
+    # slot takes a type, the collections slot collections — the wrong
+    # kind in either is refused with the verb that fits
+    cat = {**_CAT, "/collections": {"collections": [
+        {"id": "bafyCONTACT", "name": "Contact", "xKey": "contact"}]},
+        "/collections/bafyCONTACT/properties": {"properties": [
+            {"id": "pSTAGE", "name": "Stage", "xKey": "stage"}]},
+        "/objects": {"objectId": "o9"}}
+    fx = wire(replies=cat)
+    c = client(fx)
+    c.create_object("s1", {"type": "task", "collections": ["contact"],
+                           "initialProperties": {"contact": {"stage": "warm"}}})
+    body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
+    # the collection's group is keyed by ITS id — the owner of the values
+    assert body == {"type": "bafyTASK", "collections": ["bafyCONTACT"],
+                    "initialProperties": {"bafyCONTACT": {"pSTAGE": "warm"}}}
+    with pytest.raises(ValueError, match="is a collection, not a type.*add_to_collection"):
+        c.create_object("s1", {"type": "contact"})
+    with pytest.raises(ValueError, match="is a type, not a collection.*set_type"):
+        c.create_object("s1", {"collections": ["task"]})
+
+
+def test_create_object_markdown_needs_a_body_on_the_type():
+    # a type without an editor part cannot hold markdown: an error
+    # naming the fix, never a silent retype to page (ADR-029 §3)
+    cat = {**_CAT, "/types/bafyTASK/datasets": {"datasets": []}}
+    fx = wire(replies=cat)
+    with pytest.raises(ValueError, match='type "task" declares no body.*create_type'):
+        client(fx).create_object("s1", {"type": "task", "markdown": "x"})
+    assert not any(p == "/v1/spaces/s1/objects" for v, p, _ in fx.calls)
 
 
 def test_create_object_parent_places_it_in_the_wiki_tree():
     # parent= → the catalog's wiki usecase (set up once per space per
-    # run), the wiki type on the object, parentId + a position after
-    # the last sibling (ADR-027 §3)
+    # run) — a COLLECTION the object is filed under, parentId + a
+    # position after the last sibling under it (ADR-029 §5); the type
+    # is whatever the caller said
     wiki = {"usecase": "wiki", "bundles": [{
-        "id": "system:wiki/v1", "installed": False, "typeId": "bafyWIKI",
+        "id": "system:wiki/v1", "installed": False, "typeId": None,
+        "collectionId": "bafyWIKI",
         "bundle": {"id": "system:wiki/v1", "rootId": "bafyWIKI"},
         "properties": {"parentId": "pPAR", "pos": "pPOS", "folder": "pFOL"}}]}
     replies = {**_CAT, "/objects": {"objectId": "o9"},
+               "/collections": {"collections": [
+                   {"id": "bafyWIKI", "name": "Wiki", "xKey": "wiki"}]},
                "/catalog/wiki/setup": wiki,
                "/objects/query": {"records": [{"id": "sib", "bafyWIKI": {"pPOS": "a3"}}]}}
     fx = wire(replies=replies)
     c = client(fx)
-    c.create_object("s1", {"types": ["task"], "name": "Dune"}, parent="", folder=True)
+    c.create_object("s1", {"type": "task", "name": "Dune"}, parent="", folder=True)
     body = next(b for v, p, b in fx.calls if p == "/v1/spaces/s1/objects")
-    assert body["types"] == ["bafyTASK", "bafyWIKI"]
+    assert body["type"] == "bafyTASK" and body["collections"] == ["bafyWIKI"]
     assert body["initialProperties"]["bafyWIKI"] == {"pPAR": "", "pPOS": "a4", "pFOL": True}
     sib = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
     assert sib == {"filter": {"bafyWIKI.pPAR": ""}, "sort": ["-bafyWIKI.pPOS"], "limit": 1}
     # the setup ran once; a second placed object reuses it
     c.create_object("s1", {"name": "Heat"}, parent="o9")
     assert [p for _, p, _ in fx.calls].count("/v1/catalog/wiki/setup") == 1
-    # move_object attaches the type when missing and re-places
+    # move_object files the object under the wiki when it is not yet
+    # and re-places it under the collection's group
     fx.calls.clear()
     c.move_object("s1", "o1", "o9")
     verbs = [(v, p.split("/s1/")[1]) for v, p, _ in fx.calls if v != "GET"]
-    assert ("POST", "properties/o1/attach/bafyWIKI") in verbs
+    assert ("POST", "properties/o1/collections/bafyWIKI") in verbs
     assert ("POST", "properties/o1/set/bafyWIKI") in verbs
+    # "take it out of the wiki" is an unfile, the type untouched
+    fx.calls.clear()
+    assert c.remove_from_collection("s1", "o1", "wiki") == {}
+    assert fx.calls[-1][:2] == ("DELETE", "/v1/spaces/s1/properties/o1/collections/bafyWIKI")
 
 
 def test_create_object_unknown_top_level_key_raises_never_posts():
-    # the wire accepts only types/initialProperties and rejects the
+    # the wire accepts only type/collections/initialProperties and rejects the
     # rest — the client refuses first instead of losing intent (and
     # `nav` is no key at all: the tree is `parent=`)
     fx = wire(replies=_CAT)
     with pytest.raises(ValueError, match="unknown top-level key"):
-        client(fx).create_object("s1", {"types": ["task"],
+        client(fx).create_object("s1", {"type": "task",
                                         "any": {"name": "x"}})
     with pytest.raises(ValueError, match="parent= places"):
         client(fx).create_object("s1", {"nav": {"parentId": ""}})
@@ -587,7 +674,7 @@ def test_query_objects_unknown_opt_raises_never_queries():
     # query would silently match EVERY object in the space
     fx = wire(replies=_CAT)
     with pytest.raises(ValueError, match="unknown option"):
-        client(fx).query_objects("s1", filters={"any.types": "task"})
+        client(fx).query_objects("s1", filters={"any.type": "task"})
     assert not any(p.endswith("/objects/query") for v, p, _ in fx.calls)
 
 
@@ -598,13 +685,19 @@ def test_query_filters_error_on_unknown_keys_never_silent_empty():
     fx = wire(replies=_CAT)
     c = client(fx)
     with pytest.raises(ValueError, match='type "unicorn" doesn.t exist'):
-        c.query_objects("s1", filter={"any.types": "unicorn"})
+        c.query_objects("s1", filter={"any.type": "unicorn"})
     with pytest.raises(ValueError, match='type "unicorn" doesn.t exist'):
-        c.query_objects("s1", filter={"any.types": {"$in": ["task", "unicorn"]}})
-    with pytest.raises(ValueError, match='unknown property "nope" on type "task"'):
+        c.query_objects("s1", filter={"any.type": {"$in": ["task", "unicorn"]}})
+    with pytest.raises(ValueError, match='unknown property "nope" on "task"'):
         c.query_objects("s1", filter={"task.nope": 1})
-    with pytest.raises(ValueError, match='type "bookz" doesn.t exist'):
+    with pytest.raises(ValueError, match='"bookz" is neither a type nor a collection'):
         c.query_objects("s1", filter={"bookz.rating": {"$gte": 5}})
+    # the old plural is a deliberate error naming both slots — the
+    # server would answer it with a silent [] (ADR-029 §2)
+    with pytest.raises(ValueError, match='no "any.types".*any.collections'):
+        c.query_objects("s1", filter={"any.types": "task"})
+    with pytest.raises(ValueError, match='no "any.types"'):
+        c.query_objects("s1", sort=["-any.types"])
     with pytest.raises(ValueError, match='unknown property "nope"'):
         c.query_objects("s1", sort=["-task.nope"])
     # nothing reached the wire beyond catalog reads
@@ -614,19 +707,18 @@ def test_query_filters_error_on_unknown_keys_never_silent_empty():
 
 
 def test_update_object_writes_name_markdown_and_prop_groups():
-    # o1 carries no body-declaring type yet: the body write attaches
-    # `page` first (no write attaches a type server-side, ADR-027 §3)
+    # o1's type declares the body: the write goes straight through, no
+    # membership call (no write sets a type — ADR-029 §3)
     fx = wire(replies={**_CAT, "/objects/query": {"records": [
-        {"id": "o1", "any": {"types": ["bafyTASK"]}}]}})
+        {"id": "o1", "any": {"type": "bafyTASK"}}]}})
     r = client(fx).update_object("s1", "o1", {
         "name": "Renamed", "description": "now with mangoes",
         "markdown": "# body", "task": {"status": "done"}})
     assert r == {"objectId": "o1"}
     posts = [(p, b) for v, p, b in fx.calls if v in ("POST", "PUT")]
-    i_attach = posts.index(("/v1/spaces/s1/properties/o1/attach/page", None))
-    i_md = posts.index(("/v1/spaces/s1/objects/o1/editor/editor_blocks/markdown",
-                        {"content": "# body"}))
-    assert i_attach < i_md
+    assert ("/v1/spaces/s1/objects/o1/editor/editor_blocks/markdown",
+            {"content": "# body"}) in posts
+    assert not any("/properties/o1/type/" in p or "/collections/" in p for p, _ in posts)
     # name/description -> set/any patch (parity with create_object);
     # property group -> set/<typeId> patch
     assert ("/v1/spaces/s1/properties/o1/set/any",
@@ -673,7 +765,7 @@ def test_catalog_refreshes_once_on_unknown_type_miss():
         return {"status": 200, "headers": {}, "body": "{}"}
 
     c = load(fx)["_Client"]("http://any")
-    c.create_object("s1", {"types": ["task"]})   # miss then hit
+    c.create_object("s1", {"type": "task"})   # miss then hit
     assert seen["n"] == 2
 
 
@@ -831,7 +923,8 @@ def test_list_types_and_properties_unwrap():
     assert c.list_properties("s1", "t1") == [{"id": "p1", "handle": "p1"}]
     assert [(v, p) for v, p, _ in fx.calls] == [
         ("GET", "/v1/spaces/s1/types"),
-        ("GET", "/v1/spaces/s1/types"),   # list_properties type resolution
+        ("GET", "/v1/spaces/s1/types"),   # list_properties owner resolution
+        ("GET", "/v1/spaces/s1/collections"),
         ("GET", "/v1/spaces/s1/types/t1/properties")]
 
 
@@ -845,7 +938,7 @@ def test_list_properties_takes_xkey_and_errors_on_unknown():
         ("priority", "priority"), ("status", "status")]
     assert any(p.endswith("/types/bafyTASK/properties") for _, p, _ in fx.calls)
     # unknown key errors with the catalog (server would answer 200 [])
-    with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
+    with pytest.raises(ValueError, match='"ghost" is neither a type nor a collection'):
         c.list_properties("s1", "ghost")
 
 
@@ -877,25 +970,25 @@ def test_add_property_derives_kind_from_the_slug():
 
 def test_aggregate_speaks_xkeys_in_records():
     fx = wire(replies={**_CAT, "/objects/aggregate": {"records": [
-        {"id": ["bafyTASK", "page"], "count": 2},
-        {"id": ["miniapp"], "count": 1}]}})
-    r = client(fx).aggregate("s1", [{"$group": {"_id": "$any.types",
+        {"id": "bafyTASK", "count": 2},
+        {"id": "page", "count": 1}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": "$any.type",
                                                 "count": {"$sum": 1}}}])
-    assert r["records"] == [{"id": ["task", "page"], "count": 2},
-                            {"id": ["miniapp"], "count": 1}]
+    assert r["records"] == [{"id": "task", "count": 2},
+                            {"id": "page", "count": 1}]
 
 
 def test_aggregate_resolves_xkey_field_refs_in_pipeline():
     fx = wire(replies={**_CAT, "/objects/aggregate": {"records": []}})
     client(fx).aggregate("s1", [
-        {"$match": {"any.types": "task", "task.priority": {"$gte": 2}}},
+        {"$match": {"any.type": "task", "task.priority": {"$gte": 2}}},
         {"$group": {"_id": "$task.status",
                     "avg": {"$avg": "$task.priority"},
                     "n": {"$sum": 1}}},
         {"$sort": {"task.priority": -1, "n": 1}}])
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/aggregate"))
     assert body["pipeline"] == [
-        {"$match": {"any.types": "bafyTASK",
+        {"$match": {"any.type": "bafyTASK",
                     "bafyTASK.bafyPRIO": {"$gte": 2}}},
         {"$group": {"_id": "$bafyTASK.bafySTATUS",
                     "avg": {"$avg": "$bafyTASK.bafyPRIO"},
@@ -906,9 +999,9 @@ def test_aggregate_resolves_xkey_field_refs_in_pipeline():
 def test_aggregate_pipeline_unknown_ref_errors_literals_pass():
     fx = wire(replies=_CAT)
     c = client(fx)
-    with pytest.raises(ValueError, match='unknown property "nope" on type "task"'):
+    with pytest.raises(ValueError, match='unknown property "nope" on "task"'):
         c.aggregate("s1", [{"$group": {"_id": "$task.nope"}}])
-    with pytest.raises(ValueError, match='type "ghost" doesn.t exist'):
+    with pytest.raises(ValueError, match='"ghost" is neither a type nor a collection'):
         c.aggregate("s1", [{"$match": {"ghost.x": 1}}])
     # value-position literals are never resolved ($literal ambiguity):
     # a $match VALUE that merely looks dotted ships verbatim
@@ -969,11 +1062,11 @@ def test_edit_markdown_wire_shape():
 
 
 def test_markdown_roundtrip_uses_content_key():
-    # o1 already carries `page`: no attach, the routes name the shared
-    # editor collection (ADR-027 §3)
+    # o1 is a `page`: the routes name the shared editor collection
+    # (ADR-029 §3); one object read decides the body gate
     fx = wire(replies={"/editor/editor_blocks/markdown": {"content": "# hi"},
                        "/objects/query": {"records": [
-                           {"id": "o1", "any": {"types": ["page"]}}]}})
+                           {"id": "o1", "any": {"type": "page"}}]}})
     c = client(fx)
     assert c.get_markdown("s1", "o1") == "# hi"
     c.put_markdown("s1", "o1", "# bye")
@@ -984,7 +1077,7 @@ def test_markdown_roundtrip_uses_content_key():
          {"content": "# bye"}),
         ("POST", "/v1/spaces/s1/objects/o1/editor/editor_blocks/markdown/append",
          {"content": "\n## more"})]
-    # one object read decided both writes needed no attach
+    # one object read decided both writes pass the body gate
     assert [p for _, p, _ in fx.calls].count("/v1/spaces/s1/objects/query") == 1
 
 
@@ -997,7 +1090,7 @@ SPACES = {"/v1/spaces": {"spaces": [
 def test_markdown_writers_warn_on_a_space_name_in_a_link(capsys):
     fx = wire(replies={**SPACES,
                        "/objects/query": {"records": [
-                           {"id": "o1", "any": {"types": ["page"]}}]},
+                           {"id": "o1", "any": {"type": "page"}}]},
                        "/markdown": {"inserted": 1}})
     c = client(fx)
     r = c.put_markdown("s1", "o1", "[x.docx](any://f/ta/2yp2VRDcFqu)")
@@ -1014,7 +1107,7 @@ def test_markdown_writers_warn_on_a_space_name_in_a_link(capsys):
 
 def test_markdown_writers_warn_on_a_missing_space_segment():
     fx = wire(replies={"/objects/query": {"records": [
-                           {"id": "o1", "any": {"types": ["page"]}}]},
+                           {"id": "o1", "any": {"type": "page"}}]},
                        "/append": {"inserted": 1}})
     c = client(fx)
     r = c.append_markdown("s1", "o1", "see [Page](any://o/bafyobj1) and "
@@ -1029,7 +1122,7 @@ def test_markdown_writers_warn_on_a_missing_space_segment():
 def test_well_shaped_and_legacy_links_pass_silently():
     fx = wire(replies={**SPACES,
                        "/objects/query": {"records": [
-                           {"id": "o1", "any": {"types": ["page"]}}]},
+                           {"id": "o1", "any": {"type": "page"}}]},
                        "/markdown": {"inserted": 1}})
     c = client(fx)
     body = (f"[a](any://o/{SID}/bafyobj1) ![i](any://f/{SID}/fid?w=1) "
@@ -1042,7 +1135,7 @@ def test_well_shaped_and_legacy_links_pass_silently():
 
 def test_unknown_non_id_space_segment_warns_without_a_name():
     fx = wire(replies={**SPACES, "/objects/query": {"records": [
-        {"id": "o1", "any": {"types": ["page"]}}]}})
+        {"id": "o1", "any": {"type": "page"}}]}})
     c = client(fx)
     r = c.put_markdown("s1", "o1", "[f](any://f/nope/fid)")
     assert r["warnings"] == [
@@ -1085,12 +1178,12 @@ def test_search_enriches_hits_with_title_and_type():
             {"objectId": "o2", "data": "soul", "dataset": "editor_blocks",
              "score": 0.1}], "mode": "hybrid"},
         "/objects/query": {"records": [
-            {"id": "o1", "any": {"name": "Game", "types": ["page", "ty_game"]}},
-            {"id": "o2", "any": {"name": "_soul", "types": ["agent_skill", "page"]}}]},
+            {"id": "o1", "any": {"name": "Game", "type": "ty_game"}},
+            {"id": "o2", "any": {"name": "_soul", "type": "agent_skill"}}]},
         "/types": {"types": [{"id": "ty_game", "name": "Game"},
                              {"id": "agent_skill", "name": "Agent Skill"}]}})
     hits = client(fx).search("s1", "game")["hits"]
-    # the hidden built-ins never win the primary type
+    # `type` is the ONE type's display name
     assert (hits[0]["title"], hits[0]["type"]) == ("Game", "Game")
     assert (hits[1]["title"], hits[1]["type"]) == ("_soul", "Agent Skill")
     # every hit names its store key next to the collection
@@ -1110,7 +1203,7 @@ def test_search_prop_hits_gain_type_prop_xkey():
              "recordId": "name", "score": 0.2}], "mode": "hybrid"},
         "/objects/query": {"records": [
             {"id": "o1", "any": {"name": "Ship",
-                                 "types": ["bafyTASK", "page"]}}]},
+                                 "type": "bafyTASK"}}]},
         **_CAT})
     hits = client(fx).search("s1", "open")["hits"]
     assert hits[0]["prop"] == "task.status"   # propId resolved via the catalog
@@ -1255,6 +1348,148 @@ def test_create_space_installs_the_derived_general_chat():
     assert fx.calls[-2][2] == {"name": "x", "description": "d"}
 
 
+# --- collections: tags and supertags (ADR-029 §4) ------------------------------
+
+_COLL = {**_CAT,
+         "/collections": {"collections": [
+             {"id": "collection", "xKey": "collection", "name": "Collection", "builtIn": True},
+             {"id": "miniapp", "xKey": "miniapp", "hidden": True, "builtIn": True},
+             {"id": "bin", "xKey": "bin", "hidden": True, "builtIn": True},
+             {"id": "bafyRL", "name": "Reading list", "xKey": "reading_list"}]},
+         "/collections/bafyRL/properties": {"properties": [
+             {"id": "pORD", "name": "Order", "xKey": "order", "kind": "number"}],
+             "propId": "pNEW"}}
+
+
+def test_list_types_and_collections_hide_the_meta_and_builtin_rows():
+    fx = wire(replies={**_COLL, "/types": {"types": [
+        {"id": "any", "xKey": "any", "builtIn": True},
+        {"id": "type", "xKey": "type", "builtIn": True},
+        {"id": "collection", "xKey": "collection", "builtIn": True},
+        {"id": "page", "xKey": "page", "hidden": True, "builtIn": True},
+        {"id": "bafyTASK", "name": "Task", "xKey": "task"}]}})
+    c = client(fx)
+    # types: the meta rows go, the hidden built-in `page` stays (an
+    # object can BE it)
+    assert [t["id"] for t in c.list_types("s1")] == ["page", "bafyTASK"]
+    # collections: the meta row and miniapp / bin go — reachable by
+    # name, never offered as tags
+    assert [r["id"] for r in c.list_collections("s1")] == ["bafyRL"]
+
+
+def test_membership_verbs_resolve_handles_and_route():
+    fx = wire(replies={**_COLL, "/objects/query": {"records": [
+        {"id": "o1", "any": {"type": "page"}}]}})
+    c = client(fx)
+    assert c.add_to_collection("s1", "o1", "reading_list") == {}
+    assert c.remove_from_collection("s1", "o1", "reading_list") == {}
+    assert c.set_type("s1", "o1", "task") == {}
+    assert c.trash("s1", "o1") == {}
+    assert c.restore("s1", "o1") == {}
+    assert [(v, p) for v, p, _ in fx.calls if v in ("POST", "DELETE")] == [
+        ("POST", "/v1/spaces/s1/properties/o1/collections/bafyRL"),
+        ("DELETE", "/v1/spaces/s1/properties/o1/collections/bafyRL"),
+        ("POST", "/v1/spaces/s1/properties/o1/type/bafyTASK"),
+        ("POST", "/v1/spaces/s1/properties/o1/collections/bin"),
+        ("DELETE", "/v1/spaces/s1/properties/o1/collections/bin")]
+    # the wrong kind in a slot is refused with the verb that fits
+    with pytest.raises(ValueError, match="is a type, not a collection"):
+        c.add_to_collection("s1", "o1", "task")
+    with pytest.raises(ValueError, match="is a collection, not a type"):
+        c.set_type("s1", "o1", "reading_list")
+    with pytest.raises(ValueError, match='collection "ghost" doesn.t exist.*reading_list'):
+        c.add_to_collection("s1", "o1", "ghost")
+
+
+def test_collection_membership_filters_and_column_reads():
+    # `any.collections` takes collection xKeys (membership: scalar,
+    # $in / $nin / $all); a collection's columns read under its xKey
+    fx = wire(replies={**_COLL, "/objects/query": {"records": [
+        {"id": "o1", "any": {"name": "Dune", "type": "bafyTASK",
+                             "collections": ["bafyRL", "bin"]},
+         "bafyRL": {"pORD": 1}}]}})
+    c = client(fx)
+    [rec] = c.query_objects("s1", filter={"any.collections": "reading_list",
+                                          "reading_list.order": {"$lte": 3}},
+                            sort=["reading_list.order"])
+    body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
+    assert body["filter"] == {"any.collections": "bafyRL", "bafyRL.pORD": {"$lte": 3}}
+    assert body["sort"] == ["bafyRL.pORD"]
+    assert rec == {"id": "o1", "any": {"name": "Dune", "type": "task",
+                                       "collections": ["reading_list", "bin"]},
+                   "reading_list": {"order": 1}}
+    c.query_objects("s1", filter={"any.collections": {"$nin": ["bin"]},
+                                  "any.type": {"$in": ["task", "page"]}})
+    body = fx.calls[-1][2]
+    assert body["filter"] == {"any.collections": {"$nin": ["bin"]},
+                              "any.type": {"$in": ["bafyTASK", "page"]}}
+
+
+def test_collection_columns_write_through_the_owner_routes():
+    # a supertag's column: written under the collection's group on an
+    # object, defined through the collection's own property route
+    fx = wire(replies={**_COLL, "/objects/query": {"records": [
+        {"id": "o1", "any": {"type": "bafyTASK", "collections": ["bafyRL"]}}]}})
+    c = client(fx)
+    c.update_object("s1", "o1", {"reading_list": {"order": 2}})
+    assert ("POST", "/v1/spaces/s1/properties/o1/set/bafyRL",
+            {"patch": {"pORD": 2}}) in fx.calls
+    c.add_property("s1", "reading_list", {"name": "Note"})
+    assert fx.calls[-1][:2] == ("POST", "/v1/spaces/s1/collections/bafyRL/properties")
+    assert [r["handle"] for r in c.list_properties("s1", "reading_list")] == ["order"]
+    c.patch_property("s1", "reading_list", "order", set={"name": "Rank"})
+    assert fx.calls[-1][:2] == ("PATCH", "/v1/spaces/s1/collections/bafyRL/properties/pORD")
+    c.delete_property("s1", "reading_list", "order")
+    assert fx.calls[-1][:2] == ("DELETE", "/v1/spaces/s1/collections/bafyRL/properties/pORD")
+
+
+def test_create_collection_is_the_tag_composite():
+    fx = wire(replies={**_COLL, "/collections": {"collections": [], "collectionId": "cNEW"},
+                       "/collections/cNEW/properties": {"properties": [], "propId": "pX"},
+                       "/types/any/properties": {}})
+    c = client(fx)
+    r = c.create_collection("s1", {"name": "Reading list",
+                                   "properties": [{"name": "Order", "kind": "number"}]})
+    assert r == {"collectionId": "cNEW", "xKey": "reading_list", "created": True,
+                 "addedProps": {"order": "pX"}}
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts[0] == ("/v1/spaces/s1/collections", {"name": "Reading list",
+                                                      "xKey": "reading_list"})
+    assert posts[1][0] == "/v1/spaces/s1/collections/cNEW/properties"
+    # no layout, no body part: a collection has no behaviour
+    assert not any(p.endswith("/parts") for _, p, _ in fx.calls)
+    # one handle namespace: a TYPE's handle is refused on this surface,
+    # and a collection's on create_type — each naming the other verb
+    fx = wire(replies=_COLL)
+    c = client(fx)
+    with pytest.raises(ValueError, match='already the handle of the type "Task".*set_type'):
+        c.create_collection("s1", {"name": "Task"})
+    with pytest.raises(ValueError, match='already the handle of the collection.*add_to_collection'):
+        c.create_type("s1", {"name": "Reading list"})
+    with pytest.raises(ValueError, match="builtin collection"):
+        c.create_collection("s1", {"name": "Bin"})
+    assert not [p for v, p, _ in fx.calls if v == "POST"]
+    # ensure: an existing collection is reused, missing columns added
+    fx = wire(replies=_COLL)
+    r = client(fx).create_collection("s1", {"name": "Reading list", "properties": [
+        {"name": "Order"}, {"name": "Note"}]})
+    assert r == {"collectionId": "bafyRL", "xKey": "reading_list", "created": False,
+                 "addedProps": {"note": "pNEW"}}
+
+
+def test_hydrated_link_stubs_carry_type_and_collections():
+    cat = {**_COLL, "/types/bafyTASK/properties": {"properties": [
+        {"id": "pREL", "name": "Related", "xKey": "related",
+         "xFormat": {"type": "relation", "config": {"multiple": True}}}]}}
+    rows = {"/objects/query": {"records": [
+        {"id": "o1", "any": {"type": "bafyTASK"}, "bafyTASK": {"pREL": ["any://o2"]}},
+        {"id": "o2", "any": {"name": "Dune", "type": "page", "collections": ["bafyRL"]}}]}}
+    fx = wire(replies={**cat, **rows})
+    recs = client(fx).query_objects("s1", filter={"any.type": "task"})
+    assert recs[0]["task"]["related"] == [
+        {"id": "o2", "name": "Dune", "type": "page", "collections": ["reading_list"]}]
+
+
 # --- list_programs (ADR-009 §2: repo browsing) --------------------------------
 
 _PROG_REPLIES = {
@@ -1266,11 +1501,11 @@ _PROG_REPLIES = {
         {"id": "bafyTOOL", "name": "Any Tool", "xKey": "any_tool"},
         {"id": "bafySUM", "name": "Summary", "xKey": "summary"}]},
     "/objects/query": {"records": [
-        {"id": "p1", "any": {"name": "webSearch", "types": ["bafyPROG"]},
+        {"id": "p1", "any": {"name": "webSearch", "type": "bafyPROG"},
          "bafyPROG": {"bafyNAME": "webSearch", "bafyVER": "v1",
                       "bafyTOOL": True,
                       "bafySUM": "Web search one-liner."}},
-        {"id": "p2", "any": {"name": "helper", "types": ["bafyPROG"]},
+        {"id": "p2", "any": {"name": "helper", "type": "bafyPROG"},
          "bafyPROG": {"bafyNAME": "helper", "bafyVER": "v2",
                       "bafyTOOL": False}}]},
 }
@@ -1287,11 +1522,11 @@ def test_list_programs_lists_a_space_sorted():
         {"name": "webSearch", "version": "v1", "anyTool": True,
          "summary": "Web search one-liner."}]
     # the object query targeted the requested space with the program
-    # filter, minus the type-definition row and binned objects
+    # filter minus binned objects; a definition's row never matches its
+    # members (no marker clause needed — ADR-029 §2)
     body = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
-    assert body["filter"] == {"$and": [{"any.types": "bafyPROG"},
-                                       {"any.types": {"$ne": "__type__"}},
-                                       {"any.types": {"$nin": ["bin"]}}]}
+    assert body["filter"] == {"$and": [{"any.type": "bafyPROG"},
+                                       {"any.collections": {"$nin": ["bin"]}}]}
     # one round-trip per listing — no per-program dataset reads
     assert not [p for v, p, b in fx.calls if p.endswith("/query")
                 and not p.endswith("/objects/query")]
@@ -1421,7 +1656,7 @@ def test_unknown_builtin_prop_errors_with_the_catalog():
                        match='unknown property "bogus" on builtin group "any"'):
         client(fx).query_objects("s1", filter={"any.bogus": 1})
     # `nav` is no group: an unknown head errors with the catalog
-    with pytest.raises(ValueError, match='type "nav" doesn.t exist'):
+    with pytest.raises(ValueError, match='"nav" is neither a type nor a collection'):
         client(fx).query_objects("s1", filter={"nav.parentId": "f1"})
     assert not any(p.endswith("/objects/query") for _, p, _ in fx.calls)
 
@@ -1510,7 +1745,7 @@ def test_get_space_trims_sync_internals():
 def test_search_types_kwarg_redirects_to_query_objects():
     # A18: the guessed types= kwarg gets the redirect, not a bare TypeError
     g = load(wire())
-    with pytest.raises(TypeError, match="any.types"):
+    with pytest.raises(TypeError, match="any.type"):
         g["search"](SID, "q", types=["task"])
 
 
@@ -1551,7 +1786,7 @@ _LOG = {
     "/types": {"types": [{"id": "lg", "xKey": "agent_log"}]},
     "/types/lg/datasets": {"datasets": [
         {"id": "d1", "key": "agent_turns", "collection": "lg_agent_turns"}]},
-    "/objects/query": {"records": [{"id": "log1", "any": {"types": ["lg"]}}]},
+    "/objects/query": {"records": [{"id": "log1", "any": {"type": "lg"}}]},
 }
 
 
@@ -1598,8 +1833,8 @@ def test_objects_query_refuses_bare_literal_on_stamps_and_datetime_props():
 
 def test_create_type_posts_property_descriptors_with_a_derived_kind():
     # a slug declared through create_type reaches the wire as xFormat
-    # with the kind it implies (ADR-027 §4); hidden/weight/layout ride
-    # the type create
+    # with the kind it implies (ADR-027 §4); hidden/layout ride the
+    # type create
     fx = wire(replies={**_CAT, "/types": {"types": [], "typeId": "tNew"},
                        "/types/tNew/properties": {"properties": [], "propId": "p1"}})
     client(fx).create_type("s1", {"name": "Event", "hidden": True, "properties": [
@@ -1758,15 +1993,15 @@ _CATALOG = {"usecases": [
 def test_list_apps_joins_sidebar_registry_and_catalog():
     fx = wire(replies={
         "/v1/catalog": _CATALOG, "/types/any/properties": _ANY_PROPS,
-        "/types": {"types": [{"id": "miniapp", "xKey": "miniapp", "hidden": True,
-                              "builtIn": True}]},
+        "/collections": {"collections": [{"id": "miniapp", "xKey": "miniapp",
+                                          "hidden": True, "builtIn": True}]},
         "/objects/query": {"records": [
-            {"id": "wk", "any": {"name": "Wiki", "types": ["__type__", "miniapp"]},
+            {"id": "wk", "any": {"name": "Wiki", "type": "__type__", "collections": ["miniapp"]},
              "miniapp": {"bundle": "system:wiki/v1", "pos": "a0"}},
             {"id": "ch", "any": {"name": "General", "description": "Team talk",
-                                 "types": ["__type__", "ch", "miniapp"]},
+                                 "type": "__type__", "collections": ["miniapp"]},
              "miniapp": {"bundle": "system:general-chat/v1", "hidden": True}},
-            {"id": "nb", "any": {"name": "Notebook", "types": ["page", "miniapp"]},
+            {"id": "nb", "any": {"name": "Notebook", "type": "page", "collections": ["miniapp"]},
              "miniapp": {"pos": "a2"}}]},
         "/bundles": {"bundles": [{"id": "system:wiki/v1"},
                                  {"id": "system:general-chat/v1"}]}})
@@ -1780,9 +2015,10 @@ def test_list_apps_joins_sidebar_registry_and_catalog():
          "usecase": "general-chat"},
         {"name": "Notebook", "rootId": "nb", "description": "", "hidden": False,
          "pinned": True}]
+    # the sidebar is a COLLECTION's membership (ADR-029 §6)
     q = next(b for v, p, b in fx.calls if p.endswith("/objects/query"))
-    assert q == {"filter": {"$and": [{"any.types": "miniapp"},
-                                     {"any.types": {"$nin": ["bin"]}}]},
+    assert q == {"filter": {"$and": [{"any.collections": "miniapp"},
+                                     {"any.collections": {"$nin": ["bin"]}}]},
                  "sort": ["miniapp.pos"]}
     assert c.list_available_apps("s1") == [
         {"usecase": "wiki", "name": "Wiki", "description": "A tree of pages",

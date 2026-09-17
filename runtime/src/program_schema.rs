@@ -1,6 +1,7 @@
 //! The `program` type as a harness-declared USER type (ADR-010 §5,
-//! ADR-017 §1, ADR-027 §2/§3): one hidden type per space keyed by xKey
-//! `program`, four properties (`name`, `version`, `any_tool`,
+//! ADR-017 §1, ADR-027 §2/§3, ADR-029 §7): one LISTED type per space
+//! keyed by xKey `program` — a class with a body that a picker may
+//! offer; a hand-made object is inert — four properties (`name`, `version`, `any_tool`,
 //! `summary` — none indexed), a shared editor part (`body` — the
 //! program object's docs body, held through the type) and two records
 //! datasets, `program_source` and `program_manifest` (single record
@@ -79,7 +80,8 @@ impl ProgramSchema {
     /// Read-only resolve: `Ok(None)` when the space has no `program`
     /// type (or the type lacks a declared property).
     pub fn lookup(c: &Client, space: &str) -> Result<Option<Self>, AnyError> {
-        let Some(tid) = find_type(c, space)? else {
+        let Some(tid) = find_type(c, space)?.and_then(|t| t["id"].as_str().map(str::to_string))
+        else {
             return Ok(None);
         };
         let props = prop_map(c, space, &tid)?;
@@ -103,13 +105,13 @@ impl ProgramSchema {
     /// the resolved schema. Only MISSING pieces are created.
     pub fn ensure(c: &Client, space: &str) -> anyhow::Result<Self> {
         let tid = match find_type(c, space)? {
-            Some(t) => t,
+            Some(row) => listed_type_id(c, space, &row)?,
             None => {
-                // hidden: never offered by a client's type picker (ADR-027 §2)
+                // listed: a class with a body, offered like any user
+                // type (ADR-029 §7)
                 let res = c.create_type(
                     space,
-                    &json!({"name": PROGRAM_TYPE_NAME, "xKey": PROGRAM_TYPE_XKEY,
-                            "hidden": true}),
+                    &json!({"name": PROGRAM_TYPE_NAME, "xKey": PROGRAM_TYPE_XKEY}),
                 )?;
                 res["typeId"]
                     .as_str()
@@ -200,11 +202,22 @@ impl ProgramSchema {
     }
 }
 
-fn find_type(c: &Client, space: &str) -> Result<Option<String>, AnyError> {
+/// The `program` type's row, by xKey (hidden rows included).
+fn find_type(c: &Client, space: &str) -> Result<Option<Value>, AnyError> {
     Ok(c.list_types(space)?
-        .iter()
-        .find(|t| t["xKey"] == PROGRAM_TYPE_XKEY)
-        .and_then(|t| t["id"].as_str().map(str::to_string)))
+        .into_iter()
+        .find(|t| t["xKey"] == PROGRAM_TYPE_XKEY))
+}
+
+/// The id of a found harness type that must be LISTED (`program`,
+/// `agent_skill` — ADR-029 §7): a row minted hidden by an older
+/// writer is healed with one PATCH; a listed one is left alone.
+pub(crate) fn listed_type_id(c: &Client, space: &str, row: &Value) -> Result<String, AnyError> {
+    let tid = row["id"].as_str().unwrap_or_default().to_string();
+    if row["hidden"] == json!(true) {
+        c.patch_type(space, &tid, &json!({"hidden": false}))?;
+    }
+    Ok(tid)
 }
 
 /// dataset key → collection, read off the type's declarations.
@@ -267,8 +280,31 @@ mod tests {
         // the collections are the server's, read back — never composed
         assert_eq!(s.source, format!("{}_{SOURCE_KEY}", s.type_id));
         assert_eq!(s.manifest, format!("{}_{MANIFEST_KEY}", s.type_id));
-        // hidden from the first change
-        assert_eq!(user_types[0]["hidden"], json!(true));
+        // listed from the first change (ADR-029 §7)
+        assert_ne!(user_types[0]["hidden"], json!(true));
+    }
+
+    #[test]
+    fn ensure_lists_a_program_type_minted_hidden() {
+        // a row an older writer minted hidden is healed once (ADR-029
+        // §7), and a listed one is not re-patched
+        let c = client();
+        c.create_type(
+            "sp",
+            &json!({"name": "Program", "xKey": PROGRAM_TYPE_XKEY, "hidden": true}),
+        )
+        .unwrap();
+        let s = ProgramSchema::ensure(&c, "sp").unwrap();
+        let row = |c: &Client| {
+            c.list_types("sp")
+                .unwrap()
+                .into_iter()
+                .find(|t| t["id"] == s.type_id)
+                .unwrap()
+        };
+        assert_eq!(row(&c)["hidden"], json!(false));
+        assert_eq!(ProgramSchema::ensure(&c, "sp").unwrap(), s);
+        assert_eq!(row(&c)["hidden"], json!(false));
     }
 
     #[test]
