@@ -25,6 +25,11 @@
       "fingerprint": "sha256:b6bcc7230b3e36e3",
       "helper": null
     },
+    "DELETE /spaces/{spaceId}/collections/{collectionId}/properties/{propId}": {
+      "excluded": null,
+      "fingerprint": "sha256:0210cc9fcb9674ba",
+      "helper": "helper.delete_property (routed by the owner kind, ADR-029 §4)"
+    },
     "DELETE /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
       "fingerprint": "sha256:093dacc706c1a094",
@@ -59,6 +64,11 @@
       "excluded": null,
       "fingerprint": "sha256:119872c67db71c22",
       "helper": "helper.delete_block"
+    },
+    "DELETE /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
+      "excluded": null,
+      "fingerprint": "sha256:952b68f60d928e40",
+      "helper": "helper.remove_from_collection (restore = the bin)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}": {
       "excluded": null,
@@ -97,12 +107,12 @@
     },
     "GET /catalog": {
       "excluded": null,
-      "fingerprint": "sha256:b3b5210800b2f5ee",
+      "fingerprint": "sha256:37ef727e942472d0",
       "helper": "helper.list_available_apps (ADR-027 §5)"
     },
     "GET /catalog/{usecaseId}": {
       "excluded": "the list carries every usecase whole; no single-usecase consumer",
-      "fingerprint": "sha256:f2ff5f42b38d8217",
+      "fingerprint": "sha256:fc007e5d2cedc1a7",
       "helper": null
     },
     "GET /datasets": {
@@ -204,6 +214,21 @@
       "excluded": null,
       "fingerprint": "sha256:d6843cf700e29bcf",
       "helper": "helper.get_bundle"
+    },
+    "GET /spaces/{spaceId}/collections": {
+      "excluded": null,
+      "fingerprint": "sha256:4db872177d38985d",
+      "helper": "helper catalog (list_collections)"
+    },
+    "GET /spaces/{spaceId}/collections/{collectionId}": {
+      "excluded": null,
+      "fingerprint": "sha256:1c897e16be9c24c3",
+      "helper": null
+    },
+    "GET /spaces/{spaceId}/collections/{collectionId}/properties": {
+      "excluded": null,
+      "fingerprint": "sha256:0c7f3a89533f1a9d",
+      "helper": "helper catalog (list_properties — routed by the owner kind, ADR-029 §4)"
     },
     "GET /spaces/{spaceId}/datasets": {
       "excluded": "schema discovery (harness)",
@@ -347,12 +372,12 @@
     },
     "GET /spaces/{spaceId}/types": {
       "excluded": null,
-      "fingerprint": "sha256:d3088b41c240845e",
+      "fingerprint": "sha256:02afcacdbf8243c7",
       "helper": "helper catalog (list_types)"
     },
     "GET /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:b2db5d2d57196a53",
+      "fingerprint": "sha256:b1284dd9ba5c7dcb",
       "helper": null
     },
     "GET /spaces/{spaceId}/types/{typeId}/datasets": {
@@ -380,6 +405,16 @@
       "fingerprint": "sha256:21555df709fe01fb",
       "helper": null
     },
+    "PATCH /spaces/{spaceId}/collections/{collectionId}": {
+      "excluded": null,
+      "fingerprint": "sha256:f5d0d5102c77354f",
+      "helper": null
+    },
+    "PATCH /spaces/{spaceId}/collections/{collectionId}/properties/{propId}": {
+      "excluded": null,
+      "fingerprint": "sha256:cc3b791a64af4228",
+      "helper": "helper.patch_property (routed by the owner kind, ADR-029 §4)"
+    },
     "PATCH /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:60c982bccbf2c947",
@@ -402,7 +437,7 @@
     },
     "PATCH /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:ab69fe537efc63ba",
+      "fingerprint": "sha256:69c028c44819511b",
       "helper": "anyclient.patch_type (hidden harness types, ADR-027 §2)"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/datasets/{defId}": {
@@ -437,7 +472,7 @@
     },
     "POST /catalog/{usecaseId}/setup": {
       "excluded": null,
-      "fingerprint": "sha256:b0048337d36ef0f0",
+      "fingerprint": "sha256:c065f5aa5124c5b3",
       "helper": "anyclient.catalog_setup / helper.setup_app (ADR-027 §1/§5)"
     },
     "POST /devices/activate": {
@@ -632,18 +667,28 @@
     },
     "POST /spaces/{spaceId}/bundles": {
       "excluded": null,
-      "fingerprint": "sha256:151bc0e8b896d40f",
+      "fingerprint": "sha256:ab5312d8c3600cd3",
       "helper": "helper.ensure_bundle"
     },
     "POST /spaces/{spaceId}/bundles/{bundleId}/children": {
       "excluded": null,
-      "fingerprint": "sha256:161d8fea8e81734b",
+      "fingerprint": "sha256:8d71f1eb2c1e8676",
       "helper": "helper.bundle_child"
     },
     "POST /spaces/{spaceId}/bundles/{bundleId}/resolve": {
       "excluded": null,
       "fingerprint": "sha256:111cc8b0d886eff6",
       "helper": "helper.resolve_loser"
+    },
+    "POST /spaces/{spaceId}/collections": {
+      "excluded": null,
+      "fingerprint": "sha256:10a94fc144471433",
+      "helper": "helper.create_collection"
+    },
+    "POST /spaces/{spaceId}/collections/{collectionId}/properties": {
+      "excluded": null,
+      "fingerprint": "sha256:8756fa0b49089cbf",
+      "helper": "helper.add_property (routed by the owner kind, ADR-029 §4)"
     },
     "POST /spaces/{spaceId}/delete-records": {
       "excluded": "low-level (harness)",
@@ -692,7 +737,7 @@
     },
     "POST /spaces/{spaceId}/objects": {
       "excluded": null,
-      "fingerprint": "sha256:afb2e9e01c25da0a",
+      "fingerprint": "sha256:d09c8bc97c02dbbf",
       "helper": "helper.create_object"
     },
     "POST /spaces/{spaceId}/objects/aggregate": {
@@ -770,20 +815,20 @@
       "fingerprint": "sha256:47b0fbe3c53f768a",
       "helper": null
     },
-    "POST /spaces/{spaceId}/properties/{objectId}/attach/{typeId}": {
+    "POST /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
       "excluded": null,
-      "fingerprint": "sha256:1e233f67dd185d5a",
-      "helper": "helper.attach_type"
-    },
-    "POST /spaces/{spaceId}/properties/{objectId}/detach/{typeId}": {
-      "excluded": null,
-      "fingerprint": "sha256:1e233f67dd185d5a",
-      "helper": "helper.detach_type"
+      "fingerprint": "sha256:952b68f60d928e40",
+      "helper": "helper.add_to_collection (trash = the bin)"
     },
     "POST /spaces/{spaceId}/properties/{objectId}/set/{typeId}": {
       "excluded": null,
       "fingerprint": "sha256:f5729a2473d400c0",
       "helper": "helper.update_object"
+    },
+    "POST /spaces/{spaceId}/properties/{objectId}/type/{typeId}": {
+      "excluded": null,
+      "fingerprint": "sha256:1e233f67dd185d5a",
+      "helper": "helper.set_type"
     },
     "POST /spaces/{spaceId}/query": {
       "excluded": null,
@@ -807,7 +852,7 @@
     },
     "POST /spaces/{spaceId}/types": {
       "excluded": null,
-      "fingerprint": "sha256:70ece9b078be541a",
+      "fingerprint": "sha256:eb182d3404afe77a",
       "helper": "helper.create_type"
     },
     "POST /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields": {
@@ -827,7 +872,7 @@
     },
     "POST /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:f6b61ce40ed8a23f",
+      "fingerprint": "sha256:7cb81a132845f545",
       "helper": "helper.add_property"
     },
     "POST /spaces/{spaceId}/upsert": {

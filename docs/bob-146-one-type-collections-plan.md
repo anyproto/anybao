@@ -378,7 +378,7 @@ lines in ADR-006 / 010 / 017 / 022 / 027 land with the code of Phases
 2–3 (the ADR-027 convention; ADR-029's Amendments table lists them).
 User review gate before Phase 2.
 
-### Phase 2 — runtime
+### Phase 2 — runtime — DONE 2026-09-17 (ADR-029 accepted 5e9b387; commits cca69e4 client + fake + call sites, 065448e listed `program` / `agent_skill`, the pin commit)
 
 1. `anyapi.rs`: bundle shapes, `list_collections`, `set_type` +
    collection membership (only what serve needs), `attach_type`

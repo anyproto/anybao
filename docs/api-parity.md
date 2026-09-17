@@ -54,6 +54,26 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C8. Drift refresh 2026-09-17 (pin → any b5be51c, scratch server on that build, `/v1/openapi.json`)
+
+any PR #247 "types and collections" (ADR-029): an object has ONE type
+(`any.type`) and any number of collections (`any.collections`);
+attach / detach are gone. 146 paths, 6 added, 2 removed; 11 endpoint
+keys added, all mapped to the guest surface of ADR-029 §4 —
+`GET/POST …/collections` (`list_collections` / `create_collection`),
+`…/collections/:c/properties*` (the one property surface, routed by
+the owner kind: `list_properties`, `add_property`, `patch_property`,
+`delete_property`), `POST …/properties/:o/type/:t` (`set_type`),
+`POST/DELETE …/properties/:o/collections/:c` (`add_to_collection` /
+`remove_from_collection`; the bin = `trash` / `restore`);
+`GET`/`PATCH …/collections/:c` pending (patch only if `patch_type`
+is on the surface, ADR-029 open question 1). 2 keys removed with
+their helpers (`attach_type` / `detach_type`). 11 pre-existing routes
+re-fingerprinted for the reshaped bodies: object create (`type` /
+`collections`), bundles ensure (`rootType` / `rootCollections`) and
+children (`type`), type create / list / get / patch (no `weight`),
+type property add, catalog list / get / setup (`collectionId`).
+
 ## C7. Drift refresh 2026-09-16 (pin → any feat/syn-252-local-export, scratch server on that build, `/v1/openapi.json`)
 
 any SYN-252: the local store exports named collections as one file

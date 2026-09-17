@@ -281,6 +281,8 @@ nothing — it is left as it is (clean cut), the user re-creates it.
 
 ### 6. Fleet, pin, cutover
 
+**Amended 2026-09-17 (ADR-029 §8):** the pin is any b5be51c (`api/openapi.vendored.json` from a scratch server on that build, 146 paths; `api/coverage.json` gains the collection and membership endpoints mapped to ADR-029 §4 and loses attach / detach). The one-way door now also means FRESH ACCOUNTS: mark 2 leaves old rows without `any.type`, so every environment restarts on a new account and new repo spaces, and no shared server moves before any-ui's port is on main — the order is ADR-029 §8.
+
 - Pin moves to any 5d709c8 (the docs commit on top of the v0.3.3
   bump); `api/openapi.vendored.json` re-vendored from the rig,
   `api/coverage.json` remapped (catalog ×3, parts ×5, editor
