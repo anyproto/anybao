@@ -25,6 +25,8 @@ companion PR deletes the built-ins; fresh datasets, old data unread.
 
 **Amended 2026-09-08 (ADR-027 §1/§2):** the chat's bundle is `system:general-chat/v1` (the catalog's); every store below is declared as a part of its type and addressed by the collection the declaration reports (`AgentStores::*_ds`), never by the bare name.
 
+**Amended 2026-09-17 (ADR-029 §7):** the `bao/v1` root is ensured with `rootType: page` (one type per object; the built-in gives it its body) and filed under no collection; every child names its ONE store type at derivation (`bundle_child(…, type_id)`); the host client has no `attach_type`, `list_collections` reads the collection surface, and the credentials sweep and `ensure_typed` filter on `any.type`.
+
 **Amended 2026-09-08 (memory home):** `bao/v1` exists in the bao space and nowhere else — memory has ONE home. The runtime publishes the bao space id as `runtime.get("bao.space")` (serve; `run --from-space`, or a `bao.space` config key); the guest memory verbs take no space (`get_brain()`, `create_memory(fields)`, `evolve_memory(id, fields)`, `delete_memory(id)`, `memory(c)`), recall's memory source reads that brain whatever space recall is bound to, and the guest `ensure_bundle` refuses the `bao/v1` id. A fact about a user space is a memory item with that space in `context`/`tags`, not a brain in that space (observed 2026-09-08: the model installed `bao/v1` into a user space to repair a `bundle.not_found`).
 
 anyrt registers the **`bao/v1` bundle** at serve boot (the server

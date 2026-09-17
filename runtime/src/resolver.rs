@@ -362,7 +362,7 @@ mod tests {
         let res = c
             .create_object(
                 space,
-                &json!({"types": [s.type_id],
+                &json!({"type": s.type_id,
                         "initialProperties": {"any": {"name": name},
                                               s.type_id.clone(): s.group(&[
                                                   ("name", json!(name)),
@@ -528,7 +528,7 @@ mod tests {
         let s = ProgramSchema::ensure(&c, "cur").unwrap();
         c.create_object(
             "cur",
-            &json!({"types": [s.type_id],
+            &json!({"type": s.type_id,
                     "initialProperties": {s.type_id.clone(): s.group(&[
                         ("name", json!("hollow")), ("version", json!("v1"))])}}),
         )

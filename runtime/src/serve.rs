@@ -255,11 +255,11 @@ fn bundle_child_retry(
     space: &str,
     bundle: &str,
     seed: &str,
-    types: &[&str],
+    type_id: &str,
 ) -> Result<String> {
     let mut last_err = None;
     for _ in 0..5 {
-        match c.bundle_child(space, bundle, seed, types) {
+        match c.bundle_child(space, bundle, seed, type_id, &[]) {
             Ok(reply) => {
                 return reply["objectId"]
                     .as_str()
@@ -285,9 +285,9 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     for _ in 0..5 {
         // Created root on purpose: the bao space is single-account
         // (owner escape covers offline installs) and created stays the
-        // default — a derived root could never be uninstalled. `page`
-        // (built-in) gives the root a body.
-        match c.ensure_bundle(space, "bao/v1", "bao", &["page"], false) {
+        // default — a derived root could never be uninstalled. The root
+        // is a plain document: type `page` (ADR-029 §7), filed nowhere.
+        match c.ensure_bundle(space, "bao/v1", "bao", "page", &[], false) {
             Ok(_) => {
                 registered = true;
                 break;
@@ -380,10 +380,10 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             "dynamic": true, "fields": []}),
     )?;
     let stores = AgentStores {
-        config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &[&cfg_t])?,
-        secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &[&sec_t])?,
-        triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &[&trg_t])?,
-        runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &[&trg_t])?,
+        config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &cfg_t)?,
+        secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &sec_t)?,
+        triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &trg_t)?,
+        runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &trg_t)?,
         config_ds,
         secrets_ds,
         triggers_ds,
@@ -912,7 +912,7 @@ impl DeclaredTable {
             }
             let rows = match self.client.query_objects(
                 space,
-                &json!({"filter": {"any.types": schema.type_id}, "limit": 500}),
+                &json!({"filter": {"any.type": schema.type_id}, "limit": 500}),
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -2717,7 +2717,7 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
         .context("agent_log type declares no agent_turns dataset")?;
     let child = ctx
         .client
-        .bundle_child(&ctx.space, &root, "bao/log/v1", &[tid.as_str()])?;
+        .bundle_child(&ctx.space, &root, "bao/log/v1", &tid, &[])?;
     let log = child["objectId"]
         .as_str()
         .context("bundle_child returned no objectId")?
@@ -4299,9 +4299,10 @@ mod tests {
         assert_eq!(again.config, stores.config);
         assert_eq!(again.config_ds, stores.config_ds);
         assert_eq!(again.runs_ds, stores.runs_ds);
-        // the chat's log child derives under the catalog bundle
+        // the chat's log child derives under the catalog bundle; it
+        // carries its one type from the first change
         let child = c
-            .bundle_child("sp", "system:general-chat/v1", "bao/log/v1", &[])
+            .bundle_child("sp", "system:general-chat/v1", "bao/log/v1", "page", &[])
             .unwrap();
         assert!(child["objectId"].as_str().is_some_and(|s| !s.is_empty()));
     }
