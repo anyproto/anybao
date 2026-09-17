@@ -1,11 +1,11 @@
 # ADR-029: One type per object, collections — classes and tags, the default type, membership verbs, the fleet cut
 
-Status: **Proposed** (2026-09-17)
+Status: **Accepted** (2026-09-17)
 Date: 2026-09-17
 Builds on: ADR-006 §6 (xKey normalization), ADR-010 §5/§8 (harness
 types, the flat surface), ADR-017 §0/§1 (bundle-child stores),
 ADR-022 §3 (hydration), ADR-027 §1–§7 (parts, catalog, bodies, pin)
-Amends when accepted: ADR-006 §6 (two definition surfaces; `any.type`
+Amends: ADR-006 §6 (two definition surfaces; `any.type`
 / `any.collections` values speak xKeys; `collection` joins the
 synthetic rows), ADR-010 §5 (`program` listed, not hidden) and §8
 (the membership verbs, `create_object` body), ADR-017 §0/§1 (bundle

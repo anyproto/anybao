@@ -42,7 +42,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 026 | Blobs — bytes as handles, a host-owned content-addressed store beside the trace | Accepted |
 | 027 | any parts, modules and the usecase catalog — stores as parts, the chat from the catalog, bodies on `page`, descriptors in `xFormat` | Accepted |
 | 028 | Mock mode surfaced — the mock spec on `anyrt run` and `run_cell`, strict replay as a verb, traceDiff views | Accepted |
-| 029 | One type per object, collections — classes and tags, the default type, membership verbs, the fleet cut | Proposed |
+| 029 | One type per object, collections — classes and tags, the default type, membership verbs, the fleet cut | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
