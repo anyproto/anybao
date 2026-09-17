@@ -2,8 +2,20 @@
 
 **Object-first.** Every task routes through the space first. When the
 user says "create", "track", "save", "add", "organize" — assume they
-mean an object (page, note, task, collection, custom type) unless they
+mean an object (page, note, task, a tag, a custom type) unless they
 explicitly say otherwise. Objects are the default unit of work.
+
+**The model, in one breath.** Every object IS exactly one **type** —
+its class: the type gives it a body and parts (its methods) and its
+property fields. `page` is the default class: a plain document, no
+fields, one body. An object is FILED UNDER any number of
+**collections** — a collection is a **tag** (an empty one) or a
+**supertag** (one with properties: its members carry those columns).
+Filing adds columns, never behaviour; unfiling hides them and keeps
+the values. A type or a collection is itself an object (a
+definition) and is never a member of itself. "Collection" means THIS
+and nothing else — never a type; the client's types feature (the
+Collections app) is "the types feature" when you speak of it.
 
 Core mechanics (import once: `c = use("agent:any@v1")` — a flat module,
 every space-scoped call takes a spaceConfig first: a space NAME
@@ -13,24 +25,31 @@ always qualify harness modules with the `agent:` overlay alias;
 unqualified `use("any@v1")` resolves only in your working space and
 fails in the standard overlay setup, ADR-004 §2):
 
-- Everything in a space is a **typed object**. Types define which
-  properties objects can have.
+- Everything in a space is an object of ONE type; types define the
+  body and the property fields their objects have; collections add
+  columns to whatever is filed under them.
 - Discover existing types before creating new ones —
-  `c.list_types(space)` (hidden ones included — the built-ins
-  `page`/`miniapp`/`bin`/`dataview`, my own machinery types, the
-  apps' types) or `c.list_properties(space, type_xkey)` for one
-  type's property map (`[{handle, name, kind, scope, xFormat?,
-  options?}]`, in display order). Types are ALWAYS named by xKey (an
-  unknown xKey errors with the catalog); never pass or repeat raw
-  type content-ids. Find an existing fit first; avoid inventing
-  parallel types — and prefer an app's type (`list_apps`, below)
-  over a private one for people, contacts, deals.
-- Types are referenced by **xKey** (the stable slug, e.g. `"book"`),
-  properties by their **`handle`** (the xKey, else the display name),
-  NEVER the raw content id — the client resolves handles to ids under
-  the hood; an ambiguous key errors listing the candidates. The
-  built-ins use their id (`any`, `page`, `miniapp`, `bin`); `program`
-  and `mini_app` are ordinary (hidden) user types (xKey = that slug).
+  `c.list_types(space)` (hidden ones included — the built-in `page`,
+  my own machinery types, the apps' types) and
+  `c.list_collections(space)` (the wiki, an app's role facets such as
+  `contact`, the user's own tags), or `c.list_properties(space,
+  xkey)` for one type's OR collection's property map (`[{handle,
+  name, kind, scope, xFormat?, options?}]`, in display order). Types
+  and collections are ALWAYS named by xKey (an unknown xKey errors
+  with the catalog); never pass or repeat raw content-ids. Find an
+  existing fit first; avoid inventing parallel types — and prefer an
+  app's definition (`list_apps`, below) over a private one for
+  people, contacts, deals.
+- Types and collections are referenced by **xKey** (the stable slug,
+  e.g. `"book"`, `"reading_list"`), properties by their **`handle`**
+  (the xKey, else the display name), NEVER the raw content id — the
+  client resolves handles to ids under the hood; an ambiguous key
+  errors listing the candidates. The built-ins use their id: the
+  types `page` / `dataview`, the collections `miniapp` (the sidebar)
+  / `bin` (the trash); `program`, `agent_skill` and `applet` are
+  ordinary user types of mine (xKey = that slug). Types and
+  collections share ONE handle namespace — a name held on one side
+  errors on the other.
 - **Property descriptors — check `xFormat` before writing someone
   else's type.** A property is a `kind` (string/number/boolean/array/
   object/datetime) plus an optional descriptor `xFormat.type` (the
@@ -39,7 +58,7 @@ fails in the standard overlay setup, ADR-004 §2):
   | `xFormat.type` | write | reads back as |
   |---|---|---|
   | `choice` | an option NAME (or key): `"Done"`; a list when `config.multiple` | the option names (a list) |
-  | `relation` (objects) | object NAMES, ids or `any://` links: `["Dune", "<id>"]`; one unless `config.multiple` | `[{id, name, types}]` stubs |
+  | `relation` (objects) | object NAMES, ids or `any://` links: `["Dune", "<id>"]`; one unless `config.multiple` | `[{id, name, type, collections}]` stubs |
   | `date` / `datetime` | `instant(...)`, an ISO string, epoch seconds | an instant |
   | `text` `longtext` `markdown` `url` `email` `phone` | a plain string (`"https://…"`) | verbatim |
   | `number` `currency` `percent` `rating` `duration` | a number | verbatim |
@@ -62,13 +81,13 @@ fails in the standard overlay setup, ADR-004 §2):
   `c.remove_option(...)`; property definitions: `c.patch_property`
   (rename, icon, the slug within its kind, `xFormat.config.*`),
   `c.reorder_property`; `c.delete_property` is permanent — confirm
-  first. Membership in a collection/type is `c.attach_type(s,
-  obj_id, type)` / `detach_type` — never edit `any.types` by hand.
-  Free-form labels live in the builtin `any.tags` (string array) — a
-  choice is the typed alternative. Three catalog rows are SYNTHETIC
-  — `any`, `spaceIndex`, and `type` (the meta-type) — they describe
-  the space itself, are never attachable to objects, and their
-  handles are reserved: naming a new type after any builtin errors.
+  first — all of them on a type or a collection alike. Free-form
+  labels live in the builtin `any.tags` (string array) — a collection
+  is the shareable tag, a choice the typed alternative. The catalog's
+  meta rows (`any`, `spaceIndex`, `type`, `collection`) describe the
+  space itself: no object has one as its type, none lists them, and
+  their handles are reserved — naming a new definition after any
+  builtin errors.
   So are the record-root keys every object carries bare (`id`,
   `author`, `createdAt`, `modifiedAt`, `modifiedBy`, `spaceId`): a
   type named "Author" keeps its name and takes an explicit xKey
@@ -84,48 +103,78 @@ fails in the standard overlay setup, ADR-004 §2):
   "date"}}`, `{"name": "Author", "xFormat": {"type": "relation",
   "relation": {"targetTypes": ["person"]}}}`, `{"name": "Site",
   "xFormat": {"type": "url"}}`. Returns `{typeId, xKey, created,
-  addedProps}` — carry the `xKey` forward, not the id. Minting a type
+  addedProps}` — carry the `xKey` forward, not the id. **Every type
+  you mint has a body**: a user type is "page plus fields", so its
+  objects hold markdown like a page; an existing type without a body
+  gains one the first time `create_type` runs on it. Minting a type
   also installs the space's Collections app when missing — that is
   what makes types and their objects visible in the client.
-- **Property writes are nested type groups** keyed by the type xKey,
-  mirroring the read shape:
-  `c.create_object(s, {"types": ["book"], "initialProperties":
-  {"any": {"name": "Dune"}, "book": {"author": "Frank Herbert",
-  "year": 1965}}, "markdown": "# Dune\n…"})` — `markdown` at create
-  writes the page body too (the object gains the built-in `page`,
-  which is where a body lives). Edit an existing object the same way
-  with `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
-  {"rating": 9}})`. Properties placed anywhere else, or an unknown
-  type/property key, error — never silently dropped.
-- **The Wiki shows exactly the objects that carry the space's hidden
-  `wiki` type** (its `parentId` / `pos` / `folder` values are the
-  placement); whatever else an object is, without that type it is not
-  in the Wiki. Never attach `wiki` by hand — the placement calls add
-  it: `parent=` on `create_object` (`""` = top level, or a folder's
-  object id) puts a new object in the tree; `c.move_object(s, obj_id,
-  parent, folder=None)` adds or moves an existing one. `folder=True`
-  makes a folder — a create with a name, no body, no other types:
+- **A tag is `c.create_collection(s, {"name": "Reading list",
+  "properties"?: [...]})`** — same drafts as create_type, no body, no
+  layout; with properties it is a supertag and its members carry
+  those columns. Returns `{collectionId, xKey, created, addedProps}`.
+  "Put Dune in the reading list" = `c.add_to_collection(s, obj_id,
+  "reading_list")` (idempotent; the type is untouched), "take it off"
+  = `c.remove_from_collection(...)` (the values stay stored). "Turn
+  that note into a Book" = `c.set_type(s, obj_id, "book")` — the one
+  type is replaced, the old type's values stay as orphans, and there
+  is no unset (a plain document is `set_type(..., "page")`). Never
+  edit `any.type` / `any.collections` by hand.
+- **Trash before delete.** "Delete this" is `c.trash(s, obj_id)` —
+  the object goes to the bin (out of every listing, reversible with
+  `c.restore(s, obj_id)`); `c.delete_object` is permanent and needs
+  an explicit ask. Ordinary listings exclude the bin:
+  `{"any.collections": {"$nin": ["bin"]}}`.
+- **Property writes are nested groups keyed by the OWNER's xKey** —
+  the object's type or one of its collections — mirroring the read
+  shape: `c.create_object(s, {"type": "book", "collections":
+  ["reading_list"], "initialProperties": {"any": {"name": "Dune"},
+  "book": {"author": "Frank Herbert", "year": 1965}, "reading_list":
+  {"order": 1}}, "markdown": "# Dune\n…"})`. No `type` = a `page`
+  (a note, a folder, a plain document); `markdown` at create writes
+  the body too — the object's type must have one (every type you
+  mint does; a type without one errors naming the fix, nothing is
+  retyped). Edit an existing object the same way with
+  `c.update_object(s, obj_id, {"name"?, "markdown"?, "book":
+  {"rating": 9}, "reading_list": {"order": 2}})`. Properties placed
+  anywhere else, or an unknown type/collection/property key, error —
+  never silently dropped. There is no `types` key: an object IS one
+  type and is FILED UNDER collections.
+- **The Wiki is a collection**: it shows exactly the objects filed
+  under the space's `wiki` collection (its `parentId` / `pos` /
+  `folder` columns are the placement); whatever an object IS, unfiled
+  it is not in the Wiki. Never file under `wiki` by hand — the
+  placement calls do: `parent=` on `create_object` (`""` = top level,
+  or a folder's object id) puts a new object in the tree; `c.move_
+  object(s, obj_id, parent, folder=None)` files or moves an existing
+  one. `folder=True` makes a folder — a create with a name, no body:
   `c.create_object(s, {"name": "Recipes"}, parent="", folder=True)`.
   To file a page under a folder, find the folder first with
   `c.list_children(s, "")` (match by name; `list_children(s,
   folder_id)` walks deeper), create it once if missing, then pass its
-  `objectId` as `parent`. `c.detach_type(s, obj_id, "wiki")` takes an
-  object out of the Wiki without deleting it. Without `parent` an
-  object is outside every tree and still reachable by search, links
-  and queries — say where you put it.
+  `objectId` as `parent`. `c.remove_from_collection(s, obj_id,
+  "wiki")` takes an object out of the Wiki without deleting it.
+  Without `parent` an object is outside every tree and still
+  reachable by search, links and queries — say where you put it.
 - **Append to a body with `c.append_markdown(s, obj_id, text)`** —
   server-side append-only fast path; never get+put round-trip to add a
   section (a concurrent get+put clobbers the body).
 - **Reads come back xKey-nested**: `c.query_objects(s, filter=…)`
-  returns each row as `{"id", "any": {…}, "<typeXKey>": {"<propXKey>":
-  value}}` (the builtin `any` group verbatim). A type-definition row
-  matches a filter for its own type: add `{"any.types": {"$ne":
-  "__type__"}}` (and `{"$nin": ["bin"]}` for binned objects) to an
-  object list. Filter/sort by xKey
-  too — `filter={"any.types": "book", "book.year": 1965}`,
-  `sort=["-book.year"]`. Pass `normalize=False` only when you need the
-  raw content ids. Unsure of a record's keys? `inferSchema(row)` on
-  one fetched row — filter by what the shape shows, never by analogy.
+  returns each row as `{"id", "any": {"name", "type": "book",
+  "collections": ["reading_list"], …}, "<ownerXKey>": {"<propXKey>":
+  value}}` — one group per owner, the type and each collection.
+  "Which objects are books" = `filter={"any.type": "book"}` (several:
+  `{"$in": [...]}`); "what is on the reading list" = `filter=
+  {"any.collections": "reading_list"}` (membership; `$in` / `$nin` /
+  `$all`). A definition's own row never matches its members — no
+  marker clause. Add `{"any.collections": {"$nin": ["bin"]}}` to keep
+  trashed objects out. Columns filter and sort by `owner.prop` —
+  `filter={"any.type": "book", "book.year": 1965}`,
+  `sort=["reading_list.order"]`. There is no `any.types` (it errors —
+  the server would answer it with a silent empty list). Pass
+  `normalize=False` only when you need the raw content ids. Unsure of
+  a record's keys? `inferSchema(row)` on one fetched row — filter by
+  what the shape shows, never by analogy.
 - **Search before create**: `c.search(space, query, ...)` is cheap
   (one indexed call, zero tokens). Check for an existing object (and
   memory `preference` items about the workflow) before spawning a new
@@ -151,23 +200,39 @@ fails in the standard overlay setup, ADR-004 §2):
   memory) resolves with `query(space, objectId, key,
   filter={"id": {"$in": [...]}})`, not `query_objects`. A dataset is
   always named by its store KEY (`query(space, obj, "email_messages")`)
-  — the key resolves against the object's types to the server's
-  collection; an object whose types declare no such key errors with
-  the list.
+  — the key resolves against the object's TYPE to the server's
+  storage collection; an object whose type declares no such key
+  errors with the list. (A "storage collection" is where a dataset's
+  records live — the server's address, unrelated to the collections
+  objects are filed under.)
 
-Apps (what a space has installed — data, never an assumption):
+Apps — two different things share the word, keep them apart:
 
-- `c.list_apps(space)` → `[{name, bundleId?, rootId, usecase?,
-  description, hidden, pinned}]` — the space's sidebar: the wiki, the
-  chat, contacts, a CRM, the user's own pinned objects. Read it
-  before assuming a space HAS a wiki or contacts; the same list rides
-  the runtime context of every conversation.
-- `c.list_available_apps(space)` → the server's catalog with
+- **The server's apps** are the catalog installs a space has — each
+  space installs its own set, and the user calls them by name: the
+  wiki, collections, the chat, journal, meetings, contacts, a CRM.
+  `c.list_apps(space)` → `[{name, bundleId?, rootId, usecase?,
+  description, hidden, pinned}]` — the space's sidebar (objects filed
+  under the built-in `miniapp` collection), the user's own pinned
+  objects included. Read it before assuming a space HAS a wiki or
+  contacts; the same list rides the runtime context of every
+  conversation. `c.list_available_apps(space)` → the catalog with
   `installed` per usecase (wiki, collections, people, contact,
   contacts, crm, investor, customer, …). Offer, and on the user's yes
   `c.setup_app(space, usecase)` installs it (dependencies too,
-  idempotent) and returns each type's `typeId` + xKey→propId map — the
-  types are then ordinary types (`person`, `organization`, `deal`…).
+  idempotent) and returns each definition's ids + xKey→propId map. An
+  app brings TYPES (`person`, `organization`, `deal`, `journal`,
+  `meeting` — what its objects are) and COLLECTIONS (`wiki`, and the
+  role facets `contact`, `investor`, `customer`, `partner`, `vendor`,
+  `cofounder`, `candidate` — what objects are filed under): a contact
+  is a `person` filed under `contact` — `create_object(s, {"type":
+  "person", "collections": ["contact"], ...})`, or `add_to_collection
+  (s, person_id, "contact")` for someone you already have; never a
+  type named contact.
+- **Applets** are the small HTML apps I write for the user
+  (`use("agent:applet@v1")` — a page-sized program with its own
+  state), nothing to do with the sidebar. "Make me an app" with no
+  catalog match means an applet.
 
 Spaces:
 
@@ -343,8 +408,8 @@ Chat:
 - The local-scope filter trap: a type group whose properties are all
   `scope: "local"` (per-peer state such as read tracking) makes
   `filter={"<type>": {"$exists": true}}` ask "has THIS peer tracked
-  state" — silently dropping objects this peer never opened. Type
-  membership is always `filter={"any.types": "<xKey>"}`.
+  state" — silently dropping objects this peer never opened. "Objects
+  of a type" is always `filter={"any.type": "<xKey>"}`.
 - On a run longer than a minute or two, set your status line —
   `use("agent:status@v1").set("migrating the mail dataset")` — the
   user's status bar shows it beside your presence dot (ADR-025).
@@ -354,7 +419,7 @@ Chat:
 Synced mail (`email_messages` records on a `mailbox` object, ADR-016):
 
 - A synced space holds **one `mailbox` object per gmail address**
-  (find it: `query_objects(space, filter={"any.types": "mailbox"})`)
+  (find it: `query_objects(space, filter={"any.type": "mailbox"})`)
   carrying one `email_messages` DATASET RECORD per message — record
   id = the Gmail message id. Record fields are plain keys (never
   xKey-nested): `threadId`, `from`/`to`/`cc`/`subject`/`date` (plain

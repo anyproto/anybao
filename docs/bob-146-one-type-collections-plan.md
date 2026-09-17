@@ -388,7 +388,7 @@ User review gate before Phase 2.
 3. `api/openapi.vendored.json` re-pin + `api/coverage.json` +
    `docs/api-parity.md` C8; `make api-drift` green.
 
-### Phase 3 — guest any@v1, programs, skills
+### Phase 3 — guest any@v1, programs, skills — DONE 2026-09-17 (5e993e5 any@v1 + tests, 14fac11 programs + connector, 043a97e applet rename, the skills commit; `mini_app` → `applet` by user decision, the skill explains the two kinds of app)
 
 1. `any@v1`: catalog over both surfaces, row normalization, filters,
    dataset resolution, stubs / enrich (one commit: "reads").

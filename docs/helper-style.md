@@ -61,11 +61,14 @@ obj["book"]["author"]           # reads mirror the write shape
 - **Cache keyed by RESOLVED spaceId**, TTL-bounded, invalidatable — a
   cross-space call must not read another space's catalog.
 - Conceptual keys (user xKeys such as `"program"`) resolve to real
-  ids through the catalog. The built-in registered types have literal
-  string ids (`"page"`, `"miniapp"`, `"bin"`, `"dataview"`); user
-  types (including `program` / `mini_app`) have `bafyrei…` hashes. A
-  dataset is named by its store KEY and resolved to the server's
-  collection against the host object's types (ADR-027 §2).
+  ids through the catalog, which spans both definition surfaces —
+  types and collections, one handle namespace (ADR-029 §2). The
+  built-in registered definitions have literal string ids (the types
+  `"page"` / `"dataview"`, the collections `"miniapp"` / `"bin"`);
+  user definitions (including `program` / `applet`) have `bafyrei…`
+  hashes. A dataset is named by its store KEY and resolved to the
+  server's storage collection against the host object's ONE type
+  (ADR-027 §2, ADR-029 §2).
 
 ## 5. Space handling
 
@@ -88,8 +91,10 @@ obj["book"]["author"]           # reads mirror the write shape
   only user types accept dynamic props.
 - Deleted spaces persist in `GET /spaces` with `status:"deleted"` —
   filter by status on name lookups.
-- `objects/query` filter `{"any.types": "<typeId>"}` needs the real
-  typeId (resolve via catalog), not a conceptual key.
+- `objects/query` filters `{"any.type": "<typeId>"}` (the one type)
+  and `{"any.collections": "<collectionId>"}` (membership) need the
+  real ids (resolve via catalog), not a conceptual key; `any.types`
+  does not exist and the guest refuses it (ADR-029 §2).
 - **NUL sanitization** at every dataset write (anyenc/fastjson can't
   take `\x00` — anyclient.sanitize_nuls, already wired).
 
