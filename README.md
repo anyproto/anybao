@@ -1,33 +1,54 @@
 # anybao
 
-**bao** is a personal AI agent that lives inside your
-[`any`](https://github.com/anyproto/any) spaces, and **anyrt** is the
-runtime that runs it. Your chat, memory, config, and the agent's own
-code are objects in a local-first, end-to-end encrypted space that syncs
-between your devices. The agent process holds no state of its own: stop
-it, start it elsewhere, and it picks up where it left off.
+- **bao**, a personal AI agent that lives inside your
+  [`any`](https://github.com/anyproto/any) spaces, and **anyrt**, the
+  runtime that runs it
+- local-first: chat, memory, config, triggers and the agent's own code
+  are objects in an end-to-end encrypted space that syncs between your
+  devices; the agent process holds no state of its own
+- sandboxed: agent code runs as CPython compiled to wasm inside
+  [wasmtime](https://wasmtime.dev), with no sockets, no filesystem, a
+  virtual clock and a fuel budget per cell; every side effect goes out
+  through one host boundary that checks, executes and records it
+- traceable: every run is an append-only effect log that replays
+  bit-exact, drives mock runs, and answers "why did bao do that?"
+- one tool: the model writes Python cells in a persistent kernel against
+  the database, memory and connectors; docstrings are the documentation
+- space-resident: programs and skills are deployed to a space and
+  resolved live, so editing the agent is a deploy, never a restart; the
+  agent can write programs for itself
+- memory that does not depend on model initiative: background jobs
+  extract, roll up, decay and link facts; recall is injected into every
+  conversation
+- runs on its own schedule: cron and event triggers are objects in the
+  space; with several devices online an election picks the one that
+  answers
+- model-agnostic: Anthropic and any OpenAI-compatible backend
+  (OpenRouter, DeepSeek, Ollama, vLLM, ...) through per-model profiles;
+  switching is a config row
+- credentials never reach the model: the host injects keys after the
+  trace record is written; OAuth tokens are host-held
+- connectors for GitHub, Linear, Gmail, Google Calendar/Drive/Sheets,
+  Granola, Attio, Figma and Intercom, written as guest programs
+- embeddable: `anyrt` is a Rust library with a thin CLI; the
+  [any-ui](https://github.com/anyproto/any-ui) desktop app runs it
+  in-process
 
-> **Alpha software.** Data shapes change without migration, and the
-> local `any` server trusts every process on your machine. Use a
-> dedicated account for experiments.
+`any` runs a local database server on each of your devices. `anyrt
+serve` connects to it as a client, watches the chat in your `bao` space,
+answers, and runs scheduled and event-driven jobs. Everything the agent
+knows and everything it is made of lives in the database next to your
+data, so stopping the process on one device and starting it on another
+picks up the same conversation, memory and schedule.
 
-## Why it is built this way
-
-**Nothing escapes the cage.** The agent's code runs as CPython compiled
-to wasm inside a [wasmtime](https://wasmtime.dev) sandbox. No sockets
-and no filesystem are linked into the guest, and its clock is virtual,
-so a run is deterministic by construction. The only way out is
-one host function that hands a named effect (`http.get`, `llm.chat`,
-`any.query`, ...) to the broker, which checks it, executes it, and
-records it. Credentials are injected by the host after the record is
-written, so a key never reaches the model, the guest, or a trace.
-
-**If it isn't in the trace, it didn't happen.** Every effect lands in
-an append-only log in execution order, with its inputs, outputs,
-timing, and read/mutate class. A trace replays a run bit-exact, feeds a
-mock run ("same effects, edited code", or "mock the third-party API,
-keep everything else live"), and answers "why did bao do that?" without
-guesswork:
+The agent's code is not trusted with the machine. It runs inside a wasm
+cage whose only exit is one host function that hands a named effect
+(`http.get`, `llm.chat`, `any.query`, ...) to a broker. The broker
+checks the effect, executes it, and appends it to the run's trace with
+its inputs, outputs, timing and read/mutate class. A trace replays a
+run bit-exact, feeds a mock run ("same effects, edited code", or "mock
+the third-party API, keep everything else live"), and carries the
+per-turn token and cost stats:
 
 ```sh
 anyrt trace ls --program toolcaller      # conversations, newest first
@@ -36,36 +57,23 @@ anyrt trace show run_<id> --stats        # tokens, cache hits, cost per turn
 anyrt replay run_<id>                    # strict replay; a divergence is the finding
 ```
 
-**One tool, a persistent kernel.** The model gets a single tool,
-`run_cell`, and writes Python against facades it pulls in with
-`use("any@v1")`, `use("memory@v1")`, or a connector, in a kernel that
-keeps variables, helpers, and imports alive across cells. Large results
-come back as short stubs the model can drill into, so context stays
-small. `help(http.get)` prints the real docstring: the code is the
-documentation.
+The model gets a single tool, `run_cell`, and writes Python against
+facades it pulls in with `use("any@v1")`, `use("memory@v1")` or a
+connector, in a kernel that keeps variables, helpers and imports alive
+across cells. Large results come back as short stubs the model can
+drill into, so context stays small. `help(http.get)` prints the real
+docstring: the code is the documentation.
 
-**The agent is space-resident.** Programs and skills are published to a
-space with `anyrt deploy` and resolved live from there. Editing the
-agent is a deploy, never a restart. The shipped agent is one such repo
-that your account joins read-only; your own space can shadow any unit
-by name, and bao can write programs for itself.
+The shipped agent is one repo of programs and skills, published to a
+space your account joins read-only. Your own space can shadow any unit
+by name, and bao can author programs into it. Every contract behind
+this is an accepted ADR in [`docs/adr/`](docs/adr/README.md); no code
+lands ahead of its ADR.
 
-**Memory that does not depend on model initiative.** Distilled facts go
-into a small, high-signal memory graph in your space. Background jobs
-extract, roll up, decay, and link; recall is injected automatically at
-the start of every conversation, so the agent remembers without being
-asked.
-
-**Runs on its own schedule.** Cron and event triggers are objects in the
-space too, pinned to the device that owns them. With several devices
-online, an election picks the one that answers as bao.
-
-**Model-agnostic.** Anthropic and any OpenAI-compatible backend
-(OpenRouter, DeepSeek, Ollama, vLLM, ...) through one adapter layer with
-per-model profiles. Switching models is a config row, not a code change.
-
-**Designed in the open.** Every contract is an accepted ADR in
-[`docs/adr/`](docs/adr/README.md), and no code lands ahead of its ADR.
+> [!WARNING]
+> **Alpha software.** Data shapes change without migration, and the
+> local `any` server trusts every process on your machine. Use a
+> dedicated account for experiments.
 
 ## Getting started
 
