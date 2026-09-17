@@ -80,9 +80,9 @@ def test_neighbors_forward_refs_live(client, fresh_space, guest_use):
         "name": "Relates To", "xKey": "relates_to", "kind": "array",
         "xFormat": {"type": "relation", "relation": {"targetTypes": ["note"]}}})["propId"]
     target = client.create_object(fresh_space, {
-        "types": [tid], "initialProperties": {"any": {"name": "target"}}})["objectId"]
+        "type": tid, "initialProperties": {"any": {"name": "target"}}})["objectId"]
     source = client.create_object(fresh_space, {
-        "types": [tid],
+        "type": tid,
         "initialProperties": {"any": {"name": "source"},
                               tid: {pid: [f"any://{target}"]}}})["objectId"]
 

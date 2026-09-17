@@ -68,6 +68,8 @@ class FakeBackends(BaseHTTPRequestHandler):
             # through (degenerate-env rule, ADR-010 §8)
             return self._reply({"spaces": []})
         path = self.path.partition("?")[0]
+        if path.endswith("/collections"):   # the second catalog surface (ADR-029)
+            return self._reply({"collections": []})
         if "/types/" in path and path.endswith("/datasets"):
             # defs pre-exist with matching search leaves — no PATCH;
             # the collection is the server's (ADR-027 §2): `<typeId>_<key>`
@@ -94,7 +96,7 @@ class FakeBackends(BaseHTTPRequestHandler):
             # builtin-group filter paths resolve against these (A19);
             # program.any_tool rides the compose's tool query
             return self._reply({"properties": [
-                {"id": "name"}, {"id": "types"}, {"id": "any_tool"}]})
+                {"id": "name"}, {"id": "type"}, {"id": "any_tool"}]})
         if self.path.endswith("/bundles"):
             # the test chat c1 is the catalog's chat root (ADR-027 §1)
             return self._reply({"bundles": [

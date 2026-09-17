@@ -41,8 +41,8 @@ _ANY = {"properties": [
 
 DUNE = "bafyreiduneduneduneduneduneduneduneduneduneduneduneobj1"
 HEAT = "bafyreiheatheatheatheatheatheatheatheatheatheatheatobj2"
-OBJS = {DUNE: {"id": DUNE, "any": {"name": "Dune", "types": ["bafyBOOK", "page"]}},
-        HEAT: {"id": HEAT, "any": {"name": "Heat", "types": ["bafyBOOK", "page"]}}}
+OBJS = {DUNE: {"id": DUNE, "any": {"name": "Dune", "type": "bafyBOOK"}},
+        HEAT: {"id": HEAT, "any": {"name": "Heat", "type": "bafyBOOK"}}}
 
 
 def rig(records=(), by_name=None, extra=None):
@@ -109,10 +109,10 @@ def test_xkey_is_the_handle_else_the_name():
 
 
 def test_reads_label_by_handle_and_show_option_names():
-    fx = rig(records=[{"id": "o1", "any": {"name": "Ship", "types": ["bafyTASK"]},
+    fx = rig(records=[{"id": "o1", "any": {"name": "Ship", "type": "bafyTASK"},
                        "bafyTASK": {"pSTAT": ["done"], "pPRIO": ["high"],
                                     "pTAGS": ["backend", "ghost"], "pEST": 3}}])
-    [rec] = client(fx).query_objects("s1", filter={"any.types": "task"})
+    [rec] = client(fx).query_objects("s1", filter={"any.type": "task"})
     # a choice value is always an array of keys on the wire; names on read
     assert rec["task"] == {"status": ["Done"], "priority": ["High"],
                            "labels": ["Backend", "ghost"],   # dangling key raw
@@ -221,7 +221,7 @@ def test_relation_honours_target_types_and_the_candidate_filter():
     lookups = [b for v, p, b in fx.calls if p.endswith("/objects/query")]
     assert lookups[0]["filter"] == {"$and": [{"any.name": "Heat"},
                                              {"any.name": {"$ne": ""}},
-                                             {"any.types": {"$in": ["bafyBOOK"]}}]}
+                                             {"any.type": {"$in": ["bafyBOOK"]}}]}
 
 
 def test_single_relation_refuses_many():
@@ -264,7 +264,7 @@ def test_none_clears_via_unset_and_scopes_split_patches():
 
 def test_create_object_encodes_and_mints_before_the_post():
     fx = rig()
-    r = client(fx).create_object("s1", {"types": ["task"], "name": "Ship", "initialProperties": {
+    r = client(fx).create_object("s1", {"type": "task", "name": "Ship", "initialProperties": {
         "task": {"status": "Blocked", "related": "Heat", "Estimate": None}}})
     order = [(v, p.rsplit("/", 1)[-1]) for v, p, _ in fx.calls if v not in ("GET",)
              and not p.endswith("/objects/query")]
@@ -280,15 +280,16 @@ def test_create_object_encodes_and_mints_before_the_post():
 
 def test_links_hydrate_to_stubs_with_one_batched_query():
     fx = rig(records=[
-        {"id": "o1", "any": {"types": ["bafyTASK"]},
+        {"id": "o1", "any": {"type": "bafyTASK"},
          "bafyTASK": {"pREL": ["any://" + DUNE, "any://" + HEAT]}},
-        {"id": "o2", "any": {"types": ["bafyTASK"]},
+        {"id": "o2", "any": {"type": "bafyTASK"},
          "bafyTASK": {"pREL": ["any://" + DUNE, "any://bafyreighost"]}}])
-    recs = client(fx).query_objects("s1", filter={"any.types": "task"})
+    recs = client(fx).query_objects("s1", filter={"any.type": "task"})
     assert recs[0]["task"]["related"] == [
-        {"id": DUNE, "name": "Dune", "types": ["book", "page"]},
-        {"id": HEAT, "name": "Heat", "types": ["book", "page"]}]
-    assert recs[1]["task"]["related"][1] == {"id": "bafyreighost", "name": None, "types": []}
+        {"id": DUNE, "name": "Dune", "type": "book", "collections": []},
+        {"id": HEAT, "name": "Heat", "type": "book", "collections": []}]
+    assert recs[1]["task"]["related"][1] == {"id": "bafyreighost", "name": None,
+                                             "type": None, "collections": []}
     qs = [b for v, p, b in fx.calls if p.endswith("/objects/query")]
     assert len(qs) == 2 and qs[1]["filter"] == {"id": {"$in": [DUNE, HEAT, "bafyreighost"]}}
 
@@ -304,11 +305,11 @@ def test_normalize_false_keeps_raw_keys_and_values():
 def test_filters_accept_option_names_and_object_names():
     fx = rig()
     client(fx).query_objects("s1", filter={
-        "any.types": "task", "task.status": "Done",
+        "any.type": "task", "task.status": "Done",
         "task.labels": {"$all": ["Backend"]}, "task.related": "Dune",
         "$or": [{"task.priority": {"$in": ["High", "high"]}}]})
     q = [b for v, p, b in fx.calls if p.endswith("/objects/query")][-1]
-    assert q["filter"] == {"any.types": "bafyTASK", "bafyTASK.pSTAT": "done",
+    assert q["filter"] == {"any.type": "bafyTASK", "bafyTASK.pSTAT": "done",
                            "bafyTASK.pTAGS": {"$all": ["backend"]},
                            "bafyTASK.pREL": "any://" + DUNE,
                            "$or": [{"bafyTASK.pPRIO": {"$in": ["high", "high"]}}]}
@@ -369,16 +370,14 @@ def test_patch_property_refuses_pinned_paths_and_keeps_typed_leaves():
         "unset": ["xFormat.options.todo"]}
 
 
-def test_delete_attach_detach_wire_shapes():
+def test_delete_property_and_set_type_wire_shapes():
     fx = rig()
     c = client(fx)
     c.delete_property("s1", "task", "Estimate")
-    c.attach_type("s1", "o1", "task")
-    c.detach_type("s1", "o1", "task")
+    c.set_type("s1", "o1", "task")
     assert [(v, p.split("/s1/")[1], b) for v, p, b in fx.calls if v != "GET"] == [
         ("DELETE", "types/bafyTASK/properties/pEST", None),
-        ("POST", "properties/o1/attach/bafyTASK", None),
-        ("POST", "properties/o1/detach/bafyTASK", None)]
+        ("POST", "properties/o1/type/bafyTASK", None)]
     # the archived-property marker is gone with any-ui's meta bag
     g = load(wire())
     assert "archive_property" not in g
@@ -423,7 +422,9 @@ def test_add_property_seeds_options_and_validates_the_descriptor():
 def test_flat_surface_exposes_the_new_tools_with_docs():
     g = load(wire())
     for name in ("patch_property", "set_option", "remove_option", "reorder_property",
-                 "delete_property", "attach_type", "detach_type", "list_apps",
+                 "delete_property", "set_type", "add_to_collection",
+                 "remove_from_collection", "trash", "restore", "list_collections",
+                 "create_collection", "list_apps",
                  "list_available_apps", "setup_app", "links", "move_object"):
         assert callable(g[name]) and g[name].__doc__, name
     assert "createdOptions" in g["create_object"].__doc__

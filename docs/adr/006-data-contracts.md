@@ -427,6 +427,8 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
 
 ### 6. xKey normalization at the client boundary (added 2026-07-17)
 
+**Amended 2026-09-17 (ADR-029 §2):** the catalog spans BOTH definition surfaces — types and collections share one handle namespace (`GET …/types` + `GET …/collections`, `includeHidden=true`); the membership slots `any.type` (scalar) and `any.collections` (array) speak xKeys both ways; `collection` is the fourth synthetic row; the BOB-68 row-root guard covers collection handles; a filter / sort / aggregate path `any.types` is a deliberate error naming the two slots (the server answers it with a silent `[]`).
+
 **Amended 2026-09-08 (ADR-027 §2/§3):** the reserved groups are `any` and `_ver`; `nav` is gone; the hidden built-in types (`page`, `miniapp`, `bin`, `dataview`) resolve by their literal id; a dataset argument is a store KEY resolved against the host object's types to the server's collection (a canonical or already-resolved collection passes through; zero or several matches error).
 
 **Context.** The `any` server stores and validates typed values by

@@ -170,7 +170,7 @@ def test_inferschema_is_a_cell_global():
     # ground in an observed shape, not a guessed one (dev task A19)
     app = load_kernel()
     out = app._run_cell(
-        'row = {"id": "o1", "any": {"name": "Ship", "types": ["task"]},'
+        'row = {"id": "o1", "any": {"name": "Ship", "type": "task"},'
         ' "task": {"status": "open"}}\n'
         "print(inferSchema(row))\n",
         "c1",

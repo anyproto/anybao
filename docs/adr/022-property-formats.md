@@ -169,6 +169,8 @@ errors up front instead of surfacing the SDK's rejection.
 
 ### 3. Reads are hydrated
 
+**Amended 2026-09-17 (ADR-029 §2):** link stubs are `{id, name, type, collections}` (xKeys; the one type, the filings).
+
 `query_objects(normalize=True)` (the default) resolves display forms in
 the normalized record:
 
