@@ -1,8 +1,8 @@
 # anybao
 
-- **bao**, a personal AI agent that lives inside your
-  [`any`](https://github.com/anyproto/any) spaces, and **anyrt**, the
-  runtime that runs it
+A personal AI agent that lives inside your  [`any`](https://github.com/anyproto/any) spaces,
+and **anyrt**, the runtime that runs it.
+
 - local-first: chat, memory, config, triggers and the agent's own code
   are objects in an end-to-end encrypted space that syncs between your
   devices; the agent process holds no state of its own
