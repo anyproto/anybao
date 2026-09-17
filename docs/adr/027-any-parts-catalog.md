@@ -141,6 +141,8 @@ value (`query`, `query/subscribe`, `modify`, `upsert`,
 - **Time-key guard** (ADR-019 §4) keys its declared-datetime map by
   collection, filled from the same resolution.
 
+**Amended 2026-09-17 (ADR-029 §7):** `program` and `agent_skill` leave the hidden set — they carry a body and are classes a user may open, so their ensures mint them listed and heal `hidden: false` onto a hidden row. The nine store types below stay hidden.
+
 **Harness types are hidden.** Every ensure PATCHes its type
 `hidden: true` (`PATCH …/types/:typeId`) so a client's type picker never
 offers `agent_config` or `agent_log`; the guest catalog lists types

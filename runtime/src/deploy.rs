@@ -814,20 +814,18 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
 /// namePropId). Live-caught constraints: a fresh user type has no
 /// schema (property writes rejected until one is defined), and
 /// raw-client writes key type groups by typeID, not xKey (only
-/// builtins have id == xKey). Hidden: never offered by a picker.
+/// builtins have id == xKey). Listed, like `program`: a class with a
+/// body a picker may offer (ADR-029 §7).
 fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)> {
     let tid = match client
         .list_types(space)?
-        .iter()
+        .into_iter()
         .find(|t| t["xKey"] == SKILL_TYPE)
-        .and_then(|t| t["id"].as_str().map(str::to_string))
     {
-        Some(t) => t,
+        Some(row) => crate::program_schema::listed_type_id(client, space, &row)?,
         None => {
-            let res = client.create_type(
-                space,
-                &json!({"name": "Agent Skill", "xKey": SKILL_TYPE, "hidden": true}),
-            )?;
+            let res =
+                client.create_type(space, &json!({"name": "Agent Skill", "xKey": SKILL_TYPE}))?;
             res["typeId"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("create_type reply has no typeId: {res}"))?
@@ -1501,5 +1499,24 @@ mod tests {
         assert_eq!(parse_name_version("bad@vx"), None);
         assert_eq!(parse_name_version("bad@v"), None);
         assert_eq!(parse_name_version("@v1"), None);
+    }
+    #[test]
+    fn skill_schema_lists_a_type_minted_hidden() {
+        // ADR-029 §7: agent_skill is a listed class; a row an older
+        // deploy minted hidden is healed with one PATCH
+        let c = client();
+        c.create_type(
+            "sp",
+            &json!({"name": "Agent Skill", "xKey": SKILL_TYPE, "hidden": true}),
+        )
+        .unwrap();
+        let (tid, _) = skill_schema(&c, "sp").unwrap();
+        let row = c
+            .list_types("sp")
+            .unwrap()
+            .into_iter()
+            .find(|t| t["id"] == tid)
+            .unwrap();
+        assert_eq!(row["hidden"], json!(false));
     }
 }

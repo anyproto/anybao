@@ -76,6 +76,8 @@ serve, to be decided when it lands:
 
 **Amended 2026-09-08 (ADR-027 §2):** the names below are dataset KEYS. Each store is one part (`POST …/types/:typeId/parts`, `{key, datasets: [draft]}`, `name` → `key`), idempotent by key; records live in the `collection` the datasets listing reports (`<typeId>_<key>`). Every harness type is `hidden`. The pre-metatype xKey re-claim bridge is gone.
 
+**Amended 2026-09-17 (ADR-029 §7):** `program` and `agent_skill` are LISTED (minted without `hidden`; `hidden: false` healed onto an existing hidden row at ensure) — classes with a body a user may open. The store types stay hidden and bodiless.
+
 Five user types, same type/dataset names as before (the built-ins are
 deleted; no coexistence). Declarations use the runtime-dataset field
 surface: `stamp` for server-stamped identity/time, `mutableBy` for

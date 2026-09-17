@@ -139,6 +139,8 @@ convention anyway.
 
 ### 5. Program objects carry source, nothing else
 
+**Amended 2026-09-17 (ADR-029 §7):** `program` is a LISTED type — minted without `hidden`, and `hidden: false` healed onto a row an older writer minted hidden — so a client's picker offers it like any class with a body. A hand-made Program object is inert: deploy's hash gate and the resolver read only well-formed rows.
+
 - `program` is a **harness-declared user type** (amended 2026-08-26;
   the server builtin `internal/program/` is deleted — the server has
   no reason to know what a program is, ADR-017's stance): xKey
