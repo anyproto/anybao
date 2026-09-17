@@ -31,7 +31,8 @@ def test_search_finds_written_content(client, fresh_space, guest_use):
     # agent-data datasets are excluded from indexing today, so an object
     # name is the reliable searchable write.
     token = f"zanzibar{uuid.uuid4().hex[:8]}"
-    client.create_object(fresh_space, {"initialProperties": {"any": {"name": f"note {token}"}}})
+    client.create_object(fresh_space, {"type": "page",
+                                       "initialProperties": {"any": {"name": f"note {token}"}}})
 
     r = guest_use("recall@v1").recall(guest_use("any@v1"), fresh_space)
     try:

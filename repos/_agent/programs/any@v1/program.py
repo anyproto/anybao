@@ -1,19 +1,14 @@
 """The `any` server client — read and write everything in a space.
 
-Every object IS exactly one type (its class: body, parts, fields;
-`page` is the default, a plain document) and is FILED UNDER any
-number of collections (tags — supertags when they carry columns).
-Flat surface: every space-scoped
-function takes `spaceConfig` FIRST (cross-space is normal) — a space
-NAME or id string (names resolve against the live space list; an
-unknown or ambiguous name errors listing every space), or a mapping
-with `spaceId`/`id` (a `list_spaces()` row, the bound
-`currentUserSpace` / `baoSpaceConfig` cell globals). Account-level
-calls (`list_spaces`, `create_space`) take none. Types, collections
-and properties are named by xKey — resolved to content ids both
-ways; rows come back xKey-nested, `any.type` / `any.collections` as
-xKeys. Errors raise `AnyError` ({code, message} from the
-wire); a bad spaceConfig is a TypeError naming the accepted forms."""
+An object IS one type (its class: body, parts, fields; `page` is the
+default) and is FILED UNDER any number of collections (tags; supertags
+when they carry columns). Flat surface: every space-scoped function
+takes `spaceConfig` FIRST — a space NAME or id, or a mapping with
+`spaceId`/`id` (`currentUserSpace`, `baoSpaceConfig`, a `list_spaces()`
+row); account-level calls take none. Types, collections and properties
+are named by xKey — resolved to content ids both ways; rows come back
+xKey-nested. Errors raise `AnyError` ({code, message} from the wire);
+a bad spaceConfig is a TypeError naming the accepted forms."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 

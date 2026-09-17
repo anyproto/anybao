@@ -75,8 +75,8 @@ def test_dataset_declared_as_a_part_lives_in_the_reported_collection(client, fre
         client.upsert_record(fresh_space, host, "agent_turns", "00000002", {"seq": 2})
     assert ei.value.code == "dataset.unknown"
     assert client.query(fresh_space, host, "agent_turns") == []
-    # a host without the declaring type is refused
-    other = client.create_object(fresh_space, {})["objectId"]
+    # a host whose type does not declare the dataset is refused
+    other = client.create_object(fresh_space, {"type": "page"})["objectId"]
     with pytest.raises(AnyError) as ei:
         client.upsert_record(fresh_space, other, d["collection"], "x", {"seq": 3})
     assert ei.value.code == "dataset.not_declared"
@@ -112,8 +112,8 @@ def test_guest_stores_resolve_keys_turns_and_memory_land(client, bao_space, gues
     assert item["context"] == "teal"
     mcoll = client.collection(bao_space, "agent_brain", "agent_memory_items")
     assert client.query(bao_space, brain, mcoll, filter={"id": mid})
-    # a key none of the object's types declare errors client-side
-    with pytest.raises(ValueError, match="no type declaring"):
+    # a key the object's type does not declare errors client-side
+    with pytest.raises(ValueError, match='declares no dataset "agent_turns"'):
         c.query(bao_space, brain, "agent_turns")
 
 
@@ -126,7 +126,7 @@ def test_trigger_datasets_persist_and_read_back(client, bao_space, guest_use):
         c._create_dataset(bao_space, "agent_trigger", {
             "key": key, "idRule": "user", "deleteBy": "anyone", "dynamic": True, "fields": []})
     tid = next(t["id"] for t in client.list_types(bao_space) if t.get("xKey") == "agent_trigger")
-    anchor = client.bundle_child(bao_space, "bao/v1", "bao/triggers/v1", [tid])
+    anchor = client.bundle_child(bao_space, "bao/v1", "bao/triggers/v1", tid)
     definition = {"name": "memory sweep", "kind": "cron",
                   "spec": {"cron": "0 * * * *"}, "program": "evolve@v1",
                   "args": {"space": bao_space}, "owner": "inst-A",
