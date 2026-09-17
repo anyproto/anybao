@@ -1,6 +1,9 @@
-"""Author and manage Mini Apps — embeddable HTML/JS apps in the space.
+"""Author and manage applets — bao-written, embeddable HTML/JS apps.
 
-One app = one `mini_app` object addressed by NAME (lowercase, no
+An applet is NOT one of the server's apps (the wiki, collections, the
+chat: catalog installs a space lists in its sidebar, `list_apps`) — it
+is a page-sized program bao writes for the user. One applet = one
+`applet` object addressed by NAME (lowercase, no
 spaces, e.g. "coin-flipper"); `source` (full HTML), persisted `state`
 (JSON), and `readme` live as separate fields, so state updates never
 rewrite source. Prefer `edit()` for small changes and
@@ -9,9 +12,9 @@ rewrite source. Prefer `edit()` for small changes and
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
-# ADR-008 §6. `mini_app` is a harness-declared hidden USER type (xKey
-# `mini_app`) this program — its writer — ensures per space (ADR-017
-# §1, ADR-027 §2); content lives in its dataset `mini_app` (one part,
+# ADR-008 §6. `applet` is a harness-declared hidden USER type (xKey
+# `applet`) this program — its writer — ensures per space (ADR-017
+# §1, ADR-027 §2); content lives in its dataset `applet` (one part,
 # declared without a search mapping: HTML is code, never indexed),
 # single record "main", flat string fields; writes are per-field $set
 # ops — the key resolves to the app object's collection. Every
@@ -23,12 +26,13 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 import json
 import re
 
-_TYPE = "mini_app"
-_DATASET = "mini_app"
+_TYPE = "applet"
+_DATASET = "applet"
 _RECORD = "main"
-_TYPE_DECL = {"name": "Mini App", "xKey": _TYPE, "hidden": True}
+# hidden and bodiless: the source is a dataset record, not a body
+_TYPE_DECL = {"name": "Applet", "xKey": _TYPE, "hidden": True, "body": False}
 _DATASET_DECL = {
-    "key": _DATASET, "displayName": "Mini App",
+    "key": _DATASET, "displayName": "Applet",
     "idRule": "user", "deleteBy": "anyone", "dynamic": True,
     "fields": [{"key": "source", "kind": "string", "mutableBy": "any"},
                {"key": "state", "kind": "string", "mutableBy": "any"},
@@ -57,7 +61,7 @@ def _has_store(c, space):
 
 
 def _ensure_store(c, space):
-    """Idempotently declare the `mini_app` type + dataset (cached per run,
+    """Idempotently declare the `applet` type + dataset (cached per run,
     keyed by the resolved space id — `space` may be a spaceConfig)."""
     key = space if isinstance(space, str) else repr(space)
     if key in _ensured:          # the raw handle first: no round trip
@@ -72,8 +76,8 @@ def _ensure_store(c, space):
 
 def _find(c, space, name):
     if not _has_store(c, space):
-        return None   # no mini_app type = no apps here yet
-    for row in c.query_objects(space, filter={"any.types": _TYPE}):
+        return None   # no applet type = no applets here yet
+    for row in c.query_objects(space, filter={"any.type": _TYPE}):
         if ((row.get("any") or {}).get("name")) == name:
             return row["id"]
     return None
@@ -166,7 +170,7 @@ def _slice(text, frm, to):
 
 @span(kind="mutator")  # noqa: F821 - guest global
 def create(space, name, source, state=None, readme=""):
-    """Create a mini app; returns {ok, id, name, warnings?}.
+    """Create an applet; returns {ok, id, name, warnings?}.
 
     Errors (as {ok: False, error}) if the name is taken — names are
     the addressing key; use `update` to change an existing app.
@@ -188,14 +192,14 @@ def create(space, name, source, state=None, readme=""):
     c = _client()
     if _find(c, space, name):
         return {"ok": False,
-                "error": f"mini app '{name}' already exists. Use update()."}
+                "error": f"applet '{name}' already exists. Use update()."}
     html, warnings = _guard(source)
     st = _ser_state(state)
     if not st["ok"]:
         return {"ok": False, "error": st["error"]}
     _ensure_store(c, space)
     oid = c.create_object(space, {
-        "types": [_TYPE],
+        "type": _TYPE,
         "initialProperties": {"any": {"name": name}}})["objectId"]
     fields = {"source": html, "readme": readme or ""}
     if st["text"] is not None:
@@ -218,7 +222,7 @@ def update(space, name, source=None, state=None, readme=None, title=None):
     c = _client()
     oid = _find(c, space, name)
     if not oid:
-        return {"ok": False, "error": f"mini app not found: {name}"}
+        return {"ok": False, "error": f"applet not found: {name}"}
     fields, warnings = {}, None
     if source is not None:
         fields["source"], warnings = _guard(source)
@@ -253,7 +257,7 @@ def edit(space, name, old_string, new_string, replace_all=False, block="source")
     c = _client()
     oid = _find(c, space, name)
     if not oid:
-        return {"ok": False, "error": f"mini app not found: {name}"}
+        return {"ok": False, "error": f"applet not found: {name}"}
     parts = _parts(c, space, oid)
     current = parts[block]
     if not current:
@@ -320,12 +324,12 @@ def get_source(space, name, frm=None, to=None):
 
 @span(kind="getter")  # noqa: F821 - guest global
 def list(space):  # noqa: A001 - the tool surface name (ADR-008 §6)
-    """Every mini app in the space: [{id, name}], name-sorted."""
+    """Every applet in the space: [{id, name}], name-sorted."""
     c = _client()
     if not _has_store(c, space):
         return []
     apps = [{"id": row["id"], "name": (row.get("any") or {}).get("name")}
-            for row in c.query_objects(space, filter={"any.types": _TYPE})]
+            for row in c.query_objects(space, filter={"any.type": _TYPE})]
     return sorted([a for a in apps if a["name"]], key=lambda a: a["name"])
 
 
@@ -336,7 +340,7 @@ def set_state(space, name, state):
     c = _client()
     oid = _find(c, space, name)
     if not oid:
-        return {"ok": False, "error": f"mini app not found: {name}"}
+        return {"ok": False, "error": f"applet not found: {name}"}
     st = _ser_state(state)
     if not st["ok"]:
         return {"ok": False, "error": st["error"]}
@@ -371,14 +375,14 @@ def upsert_readme(space, name, readme):
     c = _client()
     oid = _find(c, space, name)
     if not oid:
-        return {"ok": False, "error": f"mini app not found: {name}"}
+        return {"ok": False, "error": f"applet not found: {name}"}
     _set_fields(c, space, oid, {"readme": readme})
     return {"ok": True, "id": oid, "name": name}
 
 
 def main(args):
     if args and args.get("space") and args.get("name"):
-        return get(args["space"], args["name"]) or f"mini app not found: {args['name']}"
+        return get(args["space"], args["name"]) or f"applet not found: {args['name']}"
     if args and args.get("space"):
         return list(args["space"])
     return {"ok": False, "error": "space arg required"}
