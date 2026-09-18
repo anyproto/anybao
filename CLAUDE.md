@@ -75,8 +75,10 @@ gitignored `configs/` and need `--config-file configs/<name>.toml`.
 Account mnemonics live OUTSIDE every repo dir, in `~/.any-accounts/`.
 
 `any`-server data dirs live in `~/any/any/datadirs/` (also gitignored):
-`repo-prod3` (:7004 repo account), `prod-test-user` (:7005),
-`staging` (:7134, owns its own repo spaces). The `any` configs are
+`repo-prod4` (:7006 prod repo account), `repo-prod4-test` (:7008, the
+repo account owning the `*-test` copies), `prod-test-user2` (:7007),
+`staging` (:7134, owns its own repo spaces). Every account was
+recreated 2026-09-18 on any `b5be51c` (ADR-029, CRDT mark 2). The `any` configs are
 in `~/any/any/configs/` — `any-config.yml` (prod network) and
 `any-config-staging.yml` (staging); `staging.yml` stays at that repo's
 root because its e2e tests look for it there.
@@ -85,7 +87,7 @@ root because its e2e tests look for it there.
 
 The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
 dedicated **repo account** whose server runs locally at
-`http://127.0.0.1:7004` (data dir `~/any/any/datadirs/repo-prod3`, prod network —
+`http://127.0.0.1:7006` (data dir `~/any/any/datadirs/repo-prod4`, prod network —
 bring-up + ids: the local `docs/environments.md`). The
 `configs/anybao.toml` account only *joins* them as guest — `anyrt
 deploy --target agent` through it 403s (`space.read_only`). Deploy via
@@ -93,7 +95,7 @@ the repo server, addressing the space by raw id (the ids live in
 `configs/anybao.toml [overlays]`):
 
 ```
-anyrt deploy --addr http://127.0.0.1:7004 --source repos/_agent \
+anyrt deploy --addr http://127.0.0.1:7006 --source repos/_agent \
   --target <agent space id>          # same for repos/_connectors
 ```
 
@@ -101,19 +103,21 @@ anyrt deploy --addr http://127.0.0.1:7004 --source repos/_agent \
 
 For exercising unreleased runtime/repo changes from real prod-network
 clients (desktop app, browser UI) WITHOUT touching the prod overlays:
-a throwaway user account (`~/any/any/datadirs/prod-test-user`, server
-`127.0.0.1:7005`, control `7014`) runs a test bao against TEST copies
+a throwaway user account (`~/any/any/datadirs/prod-test-user2`, server
+`127.0.0.1:7007`, control `7014`) runs a test bao against TEST copies
 of the repo spaces — `_agentrepo-test` / `_connectorsrepo-test`, owned
-by the same prod repo account (:7004) and joined via guest keys. The
+by a second repo account (`repo-prod4-test`, server `:7008` — the prod
+network allows three shareable spaces per account) and joined via
+guest keys. The
 staging rig (`configs/anybao.staging.toml`, server on the staging
 network via `--config configs/any-config-staging.yml`) is unreachable
 from prod clients; this one is not. Ids, commands and the browser
 recipe live in the toml's header
 and in the local `docs/environments.md`. Deploy to it
-through :7004 by raw id, exactly like prod:
+through :7008 by raw id, exactly like prod:
 
 ```
-anyrt deploy --addr http://127.0.0.1:7004 --source repos/_agent \
+anyrt deploy --addr http://127.0.0.1:7008 --source repos/_agent \
   --target <agentrepo-test id from configs/anybao.prod.test.toml>
 ```
 
