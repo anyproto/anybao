@@ -88,6 +88,7 @@ jobs:
             runtime/target
           key: cargo-stock-runtime-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: make runtime-check
+      - run: make licenses-check
       - run: make runtime
       # the vendored any spec vs the coverage manifest (ADR-002 §2)
       - run: make api-drift

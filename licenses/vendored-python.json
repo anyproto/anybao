@@ -1,0 +1,68 @@
+[
+  {
+    "name": "beautifulsoup4",
+    "version": "4.15.0",
+    "upstream": "https://pypi.org/pypi/beautifulsoup4/4.15.0/json",
+    "artifact": {
+      "filename": "beautifulsoup4-4.15.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl",
+      "sha256": "d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9"
+    },
+    "notices": [
+      "runtime/guest/licenses/beautifulsoup4-AUTHORS",
+      "runtime/guest/licenses/beautifulsoup4-LICENSE"
+    ]
+  },
+  {
+    "name": "soupsieve",
+    "version": "2.9.2",
+    "upstream": "https://pypi.org/pypi/soupsieve/2.9.2/json",
+    "artifact": {
+      "filename": "soupsieve-2.9.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/eb/dc/ad025c1ee131eba60c69f4dd5779b18fcf1e6b21a343e2162a84d5d133c7/soupsieve-2.9.2-py3-none-any.whl",
+      "sha256": "8089a26fd974ca7a1f30276d3d8492ab266ab15af581642dfe8aa162e0c1c823"
+    },
+    "notices": [
+      "runtime/guest/licenses/soupsieve-LICENSE.md"
+    ]
+  },
+  {
+    "name": "markdownify",
+    "version": "1.2.3",
+    "upstream": "https://pypi.org/pypi/markdownify/1.2.3/json",
+    "artifact": {
+      "filename": "markdownify-1.2.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/04/10/fa543d484e8b1199243fe20eedd02cc5af050edebce98a7293a5773df592/markdownify-1.2.3-py3-none-any.whl",
+      "sha256": "a189a0bedfd14009030fde5f85bb6f77c56897cb839b5c25315dd7d4e3e290ba"
+    },
+    "notices": [
+      "runtime/guest/licenses/markdownify-LICENSE"
+    ]
+  },
+  {
+    "name": "six",
+    "version": "1.17.0",
+    "upstream": "https://pypi.org/pypi/six/1.17.0/json",
+    "artifact": {
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+    },
+    "notices": [
+      "runtime/guest/licenses/six-LICENSE"
+    ]
+  },
+  {
+    "name": "typing_extensions",
+    "version": "4.16.0",
+    "upstream": "https://pypi.org/pypi/typing_extensions/4.16.0/json",
+    "artifact": {
+      "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    },
+    "notices": [
+      "runtime/guest/licenses/typing_extensions-LICENSE"
+    ]
+  }
+]

@@ -1,0 +1,142 @@
+[
+  {
+    "file": "CPython-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/dicej/cpython/v3.14.0-wasi-sdk-30/LICENSE",
+    "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+    "upstream_sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "CPython-incorporated-software.rst",
+    "url": "https://raw.githubusercontent.com/dicej/cpython/v3.14.0-wasi-sdk-30/Doc/license.rst",
+    "sha256": "c695d550b135e53e38807e76496d1db17d22c40e461d1f3f354c86188d3305dd",
+    "upstream_sha256": "c695d550b135e53e38807e76496d1db17d22c40e461d1f3f354c86188d3305dd",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "Expat-COPYING.txt",
+    "url": "https://raw.githubusercontent.com/dicej/cpython/v3.14.0-wasi-sdk-30/Modules/expat/COPYING",
+    "sha256": "122f2c27000472a201d337b9b31f7eb2b52d091b02857061a8880371612d9534",
+    "upstream_sha256": "122f2c27000472a201d337b9b31f7eb2b52d091b02857061a8880371612d9534",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "HACL-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/dicej/cpython/v3.14.0-wasi-sdk-30/Modules/_hacl/Hacl_Hash_SHA2.c",
+    "sha256": "998ce04fb8ad9dedb0bc1b44938f8c3dcf1089780fa105ce1c8c30fb5554d78c",
+    "upstream_sha256": "f8af382de7e29a73c726f9c70770498ddd99e2c4702489ed6e634f0b68597c95",
+    "extraction": "first comment (license notice)"
+  },
+  {
+    "file": "wasi-libc-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE",
+    "sha256": "2711a8b5a5cdfef0e639f96c1aca12ae23d7d64a02d0507f1bdf14d2b27bbc3a",
+    "upstream_sha256": "2711a8b5a5cdfef0e639f96c1aca12ae23d7d64a02d0507f1bdf14d2b27bbc3a",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-LICENSE-APACHE.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE-APACHE",
+    "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+    "upstream_sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-LICENSE-APACHE-LLVM.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE-APACHE-LLVM",
+    "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    "upstream_sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-LICENSE-MIT.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE-MIT",
+    "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "upstream_sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-fts-musl-fts-COPYING.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/fts/musl-fts/COPYING",
+    "sha256": "55af87e4017668f54467a3380e7ebbac5e672d8c763bfe95e6fc882a6fdc4046",
+    "upstream_sha256": "55af87e4017668f54467a3380e7ebbac5e672d8c763bfe95e6fc882a6fdc4046",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-fts-musl-fts-NOTICE.wasi-libc.md.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/fts/musl-fts/NOTICE.wasi-libc.md",
+    "sha256": "6aa429513e3e883111aceab81f80f9da38613b7f74c966393ff33470c93a9daa",
+    "upstream_sha256": "6aa429513e3e883111aceab81f80f9da38613b7f74c966393ff33470c93a9daa",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-libc-bottom-half-cloudlibc-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/libc-bottom-half/cloudlibc/LICENSE",
+    "sha256": "c8b789cf5a746611e6300a0cc7750dbf92b61912a709d04e639245f7290656d0",
+    "upstream_sha256": "c8b789cf5a746611e6300a0cc7750dbf92b61912a709d04e639245f7290656d0",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-libc-top-half-musl-COPYRIGHT.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/libc-top-half/musl/COPYRIGHT",
+    "sha256": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af",
+    "upstream_sha256": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "wasi-libc-tools-wasi-headers-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/tools/wasi-headers/LICENSE",
+    "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    "upstream_sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "llvm-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/llvm/LICENSE.TXT",
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+    "upstream_sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "libcxx-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/libcxx/LICENSE.TXT",
+    "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+    "upstream_sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "libcxxabi-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/libcxxabi/LICENSE.TXT",
+    "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c",
+    "upstream_sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "compiler-rt-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/compiler-rt/LICENSE.TXT",
+    "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d",
+    "upstream_sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "libunwind-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/libunwind/LICENSE.TXT",
+    "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d",
+    "upstream_sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "zlib-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/madler/zlib/v1.3.1/LICENSE",
+    "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+    "upstream_sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+    "extraction": "verbatim"
+  },
+  {
+    "file": "emmalloc-attribution.txt",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/emmalloc/emmalloc.c",
+    "sha256": "7183e99e2e38682c7c602c86ada92c686a84eb99aea346fc8ba8a44f3b3684f6",
+    "upstream_sha256": "c5b52c424c9101ba9b2d1338997e1758c9fdf369ab0450d9b72e9544fe482166",
+    "extraction": "first comment (including copyright attribution); MIT terms in wasi-libc-LICENSE-MIT.txt"
+  }
+]

@@ -1,0 +1,7 @@
+# Preserve upstream legal text verbatim, including its original whitespace.
+licenses/** -whitespace
+runtime/guest/licenses/** -whitespace
+licenses/*DEPENDENCIES.md linguist-generated=true
+licenses/kernel/*.txt linguist-vendored=true
+licenses/kernel/*.rst linguist-vendored=true
+runtime/guest/licenses/** linguist-vendored=true

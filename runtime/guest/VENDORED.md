@@ -12,6 +12,11 @@ from PyPI wheels; no local patches — re-vendor to upgrade.
 | six | 1.17.0 | MIT | no — markdownify internal |
 | typing_extensions | 4.16.0 | PSF-2.0 | no — bs4 internal |
 
+Original upstream license and attribution files are retained in
+[`licenses/`](licenses/). Exact wheel versions, URLs and hashes are
+recorded in [`licenses/vendored-python.json`](../../licenses/vendored-python.json).
+Keep these notices with the sources and with binary redistributions.
+
 bs4 runs on the stdlib `html.parser` backend only (no lxml — C
 extension). Guest-importable names are gated by `_ALLOWED` in app.py;
 the internals resolve through the real import machinery once bundled.

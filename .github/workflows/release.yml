@@ -66,7 +66,8 @@ jobs:
             ~/.cargo/git
             runtime/target
           key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/Cargo.lock') }}
-      - run: uv sync
+      - run: uv sync --locked
+      - run: make licenses-check
       # builds bin/kernel.wasm first; the binary embeds it via include_bytes!
       - run: make runtime
       # the shipped binary must at least load on a bare runner — this is
@@ -76,7 +77,15 @@ jobs:
         run: |
           mkdir -p dist
           cp runtime/target/release/anyrt dist/
-          tar -C dist -czf "anyrt-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" anyrt
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/
+          cp -R licenses dist/
+          mkdir -p dist/runtime/guest
+          cp -R runtime/guest/licenses dist/runtime/guest/
+          cp runtime/guest/VENDORED.md dist/runtime/guest/
+          tar -C dist -czf "anyrt-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
+            anyrt LICENSE THIRD_PARTY_NOTICES.md licenses runtime
+          uv run --locked python tools/check_licenses.py \
+            --archive "anyrt-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
           name: anyrt-${{ matrix.target }}

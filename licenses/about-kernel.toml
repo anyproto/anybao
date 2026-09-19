@@ -1,0 +1,18 @@
+# Prefer permissive alternatives and keep every term in compound AND expressions.
+accepted = [
+    "Apache-2.0 WITH LLVM-exception", "Apache-2.0", "MIT", "BSD-3-Clause",
+    "BSD-2-Clause", "ISC", "Zlib", "Unicode-3.0", "CDLA-Permissive-2.0",
+    "0BSD", "Unlicense",
+]
+ignore-dev-dependencies = true
+
+
+# The pinned wit-dylib-ffi manifest omits its license field. The repository
+# README explicitly licenses the whole project under these alternatives.
+[wit-dylib-ffi.clarify]
+license = "MIT"
+
+[[wit-dylib-ffi.clarify.files]]
+path = "../../../LICENSE-MIT"
+license = "MIT"
+checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
