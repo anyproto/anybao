@@ -1,4 +1,4 @@
-.PHONY: api-drift kernel runtime runtime-shell runtime-check test test-runtime test-integration lint
+.PHONY: api-drift kernel runtime runtime-shell runtime-check test test-runtime test-integration lint licenses-check
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
@@ -50,3 +50,6 @@ test-integration: kernel
 
 lint: runtime-check
 	uv run ruff check .
+
+licenses-check:
+	uv run --locked python tools/check_licenses.py

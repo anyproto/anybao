@@ -239,4 +239,6 @@ a trace. Point-in-time notes and runbooks live under `docs/`.
 
 ## License
 
-[MIT](LICENSE)
+Anybao and anyrt are licensed under the [MIT License](LICENSE).
+Third-party components retain their respective licenses; see
+[Third-party notices](THIRD_PARTY_NOTICES.md).

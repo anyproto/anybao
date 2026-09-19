@@ -1,0 +1,19 @@
+# Rust dependency notices
+
+Generated with cargo-about 0.9.2 from the locked dependency graph, including
+the optional shell feature and dependencies for all targets. Development-only
+dependencies are excluded. License selections follow the accompanying cargo-about configuration.
+
+{{#each licenses}}
+## {{name}}
+
+Applies to:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

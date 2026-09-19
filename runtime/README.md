@@ -141,4 +141,6 @@ override the file. Full usage: `anyrt <command> --help`.
 
 ## License
 
-[MIT](../LICENSE)
+anyrt is licensed under the [MIT License](LICENSE). Its dependencies and
+embedded Python kernel retain their respective licenses; see the
+[third-party notices](../THIRD_PARTY_NOTICES.md).

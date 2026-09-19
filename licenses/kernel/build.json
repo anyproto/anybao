@@ -1,0 +1,12 @@
+{
+  "componentize_py": "0.24.0",
+  "repository": "https://github.com/bytecodealliance/componentize-py",
+  "commit": "811ff834f1d6a0fb1b61a637f002dce36c10ee4a",
+  "upstream_sha256": {
+    "Cargo.lock": "7ecab973ab4cd24ed2018e199d7110d3c5634c44e7ba12034c5f900b50fe6409",
+    "build.rs": "8124100c87062e114b4c2276d23752d5f62ae5554925b0759298a538629e7a8d",
+    "runtime/Cargo.toml": "54762e51ee4c0c3b66d24d569e3024d5a95a99d9d3bb3870a1c8926485963642"
+  },
+  "wasi_sdk": "33",
+  "cpython_ref": "v3.14.0-wasi-sdk-30"
+}
