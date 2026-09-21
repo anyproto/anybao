@@ -177,6 +177,16 @@ names a `credential` (`api_key_ref` + the backend's header/prefix +
 sets the header AFTER the payload records (ADR-002). `api_key_ref:
 None` sends no credential — a local server needs none, and a null ref
 raises no `SecretMissing` and no credential request (ADR-021 §2).
+The call itself is retried, bounded, before a status is judged: a transport
+failure (`URLError` — DNS, connection reset, a stalled read) and a
+transient provider status (429, 5xx, 529 overloaded) get up to three
+attempts with 1 s / 4 s waits (a numeric `retry-after` wins, capped
+at 60 s); a stalled read gets one retry, since each attempt costs the
+whole 180 s request cap. Every attempt is its own `http.post` record
+and the wait is a `sleep` effect, so the trace shows the retries and
+replay skips the waits. Other 4xx and every other effect failure
+raise at once; the last failure raises unchanged (BOB-148).
+
 A ≥400 status raises `LlmError(status, body_excerpt)`; when the body
 is a known *account* error rather than a transient one, the error
 also carries a `hint` naming the fix (`_error_hint`), so the chat's

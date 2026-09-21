@@ -353,3 +353,81 @@ def test_mock_spec_errors_before_the_run(backends):
     assert proc.returncode != 0
     assert "--mock" in proc.stderr and "run_0000000000000000" in proc.stderr
     assert not FakeBackends.llm_requests
+
+
+# --- BOB-148: a transport failure on the provider call is retried ------------
+#
+# The failure is scripted through the native mock spec (ADR-028 §1/§4):
+# an inline `http.post` record carrying the URLError a reporter's export
+# recorded verbatim (BOB-147, run_e65db6ee66464ea3 seq 1253), scoped by
+# `only: ["llm.*"]` to the effects under the llm.chat facade so every
+# any-server call stays live, and a repeating `sleep` record so the
+# backoff is served, not slept. Everything unmatched runs live against
+# the fake — the retried call reaches it.
+
+READ_STALL = ("https://api.anthropic.com/v1/messages: Network Error: Network "
+              "Error: Error encountered in the status line: timed out reading response")
+DNS_BLIP = ("https://api.anthropic.com/v1/messages: Dns Failed: resolve dns name "
+            "'api.anthropic.com:443': failed to lookup address information: "
+            "nodename nor servname provided, or not known")
+
+
+def _mock_spec(scratch_dir, failures):
+    spec = {"only": ["llm.*"],
+            "records": [{"effect": "http.post",
+                         "error": {"type": "URLError", "message": m}} for m in failures]
+                       + [{"effect": "sleep", "output": {"slept": 0}, "repeat": True}],
+            "unmatched": "live"}
+    path = Path(scratch_dir) / "mock.json"
+    path.write_text(json.dumps(spec))
+    return str(path)
+
+
+def _llm_posts(run_id):
+    return sorted((r for r in _run_records(run_id)
+                   if r.get("effect") == "http.post"
+                   and r["input"]["url"].endswith("/v1/messages")),
+                  key=lambda r: r["seq"])
+
+
+def test_one_transport_failure_is_retried_through_the_binary(backends):
+    FakeBackends.reset(REPLIES_42)
+    spec = _mock_spec(tempfile.mkdtemp(), [READ_STALL])
+    proc, out, _ = run_rt(backends, "toolcaller@v1",
+                          {"space": "s1", "chatId": "c1", "userText": "what is 40+2?"},
+                          extra=["--mock", spec])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["status"] == "ok"
+    assert out["value"]["replies"] == ["It is 42."]
+    # both scripted replies were consumed live — the retry reached the fake
+    assert len(FakeBackends.llm_requests) == 2
+    posts = _llm_posts(out["traceRef"])
+    run_id = out["traceRef"]
+    # attempt 1: the served failure; attempts 2 and 3 (second turn): live
+    assert [p.get("error", {}).get("type") if p.get("error") else None
+            for p in posts] == ["URLError", None, None]
+    assert posts[0]["meta"]["mocked"] is True and READ_STALL in posts[0]["error"]["message"]
+    assert all(p["meta"]["mocked"] is False for p in posts[1:])
+    # the backoff crossed the boundary as a sleep effect and was served
+    sleeps = [r for r in _run_records(run_id) if r.get("effect") == "sleep"]
+    assert len(sleeps) == 1 and sleeps[0]["meta"]["mocked"] is True
+    assert sleeps[0]["input"]["seconds"] == 1
+
+
+def test_persistent_transport_failure_still_ends_the_run(backends):
+    FakeBackends.reset(REPLIES_42)
+    spec = _mock_spec(tempfile.mkdtemp(), [DNS_BLIP] * 3)
+    proc, out, _ = run_rt(backends, "toolcaller@v1",
+                          {"space": "s1", "chatId": "c1", "userText": "hi"},
+                          extra=["--mock", spec])
+    assert proc.returncode == 1
+    assert out["status"] == "error"
+    assert "nodename nor servname" in json.dumps(out)
+    # three attempts, all served failures, then the typed error — and
+    # the fourth record was never asked for (the fake saw nothing)
+    assert FakeBackends.llm_requests == []
+    run_id = out["traceRef"]
+    posts = _llm_posts(run_id)
+    assert len(posts) == 3 and all(p["error"]["type"] == "URLError" for p in posts)
+    sleeps = [r["input"]["seconds"] for r in _run_records(run_id) if r.get("effect") == "sleep"]
+    assert sleeps == [1, 4]
