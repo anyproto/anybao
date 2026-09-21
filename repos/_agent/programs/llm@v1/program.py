@@ -875,6 +875,11 @@ def _resolve(tier):
 
 _TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
                   # the conversation thread (live-caught with urlopen)
+# BOB-148: one transient failure must not end a run. Waits between
+# attempts (so len+1 attempts); a `retry-after` header wins, capped.
+_RETRY_DELAYS_S = (1, 4)
+_RETRY_AFTER_CAP_S = 60
+_STALL = "timed out reading response"   # our own _TIMEOUT_S cap firing
 
 _EXCERPT = 400
 
@@ -926,11 +931,52 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
-    resp = effect("http.post", payload)  # noqa: F821 - guest global
+    resp = _post(payload)
     if resp["status"] >= 400:
         raise LlmError(resp["status"], resp["body"][:_EXCERPT])
     raw = be.get("normalize", lambda r: r)(json.loads(resp["body"]))
     return _lift(adapter.parse_response(raw), traits)
+
+
+def _retry_after(resp):
+    """`retry-after` in whole seconds (the host lowercases header
+    names), capped; None when absent or not a number (an HTTP date)."""
+    try:
+        return min(int((resp.get("headers") or {}).get("retry-after")), _RETRY_AFTER_CAP_S)
+    except (TypeError, ValueError):
+        return None
+
+
+def _post(payload):
+    """The provider call with a bounded retry (ADR-005 §1.6, BOB-148).
+
+    Retried: a transport failure (`URLError` — DNS, connection reset,
+    a stalled read) and a transient provider status (429, 5xx incl.
+    529 overloaded). Not retried: any other 4xx, and any other effect
+    failure (a denied capability, a missing secret, a mock miss).
+    Each attempt is its own `http.post` record and the wait crosses
+    the boundary as a `sleep` effect, so the trace shows every attempt
+    and replay never waits. A stalled read is retried ONCE: every
+    attempt costs the whole `_TIMEOUT_S` until streaming (BOB-149)."""
+    attempt = 0
+    while True:
+        try:
+            resp = effect("http.post", payload)  # noqa: F821 - guest global
+        except EffectError as e:  # noqa: F821 - guest global
+            msg = str(e)
+            if not msg.startswith("URLError"):
+                raise
+            budget = 1 if _STALL in msg else len(_RETRY_DELAYS_S)
+            if attempt >= budget:
+                raise
+            wait = _RETRY_DELAYS_S[attempt]
+        else:
+            status = resp["status"]
+            if (status != 429 and status < 500) or attempt >= len(_RETRY_DELAYS_S):
+                return resp
+            wait = _retry_after(resp) or _RETRY_DELAYS_S[attempt]
+        effect("sleep", {"seconds": wait})  # noqa: F821 - guest global
+        attempt += 1
 
 
 @span(kind="getter")  # noqa: F821 - guest global

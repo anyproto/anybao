@@ -33,6 +33,11 @@ def _kernel_effect(name, payload):
     pytest.fail(f"unexpected kernel effect {name!r}")
 
 
+class EffectError(Exception):
+    """What the kernel raises for a failed effect: `<type>: <message>`
+    (runtime/guest/app.py) — bound as the guest global of that name."""
+
+
 def load(effect=None):
     from kernelenv import load_kernel
     k = load_kernel(effect=_kernel_effect)
@@ -40,7 +45,7 @@ def load(effect=None):
         "effect": effect or (lambda name, payload: pytest.fail(f"unexpected effect {name!r}")),
         "span": lambda name=None, kind=None: (lambda f: f),
         "use": lambda spec: pytest.fail(f"unexpected use({spec!r})"),
-        "Blob": k.Blob, "blob": k.blob,
+        "Blob": k.Blob, "blob": k.blob, "EffectError": EffectError,
     }
     exec(compile(SRC, "llm@v1.py", "exec"), g)
     return g
@@ -505,11 +510,15 @@ class FakeHost:
         self.body = body if isinstance(body, str) else json.dumps(body or {})
         self.config_keys = []
         self.posts = []
+        self.sleeps = []    # retry backoff (BOB-148): recorded, never slept
 
     def __call__(self, name, payload):
         if name == "config.get":
             self.config_keys.append(payload["key"])
             return {"value": self.prov}
+        if name == "sleep":
+            self.sleeps.append(payload["seconds"])
+            return {"slept": payload["seconds"]}
         assert name == "http.post", name
         self.posts.append(payload)
         return {"status": self.status, "headers": {}, "body": self.body}
@@ -662,6 +671,139 @@ def test_chat_low_credit_400_names_billing_not_the_key():
         g["chat"](MSGS)
     assert "settings/billing" in e.value.hint and "key itself is fine" in e.value.hint
     assert "subscription" in e.value.hint
+
+
+# --- chat(): transport + provider retry (BOB-148) ----------------------------
+#
+# The three transport failures a reporter's export carried (BOB-147,
+# anybao-export-20260917-091830.zip, 20 records — every one a single
+# `http.post` to api.anthropic.com raising URLError, every one the end
+# of its run). Messages verbatim from the trace records.
+
+URL = "https://api.anthropic.com/v1/messages"
+DNS_BLIP = (f"{URL}: Dns Failed: resolve dns name 'api.anthropic.com:443': "
+            "failed to lookup address information: nodename nor servname "
+            "provided, or not known")                       # run_255f0111… durMs 71
+CONN_RESET = (f"{URL}: Network Error: Network Error: Error encountered in "
+              "the status line: Connection reset by peer (os error 54)")  # run_f61a9d42… 54435
+READ_STALL = (f"{URL}: Network Error: Network Error: Error encountered in "
+              "the status line: timed out reading response")  # run_e65db6ee… 180003
+
+
+class ScriptedHost(FakeHost):
+    """A FakeHost whose http.post answers follow a script: an Exception
+    is raised, a `(status, body)` / `(status, body, headers)` tuple is
+    returned. `sleep` effects are recorded, never slept."""
+
+    def __init__(self, outcomes, prov=None):
+        super().__init__(prov or {"provider": "anthropic", "model": "m",
+                                  "base_url": "https://api.anthropic.com",
+                                  "api_key_ref": "llm.key.anthropic"})
+        self.outcomes = list(outcomes)
+
+    def __call__(self, name, payload):
+        if name != "http.post":
+            return super().__call__(name, payload)
+        self.posts.append(payload)
+        out = self.outcomes.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        status, body, *rest = out
+        return {"status": status, "headers": rest[0] if rest else {},
+                "body": body if isinstance(body, str) else json.dumps(body)}
+
+
+def transport(msg):
+    return EffectError(f"URLError: {msg}")
+
+
+OK = (200, ANTHROPIC_DONE_RESP)
+
+
+@pytest.mark.parametrize("msg", [DNS_BLIP, CONN_RESET, READ_STALL],
+                         ids=["dns", "reset", "stall"])
+def test_chat_retries_one_transport_failure(msg):
+    host = ScriptedHost([transport(msg), OK])
+    reply = load(host)["chat"](MSGS)
+    assert reply["stop"] == "done"
+    # the same request went out twice — each attempt is its own effect
+    assert len(host.posts) == 2 and host.posts[0] == host.posts[1]
+    assert host.sleeps == [1]
+
+
+def test_chat_gives_up_after_three_transport_attempts():
+    host = ScriptedHost([transport(DNS_BLIP)] * 3 + [OK])
+    with pytest.raises(EffectError) as e:
+        load(host)["chat"](MSGS)
+    assert "nodename nor servname" in str(e.value)   # the last error, unchanged
+    assert len(host.posts) == 3
+    assert host.sleeps == [1, 4]
+    assert host.outcomes == [OK]      # never reached
+
+
+def test_chat_retries_a_stalled_read_only_once():
+    # a stall costs the whole 180 s cap per attempt (BOB-149); one retry
+    # gives a dead connection a second chance without a 9-minute silence
+    host = ScriptedHost([transport(READ_STALL)] * 2 + [OK])
+    with pytest.raises(EffectError) as e:
+        load(host)["chat"](MSGS)
+    assert "timed out reading response" in str(e.value)
+    assert len(host.posts) == 2 and host.sleeps == [1]
+
+
+@pytest.mark.parametrize("status,body", [
+    (529, {"type": "error", "error": {"type": "overloaded_error",
+                                      "message": "Overloaded"}}),
+    (503, "upstream unavailable"),
+    (429, {"type": "error", "error": {"type": "rate_limit_error",
+                                      "message": "slow down"}}),
+], ids=["529-overloaded", "503", "429"])
+def test_chat_retries_transient_provider_status(status, body):
+    host = ScriptedHost([(status, body), OK])
+    reply = load(host)["chat"](MSGS)
+    assert reply["stop"] == "done"
+    assert len(host.posts) == 2 and host.sleeps == [1]
+
+
+def test_chat_honours_retry_after():
+    host = ScriptedHost([(429, "slow down", {"retry-after": "7"}), OK])
+    load(host)["chat"](MSGS)
+    assert host.sleeps == [7]
+
+
+def test_chat_caps_retry_after():
+    host = ScriptedHost([(429, "slow down", {"retry-after": "3600"}), OK])
+    load(host)["chat"](MSGS)
+    assert host.sleeps == [60]
+
+
+def test_chat_raises_llm_error_when_the_provider_stays_down():
+    host = ScriptedHost([(529, "Overloaded")] * 3 + [OK])
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == 529
+    assert len(host.posts) == 3 and host.sleeps == [1, 4]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 413])
+def test_chat_never_retries_a_client_error(status):
+    host = ScriptedHost([(status, "no"), OK])
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == status
+    assert len(host.posts) == 1 and host.sleeps == []
+
+
+def test_chat_does_not_retry_other_effect_failures():
+    # only the transport is retried — a capability denial, a missing
+    # secret or a mock miss are not going to change on a second try
+    host = ScriptedHost([EffectError("SecretMissing: llm.key.anthropic"), OK])
+    with pytest.raises(EffectError) as e:
+        load(host)["chat"](MSGS)
+    assert "SecretMissing" in str(e.value)
+    assert len(host.posts) == 1 and host.sleeps == []
 
 
 # --- File parts (ADR-020 §3/§4) ----------------------------------------------
