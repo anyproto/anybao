@@ -299,7 +299,11 @@ binary tomorrow, and the agent cannot tell.**
    (strict replay stays deterministic under concurrency), each
    individually mockable, `meta.batch: {id, i}` for provenance.
    Per-item failure is an `EffectError` value in that slot, never a
-   whole-batch exception. Generic thunk-based `batch()` rejected:
+   whole-batch exception — except a NAME that is no effect (a tool or
+   program method the guest should call as Python): the raw `batch`
+   effect refuses the whole call as `unknown_effect` with that hint
+   before any item runs, and the `unknown_effect` message itself
+   teaches the distinction (BOB-152). Generic thunk-based `batch()` rejected:
    thunks are guest code and cells stay single-threaded; a
    descriptor-based combinator can be added later without touching the
    trace contract.

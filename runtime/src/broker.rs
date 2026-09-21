@@ -1178,7 +1178,15 @@ impl Broker {
             ),
             other => Err(EffectFailure {
                 type_: "unknown_effect".into(),
-                message: format!("no such effect: {other}"),
+                // BOB-152: the model reaches for `effect("gmail.get_message")`
+                // — a tool method is guest Python, not a syscall; say so, or
+                // it reads as a missing method and burns turns
+                message: format!(
+                    "no such effect: {other} — effects are host syscalls (http.get/post/…, \
+                     time.now, config.get, batch, trace.*, blob.*); a tool or program method \
+                     (`<alias>.<method>`, `<repo>:<name>@vN.<method>`) is plain Python: call it \
+                     directly, or loop"
+                ),
             }),
         }
     }
@@ -2046,13 +2054,30 @@ impl Broker {
             .and_then(|p| p.as_array())
             .cloned()
             .unwrap_or_default();
-        let results: Vec<Value> = payloads
-            .into_iter()
-            .map(|p| match self.call(&name, p) {
+        // a name that is no effect fails the WHOLE call (nothing ran):
+        // N identical `unknown_effect` items (127 in the BOB-152 export)
+        // read as N missing methods; one refusal with the hint is a fact
+        // the model acts on in a turn. Item failures stay per slot.
+        let mut items = payloads.into_iter();
+        let mut results = Vec::new();
+        if let Some(first) = items.next() {
+            match self.call(&name, first) {
+                Err(e) if e.type_ == "unknown_effect" => {
+                    return Err(EffectFailure {
+                        type_: e.type_,
+                        message: format!("batch fans out host effects only — {}", e.message),
+                    })
+                }
+                Ok(v) => results.push(v),
+                Err(e) => results.push(json!({"error": {"type": e.type_, "message": e.message}})),
+            }
+        }
+        for p in items {
+            results.push(match self.call(&name, p) {
                 Ok(v) => v,
                 Err(e) => json!({"error": {"type": e.type_, "message": e.message}}),
-            })
-            .collect();
+            });
+        }
         Ok(json!({"results": results}))
     }
 
@@ -4827,5 +4852,49 @@ mod tests {
         assert_eq!(err.type_, "URLError");
         assert!(err.message.contains("interrupted"), "{}", err.message);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn batch_of_a_non_effect_name_fails_whole_with_the_hint() {
+        // BOB-152: `effect("batch", {"name": "gmail.get_message", …})` —
+        // a tool method, not a syscall. Both spellings the model tried.
+        let mut b = make_broker("run_batch_prog");
+        for name in ["gmail.get_message", "connectors:gmail@v1.get_message"] {
+            let err = b
+                .call(
+                    "batch",
+                    json!({"name": name, "payloads": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}),
+                )
+                .unwrap_err();
+            assert_eq!(err.type_, "unknown_effect", "{name}");
+            assert!(
+                err.message.starts_with("batch fans out host effects only"),
+                "{}",
+                err.message
+            );
+            assert!(err.message.contains(name), "{}", err.message);
+            assert!(
+                err.message.contains("call it directly, or loop"),
+                "{}",
+                err.message
+            );
+        }
+        // the direct call carries the same teaching
+        let err = b.call("gmail.get_message", json!({"id": "a"})).unwrap_err();
+        assert_eq!(err.type_, "unknown_effect");
+        assert!(err.message.contains("plain Python"), "{}", err.message);
+        // a real effect still fans out per item, failures per slot
+        let out = b
+            .call(
+                "batch",
+                json!({"name": "config.get", "payloads": [{"key": "x"}, {"key": "y"}]}),
+            )
+            .unwrap();
+        assert_eq!(out["results"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            b.call("batch", json!({"name": "config.get", "payloads": []}))
+                .unwrap()["results"],
+            json!([])
+        );
     }
 }

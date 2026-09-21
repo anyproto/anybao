@@ -266,6 +266,10 @@ Pick another name for your own variables.
 
 Repeating one call ≥4 times in a cell earns a hint: fan out in one
 round-trip with `effect("batch", {"name": ..., "payloads": [...]})`.
+`batch` takes a HOST effect name only (`http.get`, `time.now`, …); a
+tool method such as `gmail.get_message(id)` is plain Python — loop
+over it, or use the tool's own list method. Naming a method there is
+refused as `unknown_effect` before anything runs.
 
 ## Your compressed context is drillable
 
