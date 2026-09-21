@@ -241,9 +241,12 @@ def _sse_events(text):
     """SSE text → `[(event, data)]`: `data:` lines of one event joined
     with newlines, a blank line ends the event; `id:`/`retry:` and `:`
     comments are dropped. The host records a streamed response as this
-    text in one `http.post` body (ADR-002 §1, BOB-149)."""
+    text in one `http.post` body (ADR-002 §1, BOB-149). Lines end at
+    `\\n` (a trailing `\\r` dropped) — never `splitlines()`, which also
+    breaks on U+2028/U+2029/U+0085, legal raw inside a JSON string."""
     events, name, data = [], None, []
-    for line in text.splitlines():
+    for line in text.split("\n"):
+        line = line.rstrip("\r")
         if line == "":
             if data:
                 events.append((name, "\n".join(data)))
@@ -259,6 +262,9 @@ def _sse_events(text):
 
 # an Anthropic `error` event mid-stream, as the status the non-streaming
 # wire would have answered with (so the caller's error handling is one)
+# the `chat.completions` delta fields that arrive as text pieces and
+# concatenate in the fold; every other scalar delta is first-wins
+_STREAM_TEXT_FIELDS = ("content", "reasoning_content", "reasoning", "refusal")
 _STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429,
                         "api_error": 500, "authentication_error": 401,
                         "permission_error": 403, "invalid_request_error": 400,
@@ -361,8 +367,14 @@ class AnthropicAdapter:
             if bt == "text":
                 parts.append({"type": "text", "text": block["text"]})
             elif bt == "tool_use":
-                parts.append({"type": "tool_call", "id": block["id"],
-                              "name": block["name"], "args": block["input"]})
+                part = {"type": "tool_call", "id": block["id"],
+                        "name": block["name"], "args": block["input"]}
+                if block.get("input_error"):
+                    # a streamed call cut mid-JSON (BOB-149): the run
+                    # never dies on a malformed call — the loop answers
+                    # the flagged call with an is_error result
+                    part["error"] = block["input_error"]
+                parts.append(part)
             elif bt in ("thinking", "redacted_thinking"):
                 parts.append({"type": "thinking",
                               "text": block.get("thinking", ""),
@@ -381,8 +393,18 @@ class AnthropicAdapter:
         (text, `input_json_delta` tool input, thinking + signature),
         `stop_reason` and output usage from `message_delta`, input
         usage from `message_start`. An `error` event raises `LlmError`
-        with the status the plain wire would have sent."""
+        with the status the plain wire would have sent. Tolerant of a
+        lossy relay: a delta for a block that never started opens it
+        (typed by the delta), a hole in the indices is dropped, a tool
+        input cut mid-JSON (`max_tokens`) folds to `{}` with an
+        `input_error` the neutral Reply carries as the part's `error`."""
         msg, blocks, partial = {}, [], {}
+
+        def block(i):
+            while len(blocks) <= i:
+                blocks.append({})
+            return blocks[i]
+
         for name, data in _sse_events(text):
             ev = json.loads(data)
             t = ev.get("type", name)
@@ -392,25 +414,32 @@ class AnthropicAdapter:
                 msg["content"] = blocks
             elif t == "content_block_start":
                 i = ev["index"]
-                while len(blocks) <= i:
-                    blocks.append(None)
-                blocks[i] = dict(ev["content_block"])
+                block(i).update(ev["content_block"])
                 partial[i] = ""
             elif t == "content_block_delta":
                 i, d = ev["index"], ev["delta"]
-                b, dt = blocks[i], d.get("type")
+                b, dt = block(i), d.get("type")
                 if dt == "text_delta":
+                    b.setdefault("type", "text")
                     b["text"] = b.get("text", "") + d["text"]
                 elif dt == "input_json_delta":
-                    partial[i] += d["partial_json"]
+                    partial[i] = partial.get(i, "") + d["partial_json"]
                 elif dt == "thinking_delta":
+                    b.setdefault("type", "thinking")
                     b["thinking"] = b.get("thinking", "") + d["thinking"]
                 elif dt == "signature_delta":
                     b["signature"] = b.get("signature", "") + d["signature"]
             elif t == "content_block_stop":
                 i = ev["index"]
-                if blocks[i].get("type") == "tool_use" and partial.get(i, "").strip():
-                    blocks[i]["input"] = json.loads(partial[i])
+                b, raw = block(i), partial.get(i, "")
+                if b.get("type") == "tool_use" and raw.strip():
+                    try:
+                        b["input"] = json.loads(raw)
+                        if not isinstance(b["input"], dict):
+                            raise ValueError("input must be a JSON object")
+                    except ValueError as e:
+                        b["input"] = {}
+                        b["input_error"] = f"unparseable tool input ({e}): {raw[:200]}"
             elif t == "message_delta":
                 msg.update(ev.get("delta") or {})
                 usage = dict(msg.get("usage") or {})
@@ -421,6 +450,8 @@ class AnthropicAdapter:
                 raise LlmError(_STREAM_ERROR_STATUS.get(err.get("type"), 500),
                                json.dumps(ev)[:_EXCERPT])
             # ping / message_stop carry nothing
+        if blocks:
+            blocks[:] = [b for b in blocks if b.get("type")]
         return msg
 
 
@@ -578,8 +609,33 @@ class OpenAICompatAdapter:
         list deltas appended (`reasoning_details`), tool calls merged
         by `index` with their `arguments` concatenated, `finish_reason`
         from the chunk that carries it, `usage` from the last chunk
-        that carries it, `[DONE]` ends. An `error` chunk raises."""
+        that carries it, `[DONE]` ends. An `error` chunk raises.
+        Only the text fields concatenate; every other scalar is
+        first-wins (a repeated `role` is not `assistantassistant`).
+        A tool-call `index` is coerced to int; a call without one
+        opens a new call when it names the function, else continues
+        the last; a null `id` never pins."""
         final, msg, calls, finish = {}, {}, {}, None
+
+        def call_at(tc):
+            fn = tc.get("function") or {}
+            try:
+                idx = int(tc["index"])
+            except (KeyError, TypeError, ValueError):
+                opener = tc.get("id") or fn.get("name")
+                idx = len(calls) if opener or not calls else max(calls)
+            cur = calls.setdefault(idx, {"index": idx,
+                                         "function": {"name": "", "arguments": ""}})
+            for kk, vv in tc.items():
+                if kk == "function":
+                    for fk, fv in fn.items():
+                        if fk == "arguments":
+                            cur["function"]["arguments"] += fv or ""
+                        elif fv:
+                            cur["function"][fk] = fv
+                elif kk != "index" and vv and kk not in cur:
+                    cur[kk] = vv
+
         for _name, data in _sse_events(text):
             if data.strip() == "[DONE]":
                 break
@@ -598,18 +654,8 @@ class OpenAICompatAdapter:
                 for k, v in (choice.get("delta") or {}).items():
                     if k == "tool_calls":
                         for tc in v or []:
-                            cur = calls.setdefault(tc.get("index", len(calls)),
-                                                   {"function": {"name": "", "arguments": ""}})
-                            for kk, vv in tc.items():
-                                if kk == "function":
-                                    for fk, fv in (vv or {}).items():
-                                        if fk == "arguments":
-                                            cur["function"]["arguments"] += fv or ""
-                                        elif fv:
-                                            cur["function"][fk] = fv
-                                elif kk not in cur:
-                                    cur[kk] = vv
-                    elif isinstance(v, str):
+                            call_at(tc)
+                    elif isinstance(v, str) and k in _STREAM_TEXT_FIELDS:
                         msg[k] = msg.get(k, "") + v
                     elif isinstance(v, list):
                         msg[k] = (msg.get(k) or []) + v
@@ -1060,7 +1106,7 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     req.update(prov.get("options") or {})
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
-               "stream": True, "timeout": dict(prov.get("timeout") or _TIMEOUT)}
+               "stream": True, "timeout": _timeout_of(prov)}
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
@@ -1072,6 +1118,16 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     raw = json.loads(body) if body.lstrip().startswith("{") else adapter.parse_stream(body)
     raw = be.get("normalize", lambda r: r)(raw)
     return _lift(adapter.parse_response(raw), traits)
+
+
+def _timeout_of(prov):
+    """A tier row's `timeout` as the `{idle, total}` the host takes:
+    a plain number (the ADR-002 whole-request spelling) is the total,
+    an object overrides the defaults key by key, absent = defaults."""
+    t = prov.get("timeout")
+    if isinstance(t, (int, float)) and not isinstance(t, bool):
+        return {**_TIMEOUT, "total": t}
+    return {**_TIMEOUT, **(t or {})}
 
 
 def _retry_after(resp):

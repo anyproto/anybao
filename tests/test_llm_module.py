@@ -987,6 +987,114 @@ def test_chat_stream_error_event_is_a_typed_provider_error():
     assert e.value.status == 529 and "Overloaded" in str(e.value)
 
 
+# --- the fold under a lossy or odd stream (PR #58 review) --------------------
+
+def _anthropic_sse(*blocks_events, stop="end_turn"):
+    start = ("message_start", {"type": "message_start", "message": {
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+        "content": [], "usage": {"input_tokens": 10, "output_tokens": 1}}})
+    end = (("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop},
+                              "usage": {"output_tokens": 5}}),
+           ("message_stop", {"type": "message_stop"}))
+    return _sse(start, *blocks_events, *end)
+
+
+def test_anthropic_stream_partial_tool_input_is_an_error_part():
+    # max_tokens mid-tool-call: the partial JSON must not raise out of
+    # chat() — it folds like the OpenAI wire's malformed-arguments case
+    sse = _anthropic_sse(
+        ("content_block_start", {"type": "content_block_start", "index": 0,
+                                 "content_block": {"type": "tool_use", "id": "toolu_1",
+                                                   "name": "run_cell", "input": {}}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                 "delta": {"type": "input_json_delta",
+                                           "partial_json": "{\"code\": \"print(4"}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        stop="max_tokens")
+    a = LLM["AnthropicAdapter"]()
+    reply = a.parse_response(a.parse_stream(sse))
+    part = reply["parts"][0]
+    assert part["type"] == "tool_call" and part["args"] == {}
+    assert part["error"].startswith("unparseable tool input") and "print(4" in part["error"]
+    assert reply["stop"] == "length"
+
+
+def test_anthropic_stream_tolerates_a_lossy_relay():
+    # a delta for a block that never started opens it; a hole in the
+    # indices is dropped; nothing is None when parse_response reads it
+    sse = _anthropic_sse(
+        ("content_block_delta", {"type": "content_block_delta", "index": 2,
+                                 "delta": {"type": "text_delta", "text": "late "}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 2,
+                                 "delta": {"type": "text_delta", "text": "start"}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 2}))
+    a = LLM["AnthropicAdapter"]()
+    folded = a.parse_stream(sse)
+    assert folded["content"] == [{"type": "text", "text": "late start"}]
+    assert a.parse_response(folded)["parts"] == [{"type": "text", "text": "late start"}]
+
+
+def test_sse_events_split_on_newline_only():
+    # U+2028 / U+2029 / U+0085 are legal raw inside a JSON string and
+    # `splitlines()` would cut the data line there; `\r\n` endings too
+    text = "event: x\r\ndata: " + json.dumps({"t": "a b c\u0085d"}) + "\r\n\r\n"
+    events = LLM["_sse_events"](text)
+    assert events == [("x", json.dumps({"t": "a b c\u0085d"}))]
+    assert json.loads(events[0][1])["t"] == "a b c\u0085d"
+
+
+def _openai_sse(*chunks):
+    return "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+
+
+def test_openai_stream_tool_call_without_index_continues_the_last_call():
+    # vLLM / llama.cpp style: no `index` on any tool_call chunk
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(
+        _chunk({"tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "run_cell", "arguments": ""}}]}),
+        _chunk({"tool_calls": [{"function": {"arguments": "{\"code\": "}}]}),
+        _chunk({"tool_calls": [{"function": {"arguments": "\"1+1\"}"}}]}),
+        _chunk({}, finish="tool_calls"))
+    calls = a.parse_stream(sse)["choices"][0]["message"]["tool_calls"]
+    assert len(calls) == 1 and calls[0]["id"] == "call_1"
+    assert calls[0]["function"]["arguments"] == "{\"code\": \"1+1\"}"
+    norm = LLM["_normalize_openai_compat"]
+    assert a.parse_response(norm(a.parse_stream(sse)))["parts"][0]["args"] == {"code": "1+1"}
+
+
+def test_openai_stream_tool_call_index_is_coerced_and_null_id_never_pins():
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(
+        _chunk({"tool_calls": [{"index": "0", "id": None, "type": "function",
+                                "function": {"name": "run_cell", "arguments": ""}}]}),
+        _chunk({"tool_calls": [{"index": 0, "id": "call_1",
+                                "function": {"arguments": "{}"}}]}),
+        _chunk({"tool_calls": [{"index": "1", "id": "call_2", "type": "function",
+                                "function": {"name": "other", "arguments": "{}"}}]}),
+        _chunk({}, finish="tool_calls"))
+    calls = a.parse_stream(sse)["choices"][0]["message"]["tool_calls"]
+    assert [c["id"] for c in calls] == ["call_1", "call_2"]
+    assert [c["index"] for c in calls] == [0, 1]
+
+
+def test_openai_stream_only_text_fields_concatenate():
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(_chunk({"role": "assistant", "content": "a"}),
+                      _chunk({"role": "assistant", "content": "b"}, finish="stop"))
+    msg = a.parse_stream(sse)["choices"][0]["message"]
+    assert msg["role"] == "assistant" and msg["content"] == "ab"
+
+
+def test_chat_numeric_tier_timeout_is_the_total():
+    # the ADR-002 whole-request spelling on a tier row still works
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic",
+                     "timeout": 300}, body=ANTHROPIC_SSE)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["timeout"] == {"idle": 60, "total": 300}
+
+
 # --- File parts (ADR-020 §3/§4) ----------------------------------------------
 
 PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
