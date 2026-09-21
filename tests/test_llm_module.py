@@ -973,18 +973,108 @@ def test_chat_reads_a_json_answer_to_a_stream_request():
     assert load(host)["chat"](MSGS)["stop"] == "done"
 
 
-def test_chat_stream_error_event_is_a_typed_provider_error():
-    sse = _sse(("message_start", {"type": "message_start", "message": {
-                    "id": "m", "content": [], "usage": {"input_tokens": 1, "output_tokens": 0}}}),
-               ("error", {"type": "error", "error": {"type": "overloaded_error",
-                                                     "message": "Overloaded"}}))
-    host = FakeHost({"provider": "anthropic", "model": "m",
-                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic"},
-                    body=sse)
+OVERLOADED_SSE = _sse(
+    ("message_start", {"type": "message_start", "message": {
+        "id": "m", "content": [], "usage": {"input_tokens": 1, "output_tokens": 0}}}),
+    ("error", {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
+
+
+def test_chat_stream_error_event_is_retried_like_the_status():
+    # Anthropic signals overload under an open stream as an `error`
+    # event on a 200 — the same three attempts a 529 status gets
+    host = ScriptedHost([(200, OVERLOADED_SSE), (200, OVERLOADED_SSE), (200, ANTHROPIC_SSE)])
+    reply = load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    assert reply["stop"] == "tool"
+    assert len(host.posts) == 3 and host.sleeps == [1, 4]
+
+
+def test_chat_stream_error_event_is_a_typed_provider_error_after_the_retries():
+    host = ScriptedHost([(200, OVERLOADED_SSE)] * 3 + [OK])
     g = load(host)
     with pytest.raises(g["LlmError"]) as e:
         g["chat"](MSGS)
     assert e.value.status == 529 and "Overloaded" in str(e.value)
+    assert len(host.posts) == 3 and host.outcomes == [OK]
+
+
+@pytest.mark.parametrize("body", [
+    ANTHROPIC_SSE.split("event: message_stop")[0],   # cut before the terminator
+    ANTHROPIC_SSE.split("event: content_block_stop")[0],   # cut mid-text
+    "",                                               # a 200 with no bytes
+    "<html>gateway error</html>",                     # a proxy's error page
+], ids=["no-message-stop", "mid-text", "empty", "html"])
+def test_chat_cut_stream_is_incomplete_and_retried_never_done(body):
+    # a dropped connection or a zero-byte 200 used to fold to a
+    # half-sentence with stop=done — posted as the final answer
+    host = ScriptedHost([(200, body), (200, ANTHROPIC_SSE)])
+    reply = load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    assert reply["stop"] == "tool" and len(host.posts) == 2 and host.sleeps == [1]
+    host = ScriptedHost([(200, body)] * 3 + [OK])
+    g = load(host)
+    with pytest.raises(g["IncompleteReply"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == 502 and "incomplete" in str(e.value)
+
+
+def test_openai_cut_stream_is_incomplete():
+    a = LLM["OpenAICompatAdapter"]()
+    cut = OPENAI_SSE.split("data: [DONE]")[0]          # [DONE] lost, finish_reason kept
+    assert a.parse_stream(cut)["choices"][0]["finish_reason"] == "tool_calls"
+    cut = "".join(f"data: {json.dumps(c)}\n\n" for c in [_chunk({"content": "Half an ans"})])
+    with pytest.raises(LLM["IncompleteReply"]):
+        a.parse_stream(cut)
+
+
+def test_chat_total_timeout_failure_is_not_retried():
+    # the provider generated for the whole `total` — three of those
+    # outrun every run deadline (PR #58 review G4)
+    total = transport(f"{URL}: stream exceeded the total timeout of 900s")
+    host = ScriptedHost([total, OK])
+    with pytest.raises(EffectError) as e:
+        load(host)["chat"](MSGS)
+    assert "total timeout" in str(e.value)
+    assert len(host.posts) == 1 and host.sleeps == []
+
+
+def test_chat_tier_row_turns_streaming_off():
+    host = FakeHost({"provider": "openai-compat", "model": "m", "base_url": "https://api.openai.com/v1",
+                     "api_key_ref": "llm.key.openai", "stream": False}, body=OPENAI_FINAL)
+    reply = load(host)["chat"](MSGS)
+    post = host.posts[0]
+    assert post["stream"] is False and post["timeout"] == 900
+    assert post["json"]["stream"] is False and "stream_options" not in post["json"]
+    assert reply["stop"] == "tool"
+
+
+def test_chat_options_stream_false_is_followed_by_the_host_flag():
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic",
+                     "options": {"stream": False}}, body=ANTHROPIC_DONE_RESP)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["stream"] is False and host.posts[0]["json"]["stream"] is False
+
+
+def test_chat_local_backends_default_to_the_plain_wire():
+    host = FakeHost({"provider": "openai-compat", "model": "llama3", "backend": "ollama",
+                     "base_url": "http://127.0.0.1:11434/v1", "api_key_ref": None},
+                    body=OPENAI_FINAL)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["stream"] is False and host.posts[0]["json"]["stream"] is False
+    host = FakeHost({"provider": "openai-compat", "model": "llama3", "backend": "ollama",
+                     "base_url": "http://127.0.0.1:11434/v1", "api_key_ref": None,
+                     "stream": True}, body=OPENAI_SSE)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["stream"] is True
+
+
+def test_openai_stream_without_usage_is_marked_missing():
+    # a server that ignores stream_options: zeros are no count
+    a = LLM["OpenAICompatAdapter"]()
+    sse = "".join(f"data: {json.dumps(c)}\n\n" for c in [
+        _chunk({"content": "ok"}, finish="stop")]) + "data: [DONE]\n\n"
+    usage = a.parse_response(LLM["_normalize_openai_compat"](a.parse_stream(sse)))["usage"]
+    assert usage == {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "missing": True}
+    assert "missing" not in a.parse_response(OPENAI_FINAL)["usage"]
 
 
 # --- the fold under a lossy or odd stream (PR #58 review) --------------------

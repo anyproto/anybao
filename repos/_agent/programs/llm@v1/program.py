@@ -85,6 +85,19 @@ class LlmError(Exception):
         super().__init__(msg)
 
 
+class IncompleteReply(LlmError):
+    """A 200 whose body is not a whole answer: a stream that ended
+    without its terminator (`message_stop` / `[DONE]` or a
+    `finish_reason`), an empty body, a non-JSON answer to a plain
+    request. Carries 502 so the caller's transient-status path retries
+    it (ADR-005 §1.6) — the old wire raised on `json.loads` of a
+    truncated body; a stream cut mid-sentence must never be "done"."""
+
+    def __init__(self, detail):
+        super().__init__(502, detail)
+        self.args = (f"llm reply incomplete: {detail}",)
+
+
 _ANTHROPIC_KEY_NOTE = (
     "Create the key scoped to a single workspace: Console → Settings → API keys "
     "→ Create key → choose a workspace. A key linked to your account with no "
@@ -397,8 +410,9 @@ class AnthropicAdapter:
         lossy relay: a delta for a block that never started opens it
         (typed by the delta), a hole in the indices is dropped, a tool
         input cut mid-JSON (`max_tokens`) folds to `{}` with an
-        `input_error` the neutral Reply carries as the part's `error`."""
-        msg, blocks, partial = {}, [], {}
+        `input_error` the neutral Reply carries as the part's `error`.
+        No `message_stop` = the stream was cut: `IncompleteReply`."""
+        msg, blocks, partial, done = {}, [], {}, False
 
         def block(i):
             while len(blocks) <= i:
@@ -449,9 +463,13 @@ class AnthropicAdapter:
                 err = ev.get("error") or {}
                 raise LlmError(_STREAM_ERROR_STATUS.get(err.get("type"), 500),
                                json.dumps(ev)[:_EXCERPT])
-            # ping / message_stop carry nothing
-        if blocks:
-            blocks[:] = [b for b in blocks if b.get("type")]
+            elif t == "message_stop":
+                done = True
+            # ping carries nothing
+        if not done:
+            raise IncompleteReply(
+                f"stream ended without message_stop after {len(text)} chars")
+        blocks[:] = [b for b in blocks if b.get("type")]
         return msg
 
 
@@ -589,7 +607,15 @@ class OpenAICompatAdapter:
             parts.append(part)
         fr = choice.get("finish_reason", "stop")
         stop = "tool" if fr == "tool_calls" else ("length" if fr == "length" else "done")
-        u = raw.get("usage", {})
+        u = raw.get("usage")
+        if not u:
+            # a server that ignores `stream_options.include_usage` (an
+            # old build, a proxy) — the loop must know the count is no
+            # count: `missing` says so; `stream: false` on the tier row
+            # restores exact usage from the JSON body
+            return {"parts": parts, "stop": stop,
+                    "usage": {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0,
+                              "missing": True}}
         det = u.get("prompt_tokens_details") or {}
         cached = det.get("cached_tokens", 0)
         written = det.get("cache_write_tokens", 0)  # OpenRouter, explicit markers
@@ -614,8 +640,9 @@ class OpenAICompatAdapter:
         first-wins (a repeated `role` is not `assistantassistant`).
         A tool-call `index` is coerced to int; a call without one
         opens a new call when it names the function, else continues
-        the last; a null `id` never pins."""
-        final, msg, calls, finish = {}, {}, {}, None
+        the last; a null `id` never pins. Neither `[DONE]` nor a
+        `finish_reason` = the stream was cut: `IncompleteReply`."""
+        final, msg, calls, finish, done = {}, {}, {}, None, False
 
         def call_at(tc):
             fn = tc.get("function") or {}
@@ -638,6 +665,7 @@ class OpenAICompatAdapter:
 
         for _name, data in _sse_events(text):
             if data.strip() == "[DONE]":
+                done = True
                 break
             ch = json.loads(data)
             if ch.get("error"):
@@ -663,6 +691,9 @@ class OpenAICompatAdapter:
                         msg[k] = v
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
+        if not done and not finish:
+            raise IncompleteReply(
+                f"stream ended without [DONE] or a finish_reason after {len(text)} chars")
         if calls:
             msg["tool_calls"] = [calls[i] for i in sorted(calls)]
         final["choices"] = [{"index": 0, "message": msg, "finish_reason": finish}]
@@ -936,13 +967,18 @@ BACKENDS = {
                  "credential": {**_BEARER, "label": "Together API key",
                                 "help": "https://api.together.ai/settings/api-keys"},
                  "normalize": _normalize_openai_compat},
+    # local servers: no middlebox to keep alive, and usage-on-stream is
+    # not a given on every build — the plain JSON wire by default
+    # (`stream: true` on the tier row opts in; ADR-005 §1.2)
     "vllm": {"path": "/chat/completions", "credential": {**_BEARER, "label": "vLLM API key"},
-             "finish": _finish_chat_template, "normalize": _normalize_openai_compat},
+             "finish": _finish_chat_template, "normalize": _normalize_openai_compat,
+             "stream": False},
     "llamacpp": {"path": "/chat/completions",
                  "credential": {**_BEARER, "label": "llama.cpp API key"},
-                 "finish": _finish_llamacpp, "normalize": _normalize_openai_compat},
+                 "finish": _finish_llamacpp, "normalize": _normalize_openai_compat,
+                 "stream": False},
     "ollama": {"path": "/chat/completions", "credential": {**_BEARER, "label": "Ollama API key"},
-               "normalize": _normalize_openai_compat},
+               "normalize": _normalize_openai_compat, "stream": False},
     "generic": {"path": "/chat/completions", "credential": {**_BEARER, "label": "API key"},
                 "normalize": _normalize_openai_compat},
 }
@@ -1089,8 +1125,12 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     description, input_schema?}]`, empty for plain completions.
     `max_tokens` overrides the profile's output cap (lower it for
     small classify-style calls). Returns `{parts, stop:
-    "done"|"tool"|"length", usage: {in, out}}`; a ≥400 provider
-    status raises `LlmError(status, body_excerpt)`."""
+    "done"|"tool"|"length", usage: {in, out, cacheRead, cacheWrite}}`
+    — `usage.missing: true` when the provider streamed no usage (the
+    zeros are no count; `stream: false` on the tier row restores
+    exact usage); a ≥400 provider status raises `LlmError(status,
+    body_excerpt)`, a stream cut before its end `IncompleteReply`
+    after the retries."""
     prov, _name, backend, traits = _resolve(tier)
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
@@ -1100,24 +1140,40 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     req.update(traits["sampling"])
     be = BACKENDS[backend]
     req = be.get("finish", lambda r, _t: r)(req, traits)
-    req["stream"] = True
-    if be["path"] == "/chat/completions":
+    # the tier row's `stream` wins over the backend's default; an
+    # `options.stream` flips the body field and the host follows it
+    req["stream"] = bool(prov.get("stream", be.get("stream", True)))
+    if req["stream"] and be["path"] == "/chat/completions":
         req.setdefault("stream_options", {"include_usage": True})
     req.update(prov.get("options") or {})
+    stream = bool(req.get("stream"))
+    if not stream:
+        req.pop("stream_options", None)
+    timeout = _timeout_of(prov)
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
-               "stream": True, "timeout": _timeout_of(prov)}
+               "stream": stream, "timeout": timeout if stream else timeout["total"]}
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
-    resp = _post(payload)
-    if resp["status"] >= 400:
-        raise LlmError(resp["status"], resp["body"][:_EXCERPT])
-    body = resp["body"]
-    # a server that ignores `stream` answers JSON — one reader either way
-    raw = json.loads(body) if body.lstrip().startswith("{") else adapter.parse_stream(body)
+    raw = _post(payload, lambda body: _fold(adapter, body, stream))
     raw = be.get("normalize", lambda r: r)(raw)
     return _lift(adapter.parse_response(raw), traits)
+
+
+def _fold(adapter, body, stream):
+    """A 200 body → the provider's JSON: a JSON body as-is (a server
+    that ignores `stream` answers JSON — one reader either way), SSE
+    text through the adapter's fold; anything else is incomplete."""
+    if body.lstrip().startswith("{"):
+        try:
+            return json.loads(body)
+        except ValueError as e:
+            raise IncompleteReply(f"unparseable JSON body ({e}) after {len(body)} chars") from None
+    if stream and body.strip():
+        return adapter.parse_stream(body)
+    raise IncompleteReply("empty body" if not body.strip()
+                          else f"non-JSON body: {body[:_EXCERPT]!r}")
 
 
 def _timeout_of(prov):
@@ -1139,30 +1195,54 @@ def _retry_after(resp):
         return None
 
 
-def _post(payload):
-    """The provider call with a bounded retry (ADR-005 §1.6, BOB-148).
+# the host's total-deadline failure (broker `http.post`, ADR-002 §1):
+# the provider generated for the whole `total` — a retry would cost
+# the same again (3 × 900 s is past every run deadline), so it is the
+# one URLError that is not retried
+_TOTAL_TIMEOUT_MARK = "exceeded the total timeout"
+
+
+def _transient(status):
+    return status == 429 or status >= 500
+
+
+def _post(payload, fold):
+    """The provider call with a bounded retry (ADR-005 §1.6, BOB-148),
+    returning the FOLDED provider JSON — the fold runs inside the loop
+    so what it learns can be retried.
 
     Retried: a transport failure (`URLError` — DNS, connection reset,
-    a stalled read) and a transient provider status (429, 5xx incl.
-    529 overloaded). Not retried: any other 4xx, and any other effect
-    failure (a denied capability, a missing secret, a mock miss).
-    Each attempt is its own `http.post` record and the wait crosses
-    the boundary as a `sleep` effect, so the trace shows every attempt
-    and replay never waits. A stalled stream costs the idle timeout,
-    not the whole answer, so it is retried like any other failure."""
+    a stalled read; NOT the total-deadline failure), a transient
+    provider status (429, 5xx incl. 529 overloaded), and the same
+    statuses arriving as a mid-stream `error` event under a 200, and an
+    incomplete body (a stream cut before its terminator, an empty
+    200). Not retried: any other 4xx, and any other effect failure (a
+    denied capability, a missing secret, a mock miss). Each attempt is
+    its own `http.post` record and the wait crosses the boundary as a
+    `sleep` effect, so the trace shows every attempt and replay never
+    waits. The last failure raises unchanged."""
     attempt = 0
     while True:
         try:
             resp = effect("http.post", payload)  # noqa: F821 - guest global
         except EffectError as e:  # noqa: F821 - guest global
-            if not str(e).startswith("URLError") or attempt >= len(_RETRY_DELAYS_S):
+            retry = str(e).startswith("URLError") and _TOTAL_TIMEOUT_MARK not in str(e)
+            if not retry or attempt >= len(_RETRY_DELAYS_S):
                 raise
             wait = _RETRY_DELAYS_S[attempt]
         else:
             status = resp["status"]
-            if (status != 429 and status < 500) or attempt >= len(_RETRY_DELAYS_S):
-                return resp
-            wait = _retry_after(resp) or _RETRY_DELAYS_S[attempt]
+            if status >= 400:
+                if not _transient(status) or attempt >= len(_RETRY_DELAYS_S):
+                    raise LlmError(status, resp["body"][:_EXCERPT])
+                wait = _retry_after(resp) or _RETRY_DELAYS_S[attempt]
+            else:
+                try:
+                    return fold(resp["body"])
+                except LlmError as e:
+                    if not _transient(e.status) or attempt >= len(_RETRY_DELAYS_S):
+                        raise
+                    wait = _RETRY_DELAYS_S[attempt]
         effect("sleep", {"seconds": wait})  # noqa: F821 - guest global
         attempt += 1
 

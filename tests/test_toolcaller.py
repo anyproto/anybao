@@ -781,6 +781,23 @@ def test_context_ceiling_counts_cached_prompt_tokens():
     assert "context window nearly full (30102/32768)" in text
 
 
+def test_missing_usage_budgets_the_ceiling_from_a_prompt_floor():
+    # a streamed reply with no usage (llm@v1 marks `missing`): zeros
+    # must not disable the ceiling — a conservative floor from the
+    # prompt's size drives it instead (ADR-005 §1.2)
+    missing = {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "missing": True}
+    w = World([tool_reply(usage=missing), done_reply("summary")],
+              traits={"context_window": 128000})
+    out = run(w)
+    assert out["stop"] == "done"          # a large window: the floor is far below it
+    w = World([tool_reply(usage=missing), done_reply("summary")],
+              traits={"context_window": 600})
+    out = run(w)
+    assert out["stop"] == "wrapup"        # the system prompt alone is past 85% of 600
+    text = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+    assert "context window nearly full" in text
+
+
 def test_context_window_nearly_full_wraps_up():
     big = tool_reply(usage={"in": 30000, "out": 5})
     w = World([big, done_reply("summary")], traits={"context_window": 32768})

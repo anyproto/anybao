@@ -95,20 +95,33 @@ A profile hook that does nothing is the identity; the `generic`
 profile and `generic` backend are all-identity, so a tier with only
 `{provider, model, base_url, api_key_ref}` is the plain adapter path.
 
-The call streams (BOB-149): a non-streaming call carried no bytes for
-the whole generation, and the reporter's connections were dropped at
-about a minute of silence or by the 180 s whole-request cap. With
-`stream: true` the header and the first event arrive at once and the
-provider pings during thinking, so the connection is never idle. The
-host still records ONE `http.post` with the raw SSE text as its body
-(replay-identical, ADR-002 §1); the adapter folds the events into the
-same JSON the plain wire returns (`parse_stream`: text, tool-input
-and thinking deltas, usage from `message_start` + `message_delta`;
-chunk deltas merged per field and tool calls by index on the OpenAI
-wire, `stream_options.include_usage` requested), so `parse_response`
-is the one reader. A mid-stream `error` event raises `LlmError` with
-the status the plain wire would have sent. Timeouts are `{idle: 60,
-total: 900}`, a tier row's `timeout` overrides both. `trace show`
+The call streams (BOB-149): with `stream: true` the header and the
+first event arrive at once and the provider pings during thinking, so
+the connection is never idle. The host records ONE `http.post` with
+the raw SSE text as its body (replay-identical, ADR-002 §1); the
+adapter folds the events into the same JSON the plain wire returns
+(`parse_stream`: text, tool-input and thinking deltas, usage from
+`message_start` + `message_delta`; chunk deltas merged per field and
+tool calls by index on the OpenAI wire, `stream_options.include_usage`
+requested), so `parse_response` is the one reader. The fold runs
+INSIDE the retry loop (§1.6): a mid-stream `error` event is the status
+the plain wire would have sent (`overloaded_error` = 529, retried like
+the status); a stream that ends without its terminator
+(`message_stop`; `[DONE]` or a `finish_reason`), an empty 200 or an
+unparseable body is `IncompleteReply` (an `LlmError` at 502, retried)
+— a cut stream is never a "done" reply. A tool input cut mid-JSON
+(`max_tokens`) folds to `{}` with an `error` on the part, the same
+shape as the OpenAI malformed-arguments case, so the loop answers it
+instead of dying. Timeouts are `{idle: 60, total: 900}`; a tier row's
+`timeout` (object, or a number = total) overrides. Streaming is per
+tier: `stream: false` on the row (or in `options`) sends the plain
+JSON request with `total` as its whole-request cap; the local
+backends (`vllm`, `llamacpp`, `ollama`) default to off — no middlebox
+to keep alive, and usage-on-stream is not a given on every build. A
+streamed reply whose provider sent no usage carries `usage.missing:
+true` with zeros: the toolcaller then budgets the context ceiling from
+a conservative prompt-size floor instead of a zero that would disable
+it (§1.3), and the fix for such a tier is `stream: false`. `trace show`
 reads a streamed turn from the neutral Reply on the `llm.chat` span
 end, not from the wire body.
 
@@ -196,15 +209,19 @@ names a `credential` (`api_key_ref` + the backend's header/prefix +
 sets the header AFTER the payload records (ADR-002). `api_key_ref:
 None` sends no credential — a local server needs none, and a null ref
 raises no `SecretMissing` and no credential request (ADR-021 §2).
-The call itself is retried, bounded, before a status is judged: a transport
-failure (`URLError` — DNS, connection reset, a stalled read) and a
-transient provider status (429, 5xx, 529 overloaded) get up to three
-attempts with 1 s / 4 s waits (a numeric `retry-after` wins, capped
-at 60 s); a stalled stream costs the idle timeout, so it is retried
-like any other failure. Every attempt is its own `http.post` record
-and the wait is a `sleep` effect, so the trace shows the retries and
-replay skips the waits. Other 4xx and every other effect failure
-raise at once; the last failure raises unchanged (BOB-148).
+The call itself is retried, bounded, and the fold runs inside the
+retry: a transport failure (`URLError` — DNS, connection reset, a
+stalled stream, which costs the idle timeout), a transient provider
+status (429, 5xx, 529 overloaded) whether it arrives as the HTTP
+status or as a mid-stream `error` event under a 200, and an incomplete
+body (`IncompleteReply`, §1.2) get up to three attempts with 1 s / 4 s
+waits (a numeric `retry-after` wins, capped at 60 s). The host's
+total-deadline failure is the one `URLError` NOT retried: the provider
+generated for the whole `total`, and three of those outrun every run
+deadline. Every attempt is its own `http.post` record and the wait is
+a `sleep` effect, so the trace shows the retries and replay skips the
+waits. Other 4xx and every other effect failure raise at once; the
+last failure raises unchanged (BOB-148).
 
 A ≥400 status raises `LlmError(status, body_excerpt)`; when the body
 is a known *account* error rather than a transient one, the error
