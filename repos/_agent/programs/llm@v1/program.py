@@ -1082,11 +1082,7 @@ def _resolve(tier):
     return prov, name, backend, _effective(traits, backend)
 
 
-# BOB-149: the call streams, so the connection carries bytes for the
-# whole generation (a silent non-streaming call was dropped by
-# middleboxes at ~1 min and by our own cap at 180 s). `idle` = no chunk
-# for that long (Anthropic pings during thinking), `total` = the whole
-# answer; a tier row's `timeout` overrides both.
+# the streamed call's `{idle, total}` timeouts (ADR-005 §1.2, BOB-149)
 _TIMEOUT = {"idle": 60, "total": 900}
 # BOB-148: one transient failure must not end a run. Waits between
 # attempts (so len+1 attempts); a `retry-after` header wins, capped.

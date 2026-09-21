@@ -11,6 +11,8 @@ def test_help_on_http_verbs_states_response_keywords_and_wire_shape():
         text = app.describe(getattr(app.http, verb))
         assert "Response" in text and ".status" in text and ".json()" in text, (verb, text)
         assert "credential" in text and "params" in text and "timeout" in text, (verb, text)
+        # streaming is discoverable from help() (ADR-002 §1, BOB-149)
+        assert "stream=True" in text and '"idle": 60, "total": 900' in text, (verb, text)
         assert f"`http.{verb}`" in text and "url, body}" in text, (verb, text)
         assert "not `status_code`" in text, (verb, text)
     # get_many points at the same shape
