@@ -43,9 +43,17 @@
         }
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.anthropic",
      "header": "Authorization",
@@ -62,7 +70,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"id\":\"msg_011CeaHq4Sr7otHsDTttPEnC\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"toolu_01L8AiMR2tUg9gTxb74AMcfN\",\"type\":\"function\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\": \\\"\\\\nfrom sympy import prime\\\\nprint(sum(prime(i) for i in range(1,21)))\\\\n\\\"}\"}}]}}],\"created\":1788154877,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":77,\"prompt_tokens\":5216,\"total_tokens\":5293}}"
+    "body": "data: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"           }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"toolu_01QosUirHyXKwFXf3WJzdzm4\",\"type\":\"function\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"         }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"               }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"{\\\"cod\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"       }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"e\\\":\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\" }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\" \\\"\\\\nfrom sy\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"  }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"mpy impor\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"     }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"t prime\\\\npr\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"            }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"int(s\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"     }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"um(pri\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"             }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"me(i) \"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"        }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"for i \"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"          }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"in range(1,\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"        }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"arguments\":\"21)))\\\\n\\\"}\"}}]}}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"       }\n\ndata: {\"id\":\"msg_011CfGxtcLGcAqo3HonjzA2Y\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"created\":1790011035,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":93,\"prompt_tokens\":5216,\"total_tokens\":5309}       }\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -85,7 +93,7 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "toolu_01L8AiMR2tUg9gTxb74AMcfN",
+         "id": "toolu_01QosUirHyXKwFXf3WJzdzm4",
          "type": "function",
          "function": {
           "name": "run_cell",
@@ -96,7 +104,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "toolu_01L8AiMR2tUg9gTxb74AMcfN",
+       "tool_call_id": "toolu_01QosUirHyXKwFXf3WJzdzm4",
        "content": "Last value: 639"
       }
      ],
@@ -120,9 +128,17 @@
         }
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.anthropic",
      "header": "Authorization",
@@ -139,7 +155,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"id\":\"msg_011CeaHqECEBTMavuub1Byd6\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"The sum of the first 20 prime numbers is **639**.\"}}],\"created\":1788154878,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":21,\"prompt_tokens\":5304,\"total_tokens\":5325}}"
+    "body": "data: {\"id\":\"msg_011CfGxtka7W31teGDWP6qWc\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"created\":1790011037,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"        }\n\ndata: {\"id\":\"msg_011CfGxtka7W31teGDWP6qWc\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The sum of the first 20\"}}],\"created\":1790011037,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"   }\n\ndata: {\"id\":\"msg_011CfGxtka7W31teGDWP6qWc\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" prime numbers is **639**.\"}}],\"created\":1790011037,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"   }\n\ndata: {\"id\":\"msg_011CfGxtka7W31teGDWP6qWc\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"created\":1790011037,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":21,\"prompt_tokens\":5304,\"total_tokens\":5325}   }\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -165,9 +181,17 @@
        ]
       }
      ],
-     "max_tokens": 32768
+     "max_tokens": 32768,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.anthropic",
      "header": "Authorization",
@@ -184,7 +208,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"id\":\"msg_011CeaHqKwWFpsQjM98bX9xx\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Red\"}}],\"created\":1788154879,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":4,\"prompt_tokens\":23,\"total_tokens\":27}}"
+    "body": "data: {\"id\":\"msg_011CfGxtrLtAcLZbZgVgAtV3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"created\":1790011038,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"               }\n\ndata: {\"id\":\"msg_011CfGxtrLtAcLZbZgVgAtV3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Red\"}}],\"created\":1790011038,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"          }\n\ndata: {\"id\":\"msg_011CfGxtrLtAcLZbZgVgAtV3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"created\":1790011038,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":4,\"prompt_tokens\":23,\"total_tokens\":27}           }\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -199,9 +223,17 @@
        "content": "Write a 500-word essay about rivers."
       }
      ],
-     "max_tokens": 24
+     "max_tokens": 24,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.anthropic",
      "header": "Authorization",
@@ -218,7 +250,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"id\":\"msg_011CeaHqQdY1r8FrBe26A8nC\",\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"# Rivers: The Lifeblood of Our Planet\\n\\nRivers\"}}],\"created\":1788154881,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":24,\"prompt_tokens\":20,\"total_tokens\":44}}"
+    "body": "data: {\"id\":\"msg_011CfGxtz6xaTDwkp1K1y1Zq\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"created\":1790011040,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"   }\n\ndata: {\"id\":\"msg_011CfGxtz6xaTDwkp1K1y1Zq\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"#\"}}],\"created\":1790011040,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"               }\n\ndata: {\"id\":\"msg_011CfGxtz6xaTDwkp1K1y1Zq\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Rivers: The Lifeblood of Our Planet\\n\\nRivers\"}}],\"created\":1790011040,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\"              }\n\ndata: {\"id\":\"msg_011CfGxtz6xaTDwkp1K1y1Zq\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}],\"created\":1790011040,\"model\":\"claude-sonnet-5\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":24,\"prompt_tokens\":20,\"total_tokens\":44}        }\n\ndata: [DONE]\n\n"
    }
   }
  ]
