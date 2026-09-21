@@ -471,7 +471,9 @@ fn llm_exchange(inner: &[&Value], end: Option<&Value>) -> Option<(Value, Value)>
         }
     }
     let reply = end.filter(|e| e["output"]["parts"].is_array())?;
-    Some((req, view_response_of_reply(&reply["output"])))
+    let mut resp = view_response_of_reply(&reply["output"]);
+    resp["model"] = req["model"].clone(); // the Reply names no model; the request does
+    Some((req, resp))
 }
 
 /// The neutral Reply (`{parts, stop, usage}`, ADR-005 §1) in the
@@ -2259,6 +2261,13 @@ mod tests {
         assert!(out.contains("assistant: It is 42."), "{out}");
         assert!(out.contains("cell toolu_9"), "{out}");
         assert!(out.contains("print(42)"), "{out}");
+        // the summary names the model (from the request) and the
+        // Reply's usage — never `llm: ?`
+        assert!(
+            out.contains("llm: claude-sonnet-5 — tokens in=10 out=5"),
+            "{out}"
+        );
+        assert!(!out.contains("llm: ?"), "{out}");
     }
 
     #[test]

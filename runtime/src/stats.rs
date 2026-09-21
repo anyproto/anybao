@@ -57,18 +57,18 @@ pub fn render(store: &dyn TraceStore) -> anyhow::Result<String> {
                     if r["meta"]["class"] == "mutate" {
                         mutations += 1;
                     }
-                    // provider replies carry usage — tokens per llm call
-                    if let Some(body) = r["output"]["body"].as_str() {
-                        if let Ok(v) = serde_json::from_str::<Value>(body) {
-                            // anthropic / openai-compatible wire
-                            let u = &v["usage"];
-                            if let Some(t) = u["input_tokens"]
-                                .as_i64()
-                                .or_else(|| u["prompt_tokens"].as_i64())
-                            {
-                                tokens_in.push(t);
-                            }
-                        }
+                }
+                // tokens per llm call: the neutral Reply on the llm.chat
+                // span end (ADR-005 §1) — the recorded http body is SSE
+                // text on a streamed turn (BOB-149), so it is no source.
+                // The prompt in use = in + cacheRead + cacheWrite.
+                Some("span") if r["phase"] == "end" && r["name"] == "llm.chat" => {
+                    let u = &r["output"]["usage"];
+                    if let Some(t) = u["in"].as_i64() {
+                        tokens_in.push(
+                            t + u["cacheRead"].as_i64().unwrap_or(0)
+                                + u["cacheWrite"].as_i64().unwrap_or(0),
+                        );
                     }
                 }
                 _ => {}
@@ -104,6 +104,38 @@ pub fn render(store: &dyn TraceStore) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_in_come_from_the_llm_chat_span_end() {
+        // a streamed turn records SSE text as the http body — the
+        // Reply on the span end is the one usage source (BOB-149)
+        use crate::tracestore::{MemTraceStore, TraceStore};
+        use serde_json::json;
+        let recs = vec![
+            json!({"kind": "header", "schema": 2,
+                   "run": {"id": "run_1", "program": "toolcaller@v1", "host": "rust"}}),
+            json!({"kind": "span", "seq": 1, "phase": "begin", "span": "t1",
+                   "parent": null, "name": "llm.chat", "input": {}}),
+            json!({"kind": "effect", "seq": 2, "effect": "http.post", "span": "t1",
+                   "error": null, "meta": {"class": "read", "durMs": 40},
+                   "input": {"url": "https://api.anthropic.com/v1/messages", "stream": true},
+                   "output": {"status": 200,
+                              "body": "event: message_start\ndata: {}\n\n"}}),
+            json!({"kind": "span", "seq": 3, "phase": "end", "span": "t1",
+                   "name": "llm.chat", "ok": true, "error": null, "meta": {"durMs": 100},
+                   "output": {"parts": [], "stop": "done",
+                              "usage": {"in": 10, "out": 5, "cacheRead": 30, "cacheWrite": 2}}}),
+            json!({"kind": "cell", "seq": 4, "cell": "main", "ok": true, "error": null,
+                   "interrupted": false, "metrics": {"duration_ms": 25, "fuel_used": 4}}),
+        ];
+        let store = MemTraceStore::new();
+        store.write_run("run_1", &recs, &[]).unwrap();
+        let out = render(&store).unwrap();
+        assert!(
+            out.contains("tokens_in/call     n=1    min=42 p50=42 p95=42 max=42"),
+            "{out}"
+        );
+    }
 
     #[test]
     fn percentiles_nearest_rank() {
