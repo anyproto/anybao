@@ -1454,25 +1454,12 @@ impl Broker {
             url.push(if url.contains('?') { '&' } else { '?' });
             url.push_str(&qs.join("&"));
         }
-        // ADR-002 §1 (BOB-149): `stream: true` reads the response as it
-        // arrives; `timeout` is a whole-request cap (number, default 180)
-        // or `{idle, total}` — a stream may go `idle` s without a chunk
-        // and `total` s overall (defaults 60 / 900), a plain request
-        // keeps `total` as its whole-request cap
+        // `stream` + `timeout` — ADR-002 §1 (BOB-149)
         let stream = payload
             .get("stream")
             .and_then(|s| s.as_bool())
             .unwrap_or(false);
-        let (timeout_total, timeout_idle) = match payload.get("timeout") {
-            Some(Value::Object(t)) => (
-                t.get("total")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(if stream { 900.0 } else { 180.0 }),
-                t.get("idle").and_then(|v| v.as_f64()).unwrap_or(60.0),
-            ),
-            Some(t) => (t.as_f64().unwrap_or(180.0), 60.0),
-            None => (180.0, 60.0),
-        };
+        let (timeout_total, timeout_idle) = http_timeouts(payload, stream)?;
         // redirects: max follows for THIS request; 0 = manual (the 3xx
         // and its location header come back as data — ADR-008 §2)
         let explicit_redirects = payload.get("redirects").and_then(|r| r.as_u64());
@@ -1540,12 +1527,14 @@ impl Broker {
         // re-attached per hop — ADR-011 §4.
         let mut builder = ureq::AgentBuilder::new();
         if stream {
-            // per-read socket timeout = "no chunk for idle s"; the request
-            // itself carries no whole-request timeout (it would override
-            // this one) — the total cap is checked between chunks below
+            // socket timeouts stand in for the whole-request cap a
+            // stream cannot have: read = "no chunk for idle s" (headers
+            // too), write = the request body, connect = total capped
+            // at 30 s; the total deadline is checked between chunks
             builder = builder
-                .timeout_read(std::time::Duration::from_secs_f64(timeout_idle))
-                .timeout_connect(std::time::Duration::from_secs_f64(timeout_total.min(30.0)));
+                .timeout_read(timeout_idle)
+                .timeout_write(timeout_idle)
+                .timeout_connect(timeout_total.min(std::time::Duration::from_secs(30)));
         }
         let (agent, mut hops_left) = if cred.is_some() {
             let agent = builder.redirects(0).build();
@@ -1588,7 +1577,7 @@ impl Broker {
         let resp = loop {
             let mut req = agent.request(&cur_verb, &cur_url);
             if !stream {
-                req = req.timeout(std::time::Duration::from_secs_f64(timeout_total));
+                req = req.timeout(timeout_total);
             }
             let mut has_accept = false;
             if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
@@ -1663,44 +1652,61 @@ impl Broker {
         // `response: "text"` forces text.
         let mut bytes = Vec::new();
         if stream {
-            // chunk by chunk under the idle socket timeout, the total
-            // deadline checked between chunks — both end as URLError,
-            // the same class as a stall on the plain path (BOB-148 retries it)
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs_f64(timeout_total);
+            // chunk by chunk under the idle socket timeout; between
+            // chunks: the total deadline (clamped to the run's wall
+            // deadline, like sh.run — ADR-024 §1), the interrupt flag
+            // (/break), the byte cap. Every end is a URLError.
+            let url_error = |message: String| EffectFailure {
+                type_: "URLError".into(),
+                message,
+            };
+            let mut deadline = std::time::Instant::now() + timeout_total;
+            let mut run_bound = false;
+            if let Some(d) = self.deadline {
+                if d < deadline {
+                    deadline = d;
+                    run_bound = true;
+                }
+            }
             let mut reader = resp.into_reader();
             let mut buf = [0u8; 16 * 1024];
             loop {
                 if std::time::Instant::now() >= deadline {
-                    return Err(EffectFailure {
-                        type_: "URLError".into(),
-                        message: format!(
-                            "{final_url}: stream exceeded the total timeout of {timeout_total}s"
-                        ),
-                    });
+                    return Err(url_error(if run_bound {
+                        format!("{final_url}: stream cut at the run's wall deadline")
+                    } else {
+                        format!(
+                            "{final_url}: stream exceeded the total timeout of {}s",
+                            timeout_total.as_secs_f64()
+                        )
+                    }));
+                }
+                if self.interrupt.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(url_error(format!("{final_url}: stream interrupted")));
                 }
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        bytes.extend_from_slice(&buf[..n]);
+                        if bytes.len() > MAX_STREAM_BYTES {
+                            return Err(url_error(format!(
+                                "{final_url}: stream exceeded {MAX_STREAM_BYTES} bytes"
+                            )));
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e)
                         if matches!(
                             e.kind(),
                             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                         ) =>
                     {
-                        return Err(EffectFailure {
-                            type_: "URLError".into(),
-                            message: format!(
-                                "{final_url}: stream idle for {timeout_idle}s: timed out reading response"
-                            ),
-                        })
+                        return Err(url_error(format!(
+                            "{final_url}: stream idle for {}s: timed out reading response",
+                            timeout_idle.as_secs_f64()
+                        )))
                     }
-                    Err(e) => {
-                        return Err(EffectFailure {
-                            type_: "URLError".into(),
-                            message: format!("{final_url}: {e}"),
-                        })
-                    }
+                    Err(e) => return Err(url_error(format!("{final_url}: {e}"))),
                 }
             }
         } else {
@@ -1715,7 +1721,11 @@ impl Broker {
         let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
         let declared_text = media.as_deref().is_some_and(is_text_media);
         let body = if force_text || media.as_deref().is_some_and(|m| m.starts_with("text/")) {
-            Value::String(String::from_utf8_lossy(&bytes).into_owned())
+            // the move when valid (a streamed body is large), lossy only when not
+            Value::String(
+                String::from_utf8(bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+            )
         } else if declared_text || media.is_none() {
             match String::from_utf8(bytes) {
                 Ok(text) => Value::String(text),
@@ -2344,6 +2354,53 @@ fn host_allowed(url: &str, hosts: &[String]) -> bool {
         };
         ah == host && ap.is_none_or(|p| Some(p) == port)
     })
+}
+
+/// A streamed body is buffered whole until its end (ONE record, ADR-002
+/// §1): past this it is a URLError, not memory.
+pub const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
+
+/// The `timeout` of an http verb (ADR-002 §1) as `(total, idle)`: a
+/// number is the whole-request cap, `{idle, total}` overrides key by
+/// key; absent = 180 s plain / 900 s streamed, idle 60. Guest-supplied,
+/// so validated: a value must be a finite number of seconds in
+/// `(0, 86400]` — `Duration::from_secs_f64` panics on the rest, and a
+/// panic here would take a serve down mid-run.
+fn http_timeouts(
+    payload: &Value,
+    stream: bool,
+) -> Result<(std::time::Duration, std::time::Duration), EffectFailure> {
+    let default_total = if stream { 900.0 } else { 180.0 };
+    let (total, idle) = match payload.get("timeout") {
+        Some(Value::Object(t)) => (
+            t.get("total").filter(|v| !v.is_null()),
+            t.get("idle").filter(|v| !v.is_null()),
+        ),
+        Some(Value::Null) | None => (None, None),
+        Some(t) => (Some(t), None),
+    };
+    let secs = |v: Option<&Value>, key: &str, default: f64| {
+        let n = match v {
+            None => default,
+            Some(v) => v.as_f64().ok_or_else(|| EffectFailure {
+                type_: "ValueError".into(),
+                message: format!("timeout.{key} must be a number of seconds, got {v}"),
+            })?,
+        };
+        if !(n.is_finite() && n > 0.0 && n <= 86_400.0) {
+            return Err(EffectFailure {
+                type_: "ValueError".into(),
+                message: format!(
+                    "timeout.{key} must be a finite number of seconds in (0, 86400], got {n}"
+                ),
+            });
+        }
+        Ok(std::time::Duration::from_secs_f64(n))
+    };
+    Ok((
+        secs(total, "total", default_total)?,
+        secs(idle, "idle", 60.0)?,
+    ))
 }
 
 fn same_origin_target(current: &str, location: &str) -> Option<String> {
@@ -4648,5 +4705,127 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.type_, "URLError");
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn http_timeouts_defaults_and_validation() {
+        let d = std::time::Duration::from_secs_f64;
+        // absent: plain 180, streamed 900 (the ADR-002 defaults), idle 60
+        assert_eq!(
+            http_timeouts(&json!({}), false).unwrap(),
+            (d(180.0), d(60.0))
+        );
+        assert_eq!(
+            http_timeouts(&json!({}), true).unwrap(),
+            (d(900.0), d(60.0))
+        );
+        assert_eq!(
+            http_timeouts(&json!({"timeout": null}), true).unwrap(),
+            (d(900.0), d(60.0))
+        );
+        // a number is the total; an object overrides key by key
+        assert_eq!(
+            http_timeouts(&json!({"timeout": 30}), true).unwrap(),
+            (d(30.0), d(60.0))
+        );
+        assert_eq!(
+            http_timeouts(&json!({"timeout": {"idle": 5}}), true).unwrap(),
+            (d(900.0), d(5.0))
+        );
+        assert_eq!(
+            http_timeouts(&json!({"timeout": {"idle": 5, "total": 7.5}}), false).unwrap(),
+            (d(7.5), d(5.0))
+        );
+        // guest-supplied garbage is a ValueError, never a Duration panic
+        for bad in [
+            json!({"timeout": -1}),
+            json!({"timeout": {"idle": -1}}),
+            json!({"timeout": {"total": 0}}),
+            json!({"timeout": 1e19}),
+            json!({"timeout": {"total": 1e300}}),
+            json!({"timeout": "soon"}),
+            json!({"timeout": {"idle": "1"}}),
+            json!({"timeout": 86401}),
+        ] {
+            let err = http_timeouts(&bad, true).unwrap_err();
+            assert_eq!(err.type_, "ValueError", "{bad}");
+            assert!(err.message.starts_with("timeout."), "{}", err.message);
+        }
+        // NaN cannot be spelled in JSON; the guard covers it all the same
+        let nan = Value::from(f64::NAN); // serde: null
+        assert_eq!(
+            http_timeouts(&json!({"timeout": nan}), true).unwrap().0,
+            d(900.0)
+        );
+    }
+
+    #[test]
+    fn http_stream_bad_timeout_fails_before_any_request() {
+        let mut b = make_broker("run_bad_timeout");
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": "http://127.0.0.1:9/never", "json": {}, "stream": true,
+                       "timeout": {"idle": -1}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "ValueError");
+    }
+
+    fn pinging_server(secs: u64) -> (String, std::sync::mpsc::Receiver<String>) {
+        one_shot_server(move |sock| {
+            use std::io::Write;
+            sse_head(sock);
+            for _ in 0..(secs * 20) {
+                if sock.write_all(b"event: ping\ndata: {}\n\n").is_err() {
+                    break;
+                }
+                let _ = sock.flush();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    }
+
+    #[test]
+    fn http_stream_is_cut_at_the_run_deadline() {
+        // the read loop clamps to the run's wall deadline like sh.run
+        // (ADR-024 §1) — a dribbling provider cannot hold the host call
+        // past the run
+        let (url, _head) = pinging_server(3);
+        let mut b = make_broker("run_wall");
+        b.deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": url, "json": {}, "stream": true,
+                       "timeout": {"idle": 5, "total": 10}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(err.message.contains("wall deadline"), "{}", err.message);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn http_stream_is_cut_by_the_interrupt_flag() {
+        let (url, _head) = pinging_server(3);
+        let mut b = make_broker("run_break");
+        let flag = b.interrupt.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": url, "json": {}, "stream": true,
+                       "timeout": {"idle": 5, "total": 10}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(err.message.contains("interrupted"), "{}", err.message);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 }
