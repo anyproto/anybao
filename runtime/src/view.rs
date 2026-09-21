@@ -446,7 +446,10 @@ fn openai_response_to_blocks(resp: &Value) -> Value {
         "content": blocks,
         "stop_reason": stop,
         "usage": {
-            "input_tokens": u["prompt_tokens"].as_i64().unwrap_or(0),
+            // `prompt_tokens` INCLUDES the cached part; the view's `in` is
+            // the uncached prompt, as on the Anthropic wire and in the
+            // guest's Reply (ADR-005 §1) — never counted twice with cacheRead
+            "input_tokens": (u["prompt_tokens"].as_i64().unwrap_or(0) - cached).max(0),
             "output_tokens": u["completion_tokens"].as_i64().unwrap_or(0),
             "cache_read_input_tokens": cached,
             "cache_creation_input_tokens": 0,
@@ -2151,7 +2154,8 @@ mod tests {
             .unwrap();
         let out = render(&store, "run_abc", &ShowOpts::default()).unwrap();
         assert!(
-            out.contains("llm: gemini-x — tokens in=90 out=20 cacheRead=80 cacheWrite=0"),
+            // prompt_tokens 90 of which 80 cached: in = the uncached 10
+            out.contains("llm: gemini-x — tokens in=10 out=20 cacheRead=80 cacheWrite=0"),
             "{out}"
         );
         assert!(out.contains("cell call_1"), "{out}");
