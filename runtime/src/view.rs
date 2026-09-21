@@ -456,17 +456,57 @@ fn openai_response_to_blocks(resp: &Value) -> Value {
 
 /// The llm exchange inside an llm.chat span: (request messages,
 /// response body) from its inner provider http call, in the view's
-/// shape whatever the wire.
-fn llm_exchange(inner: &[&Value]) -> Option<(Value, Value)> {
+/// shape whatever the wire. The LAST http call is the one that
+/// answered (earlier ones are retried failures, BOB-148). A streamed
+/// call recorded SSE text, not the provider's JSON (BOB-149): then the
+/// neutral Reply on the span's end record is the readable copy.
+fn llm_exchange(inner: &[&Value], end: Option<&Value>) -> Option<(Value, Value)> {
     let post = inner
         .iter()
-        .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
-    let body = post["output"]["body"].as_str()?;
-    let parsed: Value = serde_json::from_str(body).ok()?;
-    Some((
-        view_request_of(&post["input"]),
-        view_response_of(&post["input"], parsed),
-    ))
+        .rfind(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
+    let req = view_request_of(&post["input"]);
+    if let Some(body) = post["output"]["body"].as_str() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(body) {
+            return Some((req, view_response_of(&post["input"], parsed)));
+        }
+    }
+    let reply = end.filter(|e| e["output"]["parts"].is_array())?;
+    Some((req, view_response_of_reply(&reply["output"])))
+}
+
+/// The neutral Reply (`{parts, stop, usage}`, ADR-005 §1) in the
+/// view's shape — the same blocks the wire would have given.
+fn view_response_of_reply(reply: &Value) -> Value {
+    let empty = Vec::new();
+    let blocks: Vec<Value> = reply["parts"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .map(|p| match p["type"].as_str() {
+            Some("text") => json!({"type": "text", "text": p["text"]}),
+            Some("tool_call") => json!({"type": "tool_use", "id": p["id"],
+                                        "name": p["name"], "input": p["args"]}),
+            Some("thinking") => json!({"type": "thinking", "thinking": p["text"]}),
+            _ => p.clone(),
+        })
+        .collect();
+    let stop = match reply["stop"].as_str() {
+        Some("tool") => "tool_use",
+        Some("length") => "max_tokens",
+        Some(_) => "end_turn",
+        None => "?",
+    };
+    let u = &reply["usage"];
+    json!({
+        "content": blocks,
+        "stop_reason": stop,
+        "usage": {
+            "input_tokens": u["in"].as_i64().unwrap_or(0),
+            "output_tokens": u["out"].as_i64().unwrap_or(0),
+            "cache_read_input_tokens": u["cacheRead"].as_i64().unwrap_or(0),
+            "cache_creation_input_tokens": u["cacheWrite"].as_i64().unwrap_or(0),
+        },
+    })
 }
 
 /// The llm turn's request (the http.* effect's INPUT), independent of
@@ -758,7 +798,7 @@ fn facade_block(
                 let (cb, ce) = seq_range(r, cend);
                 let cinner = between(records, cb, ce);
                 out.push_str(&format!("{inner_pad}llm.chat:\n"));
-                match llm_exchange(&cinner) {
+                match llm_exchange(&cinner, cend) {
                     Some((_, resp)) => {
                         llm_body(out, &resp, cend, &format!("{inner_pad}  "), lim, cells)
                     }
@@ -1270,7 +1310,7 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
         .iter()
         .map(|(begin, end)| {
             let (b, e) = seq_range(begin, *end);
-            llm_exchange(&between(&records, b, e))
+            llm_exchange(&between(&records, b, e), *end)
         })
         .collect();
 
@@ -1426,7 +1466,7 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
                     }
                     prev_msgs = req["messages"].as_array().map(|m| m.len()).unwrap_or(0) + 1;
                 }
-                match llm_exchange(&inner) {
+                match llm_exchange(&inner, end) {
                     Some((_, resp)) => llm_body(&mut out, &resp, end, "  ", &lim, &cells),
                     None => llm_error(&mut out, &inner, end, "  "),
                 }
@@ -2163,5 +2203,81 @@ mod tests {
         let row = ls_row(&records, None);
         assert_eq!(row.turns, 0);
         assert_eq!(row.title, "");
+    }
+
+    // --- streamed + retried turns (BOB-149 / BOB-148) ----------------------------
+
+    fn llm_turn(posts: Vec<Value>) -> Vec<Value> {
+        let mut v = vec![
+            json!({"kind": "header", "schema": 2,
+                   "run": {"id": "run_s", "program": "toolcaller@v1", "host": "rust"}}),
+            json!({"kind": "span", "seq": 1, "phase": "begin", "span": "t1",
+                   "parent": null, "name": "llm.chat", "input": {}}),
+        ];
+        let mut seq = 2;
+        for mut p in posts {
+            p["seq"] = json!(seq);
+            seq += 1;
+            v.push(p);
+        }
+        v.push(
+            json!({"kind": "span", "seq": seq, "phase": "end", "span": "t1",
+                   "name": "llm.chat", "ok": true, "error": null,
+                   "meta": {"durMs": 1000},
+                   "output": {"parts": [
+                        {"type": "text", "text": "It is 42."},
+                        {"type": "tool_call", "id": "toolu_9", "name": "run_cell",
+                         "args": {"code": "print(42)"}}],
+                       "stop": "tool",
+                       "usage": {"in": 10, "out": 5, "cacheRead": 0, "cacheWrite": 0}}}),
+        );
+        v.push(
+            json!({"kind": "cell", "seq": seq + 1, "cell": "main", "ok": true,
+                   "error": null, "interrupted": false,
+                   "metrics": {"duration_ms": 2500, "fuel_used": 42}}),
+        );
+        v
+    }
+
+    fn post(body: Value, error: Value) -> Value {
+        json!({"kind": "effect", "effect": "http.post", "span": "t1",
+               "error": error, "meta": {"class": "read", "durMs": 40},
+               "input": {"url": "https://api.anthropic.com/v1/messages", "stream": true,
+                         "json": {"model": "claude-sonnet-5", "stream": true, "messages": []}},
+               "output": body})
+    }
+
+    #[test]
+    fn render_reads_a_streamed_turn_from_the_span_reply() {
+        // the recorded body is SSE text, not the provider's JSON: the
+        // turn's text and cells come from the llm.chat end's Reply
+        let sse = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
+        let recs = llm_turn(vec![post(json!({"status": 200, "body": sse}), Value::Null)]);
+        let store = MemTraceStore::new();
+        store.write_run("run_s", &recs, &[]).unwrap();
+        let out = render(&store, "run_s", &ShowOpts::default()).unwrap();
+        assert!(out.contains("assistant: It is 42."), "{out}");
+        assert!(out.contains("cell toolu_9"), "{out}");
+        assert!(out.contains("print(42)"), "{out}");
+    }
+
+    #[test]
+    fn render_reads_a_retried_turn_from_its_last_attempt() {
+        // BOB-148: attempt 1 failed (no output), attempt 2 answered
+        let ok = json!({"status": 200, "body": json!({
+            "content": [{"type": "text", "text": "It is 42."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}}).to_string()});
+        let recs = llm_turn(vec![
+            post(
+                Value::Null,
+                json!({"type": "URLError", "message": "timed out"}),
+            ),
+            post(ok, Value::Null),
+        ]);
+        let store = MemTraceStore::new();
+        store.write_run("run_s", &recs, &[]).unwrap();
+        let out = render(&store, "run_s", &ShowOpts::default()).unwrap();
+        assert!(out.contains("assistant: It is 42."), "{out}");
     }
 }

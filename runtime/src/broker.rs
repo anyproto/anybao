@@ -1454,10 +1454,25 @@ impl Broker {
             url.push(if url.contains('?') { '&' } else { '?' });
             url.push_str(&qs.join("&"));
         }
-        let timeout = payload
-            .get("timeout")
-            .and_then(|t| t.as_f64())
-            .unwrap_or(180.0);
+        // ADR-002 §1 (BOB-149): `stream: true` reads the response as it
+        // arrives; `timeout` is a whole-request cap (number, default 180)
+        // or `{idle, total}` — a stream may go `idle` s without a chunk
+        // and `total` s overall (defaults 60 / 900), a plain request
+        // keeps `total` as its whole-request cap
+        let stream = payload
+            .get("stream")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
+        let (timeout_total, timeout_idle) = match payload.get("timeout") {
+            Some(Value::Object(t)) => (
+                t.get("total")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(if stream { 900.0 } else { 180.0 }),
+                t.get("idle").and_then(|v| v.as_f64()).unwrap_or(60.0),
+            ),
+            Some(t) => (t.as_f64().unwrap_or(180.0), 60.0),
+            None => (180.0, 60.0),
+        };
         // redirects: max follows for THIS request; 0 = manual (the 3xx
         // and its location header come back as data — ADR-008 §2)
         let explicit_redirects = payload.get("redirects").and_then(|r| r.as_u64());
@@ -1523,13 +1538,22 @@ impl Broker {
         // same-host). The host owns the follow decision — default manual,
         // an explicit count follows same-origin only with the header
         // re-attached per hop — ADR-011 §4.
+        let mut builder = ureq::AgentBuilder::new();
+        if stream {
+            // per-read socket timeout = "no chunk for idle s"; the request
+            // itself carries no whole-request timeout (it would override
+            // this one) — the total cap is checked between chunks below
+            builder = builder
+                .timeout_read(std::time::Duration::from_secs_f64(timeout_idle))
+                .timeout_connect(std::time::Duration::from_secs_f64(timeout_total.min(30.0)));
+        }
         let (agent, mut hops_left) = if cred.is_some() {
-            let agent = ureq::AgentBuilder::new().redirects(0).build();
+            let agent = builder.redirects(0).build();
             (agent, explicit_redirects.unwrap_or(0))
         } else {
             let agent = match explicit_redirects {
-                Some(max) => ureq::AgentBuilder::new().redirects(max as u32).build(),
-                None => ureq::agent(),
+                Some(max) => builder.redirects(max as u32).build(),
+                None => builder.build(),
             };
             (agent, 0) // uncredentialed: the client follows internally
         };
@@ -1562,15 +1586,21 @@ impl Broker {
         let mut cur_verb = verb;
         let mut with_body = true;
         let resp = loop {
-            let mut req = agent
-                .request(&cur_verb, &cur_url)
-                .timeout(std::time::Duration::from_secs_f64(timeout));
+            let mut req = agent.request(&cur_verb, &cur_url);
+            if !stream {
+                req = req.timeout(std::time::Duration::from_secs_f64(timeout_total));
+            }
+            let mut has_accept = false;
             if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
                 for (k, v) in headers {
+                    has_accept |= k.eq_ignore_ascii_case("accept");
                     if let Some(s) = v.as_str() {
                         req = req.set(k, s);
                     }
                 }
+            }
+            if stream && !has_accept {
+                req = req.set("Accept", "text/event-stream");
             }
             if let Some((header, value)) = &cred {
                 req = req.set(header, value);
@@ -1632,12 +1662,55 @@ impl Broker {
         // written to the blob directory and returned as a raw ref.
         // `response: "text"` forces text.
         let mut bytes = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| EffectFailure {
-                type_: "URLError".into(),
-                message: e.to_string(),
-            })?;
+        if stream {
+            // chunk by chunk under the idle socket timeout, the total
+            // deadline checked between chunks — both end as URLError,
+            // the same class as a stall on the plain path (BOB-148 retries it)
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs_f64(timeout_total);
+            let mut reader = resp.into_reader();
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return Err(EffectFailure {
+                        type_: "URLError".into(),
+                        message: format!(
+                            "{final_url}: stream exceeded the total timeout of {timeout_total}s"
+                        ),
+                    });
+                }
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        return Err(EffectFailure {
+                            type_: "URLError".into(),
+                            message: format!(
+                                "{final_url}: stream idle for {timeout_idle}s: timed out reading response"
+                            ),
+                        })
+                    }
+                    Err(e) => {
+                        return Err(EffectFailure {
+                            type_: "URLError".into(),
+                            message: format!("{final_url}: {e}"),
+                        })
+                    }
+                }
+            }
+        } else {
+            resp.into_reader()
+                .read_to_end(&mut bytes)
+                .map_err(|e| EffectFailure {
+                    type_: "URLError".into(),
+                    message: e.to_string(),
+                })?;
+        }
         let force_text = payload.get("response").and_then(|r| r.as_str()) == Some("text");
         let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
         let declared_text = media.as_deref().is_some_and(is_text_media);
@@ -4432,5 +4505,148 @@ mod tests {
         let out = b.call("mailbox.drain", json!({})).unwrap();
         assert_eq!(out["items"], json!([{"kind": "trigger", "n": 1}]));
         assert!(b.mailbox.lock().unwrap().is_empty());
+    }
+
+    // --- streamed http (BOB-149, ADR-002 §1 `stream` / `timeout {idle, total}`) --
+
+    /// One-connection fake: reads the request head, hands it back on a
+    /// channel, then runs `script` on the socket.
+    fn one_shot_server(
+        script: impl FnOnce(&mut std::net::TcpStream) + Send + 'static,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && sock.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).to_string();
+            // drain the body the head announces
+            let len: usize = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            let mut body = vec![0u8; len];
+            let _ = sock.read_exact(&mut body);
+            let _ = tx.send(head);
+            script(&mut sock);
+        });
+        (format!("http://{addr}/v1/messages"), rx)
+    }
+
+    fn sse_head(sock: &mut std::net::TcpStream) {
+        use std::io::Write;
+        sock.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+        sock.flush().unwrap();
+    }
+
+    #[test]
+    fn http_stream_records_the_sse_text_as_one_body() {
+        use std::io::Write;
+        let (url, head) = one_shot_server(|sock| {
+            sse_head(sock);
+            sock.write_all(b"event: a\ndata: {\"n\": 1}\n\nevent: b\ndata: {\"n\": 2}\n\n")
+                .unwrap();
+        });
+        let mut b = make_broker("run_stream");
+        let out = b
+            .call(
+                "http.post",
+                json!({"url": url, "json": {"q": 1}, "stream": true,
+                       "timeout": {"idle": 2, "total": 5}}),
+            )
+            .unwrap();
+        assert_eq!(out["status"], 200);
+        assert_eq!(
+            out["body"],
+            "event: a\ndata: {\"n\": 1}\n\nevent: b\ndata: {\"n\": 2}\n\n"
+        );
+        let head = head.recv().unwrap().to_ascii_lowercase();
+        assert!(head.contains("accept: text/event-stream"), "{head}");
+        // the record is an ordinary http.post: one input, one output
+        let rec = b.writer.records.last().unwrap();
+        assert_eq!(rec["input"]["stream"], true);
+        assert_eq!(rec["output"]["body"], out["body"]);
+    }
+
+    #[test]
+    fn http_stream_idle_timeout_is_a_url_error() {
+        use std::io::Write;
+        let (url, _head) = one_shot_server(|sock| {
+            sse_head(sock);
+            sock.write_all(b"event: message_start\ndata: {}\n\n")
+                .unwrap();
+            sock.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(3)); // stalls mid-stream
+        });
+        let mut b = make_broker("run_idle");
+        let started = std::time::Instant::now();
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": url, "json": {}, "stream": true,
+                       "timeout": {"idle": 0.3, "total": 10}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(err.message.contains("idle"), "{}", err.message);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn http_stream_total_deadline_is_a_url_error() {
+        use std::io::Write;
+        let (url, _head) = one_shot_server(|sock| {
+            sse_head(sock);
+            for _ in 0..60 {
+                // never idle, never done
+                if sock.write_all(b"event: ping\ndata: {}\n\n").is_err() {
+                    break;
+                }
+                let _ = sock.flush();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+        let mut b = make_broker("run_total");
+        let started = std::time::Instant::now();
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": url, "json": {}, "stream": true,
+                       "timeout": {"idle": 5, "total": 0.4}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(err.message.contains("total"), "{}", err.message);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn http_timeout_object_without_stream_is_the_whole_request_cap() {
+        let (url, _head) = one_shot_server(|_sock| {
+            std::thread::sleep(std::time::Duration::from_secs(2)); // never answers
+        });
+        let mut b = make_broker("run_total_plain");
+        let started = std::time::Instant::now();
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": url, "json": {}, "timeout": {"total": 0.2}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }

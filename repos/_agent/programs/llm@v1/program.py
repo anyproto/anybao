@@ -237,6 +237,34 @@ def _resolve_traits(prov):
 
 # --- Provider adapters (ADR-005 §1.4): neutral <-> wire family ---------------
 
+def _sse_events(text):
+    """SSE text → `[(event, data)]`: `data:` lines of one event joined
+    with newlines, a blank line ends the event; `id:`/`retry:` and `:`
+    comments are dropped. The host records a streamed response as this
+    text in one `http.post` body (ADR-002 §1, BOB-149)."""
+    events, name, data = [], None, []
+    for line in text.splitlines():
+        if line == "":
+            if data:
+                events.append((name, "\n".join(data)))
+            name, data = None, []
+        elif line.startswith("event:"):
+            name = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].strip())
+    if data:
+        events.append((name, "\n".join(data)))
+    return events
+
+
+# an Anthropic `error` event mid-stream, as the status the non-streaming
+# wire would have answered with (so the caller's error handling is one)
+_STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429,
+                        "api_error": 500, "authentication_error": 401,
+                        "permission_error": 403, "invalid_request_error": 400,
+                        "not_found_error": 404, "request_too_large": 413}
+
+
 class AnthropicAdapter:
     """Native: thinking blocks round-trip via opaque provider_state.
     Caching: breakpoints at end of system and end of the conversation
@@ -346,6 +374,54 @@ class AnthropicAdapter:
                           "out": u.get("output_tokens", 0),
                           "cacheRead": u.get("cache_read_input_tokens", 0),
                           "cacheWrite": u.get("cache_creation_input_tokens", 0)}}
+
+    def parse_stream(self, text):
+        """Anthropic SSE text → the final message JSON `parse_response`
+        reads: blocks assembled from `content_block_start` + deltas
+        (text, `input_json_delta` tool input, thinking + signature),
+        `stop_reason` and output usage from `message_delta`, input
+        usage from `message_start`. An `error` event raises `LlmError`
+        with the status the plain wire would have sent."""
+        msg, blocks, partial = {}, [], {}
+        for name, data in _sse_events(text):
+            ev = json.loads(data)
+            t = ev.get("type", name)
+            if t == "message_start":
+                msg = dict(ev["message"])
+                blocks = list(msg.get("content") or [])
+                msg["content"] = blocks
+            elif t == "content_block_start":
+                i = ev["index"]
+                while len(blocks) <= i:
+                    blocks.append(None)
+                blocks[i] = dict(ev["content_block"])
+                partial[i] = ""
+            elif t == "content_block_delta":
+                i, d = ev["index"], ev["delta"]
+                b, dt = blocks[i], d.get("type")
+                if dt == "text_delta":
+                    b["text"] = b.get("text", "") + d["text"]
+                elif dt == "input_json_delta":
+                    partial[i] += d["partial_json"]
+                elif dt == "thinking_delta":
+                    b["thinking"] = b.get("thinking", "") + d["thinking"]
+                elif dt == "signature_delta":
+                    b["signature"] = b.get("signature", "") + d["signature"]
+            elif t == "content_block_stop":
+                i = ev["index"]
+                if blocks[i].get("type") == "tool_use" and partial.get(i, "").strip():
+                    blocks[i]["input"] = json.loads(partial[i])
+            elif t == "message_delta":
+                msg.update(ev.get("delta") or {})
+                usage = dict(msg.get("usage") or {})
+                usage.update(ev.get("usage") or {})
+                msg["usage"] = usage
+            elif t == "error":
+                err = ev.get("error") or {}
+                raise LlmError(_STREAM_ERROR_STATUS.get(err.get("type"), 500),
+                               json.dumps(ev)[:_EXCERPT])
+            # ping / message_stop carry nothing
+        return msg
 
 
 _NORM_STOP = {"end_turn": "done", "stop_sequence": "done",
@@ -494,6 +570,57 @@ class OpenAICompatAdapter:
                           "out": u.get("completion_tokens", 0),
                           "cacheRead": cached,
                           "cacheWrite": written}}
+
+    def parse_stream(self, text):
+        """`chat.completions` chunk SSE → one completion JSON in the
+        non-streaming shape: string deltas concatenated per field
+        (`content`, `reasoning_content`, OpenRouter's `reasoning`),
+        list deltas appended (`reasoning_details`), tool calls merged
+        by `index` with their `arguments` concatenated, `finish_reason`
+        from the chunk that carries it, `usage` from the last chunk
+        that carries it, `[DONE]` ends. An `error` chunk raises."""
+        final, msg, calls, finish = {}, {}, {}, None
+        for _name, data in _sse_events(text):
+            if data.strip() == "[DONE]":
+                break
+            ch = json.loads(data)
+            if ch.get("error"):
+                code = ch["error"].get("code") if isinstance(ch["error"], dict) else None
+                raise LlmError(code if isinstance(code, int) and code >= 400 else 500,
+                               json.dumps(ch)[:_EXCERPT])
+            if not final:
+                final = {k: v for k, v in ch.items() if k not in ("choices", "usage")}
+            if ch.get("usage"):
+                final["usage"] = ch["usage"]
+            for choice in ch.get("choices") or []:
+                if choice.get("index", 0) != 0:
+                    continue
+                for k, v in (choice.get("delta") or {}).items():
+                    if k == "tool_calls":
+                        for tc in v or []:
+                            cur = calls.setdefault(tc.get("index", len(calls)),
+                                                   {"function": {"name": "", "arguments": ""}})
+                            for kk, vv in tc.items():
+                                if kk == "function":
+                                    for fk, fv in (vv or {}).items():
+                                        if fk == "arguments":
+                                            cur["function"]["arguments"] += fv or ""
+                                        elif fv:
+                                            cur["function"][fk] = fv
+                                elif kk not in cur:
+                                    cur[kk] = vv
+                    elif isinstance(v, str):
+                        msg[k] = msg.get(k, "") + v
+                    elif isinstance(v, list):
+                        msg[k] = (msg.get(k) or []) + v
+                    elif v is not None and k not in msg:
+                        msg[k] = v
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+        if calls:
+            msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+        final["choices"] = [{"index": 0, "message": msg, "finish_reason": finish}]
+        return final
 
 
 ADAPTERS = {
@@ -873,13 +1000,16 @@ def _resolve(tier):
     return prov, name, backend, _effective(traits, backend)
 
 
-_TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
-                  # the conversation thread (live-caught with urlopen)
+# BOB-149: the call streams, so the connection carries bytes for the
+# whole generation (a silent non-streaming call was dropped by
+# middleboxes at ~1 min and by our own cap at 180 s). `idle` = no chunk
+# for that long (Anthropic pings during thinking), `total` = the whole
+# answer; a tier row's `timeout` overrides both.
+_TIMEOUT = {"idle": 60, "total": 900}
 # BOB-148: one transient failure must not end a run. Waits between
 # attempts (so len+1 attempts); a `retry-after` header wins, capped.
 _RETRY_DELAYS_S = (1, 4)
 _RETRY_AFTER_CAP_S = 60
-_STALL = "timed out reading response"   # our own _TIMEOUT_S cap firing
 
 _EXCERPT = 400
 
@@ -924,17 +1054,23 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     req.update(traits["sampling"])
     be = BACKENDS[backend]
     req = be.get("finish", lambda r, _t: r)(req, traits)
+    req["stream"] = True
+    if be["path"] == "/chat/completions":
+        req.setdefault("stream_options", {"include_usage": True})
     req.update(prov.get("options") or {})
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
-               "timeout": _TIMEOUT_S}
+               "stream": True, "timeout": dict(prov.get("timeout") or _TIMEOUT)}
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
     resp = _post(payload)
     if resp["status"] >= 400:
         raise LlmError(resp["status"], resp["body"][:_EXCERPT])
-    raw = be.get("normalize", lambda r: r)(json.loads(resp["body"]))
+    body = resp["body"]
+    # a server that ignores `stream` answers JSON — one reader either way
+    raw = json.loads(body) if body.lstrip().startswith("{") else adapter.parse_stream(body)
+    raw = be.get("normalize", lambda r: r)(raw)
     return _lift(adapter.parse_response(raw), traits)
 
 
@@ -956,18 +1092,14 @@ def _post(payload):
     failure (a denied capability, a missing secret, a mock miss).
     Each attempt is its own `http.post` record and the wait crosses
     the boundary as a `sleep` effect, so the trace shows every attempt
-    and replay never waits. A stalled read is retried ONCE: every
-    attempt costs the whole `_TIMEOUT_S` until streaming (BOB-149)."""
+    and replay never waits. A stalled stream costs the idle timeout,
+    not the whole answer, so it is retried like any other failure."""
     attempt = 0
     while True:
         try:
             resp = effect("http.post", payload)  # noqa: F821 - guest global
         except EffectError as e:  # noqa: F821 - guest global
-            msg = str(e)
-            if not msg.startswith("URLError"):
-                raise
-            budget = 1 if _STALL in msg else len(_RETRY_DELAYS_S)
-            if attempt >= budget:
+            if not str(e).startswith("URLError") or attempt >= len(_RETRY_DELAYS_S):
                 raise
             wait = _RETRY_DELAYS_S[attempt]
         else:

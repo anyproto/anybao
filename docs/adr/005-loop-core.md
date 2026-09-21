@@ -83,7 +83,9 @@ messages, system, tools
   → profile.prepare(messages, system, tools, traits)   # system→first user turn, tool docs
   → adapter.build_request(…, model)                    # wire family
   → backend.finish_request(req, traits, options)       # param spelling, extras, cache markers
-  → effect("http.post", {url: backend.url(base_url), credential: backend.credential(prov), json: req})
+  → effect("http.post", {url: backend.url(base_url), credential: backend.credential(prov),
+                         json: req, stream: true, timeout: {idle, total}})   # SSE text back, one record
+  → adapter.parse_stream(body)                         # events → the wire's final JSON (JSON answers pass through)
   → backend.normalize_response(raw)                    # field-name unification
   → adapter.parse_response(raw)                        # → LLMReply
   → profile.lift(reply, traits)                        # ```cell / <tool_call> → ToolCall; bad args → error part
@@ -92,6 +94,23 @@ messages, system, tools
 A profile hook that does nothing is the identity; the `generic`
 profile and `generic` backend are all-identity, so a tier with only
 `{provider, model, base_url, api_key_ref}` is the plain adapter path.
+
+The call streams (BOB-149): a non-streaming call carried no bytes for
+the whole generation, and the reporter's connections were dropped at
+about a minute of silence or by the 180 s whole-request cap. With
+`stream: true` the header and the first event arrive at once and the
+provider pings during thinking, so the connection is never idle. The
+host still records ONE `http.post` with the raw SSE text as its body
+(replay-identical, ADR-002 §1); the adapter folds the events into the
+same JSON the plain wire returns (`parse_stream`: text, tool-input
+and thinking deltas, usage from `message_start` + `message_delta`;
+chunk deltas merged per field and tool calls by index on the OpenAI
+wire, `stream_options.include_usage` requested), so `parse_response`
+is the one reader. A mid-stream `error` event raises `LlmError` with
+the status the plain wire would have sent. Timeouts are `{idle: 60,
+total: 900}`, a tier row's `timeout` overrides both. `trace show`
+reads a streamed turn from the neutral Reply on the `llm.chat` span
+end, not from the wire body.
 
 **1.3 Traits** — the neutral vocabulary a profile declares and the
 backend + toolcaller act on. The set is closed by code: a profile
@@ -181,8 +200,8 @@ The call itself is retried, bounded, before a status is judged: a transport
 failure (`URLError` — DNS, connection reset, a stalled read) and a
 transient provider status (429, 5xx, 529 overloaded) get up to three
 attempts with 1 s / 4 s waits (a numeric `retry-after` wins, capped
-at 60 s); a stalled read gets one retry, since each attempt costs the
-whole 180 s request cap. Every attempt is its own `http.post` record
+at 60 s); a stalled stream costs the idle timeout, so it is retried
+like any other failure. Every attempt is its own `http.post` record
 and the wait is a `sleep` effect, so the trace shows the retries and
 replay skips the waits. Other 4xx and every other effect failure
 raise at once; the last failure raises unchanged (BOB-148).

@@ -36,7 +36,11 @@ the model has seen far more requests-style Python than JS-in-Python:
 `http.get/head/post/put/patch/delete(...)` with `params=/headers=/json=`
 (plus `redirects=` — max follows for the request, `0` = manual; and
 `response="base64"` — the body comes back as base64 of the raw bytes,
-ADR-020 §1)
+ADR-020 §1; `stream=True` reads the response as it arrives, the
+recorded `body` is the raw SSE text, still ONE record; `timeout=` is a
+whole-request cap in seconds, default 180, or `{idle, total}` — a
+stream may go `idle` s without a chunk and `total` s overall, defaults
+60 / 900, both ending as `URLError` — BOB-149)
 returning a `Response` (`.status`, `.json()`, `.text`, and `.url` — the
 final post-redirect url; both added by ADR-008 §2; `head` classifies as
 `read` like `get`, `patch` as `mutate` — added 2026-07-28 for the REST

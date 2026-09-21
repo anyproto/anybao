@@ -8,6 +8,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -36,14 +37,16 @@ class FakeBackends(BaseHTTPRequestHandler):
 
     llm_replies: list = []
     llm_requests: list = []
+    llm_stalls: int = 0       # streamed calls that start, then go silent
     turns: list = []
     chat_posts: list = []
     datasets: dict = {}
     local: dict = {}          # local-store collections: name -> {id: doc}
 
     @classmethod
-    def reset(cls, llm_replies):
+    def reset(cls, llm_replies, stalls=0):
         cls.llm_replies = list(llm_replies)
+        cls.llm_stalls = stalls
         cls.llm_requests, cls.turns, cls.chat_posts = [], [], []
         cls.local = {}
         cls.datasets = {"agent_turns": cls.turns, "agent_chunks": [],
@@ -156,7 +159,29 @@ class FakeBackends(BaseHTTPRequestHandler):
         if self.path.endswith("/v1/messages"):
             assert self.headers.get("x-api-key") == "sk-test", "credential missing"
             cls.llm_requests.append(body)
-            return self._reply(cls.llm_replies.pop(0))
+            if not body.get("stream"):
+                return self._reply(cls.llm_replies.pop(0))
+            if cls.llm_stalls > 0:
+                # the reporter's failure (BOB-149): headers + the first
+                # event arrive, then nothing — the client's idle timeout
+                # must end it, and the reply stays for the retry
+                cls.llm_stalls -= 1
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(_sse_events(
+                    ("message_start", {"type": "message_start", "message": {
+                        "id": "msg_stall", "content": [], "usage": {"input_tokens": 1}}})).encode())
+                self.wfile.flush()
+                time.sleep(4)
+                return
+            body = _sse_of(cls.llm_replies.pop(0)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.endswith("/search"):
             return self._reply({"hits": [], "mode": "fts"})
         if self.path.endswith("/objects/query"):
@@ -190,6 +215,40 @@ class FakeBackends(BaseHTTPRequestHandler):
         return self._reply({"error": {"code": "unknown", "message": self.path}}, 404)
 
 
+def _sse_events(*events):
+    return "".join(f"event: {n}\ndata: {json.dumps(d)}\n\n" for n, d in events)
+
+
+def _sse_of(reply):
+    """A scripted (non-streaming) Anthropic reply as the SSE the
+    streamed wire carries: one text or tool_use block per event group."""
+    u = reply.get("usage", {})
+    ev = [("message_start", {"type": "message_start", "message": {
+        "id": "msg_fake", "type": "message", "role": "assistant", "model": "t",
+        "content": [], "stop_reason": None,
+        "usage": {"input_tokens": u.get("input_tokens", 0), "output_tokens": 1}}})]
+    for i, b in enumerate(reply["content"]):
+        if b["type"] == "text":
+            ev.append(("content_block_start", {"type": "content_block_start", "index": i,
+                                               "content_block": {"type": "text", "text": ""}}))
+            ev.append(("content_block_delta", {"type": "content_block_delta", "index": i,
+                                               "delta": {"type": "text_delta", "text": b["text"]}}))
+        else:
+            ev.append(("content_block_start", {"type": "content_block_start", "index": i,
+                                               "content_block": {"type": "tool_use", "id": b["id"],
+                                                                 "name": b["name"], "input": {}}}))
+            ev.append(("content_block_delta", {"type": "content_block_delta", "index": i,
+                                               "delta": {"type": "input_json_delta",
+                                                         "partial_json": json.dumps(b["input"])}}))
+        ev.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
+    ev.append(("message_delta", {"type": "message_delta",
+                                 "delta": {"stop_reason": reply["stop_reason"],
+                                           "stop_sequence": None},
+                                 "usage": {"output_tokens": u.get("output_tokens", 0)}}))
+    ev.append(("message_stop", {"type": "message_stop"}))
+    return _sse_events(*ev)
+
+
 @pytest.fixture
 def backends():
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeBackends)
@@ -198,19 +257,18 @@ def backends():
     server.shutdown()
 
 
-def run_rt(base, spec, args, extra=(), cmd="run"):
+def run_rt(base, spec, args, extra=(), cmd="run", tier=None):
     """`anyrt run <spec> --args …` (or `anyrt replay <run_id>` with
-    cmd="replay": `spec` is then the run id) against the fake."""
+    cmd="replay": `spec` is then the run id) against the fake. `tier`
+    adds fields to both tier rows (e.g. a `timeout`)."""
     scratch = Path(tempfile.mkdtemp())
+    row = {"provider": "anthropic", "model": "t", "base_url": f"{base}/llm",
+           "api_key_ref": "llm.key", **(tier or {})}
     (scratch / "config.json").write_text(json.dumps({
         "any.base_url": base,
         "bao.space": "s1",          # the memory home (ADR-017 §0), lifted to runtime
-        "llm.tier.codegen": {"provider": "anthropic", "model": "t",
-                             "base_url": f"{base}/llm",
-                             "api_key_ref": "llm.key"},
-        "llm.tier.classify": {"provider": "anthropic", "model": "t",
-                              "base_url": f"{base}/llm",
-                              "api_key_ref": "llm.key"},
+        "llm.tier.codegen": dict(row),
+        "llm.tier.classify": dict(row),
     }))
     (scratch / "secrets.env").write_text("llm.key=sk-test\n")
     head = [spec, "--args", json.dumps(args)] if cmd == "run" else [spec]
@@ -431,3 +489,42 @@ def test_persistent_transport_failure_still_ends_the_run(backends):
     assert len(posts) == 3 and all(p["error"]["type"] == "URLError" for p in posts)
     sleeps = [r["input"]["seconds"] for r in _run_records(run_id) if r.get("effect") == "sleep"]
     assert sleeps == [1, 4]
+
+
+# --- BOB-149: the provider call streams; a stalled stream is retried ---------
+
+
+def test_streamed_conversation_through_the_binary(backends):
+    FakeBackends.reset(REPLIES_42)
+    proc, out, _ = run_rt(backends, "toolcaller@v1",
+                          {"space": "s1", "chatId": "c1", "userText": "what is 40+2?"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["value"]["replies"] == ["It is 42."]
+    # every provider call asked for a stream and recorded the SSE text
+    assert all(r.get("stream") is True for r in FakeBackends.llm_requests)
+    posts = _llm_posts(out["traceRef"])
+    assert len(posts) == 2
+    assert all(p["input"]["stream"] is True and p["input"]["timeout"] == {"idle": 60, "total": 900}
+               for p in posts)
+    assert all(p["output"]["body"].startswith("event: message_start") for p in posts)
+    # the cell's digest reached the second request, as before
+    results = [b for m in FakeBackends.llm_requests[1]["messages"]
+               for b in m["content"] if b.get("type") == "tool_result"]
+    assert any("#0 42" in str(b.get("content")) for b in results)
+
+
+def test_stalled_stream_is_retried_through_the_binary(backends):
+    FakeBackends.reset(REPLIES_42, stalls=1)
+    proc, out, _ = run_rt(backends, "toolcaller@v1",
+                          {"space": "s1", "chatId": "c1", "userText": "what is 40+2?"},
+                          tier={"timeout": {"idle": 1, "total": 30}})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["value"]["replies"] == ["It is 42."]
+    # the stalled attempt, its retry, and the second turn all reached the fake
+    assert len(FakeBackends.llm_requests) == 3
+    posts = _llm_posts(out["traceRef"])
+    assert [p.get("error", {}).get("type") if p.get("error") else None
+            for p in posts] == ["URLError", None, None]
+    assert "idle" in posts[0]["error"]["message"]
+    # the stall cost the idle timeout, not the whole-request cap
+    assert posts[0]["meta"]["durMs"] < 3000
