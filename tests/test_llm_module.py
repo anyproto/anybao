@@ -1186,6 +1186,29 @@ def test_openai_tool_calls_are_a_tool_stop_whatever_finish_reason_says():
     assert call["provider_state"] == {"extra_content": {"google": {"thought_signature": "sig"}}}
 
 
+@pytest.mark.parametrize("err,status,posts", [
+    ({"code": "context_length_exceeded", "type": "invalid_request_error",
+      "message": "too long"}, 400, 1),                    # permanent: raised at once
+    ({"code": "invalid_api_key", "message": "bad key"}, 401, 1),
+    ({"code": "insufficient_quota", "type": "insufficient_quota"}, 402, 1),
+    ({"code": 429, "message": "slow down"}, 429, 3),       # transient: three attempts
+    ({"code": "503", "message": "upstream"}, 503, 3),
+    ({"type": "server_error", "message": "boom"}, 500, 3),
+    ({"message": "??"}, 500, 3),                            # unknown: assumed transient
+], ids=["ctx-len", "bad-key", "quota", "429-int", "503-str", "server_error", "unknown"])
+def test_openai_stream_error_chunk_maps_its_kind_to_a_status(err, status, posts):
+    body = f"data: {json.dumps({'error': err})}\n\n"
+    host = ScriptedHost([(200, body)] * 3 + [OK],
+                        prov={"provider": "openai-compat", "model": "m",
+                              "base_url": "https://api.openai.com/v1",
+                              "api_key_ref": "llm.key.openai"})
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == status
+    assert len(host.posts) == posts
+
+
 def test_openai_stream_only_text_fields_concatenate():
     a = LLM["OpenAICompatAdapter"]()
     sse = _openai_sse(_chunk({"role": "assistant", "content": "a"}),

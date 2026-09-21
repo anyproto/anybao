@@ -278,6 +278,32 @@ def _sse_events(text):
 # the `chat.completions` delta fields that arrive as text pieces and
 # concatenate in the fold; every other scalar delta is first-wins
 _STREAM_TEXT_FIELDS = ("content", "reasoning_content", "reasoning", "refusal")
+# an OpenAI-style `error` chunk names its kind in `code` (a string or
+# the HTTP status) and/or `type`: a known permanent kind is its 4xx (not
+# retried), a known transient one 429/5xx, anything else 500 (retried)
+_OPENAI_ERROR_STATUS = {
+    "rate_limit_error": 429, "rate_limit_exceeded": 429, "insufficient_quota": 402,
+    "authentication_error": 401, "invalid_api_key": 401, "permission_error": 403,
+    "not_found_error": 404, "model_not_found": 404,
+    "invalid_request_error": 400, "context_length_exceeded": 400,
+    "server_error": 500, "overloaded_error": 529,
+}
+
+
+def _openai_error_status(err):
+    if not isinstance(err, dict):
+        return 500
+    code = err.get("code")
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if isinstance(code, int) and code >= 400:
+        return code
+    for key in (code, err.get("type")):
+        if isinstance(key, str) and key.lower() in _OPENAI_ERROR_STATUS:
+            return _OPENAI_ERROR_STATUS[key.lower()]
+    return 500
+
+
 _STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429,
                         "api_error": 500, "authentication_error": 401,
                         "permission_error": 403, "invalid_request_error": 400,
@@ -677,9 +703,7 @@ class OpenAICompatAdapter:
                 break
             ch = json.loads(data)
             if ch.get("error"):
-                code = ch["error"].get("code") if isinstance(ch["error"], dict) else None
-                raise LlmError(code if isinstance(code, int) and code >= 400 else 500,
-                               json.dumps(ch)[:_EXCERPT])
+                raise LlmError(_openai_error_status(ch["error"]), json.dumps(ch)[:_EXCERPT])
             if not final:
                 final = {k: v for k, v in ch.items() if k not in ("choices", "usage")}
             if ch.get("usage"):
