@@ -606,7 +606,15 @@ class OpenAICompatAdapter:
                 part["error"] = f"unparseable tool arguments ({e}): {raw_args[:200]}"
             parts.append(part)
         fr = choice.get("finish_reason", "stop")
-        stop = "tool" if fr == "tool_calls" else ("length" if fr == "length" else "done")
+        # a message carrying tool calls is a tool stop whatever the
+        # finish_reason says: Gemini's stream closes one with "stop"
+        # where its plain wire says "tool_calls"
+        if fr == "length":
+            stop = "length"
+        elif fr == "tool_calls" or msg.get("tool_calls"):
+            stop = "tool"
+        else:
+            stop = "done"
         u = raw.get("usage")
         if not u:
             # a server that ignores `stream_options.include_usage` (an

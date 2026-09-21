@@ -1168,6 +1168,24 @@ def test_openai_stream_tool_call_index_is_coerced_and_null_id_never_pins():
     assert [c["index"] for c in calls] == [0, 1]
 
 
+def test_openai_tool_calls_are_a_tool_stop_whatever_finish_reason_says():
+    # Gemini's /openai stream: the whole call in one chunk, no `index`,
+    # then a chunk with finish_reason "stop" (its plain wire says
+    # "tool_calls") — the loop must still answer the call
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(
+        _chunk({"role": "assistant", "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "run_cell", "arguments": "{\"code\": \"1+1\"}"},
+             "extra_content": {"google": {"thought_signature": "sig"}}}]}),
+        _chunk({"role": "assistant"}, finish="stop"))
+    reply = a.parse_response(LLM["_normalize_openai_compat"](a.parse_stream(sse)))
+    assert reply["stop"] == "tool"
+    call = reply["parts"][0]
+    assert call["name"] == "run_cell" and call["args"] == {"code": "1+1"}
+    assert call["provider_state"] == {"extra_content": {"google": {"thought_signature": "sig"}}}
+
+
 def test_openai_stream_only_text_fields_concatenate():
     a = LLM["OpenAICompatAdapter"]()
     sse = _openai_sse(_chunk({"role": "assistant", "content": "a"}),

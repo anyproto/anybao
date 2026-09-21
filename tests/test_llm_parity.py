@@ -231,8 +231,10 @@ class Recorder:
         body = json.dumps(payload["json"]).encode()
         req = urllib.request.Request(payload["url"], data=body, headers=headers, method="POST")
         timeout = payload["timeout"]
-        if isinstance(timeout, dict):     # streamed (BOB-149): the whole answer
-            timeout = timeout["total"]
+        if isinstance(timeout, dict):
+            # urlopen's timeout is per socket operation — the `idle`
+            # semantics, not `total` (BOB-149; PR #58 review G6)
+            timeout = timeout["idle"]
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 resp = {"status": r.status, "headers": {}, "body": r.read().decode()}
