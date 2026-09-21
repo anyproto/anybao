@@ -4,7 +4,6 @@
 //! suggestions. Lean by design — the trace is the database.
 
 use crate::tracestore::TraceStore;
-use serde_json::Value;
 
 fn percentile(sorted: &[i64], p: f64) -> i64 {
     if sorted.is_empty() {
