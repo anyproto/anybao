@@ -417,7 +417,8 @@ def _hints(entries):
         if name:
             counts[name] = counts.get(name, 0) + 1
     return [f"hint: {n}× sequential {name} — one round-trip via "
-            f'effect("batch", {{"name": "{name}", "payloads": [...]}})'
+            f'effect("batch", {{"name": "{name}", "payloads": [...]}}) '
+            "(host effects only, not tool methods)"
             for name, n in counts.items() if n >= 4]
 
 
