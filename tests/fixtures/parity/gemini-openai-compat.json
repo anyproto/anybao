@@ -43,9 +43,17 @@
         }
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "google.key.gemini",
      "header": "Authorization",
@@ -62,7 +70,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EvsBCvgBARFNMg/HtaVCOauJ9iEmVvD29ed2mVc85A0EKq82iRj5gfToYMQkRuS3KaLwqRs5QmrXUIpy97UUXiZss3yV0Vx8VvKAyCKXho0Emf2/orlV5MCbdhKJiuFrrVnR3/6f4F6QxrAGC/1t9Kn4Ib7BUxTPmKSVq4MX25KndNDC3RO3N1FapmcWf7LxQ4W8eIoRUp+2zks6Z8nOmH8VVLWEFpYOWB1wJX/fWVA5GcztOU0hUPKFOjaqa7gLoQbDDy7UCx1wbpuiMwEOfkk5uU27/tVF/SxtClU8EVmt3Yiu/iHsn2PIVo/hesUelNRc5qgfgDPS8ujBB/A=\"}},\"function\":{\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n \\\\u003c 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nnum = 2\\\\nwhile len(primes) \\\\u003c 20:\\\\n    if is_prime(num):\\\\n        primes.append(num)\\\\n    num += 1\\\\n\\\\nprint(primes)\\\\nprint(\\\\\\\"Sum:\\\\\\\", sum(primes))\\\\n\\\"}\",\"name\":\"run_cell\"},\"id\":\"call_1497322\",\"type\":\"function\"}]}}],\"created\":1788270553,\"id\":\"z9eWarnUAeu_nsEP9Jr2uA4\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":131,\"prompt_tokens\":3985,\"total_tokens\":4153}}"
+    "body": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"ErUCCrICAWkUfRMKfms56mJW/Vp8W6b7PFDfsoIPNCmwquDmBzPOKroAaC5WjKmo25Dn8IkhrcC7jeaqi9onXY3dYzTh31DrZj44v+JJeO8xF+6MzH3L1RHozwn1XaT/bBzKU8lWkLD1L8owbnKRSRRWr3A6trrulu4dhcczvgWH31DH9na44W64iK0ePpCQTw50KQjzfQCAG5fFgsRWOM2R7jlTWsG9k0sFMNXy5FK7/YVIHAFy6Jf/k4D2eOUZVXB2l6qb1pVVpddeVeyEqlvknozjBZ0acmxMhrlcP29NaXkN9QW3Gw870JI7LpJmt4P+qCngKVhHjdzRt35VdrPTpRB0Zt2VLSW3AtLrZjEft3oPr/vkvMwX6lOoHEBiCyw46Ejaxn5V30FQPClywhBwZLyud6fM\"}},\"function\":{\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n \\\\u003c 2: return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0: return False\\\\n    return True\\\\n\\\\nprimes = []\\\\ncurr = 2\\\\nwhile len(primes) \\\\u003c 20:\\\\n    if is_prime(curr):\\\\n        primes.append(curr)\\\\n    curr += 1\\\\n\\\\nprint(primes)\\\\nprint(\\\\\\\"Sum:\\\\\\\", sum(primes))\\\\n\\\"}\",\"name\":\"run_cell\"},\"id\":\"call_2303989\",\"type\":\"function\"}]},\"index\":0}],\"created\":1790010796,\"id\":\"q2WxauTjCIeNkdUPr7fGoQI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":127,\"prompt_tokens\":3985,\"total_tokens\":4154}}\n\ndata: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1790010796,\"id\":\"q2WxauTjCIeNkdUPr7fGoQI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":127,\"prompt_tokens\":3985,\"total_tokens\":4154}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -85,15 +93,15 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "call_1497322",
+         "id": "call_2303989",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nnum = 2\\nwhile len(primes) < 20:\\n    if is_prime(num):\\n        primes.append(num)\\n    num += 1\\n\\nprint(primes)\\nprint(\\\"Sum:\\\", sum(primes))\\n\"}"
+          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2: return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0: return False\\n    return True\\n\\nprimes = []\\ncurr = 2\\nwhile len(primes) < 20:\\n    if is_prime(curr):\\n        primes.append(curr)\\n    curr += 1\\n\\nprint(primes)\\nprint(\\\"Sum:\\\", sum(primes))\\n\"}"
          },
          "extra_content": {
           "google": {
-           "thought_signature": "EvsBCvgBARFNMg/HtaVCOauJ9iEmVvD29ed2mVc85A0EKq82iRj5gfToYMQkRuS3KaLwqRs5QmrXUIpy97UUXiZss3yV0Vx8VvKAyCKXho0Emf2/orlV5MCbdhKJiuFrrVnR3/6f4F6QxrAGC/1t9Kn4Ib7BUxTPmKSVq4MX25KndNDC3RO3N1FapmcWf7LxQ4W8eIoRUp+2zks6Z8nOmH8VVLWEFpYOWB1wJX/fWVA5GcztOU0hUPKFOjaqa7gLoQbDDy7UCx1wbpuiMwEOfkk5uU27/tVF/SxtClU8EVmt3Yiu/iHsn2PIVo/hesUelNRc5qgfgDPS8ujBB/A="
+           "thought_signature": "ErUCCrICAWkUfRMKfms56mJW/Vp8W6b7PFDfsoIPNCmwquDmBzPOKroAaC5WjKmo25Dn8IkhrcC7jeaqi9onXY3dYzTh31DrZj44v+JJeO8xF+6MzH3L1RHozwn1XaT/bBzKU8lWkLD1L8owbnKRSRRWr3A6trrulu4dhcczvgWH31DH9na44W64iK0ePpCQTw50KQjzfQCAG5fFgsRWOM2R7jlTWsG9k0sFMNXy5FK7/YVIHAFy6Jf/k4D2eOUZVXB2l6qb1pVVpddeVeyEqlvknozjBZ0acmxMhrlcP29NaXkN9QW3Gw870JI7LpJmt4P+qCngKVhHjdzRt35VdrPTpRB0Zt2VLSW3AtLrZjEft3oPr/vkvMwX6lOoHEBiCyw46Ejaxn5V30FQPClywhBwZLyud6fM"
           }
          }
         }
@@ -101,7 +109,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "call_1497322",
+       "tool_call_id": "call_2303989",
        "content": "Last value: 639"
       }
      ],
@@ -125,9 +133,17 @@
         }
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "google.key.gemini",
      "header": "Authorization",
@@ -144,7 +160,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"The sum of the first 20 prime numbers is 639.\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvgBCvUBARFNMg9cTpyEx8wJttf62LzN51Zy/9wn7QOQ8fsZ0AG19FUqKNZ02d+IdC1C6+Zo50SUkR0b1iZ0bhCHBPSGs2UcNKHZ10DsnTDMkjSVBnCwmouZQzNGKw697YO6pR0f/jPUh5Q9ZT1m9BTwUbyiHouEplabUmUDXmWGw6gXkZEDCJ32TXOj3zj5JkQJ2CFuNXNm267sboiNEe2VL5hOSbbUCijRolJf1jiA3NW1FhPMHwC2xvKG2MdY+qhF0zkdvGS4QMmNCqcRo7FypPnZK2TTB7WBLr7Xw5XdcWeH35WP3TanN8QFH/BgHW5gTXGF8MqMBJc=\"}},\"role\":\"assistant\"}}],\"created\":1788270557,\"id\":\"2deWap6JHJG1xN8P8s7O0A8\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4173,\"total_tokens\":4290}}"
+    "body": "data: {\"choices\":[{\"delta\":{\"content\":\"The sum of the first 20 prime numbers is 639.\",\"role\":\"assistant\"},\"index\":0}],\"created\":1790010798,\"id\":\"rWWxau-jBIzZxN8PrujLgAM\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4132,\"total_tokens\":4251}}\n\ndata: {\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"ErQCCrECAWkUfRN2EUpeEtREz6cuKDAKOfDAmm4BV+vyP/fQXhFrlJsjsXauYamuSJQx2zpgbaagLsDKhb3gDcD0j8T8Rjn4GAj+oN5tSeQPxY+mCEE+Mo4TVlJBFp6GilQ8CjQfp3V5ILZZzGCqgtE8T0RvPxoKhhfG9Bd+C4O4QoiEBYoqLp+23+PpDPR0hti/cYYw9ly+poYdGdHB63VOW2g2EvCs+5bdfI2AZczyM1k6CGgiCcKkNPsA5HNky1M7oDNLyEA/kJGm7FEPe4XWjXplO69zGafAcpqx14aFItm8mdeanBuQrGOaJLpKyn0dFTzYD/Q2WZ4ol527sFux2dHJdBAPPd6n375wsehnhKNVH0CFi6+F4T6o/awJuvnBZfcJ1m/3ajb3+AJIv/CRRxPdBv4=\"}},\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1790010798,\"id\":\"rWWxau-jBIzZxN8PrujLgAM\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":16,\"prompt_tokens\":4174,\"total_tokens\":4293}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -170,9 +186,17 @@
        ]
       }
      ],
-     "max_tokens": 65536
+     "max_tokens": 65536,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "google.key.gemini",
      "header": "Authorization",
@@ -189,7 +213,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvMBCvABARFNMg+0ufKnsFRgeTbAvkixeRfSSvW7+KJaKSwZeybDkC7jt/RSIcVZX5NbmiQ0gFB1Klc8l0SmmyUjiE4bSCoVEwBYJtZPBW37+UOz26S38acwy5UjVj5m4BymEwj4++EQMSSVblg0UzVyxklSlDbzUrY2nIPiO3UfESnoEyqbraJUXPE6i/o5KDG0GF/kMJNxbR5Hc6Szp+qanbepSWxhkjTV3kUw84naLwhNeVYbZ2Wk33yHC+z2MLZtF7UtmD23Go+VJgr9NImXy2CMUISCNUu3BQjg/fIpVd+pZ1J3Zr0Uxdi8hY38g/krbfFz\"}},\"role\":\"assistant\"}}],\"created\":1788270564,\"id\":\"3deWaqL3EtiNvdIPxdiO-A8\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":1101,\"total_tokens\":1141}}"
+    "body": "data: {\"choices\":[{\"delta\":{\"content\":\"Red\",\"role\":\"assistant\"},\"index\":0}],\"created\":1790010800,\"id\":\"rmWxauffPOLrkdUPuuTLiAI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":12,\"total_tokens\":45}}\n\ndata: {\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"EvgBCvUBAWkUfRNLhjv4yq/JBzs1xse9JdcvKuWQSRkAUlJQcCxUHJ73M4g4FA22FCRKS/w8P/6vSML94+OGVsxxmmdzmqOcLELYlLNNn3lmejR6YQPso6loHo5n+K3XhEGSHPItTWg9BmcDQWuep52L5A8fBNqWEscnuLlHE5p71xTvE2uAQau91KLG8sWJNAYOXIvw8wXUMQT9QGxukpoveWxYuSuVEYqWLsc3Xb18DTtrBF7EfqyafIdsUvS+a0Ic/N1bTdQB6Q6UaB3Bl0e3vBAEcDfRK8wA5rWP0z37aLje/74tFZOVCtMvM9wvODQlzLaq9jY9GFc=\"}},\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1790010800,\"id\":\"rmWxauffPOLrkdUPuuTLiAI\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":1101,\"total_tokens\":1134}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -215,9 +239,17 @@
        ]
       }
      ],
-     "max_tokens": 65536
+     "max_tokens": 65536,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "google.key.gemini",
      "header": "Authorization",
@@ -234,7 +266,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"VIOLET\",\"extra_content\":{\"google\":{\"thought_signature\":\"EvYBCvMBARFNMg8VJfn86EYWUUO34ztMoJQenM+uZUACuzo1pFPShnUJy9IjWKal/0KNmrsWn30U/J6SwLMQrEoi3BXEKYGpRvOPo4v3wR6AhQ9PXMFY5Ra+pkYrmmxSFzBAYSPO5Lu9jB0L3ECV0t96JAl7C1oDGDC5APfIJAXGIr7Ns6U7Ki7zvz8LN0eZ9adG51P8czA8455AaS2RBgEM8ReXSkE3YfWefy2OXATrY41VXxlZQR7M9OMkj3LsJJMgOFo6cPlA3cezXGMro1fr2Khh7K+TUfu9NijkPb6ko+ongvfAh1/6xO49cu5sSEdc3PSrdCBh\"}},\"role\":\"assistant\"}}],\"created\":1788270572,\"id\":\"5NeWapjfKtKDxN8P3dSf6Ak\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":548,\"total_tokens\":585}}"
+    "body": "data: {\"choices\":[{\"delta\":{\"content\":\"VIOLET\",\"role\":\"assistant\"},\"index\":0}],\"created\":1790010801,\"id\":\"sGWxarPCOemPxN8PkY2imAM\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":16,\"total_tokens\":54}}\n\ndata: {\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"EpwCCpkCAWkUfRMd9UBAEIPcI/0cfeLmWasI9CvKWtW5ufK9YgwbEkScdWRv+rj4U3CVfzlsNbGS7zDP1LzMbr5u9kea0xR2OmJtiwVe41qoVhwnpiuQaggVgBxHR7Vd5f2/m3i68kVhu55I88wywD7S7lYHlRuOJD4k9YPUR3uzC7ZljhOdr0tpKXjCXmMlS60mdbrxaaTIfh1yyVeUP2IJDwkQ6+G3x1A+vZa3CpsVbq7MVULQi4Gt2NzcgLUJ9LJDisvZ8N3v55tVFj9QHCJZM5odqPZKIlqcuDpcNTwtDAik5iOLXQ1rvsnIsSl/qjIsxux3L/VixDx6JZTXrumFY9WlD1TMbrhSaYgdPlTs+tepJmrQbjmiJDsus8E=\"}},\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1790010801,\"id\":\"sGWxarPCOemPxN8PkY2imAM\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":548,\"total_tokens\":586}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -249,9 +281,17 @@
        "content": "Write a 500-word essay about rivers."
       }
      ],
-     "max_tokens": 24
+     "max_tokens": 24,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "google.key.gemini",
      "header": "Authorization",
@@ -268,7 +308,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"message\":{\"role\":\"assistant\"}}],\"created\":1788270580,\"id\":\"7NeWaomLNrzdvdIPzfy7-QE\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":13,\"total_tokens\":34}}"
+    "body": "data: {\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"Es8BCswBAWkUfRM40JbrR4IfeU3ZdAcGFDXThiuKntFcfXTUP9yo7MtAVHHAVC7SCILRqbvltDOAN00Lj2l2cIcritWuci7Zh/aYTJfUq0x+vVuLk6lqLng/UKh1VVVPS2P4/AMOjqTj4hW9w5FKdK/ZsAL2aOW+PSyGiNCMoK9lOYdfrhfWB33gzSpdz8oAN1inI5DNOQKp2e32U5i8scY0ZPiu6m/xD9s62QTrXHCIloa4xJy212VzLzMatFldiYRni1RudzF2lO4nq+6RJ/VY\"}},\"role\":\"assistant\"},\"finish_reason\":\"length\",\"index\":0}],\"created\":1790010805,\"id\":\"smWxaqLHCP7MvdIPkcCQwQg\",\"model\":\"gemini-3.7-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":13,\"total_tokens\":34}}\n\ndata: [DONE]\n\n"
    }
   }
  ]

@@ -85,6 +85,19 @@ class LlmError(Exception):
         super().__init__(msg)
 
 
+class IncompleteReply(LlmError):
+    """A 200 whose body is not a whole answer: a stream that ended
+    without its terminator (`message_stop` / `[DONE]` or a
+    `finish_reason`), an empty body, a non-JSON answer to a plain
+    request. Carries 502 so the caller's transient-status path retries
+    it (ADR-005 §1.6) — the old wire raised on `json.loads` of a
+    truncated body; a stream cut mid-sentence must never be "done"."""
+
+    def __init__(self, detail):
+        super().__init__(502, detail)
+        self.args = (f"llm reply incomplete: {detail}",)
+
+
 _ANTHROPIC_KEY_NOTE = (
     "Create the key scoped to a single workspace: Console → Settings → API keys "
     "→ Create key → choose a workspace. A key linked to your account with no "
@@ -237,6 +250,66 @@ def _resolve_traits(prov):
 
 # --- Provider adapters (ADR-005 §1.4): neutral <-> wire family ---------------
 
+def _sse_events(text):
+    """SSE text → `[(event, data)]`: `data:` lines of one event joined
+    with newlines, a blank line ends the event; `id:`/`retry:` and `:`
+    comments are dropped. The host records a streamed response as this
+    text in one `http.post` body (ADR-002 §1, BOB-149). Lines end at
+    `\\n` (a trailing `\\r` dropped) — never `splitlines()`, which also
+    breaks on U+2028/U+2029/U+0085, legal raw inside a JSON string."""
+    events, name, data = [], None, []
+    for line in text.split("\n"):
+        line = line.rstrip("\r")
+        if line == "":
+            if data:
+                events.append((name, "\n".join(data)))
+            name, data = None, []
+        elif line.startswith("event:"):
+            name = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].strip())
+    if data:
+        events.append((name, "\n".join(data)))
+    return events
+
+
+# an Anthropic `error` event mid-stream, as the status the non-streaming
+# wire would have answered with (so the caller's error handling is one)
+# the `chat.completions` delta fields that arrive as text pieces and
+# concatenate in the fold; every other scalar delta is first-wins
+_STREAM_TEXT_FIELDS = ("content", "reasoning_content", "reasoning", "refusal")
+# an OpenAI-style `error` chunk names its kind in `code` (a string or
+# the HTTP status) and/or `type`: a known permanent kind is its 4xx (not
+# retried), a known transient one 429/5xx, anything else 500 (retried)
+_OPENAI_ERROR_STATUS = {
+    "rate_limit_error": 429, "rate_limit_exceeded": 429, "insufficient_quota": 402,
+    "authentication_error": 401, "invalid_api_key": 401, "permission_error": 403,
+    "not_found_error": 404, "model_not_found": 404,
+    "invalid_request_error": 400, "context_length_exceeded": 400,
+    "server_error": 500, "overloaded_error": 529,
+}
+
+
+def _openai_error_status(err):
+    if not isinstance(err, dict):
+        return 500
+    code = err.get("code")
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if isinstance(code, int) and code >= 400:
+        return code
+    for key in (code, err.get("type")):
+        if isinstance(key, str) and key.lower() in _OPENAI_ERROR_STATUS:
+            return _OPENAI_ERROR_STATUS[key.lower()]
+    return 500
+
+
+_STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429,
+                        "api_error": 500, "authentication_error": 401,
+                        "permission_error": 403, "invalid_request_error": 400,
+                        "not_found_error": 404, "request_too_large": 413}
+
+
 class AnthropicAdapter:
     """Native: thinking blocks round-trip via opaque provider_state.
     Caching: breakpoints at end of system and end of the conversation
@@ -333,8 +406,14 @@ class AnthropicAdapter:
             if bt == "text":
                 parts.append({"type": "text", "text": block["text"]})
             elif bt == "tool_use":
-                parts.append({"type": "tool_call", "id": block["id"],
-                              "name": block["name"], "args": block["input"]})
+                part = {"type": "tool_call", "id": block["id"],
+                        "name": block["name"], "args": block["input"]}
+                if block.get("input_error"):
+                    # a streamed call cut mid-JSON (BOB-149): the run
+                    # never dies on a malformed call — the loop answers
+                    # the flagged call with an is_error result
+                    part["error"] = block["input_error"]
+                parts.append(part)
             elif bt in ("thinking", "redacted_thinking"):
                 parts.append({"type": "thinking",
                               "text": block.get("thinking", ""),
@@ -346,6 +425,78 @@ class AnthropicAdapter:
                           "out": u.get("output_tokens", 0),
                           "cacheRead": u.get("cache_read_input_tokens", 0),
                           "cacheWrite": u.get("cache_creation_input_tokens", 0)}}
+
+    def parse_stream(self, text):
+        """Anthropic SSE text → the final message JSON `parse_response`
+        reads: blocks assembled from `content_block_start` + deltas
+        (text, `input_json_delta` tool input, thinking + signature),
+        `stop_reason` and output usage from `message_delta`, input
+        usage from `message_start`. An `error` event raises `LlmError`
+        with the status the plain wire would have sent. Tolerant of a
+        lossy relay: a delta for a block that never started opens it
+        (typed by the delta), a hole in the indices is dropped, a tool
+        input cut mid-JSON (`max_tokens`) folds to `{}` with an
+        `input_error` the neutral Reply carries as the part's `error`.
+        No `message_stop` = the stream was cut: `IncompleteReply`."""
+        msg, blocks, partial, done = {}, [], {}, False
+
+        def block(i):
+            while len(blocks) <= i:
+                blocks.append({})
+            return blocks[i]
+
+        for name, data in _sse_events(text):
+            ev = json.loads(data)
+            t = ev.get("type", name)
+            if t == "message_start":
+                msg = dict(ev["message"])
+                blocks = list(msg.get("content") or [])
+                msg["content"] = blocks
+            elif t == "content_block_start":
+                i = ev["index"]
+                block(i).update(ev["content_block"])
+                partial[i] = ""
+            elif t == "content_block_delta":
+                i, d = ev["index"], ev["delta"]
+                b, dt = block(i), d.get("type")
+                if dt == "text_delta":
+                    b.setdefault("type", "text")
+                    b["text"] = b.get("text", "") + d["text"]
+                elif dt == "input_json_delta":
+                    partial[i] = partial.get(i, "") + d["partial_json"]
+                elif dt == "thinking_delta":
+                    b.setdefault("type", "thinking")
+                    b["thinking"] = b.get("thinking", "") + d["thinking"]
+                elif dt == "signature_delta":
+                    b["signature"] = b.get("signature", "") + d["signature"]
+            elif t == "content_block_stop":
+                i = ev["index"]
+                b, raw = block(i), partial.get(i, "")
+                if b.get("type") == "tool_use" and raw.strip():
+                    try:
+                        b["input"] = json.loads(raw)
+                        if not isinstance(b["input"], dict):
+                            raise ValueError("input must be a JSON object")
+                    except ValueError as e:
+                        b["input"] = {}
+                        b["input_error"] = f"unparseable tool input ({e}): {raw[:200]}"
+            elif t == "message_delta":
+                msg.update(ev.get("delta") or {})
+                usage = dict(msg.get("usage") or {})
+                usage.update(ev.get("usage") or {})
+                msg["usage"] = usage
+            elif t == "error":
+                err = ev.get("error") or {}
+                raise LlmError(_STREAM_ERROR_STATUS.get(err.get("type"), 500),
+                               json.dumps(ev)[:_EXCERPT])
+            elif t == "message_stop":
+                done = True
+            # ping carries nothing
+        if not done:
+            raise IncompleteReply(
+                f"stream ended without message_stop after {len(text)} chars")
+        blocks[:] = [b for b in blocks if b.get("type")]
+        return msg
 
 
 _NORM_STOP = {"end_turn": "done", "stop_sequence": "done",
@@ -481,8 +632,24 @@ class OpenAICompatAdapter:
                 part["error"] = f"unparseable tool arguments ({e}): {raw_args[:200]}"
             parts.append(part)
         fr = choice.get("finish_reason", "stop")
-        stop = "tool" if fr == "tool_calls" else ("length" if fr == "length" else "done")
-        u = raw.get("usage", {})
+        # a message carrying tool calls is a tool stop whatever the
+        # finish_reason says: Gemini's stream closes one with "stop"
+        # where its plain wire says "tool_calls"
+        if fr == "length":
+            stop = "length"
+        elif fr == "tool_calls" or msg.get("tool_calls"):
+            stop = "tool"
+        else:
+            stop = "done"
+        u = raw.get("usage")
+        if not u:
+            # a server that ignores `stream_options.include_usage` (an
+            # old build, a proxy) — the loop must know the count is no
+            # count: `missing` says so; `stream: false` on the tier row
+            # restores exact usage from the JSON body
+            return {"parts": parts, "stop": stop,
+                    "usage": {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0,
+                              "missing": True}}
         det = u.get("prompt_tokens_details") or {}
         cached = det.get("cached_tokens", 0)
         written = det.get("cache_write_tokens", 0)  # OpenRouter, explicit markers
@@ -494,6 +661,75 @@ class OpenAICompatAdapter:
                           "out": u.get("completion_tokens", 0),
                           "cacheRead": cached,
                           "cacheWrite": written}}
+
+    def parse_stream(self, text):
+        """`chat.completions` chunk SSE → one completion JSON in the
+        non-streaming shape: string deltas concatenated per field
+        (`content`, `reasoning_content`, OpenRouter's `reasoning`),
+        list deltas appended (`reasoning_details`), tool calls merged
+        by `index` with their `arguments` concatenated, `finish_reason`
+        from the chunk that carries it, `usage` from the last chunk
+        that carries it, `[DONE]` ends. An `error` chunk raises.
+        Only the text fields concatenate; every other scalar is
+        first-wins (a repeated `role` is not `assistantassistant`).
+        A tool-call `index` is coerced to int; a call without one
+        opens a new call when it names the function, else continues
+        the last; a null `id` never pins. Neither `[DONE]` nor a
+        `finish_reason` = the stream was cut: `IncompleteReply`."""
+        final, msg, calls, finish, done = {}, {}, {}, None, False
+
+        def call_at(tc):
+            fn = tc.get("function") or {}
+            try:
+                idx = int(tc["index"])
+            except (KeyError, TypeError, ValueError):
+                opener = tc.get("id") or fn.get("name")
+                idx = len(calls) if opener or not calls else max(calls)
+            cur = calls.setdefault(idx, {"index": idx,
+                                         "function": {"name": "", "arguments": ""}})
+            for kk, vv in tc.items():
+                if kk == "function":
+                    for fk, fv in fn.items():
+                        if fk == "arguments":
+                            cur["function"]["arguments"] += fv or ""
+                        elif fv:
+                            cur["function"][fk] = fv
+                elif kk != "index" and vv and kk not in cur:
+                    cur[kk] = vv
+
+        for _name, data in _sse_events(text):
+            if data.strip() == "[DONE]":
+                done = True
+                break
+            ch = json.loads(data)
+            if ch.get("error"):
+                raise LlmError(_openai_error_status(ch["error"]), json.dumps(ch)[:_EXCERPT])
+            if not final:
+                final = {k: v for k, v in ch.items() if k not in ("choices", "usage")}
+            if ch.get("usage"):
+                final["usage"] = ch["usage"]
+            for choice in ch.get("choices") or []:
+                if choice.get("index", 0) != 0:
+                    continue
+                for k, v in (choice.get("delta") or {}).items():
+                    if k == "tool_calls":
+                        for tc in v or []:
+                            call_at(tc)
+                    elif isinstance(v, str) and k in _STREAM_TEXT_FIELDS:
+                        msg[k] = msg.get(k, "") + v
+                    elif isinstance(v, list):
+                        msg[k] = (msg.get(k) or []) + v
+                    elif v is not None and k not in msg:
+                        msg[k] = v
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+        if not done and not finish:
+            raise IncompleteReply(
+                f"stream ended without [DONE] or a finish_reason after {len(text)} chars")
+        if calls:
+            msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+        final["choices"] = [{"index": 0, "message": msg, "finish_reason": finish}]
+        return final
 
 
 ADAPTERS = {
@@ -763,13 +999,18 @@ BACKENDS = {
                  "credential": {**_BEARER, "label": "Together API key",
                                 "help": "https://api.together.ai/settings/api-keys"},
                  "normalize": _normalize_openai_compat},
+    # local servers: no middlebox to keep alive, and usage-on-stream is
+    # not a given on every build — the plain JSON wire by default
+    # (`stream: true` on the tier row opts in; ADR-005 §1.2)
     "vllm": {"path": "/chat/completions", "credential": {**_BEARER, "label": "vLLM API key"},
-             "finish": _finish_chat_template, "normalize": _normalize_openai_compat},
+             "finish": _finish_chat_template, "normalize": _normalize_openai_compat,
+             "stream": False},
     "llamacpp": {"path": "/chat/completions",
                  "credential": {**_BEARER, "label": "llama.cpp API key"},
-                 "finish": _finish_llamacpp, "normalize": _normalize_openai_compat},
+                 "finish": _finish_llamacpp, "normalize": _normalize_openai_compat,
+                 "stream": False},
     "ollama": {"path": "/chat/completions", "credential": {**_BEARER, "label": "Ollama API key"},
-               "normalize": _normalize_openai_compat},
+               "normalize": _normalize_openai_compat, "stream": False},
     "generic": {"path": "/chat/completions", "credential": {**_BEARER, "label": "API key"},
                 "normalize": _normalize_openai_compat},
 }
@@ -873,13 +1114,12 @@ def _resolve(tier):
     return prov, name, backend, _effective(traits, backend)
 
 
-_TIMEOUT_S = 180  # a stalled provider connection must ERROR, never hang
-                  # the conversation thread (live-caught with urlopen)
+# the streamed call's `{idle, total}` timeouts (ADR-005 §1.2, BOB-149)
+_TIMEOUT = {"idle": 60, "total": 900}
 # BOB-148: one transient failure must not end a run. Waits between
 # attempts (so len+1 attempts); a `retry-after` header wins, capped.
 _RETRY_DELAYS_S = (1, 4)
 _RETRY_AFTER_CAP_S = 60
-_STALL = "timed out reading response"   # our own _TIMEOUT_S cap firing
 
 _EXCERPT = 400
 
@@ -913,8 +1153,12 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     description, input_schema?}]`, empty for plain completions.
     `max_tokens` overrides the profile's output cap (lower it for
     small classify-style calls). Returns `{parts, stop:
-    "done"|"tool"|"length", usage: {in, out}}`; a ≥400 provider
-    status raises `LlmError(status, body_excerpt)`."""
+    "done"|"tool"|"length", usage: {in, out, cacheRead, cacheWrite}}`
+    — `usage.missing: true` when the provider streamed no usage (the
+    zeros are no count; `stream: false` on the tier row restores
+    exact usage); a ≥400 provider status raises `LlmError(status,
+    body_excerpt)`, a stream cut before its end `IncompleteReply`
+    after the retries."""
     prov, _name, backend, traits = _resolve(tier)
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
@@ -924,18 +1168,50 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     req.update(traits["sampling"])
     be = BACKENDS[backend]
     req = be.get("finish", lambda r, _t: r)(req, traits)
+    # the tier row's `stream` wins over the backend's default; an
+    # `options.stream` flips the body field and the host follows it
+    req["stream"] = bool(prov.get("stream", be.get("stream", True)))
+    if req["stream"] and be["path"] == "/chat/completions":
+        req.setdefault("stream_options", {"include_usage": True})
     req.update(prov.get("options") or {})
+    stream = bool(req.get("stream"))
+    if not stream:
+        req.pop("stream_options", None)
+    timeout = _timeout_of(prov)
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
-               "timeout": _TIMEOUT_S}
+               "stream": stream, "timeout": timeout if stream else timeout["total"]}
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
-    resp = _post(payload)
-    if resp["status"] >= 400:
-        raise LlmError(resp["status"], resp["body"][:_EXCERPT])
-    raw = be.get("normalize", lambda r: r)(json.loads(resp["body"]))
+    raw = _post(payload, lambda body: _fold(adapter, body, stream))
+    raw = be.get("normalize", lambda r: r)(raw)
     return _lift(adapter.parse_response(raw), traits)
+
+
+def _fold(adapter, body, stream):
+    """A 200 body → the provider's JSON: a JSON body as-is (a server
+    that ignores `stream` answers JSON — one reader either way), SSE
+    text through the adapter's fold; anything else is incomplete."""
+    if body.lstrip().startswith("{"):
+        try:
+            return json.loads(body)
+        except ValueError as e:
+            raise IncompleteReply(f"unparseable JSON body ({e}) after {len(body)} chars") from None
+    if stream and body.strip():
+        return adapter.parse_stream(body)
+    raise IncompleteReply("empty body" if not body.strip()
+                          else f"non-JSON body: {body[:_EXCERPT]!r}")
+
+
+def _timeout_of(prov):
+    """A tier row's `timeout` as the `{idle, total}` the host takes:
+    a plain number (the ADR-002 whole-request spelling) is the total,
+    an object overrides the defaults key by key, absent = defaults."""
+    t = prov.get("timeout")
+    if isinstance(t, (int, float)) and not isinstance(t, bool):
+        return {**_TIMEOUT, "total": t}
+    return {**_TIMEOUT, **(t or {})}
 
 
 def _retry_after(resp):
@@ -947,34 +1223,54 @@ def _retry_after(resp):
         return None
 
 
-def _post(payload):
-    """The provider call with a bounded retry (ADR-005 §1.6, BOB-148).
+# the host's total-deadline failure (broker `http.post`, ADR-002 §1):
+# the provider generated for the whole `total` — a retry would cost
+# the same again (3 × 900 s is past every run deadline), so it is the
+# one URLError that is not retried
+_TOTAL_TIMEOUT_MARK = "exceeded the total timeout"
+
+
+def _transient(status):
+    return status == 429 or status >= 500
+
+
+def _post(payload, fold):
+    """The provider call with a bounded retry (ADR-005 §1.6, BOB-148),
+    returning the FOLDED provider JSON — the fold runs inside the loop
+    so what it learns can be retried.
 
     Retried: a transport failure (`URLError` — DNS, connection reset,
-    a stalled read) and a transient provider status (429, 5xx incl.
-    529 overloaded). Not retried: any other 4xx, and any other effect
-    failure (a denied capability, a missing secret, a mock miss).
-    Each attempt is its own `http.post` record and the wait crosses
-    the boundary as a `sleep` effect, so the trace shows every attempt
-    and replay never waits. A stalled read is retried ONCE: every
-    attempt costs the whole `_TIMEOUT_S` until streaming (BOB-149)."""
+    a stalled read; NOT the total-deadline failure), a transient
+    provider status (429, 5xx incl. 529 overloaded), and the same
+    statuses arriving as a mid-stream `error` event under a 200, and an
+    incomplete body (a stream cut before its terminator, an empty
+    200). Not retried: any other 4xx, and any other effect failure (a
+    denied capability, a missing secret, a mock miss). Each attempt is
+    its own `http.post` record and the wait crosses the boundary as a
+    `sleep` effect, so the trace shows every attempt and replay never
+    waits. The last failure raises unchanged."""
     attempt = 0
     while True:
         try:
             resp = effect("http.post", payload)  # noqa: F821 - guest global
         except EffectError as e:  # noqa: F821 - guest global
-            msg = str(e)
-            if not msg.startswith("URLError"):
-                raise
-            budget = 1 if _STALL in msg else len(_RETRY_DELAYS_S)
-            if attempt >= budget:
+            retry = str(e).startswith("URLError") and _TOTAL_TIMEOUT_MARK not in str(e)
+            if not retry or attempt >= len(_RETRY_DELAYS_S):
                 raise
             wait = _RETRY_DELAYS_S[attempt]
         else:
             status = resp["status"]
-            if (status != 429 and status < 500) or attempt >= len(_RETRY_DELAYS_S):
-                return resp
-            wait = _retry_after(resp) or _RETRY_DELAYS_S[attempt]
+            if status >= 400:
+                if not _transient(status) or attempt >= len(_RETRY_DELAYS_S):
+                    raise LlmError(status, resp["body"][:_EXCERPT])
+                wait = _retry_after(resp) or _RETRY_DELAYS_S[attempt]
+            else:
+                try:
+                    return fold(resp["body"])
+                except LlmError as e:
+                    if not _transient(e.status) or attempt >= len(_RETRY_DELAYS_S):
+                        raise
+                    wait = _RETRY_DELAYS_S[attempt]
         effect("sleep", {"seconds": wait})  # noqa: F821 - guest global
         attempt += 1
 

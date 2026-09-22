@@ -36,7 +36,19 @@ the model has seen far more requests-style Python than JS-in-Python:
 `http.get/head/post/put/patch/delete(...)` with `params=/headers=/json=`
 (plus `redirects=` — max follows for the request, `0` = manual; and
 `response="base64"` — the body comes back as base64 of the raw bytes,
-ADR-020 §1)
+ADR-020 §1; `stream=True` reads the response as it arrives, the
+recorded `body` is the raw SSE text, still ONE record, capped at 32 MiB;
+the host sends `Accept: text/event-stream` unless the caller set an
+Accept; `timeout=` is a whole-request cap in seconds, default 180, or
+`{idle, total}` — a stream may go `idle` s without a chunk (the socket
+read AND write timeout, so headers and the request body are bound too;
+connect is `min(total, 30)`) and `total` s overall (checked between
+chunks, so a stream can overrun `total` by up to one `idle`), defaults
+60 / 900 (a stream with no `timeout` gets 900 / 60); the read loop also
+ends at the run's wall deadline and on the interrupt flag, like `sh.run`
+(ADR-024 §1); every end is a `URLError`; a timeout that is not a finite
+number of seconds in `(0, 86400]` is a `ValueError` before any request
+— BOB-149)
 returning a `Response` (`.status`, `.json()`, `.text`, and `.url` — the
 final post-redirect url; both added by ADR-008 §2; `head` classifies as
 `read` like `get`, `patch` as `mutate` — added 2026-07-28 for the REST

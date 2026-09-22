@@ -43,9 +43,17 @@
         }
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.openrouter",
      "header": "Authorization",
@@ -62,7 +70,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270069-2xDx4dwHclbTa3om473O\",\"object\":\"chat.completion\",\"created\":1788270069,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants me to compute the sum of the first 20 prime numbers using run_cell, then tell them the number. Let me write Python code to find the first 20 primes and sum them.\",\"tool_calls\":[{\"type\":\"function\",\"index\":0,\"id\":\"run_cell_0\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"{\\\"code\\\":\\\"def is_prime(n):\\\\n    if n < 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nn = 2\\\\nwhile len(primes) < 20:\\\\n    if is_prime(n):\\\\n        primes.append(n)\\\\n    n += 1\\\\n\\\\nprint(primes)\\\\nprint(sum(primes))\\\"}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants me to compute the sum of the first 20 prime numbers using run_cell, then tell them the number. Let me write Python code to find the first 20 primes and sum them.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3725,\"completion_tokens\":184,\"total_tokens\":3909,\"cost\":0.013935,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.013935,\"upstream_inference_prompt_cost\":0.011175,\"upstream_inference_completions_cost\":0.00276},\"completion_tokens_details\":{\"reasoning_tokens\":41,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "data: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" user wants me to compute the sum\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" user wants me to compute the sum\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" of the first 20 prime numbers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" of the first 20 prime numbers.\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" The\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" first 20 primes are 2\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" first 20 primes are 2\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\", 3, 5, \",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\", 3, 5, \",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"7, 11, 13,\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"7, 11, 13,\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" 17, 19, 23\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" 17, 19, 23\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\", 29, 31, \",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\", 29, 31, \",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"37, 41, 43,\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"37, 41, 43,\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" 47, 53, 59\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" 47, 53, 59\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\", 61, 67, \",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\", 61, 67, \",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"71. I believe\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"71. I believe\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" the\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" the\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" sum is 639\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" sum is 639\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\", but I should verify with a cell\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\", but I should verify with a cell\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" before stating\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" before stating\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" the number.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" the number.\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n: OPENROUTER PROCESSING\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"run_cell:0\",\"type\":\"function\",\"function\":{\"name\":\"run_cell\",\"arguments\":\"\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"code\\\": \\\"\\\\ndef is_prime(n):\\\\n    if n < 2:\\\\n        return False\\\\n    for i in range(2, int(n**0.5) + 1):\\\\n        if n % i == 0:\\\\n            return False\\\\n    return True\\\\n\\\\nprimes = []\\\\nn = 2\\\\nwhile len(primes) < 20:\\\\n    if is_prime(n):\\\\n        primes.append(n)\\\\n    n += 1\\\\n\\\\nprint(primes)\\\\nprint(sum(primes))\\\\n\\\"}\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"gen-1789987087-lzPfKobT1cm6RvYVk3bz\",\"object\":\"chat.completion.chunk\",\"created\":1789987087,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"service_tier\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3765,\"completion_tokens\":247,\"total_tokens\":4012,\"cost\":0.010729386,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.010729386,\"upstream_inference_prompt_cost\":0.00807216,\"upstream_inference_completions_cost\":0.002657226},\"completion_tokens_details\":{\"reasoning_tokens\":105,\"image_tokens\":0,\"audio_tokens\":0}}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -85,18 +93,120 @@
        "content": null,
        "tool_calls": [
         {
-         "id": "run_cell_0",
+         "id": "run_cell:0",
          "type": "function",
          "function": {
           "name": "run_cell",
-          "arguments": "{\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nn = 2\\nwhile len(primes) < 20:\\n    if is_prime(n):\\n        primes.append(n)\\n    n += 1\\n\\nprint(primes)\\nprint(sum(primes))\"}"
+          "arguments": "{\"code\": \"\\ndef is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nn = 2\\nwhile len(primes) < 20:\\n    if is_prime(n):\\n        primes.append(n)\\n    n += 1\\n\\nprint(primes)\\nprint(sum(primes))\\n\"}"
          }
         }
        ],
        "reasoning_details": [
         {
          "type": "reasoning.text",
-         "text": "The user wants me to compute the sum of the first 20 prime numbers using run_cell, then tell them the number. Let me write Python code to find the first 20 primes and sum them.",
+         "text": "The",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " user wants me to compute the sum",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " of the first 20 prime numbers.",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " The",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " first 20 primes are 2",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": ", 3, 5, ",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": "7, 11, 13,",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " 17, 19, 23",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": ", 29, 31, ",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": "37, 41, 43,",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " 47, 53, 59",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": ", 61, 67, ",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": "71. I believe",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " the",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " sum is 639",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": ", but I should verify with a cell",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " before stating",
+         "format": "unknown",
+         "index": 0
+        },
+        {
+         "type": "reasoning.text",
+         "text": " the number.",
          "format": "unknown",
          "index": 0
         }
@@ -104,7 +214,7 @@
       },
       {
        "role": "tool",
-       "tool_call_id": "run_cell_0",
+       "tool_call_id": "run_cell:0",
        "content": "Last value: 639"
       }
      ],
@@ -128,9 +238,17 @@
         }
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.openrouter",
      "header": "Authorization",
@@ -147,7 +265,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270074-B4MtOnChyfRlNfznLUVh\",\"object\":\"chat.completion\",\"created\":1788270074,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"The sum of the first 20 prime numbers (2 through 71) is **639**.\",\"refusal\":null,\"reasoning\":\"The first 20 primes are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, and their sum is 639.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The first 20 primes are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, and their sum is 639.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":3948,\"completion_tokens\":105,\"total_tokens\":4053,\"cost\":0.01274805,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.01274805,\"upstream_inference_prompt_cost\":0.0112518,\"upstream_inference_completions_cost\":0.00149625},\"completion_tokens_details\":{\"reasoning_tokens\":73,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "data: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\\n\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" cell\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" cell\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" confirms\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" confirms\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"\\n the\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\\n the\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\\n\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" first\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" first\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" 20 primes\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" 20 primes\\n\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" sum\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" sum\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" to \",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" to \",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"639\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"639\\n\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\".\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\".\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" Keep the\\n\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" Keep the\\n\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" answer short.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" answer short.\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The sum of the first 20\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" prime\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" numbers (2 through\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" 71) is **639**.\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"gen-1789987089-w75eHIv99r3Tf66eQlIR\",\"object\":\"chat.completion.chunk\",\"created\":1789987089,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"service_tier\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4058,\"completion_tokens\":56,\"total_tokens\":4114,\"cost\":0.0024932,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":3584,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0024932,\"upstream_inference_prompt_cost\":0.001890752,\"upstream_inference_completions_cost\":0.000602448},\"completion_tokens_details\":{\"reasoning_tokens\":27,\"image_tokens\":0,\"audio_tokens\":0}}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -173,9 +291,17 @@
        ]
       }
      ],
-     "max_tokens": 65536
+     "max_tokens": 65536,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.openrouter",
      "header": "Authorization",
@@ -192,7 +318,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270078-XE0nxpTNhSFgz6acpfdT\",\"object\":\"chat.completion\",\"created\":1788270078,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Red\",\"refusal\":null,\"reasoning\":\"The user is asking about the color of an image. Looking at the image description, it appears to be a small red image. The image shows a red color.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user is asking about the color of an image. Looking at the image description, it appears to be a small red image. The image shows a red color.\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":105,\"completion_tokens\":46,\"total_tokens\":151,\"cost\":0.0008322,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":64,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0008322,\"upstream_inference_prompt_cost\":0.0001422,\"upstream_inference_completions_cost\":0.00069},\"completion_tokens_details\":{\"reasoning_tokens\":33,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "data: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" user is asking about the color of an image. Looking at the image description, it appears to be a small red dot on\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" user is asking about the color of an image. Looking at the image description, it appears to be a small red dot on\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" a black background. The image is predominantly black with a small red element. The user wants a one-word answer.\\n\\nThe\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" a black background. The image is predominantly black with a small red element. The user wants a one-word answer.\\n\\nThe\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" image appears to be mostly black (a black square/background) with a tiny red dot. If\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" image appears to be mostly black (a black square/background) with a tiny red dot. If\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"asked \\\"what color is this image,\\\" the dominant color is black.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"asked \\\"what color is this image,\\\" the dominant color is black.\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Black\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"gen-1789987091-m2tbGX9vDpXLLYM8KtBW\",\"object\":\"chat.completion.chunk\",\"created\":1789987091,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Together\",\"system_fingerprint\":\"default\",\"service_tier\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":105,\"completion_tokens\":97,\"total_tokens\":202,\"cost\":0.0016242,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":54,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0016242,\"upstream_inference_prompt_cost\":0.0001692,\"upstream_inference_completions_cost\":0.001455},\"completion_tokens_details\":{\"reasoning_tokens\":85,\"image_tokens\":0,\"audio_tokens\":0}}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -227,9 +353,17 @@
         "engine": "cloudflare-ai"
        }
       }
-     ]
+     ],
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.openrouter",
      "header": "Authorization",
@@ -246,7 +380,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270082-5c8BLaY0urXiIyT34ulb\",\"object\":\"chat.completion\",\"created\":1788270082,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"DigitalOcean\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"VIOLET\",\"refusal\":null,\"reasoning\":\"The user is asking what single word is written in the PDF. The file content shows \\\"VIOLET\\\" on Page 1. The answer should be that word only.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user is asking what single word is written in the PDF. The file content shows \\\"VIOLET\\\" on Page 1. The answer should be that word only.\",\"format\":\"unknown\",\"index\":0}],\"annotations\":[{\"type\":\"file\",\"file\":{\"hash\":\"c668d22729eebc2ee9e00de0624df46f4a707a2a48d22851bc38ee02750a782e\",\"name\":\"word.pdf\",\"content\":[{\"type\":\"text\",\"text\":\"<file name=\\\"word.pdf\\\">\"},{\"type\":\"text\",\"text\":\"# document.pdf\\n## Metadata\\n- PDFFormatVersion=1.4\\n- IsLinearized=false\\n- IsAcroFormPresent=false\\n- IsXFAPresent=false\\n- IsCollectionPresent=false\\n- IsSignaturesPresent=false\\n\\n\\n\\n## Contents\\n### Page 1\\nVIOLET\"},{\"type\":\"text\",\"text\":\"</file>\"}]}}]}}],\"usage\":{\"prompt_tokens\":175,\"completion_tokens\":51,\"total_tokens\":226,\"cost\":0.0012255,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0012255,\"upstream_inference_prompt_cost\":0.00049875,\"upstream_inference_completions_cost\":0.00072675},\"completion_tokens_details\":{\"reasoning_tokens\":35,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "data: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"annotations\":[{\"type\":\"file\",\"file\":{\"hash\":\"c668d22729eebc2ee9e00de0624df46f4a707a2a48d22851bc38ee02750a782e\",\"name\":\"word.pdf\",\"content\":[{\"type\":\"text\",\"text\":\"<file name=\\\"word.pdf\\\">\"},{\"type\":\"text\",\"text\":\"# document.pdf\\n## Metadata\\n- PDFFormatVersion=1.4\\n- IsLinearized=false\\n- IsAcroFormPresent=false\\n- IsXFAPresent=false\\n- IsCollectionPresent=false\\n- IsSignaturesPresent=false\\n\\n\\n\\n## Contents\\n### Page 1\\nVIOLET\"},{\"type\":\"text\",\"text\":\"</file>\"}]}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" user\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" user\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" wants\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" wants\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" to know the\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" to know the\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" single word written\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" single word written\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" in the PDF\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" in the PDF\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\". Looking at the\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\". Looking at the\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" contents\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" contents\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\", Page\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\", Page\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" 1 contains\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" 1 contains\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" \\\"VIO\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" \\\"VIO\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"LET\\\". They want\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"LET\\\". They want\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" just\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" just\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" the word.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" the word.\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"VIO\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"LET\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"gen-1789987093-ctTu2HZIDZcIc4lILH0t\",\"object\":\"chat.completion.chunk\",\"created\":1789987093,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"service_tier\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":172,\"completion_tokens\":49,\"total_tokens\":221,\"cost\":0.00089591,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.00089591,\"upstream_inference_prompt_cost\":0.000368768,\"upstream_inference_completions_cost\":0.000527142},\"completion_tokens_details\":{\"reasoning_tokens\":35,\"image_tokens\":0,\"audio_tokens\":0}}}\n\ndata: [DONE]\n\n"
    }
   },
   {
@@ -261,9 +395,17 @@
        "content": "Write a 500-word essay about rivers."
       }
      ],
-     "max_tokens": 24
+     "max_tokens": 24,
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     }
     },
-    "timeout": 180,
+    "stream": true,
+    "timeout": {
+     "idle": 60,
+     "total": 900
+    },
     "credential": {
      "ref": "llm.key.openrouter",
      "header": "Authorization",
@@ -280,7 +422,7 @@
    "response": {
     "status": 200,
     "headers": {},
-    "body": "\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1788270086-0h3nJpLjWPznVwMFx1r5\",\"object\":\"chat.completion\",\"created\":1788270086,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Chutes\",\"system_fingerprint\":null,\"service_tier\":null,\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"length\",\"message\":{\"role\":\"assistant\",\"content\":null,\"refusal\":null,\"reasoning\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informational writing task. Let me\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The user wants a 500-word essay about rivers. This is a straightforward creative/informational writing task. Let me\",\"format\":\"unknown\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":132,\"completion_tokens\":24,\"total_tokens\":156,\"cost\":0.000756,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000756,\"upstream_inference_prompt_cost\":0.000396,\"upstream_inference_completions_cost\":0.00036},\"completion_tokens_details\":{\"reasoning_tokens\":24,\"image_tokens\":0,\"audio_tokens\":0}}}"
+    "body": "data: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" user wants a 500-word essay about\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" user wants a 500-word essay about\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" rivers. This is a straightforward writing task\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" rivers. This is a straightforward writing task\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\". Let me think\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\". Let me think\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":\" about what makes\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" about what makes\",\"format\":\"unknown\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"length\",\"native_finish_reason\":\"length\"}]}\n\ndata: {\"id\":\"gen-1789987095-Oc9BNMMAg4QHFQHFQNzG\",\"object\":\"chat.completion.chunk\",\"created\":1789987095,\"model\":\"moonshotai/kimi-k3\",\"provider\":\"Sail Research\",\"service_tier\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"length\",\"native_finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":132,\"completion_tokens\":24,\"total_tokens\":156,\"cost\":0.0005412,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.0005412,\"upstream_inference_prompt_cost\":0.000283008,\"upstream_inference_completions_cost\":0.000258192},\"completion_tokens_details\":{\"reasoning_tokens\":29,\"image_tokens\":0,\"audio_tokens\":0}}}\n\ndata: [DONE]\n\n"
    }
   }
  ]

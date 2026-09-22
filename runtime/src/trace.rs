@@ -322,21 +322,27 @@ impl TraceWriter {
     /// summary (ADR-023 §1) for the host to publish.
     pub fn dump(&mut self, store: &dyn TraceStore) -> anyhow::Result<Value> {
         let run = self.run_id();
-        // the text-blob store never sees a raw-written spill (ADR-026 §2)
-        let text_blobs: Vec<(String, String)> = self
-            .blobs
-            .iter()
-            .filter(|(h, _)| !self.raw_text.contains(h))
-            .cloned()
-            .collect();
-        if !(self.sink.is_some() && self.streamed) {
-            store.write_run(&run, &self.records, &text_blobs)?;
-        } else if !self.failed_blobs.is_empty() {
-            let retry = std::mem::take(&mut self.failed_blobs);
-            if let Err(e) = store.write_blobs(&retry) {
-                tracing::warn!("trace blobs still unwritten at run end ({run}): {e}");
+        // the text-blob store never sees a raw-written spill (ADR-026 §2):
+        // partition by MOVE (a streamed run's bodies are large, BOB-149),
+        // then put every blob back for the summary — order is not
+        // significant, every reader builds a map
+        let (raw, mut text): (Vec<_>, Vec<_>) = std::mem::take(&mut self.blobs)
+            .into_iter()
+            .partition(|(h, _)| self.raw_text.contains(h));
+        let written = if !(self.sink.is_some() && self.streamed) {
+            store.write_run(&run, &self.records, &text)
+        } else {
+            if !self.failed_blobs.is_empty() {
+                let retry = std::mem::take(&mut self.failed_blobs);
+                if let Err(e) = store.write_blobs(&retry) {
+                    tracing::warn!("trace blobs still unwritten at run end ({run}): {e}");
+                }
             }
-        }
+            Ok(())
+        };
+        text.extend(raw);
+        self.blobs = text;
+        written?;
         if let Some(mut sink) = self.sink.take() {
             sink.close()?;
         }

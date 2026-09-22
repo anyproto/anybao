@@ -518,6 +518,23 @@ def _dangling(messages, reason):
             for p in last["parts"] if p["type"] == "tool_call"]
 
 
+def _prompt_floor(messages, system, tools):
+    """A lower bound on the prompt's tokens for when the provider sent
+    no usage (`usage.missing`, ADR-005 §1.2): text at 3 chars per token
+    (prose runs near 4, code and JSON near 3 — a floor fires the
+    ceiling early, never late), a File part at a flat 1500 (an image's
+    tokens follow its pixels, not its base64)."""
+    chars = len(system) + len(json.dumps(tools))
+    files = 0
+    for m in messages:
+        for p in m["parts"]:
+            if p["type"] == "file":
+                files += 1
+            else:
+                chars += len(json.dumps({k: v for k, v in p.items() if k != "provider_state"}))
+    return chars // 3 + files * 1500
+
+
 def _wrapup(messages, llm, system, tier, reason, stats, tools):
     # The wrap-up call keeps the SAME tool list as every other turn:
     # the tools are part of the cached prompt prefix, and dropping them
@@ -1008,7 +1025,13 @@ def main(args):
         # usage.in is the UNCACHED prompt; the context the model holds is
         # the whole prompt — cached reads/writes included (ADR-005 §1)
         u = reply.get("usage", {})
-        last_in = u.get("in", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0)
+        if u.get("missing"):
+            # the provider streamed no usage: the count is unknown, so
+            # the ceiling sees a conservative floor, never a zero that
+            # would disable it (ADR-005 §1.2)
+            last_in = max(last_in, _prompt_floor(messages, system, tools))
+        else:
+            last_in = u.get("in", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0)
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":

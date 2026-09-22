@@ -741,14 +741,14 @@ def test_chat_gives_up_after_three_transport_attempts():
     assert host.outcomes == [OK]      # never reached
 
 
-def test_chat_retries_a_stalled_read_only_once():
-    # a stall costs the whole 180 s cap per attempt (BOB-149); one retry
-    # gives a dead connection a second chance without a 9-minute silence
-    host = ScriptedHost([transport(READ_STALL)] * 2 + [OK])
+def test_chat_retries_a_stalled_read_like_any_transport_failure():
+    # streamed (BOB-149): a stall costs the idle timeout, not 180 s, so
+    # it gets the same three attempts as a DNS blip
+    host = ScriptedHost([transport(READ_STALL)] * 3 + [OK])
     with pytest.raises(EffectError) as e:
         load(host)["chat"](MSGS)
     assert "timed out reading response" in str(e.value)
-    assert len(host.posts) == 2 and host.sleeps == [1]
+    assert len(host.posts) == 3 and host.sleeps == [1, 4]
 
 
 @pytest.mark.parametrize("status,body", [
@@ -804,6 +804,426 @@ def test_chat_does_not_retry_other_effect_failures():
         load(host)["chat"](MSGS)
     assert "SecretMissing" in str(e.value)
     assert len(host.posts) == 1 and host.sleeps == []
+
+
+# --- streaming (BOB-149, ADR-005 §1.2) ---------------------------------------
+#
+# The provider call streams: the request asks for SSE, the host
+# records the SSE text as ONE http.post body, and the adapter folds
+# the events into the same provider JSON the non-streaming wire
+# returns, so parse_response is the single reader of both.
+
+def _sse(*events):
+    return "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
+
+
+ANTHROPIC_FINAL = {
+    "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+    "content": [
+        {"type": "thinking", "thinking": "Let me think.", "signature": "sig_abc"},
+        {"type": "text", "text": "Let me compute."},
+        {"type": "tool_use", "id": "toolu_1", "name": "run_cell", "input": {"code": "1+1"}},
+    ],
+    "stop_reason": "tool_use", "stop_sequence": None,
+    "usage": {"input_tokens": 100, "output_tokens": 30,
+              "cache_read_input_tokens": 7, "cache_creation_input_tokens": 3},
+}
+
+ANTHROPIC_SSE = _sse(
+    ("message_start", {"type": "message_start", "message": {
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+        "content": [], "stop_reason": None, "stop_sequence": None,
+        "usage": {"input_tokens": 100, "output_tokens": 1,
+                  "cache_read_input_tokens": 7, "cache_creation_input_tokens": 3}}}),
+    ("content_block_start", {"type": "content_block_start", "index": 0,
+                             "content_block": {"type": "thinking", "thinking": ""}}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "thinking_delta", "thinking": "Let me "}}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "thinking_delta", "thinking": "think."}}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "signature_delta", "signature": "sig_abc"}}),
+    ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+    ("content_block_start", {"type": "content_block_start", "index": 1,
+                             "content_block": {"type": "text", "text": ""}}),
+    ("ping", {"type": "ping"}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                             "delta": {"type": "text_delta", "text": "Let me "}}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                             "delta": {"type": "text_delta", "text": "compute."}}),
+    ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+    ("content_block_start", {"type": "content_block_start", "index": 2,
+                             "content_block": {"type": "tool_use", "id": "toolu_1",
+                                               "name": "run_cell", "input": {}}}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 2,
+                             "delta": {"type": "input_json_delta", "partial_json": "{\"code\": "}}),
+    ("content_block_delta", {"type": "content_block_delta", "index": 2,
+                             "delta": {"type": "input_json_delta", "partial_json": "\"1+1\"}"}}),
+    ("content_block_stop", {"type": "content_block_stop", "index": 2}),
+    ("message_delta", {"type": "message_delta",
+                       "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                       "usage": {"output_tokens": 30}}),
+    ("message_stop", {"type": "message_stop"}),
+)
+
+
+def test_anthropic_stream_folds_to_the_final_message():
+    a = LLM["AnthropicAdapter"]()
+    assert a.parse_stream(ANTHROPIC_SSE) == ANTHROPIC_FINAL
+    # the one reader: the folded message parses exactly like the wire's
+    assert a.parse_response(a.parse_stream(ANTHROPIC_SSE)) == a.parse_response(ANTHROPIC_FINAL)
+    # thinking round-trips whole (signature included, ADR-005 §1.4)
+    think = a.parse_response(a.parse_stream(ANTHROPIC_SSE))["parts"][0]
+    assert think["provider_state"] == ANTHROPIC_FINAL["content"][0]
+
+
+def _chunk(delta=None, finish=None, usage=None, choices=True):
+    c = {"id": "c1", "object": "chat.completion.chunk", "model": "m",
+         "choices": ([{"index": 0, "delta": delta or {}, "finish_reason": finish}]
+                     if choices else [])}
+    if usage is not None:
+        c["usage"] = usage
+    return c
+
+
+OPENAI_USAGE = {"prompt_tokens": 100, "completion_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 7}}
+OPENAI_FINAL = {
+    "id": "c1", "object": "chat.completion.chunk", "model": "m",
+    "choices": [{"index": 0, "message": {
+        "role": "assistant", "content": "Let me compute.", "reasoning_content": "hmm",
+        "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                        "function": {"name": "run_cell", "arguments": "{\"code\": \"1+1\"}"}}]},
+        "finish_reason": "tool_calls"}],
+    "usage": OPENAI_USAGE,
+}
+OPENAI_SSE = "".join(f"data: {json.dumps(c)}\n\n" for c in [
+    _chunk({"role": "assistant", "content": ""}),
+    _chunk({"reasoning_content": "hmm"}),
+    _chunk({"content": "Let me "}),
+    _chunk({"content": "compute."}),
+    _chunk({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                            "function": {"name": "run_cell", "arguments": ""}}]}),
+    _chunk({"tool_calls": [{"index": 0, "function": {"arguments": "{\"code\": "}}]}),
+    _chunk({"tool_calls": [{"index": 0, "function": {"arguments": "\"1+1\"}"}}]}),
+    _chunk({}, finish="tool_calls"),
+    _chunk(usage=OPENAI_USAGE, choices=False),
+]) + "data: [DONE]\n\n"
+
+
+def test_openai_stream_folds_to_the_final_completion():
+    a = LLM["OpenAICompatAdapter"]()
+    assert a.parse_stream(OPENAI_SSE) == OPENAI_FINAL
+    norm = LLM["_normalize_openai_compat"]
+    folded, wire = norm(a.parse_stream(OPENAI_SSE)), norm(OPENAI_FINAL)
+    assert a.parse_response(folded) == a.parse_response(wire)
+
+
+def test_openai_stream_keeps_openrouter_reasoning_fields():
+    # OpenRouter streams `reasoning` text + `reasoning_details` items —
+    # both must survive the fold so normalize/parse see them as on the
+    # non-streaming wire (`roundtrip` continuity, ADR-005 §1.4)
+    a = LLM["OpenAICompatAdapter"]()
+    sse = "".join(f"data: {json.dumps(c)}\n\n" for c in [
+        _chunk({"reasoning": "why ",
+                "reasoning_details": [{"type": "reasoning.text", "text": "why "}]}),
+        _chunk({"reasoning": "not",
+                "reasoning_details": [{"type": "reasoning.text", "text": "not"}]}),
+        _chunk({"content": "ok"}, finish="stop"),
+    ]) + "data: [DONE]\n\n"
+    msg = a.parse_stream(sse)["choices"][0]["message"]
+    assert msg["reasoning"] == "why not"
+    assert msg["reasoning_details"] == [{"type": "reasoning.text", "text": "why "},
+                                        {"type": "reasoning.text", "text": "not"}]
+    assert msg["content"] == "ok"
+
+
+def test_chat_streams_with_idle_and_total_timeouts():
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic"},
+                    body=ANTHROPIC_SSE)
+    reply = load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    post = host.posts[0]
+    assert post["stream"] is True and post["json"]["stream"] is True
+    assert post["timeout"] == {"idle": 60, "total": 900}
+    assert reply["stop"] == "tool" and reply["usage"]["out"] == 30
+
+
+def test_chat_openai_stream_asks_for_usage():
+    host = FakeHost({"provider": "openai-compat", "model": "m", "base_url": "https://api.openai.com/v1",
+                     "api_key_ref": "llm.key.openai"}, body=OPENAI_SSE)
+    load(host)["chat"](MSGS)
+    req = host.posts[0]["json"]
+    assert req["stream"] is True and req["stream_options"] == {"include_usage": True}
+
+
+def test_chat_tier_row_overrides_the_timeouts():
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic",
+                     "timeout": {"idle": 1, "total": 5}}, body=ANTHROPIC_SSE)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["timeout"] == {"idle": 1, "total": 5}
+
+
+def test_chat_reads_a_json_answer_to_a_stream_request():
+    # a proxy that ignores `stream` answers JSON — still one reader
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic"},
+                    body=ANTHROPIC_DONE_RESP)
+    assert load(host)["chat"](MSGS)["stop"] == "done"
+
+
+OVERLOADED_SSE = _sse(
+    ("message_start", {"type": "message_start", "message": {
+        "id": "m", "content": [], "usage": {"input_tokens": 1, "output_tokens": 0}}}),
+    ("error", {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
+
+
+def test_chat_stream_error_event_is_retried_like_the_status():
+    # Anthropic signals overload under an open stream as an `error`
+    # event on a 200 — the same three attempts a 529 status gets
+    host = ScriptedHost([(200, OVERLOADED_SSE), (200, OVERLOADED_SSE), (200, ANTHROPIC_SSE)])
+    reply = load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    assert reply["stop"] == "tool"
+    assert len(host.posts) == 3 and host.sleeps == [1, 4]
+
+
+def test_chat_stream_error_event_is_a_typed_provider_error_after_the_retries():
+    host = ScriptedHost([(200, OVERLOADED_SSE)] * 3 + [OK])
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == 529 and "Overloaded" in str(e.value)
+    assert len(host.posts) == 3 and host.outcomes == [OK]
+
+
+@pytest.mark.parametrize("body", [
+    ANTHROPIC_SSE.split("event: message_stop")[0],   # cut before the terminator
+    ANTHROPIC_SSE.split("event: content_block_stop")[0],   # cut mid-text
+    "",                                               # a 200 with no bytes
+    "<html>gateway error</html>",                     # a proxy's error page
+], ids=["no-message-stop", "mid-text", "empty", "html"])
+def test_chat_cut_stream_is_incomplete_and_retried_never_done(body):
+    # a dropped connection or a zero-byte 200 used to fold to a
+    # half-sentence with stop=done — posted as the final answer
+    host = ScriptedHost([(200, body), (200, ANTHROPIC_SSE)])
+    reply = load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    assert reply["stop"] == "tool" and len(host.posts) == 2 and host.sleeps == [1]
+    host = ScriptedHost([(200, body)] * 3 + [OK])
+    g = load(host)
+    with pytest.raises(g["IncompleteReply"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == 502 and "incomplete" in str(e.value)
+
+
+def test_openai_cut_stream_is_incomplete():
+    a = LLM["OpenAICompatAdapter"]()
+    cut = OPENAI_SSE.split("data: [DONE]")[0]          # [DONE] lost, finish_reason kept
+    assert a.parse_stream(cut)["choices"][0]["finish_reason"] == "tool_calls"
+    cut = "".join(f"data: {json.dumps(c)}\n\n" for c in [_chunk({"content": "Half an ans"})])
+    with pytest.raises(LLM["IncompleteReply"]):
+        a.parse_stream(cut)
+
+
+def test_chat_total_timeout_failure_is_not_retried():
+    # the provider generated for the whole `total` — three of those
+    # outrun every run deadline (PR #58 review G4)
+    total = transport(f"{URL}: stream exceeded the total timeout of 900s")
+    host = ScriptedHost([total, OK])
+    with pytest.raises(EffectError) as e:
+        load(host)["chat"](MSGS)
+    assert "total timeout" in str(e.value)
+    assert len(host.posts) == 1 and host.sleeps == []
+
+
+def test_chat_tier_row_turns_streaming_off():
+    host = FakeHost({"provider": "openai-compat", "model": "m", "base_url": "https://api.openai.com/v1",
+                     "api_key_ref": "llm.key.openai", "stream": False}, body=OPENAI_FINAL)
+    reply = load(host)["chat"](MSGS)
+    post = host.posts[0]
+    assert post["stream"] is False and post["timeout"] == 900
+    assert post["json"]["stream"] is False and "stream_options" not in post["json"]
+    assert reply["stop"] == "tool"
+
+
+def test_chat_options_stream_false_is_followed_by_the_host_flag():
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic",
+                     "options": {"stream": False}}, body=ANTHROPIC_DONE_RESP)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["stream"] is False and host.posts[0]["json"]["stream"] is False
+
+
+def test_chat_local_backends_default_to_the_plain_wire():
+    host = FakeHost({"provider": "openai-compat", "model": "llama3", "backend": "ollama",
+                     "base_url": "http://127.0.0.1:11434/v1", "api_key_ref": None},
+                    body=OPENAI_FINAL)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["stream"] is False and host.posts[0]["json"]["stream"] is False
+    host = FakeHost({"provider": "openai-compat", "model": "llama3", "backend": "ollama",
+                     "base_url": "http://127.0.0.1:11434/v1", "api_key_ref": None,
+                     "stream": True}, body=OPENAI_SSE)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["stream"] is True
+
+
+def test_openai_stream_without_usage_is_marked_missing():
+    # a server that ignores stream_options: zeros are no count
+    a = LLM["OpenAICompatAdapter"]()
+    sse = "".join(f"data: {json.dumps(c)}\n\n" for c in [
+        _chunk({"content": "ok"}, finish="stop")]) + "data: [DONE]\n\n"
+    usage = a.parse_response(LLM["_normalize_openai_compat"](a.parse_stream(sse)))["usage"]
+    assert usage == {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "missing": True}
+    assert "missing" not in a.parse_response(OPENAI_FINAL)["usage"]
+
+
+# --- the fold under a lossy or odd stream (PR #58 review) --------------------
+
+def _anthropic_sse(*blocks_events, stop="end_turn"):
+    start = ("message_start", {"type": "message_start", "message": {
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+        "content": [], "usage": {"input_tokens": 10, "output_tokens": 1}}})
+    end = (("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop},
+                              "usage": {"output_tokens": 5}}),
+           ("message_stop", {"type": "message_stop"}))
+    return _sse(start, *blocks_events, *end)
+
+
+def test_anthropic_stream_partial_tool_input_is_an_error_part():
+    # max_tokens mid-tool-call: the partial JSON must not raise out of
+    # chat() — it folds like the OpenAI wire's malformed-arguments case
+    sse = _anthropic_sse(
+        ("content_block_start", {"type": "content_block_start", "index": 0,
+                                 "content_block": {"type": "tool_use", "id": "toolu_1",
+                                                   "name": "run_cell", "input": {}}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                 "delta": {"type": "input_json_delta",
+                                           "partial_json": "{\"code\": \"print(4"}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        stop="max_tokens")
+    a = LLM["AnthropicAdapter"]()
+    reply = a.parse_response(a.parse_stream(sse))
+    part = reply["parts"][0]
+    assert part["type"] == "tool_call" and part["args"] == {}
+    assert part["error"].startswith("unparseable tool input") and "print(4" in part["error"]
+    assert reply["stop"] == "length"
+
+
+def test_anthropic_stream_tolerates_a_lossy_relay():
+    # a delta for a block that never started opens it; a hole in the
+    # indices is dropped; nothing is None when parse_response reads it
+    sse = _anthropic_sse(
+        ("content_block_delta", {"type": "content_block_delta", "index": 2,
+                                 "delta": {"type": "text_delta", "text": "late "}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 2,
+                                 "delta": {"type": "text_delta", "text": "start"}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 2}))
+    a = LLM["AnthropicAdapter"]()
+    folded = a.parse_stream(sse)
+    assert folded["content"] == [{"type": "text", "text": "late start"}]
+    assert a.parse_response(folded)["parts"] == [{"type": "text", "text": "late start"}]
+
+
+def test_sse_events_split_on_newline_only():
+    # U+2028 / U+2029 / U+0085 are legal raw inside a JSON string and
+    # `splitlines()` would cut the data line there; `\r\n` endings too
+    text = "event: x\r\ndata: " + json.dumps({"t": "a b c\u0085d"}) + "\r\n\r\n"
+    events = LLM["_sse_events"](text)
+    assert events == [("x", json.dumps({"t": "a b c\u0085d"}))]
+    assert json.loads(events[0][1])["t"] == "a b c\u0085d"
+
+
+def _openai_sse(*chunks):
+    return "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+
+
+def test_openai_stream_tool_call_without_index_continues_the_last_call():
+    # vLLM / llama.cpp style: no `index` on any tool_call chunk
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(
+        _chunk({"tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "run_cell", "arguments": ""}}]}),
+        _chunk({"tool_calls": [{"function": {"arguments": "{\"code\": "}}]}),
+        _chunk({"tool_calls": [{"function": {"arguments": "\"1+1\"}"}}]}),
+        _chunk({}, finish="tool_calls"))
+    calls = a.parse_stream(sse)["choices"][0]["message"]["tool_calls"]
+    assert len(calls) == 1 and calls[0]["id"] == "call_1"
+    assert calls[0]["function"]["arguments"] == "{\"code\": \"1+1\"}"
+    norm = LLM["_normalize_openai_compat"]
+    assert a.parse_response(norm(a.parse_stream(sse)))["parts"][0]["args"] == {"code": "1+1"}
+
+
+def test_openai_stream_tool_call_index_is_coerced_and_null_id_never_pins():
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(
+        _chunk({"tool_calls": [{"index": "0", "id": None, "type": "function",
+                                "function": {"name": "run_cell", "arguments": ""}}]}),
+        _chunk({"tool_calls": [{"index": 0, "id": "call_1",
+                                "function": {"arguments": "{}"}}]}),
+        _chunk({"tool_calls": [{"index": "1", "id": "call_2", "type": "function",
+                                "function": {"name": "other", "arguments": "{}"}}]}),
+        _chunk({}, finish="tool_calls"))
+    calls = a.parse_stream(sse)["choices"][0]["message"]["tool_calls"]
+    assert [c["id"] for c in calls] == ["call_1", "call_2"]
+    assert [c["index"] for c in calls] == [0, 1]
+
+
+def test_openai_tool_calls_are_a_tool_stop_whatever_finish_reason_says():
+    # Gemini's /openai stream: the whole call in one chunk, no `index`,
+    # then a chunk with finish_reason "stop" (its plain wire says
+    # "tool_calls") — the loop must still answer the call
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(
+        _chunk({"role": "assistant", "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "run_cell", "arguments": "{\"code\": \"1+1\"}"},
+             "extra_content": {"google": {"thought_signature": "sig"}}}]}),
+        _chunk({"role": "assistant"}, finish="stop"))
+    reply = a.parse_response(LLM["_normalize_openai_compat"](a.parse_stream(sse)))
+    assert reply["stop"] == "tool"
+    call = reply["parts"][0]
+    assert call["name"] == "run_cell" and call["args"] == {"code": "1+1"}
+    assert call["provider_state"] == {"extra_content": {"google": {"thought_signature": "sig"}}}
+
+
+@pytest.mark.parametrize("err,status,posts", [
+    ({"code": "context_length_exceeded", "type": "invalid_request_error",
+      "message": "too long"}, 400, 1),                    # permanent: raised at once
+    ({"code": "invalid_api_key", "message": "bad key"}, 401, 1),
+    ({"code": "insufficient_quota", "type": "insufficient_quota"}, 402, 1),
+    ({"code": 429, "message": "slow down"}, 429, 3),       # transient: three attempts
+    ({"code": "503", "message": "upstream"}, 503, 3),
+    ({"type": "server_error", "message": "boom"}, 500, 3),
+    ({"message": "??"}, 500, 3),                            # unknown: assumed transient
+], ids=["ctx-len", "bad-key", "quota", "429-int", "503-str", "server_error", "unknown"])
+def test_openai_stream_error_chunk_maps_its_kind_to_a_status(err, status, posts):
+    body = f"data: {json.dumps({'error': err})}\n\n"
+    host = ScriptedHost([(200, body)] * 3 + [OK],
+                        prov={"provider": "openai-compat", "model": "m",
+                              "base_url": "https://api.openai.com/v1",
+                              "api_key_ref": "llm.key.openai"})
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["chat"](MSGS)
+    assert e.value.status == status
+    assert len(host.posts) == posts
+
+
+def test_openai_stream_only_text_fields_concatenate():
+    a = LLM["OpenAICompatAdapter"]()
+    sse = _openai_sse(_chunk({"role": "assistant", "content": "a"}),
+                      _chunk({"role": "assistant", "content": "b"}, finish="stop"))
+    msg = a.parse_stream(sse)["choices"][0]["message"]
+    assert msg["role"] == "assistant" and msg["content"] == "ab"
+
+
+def test_chat_numeric_tier_timeout_is_the_total():
+    # the ADR-002 whole-request spelling on a tier row still works
+    host = FakeHost({"provider": "anthropic", "model": "m",
+                     "base_url": "https://api.anthropic.com", "api_key_ref": "llm.key.anthropic",
+                     "timeout": 300}, body=ANTHROPIC_SSE)
+    load(host)["chat"](MSGS)
+    assert host.posts[0]["timeout"] == {"idle": 60, "total": 300}
 
 
 # --- File parts (ADR-020 §3/§4) ----------------------------------------------

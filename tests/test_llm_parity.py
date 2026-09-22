@@ -230,8 +230,13 @@ class Recorder:
             headers[cred["header"]] = cred.get("prefix", "") + os.environ[_secret_env(cred["ref"])]
         body = json.dumps(payload["json"]).encode()
         req = urllib.request.Request(payload["url"], data=body, headers=headers, method="POST")
+        timeout = payload["timeout"]
+        if isinstance(timeout, dict):
+            # urlopen's timeout is per socket operation — the `idle`
+            # semantics, not `total` (BOB-149; PR #58 review G6)
+            timeout = timeout["idle"]
         try:
-            with urllib.request.urlopen(req, timeout=payload["timeout"]) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 resp = {"status": r.status, "headers": {}, "body": r.read().decode()}
         except urllib.error.HTTPError as e:
             resp = {"status": e.code, "headers": {}, "body": e.read().decode(errors="replace")}
@@ -265,7 +270,8 @@ def _load(host):
     from kernelenv import load_kernel
     k = load_kernel(effect=lambda name, payload: pytest.fail(f"unexpected kernel effect {name!r}"))
     g = {"effect": host, "span": lambda name=None, kind=None: (lambda f: f),
-         "use": lambda spec: pytest.fail(spec), "Blob": k.Blob, "blob": k.blob}
+         "use": lambda spec: pytest.fail(spec), "Blob": k.Blob, "blob": k.blob,
+         "EffectError": type("EffectError", (Exception,), {})}   # the kernel's guest global
     exec(compile(SRC, "llm@v1.py", "exec"), g)
     return g
 

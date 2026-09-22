@@ -424,7 +424,13 @@ _HTTP_WIRE_DOC = """
     is the response TEXT (a raw ref for bytes). That is the shape a
     mock record must supply (ADR-028 §1): `{{"effect": "http.{verb}",
     "input": {{"url": ...}}, "output": {{"status": 500, "body": "boom"}}}}`
-    (not `status_code`, not `text`)."""
+    (not `status_code`, not `text`).
+
+    `stream=True` reads the response as it arrives (SSE): `.text` is
+    the raw event text, still ONE record of the same shape. `timeout`
+    is a whole-request cap in seconds (default 180), or for a stream
+    `{{"idle": 60, "total": 900}}` — no chunk for `idle` s, or `total` s
+    overall, each an EffectError (URLError) (ADR-002 §1)."""
 
 
 class _Http:
@@ -445,7 +451,7 @@ class _Http:
     def get(self, url, **kw):
         """GET `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
-        `response="text"`, and `credential` — the host injects a stored
+        `stream`, `response="text"`, and `credential` — the host injects a stored
         secret AFTER recording, so it never enters guest memory or the
         trace (ADR-021):
           credential={"ref": "local.key.<service>", "header": "Authorization",
@@ -464,7 +470,7 @@ class _Http:
     def head(self, url, **kw):
         """HEAD `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
-        `response="text"`, and `credential` — the host injects a stored
+        `stream`, `response="text"`, and `credential` — the host injects a stored
         secret AFTER recording, so it never enters guest memory or the
         trace (ADR-021):
           credential={"ref": "local.key.<service>", "header": "Authorization",
@@ -483,7 +489,7 @@ class _Http:
     def post(self, url, **kw):
         """POST `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
-        `response="text"`, and `credential` — the host injects a stored
+        `stream`, `response="text"`, and `credential` — the host injects a stored
         secret AFTER recording, so it never enters guest memory or the
         trace (ADR-021):
           credential={"ref": "local.key.<service>", "header": "Authorization",
@@ -502,7 +508,7 @@ class _Http:
     def put(self, url, **kw):
         """PUT `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
-        `response="text"`, and `credential` — the host injects a stored
+        `stream`, `response="text"`, and `credential` — the host injects a stored
         secret AFTER recording, so it never enters guest memory or the
         trace (ADR-021):
           credential={"ref": "local.key.<service>", "header": "Authorization",
@@ -521,7 +527,7 @@ class _Http:
     def patch(self, url, **kw):
         """PATCH `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
-        `response="text"`, and `credential` — the host injects a stored
+        `stream`, `response="text"`, and `credential` — the host injects a stored
         secret AFTER recording, so it never enters guest memory or the
         trace (ADR-021):
           credential={"ref": "local.key.<service>", "header": "Authorization",
@@ -540,7 +546,7 @@ class _Http:
     def delete(self, url, **kw):
         """DELETE `url` → Response (`.status`, `.headers`, `.text` / `.json()`,
         `.blob`). kw: `params`, `headers`, `json` | `body`, `timeout`,
-        `response="text"`, and `credential` — the host injects a stored
+        `stream`, `response="text"`, and `credential` — the host injects a stored
         secret AFTER recording, so it never enters guest memory or the
         trace (ADR-021):
           credential={"ref": "local.key.<service>", "header": "Authorization",
