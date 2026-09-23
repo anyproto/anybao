@@ -588,11 +588,11 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     return texts
 
 
-def _run_model_cells(parts, results):
+def _run_model_cells(parts, results, offered):
     """Run each tool_call part as a cell; a call llm@v1 flagged as
-    malformed (`error`: unparseable arguments) is answered with an
-    is_error result instead of a cell — the model gets to retry.
-    Returns the number of malformed calls."""
+    malformed (`error`: unparseable arguments) or naming a tool not in
+    `offered` is answered with an is_error result instead of a cell —
+    the model gets to retry. Returns the number of malformed calls."""
     malformed = 0
     for part in parts:
         if part["type"] != "tool_call":
@@ -602,6 +602,18 @@ def _run_model_cells(parts, results):
             malformed += 1
             results.append({"type": "tool_result", "call_id": cid,
                             "content": f"Error: {part['error']}",
+                            "is_error": True})
+            continue
+        if part.get("name") not in offered:
+            # an invented name (`llm(file=…)` meaning llm.read) must not
+            # fall through to an empty cell that "succeeds" (BOB-167)
+            malformed += 1
+            names = ", ".join(f"`{n}`" for n in offered)
+            results.append({"type": "tool_result", "call_id": cid,
+                            "content": (f"Error: there is no tool named {part.get('name')!r}"
+                                        f" — the only tools are {names}. Modules and"
+                                        " their methods (llm.read, any.*, …) are Python:"
+                                        " call them inside run_cell(code)."),
                             "is_error": True})
             continue
         if part.get("name") == "bash":
@@ -1076,7 +1088,8 @@ def main(args):
         for t in _texts(reply["parts"]):  # interim text = progress bubble
             bubble(t, False)
         results = []
-        malformed += _run_model_cells(reply["parts"], results)
+        malformed += _run_model_cells(reply["parts"], results,
+                                      [t["name"] for t in tools])
         stats["cells"] += len(results)
         messages.append({"role": "user", "parts": results})
 

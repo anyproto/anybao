@@ -172,7 +172,11 @@ carries tool calls sends `content: null`, never `""`; tool-call
 arguments that fail to parse become a `ToolCall` with `args: None`
 carrying `error`; the loop answers it with an `is_error` ToolResult
 instead of a cell, up to `malformed_retries`, then wraps up (the run
-never dies on a malformed call). Reasoning text
+never dies on a malformed call). A call naming a tool the run did not
+offer (`llm(file=…)` meant as `llm.read` in a cell; `bash` without the
+shell feature) is malformed the same way: an `is_error` result naming
+the offered tools, counted toward `malformed_retries` — never an
+empty cell (amended 2026-09-23; BOB-167). Reasoning text
 (`reasoning_content`/`reasoning`, unified by the backend) is captured
 as a Thinking part; whether it is resent is the profile's `reasoning`
 trait, and the backend carries the provider's resend field

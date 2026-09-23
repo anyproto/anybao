@@ -770,6 +770,35 @@ def test_malformed_calls_over_budget_wrap_up():
     assert "malformed tool calls" in text
 
 
+def test_unknown_tool_name_gets_error_result_not_an_empty_cell():
+    # BOB-167: `llm(file=…)` meaning llm.read ran as an empty cell that
+    # "succeeded"; an unoffered name is refused like a malformed call
+    bad = {"parts": [{"type": "tool_call", "id": "c_llm", "name": "llm",
+                      "args": {"file": "any://f/x", "prompt": "describe"}}],
+           "stop": "tool", "usage": {"in": 10, "out": 5}}
+    w = World([bad, tool_reply(), done_reply("ok")])
+    out = run(w)
+    assert out["stop"] == "done" and out["turns"] == 3
+    assert w.spans.count(("begin", "cell")) == 1
+    err = w.llm_calls[1]["messages"][-1]["parts"][0]
+    assert err["type"] == "tool_result" and err["is_error"]
+    assert err["call_id"] == "c_llm"
+    assert "no tool named 'llm'" in err["content"] and "`run_cell`" in err["content"]
+    assert "`bash`" not in err["content"]   # no shell: bash is not offered
+
+
+def test_unknown_tool_names_count_toward_malformed_budget():
+    bad = {"parts": [{"type": "tool_call", "id": "c", "name": "bash",
+                      "args": {"command": "ls"}}],
+           "stop": "tool", "usage": {"in": 10, "out": 5}}
+    # bash without the shell feature is not offered: refused, never run
+    w = World([bad, bad, done_reply("summary")], traits={"malformed_retries": 1})
+    out = run(w)
+    assert out["stop"] == "wrapup"
+    assert ("begin", "bash") not in w.spans
+    assert "2 malformed tool calls" in w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+
+
 def test_context_ceiling_counts_cached_prompt_tokens():
     # native anthropic with markers: nearly the whole prompt is a cache
     # hit, usage.in stays tiny — the ceiling must see the cached part
