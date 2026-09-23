@@ -196,10 +196,15 @@ PROFILES = {
         "reasoning": "roundtrip", "context_window": 1048576, "max_output": 65536}},
     "kimi": {"match": r"kimi|moonshot", "traits": {
         "reasoning": "roundtrip", "context_window": 262144, "max_output": 32768}},
-    "glm-5": {"match": r"glm-5(?!v)", "traits": {  # glm-5v-* are the vision line
+    # the 5.x flash line (and its glm-flash-latest alias) takes images;
+    # the rest of glm-5 is text-only, glm-5v-* falls to `glm` (BOB-168)
+    "glm-5-flash": {"match": r"glm-(5\.\d+-flash|flash-latest)", "traits": {
+        "reasoning": "roundtrip", "context_window": 1310720, "max_output": 65536}},
+    "glm-5": {"match": r"glm-5(?!v)", "traits": {
         "reasoning": "roundtrip", "context_window": 1310720, "max_output": 65536,
         "vision": False}},
     "glm": {"match": r"glm", "traits": {"context_window": 128000}},
+    "mercury": {"match": r"mercury", "traits": {"vision": False}},  # inception: text-only
     # explicit-only profiles (no match): the tool-carriage fallbacks
     "fenced": {"match": None, "traits": {"tool_mode": "fenced"}},
     "xml": {"match": None, "traits": {"tool_mode": "xml"}},

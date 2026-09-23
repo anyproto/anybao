@@ -414,9 +414,22 @@ def test_unknown_trait_or_value_is_a_config_error():
     ("moonshotai/kimi-k3", "kimi-k3"), ("moonshotai/kimi-k2.6", "kimi"),
     ("deepseek/deepseek-v4-pro-0813", "deepseek-v4"), ("mystery-7b", "generic"),
     ("z-ai/glm-5v-turbo", "glm"), ("deepseek/deepseek-v4-flash-vision-exp", "deepseek"),
+    ("z-ai/glm-5.3-flash", "glm-5-flash"), ("z-ai/glm-5.3-flashx", "glm-5-flash"),
+    ("~z-ai/glm-flash-latest", "glm-5-flash"), ("z-ai/glm-5-turbo", "glm-5"),
+    ("z-ai/glm-4.7-flash", "glm"), ("inception/mercury-2.5", "mercury"),
 ])
 def test_profile_matches_on_model_name(model, profile):
     assert LLM["_profile_name"]({"model": model}) == profile
+
+
+@pytest.mark.parametrize("model,vision", [
+    # OpenRouter input_modalities, 2026-09-23 (BOB-168)
+    ("z-ai/glm-5.3", False), ("z-ai/glm-5.3-flash", True), ("z-ai/glm-5.3-flashx", True),
+    ("inception/mercury-2.5", False),
+])
+def test_vision_trait_follows_the_model_not_the_family(model, vision):
+    assert LLM["_resolve_traits"]({"model": model})[1]["vision"] is vision
+
 
 
 def test_explicit_profile_wins_and_unknown_fails():

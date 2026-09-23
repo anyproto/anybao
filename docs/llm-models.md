@@ -9,7 +9,7 @@ traits through `llm.profile(tier)` and never sees a wire.
 |---|---|---|
 | `ADAPTERS` | the wire family (`anthropic`, `openai-compat`) | message / tool / file / thinking block shapes, stop-reason normalization |
 | `BACKENDS` | where the model is served (`anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `groq`, `together`, `vllm`, `llamacpp`, `ollama`, `generic`) | URL path, credential header + `about` label/help, parameter spelling, cache markers, response/usage field unification |
-| `PROFILES` | the model family (`claude`, `gpt`, `gemini`, `deepseek-r1`, `deepseek`, `qwen3`, `llama`, `gemma`, `mistral`, `glm`; explicit-only `fenced`, `xml`, `generic`) | `traits` — deviations from `GENERIC_TRAITS` |
+| `PROFILES` | the model family (`claude`, `gpt`, `gemini`, `deepseek-r1`, `deepseek`, `qwen3`, `llama`, `gemma`, `mistral`, `kimi-k3`, `kimi`, `deepseek-v4`, `glm-5-flash`, `glm-5`, `glm`, `mercury`; explicit-only `fenced`, `xml`, `generic`) | `traits` — deviations from `GENERIC_TRAITS` |
 
 A tier row (`agent_config` `llm.tier.<tier>`) picks them:
 
@@ -100,7 +100,7 @@ values and defaults in the source, meaning in ADR-005 §1.3.
 | `openai-terra` (`gpt-5.6-terra`) | gpt | openai | 2026-09-01 | direct OpenAI: tools on chat/completions need tier `options {"reasoning_effort": "none"}` (a Responses-API backend is the proper fix); PDF ok as a native `file` part |
 | `openrouter-claude` (`anthropic/claude-sonnet-5`) | claude | openrouter | 2026-09-01 | markers through OpenRouter: `cache_write_tokens` 5214 → `cached_tokens` 5214; `reasoning_details` (signed) resent |
 | `openrouter-kimi-k3` (`moonshotai/kimi-k3`) | kimi-k3 | openrouter | 2026-09-01 | vision ok; implicit cache 3712 on call 2; may return the final answer under `reasoning` with `content` empty (+ leaked `<|close|>` trailer) — lifted to text; loop-verified on the :7005 rig (tool ids `run_cell:N`) |
-| `openrouter-glm-5.3` (`z-ai/glm-5.3`) | glm-5 | openrouter | 2026-09-01 | **text-only** (`vision: false`; `glm-5v-*` is the vision line); implicit cache 3706; **PDF ok** via OpenRouter's parser (`cloudflare-ai`) |
+| `openrouter-glm-5.3` (`z-ai/glm-5.3`) | glm-5 | openrouter | 2026-09-01 | **text-only** (`vision: false`, as is the rest of `glm-5`; the 5.x flash line and `glm-flash-latest` take images — profile `glm-5-flash`, unverified by a golden trace; `glm-5v-*` falls to `glm`); implicit cache 3706; **PDF ok** via OpenRouter's parser (`cloudflare-ai`) |
 | `openrouter-deepseek-v4` (`deepseek/deepseek-v4-pro-0813`) | deepseek-v4 | openrouter | 2026-09-01 | **text-only** (`vision: false`; `deepseek-v4-flash-vision-*` sees); implicit cache 3840; **PDF ok** via OpenRouter's parser |
 
 **PDF** (ADR-020 §3, recorded 2026-09-01): every entry on the
