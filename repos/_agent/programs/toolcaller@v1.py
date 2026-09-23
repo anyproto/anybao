@@ -536,6 +536,28 @@ def _prompt_floor(messages, system, tools):
     return chars // 3 + files * 1500
 
 
+# What the user is told for each wrap-up reason (matched by substring:
+# the reason itself carries the numbers). Left to paraphrase the tag,
+# the model says "I ran out of window", which reads as an unexplained
+# failure (ADR-005 §3).
+_PLAIN_REASONS = (
+    ("context window nearly full",
+     "the working memory for this conversation is full"),
+    ("turn ceiling", "I reached the step limit for one request"),
+    ("token ceiling", "I reached the token budget for one request"),
+    ("user asked to wrap up", "you asked me to stop"),
+    ("response length limit", "my reply hit the length limit"),
+    ("malformed tool calls", "my tool calls kept failing"),
+)
+
+
+def _plain_reason(reason):
+    for key, plain in _PLAIN_REASONS:
+        if key in reason:
+            return plain
+    return "I had to stop early"
+
+
 def _wrapup(messages, llm, system, tier, reason, stats, tools):
     # The wrap-up call keeps the SAME tool list as every other turn:
     # the tools are part of the cached prompt prefix, and dropping them
@@ -545,8 +567,11 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     # answers with a tool call anyway gets one more, tool-less call.
     parts = _dangling(messages, reason)
     parts.append({"type": "text", "text":
-        f"[{reason}] No more cells. Summarize what you did, what is done, "
-        f"and what is still pending."})
+        f"[{reason}] No more cells. Write your final reply to the user: "
+        f"say plainly why you are stopping ({_plain_reason(reason)}) "
+        f"without internal terms, then what is done and what is still "
+        f"pending, and end by telling them to say \"continue\" to pick "
+        f"up where you left off."})
     messages.append({"role": "user", "parts": parts})
     reply = llm.chat(messages, system=system, tier=tier, tools=tools)
     _tally(stats, reply.get("usage", {}))

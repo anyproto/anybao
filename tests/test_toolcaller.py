@@ -779,6 +779,16 @@ def test_context_ceiling_counts_cached_prompt_tokens():
     assert out["stop"] == "wrapup"
     text = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
     assert "context window nearly full (30102/32768)" in text
+    # the user is told why in plain words, and how to resume (BOB-150)
+    assert "working memory for this conversation is full" in text
+    assert 'say "continue"' in text
+
+
+def test_soft_break_wrapup_names_the_user_as_the_reason():
+    w = World([done_reply("wrapped")], mailbox=[{"kind": "break"}])
+    run(w)
+    text = w.llm_calls[-1]["messages"][-1]["parts"][-1]["text"]
+    assert "you asked me to stop" in text
 
 
 def test_missing_usage_budgets_the_ceiling_from_a_prompt_floor():

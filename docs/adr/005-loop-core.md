@@ -330,7 +330,12 @@ with the error digest — the model self-corrects; no fix-loop (settled).
   **wrap-up turn** — a final constrained call ("no more cells;
   summarize state, what's done, what's pending") — never a silent hard
   stop (the no-lossy-truncation doctrine: caps produce a wrap-up, not a
-  cut).
+  cut). The wrap-up message is the user's last word from the run, so
+  it asks for a user-facing reply: the stop reason in plain words
+  (the ceiling's tag, e.g. `context window nearly full (n/m)`, rides
+  along for the trace but is mapped to "the working memory for this
+  conversation is full" and the like), then done / pending, ending
+  with "say *continue* to pick up where I left off".
 - **Mailbox, drained between turns via the `mailbox.drain` syscall.**
   The drain is a recorded effect, so injections and soft breaks are IN
   THE TRACE — a replayed conversation replays its interruptions.
