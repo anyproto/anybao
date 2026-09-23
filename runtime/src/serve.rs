@@ -6,7 +6,7 @@
 //! Conversations and trigger runs are guest programs through the
 //! shared cage.
 
-use crate::anyapi::Client;
+use crate::anyapi::{AnyError, Client};
 use crate::broker::{
     Broker, DeclaredCredentials, PresenceState, SecretSource, SharedMailbox, SharedPresence,
 };
@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// The chat loop's program spec — the "conversation" class for
 /// retention (ADR-023 §6).
@@ -1354,8 +1354,21 @@ fn publish_status_beat(
 ) {
     if let Err(e) = client.publish_event(&status_envelope(identity, status, run, state, role, now))
     {
-        warn!("bao.status beat not published: {e}");
+        if is_signed_out(&e) {
+            debug!("bao.status beat not published: {e}");
+        } else {
+            warn!("bao.status beat not published: {e}");
+        }
     }
+}
+
+/// `401 auth.required`: the server has no account — the embedder signed
+/// out. On a desktop sign-out the host sends `DELETE /v1/auth` while
+/// this serve is still stopping (stop joins up to a heartbeat), so the
+/// last `shutdown` beat lands on a signed-out server. Expected, and
+/// nobody is left to read the beat (BOB-153).
+fn is_signed_out(e: &AnyError) -> bool {
+    e.status == 401 && e.code == "auth.required"
 }
 
 /// The presence loop's carried state — split out so a pass is
@@ -4112,6 +4125,18 @@ mod tests {
         assert_eq!(stamp["title"], "fix the flaky test");
         let stamp = run_stamp("run_2", "myProg@v1", &json!({}));
         assert_eq!(stamp["title"], "myProg@v1"); // deterministic fallback
+    }
+
+    #[test]
+    fn a_signed_out_server_is_not_a_beat_warning() {
+        let err = |status: u16, code: &str| AnyError {
+            status,
+            code: code.into(),
+            message: String::new(),
+        };
+        assert!(is_signed_out(&err(401, "auth.required")));
+        assert!(!is_signed_out(&err(401, "control.forbidden")));
+        assert!(!is_signed_out(&err(500, "internal")));
     }
 
     #[test]
