@@ -1,7 +1,8 @@
 """any@v1's flat surface is GENERATED from the @_public-marked _Client
 methods (ADR-010 §8). Under the real kernel span machinery: every marked
 method is exported with its doc, the span input keeps the parameter-keyed
-shape recordings and mocks match on, and a bad call names the function."""
+shape recordings and mocks match on, unlisted plumbing stays callable
+but out of describe(), and a bad call names the function."""
 
 import contextlib
 import json
@@ -64,6 +65,16 @@ def test_signature_renders_spaceconfig_first_without_self():
     assert app.describe(mod.create_object).startswith(
         "create_object(spaceConfig, body, create_options=True, parent=None, folder=None) [mutator]")
     assert app.describe(mod.list_spaces).startswith("list_spaces(raw=False) [getter]")
+
+
+def test_unlisted_plumbing_is_callable_but_out_of_listings():
+    app, mod, _ = _kernel()
+    listing = app.describe(mod)
+    for n in ("append_turn", "create_chunk", "create_memory", "ensure_bundle", "modify"):
+        assert f"\n  {n}(" not in listing, n
+        assert callable(getattr(mod, n)) and getattr(mod, n).__doc__
+        assert app.describe(getattr(mod, n)).startswith(n + "(")
+    assert "\n  create_object(" in listing and "\n  chat_log(" in listing
 
 
 def test_a_bad_call_names_the_function():

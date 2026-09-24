@@ -2,8 +2,8 @@
 
 Status: **Accepted** (2026-07-28), amended 2026-07-28 (§1 hard caps;
 §4 toolhood is declared, not derived — the shape heuristic misfired
-on loop plumbing; §5 summary not indexed), amended 2026-09-24 (§8
-generated any@v1 surface — BOB-160), 2026-08-04 (§8
+on loop plumbing; §5 summary not indexed), amended 2026-09-24 (§1
+listed marker, §8 generated any@v1 surface — BOB-160), 2026-08-04 (§8
 flat tool surface — `any@v1` drops the `client()` binder for
 module-level functions with a `spaceConfig` first arg + bound space
 globals; handle methods were invisible to §3's inventory and the
@@ -63,7 +63,11 @@ Docstrings are the ONLY authored program documentation.
   capability gate (ADR-002).
 - **Visibility**: public `def` = visible; leading underscore =
   hidden. `main` is the run entry point, not a method — method
-  listings exclude it.
+  listings exclude it. A public function carrying `__any_listed__ =
+  False` stays callable (and `help(fn)` still renders it) but is left
+  out of module listings, `## Tools` included: harness plumbing other
+  programs call, which the model never should (amendment 2026-09-24,
+  BOB-160).
 - **Credentials** (ADR-021 §8.1, 2026-09-14): a module that
   sends a `connector.key.*` / `llm.key.*` ref declares it in a
   module-level `__any_credentials__ = [{"ref", "about"}]`; deploy
@@ -233,7 +237,7 @@ prevent, caused by the one place the renderer couldn't see.
   primary API is public module-level functions — every one of them
   renders into `## Tools` by §3 with no renderer change. In `any@v1`
   the surface is GENERATED (amendment 2026-09-24, BOB-160): each
-  `_Client` method marked `@_public(kind, scoped=True)`
+  `_Client` method marked `@_public(kind, scoped=True, listed=True)`
   becomes a module function carrying the method's docstring and
   signature (`self` dropped, the first parameter renamed `spaceConfig`
   when scoped), spanned with the parameter-keyed input the hand-written

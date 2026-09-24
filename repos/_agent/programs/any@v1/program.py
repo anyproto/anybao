@@ -449,14 +449,16 @@ def _pick_color(key):
     return _OPTION_COLORS[sum(ord(ch) for ch in key) % len(_OPTION_COLORS)]
 
 
-def _public(kind, scoped=True):
+def _public(kind, scoped=True, listed=True):
     """Mark a _Client method as part of the flat module surface (ADR-010
     §8): the export loop at the end of this module turns every marked
     method into a module function with the method's doc and signature —
     `self` dropped, the first parameter renamed `spaceConfig` when
-    `scoped` (resolved to a space id per call). `kind` is the span kind."""
+    `scoped` (resolved to a space id per call). `kind` is the span kind;
+    `listed=False` keeps the function callable but out of listings
+    (ADR-010 §1): harness plumbing other programs call, not the model."""
     def mark(method):
-        method.__any_public__ = (kind, scoped)
+        method.__any_public__ = (kind, scoped, listed)
         return method
     return mark
 
@@ -1863,7 +1865,7 @@ class _Client:
         body.update({k: v for k, v in opts.items() if v is not None})
         return self._call("post", f"/v1/spaces/{space}/query", body).get("records", [])
 
-    @_public('mutator')
+    @_public('mutator', listed=False)
     def modify(self, space, body):
         """Low-level dataset write; prefer upsert_record / create_object.
 
@@ -2889,7 +2891,7 @@ class _Client:
         enc = bundle_id.replace("/", "%2F").replace(":", "%3A")
         return f"/v1/spaces/{space}/bundles/{enc}{tail}"
 
-    @_public('mutator')
+    @_public('mutator', listed=False)
     def ensure_bundle(self, space, bundle_id, name=None, root_type=None,
                       root_collections=None, root_properties=None, derived=False):
         """Adopt-or-install a bundle → {bundle: {id, name, rootId,
@@ -2932,7 +2934,7 @@ class _Client:
             body["derived"] = True
         return self._call("post", f"/v1/spaces/{space}/bundles", body)
 
-    @_public('getter')
+    @_public('getter', listed=False)
     def list_bundles(self, space):
         """The space's bundles registry rows → [{id, name, rootId,
         roots, losers?}]. Read-only; non-empty `losers` = a resolved
@@ -2940,7 +2942,7 @@ class _Client:
         r = self._call("get", f"/v1/spaces/{space}/bundles")
         return r.get("bundles") or []
 
-    @_public('getter')
+    @_public('getter', listed=False)
     def get_bundle(self, space, bundle_id):
         """One registry row → {id, name, rootId, roots, losers?,
         derived, synced}; 404 bundle.not_found when nobody ensured it
@@ -2979,7 +2981,7 @@ class _Client:
                     "type": tid, "collections": cids}
         return {"objectId": self._bundle_children[key]}
 
-    @_public('mutator')
+    @_public('mutator', listed=False)
     def resolve_loser(self, space, bundle_id, loser_root_id):
         """Cascade-delete a losing bundle root after merging what
         matters out of it → {} (idempotent). 409 bundle.loser_not_ready
@@ -3029,7 +3031,7 @@ class _Client:
                           sort=["-id"], limit=1)
         return (int(rows[0]["id"]) if rows else 0) + 1
 
-    @_public('mutator')
+    @_public('mutator', listed=False)
     def append_turn(self, space, chat_id, body):
         """Append an `agent_turns` record on the chat's log child.
         Harness-level; conversations write these for you. Fields:
@@ -3043,7 +3045,7 @@ class _Client:
         return self._append_log(space, chat_id, "agent_turns", body,
                                 search_text=True)
 
-    @_public('mutator')
+    @_public('mutator', listed=False)
     def create_chunk(self, space, chat_id, body):
         """Append a compressed history chunk record (harness-level;
         rollup). Fields: `{seq?, level?, fromAgent?, summary,
@@ -3405,7 +3407,7 @@ class _Client:
         self._ensured_stores[key] = colls
         return colls
 
-    @_public('getter', scoped=False)
+    @_public('getter', scoped=False, listed=False)
     def bao_space(self):
         """The bao space id — memory's only home (ADR-017 §0). Wired by
         the runtime (serve; `run --from-space` or a `bao.space` config
@@ -3431,7 +3433,7 @@ class _Client:
                             _ROI_DATASET])
         return self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
 
-    @_public('getter')
+    @_public('getter', listed=False)
     def collection(self, space, type_key, dataset_key):
         """The collection a type's dataset lives in (`<typeId>_<key>`),
         for callers that address the wire themselves — every any@v1
@@ -3441,7 +3443,7 @@ class _Client:
         return next((d.get("collection") for d in self._datasets_of(space, tid)
                      if d.get("key") == dataset_key), None)
 
-    @_public('mutator', scoped=False)
+    @_public('mutator', scoped=False, listed=False)
     def create_memory(self, fields):
         """Create a memory item (category + context required) in the
         bao space's brain — memory's only home.
@@ -3483,7 +3485,7 @@ class _Client:
             "objectId": brain, "dataset": "agent_memory_items",
             "records": [{"id": "", "upsert": True, "ops": ops}]})
 
-    @_public('mutator', scoped=False)
+    @_public('mutator', scoped=False, listed=False)
     def evolve_memory(self, item_id, fields):
         """Evolve a memory item's mutable fields (author-only).
 
@@ -3509,7 +3511,7 @@ class _Client:
             "objectId": brain, "dataset": "agent_memory_items",
             "records": [{"id": item_id, "ops": ops}]})
 
-    @_public('mutator', scoped=False)
+    @_public('mutator', scoped=False, listed=False)
     def delete_memory(self, item_id):
         """Delete a memory item by id (author-only — the dataset's
         deleteBy gate)."""
@@ -3805,7 +3807,7 @@ def _named(bound):
 
 
 def _export(name, method):
-    kind, scoped = method.__any_public__
+    kind, scoped, listed = method.__any_public__
     sig = inspect.signature(method)
     params = list(sig.parameters.values())[1:]            # drop self
     target = params[0].name if scoped else None           # the method's `space`
@@ -3830,6 +3832,7 @@ def _export(name, method):
     fn.__doc__ = method.__doc__
     fn.__signature__ = public
     fn.__span_kind__ = kind
+    fn.__any_listed__ = listed
     return fn
 
 

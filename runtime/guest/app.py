@@ -1007,7 +1007,8 @@ def describe(obj):
     """Render an object's API from its code (ADR-010 §2): function →
     `name(sig) [kind]` + full docstring; module/class/instance →
     docstring, then one `name(sig) [kind] — summary` line per public
-    method (`_`-names and `main` hidden, ADR-010 §1). ONE renderer:
+    method (`_`-names, `main` and `__any_listed__ = False` hidden,
+    ADR-010 §1). ONE renderer:
     help() prints this and the toolcaller's `## Tools` embeds it."""
     if inspect.isroutine(obj):
         doc = inspect.getdoc(obj) or ""
@@ -1023,7 +1024,9 @@ def describe(obj):
                  if isinstance(f, types.FunctionType)]
     lines = []
     for n, f in items:
-        if n.startswith("_") or n == "main":
+        # `_`-names, `main` and functions marked `__any_listed__ = False`
+        # (callable plumbing, ADR-010 §1) stay out of listings
+        if n.startswith("_") or n == "main" or getattr(f, "__any_listed__", True) is False:
             continue
         summary = _first_doc_line(f)
         lines.append("  " + _fn_heading(n, f)
