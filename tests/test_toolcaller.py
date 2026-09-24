@@ -633,24 +633,22 @@ def test_tool_docs_two_tier_prefixes_and_shadows():
     docs = g["_tool_docs"](TwoSpaces(), "user", "code")
     # shipped-only tool imports through the agent: alias; its body is
     # describe(use(spec)) — rendered from code, not from datasets
-    assert 'Import: `use("agent:shippedOnly@v1")`' in docs
-    assert "described:agent:shippedOnly@v1" in docs
+    assert ('- **shippedOnly** `use("agent:shippedOnly@v1")` — '
+            "described:agent:shippedOnly@v1") in docs
     # the user-space webSearch shadows the shipped one: the DISPLAYED
     # import stays unqualified (cell code resolves it locally), while
     # the render loads space-qualified — compose is overlay module
     # code, whose unqualified use() would miss the working space
     # (ADR-004 §2.4 / ADR-013 §1)
-    assert 'Import: `use("webSearch@v1")`' in docs
-    assert "described:user:webSearch@v1" in docs
+    assert '- **webSearch** `use("webSearch@v1")` — described:user:webSearch@v1' in docs
     assert "agent:webSearch" not in docs
 
 
 def test_tool_docs_degenerate_has_no_prefix():
     g = _helpers()
     docs = g["_tool_docs"](TwoSpaces(), "code", "code")
-    assert 'Import: `use("webSearch@v1")`' in docs
+    assert '`use("webSearch@v1")` — described:code:webSearch@v1' in docs  # loads qualified
     assert "agent:" not in docs
-    assert "described:code:webSearch@v1" in docs  # render loads qualified
 
 
 def test_tool_docs_broken_tool_lists_with_error():
@@ -659,9 +657,25 @@ def test_tool_docs_broken_tool_lists_with_error():
     two = TwoSpaces()
     two.tools["code"].append(("p3", "broken", "v1", {"$date": 3000}, "x"))
     docs = g["_tool_docs"](two, "code", "code")
-    assert "### broken" in docs
-    assert "(unavailable: ValueError: boom)" in docs
-    assert "### webSearch" in docs  # the rest still composed
+    assert "- **broken** `use(\"broken@v1\")` — (unavailable: ValueError: boom)" in docs
+    assert "- **webSearch**" in docs  # the rest still composed
+
+
+def test_tool_listing_is_one_line_unless_the_module_asks_for_names():
+    """ADR-010 §3: a tool rides `## Tools` as its docstring's summary line;
+    `__any_listing__ = "names"` keeps the docstring and lists method names."""
+    g = _helpers()
+    g["describe"] = lambda mod: ("The x client — one line.\n\nMore about x.\n\nMethods:\n"
+                                 "  get(space, id) [getter] — Read one.\n"
+                                 "  put(space, id, v) [mutator] — Write one.")
+    plain = type("M", (), {})()
+    assert g["_tool_listing"](plain) == ("The x client — one line.", None)
+    named = type("M", (), {"__any_listing__": "names"})()
+    summary, section = g["_tool_listing"](named)
+    assert summary == "The x client — one line."
+    assert section.startswith("The x client — one line.\n\nMore about x.")
+    assert section.endswith("signature and doc): get, put")
+    assert "Read one" not in section
 
 
 def test_repo_inventory_lists_readme_first_line():

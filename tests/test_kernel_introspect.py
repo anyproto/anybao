@@ -119,8 +119,10 @@ def test_help_prints_through_the_cell_printer():
 
 def test_tool_docs_composes_from_real_programs():
     """The ## Tools block (toolcaller `_tool_docs`, ADR-010 §3) built
-    from REAL program sources through the real kernel: docstring +
-    signature lines, kind tags from @span, binder pattern intact."""
+    from REAL program sources through the real kernel: one line per tool
+    (its docstring summary), help() serves the methods; any@v1 declares
+    `__any_listing__ = "names"` and keeps a section with its method names
+    — listed ones only."""
     app = load_kernel(effect=lambda n, p: {})
     tc = app.use("toolcaller@v1")
 
@@ -130,6 +132,8 @@ def test_tool_docs_composes_from_real_programs():
 
         def query_objects(self, space, filter=None, **kw):
             return [
+                {"id": "p0", "createdAt": 0, "program":
+                    {"name": "any", "version": "v1", "any_tool": True}},
                 {"id": "p1", "createdAt": 1, "program":
                     {"name": "webSearch", "version": "v1", "any_tool": True}},
                 {"id": "p2", "createdAt": 2, "program":
@@ -138,16 +142,15 @@ def test_tool_docs_composes_from_real_programs():
 
     docs = tc._tool_docs(C(), "space")
     assert docs.startswith("## Tools")
-    assert "### webSearch" in docs
-    assert "Grounded web search" in docs                       # module docstring
-    assert ("search(*queries) [getter] — Run one or more web searches; "
-            "one formatted string per query.") in docs
-    assert "### memory" in docs
-    assert "memory(client, llm_chat=None) [setup]" in docs
-    # handle methods stay behind help(m) — no method line for them
-    assert "  save_with_dedup(" not in docs
-    assert "_provider" not in docs         # underscore names hidden
-    assert "\n  main(" not in docs         # entry point excluded
+    assert ('- **webSearch** `use("webSearch@v1")` — Grounded web search — '
+            "synthesized answers with real source urls.") in docs
+    assert "- **memory** `use(\"memory@v1\")` — " in docs
+    assert "search(*queries)" not in docs              # methods are help()'s
+    assert "### any" in docs and 'Import: `use("any@v1")`' in docs
+    names = docs.split("signature and doc): ", 1)[1].split("\n", 1)[0].split(", ")
+    assert "create_object" in names and "query_objects" in names
+    assert "append_turn" not in names and "create_memory" not in names   # unlisted
+    assert "  create_object(" not in docs              # names, not signatures
 
 
 def test_import_error_teaches_inspect_and_help():

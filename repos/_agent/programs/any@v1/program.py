@@ -7,6 +7,7 @@ xKey-nested. Errors raise `AnyError` ({code, message} from the wire);
 a bad spaceConfig is a TypeError naming the accepted forms."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
+__any_listing__ = "names"  # `## Tools` lists the method names (ADR-010 §3)
 
 # Built on the http syscall: JSON transport, error-envelope mapping
 # (AnyError), the NUL write guard, typed per-route calls.

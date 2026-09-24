@@ -3,7 +3,9 @@ only line listings (`## Tools`, help(mod)) show — then a blank line and
 the body. A summary wrapped onto a second line renders cut mid-sentence;
 a missing docstring renders nothing. Checked on the LOADED modules under
 the real kernel, so generated surfaces (any@v1's @_public export) count
-exactly as describe() sees them; unlisted plumbing is exempt."""
+exactly as describe() sees them; unlisted plumbing is exempt. The module
+docstring's first line is the tool's whole `## Tools` entry (§3): it
+stands alone too, within §1's 80-char cap."""
 
 import inspect
 import types
@@ -57,6 +59,9 @@ def test_every_listed_method_opens_with_one_summary_line(alias, spec):
     app = load_kernel(effect=effect, programs_dir=REPOS[alias], module_source=_cross_repo)
     mod = app.use(spec)
     bad = []
+    head = (inspect.getdoc(mod) or "").split("\n")
+    if len(head) > 1 and head[1].strip() or len(head[0]) > 80:
+        bad.append(f"module docstring: its first line must stand alone, ≤ 80 chars — {head[0]!r}")
     for n, f in _listed_functions(mod):
         lines = (inspect.getdoc(f) or "").split("\n")
         if not lines[0].strip():

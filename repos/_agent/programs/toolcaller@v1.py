@@ -767,20 +767,36 @@ def _compose_skills(skills, has_shell=False):
 
 _TOOLS_INTRO = (
     "## Tools\n\n"
-    "Each tool is a program reached with `use(...)` — the exact spec is on "
-    "the tool's `Import:` line. Below, per tool: its description, then one "
-    "`name(signature) [kind] — summary` line per method, rendered from the "
-    "code itself. `[getter]` reads, `[mutator]` writes / side effects, "
-    "`[setup]` is a binder you call once to get a handle (the handle's API: "
-    "`help(handle)`).")
+    "Programs reached with `use(...)`, one line each. Before a tool's first "
+    "use in a conversation, `help(mod)` in the cell that imports it: every "
+    "method with its signature, kind (`[getter]` reads, `[mutator]` writes / "
+    "side effects, `[setup]` is a binder you call once to get a handle — "
+    "`help(handle)` for its API) and summary; `help(mod.method)` gives the "
+    "full doc. A tool listed with its methods skips that first help().")
 
 
 _TOOLS_INTRO_COMPACT = (
     "## Tools\n\n"
-    "Programs reached with `use(...)` (spec on each `Import:` line). Per "
-    "tool: description, then `name(signature) [kind] — summary` per method "
-    "(`[getter]` reads, `[mutator]` writes, `[setup]` returns a handle). "
-    "`help(mod.method)` shows the full doc — check before calling.")
+    "Programs reached with `use(...)`, one line each. `help(mod)` in the cell "
+    "that imports a tool, before its first call: methods, `[getter]`/"
+    "`[mutator]`/`[setup]` kind, summary; `help(mod.method)` the full doc.")
+
+
+def _tool_listing(mod):
+    """What a tool contributes to `## Tools` (ADR-010 §3): its module
+    docstring's summary line — help(mod) serves the methods on first use.
+    A module declaring `__any_listing__ = "names"` (any@v1: used nearly
+    every turn, and its help() is too big for one digest) keeps its whole
+    docstring plus its method names. Both are cut from describe(), still
+    the one renderer. → (summary, section or None)."""
+    text = describe(mod)  # noqa: F821 - guest global
+    head, _, methods = text.partition("\n\nMethods:\n")
+    summary = head.split("\n", 1)[0]
+    if getattr(mod, "__any_listing__", None) != "names":
+        return summary, None
+    names = re.findall(r"^  (\w+)\(", methods, re.M)
+    return summary, (head + "\n\nMethods (`help(c.<name>)` for signature and "
+                     "doc): " + ", ".join(names))
 
 
 def _tool_docs(c, space, code_space=None, style="full"):
@@ -816,18 +832,21 @@ def _tool_docs(c, space, code_space=None, style="full"):
                 # load; the displayed Import: line stays `spec` — the
                 # form cell code should use, where it resolves locally
                 load = spec if prefix else f"{sp}:{name}@{ver}"
-                body = describe(use(load))  # noqa: F821 - guest globals
+                summary, section = _tool_listing(use(load))  # noqa: F821 - guest global
             except Exception as e:
-                body = f"(unavailable: {type(e).__name__}: {e})"
-            block = [f"### {name}", f'Import: `use("{spec}")`', body]
+                summary, section = f"(unavailable: {type(e).__name__}: {e})", None
+            block = (f'### {name}\n\nImport: `use("{spec}")`\n\n{section}' if section
+                     else f'- **{name}** `use("{spec}")` — {summary}')
             # dict by name: a later source (the working space) shadows
             tools[name] = (ts_s(p.get("createdAt")) or 0, name,  # noqa: F821
-                           "\n\n".join(b for b in block if b))
+                           bool(section), block)
     if not tools:
         return ""
     rows = sorted(tools.values(), key=lambda t: (t[0], t[1]))
+    sections = [b for _, _, sec, b in rows if sec]
+    lines = [b for _, _, sec, b in rows if not sec]
     intro = _TOOLS_INTRO_COMPACT if style == "compact" else _TOOLS_INTRO
-    return intro + "\n\n" + "\n\n".join(b for _, _, b in rows)
+    return "\n\n".join([intro, *sections] + (["\n".join(lines)] if lines else []))
 
 
 def _skill_rows(c, space):

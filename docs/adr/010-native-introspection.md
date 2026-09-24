@@ -3,7 +3,8 @@
 Status: **Accepted** (2026-07-28), amended 2026-07-28 (§1 hard caps;
 §4 toolhood is declared, not derived — the shape heuristic misfired
 on loop plumbing; §5 summary not indexed), amended 2026-09-24 (§1
-listed marker, §8 generated any@v1 surface — BOB-160), 2026-08-04 (§8
+listed marker, §3 one line per tool + `__any_listing__`, §8 generated
+any@v1 surface — BOB-160), 2026-08-04 (§8
 flat tool surface — `any@v1` drops the `client()` binder for
 module-level functions with a `spaceConfig` first arg + bound space
 globals; handle methods were invisible to §3's inventory and the
@@ -102,9 +103,18 @@ mid-conversation and what the prompt carries (§3) are the same bytes.
 
 - The toolcaller's `## Tools` block: query the program objects
   (`any_tool`, two-tier space merge unchanged), `use()` each, emit
-  `Import:` line + `describe(module)`. Ordering stays
-  oldest-first — output is deterministic given sources, sources
-  change only on deploy, so the cached prompt prefix holds.
+  ONE line per tool: name, import spec, and the module docstring's
+  summary line (amendment 2026-09-24, BOB-160). The methods are
+  help(mod)'s: the model calls it in the cell that imports a tool,
+  before its first call. A module declaring `__any_listing__ =
+  "names"` keeps a section instead — `Import:` line, its whole
+  docstring and its listed method names (no signatures; help on the
+  method gives those). Only a tool used nearly every turn whose
+  help() output would exceed one digest earns it: `any@v1`. Both
+  forms are cut from `describe(module)`, still the one renderer.
+  Ordering stays oldest-first (sections, then the one-line list) —
+  output is deterministic given sources, sources change only on
+  deploy, so the cached prompt prefix holds.
 - **Hard convention, now load-bearing**: program module top level is
   defs + constants ONLY — no effects, no I/O at import time. Compose
   executes every tool module each run; the fuel budget bounds a

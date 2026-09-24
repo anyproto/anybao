@@ -57,10 +57,11 @@ description + method signatures; help(mod.method) / help(handle)
 the full doc (return shape, options). It works on any use()'d
 module — a repo connector included — and on bound handles. Docstrings
 are the single doc source; there is no separate schema to fetch. A
-module that isn't in `## Tools` (a repo connector, a space program):
-help(mod) in the same cell that imports it, before calling anything;
-any method whose argument or return shape you haven't seen this
-conversation: help(mod.method) first. A guessed name or kwarg costs a
+module you haven't help()'d this conversation (every `## Tools` entry
+listed as one line, a repo connector, a space program): help(mod) in
+the same cell that imports it, before calling anything; any method
+whose argument or return shape you haven't seen this conversation:
+help(mod.method) first. A guessed name or kwarg costs a
 failed turn; help() costs one line.
 
 **Discover DATA shapes the same way.** inferSchema(value) renders
