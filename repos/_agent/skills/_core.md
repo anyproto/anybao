@@ -73,18 +73,13 @@ sync as the agent_runs dataset on the bao/runs/v1 bundle child
 
 **A cell can run against recorded effects instead of live ones** —
 run_cell's mockref / mock parameters (their descriptions are the
-spec). Use it to rework a program's parsing against the data a live
-run already fetched, to rehearse a mutating flow with nothing firing,
-or to re-run a past cell exactly. A response from an earlier reply is
-gone from the kernel (each conversation is a fresh run — no variable
-survives), but its recording is not: "reuse what you already fetched"
-means mockref that reply's run (traceRef on its turn via
-recent_turns, or effects.runs), not a re-fetch and not a question
-back. Keys are input-shaped: an edit that keeps the same call inputs
-still hits the recording — a mocked result is NEVER a live
-verification; run it for real before reporting that it works — unless
-the user asked for no live calls, then say it is mocked and stop
-there.
+spec): rework parsing against data a run already fetched, rehearse a
+write with nothing firing, re-run a past cell. "Reuse what you already
+fetched" = mockref that reply's run, not a re-fetch and not a question
+back — a variable never survives into the next conversation, its
+recording does. A mocked result is NEVER a live verification: run it
+for real before saying it works, unless the user asked for no live
+calls — then say it is mocked.
 
 **Missing keys.** A connector that reports it is not connected (a
 missing `connector.key.<name>`), or a program of yours whose
