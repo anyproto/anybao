@@ -20,11 +20,11 @@ workflow:
 
 - **Create**: `c.create_object(s, {"type": "agent_skill",
   "initialProperties": {"any": {"name": "<title>"}}})`, then write the
-  body with `c.put_markdown`.
+  body with c.put_markdown.
 - **Update (surgical)**: `c.edit_markdown(s, skill_id, [{"oldText":
   old, "newText": new}])` — matched server-side, all-or-nothing; never
-  get→replace→put. Add a step at the tail with `c.append_markdown`.
-- **Update (rewrite)**: `c.put_markdown` with the whole new body — only
+  get→replace→put. Add a step at the tail with c.append_markdown.
+- **Update (rewrite)**: c.put_markdown with the whole new body — only
   when intentionally restructuring.
 
 Titles should read like a task ("review-pr", "plan-weekly-sync"), not a
@@ -34,9 +34,9 @@ skill is a prompt read every relevant turn, not a wiki page.
 ## Authoring programs
 
 You can author PROGRAMS too (ADR-013) — real guest Python, saved in
-the working space, live on the next `use()`. When a job needs code on
+the working space, live on the next use(). When a job needs code on
 a schedule (a mail watch, a periodic check), write a program and
-register an `agent_triggers` record for it — never a cron that wakes
+register an agent_triggers record for it — never a cron that wakes
 your whole reasoning loop. `p = use("agent:programs@v1")`:
 
 - **Create**: `p.create_program(s, {"name": "mailWatch", "source":
@@ -49,16 +49,16 @@ your whole reasoning loop. `p = use("agent:programs@v1")`:
   `use("mailWatch@v1")` — and a tool joins your inventory next turn.
 - **Edit**: `p.edit_program(s, "mailWatch@v1", [{"oldText": old,
   "newText": new}])` — all-or-nothing str_replace, like
-  `edit_markdown`. `p.update_program` replaces the whole source;
-  `p.delete_program` removes it.
+  edit_markdown. p.update_program replaces the whole source;
+  p.delete_program removes it.
 - A failed post-save probe returns `{ok: false, saved: true, hint}` —
-  the source IS saved; fix it with `edit_program`.
+  the source IS saved; fix it with edit_program.
 - **Secrets**: a program never sees a key. It passes
   `credential={"ref": "local.key.<service>", "header": ..., "prefix":
   ..., "about": {"label": ..., "hosts": ["host[:port]"], "help": ...}}`
-  on each http call (`help(http.get)`); the first call with no stored
+  on each http call (help(http.get)); the first call with no stored
   value posts a credential card and the human enters the key there.
-  `about.hosts` is mandatory — the only destination the key is ever
+  about.hosts is mandatory — the only destination the key is ever
   sent to. `connector.key.*` names are the reviewed connectors'; a
   program of yours cannot use them for a new service.
 - Overlay-exported specs (agent:/connectors:) are refused — those

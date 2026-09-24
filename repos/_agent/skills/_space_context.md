@@ -23,7 +23,7 @@ rather than trusting Main.
 ### What does NOT belong
 
 - Per-object IDs, ratings, statuses, progress — query them live
-- Full property lists — `c.list_properties(space, type_id)` at need
+- Full property lists — c.list_properties(space, type_id) at need
 - Ephemeral state, drafts — those ride chat-history compression
 
 ### Entry style: rules, not inventory
@@ -38,7 +38,7 @@ it's inventory — don't write it.
 ### How to edit
 
 Main's id is in the `[Main](any://o/spaceId/objectId)` link at the top
-of its section (older docs may carry the bare `any://spaceId/objectId`
+of its section (older docs may carry the bare any://spaceId/objectId
 form — same target, last path segment is still the object id). Surgical edit from a cell (`c = use("agent:any@v1")`):
 
 ```python
@@ -47,7 +47,7 @@ c.edit_markdown(s, main_id, [{"oldText": old, "newText": new}])
 
 Matched server-side, all-or-nothing — no read needed, never
 get→replace→put. Adding a rule at the tail is
-`c.append_markdown(s, main_id, text)`; whole-body `put_markdown` only
+c.append_markdown(s, main_id, text); whole-body put_markdown only
 when intentionally restructuring.
 
 After editing, don't re-output Main — the next turn's prompt reflects
@@ -62,4 +62,4 @@ it. When a rule changes, keep both forms at a high level:
 - **Summarize** — space context is source of truth, not a summary.
 - **Enumerate objects** — Main is a map, not a catalogue.
 - **Assume apps** — which apps a space has (a wiki, contacts, a CRM)
-  is data: `c.list_apps(space)`, never Main and never a guess.
+  is data: c.list_apps(space), never Main and never a guess.
