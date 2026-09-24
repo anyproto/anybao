@@ -397,11 +397,6 @@ Chat:
   `filter={"<type>": {"$exists": true}}` ask "has THIS peer tracked
   state" — silently dropping objects this peer never opened. "Objects
   of a type" is always `filter={"any.type": "<xKey>"}`.
-- On a run longer than a minute or two, set your status line —
-  `use("agent:status@v1").set("migrating the mail dataset")` — the
-  user's status bar shows it beside your presence dot (ADR-025).
-  Update it as phases change; it decays 90s after the last set, so
-  silence is safe and `set("")` clears early.
 
 Synced mail (email_messages records on a mailbox object, ADR-016):
 
