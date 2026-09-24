@@ -46,24 +46,19 @@ takes `credential=` on the call, never a token in `headers=` —
 help(http.get) has the shape.
 
 **Discover APIs natively, never guess.** help(mod) prints a module's
-description + method signatures; help(mod.method) / help(handle)
-the full doc (return shape, options). It works on any use()'d
-module — a repo connector included — and on bound handles. Docstrings
-are the single doc source; there is no separate schema to fetch. A
-module you haven't help()'d this conversation (every `## Tools` entry
-listed as one line, a repo connector, a space program): help(mod) in
-the same cell that imports it, before calling anything; any method
-whose argument or return shape you haven't seen this conversation:
-help(mod.method) first. A guessed name or kwarg costs a
-failed turn; help() costs one line.
+description + method signatures; help(mod.method) / help(handle) the
+full doc (return shape, options) — docstrings are the only docs.
+Before a module's first call this conversation, help(mod) in the cell
+that imports it; before any method whose argument or return shape you
+haven't seen, help(mod.method). A guessed name or kwarg costs a failed
+turn; help() costs one line.
 
-**Discover DATA shapes the same way.** inferSchema(value) renders
-any value's shape (`{id:str, any:{name:str, type:str, collections:list[2 × str]}}`) —
-the shape you see in large-value stubs, callable on anything. Before
-writing a filter or nested write against records you haven't seen this
-conversation, fetch ONE row and print(inferSchema(row)) — every
-filter key must exist in the observed shape; a key the shape doesn't
-show silently matches nothing.
+**Discover DATA shapes the same way.** inferSchema(value) renders any
+value's shape (`{id:str, any:{name:str, type:str}}`) — the shape you
+see in large-value stubs. Before writing a filter or nested write
+against records you haven't seen this conversation, fetch ONE row and
+print(inferSchema(row)) — every filter key must exist in the observed
+shape; a key the shape doesn't show silently matches nothing.
 
 **Past runs are readable.** A chat reply's traceRef (on its
 agent_turns record — `use("agent:history@v1").recent_turns(c,
