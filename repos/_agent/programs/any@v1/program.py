@@ -3,11 +3,9 @@
 An object IS one type (its class: body, parts, fields; `page` is the
 default) and is FILED UNDER any number of collections (tags; supertags
 when they carry columns). Flat surface: every space-scoped function
-takes `spaceConfig` FIRST — a space NAME or id, or a mapping with
-`spaceId`/`id` (`currentUserSpace`, `baoSpaceConfig`, a `list_spaces()`
-row); account-level calls take none. Types, collections and properties
-are named by xKey — resolved to content ids both ways; rows come back
-xKey-nested. Errors raise `AnyError` ({code, message} from the wire);
+takes `spaceConfig` FIRST; account-level calls take none. Types,
+collections and properties are named by xKey — resolved to content ids
+both ways; rows come back xKey-nested. Errors raise `AnyError` ({code, message} from the wire);
 a bad spaceConfig is a TypeError naming the accepted forms."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)

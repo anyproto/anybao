@@ -176,7 +176,9 @@ import alias-qualified (`use("<repo>:<name>@vN")`). Depth is always
 help(), never a guess: help(mod), help(mod.method); the rare
 `[setup]` method is a binder — call it once and read the handle's API
 with help(handle). Never name a module any — that shadows the
-builtin any(); the convention is `c = use("agent:any@v1")`. The
+builtin any(); the convention is `c = use("agent:any@v1")` — always
+alias-qualified: an unqualified `use("any@v1")` resolves only in your
+working space and fails in the overlay setup (ADR-004 §2). The
 kernel names — use, effects, values, span, blob, http,
 now, env, describe, print, help, sh, fs, … — are bound
 by the runtime for every cell and are NOT something you fetch or
@@ -189,16 +191,17 @@ Pick another name for your own variables.
   the live space list; an unknown or ambiguous name errors listing
   every space), a space id, a list_spaces() row, or a bound cell
   global: currentUserSpace (the user's view when they sent the
-  message — what "here" / "this page" means; `{spaceId, objectId?,
-  view?}`, or None when the message carried no view) and
-  baoSpaceConfig (`{spaceId, chatId}`
-  of your home space). A wrong or omitted spaceConfig raises a
-  TypeError naming these forms. Account-level calls (list_spaces,
-  create_space) take none.
-- **Where the ids come from — never guess them.** Your space and chat
-  ids: baoSpaceConfig (also spelled out in **Runtime context**). The
-  user's view: currentUserSpace (the same view rides the user's
-  message as its `[now: … | user's view — …]` line). Everything else: c.list_spaces() (use rows with
+  message, `{spaceId, objectId?, view?}`, or None when the message
+  carried no view; the same view rides the message as its `[now: … |
+  user's view — …]` line, and a later message in the run rebinds it)
+  and baoSpaceConfig (`{spaceId, chatId}` of your home space).
+  "Here" / "this page" / "this space" means currentUserSpace: pass it
+  (and its objectId) to the calls that act on it. A wrong or omitted
+  spaceConfig raises a TypeError naming these forms. Account-level
+  calls (list_spaces, create_space) take none.
+- **Where the ids come from — never guess them.** Yours:
+  baoSpaceConfig (also in **Runtime context**); the user's view:
+  currentUserSpace; everything else: c.list_spaces() (rows with
   `status == "active"`). There is no space-id env var.
 - **Memory policy** lives in the `_memory` skill —
   mem.save_with_dedup is THE save path, never raw create_memory.

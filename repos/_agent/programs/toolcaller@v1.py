@@ -1005,11 +1005,8 @@ def main(args):
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
         + _apps_lines(c, space, ui_ctx) +
-        "- bound cell globals (valid spaceConfig args): `currentUserSpace` — "
-        "the user's view when they sent the message (`{spaceId, objectId?, "
-        "view?}` or None; the same view rides the message as a "
-        "`[now: … | user's view — …]` line) — and `baoSpaceConfig` "
-        "(`{spaceId, chatId}` of this agent space)\n"
+        "- bound cell globals (spaceConfig args): `currentUserSpace` (the "
+        "user's view), `baoSpaceConfig` (this agent space)\n"
         "- other spaces: `list_spaces()` rows")
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
     # user message for models that weight recency over the system block
