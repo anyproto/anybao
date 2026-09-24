@@ -1,14 +1,9 @@
 """Write, edit and delete programs in a working space — live on the next use().
 
-The agent-side program write path (ADR-013): a saved program is
-bit-identical in shape to what deploy writes (source in
-program_source/"main", docstring-derived summary, `name@vN`), so
-list_programs / use() / help() need no second surface. Write-time
-validation mirrors deploy's scan; a passing post-save use() probe
-makes a `__any_tool__` program a live tool immediately, and an edit
-is live on the very next use(). Overlay-exported specs are refused
-(a working-space copy would shadow the pipeline's). Promotion to an
-overlay repo stays a human deploy step (ADR-013 §6)."""
+Write-time validation mirrors deploy's (ADR-013); a passing post-save
+use() probe makes a `__any_tool__` program a live tool immediately,
+and an edit is live on the very next use(). Overlay-exported specs are
+refused; promotion to an overlay repo is a human deploy step."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 

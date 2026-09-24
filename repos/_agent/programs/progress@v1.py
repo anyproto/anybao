@@ -1,11 +1,9 @@
 """Progress bars for long jobs — start/tick/done/fail, one bar per (space, job).
 
 Programs and cells report progress ONLY through this module (ADR-014);
-never hand-roll process events. The transport — the server's process
-registry (`/v1/processes`, any PR #163): `process.*` events over the
-event bus, rendered GLOBALLY by any-ui regardless of the open space —
-is an implementation detail owned here. Callers own the throttle: tick
-per work chunk / percentage step, never per item. Nothing is
+never hand-roll process events. Bars render in the user's UI whatever
+space is open. Callers own the throttle: tick per work chunk /
+percentage step, never per item. Nothing is
 persisted: a finished bar lingers ~60s in the view, a failed one too —
 the durable record of an outcome is your notify message / job state.
 """
