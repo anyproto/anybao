@@ -1008,8 +1008,7 @@ def start_backfill(space, agent_space, q=None):
 
 @span("gmailSync.stop_backfill", kind="mutator")  # noqa: F821 - guest global
 def stop_backfill(space, agent_space):
-    """Stop a running backfill chain → {stopped, disarmed, gen,
-    syncedCount, pageToken}.
+    """Stop a running backfill chain → {stopped, disarmed, gen, syncedCount, pageToken}.
 
     Disables the current generation's pending hop trigger(s) in place
     (`enabled: false` — the fired hops stay behind as the audit trail)
@@ -1055,8 +1054,9 @@ def stop_backfill(space, agent_space):
 
 @span("gmailSync.retry_skipped", kind="mutator")  # noqa: F821 - guest global
 def retry_skipped(space):
-    """Re-process the messages earlier ticks skipped → {retried, made,
-    gone, stillSkipped, skippedCount, fuelStop?}.
+    """Re-process the messages earlier ticks skipped.
+
+    Returns {retried, made, gone, stillSkipped, skippedCount, fuelStop?}.
 
     The retry path for `status().skipped` (§2): hydrates those ids
     again — no re-listing of the mailbox — and runs them through the
@@ -1106,8 +1106,10 @@ def retry_skipped(space):
 
 @span("gmailSync.status", kind="getter")  # noqa: F821 - guest global
 def status(space):
-    """Sync bookkeeping → {q, cursor, pageToken, syncedCount,
-    skippedCount, skipped, mailboxId, emailCount}.
+    """Sync bookkeeping → {q, cursor, pageToken, syncedCount, skippedCount, …}.
+
+    Returns {q, cursor, pageToken, syncedCount, skippedCount, skipped,
+    mailboxId, emailCount}.
 
     `q` is the COVERAGE: the Gmail query the last backfill listed
     (empty = never armed). The corpus contains that scope and nothing

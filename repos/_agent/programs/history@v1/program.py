@@ -21,10 +21,10 @@ def approx_tokens(text):
 def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
                trace_ref="", user_name="", from_agent="", llm=None):
     """The agent_turns v2 payload — seq omitted (server-assigned).
-    `outcome` is the loop outcome dict (`{"replies", "stop", …}`);
-    `replies` = what the user saw; `think` = narration that did NOT go
-    to chat (distinct, ADR-006 §1). `interrupted` + neutral stopReason
-    come from the outcome."""
+
+    `outcome` is the loop outcome dict (`{"replies", "stop", …}`); `replies` =
+    what the user saw; `think` = narration that did NOT go to chat (distinct,
+    ADR-006 §1). `interrupted` + neutral stopReason come from the outcome."""
     body = {
         "userText": user_text,
         "replies": outcome["replies"],
@@ -137,12 +137,12 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
 
 @span(kind="getter")  # noqa: F821 - guest global
 def recent_turns(client, space, chat_id, limit):
-    """Newest AGENTLOG turns first (descending seq) — the agent's own
-    turn records, NOT the chat conversation. For what people said in a
-    chat, read its messages: `client.query(space, chat_id,
-    "chat_messages", sort=["-createdAt"], limit=n)`. Turns live on the
-    chat's log child (ADR-017). An empty [] here just means this agent
-    never logged turns on that chat."""
+    """Newest AGENTLOG turns first — the agent's own turn records, NOT the chat.
+
+    Descending seq. For what people said in a chat, read its messages:
+    `client.query(space, chat_id, "chat_messages", sort=["-createdAt"],
+    limit=n)`. Turns live on the chat's log child (ADR-017). An empty [] here
+    just means this agent never logged turns on that chat."""
     log = client.chat_log(space, chat_id)["objectId"]
     return client.query(space, log, "agent_turns", sort=["-seq"], limit=limit)
 
@@ -157,10 +157,11 @@ def chunks_at_level(client, space, chat_id, level, limit):
 
 @span(kind="getter")  # noqa: F821 - guest global
 def activity(client, space, chat_id, unit="day", limit=90):
-    """Turns per calendar period, oldest first: [{"period": <instant>,
-    "turns": n}] — `unit` ∈ day | week | month. Native date arithmetic
-    over agent_turns.createdAt (ADR-019 §3, $dateTrunc); the periods
-    are UTC instants — render with fmt_ts."""
+    """Turns per calendar period, oldest first → [{period, turns}].
+
+    Returns [{"period": <instant>, "turns": n}] — `unit` ∈ day | week | month.
+    Native date arithmetic over agent_turns.createdAt (ADR-019 §3, $dateTrunc);
+    the periods are UTC instants — render with fmt_ts."""
     log = client.chat_log(space, chat_id)["objectId"]
     r = client.aggregate(space, [
         {"$group": {"_id": {"$dateTrunc": {"date": "$createdAt", "unit": unit}},

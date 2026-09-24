@@ -1131,10 +1131,11 @@ _EXCERPT = 400
 
 @span(kind="getter")  # noqa: F821 - guest global
 def profile(tier="codegen"):
-    """The resolved profile of a tier: `{profile, backend, model,
-    traits}` — traits are the loop's budget inputs (`context_window`,
-    `max_output`, `prompt_style`, `instructions_at`, `tool_mode`,
-    `malformed_retries`; ADR-005 §1.3)."""
+    """The resolved profile of a tier → {profile, backend, model, traits}.
+
+    The traits are the loop's budget inputs (`context_window`, `max_output`,
+    `prompt_style`, `instructions_at`, `tool_mode`, `malformed_retries`; ADR-005
+    §1.3)."""
     prov, name, backend, traits = _resolve(tier)
     return {"profile": name, "backend": backend, "model": prov["model"],
             "traits": traits}

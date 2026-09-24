@@ -333,6 +333,7 @@ def list(space):  # noqa: A001 - the tool surface name (ADR-008 §6)
 @span(kind="mutator")  # noqa: F821 - guest global
 def set_state(space, name, state):
     """Overwrite the persisted state (what useAnytypeState reads).
+
     `None` clears it; anything else is JSONified."""
     c = _client()
     oid = _find(c, space, name)

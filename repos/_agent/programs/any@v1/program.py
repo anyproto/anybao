@@ -1497,8 +1497,7 @@ class _Client:
     @_public('mutator')
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
-        """Create an object; returns {"objectId", "resolved"?,
-        "createdOptions"?, "warnings"?}.
+        """Create an object → {objectId, resolved?, createdOptions?, warnings?}.
 
         body: {"type"?, "collections"?, "initialProperties"?, "name"?,
         "description"?, "markdown"?}. An object IS exactly one `type`
@@ -1673,14 +1672,14 @@ class _Client:
 
     @_public('mutator')
     def move_object(self, space, object_id, parent, folder=None):
-        """Place an object in the page tree (or move it): `parent` is
-        `""` for the top level or a parent object id; the object is
-        filed under the wiki collection if it is not yet, `parentId`
-        is set and a position after the last sibling allocated;
-        `folder=True/False` sets the folder flag. Its type is
-        untouched. "Take it out of the wiki" is
-        `remove_from_collection(space, object_id, "wiki")`. Returns
-        {"objectId", "parentId", "pos"}."""
+        """Place an object in the page tree, or move it within it.
+
+        `parent` is `""` for the top level or a parent object id; the object is
+        filed under the wiki collection if it is not yet, `parentId` is set and
+        a position after the last sibling allocated; `folder=True/False` sets
+        the folder flag. Its type is untouched. "Take it out of the wiki" is
+        `remove_from_collection(space, object_id, "wiki")`. Returns {"objectId",
+        "parentId", "pos"}."""
         wiki = self._wiki(space)
         wcid = wiki["collectionId"]
         if wcid not in self._owners_of_object(space, object_id)["collections"]:
@@ -1698,9 +1697,10 @@ class _Client:
 
     @_public('getter')
     def list_children(self, space, parent=""):
-        """The page tree under `parent` (`""` = the top level), in
-        sidebar order → normalized rows (query_objects shape). A space
-        without the wiki app has no tree: returns []."""
+        """The page tree under `parent` ("" = top) → rows in sidebar order.
+
+        Rows are query_objects-shaped. A space without the wiki app has no tree:
+        returns []."""
         if not any(b.get("id") == _WIKI_BUNDLE for b in self.list_bundles(space)):
             return []
         wiki = self._wiki(space)
@@ -1777,28 +1777,26 @@ class _Client:
         # normalize is keyword-only: a positional dict here used to land
         # in `normalize` and silently drop the caller's filter — a query
         # for everything where a filtered query was intended.
-        """Cross-object query over the per-space objects collection. `filter`
-        / `sort` accept readable dotted xKey paths (`task.status`,
+        """Cross-object query over a space's objects → xKey-nested rows.
+
+        `filter` / `sort` accept readable dotted xKey paths (`task.status`,
         `reading_list.order` — the owner is a type or a collection),
-        `{"any.type": "<type xKey>"}` (the object's ONE type; `$in` for
-        several) and `{"any.collections": "<collection xKey>"}`
-        (membership; `$in` / `$nin` / `$all` — `{"$nin": ["bin"]}`
-        excludes trashed objects), resolved to the server's id paths;
-        an UNKNOWN type, collection or property key errors with the
-        catalog (a typo'd key would otherwise silently match nothing)
-        — the builtin group (`any.*`) included; "any.types" is an
-        error. A definition's own row never matches its members
-        (its slot holds a marker). Derived `any` props
-        resolve to the bare top-level record keys (`any.id` → `id`,
-        `any.createdAt` → `createdAt`). Records come back
-        NORMALIZED (user-type groups keyed by type xKey, props by prop
-        xKey) unless normalize=False — pass that when you need the raw
-        content ids (e.g. graph edges) — ADR-006 §6. Time is an
-        INSTANT: `createdAt`/`modifiedAt` and every `date`/`datetime`
-        property read as `{"$date": "<RFC 3339>"}` (`ts_s(v)` → seconds)
-        and a filter compares them only to `instant(seconds)` — a bare
-        number raises here (server-side it would silently match every
-        row) — ADR-019."""
+        `{"any.type": "<type xKey>"}` (the object's ONE type; `$in` for several)
+        and `{"any.collections": "<collection xKey>"}` (membership; `$in` /
+        `$nin` / `$all` — `{"$nin": ["bin"]}` excludes trashed objects),
+        resolved to the server's id paths; an UNKNOWN type, collection or
+        property key errors with the catalog (a typo'd key would otherwise
+        silently match nothing) — the builtin group (`any.*`) included;
+        "any.types" is an error. A definition's own row never matches its
+        members (its slot holds a marker). Derived `any` props resolve to the
+        bare top-level record keys (`any.id` → `id`, `any.createdAt` →
+        `createdAt`). Records come back NORMALIZED (user-type groups keyed by
+        type xKey, props by prop xKey) unless normalize=False — pass that when
+        you need the raw content ids (e.g. graph edges) — ADR-006 §6. Time is an
+        INSTANT: `createdAt`/`modifiedAt` and every `date`/`datetime` property
+        read as `{"$date": "<RFC 3339>"}` (`ts_s(v)` → seconds) and a filter
+        compares them only to `instant(seconds)` — a bare number raises here
+        (server-side it would silently match every row) — ADR-019."""
         unknown = set(opts) - {"filter", "sort", "limit", "offset"}
         if unknown:
             # an unvisited key (e.g. `filters=`) would make the server
@@ -1848,13 +1846,13 @@ class _Client:
 
     @_public('getter')
     def query(self, space, object_id, dataset, **opts):
-        """Per-object dataset query (chat_messages, agent_turns, …).
-        None-valued opts are dropped so callers can pass through
-        optional filter/sort/limit unchecked. Stamps (`createdAt`,
-        `modifiedAt`) and datetime fields (`validFrom`, `periodStart`/
-        `periodEnd`) are instants `{"$date": …}`: read with `ts_s`,
-        filter with `instant(seconds)` — a bare number raises
-        (ADR-019 §4)."""
+        """Per-object dataset query (chat_messages, agent_turns, …) → records.
+
+        None-valued opts are dropped so callers can pass through optional
+        filter/sort/limit unchecked. Stamps (`createdAt`, `modifiedAt`) and
+        datetime fields (`validFrom`, `periodStart`/ `periodEnd`) are instants
+        `{"$date": …}`: read with `ts_s`, filter with `instant(seconds)` — a
+        bare number raises (ADR-019 §4)."""
         # ADR-019 §4: stamps + declared datetime fields take instants
         # only — checked on the KEY before anything reaches the wire
         _guard_filter(opts.get("filter"),
@@ -1933,9 +1931,10 @@ class _Client:
     # --- processes (server registry over the event bus; ADR-014 §2) ----------
     @_public('getter', scoped=False)
     def list_processes(self):
-        """Live process view → [{identity, self, id, kind, title, scope,
-        spaceId?, target?, state, done, total?, message?, error?,
-        startedAt, updatedAt}].
+        """Live process view: running and just-finished processes.
+
+        Returns [{identity, self, id, kind, title, scope, spaceId?, target?,
+        state, done, total?, message?, error?, startedAt, updatedAt}].
 
         Account-level (no space): the server's last-event-wins registry
         of long-running work — bao jobs (kind "agent", published via
@@ -1961,8 +1960,9 @@ class _Client:
 
     @_public('getter', scoped=False)
     def list_devices(self):
-        """The account's device registry (ADR-015) → {self, active,
-        devices}, each device row flagged `self` / `active` / `bao`.
+        """The account's device registry (ADR-015) → {self, active, devices}.
+
+        Each device row flagged `self` / `active` / `bao`.
 
         `self` = this server's peerId; `active` = {appSlug: peerId},
         the server-computed winner per app ("bao" is the agent; a
@@ -2087,10 +2087,11 @@ class _Client:
     @_public('mutator')
     def put_markdown(self, space, object_id, content):
         """Replace the object's editor body with `content` (markdown).
-        Whole-body write — prefer append_markdown when adding. A typed
-        `any://` link in the body whose space segment is not a space id
-        (a NAME, or missing) is reported under `warnings` (and printed),
-        never rewritten — fix the text and write again."""
+
+        Whole-body write — prefer append_markdown when adding. A typed `any://`
+        link in the body whose space segment is not a space id (a NAME, or
+        missing) is reported under `warnings` (and printed), never rewritten —
+        fix the text and write again."""
         self._check_body(space, object_id)
         r = self._call("put", self._md_path(space, object_id),
                        {"content": content})
@@ -2098,7 +2099,8 @@ class _Client:
 
     @_public('mutator')
     def edit_markdown(self, space, object_id, edits):
-        """Surgical text edits on the editor body — THE point-edit path
+        """Surgical text edits on the editor body — THE point-edit path.
+
         (never get→replace→put, which clobbers concurrent edits).
 
         `edits`: [{"oldText", "newText", "replaceAll"?}] — matched
@@ -2131,8 +2133,10 @@ class _Client:
     # --- spaces & ui context ---------------------------------------------------
     @_public('getter', scoped=False)
     def list_spaces(self, raw=False):
-        """Every space on the account: `{id, name, description?, status,
-        ownRole, spaceType, createdAt}` rows.
+        """Every space on the account → trimmed space rows.
+
+        Rows: `{id, name, description?, status, ownRole, spaceType, createdAt}`
+        rows.
 
         Sync internals (push key material, settings, index pointers) are
         TRIMMED — `raw=True` returns the wire rows. Operate on
@@ -2143,9 +2147,10 @@ class _Client:
 
     @_public('getter')
     def get_space(self, space, raw=False):
-        """One space's row → {id, name, description, status, ownRole,
-        spaceType, createdAt}; also THE explicit name resolver —
-        `get_space("dev")` works.
+        """One space's row; also THE explicit name resolver (`get_space("dev")`).
+
+        Returns {id, name, description, status, ownRole, spaceType, createdAt};
+        also THE explicit name resolver — `get_space("dev")` works.
 
         No chat id on the row: the space's chat is `general_chat(space)`.
         Sync internals are trimmed like list_spaces (`raw=True` for the
@@ -2188,8 +2193,9 @@ class _Client:
 
     @_public('mutator', scoped=False)
     def create_space(self, name, description=None):
-        """Create a new top-level space WITH its general chat → the
-        (trimmed) space row + `generalChatId`.
+        """Create a top-level space with its general chat.
+
+        Returns the (trimmed) space row + `generalChatId`.
 
         Right after the POST the catalog's `general-chat` usecase is
         set up (a derived root — the same id every member and device
@@ -2212,8 +2218,9 @@ class _Client:
 
     @_public('mutator')
     def open_in_ui(self, space, object_id=None):
-        """Open a space — or one object in it — in the user's any-ui
-        window on THIS device → {subscribers}.
+        """Open a space, or one object in it, in the user's any-ui on THIS device.
+
+        Returns {subscribers}.
 
         Publishes a `ui.open_space` / `ui.open_object` event on the
         device-scope event bus (the transient "show the user what I
@@ -2236,36 +2243,36 @@ class _Client:
     # --- types, collections & properties (catalog source) ---------------------
     @_public('getter')
     def list_types(self, space):
-        """Every type in the space — what an object can BE: rows of
-        {id, xKey, name, hidden?, builtIn?, layout?}, hidden ones
-        included (the built-in `page` — the default, a plain document —
-        and `dataview`; bao's store types; a catalog app's hidden
-        types). The meta rows (any, spaceIndex, type, collection) are
-        not listed: nothing has them as a type. Collections (what an
-        object is FILED UNDER: the wiki, contact, miniapp, bin, a user's
-        tags) are `list_collections`."""
+        """Every type in the space — what an object can BE — hidden ones included.
+
+        Rows of {id, xKey, name, hidden?, builtIn?, layout?}, hidden ones
+        included (the built-in `page` — the default, a plain document — and
+        `dataview`; bao's store types; a catalog app's hidden types). The meta
+        rows (any, spaceIndex, type, collection) are not listed: nothing has
+        them as a type. Collections (what an object is FILED UNDER: the wiki,
+        contact, miniapp, bin, a user's tags) are `list_collections`."""
         return [t for t in self._list_types_raw(space)
                 if t.get("id") not in _SYNTHETIC_TYPES]
 
     @_public('getter')
     def list_collections(self, space):
-        """Every collection a space has — what an object can be FILED
-        UNDER: rows of {id, xKey, name, hidden?, builtIn?}. A collection
-        is a tag; with properties (`list_properties(space, "<xKey>")`)
-        a supertag whose columns its members carry. Included: the
-        catalog's (`wiki`, `contact`, `investor`, …) and the user's;
-        omitted: the meta row `collection` and the built-ins `miniapp`
-        (the sidebar) / `bin` (the trash) — reachable by name
-        (`trash` / `restore`, `list_apps`), never listed as tags."""
+        """Every collection in a space — what an object can be FILED UNDER.
+
+        Rows of {id, xKey, name, hidden?, builtIn?}. A collection is a tag; with
+        properties (`list_properties(space, "<xKey>")`) a supertag whose columns
+        its members carry. Included: the catalog's (`wiki`, `contact`,
+        `investor`, …) and the user's; omitted: the meta row `collection` and
+        the built-ins `miniapp` (the sidebar) / `bin` (the trash) — reachable by
+        name (`trash` / `restore`, `list_apps`), never listed as tags."""
         return [c for c in self._list_collections_raw(space)
                 if c.get("id") not in _SYNTHETIC_TYPES
                 and c.get("id") not in _BUILTIN_COLLECTION_IDS]
 
     @_public('getter')
     def list_properties(self, space, type_key):
-        """The property definitions of a type OR a collection, in
-        display order: [{handle, id, name, xKey, kind, scope, xFormat?,
-        options?, meta?}].
+        """A type's or collection's property definitions, in display order.
+
+        [{handle, id, name, xKey, kind, scope, xFormat?, options?, meta?}].
 
         `handle` is THE key to read/write the property by (the xKey,
         else the name). `kind` is the storage shape (string | number |
@@ -2370,8 +2377,7 @@ class _Client:
 
     @_public('mutator')
     def create_type(self, space, body):
-        """Create a type — a CLASS: what an object IS — then add each
-        property (composite ensure-type).
+        """Create a type — what an object IS — with its properties (composite ensure).
 
         body: {"name", "xKey"?, "description"?, "hidden"?, "layout"?,
         "body"?: false, "properties"?: [{"name", "xKey"?, "kind"?,
@@ -2441,8 +2447,7 @@ class _Client:
 
     @_public('mutator')
     def create_collection(self, space, body):
-        """Create a collection — a TAG: what an object is FILED UNDER —
-        then add each property (composite ensure).
+        """Create a collection — a tag, what objects are FILED UNDER — with properties.
 
         body: {"name", "xKey"?, "description"?, "hidden"?,
         "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?}]} (the
@@ -2614,25 +2619,24 @@ class _Client:
 
     @_public('mutator')
     def add_property(self, space, type_key, body):
-        """POST one property onto a type or a collection (named by xKey
-        — unknown keys error with the catalog). body: {"name", "xKey"?, "kind"?,
-        "xFormat"?, "scope"?, "description"?, "meta"?}. kind ∈ string
-        | number | boolean | array | object | datetime (default from
-        the slug, else "string"). `xFormat` is the descriptor:
-        {"type": <slug>, "options"?: {key: {name, color?}} (choice),
-        "relation"?: {"targetTypes": [type xKeys], "filter"?: <query
-        condition>} (relation), "config"?: {"multiple": true, …}}.
-        Slugs: `text` `longtext` `markdown` `url` `email` `phone`
-        (string), `choice` (array of option keys — one unless
-        config.multiple), `relation` (array of any:// links — one
-        unless config.multiple), `date` `datetime` (datetime, written
-        as instant(…)), `number` `currency` `percent` `rating`
-        `duration` (number), `checkbox` (boolean), `period` `money`
-        `geo` (object). `meta` takes only `index` (a search scope, or
-        "none"). `scope` ∈ synced (default) | account | local — pinned
-        like kind. The property is appended to the owner's display
-        order (xFormat.pos). `type_key` names a type OR a collection
-        (a column on a supertag). Returns {"propId"}."""
+        """Add one property to a type or a collection (named by xKey).
+
+        Unknown keys error with the catalog. body: {"name", "xKey"?, "kind"?,
+        "xFormat"?, "scope"?, "description"?, "meta"?}. kind ∈ string | number |
+        boolean | array | object | datetime (default from the slug, else
+        "string"). `xFormat` is the descriptor: {"type": <slug>, "options"?:
+        {key: {name, color?}} (choice), "relation"?: {"targetTypes": [type
+        xKeys], "filter"?: <query condition>} (relation), "config"?:
+        {"multiple": true, …}}. Slugs: `text` `longtext` `markdown` `url`
+        `email` `phone` (string), `choice` (array of option keys — one unless
+        config.multiple), `relation` (array of any:// links — one unless
+        config.multiple), `date` `datetime` (datetime, written as instant(…)),
+        `number` `currency` `percent` `rating` `duration` (number), `checkbox`
+        (boolean), `period` `money` `geo` (object). `meta` takes only `index` (a
+        search scope, or "none"). `scope` ∈ synced (default) | account | local —
+        pinned like kind. The property is appended to the owner's display order
+        (xFormat.pos). `type_key` names a type OR a collection (a column on a
+        supertag). Returns {"propId"}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         return self._post_property(space, tid, body)
 
@@ -2696,18 +2700,18 @@ class _Client:
 
     @_public('mutator')
     def patch_property(self, space, type_key, prop_key, set=None, unset=None):
-        """PATCH a property definition: `set` {path: leaf value} /
-        `unset` [path]. Mutable paths: name, description, xKey,
-        meta.index (a search scope or "none"), and every leaf under
-        xFormat — xFormat.type (the slug moves within the pinned
-        kind), xFormat.pos / .icon, xFormat.options.<key>.{name,color,
-        pos}, xFormat.relation.targetTypes (a list) / .filter (a JSON
-        text), xFormat.config.<k>. kind / scope / items / properties
-        are pinned — refused here (define a new property instead). A
-        `set` must hit a LEAF (never an object — containers are
-        unset-only); `unset` may name a container (unsetting
-        `xFormat.options.<key>` deletes the option). `type_key` is the
-        owner — a type or a collection. Returns {}."""
+        """Patch a property definition: `set` {path: leaf} / `unset` [path].
+
+        Mutable paths: name, description, xKey, meta.index (a search scope or
+        "none"), and every leaf under xFormat — xFormat.type (the slug moves
+        within the pinned kind), xFormat.pos / .icon,
+        xFormat.options.<key>.{name,color, pos}, xFormat.relation.targetTypes (a
+        list) / .filter (a JSON text), xFormat.config.<k>. kind / scope / items
+        / properties are pinned — refused here (define a new property instead).
+        A `set` must hit a LEAF (never an object — containers are unset-only);
+        `unset` may name a container (unsetting `xFormat.options.<key>` deletes
+        the option). `type_key` is the owner — a type or a collection. Returns
+        {}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         body = {}
@@ -2736,13 +2740,13 @@ class _Client:
     @_public('mutator')
     def set_option(self, space, type_key, prop_key, option, name=None,
                    color=None, pos=None):
-        """Create or update one option of a choice property. `option`
-        is an existing key or name (matched like writes do), or a NEW
-        name — then the key is minted (slug, uniquified) with `color`
-        (one of grey yellow orange red pink purple blue ice teal green;
-        default picked) and appended `pos`. Rename with `name=`,
-        recolor with `color=`. Returns {"key", "name", "color",
-        "created"}."""
+        """Create or update one option of a choice property.
+
+        `option` is an existing key or name (matched like writes do), or a NEW
+        name — then the key is minted (slug, uniquified) with `color` (one of
+        grey yellow orange red pink purple blue ice teal green; default picked)
+        and appended `pos`. Rename with `name=`, recolor with `color=`. Returns
+        {"key", "name", "color", "created"}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         pdef = self._prop_def(space, tid, pid) or {}
@@ -2776,9 +2780,10 @@ class _Client:
 
     @_public('mutator')
     def remove_option(self, space, type_key, prop_key, option):
-        """Delete an option (by key or name). Values still holding the
-        key stay as dangling keys — by design; rewrite them first if
-        that matters. Returns {"key"}."""
+        """Delete an option of a choice property (by key or name) → {key}.
+
+        Values still holding the key stay as dangling keys — by design; rewrite
+        them first if that matters. Returns {"key"}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         pdef = self._prop_def(space, tid, pid) or {}
@@ -2791,11 +2796,11 @@ class _Client:
 
     @_public('mutator')
     def reorder_property(self, space, type_key, prop_key, after=None):
-        """Move a property in the type's display order: after the
-        property `after` (a handle), or first when `after=""`; `None`
-        = last. Re-expresses xFormat.pos for the whole type (sequential
-        writes — the server serializes schema edits). Returns {"order":
-        [handles]}."""
+        """Move a property in the owner's display order → {order}.
+
+        After the property `after` (a handle), or first when `after=""`; `None`
+        = last. Re-expresses xFormat.pos for the whole type (sequential writes —
+        the server serializes schema edits). Returns {"order": [handles]}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         rows = sorted(self._type_props(space, tid), key=_prop_sort_key)
@@ -2820,10 +2825,11 @@ class _Client:
 
     @_public('mutator')
     def delete_property(self, space, type_key, prop_key):
-        """PERMANENTLY tombstone a property definition (CRDT — the id
-        never comes back; stored values stay as orphans). Confirm with
-        the user first. `type_key` is the owner — a type or a
-        collection. Returns {}."""
+        """PERMANENTLY tombstone a property definition — confirm with the user first.
+
+        (CRDT — the id never comes back; stored values stay as orphans). Confirm
+        with the user first. `type_key` is the owner — a type or a collection.
+        Returns {}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         self._call("delete", f"{self._props_path(space, tid)}/{pid}")
@@ -2833,11 +2839,12 @@ class _Client:
     # --- membership: the one type, the collections (ADR-029 §4) ---------------
     @_public('mutator')
     def set_type(self, space, object_id, type_key):
-        """Change what an object IS: replace its one type. Values under
-        the old type stay stored as orphans (and show again if the
-        type comes back); the new type's body / fields apply from now
-        on. There is no "unset" — every object has a type ("page" for
-        a plain document). Returns {}."""
+        """Change what an object IS: replace its one type.
+
+        Values under the old type stay stored as orphans (and show again if the
+        type comes back); the new type's body / fields apply from now on. There
+        is no "unset" — every object has a type ("page" for a plain document).
+        Returns {}."""
         tid = self._resolve_type_or_raise(space, type_key)
         self._call("post",
                    f"/v1/spaces/{space}/properties/{object_id}/type/{tid}")
@@ -2846,9 +2853,10 @@ class _Client:
 
     @_public('mutator')
     def add_to_collection(self, space, object_id, collection_key):
-        """File an object under a collection (a tag; a supertag's
-        columns become writable on it). Idempotent; the type is
-        untouched. Unknown collection errors with the list; a TYPE
+        """File an object under a collection (a tag); idempotent.
+
+        (a tag; a supertag's columns become writable on it). Idempotent; the
+        type is untouched. Unknown collection errors with the list; a TYPE
         handle here is refused (that is `set_type`). Returns {}."""
         cid = self._resolve_collection_or_raise(space, collection_key)
         self._call("post",
@@ -2858,9 +2866,10 @@ class _Client:
 
     @_public('mutator')
     def remove_from_collection(self, space, object_id, collection_key):
-        """Unfile an object from a collection. Idempotent; the values it
-        held under that collection stay stored (back in view if
-        refiled); the type is untouched. `"wiki"` takes a page out of
+        """Unfile an object from a collection; idempotent, values stay stored.
+
+        Idempotent; the values it held under that collection stay stored (back
+        in view if refiled); the type is untouched. `"wiki"` takes a page out of
         the page tree. Returns {}."""
         cid = self._resolve_collection_or_raise(space, collection_key)
         self._call("delete",
@@ -2870,12 +2879,13 @@ class _Client:
 
     @_public('mutator')
     def trash(self, space, object_id):
-        """Move an object to the bin (file it under the built-in `bin`
-        collection): it leaves every ordinary listing — `{"any.
-        collections": {"$nin": ["bin"]}}` — and keeps everything else;
-        the server stamps `bin.movedAt` / `movedBy`. Reversible
-        (`restore`); prefer it over `delete_object`, which is
-        permanent. Returns {}."""
+        """Move an object to the bin — reversible with restore(); prefer it to deleting.
+
+        (file it under the built-in `bin` collection): it leaves every ordinary
+        listing — `{"any. collections": {"$nin": ["bin"]}}` — and keeps
+        everything else; the server stamps `bin.movedAt` / `movedBy`. Reversible
+        (`restore`); prefer it over `delete_object`, which is permanent. Returns
+        {}."""
         return self.add_to_collection(space, object_id, _BIN)
 
     @_public('mutator')
@@ -2894,8 +2904,9 @@ class _Client:
     @_public('mutator', listed=False)
     def ensure_bundle(self, space, bundle_id, name=None, root_type=None,
                       root_collections=None, root_properties=None, derived=False):
-        """Adopt-or-install a bundle → {bundle: {id, name, rootId,
-        roots, losers, derived}, installed}.
+        """Adopt-or-install a bundle → {bundle, installed}.
+
+        Returns {bundle: {id, name, rootId, roots, losers, derived}, installed}.
 
         A bundle is one install: one root object registered under a
         permanent id in the space's bundles registry. With a winner
@@ -2936,18 +2947,20 @@ class _Client:
 
     @_public('getter', listed=False)
     def list_bundles(self, space):
-        """The space's bundles registry rows → [{id, name, rootId,
-        roots, losers?}]. Read-only; non-empty `losers` = a resolved
-        concurrent install whose losing root may hold content."""
+        """The space's bundles registry rows → [{id, name, rootId, roots, losers?}].
+
+        Read-only; non-empty `losers` = a resolved concurrent install whose
+        losing root may hold content."""
         r = self._call("get", f"/v1/spaces/{space}/bundles")
         return r.get("bundles") or []
 
     @_public('getter', listed=False)
     def get_bundle(self, space, bundle_id):
-        """One registry row → {id, name, rootId, roots, losers?,
-        derived, synced}; 404 bundle.not_found when nobody ensured it
-        yet. The wire is a locked read `{bundle, synced}` — `synced`
-        False means the registry may still be arriving from peers."""
+        """One bundles registry row → {id, name, rootId, roots, losers?, derived, synced}.
+
+        404 bundle.not_found when nobody ensured it yet. The wire is a locked
+        read `{bundle, synced}` — `synced` False means the registry may still be
+        arriving from peers."""
         r = self._call("get", self._bundle_path(space, bundle_id))
         row = r.get("bundle") if isinstance(r.get("bundle"), dict) else r
         return {**row, "synced": r.get("synced", True)}
@@ -2983,19 +2996,18 @@ class _Client:
 
     @_public('mutator', listed=False)
     def resolve_loser(self, space, bundle_id, loser_root_id):
-        """Cascade-delete a losing bundle root after merging what
-        matters out of it → {} (idempotent). 409 bundle.loser_not_ready
-        until the loser's tree has settled (retry); 409
-        bundle.not_loser for the winner or an unclaimed root. The
-        server never merges — merge first, resolve second."""
+        """Cascade-delete a losing bundle root after merging what matters out of it.
+
+        Returns {} (idempotent). 409 bundle.loser_not_ready until the loser's
+        tree has settled (retry); 409 bundle.not_loser for the winner or an
+        unclaimed root. The server never merges — merge first, resolve second."""
         return self._call("post", self._bundle_path(space, bundle_id, "/resolve"),
                           {"loserRootId": loser_root_id})
 
     # --- agent turns / chunks (client-assigned seq, ADR-017 §2) ----------------
     @_public('getter')
     def chat_log(self, space, chat_id):
-        """The chat's log object hosting agent_turns + agent_chunks →
-        {objectId}.
+        """The chat's log object hosting agent_turns + agent_chunks → {objectId}.
 
         The `bao/log/v1` child of the chat's own bundle (ADR-017 §0):
         deterministic, ensured with the agent_log type + datasets on
@@ -3033,24 +3045,25 @@ class _Client:
 
     @_public('mutator', listed=False)
     def append_turn(self, space, chat_id, body):
-        """Append an `agent_turns` record on the chat's log child.
-        Harness-level; conversations write these for you. Fields:
-        `{seq?, fromAgent?, userName?, userText?, think?, replies?,
-        effects?, messageIds?, traceRef?, interrupted?, llm?}` — llm
-        subkeys `{stopReason, inTokens, outTokens, cacheRead,
-        cacheWrite, model, costUsd, fuelUsed, cells}`. seq absent →
-        one past the highest id ever written, deleted rows included
-        (client-assigned; safe under the ADR-015 single active writer,
-        a duplicate seq write rejects). Returns {recordIds, seq}."""
+        """Append an agent_turns record on the chat's log child (harness-level).
+
+        Conversations write these for you. Fields: `{seq?, fromAgent?,
+        userName?, userText?, think?, replies?, effects?, messageIds?,
+        traceRef?, interrupted?, llm?}` — llm subkeys `{stopReason, inTokens,
+        outTokens, cacheRead, cacheWrite, model, costUsd, fuelUsed, cells}`. seq
+        absent → one past the highest id ever written, deleted rows included
+        (client-assigned; safe under the ADR-015 single active writer, a
+        duplicate seq write rejects). Returns {recordIds, seq}."""
         return self._append_log(space, chat_id, "agent_turns", body,
                                 search_text=True)
 
     @_public('mutator', listed=False)
     def create_chunk(self, space, chat_id, body):
-        """Append a compressed history chunk record (harness-level;
-        rollup). Fields: `{seq?, level?, fromAgent?, summary,
-        periodStart, periodEnd, fromSeq, toSeq, unitsCovered?}`. seq
-        absent → max+1. Returns {recordIds, seq}."""
+        """Append a compressed history chunk record (harness-level; rollup).
+
+        Fields: `{seq?, level?, fromAgent?, summary, periodStart, periodEnd,
+        fromSeq, toSeq, unitsCovered?}`. seq absent → max+1. Returns {recordIds,
+        seq}."""
         return self._append_log(space, chat_id, "agent_chunks", body)
 
     def _append_log(self, space, chat_id, dataset, body, search_text=False):
@@ -3075,18 +3088,18 @@ class _Client:
     # --- chat messages ---------------------------------------------------------
     @_public('mutator')
     def chat_send(self, space, chat_id, body):
-        """Post a message to a chat object. `body`: `{"text": ...}` —
-        accepted fields exactly `{text, replyToMessageId?, agent?,
-        attachments?}`; the body passes through verbatim and the server
-        rejects any other key (400 request.unknown_field naming the
-        set). The chat id for a space's conversation is
-        `general_chat(space)` — never a queried or created chat. To
-        READ messages: `query(space, chat_id, "chat_messages",
-        sort=["-createdAt"], limit=n)` (agent_turns is the agentlog,
-        not the conversation). A typed `any://` link in `text` or in an
-        attachment whose space segment is a NAME or missing ships as
-        written and is reported under `warnings` (and printed) — the
-        chip/download it renders is dead until the text is fixed."""
+        """Post a message to a chat object.
+
+        `body`: `{"text": ...}` — accepted fields exactly `{text,
+        replyToMessageId?, agent?, attachments?}`; the body passes through
+        verbatim and the server rejects any other key (400 request.unknown_field
+        naming the set). The chat id for a space's conversation is
+        `general_chat(space)` — never a queried or created chat. To READ
+        messages: `query(space, chat_id, "chat_messages", sort=["-createdAt"],
+        limit=n)` (agent_turns is the agentlog, not the conversation). A typed
+        `any://` link in `text` or in an attachment whose space segment is a
+        NAME or missing ships as written and is reported under `warnings` (and
+        printed) — the chip/download it renders is dead until the text is fixed."""
         r = self._call("post",
                        f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
         if isinstance(body, dict):
@@ -3140,15 +3153,15 @@ class _Client:
 
     @_public('getter')
     def list_search_scopes(self, space):
-        """The search scopes this space's index can answer → sorted
-        list, e.g. ["agent", "basic", "chat", "email", "history",
-        "props"]. `basic` (object names + editor text), `chat`
-        (messages) and `props` (property values, FTS-only) always;
-        every runtime dataset declared with a `search.scope` adds its
-        own (`email` for synced mail, `agent`/`history` for bao's
-        memory and turns). `search(space, q)` with no `scopes` covers
-        ALL of them; pass a subset to narrow. Costs one datasets
-        listing + one call per declaring type."""
+        """The search scopes this space's index can answer → sorted list.
+
+        E.g. ["agent", "basic", "chat", "email", "history", "props"]. `basic`
+        (object names + editor text), `chat` (messages) and `props` (property
+        values, FTS-only) always; every runtime dataset declared with a
+        `search.scope` adds its own (`email` for synced mail, `agent`/`history`
+        for bao's memory and turns). `search(space, q)` with no `scopes` covers
+        ALL of them; pass a subset to narrow. Costs one datasets listing + one
+        call per declaring type."""
         scopes = set(self._FIXED_SCOPES)
         rows = self._call("get", f"/v1/spaces/{space}/datasets").get("datasets", [])
         owners = sorted({o for r in rows if r.get("module") == "records"
@@ -3237,15 +3250,16 @@ class _Client:
 
     @_public('getter')
     def backlinks(self, space, object_id):
-        """What links HERE: the link index's edges pointing at the object
-        (`object`) and at its records or property values (`parts`) →
-        {"object": [edge], "parts": [edge], "truncated"?}. An edge:
-        `{objectId, kind, target, dataset?/key?/recordId? (a block,
-        message or record), prop? ("type.prop" for a relation value),
-        spaceId? (when foreign)}`. Edges come from editor blocks, chat
-        messages, and relation / markdown properties; the index
-        catches up a few hundred ms after a write. 409 index.disabled
-        when the search index is off."""
+        """What links HERE → {object: [edge], parts: [edge], truncated?}.
+
+        The link index's edges pointing at the object (`object`) and at its
+        records or property values (`parts`) → {"object": [edge], "parts":
+        [edge], "truncated"?}. An edge: `{objectId, kind, target,
+        dataset?/key?/recordId? (a block, message or record), prop? ("type.prop"
+        for a relation value), spaceId? (when foreign)}`. Edges come from editor
+        blocks, chat messages, and relation / markdown properties; the index
+        catches up a few hundred ms after a write. 409 index.disabled when the
+        search index is off."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/backlinks")
         out = {"object": [self._edge(space, e) for e in r.get("object") or []],
                "parts": [self._edge(space, e) for e in r.get("parts") or []]}
@@ -3255,18 +3269,20 @@ class _Client:
 
     @_public('getter')
     def links(self, space, object_id):
-        """What this object links TO: the forward edges out of its
-        blocks, messages, records and relation values → [edge] (the
-        backlinks edge shape; `objectId` is this object)."""
+        """What this object links TO → [edge] (the backlinks edge shape).
+
+        The forward edges out of its blocks, messages, records and relation
+        values → [edge] (the backlinks edge shape; `objectId` is this object)."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/links")
         return [self._edge(space, e) for e in r.get("links") or []]
 
     @_public('getter', scoped=False)
     def backlinks_everywhere(self, target_uri):
-        """Account-wide backlinks to one target across every space this
-        device indexes → [{spaceId, object: [edge], parts: [edge]}].
-        `target_uri` is the GLOBAL form: `any://o/<spaceId>/<objectId>`
-        (also `any://m/…` for a member, `any://f/…` for a file)."""
+        """Account-wide backlinks to one target across every indexed space.
+
+        Returns [{spaceId, object: [edge], parts: [edge]}]. `target_uri` is the
+        GLOBAL form: `any://o/<spaceId>/<objectId>` (also `any://m/…` for a
+        member, `any://f/…` for a file)."""
         r = self._call("get", f"/v1/backlinks?target={_urlquote(target_uri)}")
         out = []
         for sp in r.get("spaces") or []:
@@ -3309,8 +3325,10 @@ class _Client:
 
     @_public('getter')
     def list_apps(self, space):
-        """The apps a space has — what shows in its sidebar → [{name,
-        bundleId?, rootId, usecase?, description, hidden, pinned}].
+        """The apps a space has — what shows in its sidebar.
+
+        Returns [{name, bundleId?, rootId, usecase?, description, hidden,
+        pinned}].
 
         Apps are DATA: every installed app is an object filed under the
         built-in `miniapp` collection with `bundle` = the install's id
@@ -3349,8 +3367,9 @@ class _Client:
 
     @_public('getter')
     def list_available_apps(self, space):
-        """The server's catalog of well-known apps with what this space
-        has → [{usecase, name, description, requires, installed}].
+        """The server's app catalog, with what this space already has.
+
+        Returns [{usecase, name, description, requires, installed}].
         `setup_app(space, usecase)` installs one (dependencies too)."""
         have = {b.get("id") for b in self.list_bundles(space)}
         out = []
@@ -3364,15 +3383,15 @@ class _Client:
 
     @_public('mutator')
     def setup_app(self, space, usecase):
-        """Install (or adopt) one of the catalog's apps in a space,
-        dependencies first → [{usecase, bundleId, rootId, installed,
-        typeId?, collectionId?, properties?}] — a bundle declares a
-        TYPE (person, deal, journal: what its objects are) or a
-        COLLECTION (wiki, contact, investor: what objects are filed
-        under — a contact is a `person` filed under `contact`);
-        `properties` is that definition's xKey → propId map.
-        Idempotent: run it again and everything adopts. The user's
-        call — offer, then install on a yes."""
+        """Install (or adopt) one of the catalog's apps in a space, dependencies first.
+
+        Returns [{usecase, bundleId, rootId, installed, typeId?, collectionId?,
+        properties?}] — a bundle declares a TYPE (person, deal, journal: what
+        its objects are) or a COLLECTION (wiki, contact, investor: what objects
+        are filed under — a contact is a `person` filed under `contact`);
+        `properties` is that definition's xKey → propId map. Idempotent: run it
+        again and everything adopts. The user's call — offer, then install on a
+        yes."""
         r = self._call("post", f"/v1/catalog/{usecase}/setup", {"spaceId": space})
         self._cat_invalidate(space)
         out = []
@@ -3409,8 +3428,9 @@ class _Client:
 
     @_public('getter', scoped=False, listed=False)
     def bao_space(self):
-        """The bao space id — memory's only home (ADR-017 §0). Wired by
-        the runtime (serve; `run --from-space` or a `bao.space` config
+        """The bao space id — memory's only home (ADR-017 §0).
+
+        Wired by the runtime (serve; `run --from-space` or a `bao.space` config
         key); raises when this run has none."""
         if not self._bao_space:
             raise ValueError(
@@ -3421,12 +3441,13 @@ class _Client:
 
     @_public('getter', scoped=False)
     def get_brain(self):
-        """The brain object hosting agent_memory_items — the bao space's
-        `bao/v1` bundle's `bao/brain/v1` child (ADR-017 §0), with the
-        `agent_brain` type + datasets ensured lazily (guest-owned
-        store). `{objectId}` — deterministic, no create race. Memory
-        has ONE home: the bao space (`bao_space()`); there is no
-        per-space brain, facts about a space go in `context`/`tags`."""
+        """The brain object hosting agent_memory_items → {objectId}.
+
+        It is the bao space's `bao/v1` bundle's `bao/brain/v1` child (ADR-017
+        §0), with the `agent_brain` type + datasets ensured lazily (guest-owned
+        store). `{objectId}` — deterministic, no create race. Memory has ONE
+        home: the bao space (`bao_space()`); there is no per-space brain, facts
+        about a space go in `context`/`tags`."""
         space = self.bao_space()
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
@@ -3435,18 +3456,19 @@ class _Client:
 
     @_public('getter', listed=False)
     def collection(self, space, type_key, dataset_key):
-        """The collection a type's dataset lives in (`<typeId>_<key>`),
-        for callers that address the wire themselves — every any@v1
-        call already takes the key. None when the type declares no
-        such dataset."""
+        """The storage collection a type's dataset lives in (`<typeId>_<key>`).
+
+        For callers that address the wire themselves — every any@v1 call already
+        takes the key. None when the type declares no such dataset."""
         tid = self._resolve_type_or_raise(space, type_key)
         return next((d.get("collection") for d in self._datasets_of(space, tid)
                      if d.get("key") == dataset_key), None)
 
     @_public('mutator', scoped=False, listed=False)
     def create_memory(self, fields):
-        """Create a memory item (category + context required) in the
-        bao space's brain — memory's only home.
+        """Create a memory item (category + context required) in the brain.
+
+        Memory's only home is the bao space's brain.
 
         Writes the brain child's agent_memory_items dataset. Returns
         ModifyResult — recordIds[0] is the item id. Fields:
@@ -3513,8 +3535,9 @@ class _Client:
 
     @_public('mutator', scoped=False, listed=False)
     def delete_memory(self, item_id):
-        """Delete a memory item by id (author-only — the dataset's
-        deleteBy gate)."""
+        """Delete a memory item by id (author-only).
+
+        The dataset's deleteBy gate."""
         brain = self.get_brain()["objectId"]
         return self.delete_records(self.bao_space(), brain,
                                    "agent_memory_items", [item_id])
@@ -3556,23 +3579,23 @@ class _Client:
 
     @_public('getter')
     def list_files(self, space, object_id=None):
-        """Files in the space — `[{fileId, objectId, name, mime, size, …}]`;
-        `object_id` narrows to one object's attachments. Files are
-        addressed `any://f/<spaceId>/<fileId>` (chat attachments arrive
-        as such lines); read one with file_content / llm.read, add one
-        with attach_file."""
+        """Files in the space → [{fileId, objectId, name, mime, size, …}].
+
+        `object_id` narrows to one object's attachments. Files are addressed
+        `any://f/<spaceId>/<fileId>` (chat attachments arrive as such lines);
+        read one with file_content / llm.read, add one with attach_file."""
         q = f"?objectId={object_id}" if object_id else ""
         return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
 
     @_public('getter')
     def file_content(self, space, file):
-        """The file as a Blob — `{fileId, mime, size, blob}` (ADR-026 §5).
-        `file` is an `any://f/<spaceId>/<fileId>` URI (a chat
-        `[attachment …]` line; `?variant=thumb` passes through) or a
-        bare fileId in `space`. `blob` is a handle, zero bytes in the
-        cell: pass it to `llm.read`, a File part, `attach_file`, an
-        http `body=`; `bytes(blob)` / `blob.text()` pull the payload
-        in only when you must."""
+        """The file as a Blob → {fileId, mime, size, blob} (ADR-026 §5).
+
+        `file` is an `any://f/<spaceId>/<fileId>` URI (a chat `[attachment …]`
+        line; `?variant=thumb` passes through) or a bare fileId in `space`.
+        `blob` is a handle, zero bytes in the cell: pass it to `llm.read`, a
+        File part, `attach_file`, an http `body=`; `bytes(blob)` / `blob.text()`
+        pull the payload in only when you must."""
         space, file_id, query = self._file_ref(space, file)
         url = self._base + f"/v1/spaces/{space}/files/{file_id}/content"
         if query:
@@ -3596,19 +3619,19 @@ class _Client:
 
     @_public('mutator')
     def attach_file(self, space, object_id, name, data, mime=None):
-        """Attach a file to an object — the write half (ADR-026 §5).
-        `data`: a Blob (an `http.get(...).blob`, `file_content(...)["blob"]`,
-        a `tempfile` writer's `.blob`) or `bytes`/`str` (wrapped into
-        one); `mime` defaults to the Blob's. One raw upload — the host
-        streams the bytes, the trace keeps the ref. Returns the
-        server's FileInfo plus `uri` (`any://f/<sid>/<fileId>`) — THE
-        file link: paste it verbatim into markdown (`![alt](<uri>)` —
-        the editor renders images from any://f/ links only; `[name](<uri>)`
-        for a download) or into `chat_send` attachments. Never compose
-        a file link yourself: its space segment is the space ID, and a
-        NAME there (`any://f/ta/…`) is a dead link. There is no file
-        without an object: to "create a file", pick or create the
-        object it belongs to first."""
+        """Attach a file to an object → FileInfo + `uri` (any://f/…).
+
+        The write half (ADR-026 §5). `data`: a Blob (an `http.get(...).blob`,
+        `file_content(...)["blob"]`, a `tempfile` writer's `.blob`) or
+        `bytes`/`str` (wrapped into one); `mime` defaults to the Blob's. One raw
+        upload — the host streams the bytes, the trace keeps the ref. Returns
+        the server's FileInfo plus `uri` (`any://f/<sid>/<fileId>`) — THE file
+        link: paste it verbatim into markdown (`![alt](<uri>)` — the editor
+        renders images from any://f/ links only; `[name](<uri>)` for a download)
+        or into `chat_send` attachments. Never compose a file link yourself: its
+        space segment is the space ID, and a NAME there (`any://f/ta/…`) is a
+        dead link. There is no file without an object: to "create a file", pick
+        or create the object it belongs to first."""
         b = data if isinstance(data, Blob) else blob.of(data)  # noqa: F821 - guest globals
         if not isinstance(data, Blob) and mime:  # noqa: F821
             b = blob.from_bytes(bytes(b), mime)  # noqa: F821

@@ -211,6 +211,7 @@ def list_project_files(project_id):
 @span("figma.list_team_projects", kind="getter")  # noqa: F821 - guest global
 def list_team_projects(team_id):
     """Projects in a team (team id from a figma.com/team/:id/... URL).
+
     Same projects:read caveat as list_project_files."""
     if not team_id or not isinstance(team_id, str):
         return {"ok": False, "error": "team_id is required"}

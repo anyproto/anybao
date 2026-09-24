@@ -120,11 +120,11 @@ def me():
 def list_conversations(open=None, sort=None, order=None, per_page=None,
                        starting_after=None):
     """Page conversation SUMMARIES (no parts), newest updated first.
+
     Cursor: pass nextCursor back as starting_after.
 
     Returns `{ok, conversations, pages}` — next page via
-    `pages.next.starting_after`.
-    """
+    `pages.next.starting_after`."""
     params = {"per_page": _clamp_per_page(per_page),
               "starting_after": starting_after, "sort": sort, "order": order}
     if open is not None:
