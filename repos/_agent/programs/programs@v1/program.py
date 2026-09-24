@@ -1,9 +1,12 @@
 """Write, edit and delete programs in a working space — live on the next use().
 
-Write-time validation mirrors deploy's (ADR-013); a passing post-save
-use() probe makes a `__any_tool__` program a live tool immediately,
-and an edit is live on the very next use(). Overlay-exported specs are
-refused; promotion to an overlay repo is a human deploy step."""
+Code that should run on its own — a mail watch, a periodic check —
+is a program here plus an agent_triggers record that runs it, never a
+cron that wakes your whole reasoning loop. Write-time validation
+mirrors deploy's (ADR-013); a passing post-save use() probe makes a
+`__any_tool__` program a live tool immediately, and an edit is live on
+the very next use(). Overlay-exported specs are refused; promotion to
+an overlay repo is a human deploy step."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -358,7 +361,21 @@ def create_program(spaceConfig, body):
     kernel-forbidden imports, an existing spec, a spec an overlay
     exports. After writing, the source is use()-probed: on success the
     program is live (a tool joins the inventory next turn); on failure
-    you get {ok: false, saved: true, hint} — fix via edit_program."""
+    you get {ok: false, saved: true, hint} — fix via edit_program.
+
+    A program imports nothing of the runtime: `use`, `span`, `effect`,
+    `http`, `now`, `print`, … are globals in a program module exactly as
+    in a cell, and other programs come in with `use("agent:any@v1")`
+    (the kernel's stdlib allowlist is the only `import`).
+
+    Secrets: a program never sees a key. Each http call passes
+    `credential={"ref": "local.key.<service>", "header", "prefix",
+    "about": {"label", "hosts": ["host[:port]"], "help"}}`
+    (help(http.get)); the first call with no stored value posts a
+    credential card and the user enters the key there. `about.hosts` is
+    mandatory — the only destination the key is ever sent to.
+    `connector.key.*` refs belong to the reviewed connectors; a program
+    of yours cannot use them for a new service."""
     body = dict(body or {})
     unknown = set(body) - {"name", "version", "source"}
     if unknown:

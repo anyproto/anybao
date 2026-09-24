@@ -148,7 +148,7 @@ BASH_STDERR_CHARS = 3000
 # sort after these. `_coding` is composed only with the shell feature.
 # `_soul` is not in the band: it is the identity, rendered verbatim as
 # the first bytes of the system block (ADR-005 §5).
-SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory", "_meta_skill"]
+SYSTEM_SKILL_ORDER = ["_core", "_any", "_coding", "_memory"]
 IDENTITY_SKILL = "_soul"
 # a pasted essay must not eat the prompt: head kept, a marker names the cut
 IDENTITY_TOKEN_CAP = 2000
@@ -888,8 +888,7 @@ def _skill_index(c, space, code_space=None, overlays=None):
     the body stays out of the standing prompt and is read with any@v1's
     get_skill(name) when a turn needs it (ADR-009 §3, ADR-005 §5). A
     working-space skill shadows a shipped one of the same name — the
-    same precedence get_skill() looks up in. The `_meta_skill` skill
-    teaches the flow."""
+    same precedence get_skill() looks up in."""
     code_space = code_space or space
     order = []   # lowest precedence first: the last read wins
     for sp in ((overlays or {}).get("connectors"), code_space, space):

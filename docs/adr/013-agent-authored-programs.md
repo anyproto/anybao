@@ -1,6 +1,7 @@
 # ADR-013: Agent-authored programs — `create_program` in the working space
 
-Status: **Accepted** (2026-08-14), amended 2026-08-14 at implementation
+Status: **Accepted** (2026-08-14), amended 2026-09-24 (the authoring
+surface is programs@v1's docstrings — BOB-160), amended 2026-08-14 at implementation
 (§1 shadow-guard mechanism = the `overlays.aliases` `runtime.get` key;
 §3 syntax gate = `ast.parse`, adding `ast` to the tier-1 allowlist;
 §3 "every public method" = module-level public defs — the §3/ADR-010
@@ -166,8 +167,9 @@ make an authored watch periodic. Subagent recursion stays governed by
 gate, per the persistence-not-power argument in Context. Prompt cost
 is bounded by ADR-010's tiered surface: one summary line per tool in
 the inventory, depth on demand via `help()`. The skill teaching this
-surface lands in `_meta_skill` (which already owns "you can author
-skills" — programs are the sibling paragraph).
+surface lives in `programs@v1`'s docstrings — the module doc says
+when to write a program, create_program's says how (amendment
+2026-09-24, BOB-160: `_meta_skill` is gone; help() is the surface).
 
 ### 6. Versioning & promotion
 

@@ -3465,7 +3465,13 @@ class _Client:
           one get_skill() returns it whole.
         - Edit it later on the returned objectId in baoSpaceConfig:
           edit_markdown (surgical, all-or-nothing — never get→replace→put),
-          append_markdown to add a step, put_markdown only to rewrite it."""
+          append_markdown to add a step, put_markdown only to rewrite it.
+
+        The `_`-prefixed skills are the system skills, composed into every
+        prompt and overwritten on each deploy. `_soul` is your identity:
+        to change who you are, the user edits a `_soul` skill of their own
+        in the working space (it shadows the shipped one; a blank body
+        does not)."""
         name = (name or "").strip() if isinstance(name, str) else ""
         if not name:
             raise ValueError("create_skill: name is required")

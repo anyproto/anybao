@@ -8,7 +8,7 @@ SKILLS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "skills"
 
 # The fixed lead order the composer honors (toolcaller SYSTEM_SKILL_ORDER);
 # `_soul` is the identity, outside the band (ADR-005 §5).
-SYSTEM_SKILL_ORDER = ("_core", "_any", "_coding", "_memory", "_meta_skill")
+SYSTEM_SKILL_ORDER = ("_core", "_any", "_coding", "_memory")
 
 
 def load_skills_dir(path: Path) -> dict[str, str]:
