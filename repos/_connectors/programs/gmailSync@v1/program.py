@@ -1,6 +1,6 @@
 """Gmail → space sync: chunked full sync, history ticks, clean_html.
 
-How to sync and how to read the synced mail: `get_skill("gmailSync")`.
+How to sync and how to read the synced mail: any's `get_skill("gmailSync")`.
 One tick per invocation (ADR-012 §2): a bounded full-sync slice while
 the backlog drains, then coalesced `history.list` increments, fuel as
 the governor (checkpoint, exit). Mail lands as `email_messages`

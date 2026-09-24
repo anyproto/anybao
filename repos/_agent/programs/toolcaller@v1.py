@@ -885,7 +885,7 @@ def _skill_index(c, space, code_space=None, overlays=None):
     """`## Skills` — the on-demand skills: every NON-`_` agent_skill of
     the working space, the agent code overlay and the connectors
     overlay, as name + one line;
-    the body stays out of the standing prompt and is read with the bound
+    the body stays out of the standing prompt and is read with any@v1's
     get_skill(name) when a turn needs it (ADR-009 §3, ADR-005 §5). A
     working-space skill shadows a shipped one of the same name — the
     same precedence get_skill() looks up in. The `_meta_skill` skill
@@ -905,7 +905,7 @@ def _skill_index(c, space, code_space=None, overlays=None):
     return ("## Skills\n\n"
             "Playbooks loaded on demand: only a name and one line ride here. "
             "When the turn — or the task in front of you — matches one, read "
-            "it FIRST with `get_skill(\"<name>\")` and follow it.\n\n" + lines)
+            "it FIRST with `c.get_skill(\"<name>\")` and follow it.\n\n" + lines)
 
 
 def _memory_categories(c, space):
@@ -1063,11 +1063,7 @@ def main(args):
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
     ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"
-                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}\n"
-                # on-demand skill bodies by name (ADR-009 §3): the bao space
-                # first, then the agent overlay, then the connectors overlay
-                f"get_skill = use('agent:skills@v1').binder("
-                f"{[space, code_space, (overlays or {}).get('connectors')]!r})")
+                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}")
     if plan["messages"]:
         # the auto-recall injection is framed as a run_cell that bound
         # `rec` (kernel state persists across cells) — make that true,

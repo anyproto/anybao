@@ -146,11 +146,10 @@ tier — the working (bao) space, the agent overlay, the connectors
 overlay: the `## Skills` index lists it as name + one line (the line is
 `any.description`, else the body's first sentence — a deployed skill
 carries no description property), and the model reads the body with
-the bound cell global `get_skill(name)` when a turn needs it.
-`get_skill` (`agent:skills@v1`, bound by the toolcaller next to
-`baoSpaceConfig`) looks in the bao space, then the agent overlay, then
-the connectors overlay; a blank body never shadows; an unknown name
-raises listing the known ones. The index merges the tiers with the same
+`any@v1`'s `get_skill(name)` when a turn needs it. It looks in the bao
+space (`runtime.get("bao.space")`), then the agent overlay, then the
+connectors overlay (`runtime.get("overlays.aliases")`); a blank body
+never shadows; an unknown name raises listing the known ones. The index merges the tiers with the same
 precedence, so names are unique and carry no ids. A playbook that only
 some turns need ships without the underscore (`gmailSync`); renaming a
 shipped skill leaves the old object in every overlay — deploy never

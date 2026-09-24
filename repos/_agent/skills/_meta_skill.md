@@ -7,7 +7,7 @@ the shipped ones (deploy-managed, in the agent and connectors repos)
 and the ones the user curates in the working space. **Only each
 skill's name and one line are injected** (the `## Skills` section) —
 the body is not. When the turn, or the task in front of you, matches
-one, read it *before* you plan and follow it: `get_skill("<name>")`
+one, read it *before* you plan and follow it: `c.get_skill("<name>")`
 (the bao space first, so a skill of the user's shadows a shipped one).
 
 You can author skills yourself when the user asks you to capture a

@@ -3427,6 +3427,55 @@ class _Client:
         self._ensured_stores[key] = colls
         return colls
 
+    @_public('getter', scoped=False)
+    def get_skill(self, name):
+        """A skill's markdown body by name — read it before you plan, then follow it.
+
+        On-demand skills ride `## Skills` as one line each (ADR-009 §3);
+        this is how their body is read. Looks in the bao space first (a
+        skill of your own shadows a shipped one), then the agent repo,
+        then the connectors repo; a blank body never shadows. An unknown
+        name raises LookupError listing the known skills."""
+        spaces = self._skill_spaces()
+        for space in spaces:
+            body = self._skill_body(space, name)
+            if body is not None:
+                return body
+        known = sorted({n for sp in spaces for n, _ in self._skills_of(sp)
+                        if not n.startswith("_")})
+        raise LookupError(f"no skill named {name!r}; known: {', '.join(known)}")
+
+    def _skill_spaces(self):
+        """get_skill's lookup order: the bao space, then the overlays the
+        runtime wires as `overlays.aliases` — agent, then connectors."""
+        order = [self._bao_space]
+        try:
+            aliases = effect("runtime.get", {"key": "overlays.aliases"})["value"] or {}  # noqa: F821
+        except Exception:  # noqa: BLE001 - a run without overlays
+            aliases = {}
+        order += [aliases.get("agent"), aliases.get("connectors")]
+        out = []
+        for sp in order:
+            if sp and sp not in out:
+                out.append(sp)
+        return out
+
+    def _skills_of(self, space):
+        """[(name, objectId)] of the agent_skill objects in one space —
+        [] when the space has no skill type."""
+        if not any((t.get("xKey") or t.get("key")) == "agent_skill"
+                   for t in self.list_types(space)):
+            return []
+        return [((o.get("any") or {}).get("name") or "", o["id"])
+                for o in self.query_objects(space, filter={"any.type": "agent_skill"})]
+
+    def _skill_body(self, space, name):
+        for n, oid in self._skills_of(space):
+            if n == name:
+                body = self.get_markdown(space, oid) or ""
+                return body if body.strip() else None
+        return None
+
     @_public('getter', scoped=False, listed=False)
     def bao_space(self):
         """The bao space id — memory's only home (ADR-017 §0).

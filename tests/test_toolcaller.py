@@ -739,7 +739,7 @@ def test_skill_index_lists_names_and_lines_not_bodies_or_ids():
     two = TwoSpaces()
     two.skills["user"].append(("u9", "review-pr", "# step one..."))
     out = g["_skill_index"](two, "user")
-    assert "## Skills" in out and 'get_skill("<name>")' in out
+    assert "## Skills" in out and 'c.get_skill("<name>")' in out
     assert "- **review-pr**" in out
     assert "u9" not in out                 # no ids: get_skill resolves by name
     assert "step one" not in out           # body stays out of the prompt
