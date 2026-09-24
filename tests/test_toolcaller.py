@@ -705,17 +705,38 @@ def test_runtime_context_degenerate_omits_code_line():
     assert "## Repos" not in w.llm_calls[0]["system"]
 
 
-def test_user_skills_lists_titles_and_ids_not_bodies():
+def test_skill_index_lists_titles_and_ids_not_bodies():
     g = _helpers()
     two = TwoSpaces()
     two.skills["user"].append(("u9", "review-pr", "# step one..."))
-    out = g["_user_skills"](two, "user")
-    assert "## User skills" in out
+    out = g["_skill_index"](two, "user")
+    assert "## Skills" in out
     assert "- **review-pr** (`u9`)" in out
     assert "step one" not in out           # body stays out of the prompt
     assert "_core" not in out              # system skills excluded
     # a space with only _-skills injects no section at all
-    assert g["_user_skills"](TwoSpaces(), "user") == ""
+    assert g["_skill_index"](TwoSpaces(), "user") == ""
+
+
+def test_skill_index_lists_shipped_on_demand_skills_working_space_wins():
+    """ADR-009 §3: a NON-`_` shipped skill joins the index (never the
+    composed band); a same-named working-space skill shadows it."""
+    g = _helpers()
+    two = TwoSpaces()
+    two.skills["code"] += [
+        ("s3", "gmailSync", "# Skill: gmailSync\n\nSyncing Gmail into a space: "
+                            "backfill, cron. Route by job size.\n\nbody detail"),
+        ("s4", "review-pr", "# shipped review")]
+    two.skills["user"].append(("u9", "review-pr", "# mine"))
+    out = g["_skill_index"](two, "user", "code")
+    assert 'Shipped — `c.get_markdown("code", "<id>")`' in out
+    assert "- **gmailSync** (`s3`) — Syncing Gmail into a space: backfill, cron." in out
+    assert "body detail" not in out
+    assert "- **review-pr** (`u9`)" in out and "`s4`" not in out   # working space wins
+    assert 'Yours — `c.get_markdown(baoSpaceConfig, "<id>")`' in out
+    # the band still composes only `_` skills
+    band = g["_compose_skills"](g["_load_system_skills"](two, "user", "code"))
+    assert "Syncing Gmail" not in band
 
 
 def test_reply_links_auto_attach_and_mentions_stay_text_only():

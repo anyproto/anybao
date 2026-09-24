@@ -1,8 +1,10 @@
-# Skill: _gmailSync
+# Skill: gmailSync
 
-Gmail → space sync (`connectors:gmailSync@v1`, ADR-012). Route by job
-size — never drain a mailbox from chat, and never rebuild the corpus
-through the raw `gmail@v1` connector:
+Syncing Gmail into a space (`connectors:gmailSync@v1`): arming a
+backfill, stopping it, the steady-state cron, sync-now, coverage and
+stalled chains. Route by job size (ADR-012) — never drain a mailbox
+from chat, and never rebuild the corpus through the raw `gmail@v1`
+connector:
 
 **First, smoke-check the credential** — an unattended chain armed on
 a dead grant just burns its 5 hops with nobody watching:

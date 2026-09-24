@@ -1,7 +1,8 @@
 # ADR-005: Loop core
 
 Status: **Accepted** (2026-07-07); §1 amended 2026-08-31 (backends,
-model profiles, traits — BOB-74)
+model profiles, traits — BOB-74); §5 amended 2026-09-24 (skill index —
+BOB-160)
 Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
@@ -437,7 +438,7 @@ the cell's span — into the ToolResult content:
 
 ### 5. System prompt & boot window assembly
 
-The stable block [core skills + tool docs + memory categories] is
+The stable block [system skills + skill index + tool docs + memory categories] is
 composed by `anybao serve` (content shapes are ADR-006's) and handed to
 the program as the `system` arg; the toolcaller appends a **runtime
 context** section (agent space id, chat id, agent name — from its args;
@@ -453,6 +454,13 @@ assembled GUEST-SIDE: `history@v1` renders the boot window
 injects topical hits as a tool result (ADR-007 §5), and the current
 user message (timestamp + view suffix) closes it. The suffix rides the
 llm message only — the persisted turn keeps the raw `userText`.
+
+**System skills in full, the rest by index (amendment 2026-09-24,
+BOB-160).** Only `_`-prefixed skills are composed into the stable
+block. Every other skill, shipped or the user's, rides the `## Skills`
+index as name + one line + id, and its body is fetched on demand
+(ADR-009 §3). The index is part of the stable block, so it is
+fingerprinted and byte-stable like the rest.
 
 The tier's profile picks the variant (§1.3): `prompt_style: "full"`
 is the block above; `"compact"` is the same skills with the shorter

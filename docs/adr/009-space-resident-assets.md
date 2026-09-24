@@ -3,7 +3,7 @@
 Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
 embedded, §8), 2026-07-23 (§4 compile cache, §8 snapshot backlog +
 deferred messages), 2026-09-16 (§8 readiness = usable, miss-driven
-program waits)
+program waits), 2026-09-24 (§3 on-demand skills)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -138,6 +138,18 @@ by name, **working space wins** (same shadowing doctrine as programs).
 The host passes `codeSpace = overlays["agent"]` in spawn args; it
 still injects no prompt wording (ADR-005 unchanged). This is the one
 guest-side change in this ADR.
+
+**The name picks how a skill loads (amendment 2026-09-24, BOB-160).**
+A `_`-prefixed skill is a system skill: its body is composed into the
+prompt in full, every run. Any other skill is **on demand**, in either
+tier: the `## Skills` index lists it as name + one line + id (the line
+is `any.description`, else the body's first sentence — a deployed
+skill carries no description property), grouped by the space to fetch
+the body from, and the model reads the body with `get_markdown` when a
+turn matches. Shadowing is the same by-name merge. A playbook that only
+some turns need ships without the underscore (`gmailSync`); renaming a
+shipped skill leaves the old object in every overlay — deploy never
+deletes — so the old name is removed by hand where it was deployed.
 
 ### 4. Kernel embedded in the binary
 

@@ -808,32 +808,68 @@ def _tool_docs(c, space, code_space=None, style="full"):
     return intro + "\n\n" + "\n\n".join(b for _, _, b in rows)
 
 
-def _user_skills(c, space):
-    """`## User skills` — the user-authored agent_skill objects of the
-    working space (names NOT `_`-prefixed): title + one-line
-    description + id, so a matching turn can fetch the body
-    (`get_markdown`) before planning. The `_meta_skill` skill teaches
-    the flow; bodies stay out of the standing prompt."""
+def _skill_rows(c, space):
+    """`[(name, id, description)]` for the NON-`_` agent_skill objects of
+    one space; the description is `any.description`, else the body's
+    first sentence (a deployed skill carries no description property)."""
     type_id = next((t["id"] for t in c.list_types(space)
                     if (t.get("xKey") or t.get("key")) == "agent_skill"), None)
     if not type_id:
-        return ""
-    lines = []
+        return []
+    rows = []
     for o in c.query_objects(space, filter={"any.type": type_id}):
         meta = o.get("any") or {}
         name = meta.get("name") or ""
         if not name or name.startswith("_"):
             continue
-        desc = (meta.get("description") or "").strip().splitlines()
-        lines.append(f"- **{name}** (`{o['id']}`)"
-                     + (f" — {desc[0]}" if desc else ""))
-    if not lines:
+        desc = (meta.get("description") or "").strip().split("\n")[0]
+        rows.append((name, o["id"], desc or _first_sentence(c.get_markdown(space, o["id"]))))
+    return rows
+
+
+def _first_sentence(md):
+    """The first prose sentence of a skill body (headings skipped),
+    whitespace-collapsed and capped — the index line of a skill that
+    names no description."""
+    for para in (md or "").split("\n\n"):
+        text = " ".join(para.split())
+        if text and not text.startswith("#"):
+            cut = text.find(". ")
+            text = text[:cut + 1] if cut >= 0 else text
+            return text if len(text) <= 200 else text[:199] + "…"
+    return ""
+
+
+def _skill_index(c, space, code_space=None):
+    """`## Skills` — the on-demand skills: every NON-`_` agent_skill of
+    the agent code overlay (shipped) and of the working space (the
+    user's), as name + one line + id; the body stays out of the standing
+    prompt and is fetched when a turn matches (ADR-009 §3, ADR-005 §5).
+    Merged by name, the working space wins. The `_meta_skill` skill
+    teaches the flow."""
+    code_space = code_space or space
+    mine = _skill_rows(c, space)
+    names = {n for n, _, _ in mine}
+    shipped = ([r for r in _skill_rows(c, code_space) if r[0] not in names]
+               if code_space != space else [])
+    if not (mine or shipped):
         return ""
-    return ("## User skills\n\n"
-            "User-curated playbooks (`agent_skill` objects). When the "
-            "turn matches one, fetch its body FIRST — "
-            "`c.get_markdown(baoSpaceConfig, \"<id>\")` — and follow "
-            "it.\n\n" + "\n".join(sorted(lines)))
+
+    def lines(rows):
+        return "\n".join(sorted(f"- **{n}** (`{i}`)" + (f" — {d}" if d else "")
+                                for n, i, d in rows))
+
+    out = ["## Skills\n\n"
+           "Playbooks (`agent_skill` objects) loaded on demand: only name, "
+           "one line and id ride here. When the turn matches one, fetch its "
+           "body FIRST and follow it."]
+    if shipped:
+        out.append(f'Shipped — `c.get_markdown("{code_space}", "<id>")`:\n'
+                   + lines(shipped))
+    if mine:
+        out.append('Yours — `c.get_markdown(baoSpaceConfig, "<id>")`:\n'
+                   + lines(mine))
+    return "\n\n".join(out)
 
 
 def _memory_categories(c, space):
@@ -897,7 +933,7 @@ def compose_system(c, space, code_space=None, overlays=None, style="full",
         soul = ""
     parts = [soul,
              _compose_skills(skills, has_shell),
-             _user_skills(c, space),
+             _skill_index(c, space, code_space),
              _tool_docs(c, space, code_space, style),
              _repo_inventory(c, overlays,
                              code_space if code_space != space else None),

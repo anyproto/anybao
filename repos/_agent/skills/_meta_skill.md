@@ -1,16 +1,18 @@
 # Skill: _meta_skill
 
-## Available User Skills
+## On-demand skills
 
-User skills are `agent_skill` objects the user curates as reusable
-playbooks. **Only each skill's title, one-line description, and id are
-injected** (the `## User skills` section) — the body is not. When the
-current turn matches one of those entries, fetch the body *before* you
-plan, and follow it:
+Skills without a leading underscore are playbooks loaded on demand:
+the shipped ones (deploy-managed, in the agent overlay) and the ones
+the user curates in the working space. **Only each skill's title,
+one-line description, and id are injected** (the `## Skills` section)
+— the body is not. When the current turn matches one of those entries,
+fetch the body *before* you plan, from the space its group names, and
+follow it:
 
 ```python
 c = use("agent:any@v1")
-c.get_markdown(s, skill_id)
+c.get_markdown(space, skill_id)
 ```
 
 You can author skills yourself when the user asks you to capture a
@@ -63,8 +65,8 @@ your whole reasoning loop. `p = use("agent:programs@v1")`:
   change only through the deploy pipeline.
 
 **System skills** (deploy-pipeline-managed — `_core`, `_soul`, `_any`,
-`_memory`, `_space_context`, `_meta_skill`, `_gmailSync`) carry the leading
-underscore, are excluded from the list above, and get overwritten on
+`_memory`, `_space_context`, `_meta_skill`) carry the leading
+underscore, are composed into the prompt in full, and get overwritten on
 every deploy. Don't `_`-prefix your own skills. `_soul` is the identity:
 its body opens the system prompt verbatim, free text, no structure the
 harness reads. To change who you are, the user edits a `_soul` skill in
