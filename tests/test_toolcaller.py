@@ -705,6 +705,21 @@ def test_runtime_context_degenerate_omits_code_line():
     assert "## Repos" not in w.llm_calls[0]["system"]
 
 
+def test_unwrap_joins_soft_wraps_and_keeps_structure():
+    """BOB-160: a composed skill body is one line per paragraph / list
+    item; code, headings, tables, quotes and item starts keep their lines."""
+    g = _helpers()
+    md = ("# Skill: _x\n\nOne paragraph\nwrapped here.\n\n"
+          "- **Item** one,\n  continued\n  twice.\n- Item two\n  1. nested\n\n"
+          "```python\nc = use(\"a\")\nc.b()\n```\nafter fence\njoined\n\n"
+          "| a | b |\n| - | - |\n> quote\n> more\n## Head\ntext")
+    assert g["_unwrap"](md) == (
+        "# Skill: _x\n\nOne paragraph wrapped here.\n\n"
+        "- **Item** one, continued twice.\n- Item two\n  1. nested\n\n"
+        "```python\nc = use(\"a\")\nc.b()\n```\nafter fence joined\n\n"
+        "| a | b |\n| - | - |\n> quote\n> more\n## Head\ntext")
+
+
 def test_skill_index_lists_titles_and_ids_not_bodies():
     g = _helpers()
     two = TwoSpaces()

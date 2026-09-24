@@ -460,7 +460,11 @@ BOB-160).** Only `_`-prefixed skills are composed into the stable
 block. Every other skill, shipped or the user's, rides the `## Skills`
 index as name + one line + id, and its body is fetched on demand
 (ADR-009 §3). The index is part of the stable block, so it is
-fingerprinted and byte-stable like the rest.
+fingerprinted and byte-stable like the rest. Composed bodies (the
+`_soul` and every `_` skill) are unwrapped: soft-wrapped lines join
+into one line per paragraph or list item, while fenced code, headings,
+tables, quotes and list-item starts keep their lines. Sources stay
+wrapped for review; the prompt spends no tokens on line breaks.
 
 The tier's profile picks the variant (§1.3): `prompt_style: "full"`
 is the block above; `"compact"` is the same skills with the shorter
@@ -554,7 +558,8 @@ method list. Two rules govern what the model sees:
 
 **Identity first (amendment 2026-09-07).** The `_soul` `agent_skill`
 object is the identity, not a skill. Its body is the FIRST bytes of the
-system block, verbatim: no heading, no wrapper, nothing before it. It
+system block, verbatim but for joined soft wraps (below): no heading,
+no wrapper, nothing before it. It
 loads two-tier like every `_` skill (ADR-009 §3: the agent overlay
 ships the default; a `_soul` object in the working space shadows it, so
 the user edits their own copy and the next run picks it up, no deploy).

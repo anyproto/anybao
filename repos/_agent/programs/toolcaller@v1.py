@@ -693,8 +693,32 @@ def _skills_in(c, space):
     for o in c.query_objects(space, filter={"any.type": type_id}):
         name = (o.get("any") or {}).get("name") or ""
         if name.startswith("_"):
-            out[name] = c.get_markdown(space, o["id"])
+            out[name] = _unwrap(c.get_markdown(space, o["id"]))
     return out
+
+
+_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+
+
+def _unwrap(md):
+    """Soft-wrapped markdown → one line per paragraph / list item (BOB-160:
+    every hard wrap and continuation indent costs tokens and says
+    nothing). Fenced code, headings, tables, quotes, list items and blank
+    lines keep their own lines; sources stay wrapped for review."""
+    out, fence = [], False
+    for line in (md or "").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fence = not fence
+            out.append(line)
+            continue
+        prev = out[-1].lstrip() if out else ""
+        if (not fence and stripped and prev and not prev.startswith(("#", "|", "```"))
+                and not _LIST_ITEM.match(line) and not stripped.startswith(("#", "|", ">"))):
+            out[-1] = out[-1].rstrip() + " " + stripped
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def _load_system_skills(c, space, code_space=None):
