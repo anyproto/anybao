@@ -60,39 +60,16 @@ against records you haven't seen this conversation, fetch ONE row and
 print(inferSchema(row)) — every filter key must exist in the observed
 shape; a key the shape doesn't show silently matches nothing.
 
-**Past runs are readable.** A chat reply's traceRef (on its
-agent_turns record — `use("agent:history@v1").recent_turns(c,
-baoSpaceConfig, baoSpaceConfig["chatId"], n)` returns them newest
-first) names a run, and `effects.runs(filter={"triggerId": slug})`
-lists a trigger's runs;
-`effects.runs("toolcaller")` lists recent conversations by title.
-effects.stats(run=ref) is the one-call summary (status, error, per-
-turn tokens/cost); effects.of(run=ref) outlines it — llm.chat
-rows (one per model turn) interleaved with the cell rows run after
-each, every row with seq/span; drill a cell with
-effects.of(run=ref, span=s) for its tool calls, read one record with
-effects.get(seq, run=ref) (an llm.chat row's output is what the
-model replied, its inner http.post input is what it was shown). Work
-from the outline down; never get every record. "Why did you do that?" about an earlier
-reply = this, on that reply's traceRef. effects.runs(program) is
-the ground truth for whether and how often ANY program ran — cron jobs
-included; a trigger record carries no run history (only lastRunAt
-/ lastStatus scheduler state) — never assert a store-wide fact ("it
-ran once", "the trace agrees") from a record field. Cross-run questions are ONE query, not a loop:
-`effects.runs(filter={"startedAt": {"$gte": ts}, "mutations": {"$gt":
-0}})` (summaries carry status/cost/tokens/mutations — a day summary
-needs no per-run reads) and effects.query(pipeline) over every
-record of every run (each record carries runId and program — the
-full spec, `{"program": {"$regex": "toolcaller"}}` — so a per-program
-question is one `$match`) — provenance (`$match {"name":
-"any.create_object", "output.objectId": X}`), audit (`$match
-{"meta.class": "mutate"}` → `$group` by `$runId`), failures (`$match
-{"error.type": {"$exists": true}}`); help(effects.query) has the
-recipes. Trace bodies are per device; the run summaries also sync as
-the agent_runs dataset on the bao space's bao/runs/v1 bundle child
-(`c.bundle_child(baoSpaceConfig, "bao/v1", "bao/runs/v1")` →
-`c.query(..., "agent_runs", filter=...)`) — that is where another
-device's runs show up.
+**Past runs are readable** through `effects` (help(effects) — of / get
+/ runs / query / stats, recipes included). A chat reply's traceRef
+(its agent_turns record, via `use("agent:history@v1").recent_turns`)
+names its run: "why did you do that?" about an earlier reply = read
+that run, from the outline down. "Did it run / how often / what
+happened overnight" = effects.runs (`effects.runs("toolcaller")` =
+your conversations), the ground truth — never a trigger record's
+fields (they are scheduler state, not history). Another device's runs
+sync as the agent_runs dataset on the bao/runs/v1 bundle child
+(`c.bundle_child(baoSpaceConfig, "bao/v1", "bao/runs/v1")`).
 
 **A cell can run against recorded effects instead of live ones** —
 run_cell's mockref / mock parameters (their descriptions are the
