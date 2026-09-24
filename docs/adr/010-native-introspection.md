@@ -2,7 +2,8 @@
 
 Status: **Accepted** (2026-07-28), amended 2026-07-28 (§1 hard caps;
 §4 toolhood is declared, not derived — the shape heuristic misfired
-on loop plumbing; §5 summary not indexed), amended 2026-08-04 (§8
+on loop plumbing; §5 summary not indexed), amended 2026-09-24 (§8
+generated any@v1 surface — BOB-160), 2026-08-04 (§8
 flat tool surface — `any@v1` drops the `client()` binder for
 module-level functions with a `spaceConfig` first arg + bound space
 globals; handle methods were invisible to §3's inventory and the
@@ -230,7 +231,14 @@ prevent, caused by the one place the renderer couldn't see.
 
 - **Agent-facing tool modules expose a flat function surface.** The
   primary API is public module-level functions — every one of them
-  renders into `## Tools` by §3 with no renderer change. The `setup`
+  renders into `## Tools` by §3 with no renderer change. In `any@v1`
+  the surface is GENERATED (amendment 2026-09-24, BOB-160): each
+  `_Client` method marked `@_public(kind, scoped=True)`
+  becomes a module function carrying the method's docstring and
+  signature (`self` dropped, the first parameter renamed `spaceConfig`
+  when scoped), spanned with the parameter-keyed input the hand-written
+  wrappers recorded. One definition per method, the doc on the code;
+  internal `self.` calls stay unspanned. The `setup`
   kind stays legal for genuinely stateful handles (e.g. `memory@v1`),
   but an API meant for the standing prompt must not hide behind one.
 - **`spaceConfig` is the explicit per-call context.** Every

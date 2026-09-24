@@ -1597,7 +1597,7 @@ def test_dataset_field_helpers_are_private_on_the_flat_surface():
 
 def test_flat_functions_lift_method_docstrings():
     g = load(wire())
-    assert "envelope" in g["search"].__doc__       # ONE authored copy, lifted
+    assert "envelope" in g["search"].__doc__       # ONE authored copy, exported
     assert "objectId" in g["create_object"].__doc__
 
 
@@ -1744,7 +1744,7 @@ def test_get_space_trims_sync_internals():
 
 def test_search_types_kwarg_redirects_to_query_objects():
     # A18: the guessed types= kwarg gets the redirect, not a bare TypeError
-    g = load(wire())
+    g = load(wire(config={"any.base_url": "http://any"}))
     with pytest.raises(TypeError, match="any.type"):
         g["search"](SID, "q", types=["task"])
 

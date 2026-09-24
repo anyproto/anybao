@@ -11,6 +11,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # Built on the http syscall: JSON transport, error-envelope mapping
 # (AnyError), the NUL write guard, typed per-route calls.
 
+import inspect
 import json
 import re
 
@@ -446,6 +447,18 @@ def _slugify_option_key(name):
 def _pick_color(key):
     # deterministic (replay-safe) stand-in for any-ui's random pick
     return _OPTION_COLORS[sum(ord(ch) for ch in key) % len(_OPTION_COLORS)]
+
+
+def _public(kind, scoped=True):
+    """Mark a _Client method as part of the flat module surface (ADR-010
+    §8): the export loop at the end of this module turns every marked
+    method into a module function with the method's doc and signature —
+    `self` dropped, the first parameter renamed `spaceConfig` when
+    `scoped` (resolved to a space id per call). `kind` is the span kind."""
+    def mark(method):
+        method.__any_public__ = (kind, scoped)
+        return method
+    return mark
 
 
 class _Client:
@@ -1479,6 +1492,7 @@ class _Client:
         return v
 
     # --- objects -------------------------------------------------------------
+    @_public('mutator')
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
         """Create an object; returns {"objectId", "resolved"?,
@@ -1655,6 +1669,7 @@ class _Client:
             last = ((rows[0].get(wcid) or {}).get(wiki["pos"]) or "")
         return _lexid_after(last)
 
+    @_public('mutator')
     def move_object(self, space, object_id, parent, folder=None):
         """Place an object in the page tree (or move it): `parent` is
         `""` for the top level or a parent object id; the object is
@@ -1679,6 +1694,7 @@ class _Client:
                    {"patch": patch})
         return {"objectId": object_id, "parentId": parent, "pos": pos}
 
+    @_public('getter')
     def list_children(self, space, parent=""):
         """The page tree under `parent` (`""` = the top level), in
         sidebar order → normalized rows (query_objects shape). A space
@@ -1692,6 +1708,7 @@ class _Client:
             filter={f'{wcid}.{wiki["parentId"]}': parent},
             sort=[f'{wcid}.{wiki["pos"]}'])
 
+    @_public('mutator')
     def update_object(self, space, object_id, body, create_options=True):
         """Update an object's name / editor body / properties by handle.
 
@@ -1744,6 +1761,7 @@ class _Client:
             by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
         return list(by_scope.values())
 
+    @_public('mutator')
     def delete_object(self, space, object_id):
         """Delete an object permanently; returns {} (wire: 204).
 
@@ -1752,6 +1770,7 @@ class _Client:
         the id (query/search) before deleting."""
         return self._call("delete", f"/v1/spaces/{space}/objects/{object_id}")
 
+    @_public('getter')
     def query_objects(self, space, *, normalize=True, **opts):
         # normalize is keyword-only: a positional dict here used to land
         # in `normalize` and silently drop the caller's filter — a query
@@ -1801,6 +1820,7 @@ class _Client:
         self._hydrate_links(space, out)   # ADR-022 §3
         return out
 
+    @_public('getter')
     def list_programs(self, space, tools_only=False):
         """Programs deployed in a space: [{name, version, anyTool, summary}].
 
@@ -1824,6 +1844,7 @@ class _Client:
                         "summary": (prog.get("summary") or "").strip()})
         return sorted(out, key=lambda r: (r["name"], r["version"]))
 
+    @_public('getter')
     def query(self, space, object_id, dataset, **opts):
         """Per-object dataset query (chat_messages, agent_turns, …).
         None-valued opts are dropped so callers can pass through
@@ -1842,6 +1863,7 @@ class _Client:
         body.update({k: v for k, v in opts.items() if v is not None})
         return self._call("post", f"/v1/spaces/{space}/query", body).get("records", [])
 
+    @_public('mutator')
     def modify(self, space, body):
         """Low-level dataset write; prefer upsert_record / create_object.
 
@@ -1854,6 +1876,7 @@ class _Client:
             body["dataset"] = self._collection(space, body["objectId"], body["dataset"])
         return self._call("post", f"/v1/spaces/{space}/modify", body)
 
+    @_public('mutator')
     def upsert_record(self, space, object_id, dataset, record_id, value):
         """Write one dataset record (whole-value $set, upsert).
 
@@ -1871,6 +1894,7 @@ class _Client:
             "records": [{"id": record_id, "upsert": True,
                          "ops": [{"type": "$set", "path": "", "value": value}]}]})
 
+    @_public('mutator')
     def upsert_records(self, space, object_id, dataset, records,
                        page_size=None):
         """Batch-ingest into an `idRule: user` runtime dataset (ADR-016).
@@ -1892,6 +1916,7 @@ class _Client:
             body["pageSize"] = int(page_size)
         return self._call("post", f"/v1/spaces/{space}/upsert", body)
 
+    @_public('mutator')
     def delete_records(self, space, object_id, dataset, record_ids):
         """Delete dataset records by id → {versionId, changeId, recordIds}.
 
@@ -1904,6 +1929,7 @@ class _Client:
                            "recordIds": list(record_ids)})
 
     # --- processes (server registry over the event bus; ADR-014 §2) ----------
+    @_public('getter', scoped=False)
     def list_processes(self):
         """Live process view → [{identity, self, id, kind, title, scope,
         spaceId?, target?, state, done, total?, message?, error?,
@@ -1919,6 +1945,7 @@ class _Client:
         without the facility 404s (request.not_found)."""
         return self._call("get", "/v1/processes").get("processes") or []
 
+    @_public('mutator', scoped=False)
     def cancel_process(self, process_id, identity=None):
         """Ask a process's owner to stop → {subscribers}.
 
@@ -1930,6 +1957,7 @@ class _Client:
         body = {"identity": identity} if identity else {}
         return self._call("post", f"/v1/processes/{process_id}/cancel", body)
 
+    @_public('getter', scoped=False)
     def list_devices(self):
         """The account's device registry (ADR-015) → {self, active,
         devices}, each device row flagged `self` / `active` / `bao`.
@@ -1970,6 +1998,7 @@ class _Client:
     def _process_finish(self, process_id, body):
         return self._call("post", f"/v1/processes/{process_id}/finish", body)
 
+    @_public('getter')
     def aggregate(self, space, pipeline, object_id=None, dataset=None):
         """Run a Mongo-style aggregation pipeline over the space's objects.
 
@@ -2047,11 +2076,13 @@ class _Client:
     def _md_path(self, space, object_id, tail=""):
         return f"/v1/spaces/{space}/objects/{object_id}/editor/editor_blocks/markdown{tail}"
 
+    @_public('getter')
     def get_markdown(self, space, object_id):
         """The object's editor body as markdown TEXT (a string, not a dict)."""
         r = self._call("get", self._md_path(space, object_id))
         return r.get("content", "")
 
+    @_public('mutator')
     def put_markdown(self, space, object_id, content):
         """Replace the object's editor body with `content` (markdown).
         Whole-body write — prefer append_markdown when adding. A typed
@@ -2063,6 +2094,7 @@ class _Client:
                        {"content": content})
         return self._warned(r, self._link_warnings(content))
 
+    @_public('mutator')
     def edit_markdown(self, space, object_id, edits):
         """Surgical text edits on the editor body — THE point-edit path
         (never get→replace→put, which clobbers concurrent edits).
@@ -2082,6 +2114,7 @@ class _Client:
         texts = [e.get("newText") for e in (edits or []) if isinstance(e, dict)]
         return self._warned(r, self._link_warnings(*texts))
 
+    @_public('mutator')
     def append_markdown(self, space, object_id, content):
         """Append to the editor body (server-side append-only fast path).
 
@@ -2094,6 +2127,7 @@ class _Client:
         return self._warned(r, self._link_warnings(content))
 
     # --- spaces & ui context ---------------------------------------------------
+    @_public('getter', scoped=False)
     def list_spaces(self, raw=False):
         """Every space on the account: `{id, name, description?, status,
         ownRole, spaceType, createdAt}` rows.
@@ -2105,6 +2139,7 @@ class _Client:
         self._spaces_cache = rows       # doubles as the name catalog (§8)
         return rows if raw else [_trim_space_row(r) for r in rows]
 
+    @_public('getter')
     def get_space(self, space, raw=False):
         """One space's row → {id, name, description, status, ownRole,
         spaceType, createdAt}; also THE explicit name resolver —
@@ -2116,6 +2151,7 @@ class _Client:
         r = self._call("get", f"/v1/spaces/{space}")
         return r if raw else _trim_space_row(r)
 
+    @_public('getter')
     def general_chat(self, space):
         """The space's canonical chat id — the catalog's general chat.
 
@@ -2148,6 +2184,7 @@ class _Client:
                            f"non-derived object {root} — unsupported server")
         return root
 
+    @_public('mutator', scoped=False)
     def create_space(self, name, description=None):
         """Create a new top-level space WITH its general chat → the
         (trimmed) space row + `generalChatId`.
@@ -2171,6 +2208,7 @@ class _Client:
         row["generalChatId"] = self.general_chat(row["id"])
         return row
 
+    @_public('mutator')
     def open_in_ui(self, space, object_id=None):
         """Open a space — or one object in it — in the user's any-ui
         window on THIS device → {subscribers}.
@@ -2194,6 +2232,7 @@ class _Client:
                           {"type": etype, "scope": "device", "data": data})
 
     # --- types, collections & properties (catalog source) ---------------------
+    @_public('getter')
     def list_types(self, space):
         """Every type in the space — what an object can BE: rows of
         {id, xKey, name, hidden?, builtIn?, layout?}, hidden ones
@@ -2206,6 +2245,7 @@ class _Client:
         return [t for t in self._list_types_raw(space)
                 if t.get("id") not in _SYNTHETIC_TYPES]
 
+    @_public('getter')
     def list_collections(self, space):
         """Every collection a space has — what an object can be FILED
         UNDER: rows of {id, xKey, name, hidden?, builtIn?}. A collection
@@ -2219,6 +2259,7 @@ class _Client:
                 if c.get("id") not in _SYNTHETIC_TYPES
                 and c.get("id") not in _BUILTIN_COLLECTION_IDS]
 
+    @_public('getter')
     def list_properties(self, space, type_key):
         """The property definitions of a type OR a collection, in
         display order: [{handle, id, name, xKey, kind, scope, xFormat?,
@@ -2325,6 +2366,7 @@ class _Client:
                 added[pxkey] = self._post_property(space, owner_id, extra)["propId"]
         return added
 
+    @_public('mutator')
     def create_type(self, space, body):
         """Create a type — a CLASS: what an object IS — then add each
         property (composite ensure-type).
@@ -2395,6 +2437,7 @@ class _Client:
         self._ds_invalidate(space, type_id=type_id)
         return True
 
+    @_public('mutator')
     def create_collection(self, space, body):
         """Create a collection — a TAG: what an object is FILED UNDER —
         then add each property (composite ensure).
@@ -2464,52 +2507,11 @@ class _Client:
         self._collections_ready.add(space)
 
     def list_datasets(self, space, type_key):
-        """The datasets a type declares (by xKey) → [defs].
-
-        Each def: {id, key, collection, module, shared?, partId,
-        displayName?, idRule, idPattern?, deleteBy, skipHistory?,
-        search?, fields: [{id, key, kind, scope, required?, mutableBy,
-        stamp?, xFormat?}], invalid?, invalidReason?}. `collection` is
-        where the records live — the server's name, read here and
-        never composed; `key` is what query/upsert take. `invalid`
-        marks a declaration that never registers or accepts data —
-        remove it (remove_dataset) and re-declare."""
         tid = self._resolve_type_or_raise(space, type_key)
         self._ds_invalidate(space, type_id=tid)   # a listing reads fresh
         return list(self._datasets_of(space, tid))
 
     def create_dataset(self, space, type_key, draft):
-        """Ensure a records dataset on a USER type — one part per store
-        (ADR-016, ADR-027 §2). A module part instead — `{"module":
-        "editor", "shared": true, "part"?: "body"}` — gives the type's
-        objects the shared page body (`editor_blocks`).
-
-        draft: {"key": "<store key>", "displayName"?, "idRule":
-        "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
-        "search"?: {"title": "<field key>", "text": "<field key>" |
-        ["<field key>", ...], "scope"?: "<index scope slug>"},
-        "fields": [{"key", "kind"?: string|number|boolean|array|
-        object, "required"?, "mutableBy"?: "author"|"any", "stamp"?:
-        "creator"|"createTime"|"modifyTime"}]}. Fields default
-        write-once; author gates (mutableBy/deleteBy "author") need a
-        {"stamp": "creator"} field; idRule "user" = caller-supplied
-        record ids (the upsert idempotency key). search.scope picks
-        the index scope the records land under (absent = "basic");
-        recall must query that scope to see them. search.text may name
-        SEVERAL fields (SYN-179) — the indexer joins their values in
-        mapping order; the server stores a single-element array as the
-        bare string. Behavioral parts pin
-        first-write — to change them remove and re-declare.
-        Idempotent by collection name: an existing def is reused, but
-        the draft stays authoritative for the mutable search.* leaves
-        — a drifted title/text/scope is PATCHed back (already-indexed
-        records keep their stored scope until they re-index) →
-        {"datasetDefId", "collection", "created", "patched"?: [paths]}.
-        Records live per host object in `collection` (the server's
-        `<typeId>_<key>`): write with upsert_records, read with
-        query(space, object_id, "<key>") — the key resolves against
-        the object's types; plain field keys in filter/sort.
-        Registered built-in types refuse (400 type.registered)."""
         tid = self._resolve_type_or_raise(space, type_key)
         if "name" in (draft or {}):
             raise ValueError("create_dataset: \"name\" is not a dataset field — "
@@ -2588,11 +2590,6 @@ class _Client:
                 "created": True}
 
     def remove_dataset(self, space, type_key, dataset_def_id):
-        """Tombstone a runtime dataset definition; returns {} (wire: 204).
-
-        dataset_def_id from list_datasets. Existing record data is NOT
-        cleaned up; subsequent writes drop once peers apply; the
-        search index evicts lazily."""
         tid = self._resolve_type_or_raise(space, type_key)
         r = self._call(
             "delete", f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}")
@@ -2600,17 +2597,6 @@ class _Client:
         return r
 
     def add_dataset_field(self, space, type_key, dataset_def_id, field):
-        """Add ONE field to an existing dataset definition (additive
-        evolution, ADR-017 §1) → {fieldDefId}.
-
-        field: {"key", "kind"?: string|number|boolean|array|object,
-        "required"?, "mutableBy"?: "author"|"any", "stamp"?:
-        "creator"|"createTime"|"modifyTime", "scope"?: "local",
-        "name"?, "shape"?}. Existing records simply lack the key
-        (a `required` field only gates writes from now on). The
-        alternative — remove + re-declare — drops the declaration's
-        pinned behaviour; adding a field keeps it. dataset_def_id from
-        list_datasets. 404 dataset.not_found when the def is gone."""
         tid = self._resolve_type_or_raise(space, type_key)
         r = self._call(
             "post",
@@ -2619,18 +2605,12 @@ class _Client:
         return {"fieldDefId": r.get("fieldDefId")}
 
     def remove_dataset_field(self, space, type_key, dataset_def_id, field_def_id):
-        """Remove ONE field definition from a dataset (wire: 204) →
-        {}.
-
-        field_def_id = the `id` inside list_datasets' `fields`. Stored
-        values under that key are NOT cleaned up — the key becomes an
-        undeclared (any-typed) field for readers; a later add under
-        the same key re-declares it."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._call(
             "delete",
             f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
 
+    @_public('mutator')
     def add_property(self, space, type_key, body):
         """POST one property onto a type or a collection (named by xKey
         — unknown keys error with the catalog). body: {"name", "xKey"?, "kind"?,
@@ -2712,6 +2692,7 @@ class _Client:
                 f"{self._prop_handles(space, tid)}")
         return pid
 
+    @_public('mutator')
     def patch_property(self, space, type_key, prop_key, set=None, unset=None):
         """PATCH a property definition: `set` {path: leaf value} /
         `unset` [path]. Mutable paths: name, description, xKey,
@@ -2750,6 +2731,7 @@ class _Client:
         self._props_cache.pop((space, tid), None)
         return {}
 
+    @_public('mutator')
     def set_option(self, space, type_key, prop_key, option, name=None,
                    color=None, pos=None):
         """Create or update one option of a choice property. `option`
@@ -2790,6 +2772,7 @@ class _Client:
         return {"key": key, "name": name or cur.get("name") or key,
                 "color": color or cur.get("color"), "created": created}
 
+    @_public('mutator')
     def remove_option(self, space, type_key, prop_key, option):
         """Delete an option (by key or name). Values still holding the
         key stay as dangling keys — by design; rewrite them first if
@@ -2804,6 +2787,7 @@ class _Client:
         self._props_cache.pop((space, tid), None)
         return {"key": key}
 
+    @_public('mutator')
     def reorder_property(self, space, type_key, prop_key, after=None):
         """Move a property in the type's display order: after the
         property `after` (a handle), or first when `after=""`; `None`
@@ -2832,6 +2816,7 @@ class _Client:
         self._props_cache.pop((space, tid), None)
         return {"order": [p["handle"] for p in rest]}
 
+    @_public('mutator')
     def delete_property(self, space, type_key, prop_key):
         """PERMANENTLY tombstone a property definition (CRDT — the id
         never comes back; stored values stay as orphans). Confirm with
@@ -2844,6 +2829,7 @@ class _Client:
         return {}
 
     # --- membership: the one type, the collections (ADR-029 §4) ---------------
+    @_public('mutator')
     def set_type(self, space, object_id, type_key):
         """Change what an object IS: replace its one type. Values under
         the old type stay stored as orphans (and show again if the
@@ -2856,6 +2842,7 @@ class _Client:
         self._ds_invalidate(space, object_id=object_id)
         return {}
 
+    @_public('mutator')
     def add_to_collection(self, space, object_id, collection_key):
         """File an object under a collection (a tag; a supertag's
         columns become writable on it). Idempotent; the type is
@@ -2867,6 +2854,7 @@ class _Client:
         self._ds_invalidate(space, object_id=object_id)
         return {}
 
+    @_public('mutator')
     def remove_from_collection(self, space, object_id, collection_key):
         """Unfile an object from a collection. Idempotent; the values it
         held under that collection stay stored (back in view if
@@ -2878,6 +2866,7 @@ class _Client:
         self._ds_invalidate(space, object_id=object_id)
         return {}
 
+    @_public('mutator')
     def trash(self, space, object_id):
         """Move an object to the bin (file it under the built-in `bin`
         collection): it leaves every ordinary listing — `{"any.
@@ -2887,6 +2876,7 @@ class _Client:
         permanent. Returns {}."""
         return self.add_to_collection(space, object_id, _BIN)
 
+    @_public('mutator')
     def restore(self, space, object_id):
         """Bring an object back from the bin, as it was. Returns {}."""
         return self.remove_from_collection(space, object_id, _BIN)
@@ -2899,6 +2889,7 @@ class _Client:
         enc = bundle_id.replace("/", "%2F").replace(":", "%3A")
         return f"/v1/spaces/{space}/bundles/{enc}{tail}"
 
+    @_public('mutator')
     def ensure_bundle(self, space, bundle_id, name=None, root_type=None,
                       root_collections=None, root_properties=None, derived=False):
         """Adopt-or-install a bundle → {bundle: {id, name, rootId,
@@ -2941,6 +2932,7 @@ class _Client:
             body["derived"] = True
         return self._call("post", f"/v1/spaces/{space}/bundles", body)
 
+    @_public('getter')
     def list_bundles(self, space):
         """The space's bundles registry rows → [{id, name, rootId,
         roots, losers?}]. Read-only; non-empty `losers` = a resolved
@@ -2948,6 +2940,7 @@ class _Client:
         r = self._call("get", f"/v1/spaces/{space}/bundles")
         return r.get("bundles") or []
 
+    @_public('getter')
     def get_bundle(self, space, bundle_id):
         """One registry row → {id, name, rootId, roots, losers?,
         derived, synced}; 404 bundle.not_found when nobody ensured it
@@ -2957,6 +2950,7 @@ class _Client:
         row = r.get("bundle") if isinstance(r.get("bundle"), dict) else r
         return {**row, "synced": r.get("synced", True)}
 
+    @_public('mutator')
     def bundle_child(self, space, bundle_id, seed, type_key=None,
                      collections=None):
         """Derive a setup object under the bundle's winner → {objectId}.
@@ -2985,6 +2979,7 @@ class _Client:
                     "type": tid, "collections": cids}
         return {"objectId": self._bundle_children[key]}
 
+    @_public('mutator')
     def resolve_loser(self, space, bundle_id, loser_root_id):
         """Cascade-delete a losing bundle root after merging what
         matters out of it → {} (idempotent). 409 bundle.loser_not_ready
@@ -2995,6 +2990,7 @@ class _Client:
                           {"loserRootId": loser_root_id})
 
     # --- agent turns / chunks (client-assigned seq, ADR-017 §2) ----------------
+    @_public('getter')
     def chat_log(self, space, chat_id):
         """The chat's log object hosting agent_turns + agent_chunks →
         {objectId}.
@@ -3033,6 +3029,7 @@ class _Client:
                           sort=["-id"], limit=1)
         return (int(rows[0]["id"]) if rows else 0) + 1
 
+    @_public('mutator')
     def append_turn(self, space, chat_id, body):
         """Append an `agent_turns` record on the chat's log child.
         Harness-level; conversations write these for you. Fields:
@@ -3046,6 +3043,7 @@ class _Client:
         return self._append_log(space, chat_id, "agent_turns", body,
                                 search_text=True)
 
+    @_public('mutator')
     def create_chunk(self, space, chat_id, body):
         """Append a compressed history chunk record (harness-level;
         rollup). Fields: `{seq?, level?, fromAgent?, summary,
@@ -3073,6 +3071,7 @@ class _Client:
         return {"recordIds": [rid], "seq": seq}
 
     # --- chat messages ---------------------------------------------------------
+    @_public('mutator')
     def chat_send(self, space, chat_id, body):
         """Post a message to a chat object. `body`: `{"text": ...}` —
         accepted fields exactly `{text, replyToMessageId?, agent?,
@@ -3096,8 +3095,9 @@ class _Client:
         return r
 
     # --- search & graph ----------------------------------------------------------
+    @_public('getter')
     def search(self, space, query, scopes=None, limit=None, mode=None,
-               enrich=True):
+               enrich=True, **kw):
         """Index search; returns the `{hits, mode, vectorStatus}` envelope.
 
         Each hit is a matched RECORD, not a resolved object:
@@ -3111,6 +3111,12 @@ class _Client:
         resolved in ONE batch query. Pass
         enrich=False to skip the extra query when you only need
         objectIds."""
+        if kw:   # A18: the guessed types= kwarg gets a redirect, not a bare TypeError
+            raise TypeError(
+                f"search() got unexpected keyword(s) {sorted(kw)} — search has "
+                "no type filter. List objects of a type with "
+                "query_objects(spaceConfig, filter={'any.type': '<xKey>'}), "
+                "or post-filter hits on h['type'].")
         body = {"query": query}
         if scopes:
             body["scopes"] = scopes
@@ -3130,6 +3136,7 @@ class _Client:
     # declarations mint the rest (`search.scope`) — the set is open
     _FIXED_SCOPES = ("basic", "chat", "props")
 
+    @_public('getter')
     def list_search_scopes(self, space):
         """The search scopes this space's index can answer → sorted
         list, e.g. ["agent", "basic", "chat", "email", "history",
@@ -3226,6 +3233,7 @@ class _Client:
             out["prop"] = f'{(row or {}).get("xKey") or tid}.{prop}'
         return out
 
+    @_public('getter')
     def backlinks(self, space, object_id):
         """What links HERE: the link index's edges pointing at the object
         (`object`) and at its records or property values (`parts`) →
@@ -3243,6 +3251,7 @@ class _Client:
             out["truncated"] = True
         return out
 
+    @_public('getter')
     def links(self, space, object_id):
         """What this object links TO: the forward edges out of its
         blocks, messages, records and relation values → [edge] (the
@@ -3250,6 +3259,7 @@ class _Client:
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/links")
         return [self._edge(space, e) for e in r.get("links") or []]
 
+    @_public('getter', scoped=False)
     def backlinks_everywhere(self, target_uri):
         """Account-wide backlinks to one target across every space this
         device indexes → [{spaceId, object: [edge], parts: [edge]}].
@@ -3295,6 +3305,7 @@ class _Client:
                     return u, b
         return None, None
 
+    @_public('getter')
     def list_apps(self, space):
         """The apps a space has — what shows in its sidebar → [{name,
         bundleId?, rootId, usecase?, description, hidden, pinned}].
@@ -3334,6 +3345,7 @@ class _Client:
             out.append(row)
         return out
 
+    @_public('getter')
     def list_available_apps(self, space):
         """The server's catalog of well-known apps with what this space
         has → [{usecase, name, description, requires, installed}].
@@ -3348,6 +3360,7 @@ class _Client:
                         "installed": bool(ids) and all(i in have for i in ids)})
         return out
 
+    @_public('mutator')
     def setup_app(self, space, usecase):
         """Install (or adopt) one of the catalog's apps in a space,
         dependencies first → [{usecase, bundleId, rootId, installed,
@@ -3392,6 +3405,7 @@ class _Client:
         self._ensured_stores[key] = colls
         return colls
 
+    @_public('getter', scoped=False)
     def bao_space(self):
         """The bao space id — memory's only home (ADR-017 §0). Wired by
         the runtime (serve; `run --from-space` or a `bao.space` config
@@ -3403,6 +3417,7 @@ class _Client:
                 "`anyrt run --from-space`")
         return self._bao_space
 
+    @_public('getter', scoped=False)
     def get_brain(self):
         """The brain object hosting agent_memory_items — the bao space's
         `bao/v1` bundle's `bao/brain/v1` child (ADR-017 §0), with the
@@ -3416,6 +3431,7 @@ class _Client:
                             _ROI_DATASET])
         return self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
 
+    @_public('getter')
     def collection(self, space, type_key, dataset_key):
         """The collection a type's dataset lives in (`<typeId>_<key>`),
         for callers that address the wire themselves — every any@v1
@@ -3425,6 +3441,7 @@ class _Client:
         return next((d.get("collection") for d in self._datasets_of(space, tid)
                      if d.get("key") == dataset_key), None)
 
+    @_public('mutator', scoped=False)
     def create_memory(self, fields):
         """Create a memory item (category + context required) in the
         bao space's brain — memory's only home.
@@ -3466,6 +3483,7 @@ class _Client:
             "objectId": brain, "dataset": "agent_memory_items",
             "records": [{"id": "", "upsert": True, "ops": ops}]})
 
+    @_public('mutator', scoped=False)
     def evolve_memory(self, item_id, fields):
         """Evolve a memory item's mutable fields (author-only).
 
@@ -3491,6 +3509,7 @@ class _Client:
             "objectId": brain, "dataset": "agent_memory_items",
             "records": [{"id": item_id, "ops": ops}]})
 
+    @_public('mutator', scoped=False)
     def delete_memory(self, item_id):
         """Delete a memory item by id (author-only — the dataset's
         deleteBy gate)."""
@@ -3533,6 +3552,7 @@ class _Client:
             space, file = parts
         return space, file, query
 
+    @_public('getter')
     def list_files(self, space, object_id=None):
         """Files in the space — `[{fileId, objectId, name, mime, size, …}]`;
         `object_id` narrows to one object's attachments. Files are
@@ -3542,6 +3562,7 @@ class _Client:
         q = f"?objectId={object_id}" if object_id else ""
         return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
 
+    @_public('getter')
     def file_content(self, space, file):
         """The file as a Blob — `{fileId, mime, size, blob}` (ADR-026 §5).
         `file` is an `any://f/<spaceId>/<fileId>` URI (a chat
@@ -3571,6 +3592,7 @@ class _Client:
              else blob.from_bytes(body or "", mime))  # noqa: F821
         return {"fileId": file_id, "mime": b.mime, "size": b.size, "blob": b}
 
+    @_public('mutator')
     def attach_file(self, space, object_id, name, data, mime=None):
         """Attach a file to an object — the write half (ADR-026 §5).
         `data`: a Blob (an `http.get(...).blob`, `file_content(...)["blob"]`,
@@ -3622,10 +3644,11 @@ def _urlquote(s):
 
 # --- flat module surface (ADR-010 §8) ----------------------------------------
 # One private _Client instance carries the connection + per-space xKey
-# catalog caches; the public API is these module functions, so the whole
-# surface renders into the `## Tools` inventory (describe() lists module
-# functions only). Docstrings live ONCE, on the _Client methods, and are
-# lifted onto the wrappers below — help(search) shows the method doc.
+# catalog caches; the public API is module functions (describe() lists
+# module functions only), GENERATED at the end of this file from the
+# @_public-marked methods — one definition per method, its docstring on
+# the code. Internal self.<method> calls stay unspanned (no nested spans,
+# no mock interception of a facade's own queries).
 
 _instance = None
 
@@ -3662,114 +3685,93 @@ def _space(sc):
     return _c()._resolve_space(_sid(sc))
 
 
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_object(spaceConfig, body, create_options=True, parent=None, folder=None):
-    return _c().create_object(_space(spaceConfig), body, create_options,
-                              parent, folder)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def move_object(spaceConfig, object_id, parent, folder=None):
-    return _c().move_object(_space(spaceConfig), object_id, parent, folder)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_children(spaceConfig, parent=""):
-    return _c().list_children(_space(spaceConfig), parent)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def update_object(spaceConfig, object_id, body, create_options=True):
-    return _c().update_object(_space(spaceConfig), object_id, body,
-                              create_options)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def delete_object(spaceConfig, object_id):
-    return _c().delete_object(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def query_objects(spaceConfig, *, normalize=True, **opts):
-    return _c().query_objects(_space(spaceConfig), normalize=normalize, **opts)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_programs(spaceConfig, tools_only=False):
-    return _c().list_programs(_space(spaceConfig), tools_only)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def query(spaceConfig, object_id, dataset, **opts):
-    return _c().query(_space(spaceConfig), object_id, dataset, **opts)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def modify(spaceConfig, body):
-    return _c().modify(_space(spaceConfig), body)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def upsert_record(spaceConfig, object_id, dataset, record_id, value):
-    return _c().upsert_record(_space(spaceConfig), object_id, dataset,
-                              record_id, value)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def upsert_records(spaceConfig, object_id, dataset, records, page_size=None):
-    return _c().upsert_records(_space(spaceConfig), object_id, dataset,
-                               records, page_size)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def delete_records(spaceConfig, object_id, dataset, record_ids):
-    return _c().delete_records(_space(spaceConfig), object_id, dataset,
-                               record_ids)
-
-
 # `_`-private (hidden from the tool inventory, ADR-010 §1): dataset
 # DECLARATION is program plumbing — a program that owns a store ensures
 # its type + datasets (ADR-017 §1); the chat agent only reads/writes
 # records. Records stay public: query / upsert_record(s) / delete_records.
 def _list_datasets(spaceConfig, type_key):
+    """The datasets a type declares (by xKey) → [defs].
+
+    Each def: {id, key, collection, module, shared?, partId,
+    displayName?, idRule, idPattern?, deleteBy, skipHistory?,
+    search?, fields: [{id, key, kind, scope, required?, mutableBy,
+    stamp?, xFormat?}], invalid?, invalidReason?}. `collection` is
+    where the records live — the server's name, read here and
+    never composed; `key` is what query/upsert take. `invalid`
+    marks a declaration that never registers or accepts data —
+    remove it (remove_dataset) and re-declare."""
     return _c().list_datasets(_space(spaceConfig), type_key)
 
 
 def _create_dataset(spaceConfig, type_key, draft):
+    """Ensure a records dataset on a USER type — one part per store
+    (ADR-016, ADR-027 §2). A module part instead — `{"module":
+    "editor", "shared": true, "part"?: "body"}` — gives the type's
+    objects the shared page body (`editor_blocks`).
+
+    draft: {"key": "<store key>", "displayName"?, "idRule":
+    "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,
+    "search"?: {"title": "<field key>", "text": "<field key>" |
+    ["<field key>", ...], "scope"?: "<index scope slug>"},
+    "fields": [{"key", "kind"?: string|number|boolean|array|
+    object, "required"?, "mutableBy"?: "author"|"any", "stamp"?:
+    "creator"|"createTime"|"modifyTime"}]}. Fields default
+    write-once; author gates (mutableBy/deleteBy "author") need a
+    {"stamp": "creator"} field; idRule "user" = caller-supplied
+    record ids (the upsert idempotency key). search.scope picks
+    the index scope the records land under (absent = "basic");
+    recall must query that scope to see them. search.text may name
+    SEVERAL fields (SYN-179) — the indexer joins their values in
+    mapping order; the server stores a single-element array as the
+    bare string. Behavioral parts pin
+    first-write — to change them remove and re-declare.
+    Idempotent by collection name: an existing def is reused, but
+    the draft stays authoritative for the mutable search.* leaves
+    — a drifted title/text/scope is PATCHed back (already-indexed
+    records keep their stored scope until they re-index) →
+    {"datasetDefId", "collection", "created", "patched"?: [paths]}.
+    Records live per host object in `collection` (the server's
+    `<typeId>_<key>`): write with upsert_records, read with
+    query(space, object_id, "<key>") — the key resolves against
+    the object's types; plain field keys in filter/sort.
+    Registered built-in types refuse (400 type.registered)."""
     return _c().create_dataset(_space(spaceConfig), type_key, draft)
 
 
 def _remove_dataset(spaceConfig, type_key, dataset_def_id):
+    """Tombstone a runtime dataset definition; returns {} (wire: 204).
+
+    dataset_def_id from list_datasets. Existing record data is NOT
+    cleaned up; subsequent writes drop once peers apply; the
+    search index evicts lazily."""
     return _c().remove_dataset(_space(spaceConfig), type_key, dataset_def_id)
 
 
 def _add_dataset_field(spaceConfig, type_key, dataset_def_id, field):
+    """Add ONE field to an existing dataset definition (additive
+    evolution, ADR-017 §1) → {fieldDefId}.
+
+    field: {"key", "kind"?: string|number|boolean|array|object,
+    "required"?, "mutableBy"?: "author"|"any", "stamp"?:
+    "creator"|"createTime"|"modifyTime", "scope"?: "local",
+    "name"?, "shape"?}. Existing records simply lack the key
+    (a `required` field only gates writes from now on). The
+    alternative — remove + re-declare — drops the declaration's
+    pinned behaviour; adding a field keeps it. dataset_def_id from
+    list_datasets. 404 dataset.not_found when the def is gone."""
     return _c().add_dataset_field(_space(spaceConfig), type_key, dataset_def_id, field)
 
 
 def _remove_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id):
+    """Remove ONE field definition from a dataset (wire: 204) →
+    {}.
+
+    field_def_id = the `id` inside list_datasets' `fields`. Stored
+    values under that key are NOT cleaned up — the key becomes an
+    undeclared (any-typed) field for readers; a later add under
+    the same key re-declares it."""
     return _c().remove_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
                                      field_def_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def aggregate(spaceConfig, pipeline, object_id=None, dataset=None):
-    return _c().aggregate(_space(spaceConfig), pipeline, object_id, dataset)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_processes():
-    return _c().list_processes()
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def cancel_process(process_id, identity=None):
-    return _c().cancel_process(process_id, identity)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_devices():
-    return _c().list_devices()
 
 
 # `_`-private (hidden from the tool inventory): progress@v1's transport
@@ -3785,295 +3787,54 @@ def _process_finish(process_id, body):
     return _c()._process_finish(process_id, body)
 
 
-@span(kind="getter")  # noqa: F821 - guest global
-def get_markdown(spaceConfig, object_id):
-    return _c().get_markdown(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_search_scopes(spaceConfig):
-    return _c().list_search_scopes(_space(spaceConfig))
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_files(spaceConfig, object_id=None):
-    return _c().list_files(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def file_content(spaceConfig, file):
-    return _c().file_content(_space(spaceConfig), file)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def attach_file(spaceConfig, object_id, name, data, mime=None):
-    return _c().attach_file(_space(spaceConfig), object_id, name, data, mime)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def put_markdown(spaceConfig, object_id, content):
-    return _c().put_markdown(_space(spaceConfig), object_id, content)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def edit_markdown(spaceConfig, object_id, edits):
-    return _c().edit_markdown(_space(spaceConfig), object_id, edits)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def append_markdown(spaceConfig, object_id, content):
-    return _c().append_markdown(_space(spaceConfig), object_id, content)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_spaces(raw=False):
-    return _c().list_spaces(raw)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def get_space(spaceConfig, raw=False):
-    return _c().get_space(_space(spaceConfig), raw)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def general_chat(spaceConfig):
-    return _c().general_chat(_space(spaceConfig))
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def ensure_bundle(spaceConfig, bundle_id, name=None, root_type=None,
-                  root_collections=None, root_properties=None, derived=False):
-    return _c().ensure_bundle(_space(spaceConfig), bundle_id, name,
-                              root_type, root_collections, root_properties,
-                              derived)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_bundles(spaceConfig):
-    return _c().list_bundles(_space(spaceConfig))
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def get_bundle(spaceConfig, bundle_id):
-    return _c().get_bundle(_space(spaceConfig), bundle_id)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def bundle_child(spaceConfig, bundle_id, seed, type_key=None, collections=None):
-    return _c().bundle_child(_space(spaceConfig), bundle_id, seed, type_key,
-                             collections)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def resolve_loser(spaceConfig, bundle_id, loser_root_id):
-    return _c().resolve_loser(_space(spaceConfig), bundle_id, loser_root_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def chat_log(spaceConfig, chat_id):
-    return _c().chat_log(_space(spaceConfig), chat_id)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_space(name, description=None):
-    return _c().create_space(name, description)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def open_in_ui(spaceConfig, object_id=None):
-    return _c().open_in_ui(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_types(spaceConfig):
-    return _c().list_types(_space(spaceConfig))
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_properties(spaceConfig, type_key):
-    return _c().list_properties(_space(spaceConfig), type_key)
-
-
 # --- ADR-022 §4: definition surface -----------------------------------------
-@span(kind="mutator")  # noqa: F821 - guest global
-def patch_property(spaceConfig, type_key, prop_key, set=None, unset=None):
-    return _c().patch_property(_space(spaceConfig), type_key, prop_key, set, unset)
 
 
-@span(kind="mutator")  # noqa: F821 - guest global
-def set_option(spaceConfig, type_key, prop_key, option, name=None, color=None,
-               pos=None):
-    return _c().set_option(_space(spaceConfig), type_key, prop_key, option,
-                           name, color, pos)
+# --- export: one module function per @_public method -------------------------
+
+def _named(bound):
+    """A bound call as parameter-keyed kwargs — the span input shape the
+    hand-written wrappers recorded (ADR-003 §4b): `**opts` merged flat."""
+    out = {}
+    for k, v in bound.arguments.items():
+        if bound.signature.parameters[k].kind is inspect.Parameter.VAR_KEYWORD:
+            out.update(v)
+        else:
+            out[k] = v
+    return out
 
 
-@span(kind="mutator")  # noqa: F821 - guest global
-def remove_option(spaceConfig, type_key, prop_key, option):
-    return _c().remove_option(_space(spaceConfig), type_key, prop_key, option)
+def _export(name, method):
+    kind, scoped = method.__any_public__
+    sig = inspect.signature(method)
+    params = list(sig.parameters.values())[1:]            # drop self
+    target = params[0].name if scoped else None           # the method's `space`
+    if scoped:
+        params[0] = params[0].replace(name="spaceConfig")
+    public = sig.replace(parameters=params)
+
+    @span(name=f"{__name__}.{name}", kind=kind)  # noqa: F821 - guest global
+    def facade(**named):
+        if scoped:
+            named[target] = _space(named.pop("spaceConfig"))
+        return getattr(_c(), name)(**named)
+
+    def fn(*args, **kwargs):
+        try:
+            bound = public.bind(*args, **kwargs)
+        except TypeError as e:
+            raise TypeError(f"{name}() {e}") from None
+        return facade(**_named(bound))
+
+    fn.__name__ = fn.__qualname__ = name
+    fn.__doc__ = method.__doc__
+    fn.__signature__ = public
+    fn.__span_kind__ = kind
+    return fn
 
 
-@span(kind="mutator")  # noqa: F821 - guest global
-def reorder_property(spaceConfig, type_key, prop_key, after=None):
-    return _c().reorder_property(_space(spaceConfig), type_key, prop_key, after)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def delete_property(spaceConfig, type_key, prop_key):
-    return _c().delete_property(_space(spaceConfig), type_key, prop_key)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def set_type(spaceConfig, object_id, type_key):
-    return _c().set_type(_space(spaceConfig), object_id, type_key)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def add_to_collection(spaceConfig, object_id, collection_key):
-    return _c().add_to_collection(_space(spaceConfig), object_id, collection_key)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def remove_from_collection(spaceConfig, object_id, collection_key):
-    return _c().remove_from_collection(_space(spaceConfig), object_id,
-                                       collection_key)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def trash(spaceConfig, object_id):
-    return _c().trash(_space(spaceConfig), object_id)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def restore(spaceConfig, object_id):
-    return _c().restore(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_collections(spaceConfig):
-    return _c().list_collections(_space(spaceConfig))
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_collection(spaceConfig, body):
-    return _c().create_collection(_space(spaceConfig), body)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_type(spaceConfig, body):
-    return _c().create_type(_space(spaceConfig), body)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def add_property(spaceConfig, type_key, body):
-    return _c().add_property(_space(spaceConfig), type_key, body)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def append_turn(spaceConfig, chat_id, body):
-    return _c().append_turn(_space(spaceConfig), chat_id, body)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_chunk(spaceConfig, chat_id, body):
-    return _c().create_chunk(_space(spaceConfig), chat_id, body)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def chat_send(spaceConfig, chat_id, body):
-    return _c().chat_send(_space(spaceConfig), chat_id, body)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def search(spaceConfig, query, scopes=None, limit=None, mode=None,
-           enrich=True, **kw):
-    if kw:   # A18: the guessed types= kwarg gets a redirect, not a bare TypeError
-        raise TypeError(
-            f"search() got unexpected keyword(s) {sorted(kw)} — search has "
-            "no type filter. List objects of a type with "
-            "query_objects(spaceConfig, filter={'any.type': '<xKey>'}), "
-            "or post-filter hits on h['type'].")
-    return _c().search(_space(spaceConfig), query, scopes, limit, mode, enrich)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def backlinks(spaceConfig, object_id):
-    return _c().backlinks(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def links(spaceConfig, object_id):
-    return _c().links(_space(spaceConfig), object_id)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def backlinks_everywhere(target_uri):
-    return _c().backlinks_everywhere(target_uri)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_apps(spaceConfig):
-    return _c().list_apps(_space(spaceConfig))
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def list_available_apps(spaceConfig):
-    return _c().list_available_apps(_space(spaceConfig))
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def setup_app(spaceConfig, usecase):
-    return _c().setup_app(_space(spaceConfig), usecase)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def collection(spaceConfig, type_key, dataset_key):
-    return _c().collection(_space(spaceConfig), type_key, dataset_key)
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def bao_space():
-    return _c().bao_space()
-
-
-@span(kind="getter")  # noqa: F821 - guest global
-def get_brain():
-    return _c().get_brain()
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def create_memory(fields):
-    return _c().create_memory(fields)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def evolve_memory(item_id, fields):
-    return _c().evolve_memory(item_id, fields)
-
-
-@span(kind="mutator")  # noqa: F821 - guest global
-def delete_memory(item_id):
-    return _c().delete_memory(item_id)
-
-
-# lift the method docstrings onto the public functions — ONE authored
-# copy (on _Client), rendered by describe()/help() from here
-for _f in (create_object, move_object, list_children, update_object,
-           delete_object, query_objects,
-           list_programs, query, modify, upsert_record, upsert_records,
-           delete_records, _list_datasets, _create_dataset, _remove_dataset,
-           _add_dataset_field, _remove_dataset_field,
-           aggregate, list_processes, cancel_process, list_devices,
-           get_markdown, put_markdown, edit_markdown, list_files, file_content,
-           list_search_scopes,
-           append_markdown, list_spaces, get_space, general_chat,
-           create_space, open_in_ui, list_types,
-           list_properties, patch_property, set_option, remove_option,
-           reorder_property, delete_property,
-           set_type, add_to_collection, remove_from_collection, trash, restore,
-           list_collections, create_collection,
-           create_type, add_property, append_turn, create_chunk,
-           chat_send, search, backlinks, links, backlinks_everywhere,
-           list_apps, list_available_apps, setup_app, collection,
-           bao_space, get_brain, create_memory, evolve_memory, delete_memory):
-    _f.__doc__ = getattr(_Client, _f.__name__.lstrip("_")).__doc__
-del _f
+# the module namespace (no globals() in the guest): any function's __globals__
+for _n, _m in list(_Client.__dict__.items()):
+    if hasattr(_m, "__any_public__"):
+        _c.__globals__[_n] = _export(_n, _m)
+del _n, _m
