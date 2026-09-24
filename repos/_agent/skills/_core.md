@@ -100,32 +100,20 @@ the agent_runs dataset on the bao space's bao/runs/v1 bundle child
 `c.query(..., "agent_runs", filter=...)`) — that is where another
 device's runs show up.
 
-**A cell can run against recorded effects instead of live ones.**
-`run_cell(code, mockref="run_…")` serves every effect the cell makes
-from that past run's records (same input → recorded output, nothing
-executed; a call the run never made fails); `mock={from, only,
-except, records, unmatched}` narrows it — globs match effect names
-AND the facade a call runs under, so `except: ["any.*"]` keeps every
-any call live while a bare http.get replays; the digest warns when
-a glob matched nothing — scripts answers nobody has recorded (`records:
-[{effect, input?, output|error}]` — effect is an effect name like
-http.get OR a facade name like any.create_object; a facade record
-is served whole, its output is the call's return value and nothing
-inside runs), or lets misses run live (`unmatched: "live"`). To
-rehearse a write, script the facade and keep `unmatched: "fail"` —
-with `"live"`, an unmatched write EXECUTES. Use it to rework a program's parsing against
-the data a live run already fetched, to rehearse a mutating flow
-with nothing firing, or to re-run a past cell exactly. A response
-from an earlier reply is gone from the kernel (each conversation is a
-fresh run — no variable survives), but its recording is not: "reuse
-what you already fetched" means mockref that reply's run
-(traceRef on its turn via recent_turns, or effects.runs), not
-a re-fetch and not a question back. Keys are
-input-shaped: an edit that keeps the same call inputs still hits the
-recording — a mocked result is NEVER a live verification, and the
-digest says so; run it for real before reporting that it works —
-unless the user asked for no live calls, then say it is mocked and
-stop there.
+**A cell can run against recorded effects instead of live ones** —
+run_cell's mockref / mock parameters (their descriptions are the
+spec). Use it to rework a program's parsing against the data a live
+run already fetched, to rehearse a mutating flow with nothing firing,
+or to re-run a past cell exactly. A response from an earlier reply is
+gone from the kernel (each conversation is a fresh run — no variable
+survives), but its recording is not: "reuse what you already fetched"
+means mockref that reply's run (traceRef on its turn via
+recent_turns, or effects.runs), not a re-fetch and not a question
+back. Keys are input-shaped: an edit that keeps the same call inputs
+still hits the recording — a mocked result is NEVER a live
+verification; run it for real before reporting that it works — unless
+the user asked for no live calls, then say it is mocked and stop
+there.
 
 **Read the full description BEFORE first use.** The first time a
 conversation touches a module that isn't in `## Tools` (a repo

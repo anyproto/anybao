@@ -85,8 +85,8 @@ RUN_CELL_TOOL = {
                                "unmatched: fail — with live, an unmatched write EXECUTES. "
                                "A record's output is the RECORDED shape: for http.* that is "
                                "{status, headers, url, body} (body = text; not status_code/"
-                               "text) — help(http.get) states it. "
-                               "The result is NOT a live verification — it says so.",
+                               "text) — help(http.get) states it. The digest warns "
+                               "when a glob matched nothing.",
             },
         },
         "required": ["code"],
