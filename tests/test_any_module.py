@@ -2086,3 +2086,42 @@ def test_get_skill_is_on_the_flat_surface_unscoped():
     g = load(wire())
     assert "get_skill" in g and g["get_skill"].__any_listed__
     assert str(inspect.signature(g["get_skill"])) == "(name)"
+
+
+def _creating_client(existing=(), with_type=True):
+    c = _skill_client({"bao": list(existing)} if with_type else {}, {})
+    c.created_types, c.created = [], []
+    c.create_type = lambda space, body: c.created_types.append((space, body)) or {}
+    c.create_object = lambda space, body, *a, **kw: c.created.append((space, body)) or {
+        "objectId": "new1"}
+    return c
+
+
+def test_create_skill_saves_in_the_bao_space_with_its_line():
+    c = _creating_client()
+    assert c.create_skill("review-pr", "# Skill: review-pr\n\nSteps.", "When a PR needs review.") \
+        == {"objectId": "new1"}
+    (space, body), = c.created
+    assert space == "bao" and body["type"] == "agent_skill"
+    assert body["markdown"].startswith("# Skill")
+    assert body["initialProperties"] == {"any": {"name": "review-pr",
+                                                 "description": "When a PR needs review."},
+                                         "agent_skill": {"name": "review-pr"}}
+    assert c.created_types == []                     # the type exists: not re-minted
+
+
+def test_create_skill_mints_the_type_deploy_mints_when_missing():
+    c = _creating_client(with_type=False)
+    c.create_skill("plan-week", "steps")
+    (space, body), = c.created_types
+    assert space == "bao" and body["xKey"] == "agent_skill"
+    assert body["properties"] == [{"name": "Name", "xKey": "name", "kind": "string"}]
+
+
+def test_create_skill_refuses_system_names_and_duplicates():
+    c = _creating_client(existing=[("b1", "review-pr", "# mine")])
+    with pytest.raises(ValueError, match="leading '_'"):
+        c.create_skill("_core", "x")
+    with pytest.raises(ValueError, match="already have a skill named 'review-pr'"):
+        c.create_skill("review-pr", "x")
+    assert c.created == []

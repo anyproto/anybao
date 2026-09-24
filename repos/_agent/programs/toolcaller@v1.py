@@ -905,7 +905,8 @@ def _skill_index(c, space, code_space=None, overlays=None):
     return ("## Skills\n\n"
             "Playbooks loaded on demand: only a name and one line ride here. "
             "When the turn — or the task in front of you — matches one, read "
-            "it FIRST with `c.get_skill(\"<name>\")` and follow it.\n\n" + lines)
+            "it FIRST with `c.get_skill(\"<name>\")` and follow it. To save one "
+            "of your own: `c.create_skill` (help it first).\n\n" + lines)
 
 
 def _memory_categories(c, space):

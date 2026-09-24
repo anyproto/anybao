@@ -3445,6 +3445,54 @@ class _Client:
                         if not n.startswith("_")})
         raise LookupError(f"no skill named {name!r}; known: {', '.join(known)}")
 
+    @_public('mutator', scoped=False)
+    def create_skill(self, name, markdown, description=None):
+        """Save a skill of your own — a playbook to reuse → {objectId}.
+
+        For "remember how we do X", "make this a checklist", "capture this
+        workflow". It lands in the bao space as an `agent_skill` object and
+        joins the `## Skills` index from the next turn as its name plus
+        `description` (else the body's first sentence) — so make that line
+        say WHEN it applies, in the user's words. Read it back with
+        get_skill(name).
+
+        - `name` reads like a task ("review-pr", "plan-weekly-sync"), not a
+          noun. A leading `_` is refused (those are the deploy-managed
+          system skills), and so is a name you already have; a name a
+          shipped skill uses is allowed and shadows it on purpose.
+        - `markdown` is the body: the steps, not a wiki page — it is a
+          prompt read whenever the skill applies. Keep it under ~3.5KB so
+          one get_skill() returns it whole.
+        - Edit it later on the returned objectId in baoSpaceConfig:
+          edit_markdown (surgical, all-or-nothing — never get→replace→put),
+          append_markdown to add a step, put_markdown only to rewrite it."""
+        name = (name or "").strip() if isinstance(name, str) else ""
+        if not name:
+            raise ValueError("create_skill: name is required")
+        if name.startswith("_"):
+            raise ValueError(
+                f"create_skill: {name!r} — a leading '_' marks the deploy-managed "
+                "system skills; pick a task-like name such as 'review-pr'")
+        space = self.bao_space()
+        if any(n == name for n, _ in self._skills_of(space)):
+            raise ValueError(
+                f"create_skill: you already have a skill named {name!r} — edit it "
+                "with edit_markdown / append_markdown instead")
+        if not any((t.get("xKey") or t.get("key")) == "agent_skill"
+                   for t in self.list_types(space)):
+            # the shape deploy mints in the overlays (deploy.rs skill_schema)
+            self.create_type(space, {"name": "Agent Skill", "xKey": "agent_skill",
+                                     "properties": [{"name": "Name", "xKey": "name",
+                                                     "kind": "string"}]})
+        props = {"name": name}
+        if description:
+            props["description"] = description
+        res = self.create_object(space, {"type": "agent_skill",
+                                         "initialProperties": {"any": props,
+                                                               "agent_skill": {"name": name}},
+                                         "markdown": markdown or ""})
+        return {"objectId": res["objectId"]}
+
     def _skill_spaces(self):
         """get_skill's lookup order: the bao space, then the overlays the
         runtime wires as `overlays.aliases` — agent, then connectors."""
