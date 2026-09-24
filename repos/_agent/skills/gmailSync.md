@@ -1,10 +1,54 @@
 # Skill: gmailSync
 
-Syncing Gmail into a space (connectors:gmailSync@v1): arming a
-backfill, stopping it, the steady-state cron, sync-now, coverage and
-stalled chains. Route by job size (ADR-012) — never drain a mailbox
-from chat, and never rebuild the corpus through the raw gmail@v1
-connector:
+Gmail in a space: reading synced mail (who wrote what, threads,
+labels, counts) and syncing it with connectors:gmailSync@v1
+(backfill, stop, cron, sync-now, stalls).
+
+## Reading the synced mail
+
+Synced mail is email_messages records on a mailbox object (ADR-016):
+
+- A synced space holds **one mailbox object per gmail address**
+  (find it: `query_objects(space, filter={"any.type": "mailbox"})`)
+  carrying one email_messages DATASET RECORD per message — record
+  id = the Gmail message id. Record fields are plain keys (never
+  xKey-nested): threadId, from/to/cc/subject/date (plain
+  strings), labelIds (Gmail's labels, e.g. TRASH, STARRED,
+  CATEGORY_PROMOTIONS), internalDate (ms epoch — the sort key),
+  snippet, body (cleaned markdown), signature, participants
+  (normalized lowercase addresses from From/To/Cc — the person-join
+  key), summary (generated digest) and notes (the user's OWN
+  markdown notes — user-authored, edit only on request; both may be
+  empty and both survive re-sync), plus derived
+  creator/createdAt/modifiedAt (instants; a date-range filter
+  on them is `{"createdAt": {"$gte": instant(t0)}}` — internalDate
+  stays a plain ms number). **For "what
+  did X and I email about", use the synced corpus first — never the
+  live gmail connector** (that is the raw provider API: slower,
+  quota-bound, needs OAuth, and blind to the cleaned corpus; reach
+  for it only for something not yet synced).
+- Query mail: `query(space, <mailboxId>, "email_messages",
+  filter=..., sort=["-internalDate"], limit=...)` — NOT
+  query_objects (records are not objects). A person is
+  `{"participants": "ruud@ruuda.nl"}` (array contains); labels
+  likewise `{"labelIds": "TRASH"}`. Bodies ride in the rows — no
+  get_markdown step. Counts: `aggregate(space, [{"$count": "n"}],
+  object_id=<mailboxId>, dataset="email_messages")`. Semantic search
+  covers mail — subject + body + notes index under scope email
+  (recall queries it by default; summary is NOT indexed); hits carry
+  `dataset: "email_messages"` + recordId (the gmail id) — fetch the
+  full record with `query(..., filter={"id": {"$in": [...]}})`.
+- Threads are data, not structure: same threadId = one
+  conversation, sort by internalDate.
+- A sync_state object holds the sync cursor — bookkeeping, not
+  content; leave it alone. Pre-2026-08 spaces may still hold legacy
+  per-message email OBJECTS — a stale corpus; prefer the dataset
+  and offer to delete the leftovers, never mix the two.
+
+## Syncing
+
+Route by job size (ADR-012) — never drain a mailbox from chat, and
+never rebuild the corpus through the raw gmail@v1 connector:
 
 **First, smoke-check the credential** — an unattended chain armed on
 a dead grant just burns its 5 hops with nobody watching:
@@ -78,9 +122,7 @@ user the count when it is non-zero; retry_skipped(space) re-runs
 them through the current cleaner without re-listing the mailbox —
 worth a try after a runtime update, otherwise they stay listed.
 
-Reading the synced corpus (email_messages records on the mailbox
-object, thread queries, label filters — ADR-016) is the `_any`
-skill's job. Re-arming start_backfill on a space synced before the
+Re-arming start_backfill on a space synced before the
 dataset move re-ingests everything into the dataset automatically
 (one-shot state migration); the legacy per-message email objects
 stay behind until the user asks to delete them.
