@@ -458,8 +458,8 @@ llm message only — the persisted turn keeps the raw `userText`.
 **System skills in full, the rest by index (amendment 2026-09-24,
 BOB-160).** Only `_`-prefixed skills are composed into the stable
 block. Every other skill, shipped or the user's, rides the `## Skills`
-index as name + one line + id, and its body is fetched on demand
-(ADR-009 §3). The index is part of the stable block, so it is
+index as name + one line, and its body is read on demand with the
+bound `get_skill(name)` (ADR-009 §3). The index is part of the stable block, so it is
 fingerprinted and byte-stable like the rest. Composed bodies (the
 `_soul` and every `_` skill) are unwrapped: soft-wrapped lines join
 into one line per paragraph or list item, while fenced code, headings,

@@ -141,12 +141,17 @@ guest-side change in this ADR.
 
 **The name picks how a skill loads (amendment 2026-09-24, BOB-160).**
 A `_`-prefixed skill is a system skill: its body is composed into the
-prompt in full, every run. Any other skill is **on demand**, in either
-tier: the `## Skills` index lists it as name + one line + id (the line
-is `any.description`, else the body's first sentence — a deployed
-skill carries no description property), grouped by the space to fetch
-the body from, and the model reads the body with `get_markdown` when a
-turn matches. Shadowing is the same by-name merge. A playbook that only
+prompt in full, every run. Any other skill is **on demand**, in every
+tier — the working (bao) space, the agent overlay, the connectors
+overlay: the `## Skills` index lists it as name + one line (the line is
+`any.description`, else the body's first sentence — a deployed skill
+carries no description property), and the model reads the body with
+the bound cell global `get_skill(name)` when a turn needs it.
+`get_skill` (`agent:skills@v1`, bound by the toolcaller next to
+`baoSpaceConfig`) looks in the bao space, then the agent overlay, then
+the connectors overlay; a blank body never shadows; an unknown name
+raises listing the known ones. The index merges the tiers with the same
+precedence, so names are unique and carry no ids. A playbook that only
 some turns need ships without the underscore (`gmailSync`); renaming a
 shipped skill leaves the old object in every overlay — deploy never
 deletes — so the old name is removed by hand where it was deployed.

@@ -3,17 +3,12 @@
 ## On-demand skills
 
 Skills without a leading underscore are playbooks loaded on demand:
-the shipped ones (deploy-managed, in the agent overlay) and the ones
-the user curates in the working space. **Only each skill's title,
-one-line description, and id are injected** (the `## Skills` section)
-— the body is not. When the current turn matches one of those entries,
-fetch the body *before* you plan, from the space its group names, and
-follow it:
-
-```python
-c = use("agent:any@v1")
-c.get_markdown(space, skill_id)
-```
+the shipped ones (deploy-managed, in the agent and connectors repos)
+and the ones the user curates in the working space. **Only each
+skill's name and one line are injected** (the `## Skills` section) —
+the body is not. When the turn, or the task in front of you, matches
+one, read it *before* you plan and follow it: `get_skill("<name>")`
+(the bao space first, so a skill of the user's shadows a shipped one).
 
 You can author skills yourself when the user asks you to capture a
 workflow:

@@ -881,36 +881,31 @@ def _first_sentence(md):
     return ""
 
 
-def _skill_index(c, space, code_space=None):
+def _skill_index(c, space, code_space=None, overlays=None):
     """`## Skills` — the on-demand skills: every NON-`_` agent_skill of
-    the agent code overlay (shipped) and of the working space (the
-    user's), as name + one line + id; the body stays out of the standing
-    prompt and is fetched when a turn matches (ADR-009 §3, ADR-005 §5).
-    Merged by name, the working space wins. The `_meta_skill` skill
+    the working space, the agent code overlay and the connectors
+    overlay, as name + one line;
+    the body stays out of the standing prompt and is read with the bound
+    get_skill(name) when a turn needs it (ADR-009 §3, ADR-005 §5). A
+    working-space skill shadows a shipped one of the same name — the
+    same precedence get_skill() looks up in. The `_meta_skill` skill
     teaches the flow."""
     code_space = code_space or space
-    mine = _skill_rows(c, space)
-    names = {n for n, _, _ in mine}
-    shipped = ([r for r in _skill_rows(c, code_space) if r[0] not in names]
-               if code_space != space else [])
-    if not (mine or shipped):
+    order = []   # lowest precedence first: the last read wins
+    for sp in ((overlays or {}).get("connectors"), code_space, space):
+        if sp and sp not in order:
+            order.append(sp)
+    rows = {}
+    for sp in order:
+        for name, _, desc in _skill_rows(c, sp):
+            rows[name] = desc          # the working space (read last) wins
+    if not rows:
         return ""
-
-    def lines(rows):
-        return "\n".join(sorted(f"- **{n}** (`{i}`)" + (f" — {d}" if d else "")
-                                for n, i, d in rows))
-
-    out = ["## Skills\n\n"
-           "Playbooks (`agent_skill` objects) loaded on demand: only name, "
-           "one line and id ride here. When the turn matches one, fetch its "
-           "body FIRST and follow it."]
-    if shipped:
-        out.append(f'Shipped — `c.get_markdown("{code_space}", "<id>")`:\n'
-                   + lines(shipped))
-    if mine:
-        out.append('Yours — `c.get_markdown(baoSpaceConfig, "<id>")`:\n'
-                   + lines(mine))
-    return "\n\n".join(out)
+    lines = "\n".join(f"- **{n}**" + (f" — {d}" if d else "") for n, d in sorted(rows.items()))
+    return ("## Skills\n\n"
+            "Playbooks loaded on demand: only a name and one line ride here. "
+            "When the turn — or the task in front of you — matches one, read "
+            "it FIRST with `get_skill(\"<name>\")` and follow it.\n\n" + lines)
 
 
 def _memory_categories(c, space):
@@ -974,7 +969,7 @@ def compose_system(c, space, code_space=None, overlays=None, style="full",
         soul = ""
     parts = [soul,
              _compose_skills(skills, has_shell),
-             _skill_index(c, space, code_space),
+             _skill_index(c, space, code_space, overlays),
              _tool_docs(c, space, code_space, style),
              _repo_inventory(c, overlays,
                              code_space if code_space != space else None),
@@ -1068,7 +1063,11 @@ def main(args):
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
     ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"
-                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}")
+                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}\n"
+                # on-demand skill bodies by name (ADR-009 §3): the bao space
+                # first, then the agent overlay, then the connectors overlay
+                f"get_skill = use('agent:skills@v1').binder("
+                f"{[space, code_space, (overlays or {}).get('connectors')]!r})")
     if plan["messages"]:
         # the auto-recall injection is framed as a run_cell that bound
         # `rec` (kernel state persists across cells) — make that true,

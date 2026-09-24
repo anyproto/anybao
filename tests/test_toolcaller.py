@@ -734,35 +734,38 @@ def test_unwrap_joins_soft_wraps_and_keeps_structure():
         "| a | b |\n| - | - |\n> quote\n> more\n## Head\ntext")
 
 
-def test_skill_index_lists_titles_and_ids_not_bodies():
+def test_skill_index_lists_names_and_lines_not_bodies_or_ids():
     g = _helpers()
     two = TwoSpaces()
     two.skills["user"].append(("u9", "review-pr", "# step one..."))
     out = g["_skill_index"](two, "user")
-    assert "## Skills" in out
-    assert "- **review-pr** (`u9`)" in out
+    assert "## Skills" in out and 'get_skill("<name>")' in out
+    assert "- **review-pr**" in out
+    assert "u9" not in out                 # no ids: get_skill resolves by name
     assert "step one" not in out           # body stays out of the prompt
     assert "_core" not in out              # system skills excluded
     # a space with only _-skills injects no section at all
     assert g["_skill_index"](TwoSpaces(), "user") == ""
 
 
-def test_skill_index_lists_shipped_on_demand_skills_working_space_wins():
-    """ADR-009 §3: a NON-`_` shipped skill joins the index (never the
-    composed band); a same-named working-space skill shadows it."""
+def test_skill_index_merges_tiers_with_get_skill_precedence():
+    """ADR-009 §3: NON-`_` skills of the connectors overlay, the agent
+    overlay and the working space join the index (never the composed
+    band); by name the working space wins, then agent, then connectors."""
     g = _helpers()
     two = TwoSpaces()
+    two.skills["conn"] = [("k1", "crm-hygiene", "# Skill: crm-hygiene\n\nKeep the CRM tidy."),
+                          ("k2", "review-pr", "# connectors review")]
     two.skills["code"] += [
         ("s3", "gmailSync", "# Skill: gmailSync\n\nSyncing Gmail into a space: "
                             "backfill, cron. Route by job size.\n\nbody detail"),
-        ("s4", "review-pr", "# shipped review")]
-    two.skills["user"].append(("u9", "review-pr", "# mine"))
-    out = g["_skill_index"](two, "user", "code")
-    assert 'Shipped — `c.get_markdown("code", "<id>")`' in out
-    assert "- **gmailSync** (`s3`) — Syncing Gmail into a space: backfill, cron." in out
+        ("s4", "review-pr", "# Skill: review-pr\n\nShipped review.")]
+    two.skills["user"].append(("u9", "review-pr", "# Skill: review-pr\n\nMy review."))
+    out = g["_skill_index"](two, "user", "code", {"connectors": "conn"})
+    assert "- **gmailSync** — Syncing Gmail into a space: backfill, cron." in out
+    assert "- **crm-hygiene** — Keep the CRM tidy." in out
+    assert "- **review-pr** — My review." in out and "Shipped review" not in out
     assert "body detail" not in out
-    assert "- **review-pr** (`u9`)" in out and "`s4`" not in out   # working space wins
-    assert 'Yours — `c.get_markdown(baoSpaceConfig, "<id>")`' in out
     # the band still composes only `_` skills
     band = g["_compose_skills"](g["_load_system_skills"](two, "user", "code"))
     assert "Syncing Gmail" not in band
