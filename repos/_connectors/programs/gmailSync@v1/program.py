@@ -1,15 +1,15 @@
 """Gmail → space sync: chunked full sync, history ticks, clean_html.
 
+How to sync and how to read the synced mail: `get_skill("gmailSync")`.
 One tick per invocation (ADR-012 §2): a bounded full-sync slice while
-the backlog drains, then coalesced `history.list` increments. The
-tick's real governor is fuel — it checkpoints and exits when the
-budget runs low. Mail lands as `email_messages` runtime-dataset
-records on a per-address `mailbox` object (ADR-016), record id =
-Gmail message id, body = clean_html markdown (ADR-012 §4); the raw
-MIME stays in Gmail. Cron: an agent_triggers record, kind "cron",
-program "connectors:gmailSync@v1", args {"space", "q"?}. Backlog:
-`start_backfill` arms a self-chaining once-trigger, `stop_backfill`
-disarms it (checkpoint kept), `retry_skipped` re-runs skipped mail.
+the backlog drains, then coalesced `history.list` increments, fuel as
+the governor (checkpoint, exit). Mail lands as `email_messages`
+records on a per-address `mailbox` object (ADR-016), record id = Gmail
+message id, body = clean_html markdown (ADR-012 §4). Cron: an
+agent_triggers record, kind "cron", program "connectors:gmailSync@v1",
+args {"space", "q"?}. `start_backfill` arms a self-chaining
+once-trigger, `stop_backfill` disarms it, `retry_skipped` re-runs
+skipped mail.
 """
 
 # ADR-012 (algorithm, clean_html, chain) + ADR-016 (dataset storage)

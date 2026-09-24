@@ -6,7 +6,8 @@ in order, the label list, and a thin q: search wrapper. Auth rides
 googleAuth@v1 (one consent covers the Google family) — not-connected
 errors say to run googleAuth.connect(). Methods return {ok, ...} or
 {ok: False, error}; page sizes capped (messages.get costs 20 quota
-units each). Scope: gmail.readonly."""
+units each). Scope: gmail.readonly. Mail already synced into a space
+is read from its corpus, not from here: `get_skill("gmailSync")`."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 

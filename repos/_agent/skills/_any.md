@@ -185,7 +185,8 @@ takes a spaceConfig first, as the module surface above says):
   when you only need ids.)
 - **Search scopes**: the index is partitioned by scope — basic
   (object names + editor text), chat (messages), props (property
-  values), and one per declared dataset: email (synced mail),
+  values), and one per declared dataset: email (synced mail —
+  reading it: `get_skill("gmailSync")`),
   agent (memory items), history (turns/rollups). **No scopes
   argument = ALL scopes** — that is the right default for "find
   anything about X"; `scopes=["basic"]` finds only pages/notes and
