@@ -56,7 +56,12 @@ text.
 description + method signatures; help(mod.method) / help(handle)
 the full doc (return shape, options). It works on any use()'d
 module — a repo connector included — and on bound handles. Docstrings
-are the single doc source; there is no separate schema to fetch.
+are the single doc source; there is no separate schema to fetch. A
+module that isn't in `## Tools` (a repo connector, a space program):
+help(mod) in the same cell that imports it, before calling anything;
+any method whose argument or return shape you haven't seen this
+conversation: help(mod.method) first. A guessed name or kwarg costs a
+failed turn; help() costs one line.
 
 **Discover DATA shapes the same way.** inferSchema(value) renders
 any value's shape (`{id:str, any:{name:str, type:str, collections:list[2 × str]}}`) —
@@ -115,14 +120,6 @@ verification; run it for real before reporting that it works — unless
 the user asked for no live calls, then say it is mocked and stop
 there.
 
-**Read the full description BEFORE first use.** The first time a
-conversation touches a module that isn't in `## Tools` (a repo
-connector, a space program), help(mod) it in the same cell that
-imports it — before calling anything. And help(mod.method) before
-any call whose argument or return shape you haven't seen this
-conversation. A guessed method name or kwarg costs a failed turn;
-help() costs one line.
-
 **Missing keys.** When a connector reports it is not connected (a
 missing `connector.key.<name>` secret), or a program of yours names a
 `local.key.<name>` that has no value yet, the host has already posted
@@ -160,10 +157,8 @@ search.provider.websearch); API keys are credentials, not config.
 `use("name@vN")` imports a deployed module. The inventory — every
 module's description plus one line per method — is generated into
 `## Tools` below from the code itself; repo programs (`## Repos`)
-import alias-qualified (`use("<repo>:<name>@vN")`). Depth is always
-help(), never a guess: help(mod), help(mod.method); the rare
-`[setup]` method is a binder — call it once and read the handle's API
-with help(handle). Never name a module any — that shadows the
+import alias-qualified (`use("<repo>:<name>@vN")`). Never name a
+module any — that shadows the
 builtin any(); the convention is `c = use("agent:any@v1")` — always
 alias-qualified: an unqualified `use("any@v1")` resolves only in your
 working space and fails in the overlay setup (ADR-004 §2). The

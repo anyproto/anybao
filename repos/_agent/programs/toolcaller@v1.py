@@ -772,8 +772,7 @@ _TOOLS_INTRO = (
     "`name(signature) [kind] — summary` line per method, rendered from the "
     "code itself. `[getter]` reads, `[mutator]` writes / side effects, "
     "`[setup]` is a binder you call once to get a handle (the handle's API: "
-    "`help(handle)`). Full method doc — return shape, options — via "
-    "`help(mod.method)`; describe before you call, don't guess shapes.")
+    "`help(handle)`).")
 
 
 _TOOLS_INTRO_COMPACT = (
