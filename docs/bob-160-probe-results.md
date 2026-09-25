@@ -125,3 +125,42 @@ The cut held for the core loop: object writes, search, trash, links, apps, memor
 | 11.2 | PASS | 5 | 0 | 0.025 |  |
 | 11.3 | PARTIAL | 8 | 4 | 0.061 | (1) The skill description ('When the user says "status", list the To do tasks in Garden.') reads like a complete instruction, so the model s… |
 | 11.4 | PASS | 8 | 0 | 0.047 |  |
+
+## Round 2 (after the fix pass, 2026-09-25)
+
+**44 PASS · 5 PARTIAL · 1 FAIL · 1 invalid (7.2) · $1.63 · 97 of 299 turns wasted** (round 1: 35 / 12 / 3 / 1, $1.64, 104 of 304).
+
+Round 2 after the fix pass: 44 PASS / 5 PARTIAL / 1 FAIL (round 1: 35 / 12 / 3), 11 improved, 2 regressed. Cost is flat ($1.63 vs $1.64): most questions got cheaper, but three runs ate the savings — 9.1/9.2 trace forensics (+$0.08, tooling unchanged, BOB-172) and 11.2 (+$0.11, source-hunting a program it can't read). The cache split works (first turn after a memory/skill change: $0.025 → $0.008). Teach-on-failure fired 10 times and fixed the next call each time. Prompt rules the model must remember to apply (batched discovery, put the file link in the reply, don't re-look-up ids) mostly didn't take; mechanisms did.
+
+### 1. What the fixes changed
+
+- **Fixed:** (1.1, 2.3, 2.4, 3.1, 5.3a, 6.2, 7.3, 8.2, 8.3, 8.4, 11.3) 1.1 choice type (11 → 6 turns, $0.080 → $0.030: list options + slug error + teach-on-failure); 2.3/2.4 delete rule; 3.1 wiki placement (10 → 5 turns); 5.3a app consent; 6.1/6.2 chat read recipe (6.2: 11 → 3 turns); 7.3 pasted key; 8.2 'did it run' via effects.runs; 8.3 cron converted to UTC, no tz; 8.4 pages named on create; 11.3 reads the saved skill.
+- **Cache split works.** (9.5, 11.3) 9.5 first turn cacheRead 8,859 / write 1,540 (was 0 / 9,824); 11.3 write 1,612 (was 10,180).
+- **Teach-on-failure works where a failed call is recorded.** (1.1, 4.2, 9.5) Fired 10×; each time the next call was right (1.1, 1.3, 4.2, 5.5, 9.0, 10.2, 11.2). It does not fire for argument-check TypeErrors raised by the any@v1 wrapper before the call is recorded (9.5), nor for empty successes.
+  Fix: Teach also on wrapper TypeErrors (match the function name against the flat any@v1 surface, as for signature errors).
+
+### 2. Regressions
+
+- **6.3 posted into its own chat (PARTIAL → FAIL).** (6.3) The new recipes print bao["chatId"] ready to paste; a literal 'say hi in this chat' beats the prose rule.
+  Fix: Mechanism: chat_send refuses the current run's own chat with 'your reply lands here — just answer'.
+- **1.4 asked instead of adding the red option.** (1.4) Saw 'To do' is already red and asked.
+  Fix: set_option doc: colours need not be unique.
+- **11.2 went 5 → 22 turns.** (11.2) It test-ran its query (good) against a fixture with no To-do tasks, couldn't tell 'none' from 'wrong value form', then hunted for a program's source it cannot read.
+  Fix: query_objects doc: a choice filter takes the option name or key, an unknown one errors; programs@v1 read-source method; seed one To-do task.
+
+### 3. Rules that didn't take → need mechanisms (the refs direction)
+
+- **Batched discovery: 4 of 51 runs.** The model reads docs one per cell, or learns from errors. Per-value output limits did not collide with batching (0 of 19 help() cells stubbed).
+  Fix: Drop the batching wording; keep 'help(method) before first call' + teach-on-failure.
+- **Ids re-looked-up, links missing from replies.** (1.1, 3.3, 4.2) list_spaces just to get Garden's id in most runs; 4.1 still doesn't put the file link in its reply, so 4.2 hunts for it; 3.3 re-searches Dune because 3.2's reply had no link.
+  Fix: refs ADR: runtime captures touched objects/files per turn, rebinds a `refs` global by name next run, auto-attaches created/changed objects to the reply.
+- **currentUserSpace None → first cell wasted in most series.** Probe artifact partly, but real for any message without a view.
+  Fix: Say 'no view' in the message suffix when there is none.
+- **_core recipe copies fail on unbound `c`.** (8.1, 11.1)
+  Fix: Bind `c = use("agent:any@v1")` in the _ctx prelude, like baoSpaceConfig.
+
+### 4. Tooling and server, unchanged since round 1
+
+- **Trace forensics (BOB-172): 9.1 27 turns $0.19, 9.2 17 turns $0.12.** (9.1, 9.2, 9.3) Span end rows carry no input; cell rows carry no code; boot rows lead the outline; runs() startedAt is epoch seconds but documented as an instant.
+- **backlinks returns no chat-message edges.** (3.4) Confirmed again in 3.4 — a server/index issue.
+- **7.2 still invalid.** (7.2) Linear key still reaches the serve (likely the account-scoped Credentials value), so the missing-key path didn't run.
