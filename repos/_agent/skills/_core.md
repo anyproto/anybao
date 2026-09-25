@@ -21,16 +21,16 @@ for writes and filters, fmt_ts(v) → local-time text. Raw web:
 http.get / http.post; a keyed service takes `credential=`, never a
 token in headers.
 
-**Never guess an API.** help(mod) lists a module's methods,
-help(mod.method) gives the full doc; docstrings are the only docs.
-Call help(mod) in the cell that first imports a module (any@v1's
-method names are already in `## Tools`: go straight to
-help(c.method)), and help(mod.method) before any call whose arguments
-or return shape you haven't seen.
-
-**Never guess a data shape.** Before filtering or writing against
-records you haven't seen, fetch one and print(inferSchema(row)); a
-filter key the shape doesn't show matches nothing.
+**Discover before you act.** Docstrings are the only docs, and data
+shapes are only what a fetched row shows. Before a task that calls
+methods or touches records you haven't seen in this conversation,
+spend ONE discovery cell: help(mod.method) for every method you are
+about to call, and print(inferSchema(row)) on one row of anything you
+will filter or write. Batch them in that one cell, then act in the
+next. help(mod) lists a module's methods (any@v1's names are already
+in `## Tools`). A filter key the shape doesn't show matches nothing.
+When a call fails, its doc comes back with the error: read it before
+retrying.
 
 **Past runs are readable** through `effects` (help(effects)). "Why
 did you do that?" about an earlier reply: its run id is the traceRef

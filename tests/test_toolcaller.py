@@ -1248,3 +1248,46 @@ def test_bad_mock_spec_is_an_error_result_before_any_cell():
     # the span never opened, so no cell ran (the rejected call still
     # counts as a tool result, like a malformed call)
     assert ("begin", "cell") not in w.spans
+
+
+# --- teach on failure (ADR-005 §4) --------------------------------------
+
+def _digest_env():
+    class Any:
+        def attach_file(self, space, object_id, name, data, mime=None):
+            """Attach a file to an object → FileInfo + `uri`."""
+    mod = Any()
+    g = {"use": lambda spec: mod,
+         "describe": lambda fn: f"{fn.__name__}(space, object_id, name, data, mime=None)\n"
+                                f"{fn.__doc__}",
+         **kernel_globals(now=1234)}
+    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
+    g["_TOOL_SPECS"]["any"] = "agent:any@v1"
+    return g
+
+
+def test_a_failed_tool_call_gets_its_help_once_per_run():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "ValueError", "message": "bad data"}}
+    failed = [{"name": "any.attach_file", "kind": "span", "ok": False}]
+    first = g["render_digest"]("c1", cr, failed)
+    assert "help(any.attach_file) — the contract you just called" in first
+    assert "Attach a file to an object" in first
+    assert "help(any.attach_file)" not in g["render_digest"]("c2", cr, failed)
+
+
+def test_a_signature_error_is_matched_to_the_tool_that_has_the_method():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "TypeError",
+                    "message": "attach_file() got an unexpected keyword argument 'url'"}}
+    assert "help(any.attach_file)" in g["render_digest"]("c1", cr, [])
+
+
+def test_non_contract_errors_teach_nothing():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "TimeoutError", "message": "attach_file() timed out"}}
+    failed = [{"name": "any.attach_file", "kind": "span", "ok": False}]
+    assert "help(" not in g["render_digest"]("c1", cr, failed)

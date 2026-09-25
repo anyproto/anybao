@@ -445,6 +445,12 @@ the cell's span — into the ToolResult content:
   batched via one `batch` fan-out over `llm.chat`.
 - **Teaching hints**: the `*_many` nudge (ADR-002) and future hints of
   the same shape — appended to the digest only when triggered.
+- **Teach on failure**: a cell that fails with a contract error
+  (TypeError / ValueError / KeyError / AnyError) on a tool method —
+  a failed `tool.method` span, or a signature TypeError naming a
+  method one listed tool has — gets that method's describe() text
+  appended, once per method per run (capped ~1.5k tokens). The
+  contract arrives at the moment it was broken, without a turn.
 
 ### 5. System prompt & boot window assembly
 

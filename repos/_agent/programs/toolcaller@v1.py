@@ -423,6 +423,63 @@ def _mock_spec(args):
     return mock or None
 
 
+# tool name → the spec its module loads by, filled by _tool_docs each run;
+# a failed call to one of these gets its help() text in the digest, once
+# per method per run (teach on failure, §4)
+_TOOL_SPECS = {}
+_TAUGHT = set()
+TEACH_TOKEN_CAP = 1500
+# contract errors — a network failure or a timeout teaches nothing
+_TEACH_ON = ("TypeError", "ValueError", "KeyError", "AnyError")
+_SIG_ERROR = re.compile(r"\b([a-z_][a-z0-9_]*)\(\) (?:got an unexpected|got multiple|"
+                        r"missing \d+ required|takes \d+|missing a required)")
+
+
+def _failed_methods(cr, entries):
+    """(tool, method) pairs the cell's error points at: failed facade
+    spans first, else a signature TypeError's function name matched
+    against the loaded tools."""
+    out = []
+    for e in entries:
+        name = e.get("name") or ""
+        if e.get("ok") is False and "." in name:
+            tool, _, method = name.partition(".")
+            if tool in _TOOL_SPECS:
+                out.append((tool, method))
+    if not out:
+        m = _SIG_ERROR.search((cr.get("error") or {}).get("message") or "")
+        if m:
+            for tool in _TOOL_SPECS:
+                try:
+                    if callable(getattr(use(_TOOL_SPECS[tool]), m.group(1), None)):  # noqa: F821
+                        out.append((tool, m.group(1)))
+                except Exception:  # noqa: BLE001 - an unloadable tool teaches nothing
+                    continue
+    return out
+
+
+def _teach(cr, entries):
+    """A failed tool call's doc, the first time that method fails this
+    run: the model reads the contract at the moment it got it wrong."""
+    err = cr.get("error") or {}
+    if err.get("type") not in _TEACH_ON or not _TOOL_SPECS:
+        return []
+    lessons = []
+    for tool, method in _failed_methods(cr, entries):
+        if (tool, method) in _TAUGHT:
+            continue
+        try:
+            fn = getattr(use(_TOOL_SPECS[tool]), method)  # noqa: F821 - guest global
+            doc = describe(fn)  # noqa: F821 - guest global
+        except Exception:  # noqa: BLE001
+            continue
+        _TAUGHT.add((tool, method))
+        if approx_tokens(doc) > TEACH_TOKEN_CAP:
+            doc = doc[:TEACH_TOKEN_CAP * 4] + " …"
+        lessons.append(f"help({tool}.{method}) — the contract you just called:\n{doc}")
+    return lessons
+
+
 def _hints(entries):
     # Batch hint targets raw syscalls, not composite facade spans.
     counts = {}
@@ -502,6 +559,7 @@ def render_digest(cell_id, cr, entries, mock=None, filter_hits=None, full=False)
     if cr["error"]:
         tb = "\n" + cr["error"].get("traceback", "") if cr["error"].get("traceback") else ""
         parts.append(f"Error: {cr['error']['type']}: {cr['error']['message']}{tb}")
+    parts.extend(_teach(cr, entries))
     parts.extend(_hints(entries))
     if mock is not None:
         parts.append(MOCK_GUARD)
@@ -851,6 +909,7 @@ def _tool_docs(c, space, code_space=None, style="full"):
                 # form cell code should use, where it resolves locally
                 load = spec if prefix else f"{sp}:{name}@{ver}"
                 summary, section = _tool_listing(use(load))  # noqa: F821 - guest global
+                _TOOL_SPECS[name] = load
             except Exception as e:
                 summary, section = f"(unavailable: {type(e).__name__}: {e})", None
             block = (f'### {name}\n\nImport: `use("{spec}")`\n\n{section}' if section
