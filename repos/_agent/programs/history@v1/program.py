@@ -1,7 +1,8 @@
+# ADR-017
 """Conversation history reads (turns/chunks) + the boot window.
 
 Turns and chunks live on the chat's log child (`c.chat_log(space,
-chat_id)`, ADR-017), never on the chat itself. `recent_turns` /
+chat_id)`), never on the chat itself. `recent_turns` /
 `chunks_at_level` take the any@v1 module as their first argument."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
@@ -20,11 +21,12 @@ def approx_tokens(text):
 
 def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
                trace_ref="", user_name="", from_agent="", llm=None):
+    # ADR-006 §1
     """The agent_turns v2 payload — seq omitted (server-assigned).
 
     `outcome` is the loop outcome dict (`{"replies", "stop", …}`); `replies` =
-    what the user saw; `think` = narration that did NOT go to chat (distinct,
-    ADR-006 §1). `interrupted` + neutral stopReason come from the outcome."""
+    what the user saw; `think` = narration that did NOT go to chat
+    (distinct). `interrupted` + neutral stopReason come from the outcome."""
     body = {
         "userText": user_text,
         "replies": outcome["replies"],
@@ -73,10 +75,11 @@ def _chunk_line(chunk):
 
 
 def raw_tail(raw_turns, total_tokens=40000, raw_tail_fraction=0.5):
+    # ADR-007 §5
     """The boot window's full-resolution slice, returned oldest→newest.
 
     Newest raw turns filling the raw-tail budget; the slice's min seq
-    is also the auto-recall deep-history guard boundary (ADR-007 §5)."""
+    is also the auto-recall deep-history guard boundary."""
     raw_budget = int(total_tokens * raw_tail_fraction)
     included = []
     spent = 0
@@ -137,11 +140,12 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
 
 @span(kind="getter")  # noqa: F821 - guest global
 def recent_turns(client, space, chat_id, limit):
+    # ADR-017
     """Newest AGENTLOG turns first — the agent's own turn records, NOT the chat.
 
     Descending seq. For what people said in a chat, read its messages:
     `client.query(space, chat_id, "chat_messages", sort=["-createdAt"],
-    limit=n)`. Turns live on the chat's log child (ADR-017). An empty [] here
+    limit=n)`. Turns live on the chat's log child. An empty [] here
     just means this agent never logged turns on that chat."""
     log = client.chat_log(space, chat_id)["objectId"]
     return client.query(space, log, "agent_turns", sort=["-seq"], limit=limit)
@@ -157,10 +161,11 @@ def chunks_at_level(client, space, chat_id, level, limit):
 
 @span(kind="getter")  # noqa: F821 - guest global
 def activity(client, space, chat_id, unit="day", limit=90):
+    # ADR-019 §3
     """Turns per calendar period, oldest first → [{period, turns}].
 
     Returns [{"period": <instant>, "turns": n}] — `unit` ∈ day | week | month.
-    Native date arithmetic over agent_turns.createdAt (ADR-019 §3, $dateTrunc);
+    Native date arithmetic over agent_turns.createdAt ($dateTrunc);
     the periods are UTC instants — render with fmt_ts."""
     log = client.chat_log(space, chat_id)["objectId"]
     r = client.aggregate(space, [

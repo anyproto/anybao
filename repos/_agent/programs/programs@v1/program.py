@@ -1,9 +1,10 @@
+# ADR-013
 """Write, edit and delete programs in a working space — live on the next use().
 
 Code that should run on its own — a mail watch, a periodic check —
 is a program here plus an agent_triggers record that runs it, never a
 cron that wakes your whole reasoning loop. Write-time validation
-mirrors deploy's (ADR-013); a passing post-save use() probe makes a
+mirrors deploy's; a passing post-save use() probe makes a
 `__any_tool__` program a live tool immediately, and an edit is live on
 the very next use(). Overlay-exported specs are refused; promotion to
 an overlay repo is a human deploy step."""
@@ -350,11 +351,12 @@ def _apply_edits(spec, code, edits):
 
 @span(kind="mutator")  # noqa: F821 - guest global
 def create_program(spaceConfig, body):
+    # ADR-010 §1
     """Create a program in the space → {ok, objectId, spec, anyTool, probe, hint?}.
 
     `body`: {"name", "source", "version"?} (version defaults "v1";
-    accepted keys exactly these). Source rules are the deployed ones
-    (ADR-010 §1): short module docstring (first line ≤ 80 chars = the
+    accepted keys exactly these). Source rules are the deployed ones:
+    short module docstring (first line ≤ 80 chars = the
     listed summary); a tool adds `__any_tool__ = True` +
     `@span(kind=...)` and a docstring on every public def (the span
     name derives as `<module>.<def>`). Refused loudly (nothing written): syntax errors,
@@ -406,11 +408,12 @@ def create_program(spaceConfig, body):
 
 @span(kind="mutator")  # noqa: F821 - guest global
 def update_program(spaceConfig, spec, source):
+    # ADR-004 §4
     """Replace a program's whole source → {ok, objectId, spec, anyTool, probe, hint?}.
 
     Full-source replace of an EXISTING working-space program (same
     validation and post-save probe as create_program; the edit is live
-    on the next use() — ADR-004 §4). Prefer edit_program for point
+    on the next use()). Prefer edit_program for point
     changes; use this when intentionally restructuring."""
     name, version = _parse_spec(spec)
     summary = _validate_source(spec, source)

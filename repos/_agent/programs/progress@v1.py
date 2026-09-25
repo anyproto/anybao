@@ -1,6 +1,7 @@
+# ADR-014
 """Progress bars for long jobs — start/tick/done/fail, one bar per (space, job).
 
-Programs and cells report progress ONLY through this module (ADR-014);
+Programs and cells report progress ONLY through this module;
 never hand-roll process events. Bars render in the user's UI whatever
 space is open. Callers own the throttle: tick per work chunk /
 percentage step, never per item. Nothing is
@@ -132,13 +133,14 @@ def _own_row(pid):
 
 @span("progress.done", kind="mutator")  # noqa: F821 - guest global
 def done(space, job, notify=None):
+    # ADR-014 §4, ADR-014 §6
     """Finish the bar → 1 if a live row was finished, else 0.
 
     Emits the terminal `process.done` frame; the row lingers ~60s in
     the view as the success signal, then expires — nothing is left
-    behind (ADR-014 §4). Want final counts in that linger? tick() them
-    just before done(). Idempotent when nothing is live. `notify`
-    (§6): pass `baoSpaceConfig` (or a `{spaceId, chatId}` dict / agent
+    behind. Want final counts in that linger? tick() them
+    just before done(). Idempotent when nothing is live. `notify`:
+    pass `baoSpaceConfig` (or a `{spaceId, chatId}` dict / agent
     space) to post a visible `trigger:<job>` chat message that
     triggers the loop — the agent reports completion in that chat with
     history in context. For detached (trigger-driven) jobs; pointless
@@ -192,13 +194,14 @@ def jobs(space):
 
 @span("progress.fail", kind="mutator")  # noqa: F821 - guest global
 def fail(space, job, error, detail=None, notify=None):
+    # ADR-014 §4 (as amended), ADR-014 §6
     """Mark the job failed → process id.
 
     Emits the terminal `process.failed` frame with the error; the row
     lingers ~60s as the visible outcome, then expires — the DURABLE
     record of a failure is the notify chat message and the job's own
-    state, not the bar (ADR-014 §4 as amended). A start()/tick() of
-    the same job reopens it (the retry path). `notify` (§6): same as
+    state, not the bar. A start()/tick() of
+    the same job reopens it (the retry path). `notify`: same as
     done() — a visible `trigger:<job>` chat message triggers the loop
     so the agent tells the user what broke."""
     pid = _pid(space, job)

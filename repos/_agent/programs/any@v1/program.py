@@ -1499,6 +1499,7 @@ class _Client:
     @_public('mutator')
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
+        # ADR-006 §6, ADR-022 §2
         """Create an object → {objectId, resolved?, createdOptions?, warnings?}.
 
         body: {"type"?, "collections"?, "initialProperties"?, "name"?,
@@ -1521,9 +1522,9 @@ class _Client:
         content-ids the server writes by — a group is keyed by its
         owner, the type or one of the collections; the `any` group
         passes through literal. Unknown keys — and unknown TOP-LEVEL
-        keys, which the wire would silently drop — error — ADR-006 §6.
-        VALUES are encoded against each property's definition
-        (ADR-022 §2): select/multiselect take option NAMES or keys — a
+        keys, which the wire would silently drop — error. VALUES are
+        encoded against each property's definition: select/multiselect
+        take option NAMES or keys — a
         missing option is created (any-ui style key/color/pos; pass
         `create_options=False` to refuse) and reported in
         `createdOptions`; links take object names, ids or any://
@@ -1779,6 +1780,7 @@ class _Client:
         # normalize is keyword-only: a positional dict here used to land
         # in `normalize` and silently drop the caller's filter — a query
         # for everything where a filtered query was intended.
+        # ADR-006 §6, ADR-019
         """Cross-object query over a space's objects → xKey-nested rows.
 
         `filter` / `sort` accept readable dotted xKey paths (`task.status`,
@@ -1794,11 +1796,11 @@ class _Client:
         bare top-level record keys (`any.id` → `id`, `any.createdAt` →
         `createdAt`). Records come back NORMALIZED (user-type groups keyed by
         type xKey, props by prop xKey) unless normalize=False — pass that when
-        you need the raw content ids (e.g. graph edges) — ADR-006 §6. Time is an
+        you need the raw content ids (e.g. graph edges). Time is an
         INSTANT: `createdAt`/`modifiedAt` and every `date`/`datetime` property
         read as `{"$date": "<RFC 3339>"}` (`ts_s(v)` → seconds) and a filter
         compares them only to `instant(seconds)` — a bare number raises here
-        (server-side it would silently match every row) — ADR-019."""
+        (server-side it would silently match every row)."""
         unknown = set(opts) - {"filter", "sort", "limit", "offset"}
         if unknown:
             # an unvisited key (e.g. `filters=`) would make the server
@@ -1824,10 +1826,11 @@ class _Client:
 
     @_public('getter')
     def list_programs(self, space, tools_only=False):
+        # ADR-009 §2, ADR-010 §4
         """Programs deployed in a space: [{name, version, anyTool, summary}].
 
-        An overlay/repo or your own working space (ADR-009 §2), sorted
-        by name — `summary` is the program's one-liner (ADR-010 §4);
+        An overlay/repo or your own working space, sorted by name —
+        `summary` is the program's one-liner;
         for depth, `use()` it and `help(mod)`. Import one from another
         space with `use("<alias-or-spaceId>:<name>@<version>")`."""
         out = []
@@ -1848,13 +1851,14 @@ class _Client:
 
     @_public('getter')
     def query(self, space, object_id, dataset, **opts):
+        # ADR-019 §4
         """Per-object dataset query (chat_messages, agent_turns, …) → records.
 
         None-valued opts are dropped so callers can pass through optional
         filter/sort/limit unchecked. Stamps (`createdAt`, `modifiedAt`) and
         datetime fields (`validFrom`, `periodStart`/ `periodEnd`) are instants
         `{"$date": …}`: read with `ts_s`, filter with `instant(seconds)` — a
-        bare number raises (ADR-019 §4)."""
+        bare number raises."""
         # ADR-019 §4: stamps + declared datetime fields take instants
         # only — checked on the KEY before anything reaches the wire
         _guard_filter(opts.get("filter"),
@@ -1899,7 +1903,8 @@ class _Client:
     @_public('mutator')
     def upsert_records(self, space, object_id, dataset, records,
                        page_size=None):
-        """Batch-ingest into an `idRule: user` runtime dataset (ADR-016).
+        # ADR-016
+        """Batch-ingest into an `idRule: user` runtime dataset.
 
         records: [{"id": "<caller id>", "fields": {…}}] — the id is
         the idempotency key: absent ids are created, existing ids get
@@ -1962,7 +1967,8 @@ class _Client:
 
     @_public('getter', scoped=False)
     def list_devices(self):
-        """The account's device registry (ADR-015) → {self, active, devices}.
+        # ADR-015
+        """The account's device registry → {self, active, devices}.
 
         Each device row flagged `self` / `active` / `bao`.
 
@@ -2220,6 +2226,7 @@ class _Client:
 
     @_public('mutator')
     def open_in_ui(self, space, object_id=None):
+        # device scope: user decision 2026-08-19
         """Open a space, or one object in it, in the user's any-ui on THIS device.
 
         Returns {subscribers}.
@@ -2227,7 +2234,7 @@ class _Client:
         Publishes a `ui.open_space` / `ui.open_object` event on the
         device-scope event bus (the transient "show the user what I
         mean" navigation directive — at-most-once, nothing stored).
-        Device scope on purpose (user decision 2026-08-19): the view
+        Device scope on purpose: the view
         changes only on the device this server runs on, never on the
         account's other machines. `subscribers: 0` simply means no UI
         window is connected right now — not an error, nothing is
@@ -2379,6 +2386,7 @@ class _Client:
 
     @_public('mutator')
     def create_type(self, space, body):
+        # ADR-029 §3
         """Create a type — what an object IS — with its properties (composite ensure).
 
         body: {"name", "xKey"?, "description"?, "hidden"?, "layout"?,
@@ -2393,8 +2401,8 @@ class _Client:
         MISSING properties are added. **Every type has a body**: the
         shared editor part is declared on a new type and healed onto
         an existing one that lacks it, so a user type is "page plus
-        fields" — its objects hold markdown like a page does (ADR-029
-        §3); `"body": false` opts out (bao's hidden stores). A name or
+        fields" — its objects hold markdown like a page does;
+        `"body": false` opts out (bao's hidden stores). A name or
         xKey that collides with a builtin handle (any, spaceIndex,
         type, collection, page, dataview, miniapp, bin), a catalog
         definition's (wiki, person, contact, …) or an existing
@@ -3017,14 +3025,14 @@ class _Client:
     # --- agent turns / chunks (client-assigned seq, ADR-017 §2) ----------------
     @_public('getter')
     def chat_log(self, space, chat_id):
+        # ADR-017 §0, ADR-017 §0a
         """The chat's log object hosting agent_turns + agent_chunks → {objectId}.
 
-        The `bao/log/v1` child of the chat's own bundle (ADR-017 §0):
-        deterministic, ensured with the agent_log type + datasets on
-        first use. Query turns/chunks on THIS object, never on the
-        chat itself. The chat must be a bundle root (the general chat
-        is the catalog's `system:general-chat/v1`; §0a covers future
-        non-bundle chats)."""
+        The `bao/log/v1` child of the chat's own bundle: deterministic,
+        ensured with the agent_log type + datasets on first use. Query
+        turns/chunks on THIS object, never on the chat itself. The chat
+        must be a bundle root (the general chat is the catalog's
+        `system:general-chat/v1`)."""
         return {"objectId": self._chat_log(space, chat_id)}
 
     def _chat_log(self, space, chat_id):
@@ -3444,9 +3452,10 @@ class _Client:
 
     @_public('getter', scoped=False)
     def get_skill(self, name):
+        # ADR-009 §3
         """A skill's markdown body by name — read it before you plan, then follow it.
 
-        On-demand skills ride `## Skills` as one line each (ADR-009 §3);
+        On-demand skills ride `## Skills` as one line each;
         this is how their body is read. Looks in the bao space first (a
         skill of your own shadows a shipped one), then the agent repo,
         then the connectors repo; a blank body never shadows. An unknown
@@ -3561,10 +3570,11 @@ class _Client:
 
     @_public('getter', scoped=False)
     def get_brain(self):
+        # ADR-017 §0
         """The brain object hosting agent_memory_items → {objectId}.
 
-        It is the bao space's `bao/v1` bundle's `bao/brain/v1` child (ADR-017
-        §0), with the `agent_brain` type + datasets ensured lazily (guest-owned
+        It is the bao space's `bao/v1` bundle's `bao/brain/v1` child, with
+        the `agent_brain` type + datasets ensured lazily (guest-owned
         store). `{objectId}` — deterministic, no create race. Memory has ONE
         home: the bao space (`bao_space()`); there is no per-space brain, facts
         about a space go in `context`/`tags`."""
@@ -3709,7 +3719,8 @@ class _Client:
 
     @_public('getter')
     def file_content(self, space, file):
-        """The file as a Blob → {fileId, mime, size, blob} (ADR-026 §5).
+        # ADR-026 §5
+        """The file as a Blob → {fileId, mime, size, blob}.
 
         `file` is an `any://f/<spaceId>/<fileId>` URI (a chat `[attachment …]`
         line; `?variant=thumb` passes through) or a bare fileId in `space`.
@@ -3739,9 +3750,10 @@ class _Client:
 
     @_public('mutator')
     def attach_file(self, space, object_id, name, data, mime=None):
+        # ADR-026 §5
         """Attach a file to an object → FileInfo + `uri` (any://f/…).
 
-        The write half (ADR-026 §5). `data`: a Blob (an `http.get(...).blob`,
+        The write half. `data`: a Blob (an `http.get(...).blob`,
         `file_content(...)["blob"]`, a `tempfile` writer's `.blob`) or
         `bytes`/`str` (wrapped into one); `mime` defaults to the Blob's. One raw
         upload — the host streams the bytes, the trace keeps the ref. Returns

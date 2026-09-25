@@ -1,11 +1,12 @@
+# ADR-012 §2, ADR-016, ADR-012 §4
 """Gmail → space sync: chunked full sync, history ticks, clean_html.
 
 How to sync and how to read the synced mail: any's `get_skill("gmailSync")`.
-One tick per invocation (ADR-012 §2): a bounded full-sync slice while
+One tick per invocation: a bounded full-sync slice while
 the backlog drains, then coalesced `history.list` increments, fuel as
 the governor (checkpoint, exit). Mail lands as `email_messages`
-records on a per-address `mailbox` object (ADR-016), record id = Gmail
-message id, body = clean_html markdown (ADR-012 §4). Cron: an
+records on a per-address `mailbox` object, record id = Gmail
+message id, body = clean_html markdown. Cron: an
 agent_triggers record, kind "cron", program "connectors:gmailSync@v1",
 args {"space", "q"?}. `start_backfill` arms a self-chaining
 once-trigger, `stop_backfill` disarms it, `retry_skipped` re-runs
@@ -243,7 +244,8 @@ def _cap_depth(soup, Tag, cap=_MAX_DEPTH):
 
 @span("gmailSync.clean_html", kind="getter")  # noqa: F821 - guest global
 def clean_html(html):
-    """Email HTML → {markdown, signature} — the §4 named filter.
+    # ADR-012 §4 (the named filter)
+    """Email HTML → {markdown, signature}.
 
     Five passes: layout-table flattening, quoted-chain + preheader +
     tracking-pixel removal, link hygiene (tracker unwrap, utm strip),
@@ -947,6 +949,7 @@ def sync_now(space, q=None, max_messages=None):
 
 @span("gmailSync.start_backfill", kind="mutator")  # noqa: F821 - guest global
 def start_backfill(space, agent_space, q=None):
+    # ADR-014
     """Drive the WHOLE initial sync unattended → {armed, estimatedTotal}.
 
     The reliable path for big backlogs: arms a self-chaining
@@ -955,7 +958,7 @@ def start_backfill(space, agent_space, q=None):
     from the checkpoint), and a circuit breaker stops the chain after
     5 consecutive failed hops. `agent_space` is the serving agent's
     space (baoSpaceConfig — triggers live on its anchor). Progress
-    goes through agent:progress@v1 (job "gmail-backfill", ADR-014):
+    goes through agent:progress@v1 (job "gmail-backfill"):
     a GLOBAL bar (the server process registry) while running; terminal
     states linger ~60s — for history use `status(space)`. When the chain
     ends — backlog drained OR breaker — it arms a toolcaller nudge so
@@ -1054,11 +1057,12 @@ def stop_backfill(space, agent_space):
 
 @span("gmailSync.retry_skipped", kind="mutator")  # noqa: F821 - guest global
 def retry_skipped(space):
+    # ADR-012 §2
     """Re-process the messages earlier ticks skipped.
 
     Returns {retried, made, gone, stillSkipped, skippedCount, fuelStop?}.
 
-    The retry path for `status().skipped` (§2): hydrates those ids
+    The retry path for `status().skipped`: hydrates those ids
     again — no re-listing of the mailbox — and runs them through the
     CURRENT cleaner. A message that now converts lands as a record and
     leaves the list; one that still fails stays with the fresh reason;
