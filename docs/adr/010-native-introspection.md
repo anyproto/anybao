@@ -2,7 +2,9 @@
 
 Status: **Accepted** (2026-07-28), amended 2026-07-28 (§1 hard caps;
 §4 toolhood is declared, not derived — the shape heuristic misfired
-on loop plumbing; §5 summary not indexed), amended 2026-08-04 (§8
+on loop plumbing; §5 summary not indexed), amended 2026-09-24 (§1
+listed marker, §3 one line per tool + `__any_listing__`, §8 generated
+any@v1 surface — BOB-160), 2026-08-04 (§8
 flat tool surface — `any@v1` drops the `client()` binder for
 module-level functions with a `spaceConfig` first arg + bound space
 globals; handle methods were invisible to §3's inventory and the
@@ -62,7 +64,11 @@ Docstrings are the ONLY authored program documentation.
   capability gate (ADR-002).
 - **Visibility**: public `def` = visible; leading underscore =
   hidden. `main` is the run entry point, not a method — method
-  listings exclude it.
+  listings exclude it. A public function carrying `__any_listed__ =
+  False` stays callable (and `help(fn)` still renders it) but is left
+  out of module listings, `## Tools` included: harness plumbing other
+  programs call, which the model never should (amendment 2026-09-24,
+  BOB-160).
 - **Credentials** (ADR-021 §8.1, 2026-09-14): a module that
   sends a `connector.key.*` / `llm.key.*` ref declares it in a
   module-level `__any_credentials__ = [{"ref", "about"}]`; deploy
@@ -97,9 +103,18 @@ mid-conversation and what the prompt carries (§3) are the same bytes.
 
 - The toolcaller's `## Tools` block: query the program objects
   (`any_tool`, two-tier space merge unchanged), `use()` each, emit
-  `Import:` line + `describe(module)`. Ordering stays
-  oldest-first — output is deterministic given sources, sources
-  change only on deploy, so the cached prompt prefix holds.
+  ONE line per tool: name, import spec, and the module docstring's
+  summary line (amendment 2026-09-24, BOB-160). The methods are
+  help(mod)'s: the model calls it in the cell that imports a tool,
+  before its first call. A module declaring `__any_listing__ =
+  "names"` keeps a section instead — `Import:` line, its whole
+  docstring and its listed method names (no signatures; help on the
+  method gives those). Only a tool used nearly every turn whose
+  help() output would exceed one digest earns it: `any@v1`. Both
+  forms are cut from `describe(module)`, still the one renderer.
+  Ordering stays oldest-first (sections, then the one-line list) —
+  output is deterministic given sources, sources change only on
+  deploy, so the cached prompt prefix holds.
 - **Hard convention, now load-bearing**: program module top level is
   defs + constants ONLY — no effects, no I/O at import time. Compose
   executes every tool module each run; the fuel budget bounds a
@@ -230,7 +245,14 @@ prevent, caused by the one place the renderer couldn't see.
 
 - **Agent-facing tool modules expose a flat function surface.** The
   primary API is public module-level functions — every one of them
-  renders into `## Tools` by §3 with no renderer change. The `setup`
+  renders into `## Tools` by §3 with no renderer change. In `any@v1`
+  the surface is GENERATED (amendment 2026-09-24, BOB-160): each
+  `_Client` method marked `@_public(kind, scoped=True, listed=True)`
+  becomes a module function carrying the method's docstring and
+  signature (`self` dropped, the first parameter renamed `spaceConfig`
+  when scoped), spanned with the parameter-keyed input the hand-written
+  wrappers recorded. One definition per method, the doc on the code;
+  internal `self.` calls stay unspanned. The `setup`
   kind stays legal for genuinely stateful handles (e.g. `memory@v1`),
   but an API meant for the standing prompt must not hide behind one.
 - **`spaceConfig` is the explicit per-call context.** Every
@@ -271,7 +293,11 @@ prevent, caused by the one place the renderer couldn't see.
   `{spaceId, objectId?, view?}`, or `None` when the message carried
   none; rebound when a mid-run message brings a new one, ADR-005 §5)
   and `baoSpaceConfig` (`{spaceId, chatId}` of the agent's home
-  space). "Here"/"this page" resolve against `currentUserSpace` in
+  space), plus `c` = `use("agent:any@v1")` so a copied recipe runs in
+  a first cell. The same prelude marks `(spaceId, chatId)` as the chat
+  the run answers in: `chat_send` there refuses anything but a progress
+  bubble (`agent.done: false`) — the loop posts the reply itself
+  through a private path, and a model-sent final duplicates it. "Here"/"this page" resolve against `currentUserSpace` in
   code the same way the prompt's view line resolves them in prose.
 - **Internals**: connection (base url) and per-space catalog caches
   move to a module-private singleton; `client()` is removed. Callers

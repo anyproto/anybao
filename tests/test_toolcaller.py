@@ -92,6 +92,8 @@ class World:
                 w.chat_posts.append(body)
                 return {"recordIds": ["m1"]}
 
+            _post_reply = chat_send   # the loop's own reply path
+
             def append_turn(self, space, chat, body):
                 w.turns.append(body)
                 return {"seq": len(w.turns) - 1}
@@ -120,8 +122,12 @@ class World:
         class Llm:
             @staticmethod
             def chat(messages, system="", tier="codegen", tools=None):
+                # `system` is the joined text; `system_blocks` the cache blocks
+                blocks = system if isinstance(system, list) else [system]
                 w.llm_calls.append({"messages": [dict(m) for m in messages],
-                                    "system": system, "tier": tier, "tools": tools})
+                                    "system": "\n\n".join(blocks),
+                                    "system_blocks": blocks,
+                                    "tier": tier, "tools": tools})
                 return w.replies.pop(0)
 
             @staticmethod
@@ -234,6 +240,28 @@ def test_cell_turn_spans_digest_and_tool_result():
                    "inTokens": 15, "outTokens": 7,
                    "cacheRead": 0, "cacheWrite": 0}
 
+
+
+def test_full_output_renders_large_values_whole_up_to_the_wider_cap():
+    # BOB-169: the default stub names the opt-in; full_output shows a
+    # value whole up to 8k tokens, and still stubs past that
+    doc = "d" * 9000                       # ~2.3k tokens: over 1k, under 8k
+    huge = "h" * 40000                     # ~10k tokens: over both
+    cell = {"ok": True,
+            "prints": [{"repr": doc, "size": len(doc), "schema": "str"},
+                       {"repr": huge, "size": len(huge), "schema": "str"}],
+            "last": None, "error": None}
+    plain = World([tool_reply(), done_reply("ok")], cells=[dict(cell)])
+    run(plain)
+    stub = plain.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert doc not in stub and "full_output: true" in stub
+    reply = tool_reply()
+    reply["parts"][0]["args"]["full_output"] = True
+    w = World([reply, done_reply("ok")], cells=[dict(cell)])
+    run(w)
+    content = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert f"#0 {doc}" in content
+    assert huge not in content and "over the full_output cap" in content
 
 def test_cell_error_marks_tool_result_is_error():
     cell = {"ok": False, "prints": [], "last": None,
@@ -633,24 +661,22 @@ def test_tool_docs_two_tier_prefixes_and_shadows():
     docs = g["_tool_docs"](TwoSpaces(), "user", "code")
     # shipped-only tool imports through the agent: alias; its body is
     # describe(use(spec)) — rendered from code, not from datasets
-    assert 'Import: `use("agent:shippedOnly@v1")`' in docs
-    assert "described:agent:shippedOnly@v1" in docs
+    assert ('- **shippedOnly** `use("agent:shippedOnly@v1")` — '
+            "described:agent:shippedOnly@v1") in docs
     # the user-space webSearch shadows the shipped one: the DISPLAYED
     # import stays unqualified (cell code resolves it locally), while
     # the render loads space-qualified — compose is overlay module
     # code, whose unqualified use() would miss the working space
     # (ADR-004 §2.4 / ADR-013 §1)
-    assert 'Import: `use("webSearch@v1")`' in docs
-    assert "described:user:webSearch@v1" in docs
+    assert '- **webSearch** `use("webSearch@v1")` — described:user:webSearch@v1' in docs
     assert "agent:webSearch" not in docs
 
 
 def test_tool_docs_degenerate_has_no_prefix():
     g = _helpers()
     docs = g["_tool_docs"](TwoSpaces(), "code", "code")
-    assert 'Import: `use("webSearch@v1")`' in docs
+    assert '`use("webSearch@v1")` — described:code:webSearch@v1' in docs  # loads qualified
     assert "agent:" not in docs
-    assert "described:code:webSearch@v1" in docs  # render loads qualified
 
 
 def test_tool_docs_broken_tool_lists_with_error():
@@ -659,9 +685,25 @@ def test_tool_docs_broken_tool_lists_with_error():
     two = TwoSpaces()
     two.tools["code"].append(("p3", "broken", "v1", {"$date": 3000}, "x"))
     docs = g["_tool_docs"](two, "code", "code")
-    assert "### broken" in docs
-    assert "(unavailable: ValueError: boom)" in docs
-    assert "### webSearch" in docs  # the rest still composed
+    assert "- **broken** `use(\"broken@v1\")` — (unavailable: ValueError: boom)" in docs
+    assert "- **webSearch**" in docs  # the rest still composed
+
+
+def test_tool_listing_is_one_line_unless_the_module_asks_for_names():
+    """ADR-010 §3: a tool rides `## Tools` as its docstring's summary line;
+    `__any_listing__ = "names"` keeps the docstring and lists method names."""
+    g = _helpers()
+    g["describe"] = lambda mod: ("The x client — one line.\n\nMore about x.\n\nMethods:\n"
+                                 "  get(space, id) [getter] — Read one.\n"
+                                 "  put(space, id, v) [mutator] — Write one.")
+    plain = type("M", (), {})()
+    assert g["_tool_listing"](plain) == ("The x client — one line.", None)
+    named = type("M", (), {"__any_listing__": "names"})()
+    summary, section = g["_tool_listing"](named)
+    assert summary == "The x client — one line."
+    assert section.startswith("The x client — one line.\n\nMore about x.")
+    assert section.endswith("signature and doc): get, put")
+    assert "Read one" not in section
 
 
 def test_repo_inventory_lists_readme_first_line():
@@ -705,17 +747,56 @@ def test_runtime_context_degenerate_omits_code_line():
     assert "## Repos" not in w.llm_calls[0]["system"]
 
 
-def test_user_skills_lists_titles_and_ids_not_bodies():
+def test_unwrap_joins_soft_wraps_and_keeps_structure():
+    """BOB-160: a composed skill body is one line per paragraph / list
+    item; code, headings, tables, quotes and item starts keep their lines."""
+    g = _helpers()
+    md = ("# Skill: _x\n\nOne paragraph\nwrapped here.\n\n"
+          "- **Item** one,\n  continued\n  twice.\n- Item two\n  1. nested\n\n"
+          "```python\nc = use(\"a\")\nc.b()\n```\nafter fence\njoined\n\n"
+          "| a | b |\n| - | - |\n> quote\n> more\n## Head\ntext")
+    assert g["_unwrap"](md) == (
+        "# Skill: _x\n\nOne paragraph wrapped here.\n\n"
+        "- **Item** one, continued twice.\n- Item two\n  1. nested\n\n"
+        "```python\nc = use(\"a\")\nc.b()\n```\nafter fence joined\n\n"
+        "| a | b |\n| - | - |\n> quote\n> more\n## Head\ntext")
+
+
+def test_skill_index_lists_names_and_lines_not_bodies_or_ids():
     g = _helpers()
     two = TwoSpaces()
     two.skills["user"].append(("u9", "review-pr", "# step one..."))
-    out = g["_user_skills"](two, "user")
-    assert "## User skills" in out
-    assert "- **review-pr** (`u9`)" in out
+    out = g["_skill_index"](two, "user")
+    assert "## Skills" in out and 'c.get_skill("<name>")' in out
+    assert "- **review-pr**" in out
+    assert "u9" not in out                 # no ids: get_skill resolves by name
     assert "step one" not in out           # body stays out of the prompt
     assert "_core" not in out              # system skills excluded
     # a space with only _-skills injects no section at all
-    assert g["_user_skills"](TwoSpaces(), "user") == ""
+    assert g["_skill_index"](TwoSpaces(), "user") == ""
+
+
+def test_skill_index_merges_tiers_with_get_skill_precedence():
+    """ADR-009 §3: NON-`_` skills of the connectors overlay, the agent
+    overlay and the working space join the index (never the composed
+    band); by name the working space wins, then agent, then connectors."""
+    g = _helpers()
+    two = TwoSpaces()
+    two.skills["conn"] = [("k1", "crm-hygiene", "# Skill: crm-hygiene\n\nKeep the CRM tidy."),
+                          ("k2", "review-pr", "# connectors review")]
+    two.skills["code"] += [
+        ("s3", "gmailSync", "# Skill: gmailSync\n\nSyncing Gmail into a space: "
+                            "backfill, cron. Route by job size.\n\nbody detail"),
+        ("s4", "review-pr", "# Skill: review-pr\n\nShipped review.")]
+    two.skills["user"].append(("u9", "review-pr", "# Skill: review-pr\n\nMy review."))
+    out = g["_skill_index"](two, "user", "code", {"connectors": "conn"})
+    assert "- **gmailSync** — Syncing Gmail into a space: backfill, cron." in out
+    assert "- **crm-hygiene** — Keep the CRM tidy." in out
+    assert "- **review-pr** — My review." in out and "Shipped review" not in out
+    assert "body detail" not in out
+    # the band still composes only `_` skills
+    band = g["_compose_skills"](g["_load_system_skills"](two, "user", "code"))
+    assert "Syncing Gmail" not in band
 
 
 def test_reply_links_auto_attach_and_mentions_stay_text_only():
@@ -1173,3 +1254,73 @@ def test_bad_mock_spec_is_an_error_result_before_any_cell():
     # the span never opened, so no cell ran (the rejected call still
     # counts as a tool result, like a malformed call)
     assert ("begin", "cell") not in w.spans
+
+
+# --- teach on failure (ADR-005 §4) --------------------------------------
+
+def _digest_env():
+    class Any:
+        def attach_file(self, space, object_id, name, data, mime=None):
+            """Attach a file to an object → FileInfo + `uri`."""
+    mod = Any()
+    g = {"use": lambda spec: mod,
+         "describe": lambda fn: f"{fn.__name__}(space, object_id, name, data, mime=None)\n"
+                                f"{fn.__doc__}",
+         **kernel_globals(now=1234)}
+    exec(compile(SRC, "toolcaller@v1.py", "exec"), g)
+    g["_TOOL_SPECS"]["any"] = "agent:any@v1"
+    return g
+
+
+def test_a_failed_tool_call_gets_its_help_once_per_run():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "ValueError", "message": "bad data"}}
+    failed = [{"name": "any.attach_file", "kind": "span", "ok": False}]
+    first = g["render_digest"]("c1", cr, failed)
+    assert "help(any.attach_file) — the contract you just called" in first
+    assert "Attach a file to an object" in first
+    assert "help(any.attach_file)" not in g["render_digest"]("c2", cr, failed)
+
+
+def test_a_signature_error_is_matched_to_the_tool_that_has_the_method():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "TypeError",
+                    "message": "attach_file() got an unexpected keyword argument 'url'"}}
+    assert "help(any.attach_file)" in g["render_digest"]("c1", cr, [])
+
+
+def test_non_contract_errors_teach_nothing():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "TimeoutError", "message": "attach_file() timed out"}}
+    failed = [{"name": "any.attach_file", "kind": "span", "ok": False}]
+    assert "help(" not in g["render_digest"]("c1", cr, failed)
+
+
+def test_system_is_two_cache_blocks_with_what_runs_change_in_the_tail():
+    # a new skill, program, memory category or the view's apps change only
+    # the tail block — the stable block (soul, skills, tool docs) stays cached
+    w = Souled([done_reply("ok")])
+    run(w)
+    blocks = w.llm_calls[0]["system_blocks"]
+    assert len(blocks) == 2
+    stable, tail = blocks
+    assert stable.startswith(SOUL) and "## Runtime context" not in stable
+    assert "## Runtime context" in tail and SOUL not in tail
+
+
+def test_a_message_without_a_view_says_so():
+    w = World([done_reply("ok")])
+    run(w)
+    text = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "no view: currentUserSpace is None" in text
+
+
+def test_an_argument_count_error_is_taught_too():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "TypeError",
+                    "message": "attach_file() too many positional arguments"}}
+    assert "help(any.attach_file)" in g["render_digest"]("c1", cr, [])

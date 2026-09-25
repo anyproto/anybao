@@ -3,7 +3,8 @@
 Status: **Accepted** (2026-08-27); §1–§4 **superseded by ADR-027 §4**
 (2026-09-08): descriptors live in `xFormat` (`choice`, `relation`,
 `date`, …), the marker-xKey bridge, `xKind`, `meta.pos` and the
-archived marker are gone. §5's guidance stands in the skills.
+archived marker are gone. §5's guidance stands in the skills;
+§5 amended 2026-09-24 (no space-context skill — BOB-160).
 Date: 2026-08-26
 Builds on: ADR-006 §6 (xKey normalization at the client boundary),
 ADR-010 §8 (flat `any@v1` surface), ADR-019 (instants)
@@ -232,8 +233,9 @@ on `add_property` so host tests can observe them.
 meta.pos}`; the §2 write table in five lines; "check `format` before
 writing someone else's type"; `any.tags` (free-form labels) vs a
 select; attach/detach for membership; option CRUD; the existing
-datetime-filter trap. `_space_context.md` lists formats and options
-with a space's types so the vocabulary precedes the write.
+datetime-filter trap. The vocabulary precedes the write through
+`list_properties` (amendment 2026-09-24, BOB-160: there is no
+space-context skill).
 `_memory.md` and ADR-007 say "links-format property".
 `docs/helper-style.md` drops "uses `kind` (not `format`)";
 `docs/debugging.md` shows how a resolution reads in a trace.

@@ -1,7 +1,8 @@
 # ADR-005: Loop core
 
 Status: **Accepted** (2026-07-07); §1 amended 2026-08-31 (backends,
-model profiles, traits — BOB-74)
+model profiles, traits — BOB-74); §5 amended 2026-09-24 (skill index —
+BOB-160)
 Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
@@ -163,8 +164,9 @@ trait that gates it — the config selects behavior, it never defines it.
 
 **1.4 Provider adapters.** `anthropic` — native; Thinking
 `provider_state` round-trips byte-exact; `cache_control` breakpoints at
-end of system and end of conversation, set by the adapter with no
-caller hint (the loop's prefix is append-only, so each call writes the
+the end of each system block (a `system` list renders one block per
+text — §5's stable and tail blocks) and at the end of the conversation,
+set by the adapter with no caller hint (the loop's prefix is append-only, so each call writes the
 cache the next one reads). `openai-compat` — one adapter for every
 `/chat/completions` server (OpenAI, OpenRouter, vLLM, llama.cpp,
 SGLang, ollama, Together, DeepSeek, Groq …); an assistant turn that
@@ -324,6 +326,11 @@ Interim assistant text before tool calls surfaces as `done: false`
 progress bubbles (v1 behavior, kept). Errors: `is_error` ToolResult
 with the error digest — the model self-corrects; no fix-loop (settled).
 
+**`run_cell(…, full_output=true)`.** Opt-in wide rendering for the
+cell's digest (§4): each value shows whole up to 8k tokens instead of
+collapsing past the 1k inline budget. It rides the cell span as
+`input.full_output`; nothing else about the cell changes.
+
 ### 3. Ceilings and loop control
 
 - **Ceilings, passed in `args`**: `max_turns`, `max_tokens_total` per
@@ -426,7 +433,12 @@ the cell's span — into the ToolResult content:
   links; full detail via `effects.of(cell_id)`).
 - **Budget-aware inline**: per-value inline budget in TOKENS (policy
   may scale with remaining context), not a fixed char constant. Over
-  budget → stub `[N bytes, schema …, values.get("<cell>", i)]`.
+  budget → stub `[N bytes, schema …, values.get("<cell>", i)]`; the
+  stub names both ways on: walk the stored value, or print it again in
+  a cell with `full_output: true`. A `run_cell(…, full_output=true)`
+  cell renders each value whole up to a wider cap (8k tokens); past
+  that it stubs too. The model opts in for text it means to read
+  whole — a help() page, a skill body, a document.
 - **Orientation summary** (plan §4, all guardrails apply): values over
   the inline budget get a cheap-tier one-paragraph summary rendered
   next to the machine stub — sampled input, describe-only prompt,
@@ -434,25 +446,45 @@ the cell's span — into the ToolResult content:
   batched via one `batch` fan-out over `llm.chat`.
 - **Teaching hints**: the `*_many` nudge (ADR-002) and future hints of
   the same shape — appended to the digest only when triggered.
+- **Teach on failure**: a cell that fails with a contract error
+  (TypeError / ValueError / KeyError / AnyError) on a tool method —
+  a failed `tool.method` span, or a signature TypeError naming a
+  method one listed tool has — gets that method's describe() text
+  appended, once per method per run (capped ~1.5k tokens). The
+  contract arrives at the moment it was broken, without a turn.
 
 ### 5. System prompt & boot window assembly
 
-The stable block [core skills + tool docs + memory categories] is
-composed by `anybao serve` (content shapes are ADR-006's) and handed to
-the program as the `system` arg; the toolcaller appends a **runtime
-context** section (agent space id, chat id, agent name — from its args;
-amendment 2026-07-08: composed guest-side, the host writes no prompt
-wording, and the ids must be stated because the model has no other
-source for them) and passes the result unchanged to every
-`use("llm@v1").chat`; the whole thing is stable per instance, and the
-adapter's system-end cache breakpoint covers it. Stable-block content
-is fingerprinted; the fingerprint is recorded per run (prompt drift is
+The system prompt is two cache blocks, composed guest-side by the
+toolcaller (content shapes are ADR-006's; the host writes no prompt
+wording). The **stable** block is identity + system skills + tool docs;
+the **tail** block is what a run's own actions or surroundings change:
+the skills index, the repo inventory, the memory categories, and the
+**runtime context** (agent space id, chat id, agent name, the apps of
+the agent space and of the user's view, the shell device — the ids
+must be stated because the model has no other source for them). Both
+go as a `system` list to every `use("llm@v1").chat`; each block ends in
+its own cache breakpoint, so a new skill, program or memory category,
+or a view on another space, rewrites only the small tail, never the
+stable prefix. Providers without markers get the blocks joined. The
+joined text is fingerprinted; the fingerprint is recorded per run (prompt drift is
 diagnosable from traces). The rest of the conversation prompt is
 assembled GUEST-SIDE: `history@v1` renders the boot window
 (hierarchical chunks message → raw turn window), `autorecall@v1`
 injects topical hits as a tool result (ADR-007 §5), and the current
 user message (timestamp + view suffix) closes it. The suffix rides the
 llm message only — the persisted turn keeps the raw `userText`.
+
+**System skills in full, the rest by index (amendment 2026-09-24,
+BOB-160).** Only `_`-prefixed skills are composed into the stable
+block. Every other skill, shipped or the user's, rides the `## Skills`
+index as name + one line, and its body is read on demand with
+`any@v1`'s `get_skill(name)` (ADR-009 §3). The index is part of the stable block, so it is
+fingerprinted and byte-stable like the rest. Composed bodies (the
+`_soul` and every `_` skill) are unwrapped: soft-wrapped lines join
+into one line per paragraph or list item, while fenced code, headings,
+tables, quotes and list-item starts keep their lines. Sources stay
+wrapped for review; the prompt spends no tokens on line breaks.
 
 The tier's profile picks the variant (§1.3): `prompt_style: "full"`
 is the block above; `"compact"` is the same skills with the shorter
@@ -471,8 +503,8 @@ unchanged as the `uiContext` arg (a mid-run message rides the mailbox
 inject as `context`). The toolcaller turns it into the
 `[now: … | user's view — space: …, object: …, view: …]` line on THAT
 message and binds it as the `currentUserSpace` cell global (ADR-010
-§8); a message without a view degrades to timestamp-only and binds
-`None`; an inject with a view rebinds the global, so "here" in code and
+§8); a message without a view says so (`[now: … | no view:
+currentUserSpace is None]`) and binds `None`; an inject with a view rebinds the global, so "here" in code and
 in prose always mean the newest message's view. Nothing is read from
 the space and nothing is written to it: there is no pointer object, no
 staleness age, no live re-read — the message IS the record of where
@@ -546,7 +578,8 @@ method list. Two rules govern what the model sees:
 
 **Identity first (amendment 2026-09-07).** The `_soul` `agent_skill`
 object is the identity, not a skill. Its body is the FIRST bytes of the
-system block, verbatim: no heading, no wrapper, nothing before it. It
+system block, verbatim but for joined soft wraps (below): no heading,
+no wrapper, nothing before it. It
 loads two-tier like every `_` skill (ADR-009 §3: the agent overlay
 ships the default; a `_soul` object in the working space shadows it, so
 the user edits their own copy and the next run picks it up, no deploy).

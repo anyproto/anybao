@@ -2,6 +2,7 @@
 exec-ing the module source with a fake `effect` global answering
 http.* (json wire replies) and config.get."""
 
+import inspect
 import json
 from pathlib import Path
 
@@ -1597,7 +1598,7 @@ def test_dataset_field_helpers_are_private_on_the_flat_surface():
 
 def test_flat_functions_lift_method_docstrings():
     g = load(wire())
-    assert "envelope" in g["search"].__doc__       # ONE authored copy, lifted
+    assert "envelope" in g["search"].__doc__       # ONE authored copy, exported
     assert "objectId" in g["create_object"].__doc__
 
 
@@ -1744,7 +1745,7 @@ def test_get_space_trims_sync_internals():
 
 def test_search_types_kwarg_redirects_to_query_objects():
     # A18: the guessed types= kwarg gets the redirect, not a bare TypeError
-    g = load(wire())
+    g = load(wire(config={"any.base_url": "http://any"}))
     with pytest.raises(TypeError, match="any.type"):
         g["search"](SID, "q", types=["task"])
 
@@ -2036,10 +2037,132 @@ def test_setup_app_installs_and_reports_ids():
          "bundle": {"rootId": "r1"}},
         {"usecase": "crm", "id": "system:deal/v1", "installed": True,
          "bundle": {"rootId": "r2"}, "typeId": "r2",
-         "properties": {"stage": "pS", "amount": "pA"}}]}})
+         "properties": {"stage": "pS", "amount": "pA"}}]},
+        "/spaces/s1/types": {"types": [{"id": "r2", "xKey": "deal", "name": "Deal"}]}})
     assert client(fx).setup_app("s1", "crm") == [
         {"usecase": "contacts", "bundleId": "system:contacts/v1", "rootId": "r1",
          "installed": False},
         {"usecase": "crm", "bundleId": "system:deal/v1", "rootId": "r2",
-         "installed": True, "typeId": "r2", "properties": {"stage": "pS", "amount": "pA"}}]
-    assert fx.calls == [("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})]
+         "installed": True, "typeId": "r2", "xKey": "deal",
+         "properties": {"stage": "pS", "amount": "pA"}}]
+    # the install, then one fresh catalog read for the definitions' xKeys
+    assert fx.calls[0] == ("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})
+    assert [p for _, p, _ in fx.calls[1:]] == ["/v1/spaces/s1/types",
+                                               "/v1/spaces/s1/collections"]
+
+
+# --- get_skill: on-demand skill bodies by name (ADR-009 §3) -----------------
+
+def _skill_client(skills, aliases):
+    """A _Client whose skill reads come from `skills` {space: [(id, name,
+    body)]}; `overlays.aliases` served through runtime.get."""
+    c = client(wire(config={"overlays.aliases": aliases}), bao="bao")
+    c.list_types = lambda space: ([{"id": "t", "xKey": "agent_skill"}]
+                                  if space in skills else [])
+    c.query_objects = lambda space, filter=None, **kw: [
+        {"id": i, "any": {"name": n}} for i, n, _ in skills.get(space, [])]
+    c.get_markdown = lambda space, oid: next(b for i, _, b in skills[space] if i == oid)
+    return c
+
+
+def test_get_skill_looks_in_bao_then_agent_then_connectors():
+    c = _skill_client({"bao": [("b1", "review-pr", "# mine"), ("b2", "files", "  \n")],
+                       "ag": [("a1", "review-pr", "# shipped"), ("a2", "files", "# files")],
+                       "cn": [("c1", "files", "# conn files"), ("c2", "crm", "# crm")]},
+                      {"agent": "ag", "connectors": "cn"})
+    assert c.get_skill("review-pr") == "# mine"     # the user's shadows the shipped
+    assert c.get_skill("files") == "# files"        # a blank body never shadows
+    assert c.get_skill("crm") == "# crm"            # connectors last
+
+
+def test_get_skill_unknown_lists_the_known_ones():
+    c = _skill_client({"ag": [("a1", "files", "# f"), ("a0", "_core", "# c")],
+                       "cn": [("c2", "crm", "# crm")]}, {"agent": "ag", "connectors": "cn"})
+    with pytest.raises(LookupError, match=r"no skill named 'mail'; known: crm, files"):
+        c.get_skill("mail")
+
+
+def test_get_skill_without_overlays_reads_the_bao_space():
+    c = _skill_client({"bao": [("b1", "notes", "# n")]}, {})
+    assert c.get_skill("notes") == "# n"
+
+
+def test_get_skill_is_on_the_flat_surface_unscoped():
+    g = load(wire())
+    assert "get_skill" in g and g["get_skill"].__any_listed__
+    assert str(inspect.signature(g["get_skill"])) == "(name)"
+
+
+def _creating_client(existing=(), with_type=True):
+    c = _skill_client({"bao": list(existing)} if with_type else {}, {})
+    c.created_types, c.created = [], []
+    c.create_type = lambda space, body: c.created_types.append((space, body)) or {}
+    c.create_object = lambda space, body, *a, **kw: c.created.append((space, body)) or {
+        "objectId": "new1"}
+    return c
+
+
+def test_create_skill_saves_in_the_bao_space_with_its_line():
+    c = _creating_client()
+    assert c.create_skill("review-pr", "# Skill: review-pr\n\nSteps.", "When a PR needs review.") \
+        == {"objectId": "new1"}
+    (space, body), = c.created
+    assert space == "bao" and body["type"] == "agent_skill"
+    assert body["markdown"].startswith("# Skill")
+    assert body["initialProperties"] == {"any": {"name": "review-pr",
+                                                 "description": "When a PR needs review."},
+                                         "agent_skill": {"name": "review-pr"}}
+    assert c.created_types == []                     # the type exists: not re-minted
+
+
+def test_create_skill_mints_the_type_deploy_mints_when_missing():
+    c = _creating_client(with_type=False)
+    c.create_skill("plan-week", "steps")
+    (space, body), = c.created_types
+    assert space == "bao" and body["xKey"] == "agent_skill"
+    assert body["properties"] == [{"name": "Name", "xKey": "name", "kind": "string"}]
+
+
+def test_create_skill_refuses_system_names_and_duplicates():
+    c = _creating_client(existing=[("b1", "review-pr", "# mine")])
+    with pytest.raises(ValueError, match="leading '_'"):
+        c.create_skill("_core", "x")
+    with pytest.raises(ValueError, match="already have a skill named 'review-pr'"):
+        c.create_skill("review-pr", "x")
+    assert c.created == []
+
+
+# --- chat_send guard: the chat the loop answers in -------------------------
+
+def test_chat_send_refuses_a_final_post_into_the_answering_chat():
+    # the loop posts the reply itself; a model chat_send there duplicates it
+    fx = wire(replies={"/chat/messages": {"recordIds": ["m1"]}},
+              config={"any.base_url": "http://any", "bao.space": None})
+    g = load(fx)
+    g["_answering_in"]("s1", "chat1")
+    c = g["_Client"]("http://any", None)
+    with pytest.raises(ValueError, match="the chat you are answering in"):
+        c.chat_send("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
+    with pytest.raises(ValueError):
+        c.chat_send("s1", "chat1", {"text": "Hi."})
+    # progress bubbles and other chats go through; so does the loop's own path
+    c.chat_send("s1", "chat1", {"text": "working…", "agent": {"name": "bao", "done": False}})
+    c.chat_send("s2", "chat9", {"text": "Watering at 6", "agent": {"name": "bao", "done": True}})
+    g["_post_reply"]("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
+    assert [p for _, p, _ in fx.calls].count("/v1/spaces/s1/objects/chat1/chat/messages") == 2
+
+
+def test_list_datasets_is_the_model_facing_store_listing():
+    fx = wire(replies={
+        "/spaces/s1/types": {"types": [{"id": "tM", "xKey": "mailbox", "name": "Mailbox"}]},
+        "/types/tM/datasets": {"datasets": [{
+            "id": "d1", "key": "email_messages", "collection": "tM_email_messages",
+            "partId": "p1", "displayName": "Email", "idRule": "user",
+            "search": {"text": "body", "scope": "email"},
+            "fields": [{"id": "f1", "key": "subject", "kind": "string", "scope": "synced"},
+                       {"id": "f2", "key": "internalDate", "kind": "number"}]}]}})
+    rows = client(fx).list_datasets("s1", "mailbox")
+    assert rows == [{"key": "email_messages", "idRule": "user", "displayName": "Email",
+                     "searchScope": "email",
+                     "fields": [{"key": "subject", "kind": "string"},
+                                {"key": "internalDate", "kind": "number"}]}]

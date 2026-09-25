@@ -1,6 +1,7 @@
 # ADR-027: any parts, modules and the usecase catalog — stores as parts, the chat from the catalog, bodies on `page`, descriptors in `xFormat`
 
-Status: **Accepted** (2026-09-08)
+Status: **Accepted** (2026-09-08), amended 2026-09-24 (§5 apps rule
+lives in `_any`; no space-context skill — BOB-160)
 Date: 2026-09-08
 Builds on: ADR-006 §0/§6, ADR-010 §5/§8, ADR-011 §4, ADR-013 §1,
 ADR-016 §1/§4, ADR-017 §0/§1/§4, ADR-018 §2, ADR-019 §4, ADR-022
@@ -278,7 +279,7 @@ nothing — it is left as it is (clean cut), the user re-creates it.
   runtime context carries one line per installed app — name, usecase
   id, description — for the agent space and for `currentUserSpace`
   when set, capped at fifteen; beyond that the model calls
-  `list_apps`. `_space_context` gains the rule "apps are data: read
+  `list_apps`. `_any` carries the rule "apps are data: read
   `list_apps`, never assume a wiki or contacts exists". Descriptions
   on bundle roots are an upstream ask (the plan § 2.9): until the
   catalog stamps `any.description`, the join above is the source.
@@ -307,7 +308,7 @@ nothing — it is left as it is (clean cut), the user re-creates it.
 chat found only through `general_chat`; bodies need `page` (handled by
 `create_object`); `parent=` for the tree; the §4 write table; apps via
 `list_apps`. `_core.md`, `_memory.md`, `_gmailSync.md`: dataset keys
-unchanged in spelling (§2). `_space_context.md`: the apps rule.
+unchanged in spelling (§2).
 `docs/debugging.md`, `docs/testing-agent-changes.md`,
 the local `docs/environments.md`, `docs/api-parity.md` § C5,
 `repos/CLAUDE.md`, `CLAUDE.md`: the catalog step, the rig, the new

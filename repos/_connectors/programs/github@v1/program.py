@@ -489,15 +489,15 @@ def list_commits(owner, repo, sha=None, path=None, since=None, per_page=None):
 
 @span("github.list_repos", kind="getter")  # noqa: F821 - guest global
 def list_repos(affiliation=None, sort=None, direction=None, per_page=None):
-    """Repos the user owns / collaborates on. `sort`: pushed (default)
-    | created | updated | full_name; `direction`: desc (default) |
-    asc; `affiliation`: comma-set of
+    """Repos the user owns / collaborates on.
+
+    `sort`: pushed (default) | created | updated | full_name; `direction`: desc
+    (default) | asc; `affiliation`: comma-set of
     owner|collaborator|organization_member (default all three).
 
     Returns `{ok, items: [{full_name, private, fork, archived,
     description, default_branch, language, stargazers_count,
-    open_issues_count, created_at, pushed_at, html_url}]}`.
-    """
+    open_issues_count, created_at, pushed_at, html_url}]}`."""
     per_page = _clamp(per_page, 30, 100)
     res = _paged("/user/repos", {
         "sort": sort or "pushed", "direction": direction or "desc",
@@ -561,8 +561,9 @@ def request(method, path, params=None, body=None):
 
 @span("github.get_readme", kind="getter")  # noqa: F821 - guest global
 def get_readme(owner, repo):
-    """A repository's README → `{ok, path, text}` (text decoded,
-    trimmed to 8000 chars — NOT the raw API's base64 `content`)."""
+    """A repository's README → {ok, path, text} (text decoded, trimmed to 8000 chars).
+
+    The text is decoded, NOT the raw API's base64 `content`."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     resp = _fetch(f"/repos/{owner}/{repo}/readme")
@@ -577,9 +578,11 @@ def get_readme(owner, repo):
 
 @span("github.get_contents", kind="getter")  # noqa: F821 - guest global
 def get_contents(owner, repo, path):
-    """A file → `{ok, kind: "file", path, text}` (text decoded, trimmed
-    to 8000 chars — NOT the raw API's base64 `content`) or a directory
-    → `{ok, kind: "dir", entries: [{name, path, type}]}`."""
+    """A file → {ok, kind: "file", path, text}, or a directory → its entries.
+
+    Returns `{ok, kind: "file", path, text}` (text decoded, trimmed to 8000
+    chars — NOT the raw API's base64 `content`) or a directory → `{ok, kind:
+    "dir", entries: [{name, path, type}]}`."""
     if not owner or not repo:
         return {"ok": False, "error": "owner and repo are required"}
     if path is None:

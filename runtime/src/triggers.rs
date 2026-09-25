@@ -346,10 +346,28 @@ pub fn event_space<'a>(t: &'a Trigger, home: &'a str) -> &'a str {
         .unwrap_or(home)
 }
 
+/// The spec keys each kind reads. Anything else is refused, never
+/// ignored: a `tz` beside a `cron` would otherwise fire at the UTC hour
+/// while its author believes it local.
+fn spec_keys(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "cron" => &["cron", "every_s"],
+        "once" => &["at"],
+        "event" => &["dataset", "objectId", "spaceId", "filter"],
+        _ => &[],
+    }
+}
+
 /// The definition can never arm: a cron whose spec yields no next
 /// occurrence, a `once` without a numeric `at`, an event without a
-/// `(dataset, objectId)` source.
+/// `(dataset, objectId)` source, or a spec key the kind doesn't read.
 pub fn spec_invalid(sched: &Scheduler, t: &Trigger) -> bool {
+    let known = spec_keys(&t.kind);
+    if let Some(obj) = t.spec.as_object() {
+        if !known.is_empty() && obj.keys().any(|k| !known.contains(&k.as_str())) {
+            return true;
+        }
+    }
     match t.kind.as_str() {
         "cron" => sched.compute_next_due(t).is_none(),
         "once" => t.spec.get("at").and_then(|v| v.as_f64()).is_none(),
@@ -1285,6 +1303,15 @@ mod tests {
         event.spec = json!({"dataset": "objects", "objectId": "o1"});
         assert!(!spec_invalid(&sched, &event)); // well-formed, merely undeliverable
         assert_eq!(event_source(&event), Some(("objects", "o1")));
+        // a key the kind doesn't read is refused, never ignored: a tz
+        // beside a cron would fire at the UTC hour its author thinks local
+        let mut tz = ok.clone();
+        tz.spec = json!({"cron": "0 8 * * *", "tz": 7200});
+        assert!(spec_invalid(&sched, &tz));
+        once.spec = json!({"at": 1500.0, "every_s": 60.0});
+        assert!(spec_invalid(&sched, &once));
+        event.spec = json!({"dataset": "chat_messages", "objectId": "c", "spaceId": "s"});
+        assert!(!spec_invalid(&sched, &event));
     }
 
     #[test]

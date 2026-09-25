@@ -1,9 +1,6 @@
 """Author and manage applets — bao-written, embeddable HTML/JS apps.
 
-An applet is NOT one of the server's apps (the wiki, collections, the
-chat: catalog installs a space lists in its sidebar, `list_apps`) — it
-is a page-sized program bao writes for the user. One applet = one
-`applet` object addressed by NAME (lowercase, no
+One applet = one `applet` object addressed by NAME (lowercase, no
 spaces, e.g. "coin-flipper"); `source` (full HTML), persisted `state`
 (JSON), and `readme` live as separate fields, so state updates never
 rewrite source. Prefer `edit()` for small changes and
@@ -336,6 +333,7 @@ def list(space):  # noqa: A001 - the tool surface name (ADR-008 §6)
 @span(kind="mutator")  # noqa: F821 - guest global
 def set_state(space, name, state):
     """Overwrite the persisted state (what useAnytypeState reads).
+
     `None` clears it; anything else is JSONified."""
     c = _client()
     oid = _find(c, space, name)

@@ -137,11 +137,11 @@ def _page_all(path, base_params, row_keys, cursor, limit, max_items):
 @span("granola.verify", kind="getter")  # noqa: F821 - guest global
 def verify():
     """Connectivity check + key validator (pulls a 1-item note page).
+
     Use right after seeding a key.
 
     Returns `{ok, connected: true}` or `{ok: false, error}`. Use right
-    after a key is seeded.
-    """
+    after a key is seeded."""
     r = _get("/notes", {"limit": 1})
     if not r["ok"]:
         return r
