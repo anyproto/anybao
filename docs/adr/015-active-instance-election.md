@@ -13,7 +13,10 @@ BOB-111), amended 2026-09-16 (§5: the log speaks only on a change of
 chat ownership — the once-a-minute repeat is gone; the role is
 visible in the UI and on `GET /status`, BOB-143 follow-up; §5: the
 guest's `list_devices` rows carry `self`/`active`/`bao` flags and the
-`_any` skill says where the user switches, BOB-117)
+`_any` skill says where the user switches, BOB-117), amended 2026-09-25
+(§5: a switch can be made from any device — `activate` names the
+target and the claim lands on the claimer's own row, so `active` is
+the device the winning claim names, not the row holding it; SYN-273)
 Date: 2026-08-17
 Builds on: ADR-006 §4 (triggers: single-owner, missed-occurrence
 rule), ADR-009 §6 (serve/lib surface), ADR-009 §8 (snapshot backlog —
@@ -189,15 +192,17 @@ and on a pruned device, which runs no election thread.
 
 Guest: `any@v1.list_devices()` (getter, public) is the registry read
 — `{self, active, devices}` — with each device row flagged `self`
-(the device this run executes on), `active` (holds the bao claim)
-and `bao` (has run bao), so bao can tell the user which device
-answers right now, which others exist and where to switch (Settings
-▸ Agent ▸ Devices ▸ "Use this device", on the device they want) —
+(the device this run executes on), `active` (the device the winning
+bao claim names) and `bao` (has run bao), so bao can tell the user
+which device answers right now, which others exist and where to
+switch (Settings ▸ Agent ▸ Devices: "Use this device" where they are,
+or "Use <name>" for another device that runs bao) —
 the `_any` skill carries that guidance, including the ≤ one-poll
 hand-off window a quick switch-back can expose (BOB-143).
 Read-only by design: the rule stays server-side (§2) and a switch is
-the user activating on the device they want (§4 cadence); no guest
-`activate` exists, the election claims only for its own process (§3).
+the user activating from a UI, for the device they are at or for
+another one (§4 cadence); no guest `activate` exists, the election
+claims only for its own process (§3).
 
 ## Consequences
 
