@@ -2526,10 +2526,42 @@ class _Client:
             return
         self._collections_ready.add(space)
 
-    def list_datasets(self, space, type_key):
+    def _list_dataset_defs(self, space, type_key):
         tid = self._resolve_type_or_raise(space, type_key)
         self._ds_invalidate(space, type_id=tid)   # a listing reads fresh
         return list(self._datasets_of(space, tid))
+
+    @_public('getter')
+    def list_datasets(self, space, type_or_object):
+        """The record stores an object carries → [{key, fields, …}].
+
+        `type_or_object` is a type xKey ("mailbox") or an object id — then
+        its type is used. Each row: {key, displayName?, idRule, fields:
+        [{key, kind}], searchScope?} — `key` is what query /
+        upsert_record / delete_records take, `fields` the record keys
+        (plain, never xKey-nested), `searchScope` where c.search finds
+        them. Records are not objects: read them with
+        `query(space, object_id, key, filter=…)`."""
+        try:
+            tid = self._resolve_type_or_raise(space, type_or_object)
+        except (ValueError, AnyError):
+            tid = self._owners_of_object(space, type_or_object).get("type")
+            if not tid or not isinstance(tid, str):
+                raise
+        self._ds_invalidate(space, type_id=tid)
+        out = []
+        for d in self._datasets_of(space, tid):
+            row = {"key": d.get("key"), "idRule": d.get("idRule"),
+                   "fields": [{"key": f.get("key"), "kind": f.get("kind")}
+                              for f in d.get("fields") or [] if isinstance(f, dict)]}
+            if d.get("displayName"):
+                row["displayName"] = d["displayName"]
+            if d.get("module"):
+                row["module"] = d["module"]
+            if (d.get("search") or {}).get("scope"):
+                row["searchScope"] = d["search"]["scope"]
+            out.append(row)
+        return out
 
     def create_dataset(self, space, type_key, draft):
         tid = self._resolve_type_or_raise(space, type_key)
@@ -2544,7 +2576,7 @@ class _Client:
                 raise ValueError("create_dataset: a module dataset is shared "
                                  "(the module's canonical collection)")
             canonical = "editor_blocks" if draft["module"] == "editor" else "chat_messages"
-            for d in self.list_datasets(space, type_key):
+            for d in self._list_dataset_defs(space, type_key):
                 if d.get("collection") == canonical:
                     return {"datasetDefId": d.get("id"), "collection": canonical,
                             "created": False}
@@ -2561,7 +2593,7 @@ class _Client:
             raise ValueError("create_dataset: the draft needs a \"key\" (the store key)")
         # ADR-019 §4: this run's queries guard the draft's dates
         self._dataset_time_keys.setdefault(key, set()).update(_datetime_keys(draft))
-        for d in self.list_datasets(space, type_key):
+        for d in self._list_dataset_defs(space, type_key):
             if d.get("key") == key:
                 out = {"datasetDefId": d.get("id"),
                        "collection": d.get("collection"), "created": False}
@@ -3890,7 +3922,7 @@ def _list_datasets(spaceConfig, type_key):
     never composed; `key` is what query/upsert take. `invalid`
     marks a declaration that never registers or accepts data —
     remove it (remove_dataset) and re-declare."""
-    return _c().list_datasets(_space(spaceConfig), type_key)
+    return _c()._list_dataset_defs(_space(spaceConfig), type_key)
 
 
 def _create_dataset(spaceConfig, type_key, draft):

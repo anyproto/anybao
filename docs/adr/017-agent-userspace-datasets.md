@@ -193,7 +193,12 @@ plumbing, never in the chat agent's inventory): `_list_datasets`,
 `{fieldDefId}` / `_remove_dataset_field(space, type_key,
 dataset_def_id, field_def_id)` — one field in or out of an existing
 definition (§1), keeping the declaration's pinned behaviour where
-remove + re-declare would drop it. Records stay public (`query`,
+remove + re-declare would drop it. The READ of declarations is public
+in a trimmed, model-facing shape: `list_datasets(space,
+type_or_object)` → `[{key, displayName?, idRule, fields: [{key,
+kind}], searchScope?, module?}]` (an object id resolves to its type),
+so the agent can discover a store it has no recipe for; `_list_datasets`
+keeps the full definitions for programs. Records stay public (`query`,
 `upsert_records`, `delete_records`).
 
 Memory verbs, over the generic surface: `bao_space()` (the runtime-wired

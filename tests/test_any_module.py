@@ -2150,3 +2150,19 @@ def test_chat_send_refuses_a_final_post_into_the_answering_chat():
     c.chat_send("s2", "chat9", {"text": "Watering at 6", "agent": {"name": "bao", "done": True}})
     g["_post_reply"]("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
     assert [p for _, p, _ in fx.calls].count("/v1/spaces/s1/objects/chat1/chat/messages") == 2
+
+
+def test_list_datasets_is_the_model_facing_store_listing():
+    fx = wire(replies={
+        "/spaces/s1/types": {"types": [{"id": "tM", "xKey": "mailbox", "name": "Mailbox"}]},
+        "/types/tM/datasets": {"datasets": [{
+            "id": "d1", "key": "email_messages", "collection": "tM_email_messages",
+            "partId": "p1", "displayName": "Email", "idRule": "user",
+            "search": {"text": "body", "scope": "email"},
+            "fields": [{"id": "f1", "key": "subject", "kind": "string", "scope": "synced"},
+                       {"id": "f2", "key": "internalDate", "kind": "number"}]}]}})
+    rows = client(fx).list_datasets("s1", "mailbox")
+    assert rows == [{"key": "email_messages", "idRule": "user", "displayName": "Email",
+                     "searchScope": "email",
+                     "fields": [{"key": "subject", "kind": "string"},
+                                {"key": "internalDate", "kind": "number"}]}]

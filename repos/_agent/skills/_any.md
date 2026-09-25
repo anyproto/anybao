@@ -54,6 +54,12 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   searches everything: pages, chat, properties, memory, synced mail
   (reading mail: `c.get_skill("gmailSync")`). Hits are records:
   iterate `r["hits"]` and dedup on objectId.
+- **Records are not objects.** Mail, chat messages, memory, triggers
+  are records in an object's datasets. c.list_datasets(space,
+  type_or_object) names the stores and their fields; read with
+  `c.query(space, object_id, key, filter=…)`, never query_objects. A
+  search hit's recordId resolves the same way (`filter={"id":
+  {"$in": [...]}}`).
 
 **Apps**: the server's apps are a space's catalog installs (wiki,
 chat, contacts, CRM…): c.list_apps(space) before assuming one exists.
