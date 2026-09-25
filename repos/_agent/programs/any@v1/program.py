@@ -1788,7 +1788,9 @@ class _Client:
         `{"any.type": "<type xKey>"}` (the object's ONE type; `$in` for several)
         and `{"any.collections": "<collection xKey>"}` (membership; `$in` /
         `$nin` / `$all` — `{"$nin": ["bin"]}` excludes trashed objects),
-        resolved to the server's id paths; an UNKNOWN type, collection or
+        resolved to the server's id paths. A choice filter value is the
+        option's NAME or key (`{"task.status": "Done"}`); a value that is
+        neither errors with the options. An UNKNOWN type, collection or
         property key errors with the catalog (a typo'd key would otherwise
         silently match nothing) — the builtin group (`any.*`) included;
         "any.types" is an error. A definition's own row never matches its
@@ -2763,8 +2765,9 @@ class _Client:
         `option` is an existing key or name (matched like writes do), or a NEW
         name — then the key is minted (slug, uniquified) with `color` (one of
         grey yellow orange red pink purple blue ice teal green; default picked)
-        and appended `pos`. Rename with `name=`, recolor with `color=`. Returns
-        {"key", "name", "color", "created"}."""
+        and appended `pos`. Rename with `name=`, recolor with `color=`. Colors
+        need not be unique across options. Returns {"key", "name", "color",
+        "created"}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         pid = self._resolve_prop_or_raise(space, tid, prop_key)
         pdef = self._prop_def(space, tid, pid) or {}

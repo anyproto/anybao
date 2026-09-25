@@ -108,10 +108,14 @@ principle holds).
   result drops `main()`/the module docstring (bobrik's self-heal,
   as a refusal instead of silent stub injection).
 - `delete_program(space, spec)`.
+- `read_program(space, spec)` → `{spec, objectId, source}` — the
+  source record, for a working-space program or an alias-qualified
+  shipped one (`agent:remind@v1`). help() shows only docstrings; the
+  model needs the code to edit a program or reuse a query it proved.
 
-Read side stays where it is (`list_programs`, `use()`, `help()` —
-ADR-010); no duplicate surface. Source is guest Python; the docs ARE
-the docstrings — bobrik's separate markdown side-channel does not
+Read side: `list_programs`, `use()`, `help()` (ADR-010) for the
+contract, `read_program` for the source itself. Source is guest
+Python; the docs ARE the docstrings — bobrik's separate markdown side-channel does not
 return.
 
 ### 3. Write-time validation — deploy parity, guest-implemented

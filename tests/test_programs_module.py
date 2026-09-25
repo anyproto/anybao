@@ -293,6 +293,20 @@ def test_edit_applies_and_is_live():
     assert app.use(f"{SID}:job@v1").main(None) == {"n": 3}
 
 
+
+def test_read_program_returns_the_source_of_yours_and_shipped_ones():
+    fake = FakeAny(spaces=(SID, OVL))
+    fake.seed(OVL, "remind", "v1", code=PLAIN)
+    app, p = kernel(fake, overlays={"agent": OVL})
+    p.create_program(SID, {"name": "job", "source": PLAIN})
+    mine = p.read_program(SID, "job@v1")
+    assert mine["spec"] == "job@v1" and mine["source"] == PLAIN
+    assert p.read_program(None, "agent:remind@v1")["source"] == PLAIN
+    with pytest.raises(ValueError, match="not found in this space"):
+        p.read_program(SID, "nope@v1")
+    with pytest.raises(ValueError, match="no repo alias 'x'"):
+        p.read_program(SID, "x:job@v1")
+
 def test_edit_replace_all_and_ambiguity():
     src = '"""Doc."""\n\nA = "zig"\nB = "zig"\n\n\ndef main(args):\n    return A + B\n'
     fake = FakeAny()

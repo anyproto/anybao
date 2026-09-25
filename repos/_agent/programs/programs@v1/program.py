@@ -337,7 +337,7 @@ def _apply_edits(spec, code, edits):
         if n == 0:
             raise ValueError(
                 f"edit [{i}]: oldText not found in {spec} — nothing was "
-                "applied (all-or-nothing); re-read the source and retry")
+                "applied (all-or-nothing); read_program() the current source and retry")
         if n > 1 and not e.get("replaceAll"):
             raise ValueError(
                 f"edit [{i}]: oldText matches {n} places in {spec} — add "
@@ -404,6 +404,33 @@ def create_program(spaceConfig, body):
                                           "summary": summary}},
     })["objectId"]
     return _write_and_probe(sid, oid, spec, body["source"], summary)
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def read_program(spaceConfig, spec):
+    """A program's source → {spec, objectId, source}.
+
+    `spec` is "name@vN" for a program in `spaceConfig` (yours: pass
+    baoSpaceConfig), or alias-qualified ("agent:remind@v1",
+    "connectors:gmail@v1") for a shipped one — spaceConfig is then
+    ignored. Read before edit_program, or to reuse a filter or query a
+    program already proved. help(mod) shows only the docstrings."""
+    alias, _, bare = spec.rpartition(":") if isinstance(spec, str) else ("", "", spec)
+    name, version = _parse_spec(bare)
+    if alias:
+        sid = _overlay_aliases().get(alias)
+        if not sid:
+            raise ValueError(f"{spec}: no repo alias {alias!r} — known: "
+                             f"{sorted(_overlay_aliases())}")
+    else:
+        sid = _space_id(spaceConfig)
+    oid = _find(sid, name, version)
+    if not oid:
+        raise ValueError(f"{spec} not found" + ("" if alias else " in this space"))
+    recs = _any().query(sid, oid, "program_source")
+    if not recs:
+        raise ValueError(f"{spec} has no source record")
+    return {"spec": spec, "objectId": oid, "source": recs[0].get("code") or ""}
 
 
 @span(kind="mutator")  # noqa: F821 - guest global
