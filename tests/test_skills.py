@@ -37,7 +37,7 @@ def test_soul_is_the_only_identity_and_carries_no_heading():
             f"{name} carries a second identity"
     core = skills["_core"]
     assert "## Conduct" in core
-    for rule in ("list it and ask", "wait for a yes", "Resolve first"):
+    for rule in ("list them and ask", "wait for a yes", "Resolve first"):
         assert rule in core
     assert "Conduct" not in soul
 
