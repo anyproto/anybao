@@ -3117,7 +3117,18 @@ class _Client:
         limit=n)` (agent_turns is the agentlog, not the conversation). A typed
         `any://` link in `text` or in an attachment whose space segment is a
         NAME or missing ships as written and is reported under `warnings` (and
-        printed) — the chip/download it renders is dead until the text is fixed."""
+        printed) — the chip/download it renders is dead until the text is fixed.
+        The chat you are answering in takes progress bubbles only (`agent.done:
+        false`): your reply is posted there for you."""
+        if (space, chat_id) == _ANSWERING and not (
+                isinstance(body, dict) and (body.get("agent") or {}).get("done") is False):
+            raise ValueError(
+                "that is the chat you are answering in: your reply lands there by "
+                "itself — just answer. chat_send is for other chats (only progress "
+                "bubbles, agent.done=false, go here)")
+        return self._post_message(space, chat_id, body)
+
+    def _post_message(self, space, chat_id, body):
         r = self._call("post",
                        f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)
         if isinstance(body, dict):
@@ -3808,6 +3819,20 @@ def _urlquote(s):
 # no mock interception of a facade's own queries).
 
 _instance = None
+# (space id, chat id) of the chat the running toolcaller answers in — set
+# by its cell prelude; chat_send refuses a final post there (the loop
+# posts the reply itself, a second one duplicates it)
+_ANSWERING = None
+
+
+def _answering_in(space, chat_id):
+    global _ANSWERING
+    _ANSWERING = (space, chat_id)
+
+
+def _post_reply(space, chat_id, body):
+    """The loop's own reply post: the one sender the guard lets through."""
+    return _c()._post_message(space, chat_id, body)
 
 
 def _c():

@@ -247,6 +247,9 @@ def _context_suffix(ctx):
         line += (f" | user's view — space: {ctx['spaceId']}"
                  + (f", object: {ctx['objectId']}" if ctx.get("objectId") else "")
                  + (f", view: {ctx['view']}" if ctx.get("view") else ""))
+    else:
+        # said, not left to be discovered by a failing call
+        line += " | no view: currentUserSpace is None"
     return line + "]"
 
 
@@ -432,7 +435,8 @@ TEACH_TOKEN_CAP = 1500
 # contract errors — a network failure or a timeout teaches nothing
 _TEACH_ON = ("TypeError", "ValueError", "KeyError", "AnyError")
 _SIG_ERROR = re.compile(r"\b([a-z_][a-z0-9_]*)\(\) (?:got an unexpected|got multiple|"
-                        r"missing \d+ required|takes \d+|missing a required)")
+                        r"missing \d+ required|takes \d+|missing a required|"
+                        r"too many positional)")
 
 
 def _failed_methods(cr, entries):
@@ -1159,7 +1163,9 @@ def main(args):
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
     ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"
-                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}")
+                f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}\n"
+                'c = use("agent:any@v1")\n'
+                f"c._answering_in({space!r}, {chat_id!r})")
     if plan["messages"]:
         # the auto-recall injection is framed as a run_cell that bound
         # `rec` (kernel state persists across cells) — make that true,
@@ -1180,7 +1186,7 @@ def main(args):
             atts = _auto_attachments(text)
             if atts:
                 body["attachments"] = atts
-            c.chat_send(space, chat_id, body)
+            c._post_reply(space, chat_id, body)
 
     stats = {"inTokens": 0, "outTokens": 0,
              "cacheRead": 0, "cacheWrite": 0, "cells": 0}

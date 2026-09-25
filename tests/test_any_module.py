@@ -2130,3 +2130,23 @@ def test_create_skill_refuses_system_names_and_duplicates():
     with pytest.raises(ValueError, match="already have a skill named 'review-pr'"):
         c.create_skill("review-pr", "x")
     assert c.created == []
+
+
+# --- chat_send guard: the chat the loop answers in -------------------------
+
+def test_chat_send_refuses_a_final_post_into_the_answering_chat():
+    # the loop posts the reply itself; a model chat_send there duplicates it
+    fx = wire(replies={"/chat/messages": {"recordIds": ["m1"]}},
+              config={"any.base_url": "http://any", "bao.space": None})
+    g = load(fx)
+    g["_answering_in"]("s1", "chat1")
+    c = g["_Client"]("http://any", None)
+    with pytest.raises(ValueError, match="the chat you are answering in"):
+        c.chat_send("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
+    with pytest.raises(ValueError):
+        c.chat_send("s1", "chat1", {"text": "Hi."})
+    # progress bubbles and other chats go through; so does the loop's own path
+    c.chat_send("s1", "chat1", {"text": "working…", "agent": {"name": "bao", "done": False}})
+    c.chat_send("s2", "chat9", {"text": "Watering at 6", "agent": {"name": "bao", "done": True}})
+    g["_post_reply"]("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
+    assert [p for _, p, _ in fx.calls].count("/v1/spaces/s1/objects/chat1/chat/messages") == 2

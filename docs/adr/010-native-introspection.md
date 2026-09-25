@@ -293,7 +293,11 @@ prevent, caused by the one place the renderer couldn't see.
   `{spaceId, objectId?, view?}`, or `None` when the message carried
   none; rebound when a mid-run message brings a new one, ADR-005 §5)
   and `baoSpaceConfig` (`{spaceId, chatId}` of the agent's home
-  space). "Here"/"this page" resolve against `currentUserSpace` in
+  space), plus `c` = `use("agent:any@v1")` so a copied recipe runs in
+  a first cell. The same prelude marks `(spaceId, chatId)` as the chat
+  the run answers in: `chat_send` there refuses anything but a progress
+  bubble (`agent.done: false`) — the loop posts the reply itself
+  through a private path, and a model-sent final duplicates it. "Here"/"this page" resolve against `currentUserSpace` in
   code the same way the prompt's view line resolves them in prose.
 - **Internals**: connection (base url) and per-space catalog caches
   move to a module-private singleton; `client()` is removed. Callers

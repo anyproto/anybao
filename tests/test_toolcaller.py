@@ -92,6 +92,8 @@ class World:
                 w.chat_posts.append(body)
                 return {"recordIds": ["m1"]}
 
+            _post_reply = chat_send   # the loop's own reply path
+
             def append_turn(self, space, chat, body):
                 w.turns.append(body)
                 return {"seq": len(w.turns) - 1}
@@ -1307,3 +1309,18 @@ def test_system_is_two_cache_blocks_with_what_runs_change_in_the_tail():
     stable, tail = blocks
     assert stable.startswith(SOUL) and "## Runtime context" not in stable
     assert "## Runtime context" in tail and SOUL not in tail
+
+
+def test_a_message_without_a_view_says_so():
+    w = World([done_reply("ok")])
+    run(w)
+    text = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "no view: currentUserSpace is None" in text
+
+
+def test_an_argument_count_error_is_taught_too():
+    g = _digest_env()
+    cr = {"ok": False, "prints": [], "last": None,
+          "error": {"type": "TypeError",
+                    "message": "attach_file() too many positional arguments"}}
+    assert "help(any.attach_file)" in g["render_digest"]("c1", cr, [])

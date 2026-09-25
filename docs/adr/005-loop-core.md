@@ -503,8 +503,8 @@ unchanged as the `uiContext` arg (a mid-run message rides the mailbox
 inject as `context`). The toolcaller turns it into the
 `[now: … | user's view — space: …, object: …, view: …]` line on THAT
 message and binds it as the `currentUserSpace` cell global (ADR-010
-§8); a message without a view degrades to timestamp-only and binds
-`None`; an inject with a view rebinds the global, so "here" in code and
+§8); a message without a view says so (`[now: … | no view:
+currentUserSpace is None]`) and binds `None`; an inject with a view rebinds the global, so "here" in code and
 in prose always mean the newest message's view. Nothing is read from
 the space and nothing is written to it: there is no pointer object, no
 staleness age, no live re-read — the message IS the record of where
