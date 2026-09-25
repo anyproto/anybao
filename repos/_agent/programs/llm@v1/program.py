@@ -330,10 +330,16 @@ class AnthropicAdapter:
         if traits["cache"] == "markers":
             self._mark_cache(api_msgs)
         if system:
-            block = {"type": "text", "text": system}
-            if traits["cache"] == "markers":
-                block["cache_control"] = {"type": "ephemeral"}
-            req["system"] = [block]
+            # a list is separate cache blocks: each gets its own breakpoint,
+            # so a change in a later block leaves the earlier ones cached
+            texts = system if isinstance(system, list) else [system]
+            blocks = []
+            for text in texts:
+                block = {"type": "text", "text": text}
+                if traits["cache"] == "markers":
+                    block["cache_control"] = {"type": "ephemeral"}
+                blocks.append(block)
+            req["system"] = blocks
         if tools:
             req["tools"] = [
                 {"name": t["name"], "description": t.get("description", ""),
@@ -1155,7 +1161,9 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     ref, the host puts the bytes on the wire; `read()` is
     the one-call form);
     `tool_call`/`tool_result`/`thinking` parts round-trip loop
-    traffic. `tier`: "codegen" (default, the strong model),
+    traffic. `system`: a text, or a list of texts cached as separate
+    blocks (stable first; joined for providers without cache markers).
+    `tier`: "codegen" (default, the strong model),
     "classify" (fast/cheap — one-off judgments) or "vision" (file
     reads). `tools`: `[{name,
     description, input_schema?}]`, empty for plain completions.
@@ -1171,6 +1179,13 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
     adapter = ADAPTERS[prov["provider"]]()
+    if isinstance(system, list):
+        # system blocks survive only where they buy something: native
+        # Anthropic with cache markers; everywhere else one joined text
+        system = [p for p in system if p]
+        if not (isinstance(adapter, AnthropicAdapter) and traits["cache"] == "markers"
+                and traits["system_role"] == "native" and traits["tool_mode"] != "fenced"):
+            system = "\n\n".join(system)
     messages, system, tools = _prepare(messages, system, tools or [], traits)
     req = adapter.build_request(messages, system, tools, prov["model"], traits)
     req.update(traits["sampling"])

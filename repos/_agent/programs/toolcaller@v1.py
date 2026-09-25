@@ -597,7 +597,8 @@ def _prompt_floor(messages, system, tools):
     (prose runs near 4, code and JSON near 3 — a floor fires the
     ceiling early, never late), a File part at a flat 1500 (an image's
     tokens follow its pixels, not its base64)."""
-    chars = len(system) + len(json.dumps(tools))
+    text = system if isinstance(system, str) else "".join(system)
+    chars = len(text) + len(json.dumps(tools))
     files = 0
     for m in messages:
         for p in m["parts"]:
@@ -1031,27 +1032,40 @@ def _repo_inventory(c, overlays, code_space=None):
             + "\n".join(lines))
 
 
-def compose_system(c, space, code_space=None, overlays=None, style="full",
-                   has_shell=False, identity=True):
-    """The full system prompt loaded from the space(s): identity (the
-    `_soul` body, first, verbatim) + skills + tool docs (both two-tier:
-    agent code overlay + working space, working wins) + repo inventory
-    + memory categories. Guest-side — the host injects nothing. `style`
-    is the profile's `prompt_style`; `identity=False` (quiet runs,
-    ADR-008 §5) composes without the soul. Returns `(system, soul)` —
-    the soul body separately so the run can fingerprint it."""
+def compose_system_parts(c, space, code_space=None, overlays=None, style="full",
+                         has_shell=False, identity=True):
+    """The system prompt loaded from the space(s), in two cache blocks:
+    STABLE = identity (the `_soul` body, first, verbatim) + skills + tool
+    docs (both two-tier: agent code overlay + working space, working
+    wins); TAIL = the parts a run's own actions change — the skills
+    index, the repo inventory, the memory categories (the caller adds
+    the runtime context). A new skill, program or memory category then
+    rewrites only the tail's cache, never the whole prefix. Guest-side —
+    the host injects nothing. `style` is the profile's `prompt_style`;
+    `identity=False` (quiet runs, ADR-008 §5) composes without the soul.
+    Returns `(stable, tail, soul)` — the soul body separately so the run
+    can fingerprint it."""
     skills = _load_system_skills(c, space, code_space)
     soul = _identity(skills)          # always popped: never in the band
     if not identity:
         soul = ""
-    parts = [soul,
-             _compose_skills(skills, has_shell),
-             _skill_index(c, space, code_space, overlays),
-             _tool_docs(c, space, code_space, style),
-             _repo_inventory(c, overlays,
-                             code_space if code_space != space else None),
-             _memory_categories(c, space)]
-    return "\n\n".join(p for p in parts if p), soul
+    stable = [soul,
+              _compose_skills(skills, has_shell),
+              _tool_docs(c, space, code_space, style)]
+    tail = [_skill_index(c, space, code_space, overlays),
+            _repo_inventory(c, overlays,
+                            code_space if code_space != space else None),
+            _memory_categories(c, space)]
+    return ("\n\n".join(p for p in stable if p),
+            "\n\n".join(p for p in tail if p), soul)
+
+
+def compose_system(c, space, code_space=None, overlays=None, style="full",
+                   has_shell=False, identity=True):
+    """compose_system_parts joined into one text → `(system, soul)`."""
+    stable, tail, soul = compose_system_parts(c, space, code_space, overlays,
+                                              style, has_shell, identity)
+    return "\n\n".join(p for p in (stable, tail) if p), soul
 
 
 def main(args):
@@ -1085,9 +1099,9 @@ def main(args):
     # + memory categories) — the agent loads its own context from `any`, the
     # host injects no prompt wording. Runtime context (the ids the model must
     # never guess) is appended; stable per instance.
-    system, soul = compose_system(c, space, code_space, overlays,
-                                  traits["prompt_style"], bool(shell),
-                                  identity=not quiet)
+    stable, tail, soul = compose_system_parts(c, space, code_space, overlays,
+                                              traits["prompt_style"], bool(shell),
+                                              identity=not quiet)
     ui_ctx = _view(args.get("uiContext"))
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
@@ -1100,25 +1114,30 @@ def main(args):
         "- other spaces: `list_spaces()` rows")
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
     # user message for models that weight recency over the system block
+    # everything below changes with the run's surroundings (the view's
+    # apps, the device): it rides the TAIL cache block, never the stable one
     if traits["instructions_at"] == "system":
-        system += runtime_ctx
+        tail += runtime_ctx
         user_suffix = ""
     else:
         user_suffix = runtime_ctx
     if shell:
-        system += (
+        tail += (
             f"\n- shell: this device (`{shell.get('os')}`), serve cwd "
             f"`{shell.get('cwd')}`, home `{shell.get('home')}` — the `bash` tool "
             "and the `sh`/`fs` cell globals run here")
     if quiet:
-        system += (
+        tail += (
             "\n\n## Subagent\n\nYou are running as a subagent on a delegated "
             "task. There is no interactive user on this thread: your final "
             "reply is returned verbatim to the delegating agent — make it a "
             "complete, self-contained report.")
 
+    # two blocks, each its own cache breakpoint (llm@v1 renders a list
+    # as separate system blocks; providers without markers join them)
+    system = [p for p in (stable, tail.lstrip("\n")) if p]
     # prompt provenance (ADR-005 §5): recorded on the persisted turn
-    prompt_fp = _fingerprint(system)
+    prompt_fp = _fingerprint("\n\n".join(system))
     soul_fp = _fingerprint(soul) if soul else ""
 
     # boot window (recency channel) + auto-recall (topical channel);

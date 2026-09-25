@@ -120,8 +120,12 @@ class World:
         class Llm:
             @staticmethod
             def chat(messages, system="", tier="codegen", tools=None):
+                # `system` is the joined text; `system_blocks` the cache blocks
+                blocks = system if isinstance(system, list) else [system]
                 w.llm_calls.append({"messages": [dict(m) for m in messages],
-                                    "system": system, "tier": tier, "tools": tools})
+                                    "system": "\n\n".join(blocks),
+                                    "system_blocks": blocks,
+                                    "tier": tier, "tools": tools})
                 return w.replies.pop(0)
 
             @staticmethod
@@ -1291,3 +1295,15 @@ def test_non_contract_errors_teach_nothing():
           "error": {"type": "TimeoutError", "message": "attach_file() timed out"}}
     failed = [{"name": "any.attach_file", "kind": "span", "ok": False}]
     assert "help(" not in g["render_digest"]("c1", cr, failed)
+
+
+def test_system_is_two_cache_blocks_with_what_runs_change_in_the_tail():
+    # a new skill, program, memory category or the view's apps change only
+    # the tail block — the stable block (soul, skills, tool docs) stays cached
+    w = Souled([done_reply("ok")])
+    run(w)
+    blocks = w.llm_calls[0]["system_blocks"]
+    assert len(blocks) == 2
+    stable, tail = blocks
+    assert stable.startswith(SOUL) and "## Runtime context" not in stable
+    assert "## Runtime context" in tail and SOUL not in tail

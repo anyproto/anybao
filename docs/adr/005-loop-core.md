@@ -164,8 +164,9 @@ trait that gates it — the config selects behavior, it never defines it.
 
 **1.4 Provider adapters.** `anthropic` — native; Thinking
 `provider_state` round-trips byte-exact; `cache_control` breakpoints at
-end of system and end of conversation, set by the adapter with no
-caller hint (the loop's prefix is append-only, so each call writes the
+the end of each system block (a `system` list renders one block per
+text — §5's stable and tail blocks) and at the end of the conversation,
+set by the adapter with no caller hint (the loop's prefix is append-only, so each call writes the
 cache the next one reads). `openai-compat` — one adapter for every
 `/chat/completions` server (OpenAI, OpenRouter, vLLM, llama.cpp,
 SGLang, ollama, Together, DeepSeek, Groq …); an assistant turn that
@@ -454,16 +455,19 @@ the cell's span — into the ToolResult content:
 
 ### 5. System prompt & boot window assembly
 
-The stable block [system skills + skill index + tool docs + memory categories] is
-composed by `anybao serve` (content shapes are ADR-006's) and handed to
-the program as the `system` arg; the toolcaller appends a **runtime
-context** section (agent space id, chat id, agent name — from its args;
-amendment 2026-07-08: composed guest-side, the host writes no prompt
-wording, and the ids must be stated because the model has no other
-source for them) and passes the result unchanged to every
-`use("llm@v1").chat`; the whole thing is stable per instance, and the
-adapter's system-end cache breakpoint covers it. Stable-block content
-is fingerprinted; the fingerprint is recorded per run (prompt drift is
+The system prompt is two cache blocks, composed guest-side by the
+toolcaller (content shapes are ADR-006's; the host writes no prompt
+wording). The **stable** block is identity + system skills + tool docs;
+the **tail** block is what a run's own actions or surroundings change:
+the skills index, the repo inventory, the memory categories, and the
+**runtime context** (agent space id, chat id, agent name, the apps of
+the agent space and of the user's view, the shell device — the ids
+must be stated because the model has no other source for them). Both
+go as a `system` list to every `use("llm@v1").chat`; each block ends in
+its own cache breakpoint, so a new skill, program or memory category,
+or a view on another space, rewrites only the small tail, never the
+stable prefix. Providers without markers get the blocks joined. The
+joined text is fingerprinted; the fingerprint is recorded per run (prompt drift is
 diagnosable from traces). The rest of the conversation prompt is
 assembled GUEST-SIDE: `history@v1` renders the boot window
 (hierarchical chunks message → raw turn window), `autorecall@v1`
