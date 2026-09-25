@@ -339,6 +339,7 @@ _KIND_OF_SLUG = {
     "rating": "number", "duration": "number",
     "period": "object", "money": "object", "geo": "object",
 }
+_TEXT_SLUGS = ("text", "longtext", "markdown", "url", "email", "phone")
 # the option palette any-ui renders as swatches — `color` is an open
 # string on the wire; these are the ten with a swatch
 _OPTION_COLORS = ("grey", "yellow", "orange", "red", "pink", "purple",
@@ -2161,7 +2162,7 @@ class _Client:
 
     @_public('getter')
     def general_chat(self, space):
-        """The space's canonical chat id — the catalog's general chat.
+        """The space's one chat → its id (a string) — the catalog's general chat.
 
         Every space has exactly ONE chat: the server's `general-chat`
         usecase installs it on a root derived from the bundle id, the
@@ -2384,9 +2385,10 @@ class _Client:
         "body"?: false, "properties"?: [{"name", "xKey"?, "kind"?,
         "xFormat"?}]}. kind ∈ string | number | boolean | array |
         object | datetime — NOTHING else ("text" and "date" are
-        descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}}
-        (see add_property for the slug table); with a slug the kind
-        may be omitted. xKeys default to a slug of the name.
+        descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}},
+        a pick-list {"xFormat": {"type": "choice", "options": ["To do",
+        "Done"]}} (see add_property for the slug table); with a slug
+        the kind may be omitted. xKeys default to a slug of the name.
         Idempotent: an existing USER type (by xKey) is reused, only
         MISSING properties are added. **Every type has a body**: the
         shared editor part is declared on a new type and healed onto
@@ -2653,6 +2655,11 @@ class _Client:
             raise ValueError("xFormat must be an object")
         fmt = dict(fmt or {})
         slug = fmt.get("type")
+        if slug is not None and slug not in _KIND_OF_SLUG and slug not in _TEXT_SLUGS:
+            raise ValueError(
+                f"unknown xFormat.type {slug!r} — slugs: "
+                f"{', '.join([*_TEXT_SLUGS, *_KIND_OF_SLUG])}. A pick-list is "
+                '"choice": {"type": "choice", "options": ["To do", "Done"]}')
         if body.get("kind") is None:
             body["kind"] = _KIND_OF_SLUG.get(slug, "string")
         if body["kind"] not in _KINDS:
@@ -2661,6 +2668,8 @@ class _Client:
                 'dates/relations/choices are descriptor SLUGS '
                 '({"xFormat": {"type": …}})')
         opts = fmt.get("options")
+        if isinstance(opts, list):   # names only: keys slug from them
+            opts = {_slugify_xkey(str(n)): n for n in opts}
         if isinstance(opts, dict):
             fmt["options"] = {}
             last = ""
@@ -3386,13 +3395,14 @@ class _Client:
     def setup_app(self, space, usecase):
         """Install (or adopt) one of the catalog's apps in a space, dependencies first.
 
-        Returns [{usecase, bundleId, rootId, installed, typeId?, collectionId?,
-        properties?}] — a bundle declares a TYPE (person, deal, journal: what
-        its objects are) or a COLLECTION (wiki, contact, investor: what objects
-        are filed under — a contact is a `person` filed under `contact`);
-        `properties` is that definition's xKey → propId map. Idempotent: run it
-        again and everything adopts. The user's call — offer, then install on a
-        yes."""
+        The user asking for the app is the yes; when it is your own idea,
+        offer first. Returns [{usecase, bundleId, rootId, installed, typeId?,
+        collectionId?, xKey?, properties?}] — a bundle declares a TYPE (what
+        its objects are: profile, deal, journal) or a COLLECTION (what objects
+        are filed under: wiki, person, contact, organization, investor). A
+        contact is a `profile` filed under `contact`; write with the returned
+        xKeys, never guessed ones. `properties` is that definition's
+        xKey → propId map. Idempotent: run it again and everything adopts."""
         r = self._call("post", f"/v1/catalog/{usecase}/setup", {"spaceId": space})
         self._cat_invalidate(space)
         out = []
@@ -3407,6 +3417,11 @@ class _Client:
             if b.get("properties"):
                 row["properties"] = b["properties"]
             out.append(row)
+        by_id = self._catalog(space)["by_id"] if out else {}
+        for row in out:
+            d = by_id.get(row.get("typeId") or row.get("collectionId") or "")
+            if d and d.get("xKey"):
+                row["xKey"] = d["xKey"]
         return out
 
     # --- agent memory (write path; reads go through /query on the brain) --------
@@ -3453,8 +3468,9 @@ class _Client:
         workflow". It lands in the bao space as an `agent_skill` object and
         joins the `## Skills` index from the next turn as its name plus
         `description` (else the body's first sentence) — so make that line
-        say WHEN it applies, in the user's words. Read it back with
-        get_skill(name).
+        say WHEN it applies, in the user's words ('when the user says
+        "status"'), never the steps: a description that reads like the
+        whole instruction gets acted on without get_skill(name).
 
         - `name` reads like a task ("review-pr", "plan-weekly-sync"), not a
           noun. A leading `_` is refused (those are the deploy-managed
@@ -3804,6 +3820,11 @@ def _sid(sc):
         sid = sc.get("spaceId") or sc.get("id")
         if isinstance(sid, str) and sid:
             return sid
+    if sc is None:
+        raise TypeError(
+            "spaceConfig is None — currentUserSpace is None when the message "
+            "carried no view. Pass the space by NAME (\"Garden\") or id; "
+            "c.list_spaces() lists them.")
     raise TypeError(
         "spaceConfig (the FIRST argument) must name a space: a space "
         "NAME or id string, a list_spaces() row, or a bound cell global "

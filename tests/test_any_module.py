@@ -2037,13 +2037,18 @@ def test_setup_app_installs_and_reports_ids():
          "bundle": {"rootId": "r1"}},
         {"usecase": "crm", "id": "system:deal/v1", "installed": True,
          "bundle": {"rootId": "r2"}, "typeId": "r2",
-         "properties": {"stage": "pS", "amount": "pA"}}]}})
+         "properties": {"stage": "pS", "amount": "pA"}}]},
+        "/spaces/s1/types": {"types": [{"id": "r2", "xKey": "deal", "name": "Deal"}]}})
     assert client(fx).setup_app("s1", "crm") == [
         {"usecase": "contacts", "bundleId": "system:contacts/v1", "rootId": "r1",
          "installed": False},
         {"usecase": "crm", "bundleId": "system:deal/v1", "rootId": "r2",
-         "installed": True, "typeId": "r2", "properties": {"stage": "pS", "amount": "pA"}}]
-    assert fx.calls == [("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})]
+         "installed": True, "typeId": "r2", "xKey": "deal",
+         "properties": {"stage": "pS", "amount": "pA"}}]
+    # the install, then one fresh catalog read for the definitions' xKeys
+    assert fx.calls[0] == ("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})
+    assert [p for _, p, _ in fx.calls[1:]] == ["/v1/spaces/s1/types",
+                                               "/v1/spaces/s1/collections"]
 
 
 # --- get_skill: on-demand skill bodies by name (ADR-009 §3) -----------------
