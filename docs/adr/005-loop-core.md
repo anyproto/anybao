@@ -325,6 +325,11 @@ Interim assistant text before tool calls surfaces as `done: false`
 progress bubbles (v1 behavior, kept). Errors: `is_error` ToolResult
 with the error digest — the model self-corrects; no fix-loop (settled).
 
+**`run_cell(…, full_output=true)`.** Opt-in wide rendering for the
+cell's digest (§4): each value shows whole up to 8k tokens instead of
+collapsing past the 1k inline budget. It rides the cell span as
+`input.full_output`; nothing else about the cell changes.
+
 ### 3. Ceilings and loop control
 
 - **Ceilings, passed in `args`**: `max_turns`, `max_tokens_total` per
@@ -427,7 +432,12 @@ the cell's span — into the ToolResult content:
   links; full detail via `effects.of(cell_id)`).
 - **Budget-aware inline**: per-value inline budget in TOKENS (policy
   may scale with remaining context), not a fixed char constant. Over
-  budget → stub `[N bytes, schema …, values.get("<cell>", i)]`.
+  budget → stub `[N bytes, schema …, values.get("<cell>", i)]`; the
+  stub names both ways on: walk the stored value, or print it again in
+  a cell with `full_output: true`. A `run_cell(…, full_output=true)`
+  cell renders each value whole up to a wider cap (8k tokens); past
+  that it stubs too. The model opts in for text it means to read
+  whole — a help() page, a skill body, a document.
 - **Orientation summary** (plan §4, all guardrails apply): values over
   the inline budget get a cheap-tier one-paragraph summary rendered
   next to the machine stub — sampled input, describe-only prompt,

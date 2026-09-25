@@ -71,6 +71,14 @@ RUN_CELL_TOOL = {
                                "outputs, nothing executed; a call the run never "
                                "made fails. Sugar for mock={\"from\": ref}.",
             },
+            "full_output": {
+                "type": "boolean",
+                "description": "Show this cell's printed values whole, up to "
+                               "~8k tokens each, instead of collapsing large ones "
+                               "to a values.get stub. For text you mean to read "
+                               "in full: a help() page, a skill body, a document, "
+                               "a stored value you print again.",
+            },
             "mock": {
                 "type": "object",
                 "description": "Recorded/scripted effects for this cell only: "
@@ -138,6 +146,8 @@ TIER = "codegen"
 # ends the run with a wrap-up — before the next call fails (§1.3)
 CONTEXT_FULL_SHARE = 0.85
 INLINE_TOKEN_BUDGET = 1000
+# run_cell(full_output=true): a value is shown whole up to this (BOB-169)
+FULL_OUTPUT_TOKEN_BUDGET = 8000
 MAX_SIDE_EFFECT_LINES = 12
 # bash tool results are raw text, not values: a wider inline budget,
 # head + tail past it (the whole text stays on sh.last.out)
@@ -242,13 +252,18 @@ def _context_suffix(ctx):
 
 # --- digest (progressive disclosure over subcell results) --------------------
 
-def _render_value(cell_id, meta, i):
-    if approx_tokens(meta["repr"]) <= INLINE_TOKEN_BUDGET:
+def _render_value(cell_id, meta, i, full=False):
+    budget = FULL_OUTPUT_TOKEN_BUDGET if full else INLINE_TOKEN_BUDGET
+    if approx_tokens(meta["repr"]) <= budget:
         return meta["repr"]
     sel = f'values.get("{cell_id}", {i!r})'
+    if full:
+        return (f"[{meta['size']} bytes, {meta['schema']} — over the full_output "
+                f"cap too: {sel} returns the STORED value, read it in slices]")
     return (f"[{meta['size']} bytes, {meta['schema']} — {sel} returns the "
-            f"STORED value: walk it (fields, slices), don't re-run the "
-            f"producing call; printing it whole re-elides]")
+            f"STORED value: walk it (fields, slices), or print it in a cell "
+            f"with full_output: true to read it whole; don't re-run the "
+            f"producing call]")
 
 
 def _op_name(e):
@@ -472,15 +487,15 @@ def render_bash(cr, res, bound):
     return "\n".join(parts)
 
 
-def render_digest(cell_id, cr, entries, mock=None, filter_hits=None):
+def render_digest(cell_id, cr, entries, mock=None, filter_hits=None, full=False):
     parts = []
     if mock is not None:
         parts.append(_mock_header(entries, mock, filter_hits))
     if cr["prints"]:
         parts.append("Output:\n" + "\n".join(
-            f"#{i} {_render_value(cell_id, m, i)}" for i, m in enumerate(cr["prints"])))
+            f"#{i} {_render_value(cell_id, m, i, full)}" for i, m in enumerate(cr["prints"])))
     if cr["last"] is not None:
-        parts.append("Last value: " + _render_value(cell_id, cr["last"], "last"))
+        parts.append("Last value: " + _render_value(cell_id, cr["last"], "last", full))
     se = _side_effects(entries, mocked=mock is not None)
     if se:
         parts.append(se)
@@ -649,6 +664,9 @@ def _run_model_cells(parts, results, offered):
             continue
         if mock is not None:
             span_input["mock"] = mock
+        full = part["args"].get("full_output") is True
+        if full:
+            span_input["full_output"] = True
         try:
             sid = effect("span.begin",  # noqa: F821 - guest global
                          {"name": "cell", "input": span_input})["span"]
@@ -670,7 +688,7 @@ def _run_model_cells(parts, results, offered):
                          {"span": sid})["records"]
         results.append({"type": "tool_result", "call_id": cid,
                         "content": render_digest(cid, cr, entries, mock,
-                                                 end.get("mockFilter")),
+                                                 end.get("mockFilter"), full),
                         "is_error": not cr["ok"]})
     return malformed
 

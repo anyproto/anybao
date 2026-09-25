@@ -23,9 +23,10 @@ token in headers.
 
 **Never guess an API.** help(mod) lists a module's methods,
 help(mod.method) gives the full doc; docstrings are the only docs.
-Call help(mod) in the cell that first imports a module, and
-help(mod.method) before any call whose arguments or return shape you
-haven't seen.
+Call help(mod) in the cell that first imports a module (any@v1's
+method names are already in `## Tools`: go straight to
+help(c.method)), and help(mod.method) before any call whose arguments
+or return shape you haven't seen.
 
 **Never guess a data shape.** Before filtering or writing against
 records you haven't seen, fetch one and print(inferSchema(row)); a

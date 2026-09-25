@@ -235,6 +235,28 @@ def test_cell_turn_spans_digest_and_tool_result():
                    "cacheRead": 0, "cacheWrite": 0}
 
 
+
+def test_full_output_renders_large_values_whole_up_to_the_wider_cap():
+    # BOB-169: the default stub names the opt-in; full_output shows a
+    # value whole up to 8k tokens, and still stubs past that
+    doc = "d" * 9000                       # ~2.3k tokens: over 1k, under 8k
+    huge = "h" * 40000                     # ~10k tokens: over both
+    cell = {"ok": True,
+            "prints": [{"repr": doc, "size": len(doc), "schema": "str"},
+                       {"repr": huge, "size": len(huge), "schema": "str"}],
+            "last": None, "error": None}
+    plain = World([tool_reply(), done_reply("ok")], cells=[dict(cell)])
+    run(plain)
+    stub = plain.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert doc not in stub and "full_output: true" in stub
+    reply = tool_reply()
+    reply["parts"][0]["args"]["full_output"] = True
+    w = World([reply, done_reply("ok")], cells=[dict(cell)])
+    run(w)
+    content = w.llm_calls[1]["messages"][-1]["parts"][0]["content"]
+    assert f"#0 {doc}" in content
+    assert huge not in content and "over the full_output cap" in content
+
 def test_cell_error_marks_tool_result_is_error():
     cell = {"ok": False, "prints": [], "last": None,
             "error": {"type": "ValueError", "message": "boom", "traceback": "tb"}}
