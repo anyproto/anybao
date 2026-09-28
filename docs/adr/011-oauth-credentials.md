@@ -4,8 +4,8 @@ Status: **Accepted** (2026-07-31; amended in review — open questions
 resolved, §4 host binding deferred)
 Date: 2026-07-30
 Builds on: ADR-002 (effect boundary — credential injection is a
-boundary fact, §Design rationale "Secrets"), ADR-006 §3 (device-local
-secrets on the derived object), ADR-008 §1–2 (credential refs beyond
+boundary fact, §Design rationale "Secrets"), ADR-006 §3 (secrets on the derived object —
+account-scoped since ADR-021 §4 was amended, 2026-08-26), ADR-008 §1–2 (credential refs beyond
 the LLM key; the http redirect surface), ADR-009 §6 (lib mode);
 `docs/config-secrets.md` (seed/rotate/revoke + the guest read-guard)
 
@@ -38,7 +38,8 @@ scope union); what changes is *custody*.
 
 The mechanics needed on the storage side already exist and need no
 extension: the `agent_secrets` dataset takes an **open ref set** with
-device-local never-synced values, hard-seed rotation, empty-value
+account-scoped values (the row's synced `value`, E2E-encrypted by
+any-sync — ADR-021 §4, amended 2026-08-26), hard-seed rotation, empty-value
 revoke, and a guest read-guard (`docs/config-secrets.md`).
 
 Second forcing function: **remote instances.** The desktop case (serve
@@ -105,11 +106,12 @@ by a new store:
   behavior, a stored string injected as-is.
 - **managed OAuth** — `connector.oauth.<provider>`: not a stored
   string at all but a *handle* to a provider descriptor plus these
-  device-local records in `agent_secrets` (open ref set, so zero
+  records in `agent_secrets` (open ref set, so zero
   runtime change to store them):
   - `connector.oauth.<provider>.refresh` — the refresh token. The
     crown jewel: durable, offline, equals standing scoped account
-    access. Device-local, never synced, never guest-readable.
+    access. Account-scoped (the row's synced `value`, reaching every
+    device of the account), never guest-readable.
   - `connector.oauth.<provider>.client_id` /
     `.client_secret` — seeded through the ordinary `.connectors.env`
     path. Bring-your-own client (Google Cloud Console → Credentials →
@@ -127,6 +129,15 @@ per-run: Google caps live tokens per client per account, and a
 per-run cache would mint one per conversation/cron run.) They are
 short-lived by construction; persisting them buys a few minutes of
 warm start against a durable at-rest secret. Not worth it.
+
+**Amended 2026-09-27 (ADR-021 §4, amended 2026-08-26):** secret values are
+account-scoped, not device-local — the refresh token is the synced `value` of
+its `agent_secrets` row, E2E-encrypted by any-sync and readable by every
+device of the account (ADR-006 §3: "there is no device-local tier"). A grant
+made through any device's serve is live on all of them; consent location
+matters only for where the browser and the redirect receiver run (§5.1). The
+"device-local" wording elsewhere in this ADR predates that amendment and is
+corrected in place.
 
 ### 4. Host binding deferred; guest shape stays `{ref, header, prefix}` (resolves review Q4)
 
@@ -208,7 +219,7 @@ generates `code_verifier`/`code_challenge` (S256) and `state` → builds
 the consent URL → hands it to the human over a **transport** (§5.1) →
 receives the code, checking `state` by exact match → exchanges the
 code at the token endpoint host-side over TLS → writes the refresh
-token device-local → caches the access token in memory.
+token to its `agent_secrets` row → caches the access token in memory.
 
 **Blocking (resolves review Q3):** `connect` blocks for
 `min(timeout | 120s, 300s)` while the human clicks. On timeout it
@@ -424,7 +435,7 @@ client could ever ask for.
 ### 8. Revoke, rotate, and the store
 
 - `oauth.disconnect(provider)` POSTs the provider's revoke endpoint
-  **and** deletes the device-local refresh token. Provider-side revoke
+  **and** deletes the refresh token's row value. Provider-side revoke
   is the part that actually ends access; local delete alone leaves a
   live grant on the account.
 - The existing hard-seed revoke path works unchanged as the blunt
@@ -498,9 +509,7 @@ One topic = one commit; the ADR is accepted before any code lands.
   provider; `connect` blocks a run thread for up to 120s.
 - Deliberately not solved here: a shared published anybao OAuth client
   (needs Google verification, and for restricted scopes a CASA
-  assessment) — BYO Desktop client is the shipping path; account-scoped
-  rather than device-local secrets (open exploration in the dev-space
-  task, gated on at-rest guarantees); token-level capability scoping
+  assessment) — BYO Desktop client is the shipping path; token-level capability scoping
   (which cell may use which ref).
 
 ## Resolved questions (review, 2026-07-31)
