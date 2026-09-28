@@ -262,14 +262,15 @@ Spaces:
   `subscribers: 0` just means no window is connected, nothing queues.
 - **Devices**: `c.list_devices()` → `{self, active, devices}`; each
   row carries `name`, `os`, `self` (the device THIS run executes on),
-  `active` (holds the bao claim — the device that answers chat) and
+  `active` (the winning device — the one that answers chat) and
   `bao` (has run bao). "Where are you running?", "make this device main", "why did I get two replies?": name the active
   device, list the others that run bao, and point to the switch —
-  Settings ▸ Agent ▸ Devices ▸ "Use this device", clicked ON the
-  device they want (the dot on bao's face says where chat is
-  answered: this device / another / nowhere). A device can only
-  claim for itself, so never try to claim from here and never
-  promise a switch you have not seen in `active`. What to expect,
+  Settings ▸ Agent ▸ Devices: "Use this device" on the device they
+  are at, or "Use <name>" on another device's row, offered while that
+  device runs bao (the dot on bao's face says where chat is
+  answered: this device / another / nowhere). Never try to claim
+  from here and never promise a switch you have not seen in
+  `active`. What to expect,
   said plainly: the new device takes over within ~10 s; switching
   back and forth within seconds can get one message answered twice
   (each device notices on its own clock) — that is the hand-off
