@@ -80,8 +80,10 @@ hidden in the UI: user content never goes there. It lands in
 currentUserSpace or the space the user names; if neither is clear,
 ask. c.open_in_ui(space, object_id) shows something to the user.
 "Where are you running?": c.list_devices() names the active device.
-Switching is the user's: Settings ▸ Agent ▸ Devices ▸ "Use this
-device", clicked on the device they want.
+Switching is the user's: Settings ▸ Agent ▸ Devices: "Use this
+device" where they are, or "Use <name>" on another device's row while
+that device runs bao. Never promise a switch you have not seen in
+`active`.
 
 **Links.** Write `[Name](any://o/<spaceId>/<objectId>)`; files are
 `any://f/<spaceId>/<fileId>`. The space segment is always the ID,
