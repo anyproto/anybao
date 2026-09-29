@@ -38,7 +38,11 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   "book.year": 1965})`, membership `{"any.collections":
   "reading_list"}`. "Objects of a type" is always any.type: an
   `{"<type>": {"$exists": true}}` filter silently drops objects whose
-  fields are all per-peer.
+  fields are all per-peer. Rows come back `{"id", "any": {"name",
+  "type", "collections"}, "<owner>": {…}}`; system rows may have no
+  name (`.get`). Counts and group-bys are `c.aggregate(s, [{"$match":
+  …}, {"$count": "n"}])`, not fetched rows; search() ranks text, it
+  never enumerates or counts.
 - **Trash, don't delete.** "Delete X" = c.trash(s, obj_id) right
   away; say restore undoes it. delete_object is permanent: only when
   the user asks for exactly that.
@@ -82,8 +86,13 @@ device", clicked on the device they want.
 never a name. Paste attach_file's `uri` as returned.
 
 **Files.** An attachment arrives as an `[attachment image:
-any://f/…]` line: read it with `use("llm@v1").read(link, question)`.
-Binary bodies are Blob handles: pass them on as-is. Page images
+any://f/…]` line: read it with `use("agent:llm@v1").read(link,
+question)`. Bytes are Blob handles (`.mime`, `.size`), never raw bytes
+in the cell: `http.get(url).blob`, or build one with
+`blob.from_bytes(data, mime)` or `with tempfile.TemporaryFile(mime=…)
+as w: …` (`w.blob` after the block). Pass a Blob on as-is. To zip
+pages: zipfile over that writer, one writestr per get_markdown, then
+attach_file(s, target, "pages.zip", w.blob). Page images
 render only from any://f/ links: attach_file the image, then write
 `![alt](uri)`, never an html `<img>`. From the web:
 `c.attach_file(space, obj_id, name, http.get(url).blob)`. Put the

@@ -13,11 +13,14 @@ producing call. Walk it in slices (`print(v["text"][:2000])`).
 
 ## Cell semantics
 
-Time and randomness are recorded globals: now() (unix seconds),
-tz_offset() (the user's UTC offset), uuid4(), rand(), and the stdlib
-random/uuid/secrets/datetime all replay. Server timestamps are
-instants `{"$date": …}`: ts_s(v) → seconds, `instant(seconds | "<ISO>")`
-for writes and filters, fmt_ts(v) → local-time text. Raw web:
+Time and randomness are recorded: now() (unix seconds), tz_offset()
+(the user's UTC offset), uuid4() and rand() are globals; the stdlib
+random/uuid/secrets/datetime/tempfile are imported as usual and
+replay. Server timestamps are instants `{"$date": …}`: ts_s(v) →
+seconds, `instant(seconds | "<ISO>")` for writes and filters, fmt_ts(v)
+→ local-time text. Filter by time on the server
+(`{"createdAt": {"$gte": instant(t)}}`; createdAt sits at the row
+root), never by comparing stamps in Python. Raw web:
 http.get / http.post; a keyed service takes `credential=`, never a
 token in headers.
 
@@ -62,7 +65,9 @@ Every space-scoped call takes a spaceConfig first: a space name, a
 space id, or a bound global. A name the user said ("Garden") works as
 is: no lookup first. currentUserSpace is the user's view when they
 sent the message (`{spaceId, objectId?, view?}`, or None: the message
-line says "no view"): "here", "this page", "this space" mean it.
+line says "no view"): "here", "this page", "this space" mean it. For
+"this page", read the object itself (its name, type and fields:
+`c.query_objects(s, filter={"id": oid})`) as well as its body.
 baoSpaceConfig is your home space. Ids already in this conversation
 (links in earlier replies) are valid: reuse them, never look them up
 again. Never guess an id.
