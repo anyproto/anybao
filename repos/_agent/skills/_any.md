@@ -89,10 +89,11 @@ never a name. Paste attach_file's `uri` as returned.
 any://f/…]` line: read it with `use("agent:llm@v1").read(link,
 question)`. Bytes are Blob handles (`.mime`, `.size`), never raw bytes
 in the cell: `http.get(url).blob`, or build one with
-`blob.from_bytes(data, mime)` or `with tempfile.TemporaryFile(mime=…)
-as w: …` (`w.blob` after the block). Pass a Blob on as-is. To zip
-pages: zipfile over that writer, one writestr per get_markdown, then
-attach_file(s, target, "pages.zip", w.blob). Page images
+`blob.from_bytes(data, mime)` or `import tempfile` + `with
+tempfile.TemporaryFile(mime=…) as w: …`, then `zb = w.blob` after the
+block (`blob` itself is a kernel name: never assign to it). Pass a
+Blob on as-is. To zip pages: zipfile over that writer, one writestr
+per get_markdown, then attach_file(s, target, "pages.zip", zb). Page images
 render only from any://f/ links: attach_file the image, then write
 `![alt](uri)`, never an html `<img>`. From the web:
 `c.attach_file(space, obj_id, name, http.get(url).blob)`. Put the
