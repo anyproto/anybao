@@ -310,6 +310,11 @@ def _write_and_probe(sid, oid, spec, code, summary):
         out["saved"] = True
         out["hint"] = (f'the source IS saved (any_tool stays false) — fix it '
                        f'via edit_program(space, "{spec}", edits)')
+    elif not any_tool and not _has_main(code):
+        # a trigger calls use(spec).main(args); a run()-only program
+        # probes fine and then fails on every fire (BOB-160 bench 8.3)
+        out["hint"] = ("no main(args): a trigger runs use(spec).main(args) — "
+                       "add `def main(args)` before scheduling this program")
     return out
 
 
@@ -364,6 +369,9 @@ def create_program(spaceConfig, body):
     exports. After writing, the source is use()-probed: on success the
     program is live (a tool joins the inventory next turn); on failure
     you get {ok: false, saved: true, hint} — fix via edit_program.
+    A program a trigger runs is called as `main(args)` (args = the
+    trigger's `args`): define `def main(args)`; a non-tool program
+    without one comes back with a hint.
 
     A program imports nothing of the runtime: `use`, `span`, `effect`,
     `http`, `now`, `print`, … are globals in a program module exactly as

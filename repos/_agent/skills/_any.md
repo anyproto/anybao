@@ -68,7 +68,9 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
 **Apps**: the server's apps are a space's catalog installs (wiki,
 chat, contacts, CRM…): c.list_apps(space) before assuming one exists.
 The user asking for one ("add contacts") is the yes: c.setup_app;
-when it is your idea, offer first. An **applet** is a small HTML app you
+when it is your idea, offer first. An app's objects take the shape
+setup_app returns (a contact is type `profile` filed under `contact`):
+read it before adding to an app. An **applet** is a small HTML app you
 write (`use("agent:applet@v1")`); "make me an app" with no catalog
 match means an applet.
 

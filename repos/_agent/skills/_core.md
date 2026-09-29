@@ -14,8 +14,8 @@ producing call. Walk it in slices (`print(v["text"][:2000])`).
 ## Cell semantics
 
 Time and randomness are recorded: now() (unix seconds), tz_offset()
-(the user's UTC offset), uuid4() and rand() are globals; the stdlib
-random/uuid/secrets/datetime/tempfile are imported as usual and
+(the user's UTC offset), uuid4(), rand(), datetime and tempfile are
+globals; the stdlib random/uuid/secrets are imported as usual and
 replay. Server timestamps are instants `{"$date": …}`: ts_s(v) →
 seconds, `instant(seconds | "<ISO>")` for writes and filters, fmt_ts(v)
 → local-time text. Filter by time on the server
@@ -87,7 +87,9 @@ c.upsert_record(bao, anchor, "agent_triggers", "<slug>", {
   "enabled": True})
 ```
 
-Recurring: `"kind": "cron"` with `{"cron": "<expr>"}` or
+A trigger calls `use(program).main(args)` with the record's args: a
+program of yours for it defines `def main(args)`. Recurring: `"kind":
+"cron"` with `{"cron": "<expr>"}` or
 `{"every_s": n}`. Cron fields are UTC: shift the user's hour by
 tz_offset(). A program that reports back posts to your chat
 (`bao["chatId"]` in bao), whatever space its data lives in. On chat activity: `"kind": "event"` with
