@@ -293,14 +293,24 @@ class Blob:
 class _BlobWriter:
     """`tempfile.TemporaryFile()` in the guest (ADR-026 §4): a file-like
     object to write into; `close()` (or leaving the `with`) hands the
-    bytes to the host and sets `.blob`. Text mode encodes utf-8."""
+    bytes to the host and sets `.blob` — reading `.blob` while the
+    writer is open raises. Text mode encodes utf-8."""
 
     def __init__(self, mime="application/octet-stream", text=False):
         self.mime = mime
         self._text = text
         self._buf = io.StringIO() if text else io.BytesIO()
-        self.blob = None
+        self._blob = None
         self.closed = False
+
+    @property
+    def blob(self):
+        # read before close() used to give None, and the failure only
+        # surfaced later as from_bytes' "got NoneType" (BOB-160 bench)
+        if not self.closed:
+            raise ValueError("the writer is still open: .blob exists after close() "
+                             "(or after leaving the `with` block)")
+        return self._blob
 
     def write(self, data):
         return self._buf.write(data)
@@ -327,8 +337,8 @@ class _BlobWriter:
     def close(self):
         if not self.closed:
             self.closed = True
-            self.blob = blob.from_bytes(self.getvalue(), self.mime)
-        return self.blob
+            self._blob = blob.from_bytes(self.getvalue(), self.mime)
+        return self._blob
 
     def __enter__(self):
         return self
