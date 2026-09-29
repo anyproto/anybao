@@ -164,3 +164,33 @@ Round 2 after the fix pass: 44 PASS / 5 PARTIAL / 1 FAIL (round 1: 35 / 12 / 3),
 - **Trace forensics (BOB-172): 9.1 27 turns $0.19, 9.2 17 turns $0.12.** (9.1, 9.2, 9.3) Span end rows carry no input; cell rows carry no code; boot rows lead the outline; runs() startedAt is epoch seconds but documented as an instant.
 - **backlinks returns no chat-message edges.** (3.4) Confirmed again in 3.4 — a server/index issue.
 - **7.2 still invalid.** (7.2) Linear key still reaches the serve (likely the account-scoped Credentials value), so the missing-key path didn't run.
+
+## Round 3: A/B bench against main (2026-09-29)
+
+claude-sonnet-5-5 on both sides; every arm × repeat on a FRESH staging account (the bao space is derived and undeletable, so a new account is the only clean reset); identical Garden fixtures; 82 questions (the 49 above + S12 records, S13 user view incl. a no-view follow-up, S14 a 14-exchange session, S15 everyday asks) × 3 repeats; graded blind (six conversations per series, shuffled, arm and ports masked) against per-question criteria. A = main b46e6b2, B = this PR at 5b3ad70, C = B + the first fix commits, D = the final build on the five series the last fixes touch.
+
+| per 82-question set | A (main) | B | C |
+|---|---:|---:|---:|
+| score (PASS 1, PARTIAL ½) | 76.2 | 78.5 | 77.7 |
+| FAIL | 8 | 1 | 5 |
+| wasted turns | 44 | 50 | 39 |
+| cost | $3.41 | $1.77 | $1.71 |
+| first-turn prompt (median) | 35.2k | 10.3k | ≈10.4k |
+
+C was graded by different grader instances than A/B (5.4 in particular was graded stricter); read B vs C as a tie on quality. On the 27 questions of S1/S2/S4/S5/S8, D scores 0.951 per question vs A 0.895 / B 0.907 / C 0.907, at $0.021 vs A's $0.041 (2 D runs lost to a provider 503, excluded).
+
+**Where the PR beats main:** 8.3 daily report (A 0/3: a trigger program without `main`, cron left in local time), 12.3 bao's stores (A 0/3 guesses dataset names; the PR uses list_datasets), 10.1 bulk delete asks first (A trashed 30 pages twice), 11.x skills (main has no create_skill and hand-builds the type at 2–7× the cost).
+
+**What the cut lost, and the fix (passes/3 as A → B → fixed):**
+- 13.1 "What's this page about?" 3 → 0 → 3: read only the body and named the page after its first line; `_core` now says to read the object (name, type, fields) as well.
+- 2.1 / 2.5 counts and "created today" 3 → 1 → 3 / 2 → 1 → 3: search used to count, client-side date filtering, `datetime` unimported; `_core` + `_any` lines (server-side `instant()` filter on the root createdAt, aggregate for counts), `datetime`/`tempfile` pre-bound.
+- 4.3 zip 2 → 0 → 3: Blob handles + the tempfile/zip recipe in `_any`; a writer's `.blob` now raises while open (ADR-026's example read it inside the `with`).
+- 9.3 `effects.runs(filter={"startedAt": {"$gte": instant(t)}})` returned [] — the run summary stores seconds; instants in the filter are converted.
+- 8.3 / 5.4 (regressed in C, fixed in D 3/3): a trigger calls `main(args)` (`_core`, create_program doc + hint); an app's objects take setup_app's shape (a contact is a `profile` under `contact`).
+
+**Found, not fixed here:**
+- Turn records keep only the user's text: a past message's view and the turn's writes are gone next turn, so a no-view follow-up retracted correct answers (13.5) and 12.2 re-saved a memory it had just saved.
+- A `date` property written as local midnight is stored as the previous day (the encoder floors to UTC midnight) — 1.2 in every arm.
+- Link-shape warning fires on `<placeholder>` links in skill text; create_object returns no spaceId (a turn to build a link); backlinks_everywhere's error lacks its signature; reserved catalog xKeys (`task`) cost a turn in 1.1 every run; the own-chat guard's message fires when bao tests its own trigger program.
+- Id reuse across turns depends on whether a reply linked the id (S14) — the semantic-refs experiment (ADR-030, separate branch). Trace forensics (9.1/9.2, 9–12 cells) — BOB-172.
+- Earlier rounds' 7.2 was invalid because `--secrets-file` is merged over the `.connectors.env` beside the config; the bench configs live in their own directory.
