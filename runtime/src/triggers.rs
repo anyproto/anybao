@@ -76,6 +76,9 @@ pub struct RunResult {
     /// Whether the run recorded any mutating effect — a miss-deferred
     /// message is re-run only when it did not (ADR-009 §8).
     pub mutated: bool,
+    /// ADR-030: local inference can consume quota; do not automatically rerun
+    /// a failed run after a program-sync miss just because its effects are read.
+    pub local_ai_attempted: bool,
 }
 
 pub struct Scheduler {
@@ -1490,6 +1493,7 @@ mod tests {
             missing_secrets: Vec::new(),
             missing_programs: Vec::new(),
             mutated: false,
+            local_ai_attempted: false,
         };
         for _ in 0..3 {
             sched.record_run(&mut tr, &fail);

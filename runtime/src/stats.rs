@@ -63,7 +63,9 @@ pub fn render(store: &dyn TraceStore) -> anyhow::Result<String> {
                 // The prompt in use = in + cacheRead + cacheWrite.
                 Some("span") if r["phase"] == "end" && r["name"] == "llm.chat" => {
                     let u = &r["output"]["usage"];
-                    if let Some(t) = u["in"].as_i64() {
+                    if let Some(t) = u["inputTotal"].as_i64() {
+                        tokens_in.push(t);
+                    } else if let Some(t) = u["in"].as_i64() {
                         tokens_in.push(
                             t + u["cacheRead"].as_i64().unwrap_or(0)
                                 + u["cacheWrite"].as_i64().unwrap_or(0),

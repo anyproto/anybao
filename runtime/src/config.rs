@@ -111,6 +111,7 @@ pub struct AgentSection {
     /// user-authored skills/programs
     pub space: Option<String>,
     pub name: Option<String>,
+    pub program: Option<String>,
     pub control_port: Option<u16>,
 }
 
@@ -128,6 +129,8 @@ pub struct Config {
     pub addr: String,
     pub agent_space: String,
     pub agent_name: String,
+    /// Trusted local chat entrypoint; never selected by synced model config.
+    pub agent_program: String,
     pub control_port: u16,
     pub overlays: BTreeMap<String, Overlay>,
     /// `paths.traces`: the raw-blob directory (ADR-026 §1) — the bytes
@@ -177,6 +180,7 @@ impl Default for Config {
             addr: DEFAULT_ADDR.into(),
             agent_space: "bao".into(),
             agent_name: "bao".into(),
+            agent_program: crate::serve::CHAT_PROGRAM.into(),
             control_port: 7010,
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
@@ -198,6 +202,7 @@ pub struct CliOverrides {
     pub addr: Option<String>,
     pub space: Option<String>,
     pub agent_name: Option<String>,
+    pub agent_program: Option<String>,
     pub control_port: Option<u16>,
     pub traces_dir: Option<PathBuf>,
 }
@@ -209,6 +214,10 @@ pub struct ConfigBuilder {
 }
 
 impl ConfigBuilder {
+    pub fn agent_program(mut self, v: impl Into<String>) -> Self {
+        self.cfg.agent_program = v.into();
+        self
+    }
     pub fn addr(mut self, v: impl Into<String>) -> Self {
         self.cfg.addr = v.into();
         self
@@ -361,6 +370,9 @@ impl Config {
         if let Some(name) = fc.agent.name {
             c.agent_name = name;
         }
+        if let Some(program) = fc.agent.program {
+            c.agent_program = program;
+        }
         if let Some(port) = fc.agent.control_port {
             c.control_port = port;
         }
@@ -395,6 +407,9 @@ impl Config {
         }
         if let Some(name) = o.agent_name {
             self.agent_name = name;
+        }
+        if let Some(program) = o.agent_program {
+            self.agent_program = program;
         }
         if let Some(port) = o.control_port {
             self.control_port = port;
@@ -608,6 +623,21 @@ traces = "t"
         assert!(Config::from_toml("adr = \"typo\"").is_err());
         assert!(Config::from_toml("[agent]\nspaec = \"x\"").is_err());
         assert!(Config::from_toml("[paths]\ntrace = \"x\"").is_err());
+    }
+
+    #[test]
+    fn local_experiment_chat_program_is_trusted_host_config_only() {
+        assert_eq!(Config::default().agent_program, "agent:toolcaller@v1");
+        let cfg = Config::from_toml("[agent]\nprogram = 'agent:toolcaller@v2'").unwrap();
+        assert_eq!(cfg.agent_program, "agent:toolcaller@v2");
+        assert!(!cfg.config.contains_key("agent.program"));
+        assert_eq!(
+            Config::builder()
+                .agent_program("agent:toolcaller@v2")
+                .build()
+                .agent_program,
+            "agent:toolcaller@v2"
+        );
     }
 
     #[test]

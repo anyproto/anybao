@@ -55,6 +55,12 @@ fn s(v: &Value) -> String {
         .unwrap_or_else(|| v.to_string())
 }
 
+fn counter(v: &Value) -> String {
+    v.as_i64()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into())
+}
+
 fn clip(text: &str, limit: usize) -> String {
     let t = text.trim();
     if t.chars().count() <= limit {
@@ -314,7 +320,28 @@ fn is_openai_wire(input: &Value) -> bool {
 
 /// A provider request (an http effect's `input`) in the view's shape.
 fn view_request_of(input: &Value) -> Value {
-    if is_openai_wire(input) {
+    if input["harness"].is_string() && input["messages"].is_array() {
+        let messages: Vec<Value> = input["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                let raw = m["content"].as_str().unwrap_or("");
+                let decoded = serde_json::from_str::<Value>(raw).ok();
+                let parts = decoded
+                    .as_ref()
+                    .and_then(|v| v.get("parts"))
+                    .and_then(Value::as_array);
+                let content = match parts {
+                    Some(parts) => parts.iter().map(neutral_block).collect::<Vec<_>>(),
+                    None => vec![json!({"type": "text", "text": raw})],
+                };
+                json!({"role": m["role"], "content": content})
+            })
+            .collect();
+        json!({"model": input["model"], "harness": input["harness"],
+               "system": input["system"], "messages": messages})
+    } else if is_openai_wire(input) {
         openai_request_to_blocks(&input["json"])
     } else {
         input["json"].clone()
@@ -464,10 +491,25 @@ fn openai_response_to_blocks(resp: &Value) -> Value {
 /// call recorded SSE text, not the provider's JSON (BOB-149): then the
 /// neutral Reply on the span's end record is the readable copy.
 fn llm_exchange(inner: &[&Value], end: Option<&Value>) -> Option<(Value, Value)> {
-    let post = inner
-        .iter()
-        .rfind(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))?;
+    let post = inner.iter().rfind(|r| {
+        r["kind"] == "effect"
+            && (s(&r["effect"]).starts_with("http.") || r["effect"] == "ai.generate")
+    })?;
     let req = view_request_of(&post["input"]);
+    if post["effect"] == "ai.generate" {
+        let reply = end.filter(|e| e["output"]["parts"].is_array())?;
+        let mut resp = view_response_of_reply(&reply["output"]);
+        resp["model"] = post["output"].get("model").unwrap_or(&req["model"]).clone();
+        resp["harness"] = post["output"]
+            .get("harness")
+            .unwrap_or(&req["harness"])
+            .clone();
+        // ADR-030: absent counters are unknown, including cache counters.
+        let u = &reply["output"]["usage"];
+        resp["usage"] = json!({"input_tokens": u["in"], "output_tokens": u["out"],
+            "cache_read_input_tokens": u["cacheRead"], "cache_creation_input_tokens": u["cacheWrite"]});
+        return Some((req, resp));
+    }
     if let Some(body) = post["output"]["body"].as_str() {
         if let Ok(parsed) = serde_json::from_str::<Value>(body) {
             return Some((req, view_response_of(&post["input"], parsed)));
@@ -481,19 +523,27 @@ fn llm_exchange(inner: &[&Value], end: Option<&Value>) -> Option<(Value, Value)>
 
 /// The neutral Reply (`{parts, stop, usage}`, ADR-005 §1) in the
 /// view's shape — the same blocks the wire would have given.
+fn neutral_block(p: &Value) -> Value {
+    match p["type"].as_str() {
+        Some("text") => json!({"type": "text", "text": p["text"]}),
+        Some("tool_call") => {
+            json!({"type": "tool_use", "id": p["id"], "name": p["name"], "input": p["args"]})
+        }
+        Some("tool_result") => {
+            json!({"type": "tool_result", "tool_use_id": p["call_id"], "content": p["content"], "is_error": p["is_error"]})
+        }
+        Some("thinking") => json!({"type": "thinking", "thinking": p["text"]}),
+        _ => p.clone(),
+    }
+}
+
 fn view_response_of_reply(reply: &Value) -> Value {
     let empty = Vec::new();
     let blocks: Vec<Value> = reply["parts"]
         .as_array()
         .unwrap_or(&empty)
         .iter()
-        .map(|p| match p["type"].as_str() {
-            Some("text") => json!({"type": "text", "text": p["text"]}),
-            Some("tool_call") => json!({"type": "tool_use", "id": p["id"],
-                                        "name": p["name"], "input": p["args"]}),
-            Some("thinking") => json!({"type": "thinking", "thinking": p["text"]}),
-            _ => p.clone(),
-        })
+        .map(neutral_block)
         .collect();
     let stop = match reply["stop"].as_str() {
         Some("tool") => "tool_use",
@@ -520,8 +570,17 @@ fn view_response_of_reply(reply: &Value) -> Value {
 fn llm_request(inner: &[&Value]) -> Option<Value> {
     inner
         .iter()
-        .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))
-        .map(|post| view_request_of(&post["input"]))
+        .find(|r| {
+            r["kind"] == "effect"
+                && (s(&r["effect"]).starts_with("http.") || r["effect"] == "ai.generate")
+        })
+        .map(|post| {
+            let mut req = view_request_of(&post["input"]);
+            if post["effect"] == "ai.generate" && !req["model"].is_string() {
+                req["model"] = post["output"]["model"].clone();
+            }
+            req
+        })
 }
 
 /// Render the boot window — the messages the loop assembled BEFORE the
@@ -702,11 +761,14 @@ fn llm_body(
     let dur = end
         .map(|e| format!("{}ms", e["meta"]["durMs"]))
         .unwrap_or_else(|| "no span end — run ended mid-turn".into());
+    if let Some(harness) = resp["harness"].as_str() {
+        out.push_str(&format!("{pad}local harness: {harness}\n"));
+    }
     out.push_str(&format!(
         "{pad}llm: in={} out={} cacheRead={} stop={stop} ({dur})\n",
-        u["input_tokens"].as_i64().unwrap_or(0),
-        u["output_tokens"].as_i64().unwrap_or(0),
-        u["cache_read_input_tokens"].as_i64().unwrap_or(0),
+        counter(&u["input_tokens"]),
+        counter(&u["output_tokens"]),
+        counter(&u["cache_read_input_tokens"]),
     ));
 }
 
@@ -1347,9 +1409,23 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
     let mut tokens_out = 0i64;
     let mut cache_read = 0i64;
     let mut cache_write = 0i64;
+    let missing_local = records.iter().any(|r| r["effect"] == "ai.generate")
+        && exchanges.iter().flatten().count() < all_llm.len();
+    let mut unknown = [missing_local; 4];
     let mut model = String::new();
     for ex in exchanges.iter().flatten() {
         let u = &ex.1["usage"];
+        for (i, key) in [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ]
+        .iter()
+        .enumerate()
+        {
+            unknown[i] |= u[key].as_i64().is_none();
+        }
         tokens_in += u["input_tokens"].as_i64().unwrap_or(0);
         tokens_out += u["output_tokens"].as_i64().unwrap_or(0);
         cache_read += u["cache_read_input_tokens"].as_i64().unwrap_or(0);
@@ -1371,10 +1447,26 @@ pub fn render(store: &dyn TraceStore, run_id: &str, opts: &ShowOpts) -> anyhow::
         out.push_str(&format!(
             "llm: {} — tokens in={} out={} cacheRead={} cacheWrite={}\n",
             if model.is_empty() { "?" } else { &model },
-            tokens_in,
-            tokens_out,
-            cache_read,
-            cache_write
+            if unknown[0] {
+                "?".into()
+            } else {
+                tokens_in.to_string()
+            },
+            if unknown[1] {
+                "?".into()
+            } else {
+                tokens_out.to_string()
+            },
+            if unknown[2] {
+                "?".into()
+            } else {
+                cache_read.to_string()
+            },
+            if unknown[3] {
+                "?".into()
+            } else {
+                cache_write.to_string()
+            }
         ));
     }
 
@@ -1561,6 +1653,9 @@ struct TurnStats {
     cells: usize,
     effects: usize,
     llm_ms: i64,
+    local: bool,
+    unknown: [bool; 4],
+    reported_cost: Option<f64>,
 }
 
 impl TurnStats {
@@ -1576,10 +1671,12 @@ impl TurnStats {
 impl TurnStats {
     fn to_value(&self, price: Option<&Price>) -> Value {
         json!({
-            "stop": self.stop, "in": self.input, "cacheRead": self.cache_read,
-            "cacheWrite": self.cache_write, "out": self.output,
+            "stop": self.stop, "in": (!self.unknown[0]).then_some(self.input),
+            "cacheRead": (!self.unknown[1]).then_some(self.cache_read),
+            "cacheWrite": (!self.unknown[2]).then_some(self.cache_write),
+            "out": (!self.unknown[3]).then_some(self.output),
             "cells": self.cells, "effects": self.effects, "llmMs": self.llm_ms,
-            "costUsd": price.map(|p| self.cost_usd(p)),
+            "costUsd": if self.local { self.reported_cost } else { price.map(|p| self.cost_usd(p)) },
         })
     }
 }
@@ -1609,7 +1706,11 @@ pub fn stats_data(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<Value>
             }
         })
         .transpose()?
-        .map(|input| s(&view_request_of(&input)["model"]))
+        .and_then(|input| {
+            view_request_of(&input)["model"]
+                .as_str()
+                .map(str::to_string)
+        })
         .filter(|m| !m.is_empty());
     Ok(stats_with_model(&records, model))
 }
@@ -1620,9 +1721,10 @@ fn first_turn_request(records: &[Value]) -> Option<&Value> {
         .into_iter()
         .find(|(b, _)| b["parent"].is_null())?;
     let (bs, es) = seq_range(begin, end);
-    between(records, bs, es)
-        .into_iter()
-        .find(|r| r["kind"] == "effect" && s(&r["effect"]).starts_with("http."))
+    between(records, bs, es).into_iter().find(|r| {
+        r["kind"] == "effect"
+            && (s(&r["effect"]).starts_with("http.") || r["effect"] == "ai.generate")
+    })
 }
 
 /// `stats_data` over an in-memory (blob-resolved) log.
@@ -1641,18 +1743,38 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
         .collect();
     let model = model
         .or_else(|| {
+            turns.first().and_then(|(_, e)| {
+                e.and_then(|e| {
+                    e["output"]["provenance"]["model"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+            })
+        })
+        .or_else(|| {
             turns.first().and_then(|(b, e)| {
                 let (bs, es) = seq_range(b, *e);
-                llm_request(&between(records, bs, es)).map(|req| s(&req["model"]))
+                llm_request(&between(records, bs, es))
+                    .and_then(|req| req["model"].as_str().map(str::to_string))
             })
         })
         .unwrap_or_default();
 
     let mut rows = Vec::new();
-    for (i, (_begin, end)) in turns.iter().enumerate() {
+    for (i, (begin, end)) in turns.iter().enumerate() {
         let mut t = TurnStats::default();
+        let (bs, es) = seq_range(begin, *end);
+        t.local = between(records, bs, es)
+            .iter()
+            .any(|r| r["effect"] == "ai.generate");
         if let Some(e) = end {
             let u = &e["output"]["usage"];
+            if t.local {
+                for (i, key) in ["in", "cacheRead", "cacheWrite", "out"].iter().enumerate() {
+                    t.unknown[i] = u[key].as_i64().is_none();
+                }
+                t.reported_cost = u["costUsd"].as_f64();
+            }
             t.input = u["in"].as_i64().unwrap_or(0);
             t.cache_read = u["cacheRead"].as_i64().unwrap_or(0);
             t.cache_write = u["cacheWrite"].as_i64().unwrap_or(0);
@@ -1661,6 +1783,7 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
             t.llm_ms = e["meta"]["durMs"].as_i64().unwrap_or(0);
         } else {
             t.stop = "NO END".into();
+            t.unknown = [t.local; 4];
         }
         let from = starts[i];
         let to = starts.get(i + 1).copied().unwrap_or(i64::MAX);
@@ -1681,6 +1804,10 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
     let price = price_for(&model);
     let mut tot = TurnStats::default();
     for t in &rows {
+        tot.local |= t.local;
+        for i in 0..4 {
+            tot.unknown[i] |= t.unknown[i];
+        }
         tot.input += t.input;
         tot.cache_read += t.cache_read;
         tot.cache_write += t.cache_write;
@@ -1689,15 +1816,26 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
         tot.effects += t.effects;
         tot.llm_ms += t.llm_ms;
     }
+    if tot.local {
+        tot.reported_cost = rows
+            .iter()
+            .map(|t| t.to_value(price.as_ref())["costUsd"].as_f64())
+            .sum();
+    }
     let term = records
         .iter()
         .find(|r| r["kind"] == "cell" && r["cell"] == "main");
+    let harness = turns
+        .iter()
+        .find_map(|(_, e)| e.and_then(|e| e["output"]["provenance"]["harness"].as_str()));
     json!({
         "run": {
             "id": s(&records[0]["run"]["id"]),
             "program": s(&records[0]["run"]["program"]),
             "model": model,
-            "priced": price.is_some(),
+            "harness": harness,
+            "localAi": tot.local,
+            "priced": !tot.local && price.is_some(),
             "status": term.map(|t| if t["ok"] == true { "ok" } else { "FAILED" }),
             "durationMs": term.and_then(|t| t["metrics"]["duration_ms"].as_f64()),
             "fuel": term.map(|t| t["metrics"]["fuel_used"].clone()),
@@ -1743,7 +1881,13 @@ pub fn stats(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<String> {
     };
     let line = |label: &str, row: &Value| {
         // Value's Display ignores width — pad strings, not Values
-        let n = |k: &str| row[k].to_string();
+        let n = |k: &str| {
+            if row[k].is_null() {
+                "?".into()
+            } else {
+                row[k].to_string()
+            }
+        };
         format!(
             "{:>4}  {:<8} {:>9} {:>9} {:>9} {:>7} {:>5} {:>7} {:>8} {:>9}\n",
             label,
@@ -1768,7 +1912,11 @@ pub fn stats(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<String> {
     let mut total = d["total"].clone();
     total["stop"] = json!("");
     out.push_str(&line("tot", &total));
-    if !priced && !model.is_empty() {
+    if d["run"]["localAi"] == true {
+        out.push_str(
+            "\n(local harness generation — API list pricing does not apply; ? = unknown usage)\n",
+        );
+    } else if !priced && !model.is_empty() {
         out.push_str(&format!(
             "\n(no pricing for {model} — add it to model_pricing.json)\n"
         ));
@@ -1780,6 +1928,66 @@ pub fn stats(store: &dyn TraceStore, run_id: &str) -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use crate::tracestore::MemTraceStore;
+
+    fn local_ai_trace() -> Vec<Value> {
+        vec![
+            json!({"kind":"header","schema":2,"run":{"id":"run_local","program":"agent:toolcaller@v2"}}),
+            json!({"kind":"span","seq":1,"phase":"begin","span":"t1","name":"llm.chat","parent":null,"input":{}}),
+            json!({"kind":"effect","seq":2,"effect":"ai.generate","span":"t1","error":null,"meta":{"class":"read"},
+                "input":{"harness":"claude","model":"claude-sonnet-5","system":"system text",
+                    "messages":[{"role":"user","content":json!({"parts":[{"type":"text","text":"local request"}]}).to_string()}]},
+                "output":{"harness":"claude","model":"claude-sonnet-5","content":{"type":"json","value":{}}}}),
+            json!({"kind":"span","seq":3,"phase":"end","span":"t1","name":"llm.chat","ok":true,"error":null,"meta":{"durMs":10},
+                "output":{"parts":[{"type":"text","text":"local reply"}],"stop":"done",
+                    "usage":{"in":null,"out":5,"cacheRead":null,"cacheWrite":null,"inputTotal":100,"costUsd":null},
+                    "provenance":{"harness":"claude","model":"claude-sonnet-5","backend":"any-ai"}}}),
+            json!({"kind":"cell","seq":4,"cell":"main","ok":true,"error":null,"metrics":{"duration_ms":12,"fuel_used":1}}),
+        ]
+    }
+
+    #[test]
+    fn local_ai_trace_preserves_messages_provenance_and_unknown_usage_cost() {
+        let records = local_ai_trace();
+        let (req, resp) = llm_exchange(&[&records[2]], Some(&records[3])).unwrap();
+        assert_eq!(req["messages"][0]["content"][0]["text"], "local request");
+        assert_eq!(resp["content"][0]["text"], "local reply");
+        assert_eq!(resp["harness"], "claude");
+        assert!(resp["usage"]["input_tokens"].is_null());
+        assert_eq!(resp["usage"]["output_tokens"], 5);
+        let d = stats_of(&records);
+        assert_eq!(d["run"]["harness"], "claude");
+        assert_eq!(d["run"]["priced"], false);
+        assert!(d["total"]["in"].is_null());
+        assert!(d["turns"][0]["costUsd"].is_null());
+        assert!(d["total"]["costUsd"].is_null());
+        assert_eq!(d["total"]["out"], 5);
+        let store = MemTraceStore::new();
+        store.write_run("run_local", &records, &[]).unwrap();
+        let rendered = render(&store, "run_local", &ShowOpts::default()).unwrap();
+        assert!(rendered.contains("local request"), "{rendered}");
+        assert!(rendered.contains("local reply"), "{rendered}");
+        assert!(rendered.contains("tokens in=? out=5"), "{rendered}");
+        let table = stats(&store, "run_local").unwrap();
+        assert!(table.contains("API list pricing does not apply"), "{table}");
+        assert!(!table.contains("add it to model_pricing"), "{table}");
+    }
+
+    #[test]
+    fn local_ai_known_usage_is_not_priced_as_an_api_and_model_defaults_are_visible() {
+        let mut records = local_ai_trace();
+        records[2]["input"].as_object_mut().unwrap().remove("model");
+        records[3]["output"]["usage"] = json!({"in":10,"out":5,"cacheRead":0,"cacheWrite":0});
+        let d = stats_of(&records);
+        assert_eq!(d["run"]["model"], "claude-sonnet-5");
+        assert_eq!(d["total"]["in"], 10);
+        assert!(d["total"]["costUsd"].is_null());
+        let store = MemTraceStore::new();
+        store.write_run("run_local", &records, &[]).unwrap();
+        assert_eq!(
+            stats_data(&store, "run_local").unwrap()["run"]["model"],
+            "claude-sonnet-5"
+        );
+    }
 
     #[test]
     fn follow_lines_render_the_show_vocabulary() {

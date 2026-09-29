@@ -6,6 +6,9 @@ Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
 
+Local experiment amendment (2026-09-28): [ADR-030](030-local-ai-service.md)
+adds the text/JSON local route in `llm@v2` and opt-in `toolcaller@v2`, preserving v1.
+
 ## Context
 
 The conversation loop — the successor of `toolcall_core@v1.js` — is a

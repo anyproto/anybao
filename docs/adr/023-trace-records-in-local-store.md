@@ -13,6 +13,9 @@ Upstream: `~/any/any` PR #195 — local store (`docs/26-local-store.md`,
 `/v1/local/*`); gated follow-ups in `docs/07-roadmap.md`; the asks this
 ADR adds are filed as SYN-204 (text: [`../localstore-traces-upstream-ticket.md`](../localstore-traces-upstream-ticket.md))
 
+Local experiment amendment (2026-09-28): [ADR-030](030-local-ai-service.md)
+extends model trace views to local AI and preserves unknown usage/cost.
+
 ## Context
 
 A run's trace is the only record of what the agent did (ADR-001: if it

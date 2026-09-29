@@ -263,6 +263,7 @@ enum RefKind {
 }
 
 pub struct Broker {
+    pub ai: crate::ai::AiRuntime,
     pub writer: TraceWriter,
     /// space-backed module resolution (serve); None = programs_dir only
     pub resolver: Option<Box<dyn crate::resolver::ModuleResolver + Send>>,
@@ -509,6 +510,7 @@ impl Broker {
         classifier: Classifier,
     ) -> Self {
         Broker {
+            ai: Default::default(),
             writer,
             resolver: None,
             current_cell: None,
@@ -1098,6 +1100,9 @@ impl Broker {
     // llm.chat / data.read / data.write / net.http; every other
     // syscall's cap is its own name (the reference-host default).
     fn cap_of(&self, name: &str, payload: &Value) -> String {
+        if name == "ai.generate" {
+            return "llm.chat".into();
+        }
         if let Some(verb) = name.strip_prefix("http.") {
             let url = payload.get("url").and_then(|u| u.as_str()).unwrap_or("");
             return self.classifier.cap(&verb.to_uppercase(), url).to_string();
@@ -1108,6 +1113,9 @@ impl Broker {
     // --- the syscall implementations -------------------------------------
     fn execute(&mut self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
         match name {
+            "ai.generate" => self
+                .ai
+                .generate(payload, self.interrupt.clone(), self.deadline),
             n if n.starts_with("http.") => self.sys_http(n, payload),
             "config.get" => self.sys_config_get(payload),
             "config.set" => self.sys_config_set(payload),

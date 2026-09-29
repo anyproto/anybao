@@ -23,6 +23,8 @@ struct Cli {
 /// The run/replay plumbing (kernel, programs, trace landing, config).
 #[derive(clap::Args)]
 struct RunOpts {
+    #[command(flatten)]
+    local_ai: LocalAiOpts,
     /// local kernel override (dev) [default: the embedded kernel]
     #[arg(long)]
     kernel: Option<PathBuf>,
@@ -53,6 +55,79 @@ struct RunOpts {
     /// [default: ./anybao.toml when present]
     #[arg(long)]
     config_file: Option<PathBuf>,
+}
+
+/// Explicit host policy only; constructing the service performs no discovery.
+#[derive(clap::Args, Default)]
+struct LocalAiOpts {
+    /// Enable local CLI generation on this execution device (ADR-030).
+    #[arg(long)]
+    local_ai: bool,
+    /// Permit Claude Code after reviewing its use and metered-auth policy.
+    #[arg(long, requires = "local_ai")]
+    local_ai_allow_claude: bool,
+    /// Permit metered or unverified-cost CLI authentication.
+    #[arg(long, requires = "local_ai")]
+    local_ai_allow_metered: bool,
+}
+
+impl LocalAiOpts {
+    fn services(self) -> anyrt::Services {
+        anyrt::Services {
+            ai: self.local_ai.then(|| {
+                Arc::new(any_ai::AnyAi::with_config(any_ai::SystemConfig {
+                    allow_claude: self.local_ai_allow_claude,
+                    allow_metered: self.local_ai_allow_metered,
+                    ..Default::default()
+                })) as Arc<dyn anyrt::AiService>
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod local_ai_cli_tests {
+    use super::*;
+
+    #[test]
+    fn local_ai_is_opt_in_for_serve_and_run() {
+        for args in [vec!["anyrt", "serve"], vec!["anyrt", "run", "test@v1"]] {
+            match Cli::try_parse_from(args).unwrap().cmd {
+                Cmd::Serve { local_ai, .. }
+                | Cmd::Run {
+                    opts: RunOpts { local_ai, .. },
+                    ..
+                } => {
+                    assert!(local_ai.services().ai.is_none());
+                }
+                _ => panic!("unexpected command"),
+            }
+        }
+        assert!(Cli::try_parse_from(["anyrt", "serve", "--local-ai-allow-metered"]).is_err());
+        assert!(
+            Cli::try_parse_from(["anyrt", "run", "test@v1", "--local-ai-allow-claude"]).is_err()
+        );
+        match Cli::try_parse_from([
+            "anyrt",
+            "serve",
+            "--local-ai",
+            "--agent-program",
+            "agent:toolcaller@v2",
+        ])
+        .unwrap()
+        .cmd
+        {
+            Cmd::Serve {
+                local_ai,
+                agent_program,
+                ..
+            } => {
+                assert!(local_ai.services().ai.is_some());
+                assert_eq!(agent_program.as_deref(), Some("agent:toolcaller@v2"));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -91,6 +166,11 @@ enum Cmd {
     /// the agent: watch a chat, run conversations + triggers
     /// (defaults come from anybao.toml, ADR-009 §1; flags override)
     Serve {
+        #[command(flatten)]
+        local_ai: LocalAiOpts,
+        /// Trusted chat entrypoint [default: config agent.program].
+        #[arg(long)]
+        agent_program: Option<String>,
         /// any server base url [default: config addr]
         #[arg(long)]
         addr: Option<String>,
@@ -298,6 +378,7 @@ fn mock_spec_value(
 
 fn run_cmd(spec: String, args: Value, opts: RunOpts, how: RunHow) -> Result<()> {
     let RunOpts {
+        local_ai,
         kernel,
         programs,
         traces_dir,
@@ -455,6 +536,7 @@ fn run_cmd(spec: String, args: Value, opts: RunOpts, how: RunHow) -> Result<()> 
         routes::Classifier::new(any_base.as_deref()),
     );
     broker.resolver = resolver;
+    broker.ai = anyrt::ai::AiRuntime::new(local_ai.services());
     broker.runtime = runtime;
     broker.oauth = Some(oauth_state);
     broker.trace_store = Some(store.clone());
@@ -600,6 +682,8 @@ fn main() -> Result<()> {
         }
         Cmd::Replay { run, opts } => run_cmd(String::new(), Value::Null, opts, RunHow::Replay(run)),
         Cmd::Serve {
+            local_ai,
+            agent_program,
             addr,
             space,
             agent_name,
@@ -615,6 +699,7 @@ fn main() -> Result<()> {
                 addr,
                 space,
                 agent_name,
+                agent_program,
                 control_port,
                 traces_dir,
             });
@@ -631,7 +716,7 @@ fn main() -> Result<()> {
             cfg.secret_overrides
                 .append(&mut load_secrets_file(&secrets_file)?);
             config::bootstrap(&mut cfg);
-            serve::serve(cfg)
+            serve::start_with_services(cfg, local_ai.services())?.join()
         }
         Cmd::Deploy {
             source,

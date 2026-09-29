@@ -10,6 +10,9 @@ delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
 (capabilities); plan §4 Overlays + the `agent:` overlay split (00-plan,
 decided 2026-07-08)
 
+Local experiment amendment (2026-09-28): [ADR-030](030-local-ai-service.md)
+adds `start_with_services` and trusted `agent.program` selection; defaults stay v1.
+
 ## Context
 
 The runtime locates all three asset kinds through cwd-relative clap

@@ -9,6 +9,7 @@
 //! Logging rides `tracing`: embedders install a subscriber (or get
 //! silence); the bin installs a fmt subscriber.
 
+pub mod ai;
 pub mod anyapi;
 pub mod blob;
 pub mod broker;
@@ -70,6 +71,7 @@ pub(crate) mod bindings {
     });
 }
 
+pub use ai::{AiService, Services};
 pub use config::{Config, ConfigBuilder};
 pub use runner::{run_program, Cage, RunOutcome};
-pub use serve::{start, AgentHandle, RunCtx};
+pub use serve::{start, start_with_services, AgentHandle, RunCtx};

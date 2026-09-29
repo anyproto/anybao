@@ -1510,8 +1510,8 @@ fn run_stamp(run_id: &str, spec: &str, args: &Value) -> Value {
 
 /// The embedder's handle on a running agent (ADR-009 §6): `ctx` is the
 /// per-turn API (`RunCtx::run`); `stop()` flips the shutdown flag and
-/// joins the watch/ticker/control threads. In-flight conversation
-/// threads are not joined — a running turn finishes on its own.
+/// joins service threads. Local AI admission closes before live runs
+/// are interrupted, and accepted AI work is drained (ADR-030).
 pub struct AgentHandle {
     pub ctx: Arc<RunCtx>,
     shutdown: Arc<AtomicBool>,
@@ -1550,6 +1550,11 @@ impl AgentHandle {
     /// on the next frame/heartbeat (or the sliced reconnect sleep).
     pub fn stop(mut self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
+        self.ctx.ai.close();
+        for live in self.ctx.live_runs.lock().unwrap().values() {
+            live.interrupt.store(true, Ordering::Release);
+        }
+        let drained = self.ctx.ai.shutdown(Duration::from_secs(10));
         let joined = self.join_all();
         // runs are detached and finish on their own; a run mid-command
         // must not leave its child behind when the process goes
@@ -1557,13 +1562,16 @@ impl AgentHandle {
         // PDEATHSIG/SIGPIPE case, not ours.
         #[cfg(feature = "shell")]
         crate::shell::kill_all();
-        joined
+        joined?;
+        drained.map_err(|e| anyhow::anyhow!("{}: {}", e.type_, e.message))
     }
 
     /// Block until the service threads exit (the CLI path — they only
     /// exit on `stop()` from another handle-holder or a bind failure).
     pub fn join(mut self) -> Result<()> {
-        self.join_all()
+        let joined = self.join_all();
+        let stopped = self.stop();
+        joined.and(stopped)
     }
 
     fn join_all(&mut self) -> Result<()> {
@@ -1758,7 +1766,15 @@ fn load_cage(cfg: &Config) -> Result<Arc<Cage>> {
 
 /// Everything serve does up to the watch loop, which is spawned —
 /// returns immediately with the handle (the lib-mode surface).
-pub fn start(mut cfg: Config) -> Result<AgentHandle> {
+pub fn start(cfg: Config) -> Result<AgentHandle> {
+    start_with_services(cfg, crate::Services::default())
+}
+
+pub fn start_with_services(mut cfg: Config, services: crate::Services) -> Result<AgentHandle> {
+    anyhow::ensure!(
+        !cfg.agent_program.trim().is_empty(),
+        "agent.program must not be empty"
+    );
     // Boot is serial, every step below can wait on the server (a
     // registry convergence, a space still syncing), and nothing shows
     // — no control port, no presence beat — until all of it is done.
@@ -2042,6 +2058,8 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     });
 
     let ctx = Arc::new(RunCtx {
+        ai: crate::ai::AiRuntime::new(services),
+        shutdown: shutdown.clone(),
         cage,
         waiting: Mutex::new(WaitSet::overlays(pending)),
         client: client.clone(),
@@ -2151,6 +2169,8 @@ fn sliced_sleep(total: Duration, stop: &AtomicBool) {
 }
 
 pub struct RunCtx {
+    pub ai: crate::ai::AiRuntime,
+    shutdown: Arc<AtomicBool>,
     pub cage: Arc<Cage>,
     /// what the loop is waiting for (ADR-009 §8): unreadable overlays
     /// and missed programs — gates program runs, never the cage
@@ -2236,6 +2256,10 @@ impl RunCtx {
     /// The error text is user-facing status — the watcher bubbles it
     /// into the chat while not ready.
     pub fn ensure_ready(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.shutdown.load(Ordering::Acquire),
+            "agent is shutting down"
+        );
         let mut waiting = self.waiting.lock().unwrap();
         if waiting.is_empty() {
             return Ok(());
@@ -2293,7 +2317,7 @@ impl RunCtx {
         if conv.is_none() && jobs.is_none() {
             return Ok(0);
         }
-        self.traces.expire(CHAT_PROGRAM, conv, jobs)
+        self.traces.expire(&self.cfg.agent_program, conv, jobs)
     }
 
     fn broker(&self, spec: &str, run_id: String) -> Broker {
@@ -2314,6 +2338,7 @@ impl RunCtx {
             Classifier::new(Some(&self.cfg.addr)),
         );
         b.secrets_guard = self.secrets_guard.clone();
+        b.ai = self.ai.clone();
         b.secrets_collection = Some(self.secrets_ds.clone());
         b.oauth = Some(self.oauth.clone());
         b.trace_store = Some(self.traces.clone());
@@ -2358,7 +2383,12 @@ impl RunCtx {
         // source: working beats carry the freshest live run (ADR-025 §1)
         let activity: crate::broker::SharedActivity = Default::default();
         broker.activity = Some(activity.clone());
-        self.live_runs.lock().unwrap().insert(
+        let mut live_runs = self.live_runs.lock().unwrap();
+        anyhow::ensure!(
+            !self.shutdown.load(Ordering::Acquire),
+            "agent is shutting down"
+        );
+        live_runs.insert(
             run_id.clone(),
             crate::triggers::LiveRun {
                 mailbox: mailbox.clone(),
@@ -2367,6 +2397,7 @@ impl RunCtx {
                 activity,
             },
         );
+        drop(live_runs);
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
         self.live_runs.lock().unwrap().remove(&run_id);
         let mut outcome = outcome?;
@@ -2402,6 +2433,7 @@ impl RunCtx {
                 missing_secrets: outcome.broker.missing_secrets.clone(),
                 missing_programs: outcome.broker.missing_programs.clone(),
                 mutated: outcome.broker.mutations > 0,
+                local_ai_attempted: crate::ai::attempted(&outcome.broker.writer.records),
             },
         ))
     }
@@ -2432,7 +2464,12 @@ impl RunCtx {
         let interrupt = Arc::new(AtomicBool::new(false));
         let activity: crate::broker::SharedActivity = Default::default();
         broker.activity = Some(activity.clone());
-        self.live_runs.lock().unwrap().insert(
+        let mut live_runs = self.live_runs.lock().unwrap();
+        anyhow::ensure!(
+            !self.shutdown.load(Ordering::Acquire),
+            "agent is shutting down"
+        );
+        live_runs.insert(
             run_id.clone(),
             crate::triggers::LiveRun {
                 mailbox: mailbox.clone(),
@@ -2441,6 +2478,7 @@ impl RunCtx {
                 activity,
             },
         );
+        drop(live_runs);
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
         self.live_runs.lock().unwrap().remove(&run_id);
         let mut outcome = outcome?;
@@ -2764,6 +2802,10 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
     Ok(())
 }
 
+fn retryable_program_gap(rr: &RunResult) -> bool {
+    rr.status == "error" && !rr.missing_programs.is_empty() && !rr.mutated && !rr.local_ai_attempted
+}
+
 /// Start a run for `input` — or, when one is already live on this chat,
 /// inject into its mailbox instead. Check-and-register happens under
 /// ONE watcher lock: the watch thread and the ticker's backlog drain
@@ -2809,7 +2851,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
             "uiContext": input.context, "agentName": ctx.cfg.agent_name, "traceRef": run_id,
             "codeSpace": ctx.code_space, "overlays": overlays});
         let result = ctx.run(
-            "agent:toolcaller@v1",
+            &ctx.cfg.agent_program,
             &args,
             mailbox.clone(),
             interrupt,
@@ -2864,8 +2906,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
             // to re-run — the trace's mutate count is the oracle; a
             // second miss, or a miss after a mutation, fails loudly
             // below like any other error.
-            let program_gap = rr.status == "error" && !rr.missing_programs.is_empty();
-            if program_gap && !died_on_miss && !rr.mutated && input.deferrals == 0 {
+            if retryable_program_gap(rr) && !died_on_miss && input.deferrals == 0 {
                 let added = ctx
                     .waiting
                     .lock()
@@ -3324,6 +3365,7 @@ fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Val
             missing_secrets: Vec::new(),
             missing_programs: Vec::new(),
             mutated: false,
+            local_ai_attempted: false,
         })
 }
 
@@ -3914,6 +3956,27 @@ mod tests {
     use super::*;
     use crate::config::Overlay;
     use crate::testutil::StubTransport;
+
+    #[test]
+    fn program_gap_never_retries_a_local_ai_attempt() {
+        let mut rr = RunResult {
+            status: "error".into(),
+            duration_ms: 0,
+            trace_ref: None,
+            fuel: None,
+            error: None,
+            missing_secrets: vec![],
+            missing_programs: vec![("space".into(), "missing@v1".into())],
+            mutated: false,
+            local_ai_attempted: false,
+        };
+        assert!(retryable_program_gap(&rr));
+        rr.local_ai_attempted = true;
+        assert!(!retryable_program_gap(&rr));
+        rr.local_ai_attempted = false;
+        rr.mutated = true;
+        assert!(!retryable_program_gap(&rr));
+    }
 
     fn overlay(space: &str, invite: Option<&str>) -> Overlay {
         Overlay {

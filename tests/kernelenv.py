@@ -88,7 +88,10 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     the default models a binary without it — the probe reads null
     and the names stay out of the namespace — unless `effect` chooses
     to serve the key itself."""
+    span_count = 0
+
     def host_effect(name, payload_json):
+        nonlocal span_count
         payload = json.loads(payload_json)
         try:
             if name == "module.resolve":
@@ -117,7 +120,10 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                         # the same bare-name source
                         src = local_source(spec.split(":")[-1], programs_dir)
                 out = {"objectId": spec, "marker": marker, "source": src}
-            elif name in ("span.begin", "span.end"):
+            elif name == "span.begin":
+                span_count += 1
+                out = {"span": f"test-span-{span_count}"}
+            elif name == "span.end":
                 out = {}
             elif name == "test.any":
                 fn = getattr(any_client, payload["method"])

@@ -16,6 +16,7 @@ name = "anyrt"
 path = "src/main.rs"
 
 [dependencies]
+any-ai = { path = "../../any-ai" } # ADR-030: local experiment, pin before distribution
 # pinned to the wasmtime-py major the Python reference host embeds
 wasmtime = { version = "46", features = ["component-model"] }
 wasmtime-wasi = "46"

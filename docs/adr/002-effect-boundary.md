@@ -4,6 +4,9 @@ Status: **Accepted** (2026-07-07)
 Date: 2026-07-07
 Builds on: ADR-001 (trace format v2 — accepted)
 
+Local experiment amendment (2026-09-28): [ADR-030](030-local-ai-service.md)
+adds recorded `ai.generate` (`read`, `llm.chat`) through an injected host service.
+
 ## Context
 
 The isolation principle (00-plan.md §5): nothing executes side effects
