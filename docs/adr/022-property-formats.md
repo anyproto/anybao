@@ -184,6 +184,13 @@ the normalized record:
   A missing object is `{"id", "name": None}`.
 - `date`/`datetime` stay instants (ADR-019).
 
+`aggregate` over a space's objects speaks the same names: a `$group`
+`_id` that is a plain `"$type.prop"` ref to a select property (alone
+or as a member of a compound `_id`) comes back as option names in the
+result's group key (the store names it `id`), as long as no stage
+after that `$group` reshapes it. Computed `_id`
+expressions and dataset-record pipelines stay raw.
+
 `normalize=False` returns the raw wire shape, unchanged. `filter` /
 `sort` accept the same display forms — `{"task.status": "In
 progress"}` resolves to the key, `{"task.related": "Dune"}` to

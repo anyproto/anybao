@@ -2020,7 +2020,9 @@ class _Client:
         $match/$sort keys and $group refs; unknown ones error with the
         catalog. Avg rating per genre: [{"$group": {"_id":
         "$book.genre", "avg": {"$avg": "$book.rating"}}}]. Returns
-        {"records": [...]} with ids mapped back to xKeys; unknown
+        {"records": [...]} with ids mapped back to xKeys and a choice
+        property's group keys as option NAMES (as query_objects reads
+        them; filters take names or keys); unknown
         stages are a 400 (aggregate.bad_pipeline). With object_id +
         dataset the pipeline runs over that object's dataset records
         instead — field refs are then the dataset's PLAIN keys
@@ -2037,8 +2039,60 @@ class _Client:
         r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                        {"pipeline": self._resolve_pipeline(space, pipeline)})
         if isinstance(r, dict) and isinstance(r.get("records"), list):
-            r["records"] = self._dexify(space, r["records"])
+            r["records"] = self._choice_group_names(
+                space, pipeline, self._dexify(space, r["records"]))
         return r
+
+    def _choice_group_names(self, space, pipeline, recs):
+        """A `$group` `_id` that is a plain "$type.prop" ref to a choice
+        property comes back as stored option KEYS; query_objects reads
+        the same property as option NAMES. Map the group keys to names
+        so both reads agree (a skill built from aggregate's "to_do" never
+        matched query_objects' "To do" — BOB-160 bench 11.2). Only when
+        no stage after that `$group` reshapes `_id`; computed `_id`
+        expressions stay keys."""
+        if not isinstance(pipeline, list):
+            return recs
+        gi = max((i for i, st in enumerate(pipeline)
+                  if isinstance(st, dict) and "$group" in st), default=None)
+        if gi is None or any(
+                set(st) - {"$sort", "$limit", "$skip", "$match"}
+                for st in pipeline[gi + 1:] if isinstance(st, dict)):
+            return recs
+        gid = (pipeline[gi]["$group"] or {}).get("_id")
+        refs = ({None: gid} if isinstance(gid, str)
+                else dict(gid) if isinstance(gid, dict) else {})
+        defs = {k: self._choice_def(space, ref) for k, ref in refs.items()}
+        defs = {k: d for k, d in defs.items() if d}
+        if not defs:
+            return recs
+        for rec in recs:
+            if not isinstance(rec, dict):
+                continue
+            # the store returns the group key as `id` (not `_id`)
+            gk = "id" if "id" in rec else "_id"
+            for k, pdef in defs.items():
+                if k is None:
+                    rec[gk] = self._display_value(pdef, rec.get(gk))
+                elif isinstance(rec.get(gk), dict) and k in rec[gk]:
+                    rec[gk][k] = self._display_value(pdef, rec[gk][k])
+        return recs
+
+    def _choice_def(self, space, ref):
+        """The property def behind a "$typeXKey.propXKey" ref when it is
+        a choice property, else None (builtin groups, unknowns, other
+        formats)."""
+        if not (isinstance(ref, str) and ref.startswith("$") and ref.count(".") == 1):
+            return None
+        head, _, tail = ref[1:].partition(".")
+        if head in _RESERVED_GROUPS:
+            return None
+        tid = self._resolve_def(space, head)
+        if tid is None:
+            return None
+        p = next((q for q in self._type_props(space, tid)
+                  if tail in (q.get("id"), q.get("xKey"), q.get("handle"))), None)
+        return p if p is not None and _slug(p) == "choice" else None
 
     def _resolve_pipeline(self, space, pipeline):
         """xKey field refs -> wire ids, only in the grammatically

@@ -2166,3 +2166,35 @@ def test_list_datasets_is_the_model_facing_store_listing():
                      "searchScope": "email",
                      "fields": [{"key": "subject", "kind": "string"},
                                 {"key": "internalDate", "kind": "number"}]}]
+
+
+_CHOICE_CAT = {**_CAT, "/types/bafyTASK/properties": {"properties": [
+    {"id": "bafySTATUS", "name": "Status", "xKey": "status",
+     "xFormat": {"type": "choice", "options": {
+         "to_do": {"name": "To do"}, "done": {"name": "Done"}}}},
+    {"id": "bafyPRIO", "name": "Priority", "xKey": "priority"}]}}
+
+
+def test_aggregate_groups_a_choice_by_option_name_like_query_objects():
+    # the store groups by stored option KEYS; query_objects reads names —
+    # a skill built from aggregate's "to_do" never matched "To do"
+    fx = wire(replies={**_CHOICE_CAT, "/objects/aggregate": {"records": [
+        {"id": ["to_do"], "n": 3}, {"id": ["done"], "n": 1}, {"id": None, "n": 4}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": "$task.status",
+                                                "n": {"$sum": 1}}},
+                                    {"$sort": {"n": -1}}])
+    assert r["records"] == [{"id": ["To do"], "n": 3}, {"id": ["Done"], "n": 1},
+                            {"id": None, "n": 4}]   # the store names the group key `id`
+    # a compound _id maps its choice member; non-choice refs and a
+    # reshaping stage after the $group leave values as they came
+    fx = wire(replies={**_CHOICE_CAT, "/objects/aggregate": {"records": [
+        {"id": {"s": "done", "p": 2}, "n": 1}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": {"s": "$task.status",
+                                                        "p": "$task.priority"},
+                                                "n": {"$sum": 1}}}])
+    assert r["records"] == [{"id": {"s": "Done", "p": 2}, "n": 1}]
+    fx = wire(replies={**_CHOICE_CAT, "/objects/aggregate": {"records": [
+        {"id": "done", "n": 1}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": "$task.status", "n": {"$sum": 1}}},
+                                    {"$project": {"n": 1}}])
+    assert r["records"] == [{"id": "done", "n": 1}]
