@@ -819,6 +819,20 @@ def test_create_dataset_adds_the_fields_an_existing_def_lacks():
     posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
     assert posts == [("/v1/spaces/s1/types/lg/datasets/d1/fields",
                       {"key": "context", "kind": "string"})]
+    # a server refusing the add leaves the store usable — reported, not raised
+    base = wire(replies={
+        "/types/lg/datasets": {"datasets": [
+            {"id": "d1", "key": "agent_turns", "collection": "lg_agent_turns",
+             "fields": []}]},
+        "/types": {"types": [{"id": "lg", "xKey": "agent_log"}]}})
+
+    def refusing(name, payload):
+        if payload.get("url", "").endswith("/fields"):
+            return {"status": 404, "headers": {}, "body": "{}"}
+        return base(name, payload)
+    r = client(refusing).create_dataset("s1", "agent_log", {
+        "key": "agent_turns", "fields": [{"key": "context", "kind": "string"}]})
+    assert r["collection"] == "lg_agent_turns" and r["fieldsFailed"][0].startswith("context:")
 
 
 def test_create_dataset_single_element_text_array_is_not_drift():

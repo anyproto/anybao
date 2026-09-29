@@ -2711,9 +2711,14 @@ class _Client:
                 added = []
                 for f in ((draft or {}).get("fields") or []) if "fields" in d else []:
                     if f.get("key") and f["key"] not in have_keys and not f.get("stamp"):
-                        self._call("post", f"/v1/spaces/{space}/types/{tid}/datasets/"
-                                   f"{d.get('id')}/fields", f)
-                        added.append(f["key"])
+                        # best-effort: the store stays usable without it —
+                        # a refusal here must never fail the chat-log boot
+                        try:
+                            self._call("post", f"/v1/spaces/{space}/types/{tid}/datasets/"
+                                       f"{d.get('id')}/fields", f)
+                            added.append(f["key"])
+                        except AnyError as e:
+                            out.setdefault("fieldsFailed", []).append(f"{f['key']}: {e}")
                 if added:
                     self._ds_invalidate(space, type_id=tid)
                     out["fieldsAdded"] = added
