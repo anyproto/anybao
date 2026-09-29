@@ -88,7 +88,10 @@ c.upsert_record(bao, anchor, "agent_triggers", "<slug>", {
 ```
 
 A trigger calls `use(program).main(args)` with the record's args: a
-program of yours for it defines `def main(args)`. Recurring: `"kind":
+program of yours for it defines `def main(args)`. Test it before
+scheduling it for real with a `"once"` trigger at now() + 30 and
+`effects.runs(filter={"triggerId": "<slug>"})`, never by calling it in
+a cell (its post to your chat is refused there). Recurring: `"kind":
 "cron"` with `{"cron": "<expr>"}` or
 `{"every_s": n}`. Cron fields are UTC: shift the user's hour by
 tz_offset(). A program that reports back posts to your chat
