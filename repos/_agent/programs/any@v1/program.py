@@ -581,7 +581,13 @@ class _Client:
         for t in texts:
             if not isinstance(t, str):
                 continue
-            for uri in self._LINK.findall(t):
+            for m in self._LINK.finditer(t):
+                uri = m.group(0)
+                # a template, not a link: `any://o/<spaceId>/<id>` (the
+                # match stops at "<") or `any://o/…` — skill and doc text
+                # carries these and warned on every save (BOB-160 bench)
+                if t[m.end():m.end() + 1] == "<" or "…" in uri or "..." in uri:
+                    continue
                 w = self._link_issue(uri)
                 if w and w not in out:
                     out.append(w)
@@ -1509,7 +1515,7 @@ class _Client:
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
         # ADR-006 §6, ADR-022 §2
-        """Create an object → {objectId, resolved?, createdOptions?, warnings?}.
+        """Create an object → {objectId, link, resolved?, createdOptions?, warnings?}.
 
         body: {"type"?, "collections"?, "initialProperties"?, "name"?,
         "description"?, "markdown"?}. An object IS exactly one `type`
@@ -1621,7 +1627,12 @@ class _Client:
                                                        "collections": list(cids)}
         if markdown is not None and object_id:
             self.put_markdown(space, object_id, markdown)
-        return self._write_result(object_id, ctx)
+        out = self._write_result(object_id, ctx)
+        if object_id and self._is_space_id(space):
+            # the link to paste — the space segment is the ID; building it
+            # cost a turn or came out with the space NAME (BOB-160 bench)
+            out["link"] = f"any://o/{space}/{object_id}"
+        return out
 
     def _declares_body(self, space, type_ids):
         """Whether any of `type_ids` declares the shared editor body."""
@@ -2419,7 +2430,8 @@ class _Client:
                 f'"{xkey}" is the {want if row is None else row["kind"]} of a '
                 "catalog app (`list_available_apps`) — catalog definitions "
                 "cannot be created or reshaped; `setup_app` installs the app. "
-                'Pick another name, or pass an explicit non-catalog "xKey".')
+                "To make your own, keep the name and pass a free handle, e.g. "
+                f'"xKey": "my_{xkey}" — the user sees the name, never the xKey.')
         if row is None:
             # The record-root guard gates MINTING only: an existing
             # definition keeps its handle (refusing here would lock the
@@ -2470,7 +2482,7 @@ class _Client:
         `"body": false` opts out (bao's hidden stores). A name or
         xKey that collides with a builtin handle (any, spaceIndex,
         type, collection, page, dataview, miniapp, bin), a catalog
-        definition's (wiki, person, contact, …) or an existing
+        definition's (task, wiki, person, contact, …) or an existing
         COLLECTION's ERRORS — types and collections share one handle
         namespace. So does MINTING one under a record-root key (id,
         author, createdAt, modifiedAt, modifiedBy, spaceId): every
@@ -3407,12 +3419,22 @@ class _Client:
         return [self._edge(space, e) for e in r.get("links") or []]
 
     @_public('getter', scoped=False)
-    def backlinks_everywhere(self, target_uri):
+    def backlinks_everywhere(self, target_uri, object_id=None):
         """Account-wide backlinks to one target across every indexed space.
 
         Returns [{spaceId, object: [edge], parts: [edge]}]. `target_uri` is the
         GLOBAL form: `any://o/<spaceId>/<objectId>` (also `any://m/…` for a
-        member, `any://f/…` for a file)."""
+        member, `any://f/…` for a file); `(space, object_id)` works too."""
+        if object_id is not None:
+            sp = target_uri
+            if isinstance(sp, dict):
+                sp = sp.get("spaceId") or sp.get("id")
+            target_uri = f"any://o/{self._resolve_space(sp)}/{object_id}"
+        if not (isinstance(target_uri, str) and target_uri.startswith("any://")):
+            raise ValueError(
+                "backlinks_everywhere(target_uri) takes the global link "
+                "any://o/<spaceId>/<objectId> — or (space, object_id) — "
+                f"not {target_uri!r}")
         r = self._call("get", f"/v1/backlinks?target={_urlquote(target_uri)}")
         out = []
         for sp in r.get("spaces") or []:

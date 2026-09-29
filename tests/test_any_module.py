@@ -264,8 +264,9 @@ def test_create_type_refuses_catalog_types():
             {"id": "system:wiki/v1", "type": {"xKey": "wiki"}}]}]},
         "/bundles": {"bundles": [{"id": "system:collections/v1"}]}})
     c = client(fx)
-    with pytest.raises(ValueError, match="catalog app"):
+    with pytest.raises(ValueError, match="catalog app") as e:
         c.create_type("s1", {"name": "Wiki", "properties": [{"name": "Extra"}]})
+    assert '"xKey": "my_wiki"' in str(e.value)      # a free handle to retry with
     assert not any(v == "POST" for v, _, _ in fx.calls)      # nothing minted or reshaped
     # a server without a catalog reserves nothing
     fx = wire(replies={"/types": {"types": [], "typeId": "t9"},
@@ -470,6 +471,13 @@ def test_create_object_resolves_types_and_property_groups():
     assert body == {"type": "bafyTASK", "initialProperties": {
         "any": {"name": "Ship it"},                    # reserved: literal
         "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}}
+
+
+def test_create_object_returns_the_link_to_paste():
+    sid = "bafyreispace0000000000000.abc"
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
+    r = client(fx).create_object(sid, {"type": "task"})
+    assert r == {"objectId": "o9", "link": f"any://o/{sid}/o9"}
 
 
 def test_create_object_unknown_property_raises_never_drops():
@@ -1047,6 +1055,11 @@ def test_links_and_account_wide_backlinks_paths():
     assert c.backlinks_everywhere("any://o/s1/o1") == [
         {"spaceId": "s2", "object": [], "parts": []}]
     assert fx.urls[-1] == "/v1/backlinks?target=any%3A%2F%2Fo%2Fs1%2Fo1"
+    sid = "bafyreispace0000000000000.abc"
+    c.backlinks_everywhere(sid, "o1")                  # (space, id) builds the link
+    assert fx.urls[-1] == f"/v1/backlinks?target=any%3A%2F%2Fo%2F{sid}%2Fo1"
+    with pytest.raises(ValueError, match=r"any://o/<spaceId>/<objectId> — or \(space"):
+        c.backlinks_everywhere("o1")                   # a bare id: the signature, not a 400
 
 
 # --- markdown ---------------------------------------------------------------------
@@ -1119,6 +1132,18 @@ def test_markdown_writers_warn_on_a_missing_space_segment():
     r = c.edit_markdown("s1", "o1", [{"oldText": "a", "newText": "[s](any://s)"}])
     assert r["warnings"] == [
         "any://s: no space segment — a typed link is any://s/<spaceId>/<id>"]
+
+
+def test_link_templates_in_text_pass_silently():
+    # skill/doc text shows the shape; it is not a link to judge
+    fx = wire(replies={"/objects/query": {"records": [
+                           {"id": "o1", "any": {"type": "page"}}]},
+                       "/append": {"inserted": 1}})
+    r = client(fx).append_markdown(
+        "s1", "o1", "write `[Name](any://o/<spaceId>/<objectId>)`, files "
+        "any://f/<spaceId>/<fileId>, e.g. any://o/… — but not any://o/bafyobj1")
+    assert r["warnings"] == [
+        "any://o/bafyobj1: no space segment — a typed link is any://o/<spaceId>/<id>"]
 
 
 def test_well_shaped_and_legacy_links_pass_silently():
