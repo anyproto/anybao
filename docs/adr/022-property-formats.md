@@ -144,7 +144,7 @@ the trace, it didn't happen).
 | `select` | option key; option name (exact, then casefold); | the key |
 | `multiselect` | list of the above; a scalar → one-element list; deduped, order kept | list of keys |
 | `links` | object id; `any://<id>`; typed `any://o/<sid>/<id>` (normalized down); an object **name** — exact `any.name` match, then casefold-unique, within `format.filter` when declared; a list of any of these; a scalar → one-element list | `["any://<id>", …]` |
-| `date` | `instant(…)`, ISO date/datetime string, epoch seconds or millis | `{"$date": <midnight UTC>}`; ISO `YYYY-MM-DD` when the prop is legacy `kind: string` |
+| `date` | `instant(…)`, ISO date/datetime string, epoch seconds or millis | `{"$date": <midnight UTC>}` of the calendar day: an ISO string's day as written, any other instant's day in the user's zone (a value already on a UTC midnight is kept); ISO `YYYY-MM-DD` when the prop is legacy `kind: string` |
 | `datetime` | same inputs | `{"$date": …}`; RFC 3339 when legacy `kind: string` |
 | bare kind | the kind's JSON shape; `"42"` → 42 for `number` | verbatim after a client-side kind check that names the expected shape |
 | any | `None` | a `$unset` of `<typeId>.<propId>` via `/modify` (synced scope; account/local error naming the reason) |

@@ -40,7 +40,7 @@ def wire(replies=None, status=200, config=None):
 BLOBS = {}   # the fake blob directory behind the kernel's blob.* effects
 
 
-def _kernel_effect(name, payload, now):
+def _kernel_effect(name, payload, now, offset_s=0):
     import base64
     import hashlib
     if name == "blob.put":
@@ -51,16 +51,17 @@ def _kernel_effect(name, payload, now):
     if name == "blob.read":
         raw = BLOBS[payload["hash"]][payload["offset"]:payload["offset"] + payload["length"]]
         return {"data": base64.b64encode(raw).decode(), "bytes": len(raw)}
-    return {"epoch": now, "offset_s": 0}
+    return {"epoch": now, "offset_s": offset_s}
 
 
-def load(fx, now=1_787_673_600.0):
-    # ts_s / instant / now are kernel globals (ADR-019 §1) — the real
-    # implementations, loaded from the guest kernel source
+def load(fx, now=1_787_673_600.0, offset_s=0):
+    # ts_s / instant / now / tz_offset are kernel globals (ADR-019 §1) —
+    # the real implementations, loaded from the guest kernel source
     from kernelenv import load_kernel
-    k = load_kernel(effect=lambda n, p: _kernel_effect(n, p, now))
+    k = load_kernel(effect=lambda n, p: _kernel_effect(n, p, now, offset_s))
     g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f),
          "use": None, "ts_s": k.ts_s, "instant": k.instant, "now": k.now,
+         "tz_offset": k.tz_offset,
          "Blob": k.Blob, "blob": k.blob}
     exec(compile(SRC, "any@v1.py", "exec"), g)
     return g
@@ -2199,3 +2200,23 @@ def test_aggregate_groups_a_choice_by_option_name_like_query_objects():
     r = client(fx).aggregate("s1", [{"$group": {"_id": "$task.status", "n": {"$sum": 1}}},
                                     {"$project": {"n": 1}}])
     assert r["records"] == [{"id": "done", "n": 1}]
+
+
+
+def test_a_date_property_keeps_the_calendar_day_east_and_west_of_utc():
+    # the encoder floored the raw instant to UTC midnight: local midnight in
+    # +02:00 is 22:00 UTC the day before, so "due Friday" saved Thursday
+    enc = load(wire(), offset_s=7200)["_Client"]._encode_instant
+    day = {"$date": 1791504000000}                       # 2026-10-09T00:00Z
+    assert enc("due", "date", "2026-10-09T00:00:00+02:00") == day
+    assert enc("due", "date", "2026-10-09") == day
+    assert enc("due", "date", "2026-10-09T23:30:00-05:00") == day   # the day as written
+    enc = load(wire(), offset_s=7200)["_Client"]._encode_instant
+    local_midnight = {"$date": (1791504000 - 7200) * 1000}   # instant(...+02:00)
+    assert enc("due", "date", local_midnight) == day          # the user's day
+    assert enc("due", "date", day) == day                     # a stored date round-trips
+    west = load(wire(), offset_s=-5 * 3600)["_Client"]._encode_instant
+    assert west("due", "date", day) == day                    # never shifts a UTC midnight
+    assert west("due", "date", {"$date": (1791504000 + 5 * 3600) * 1000}) == day
+    # datetimes are untouched
+    assert enc("at", "datetime", local_midnight) == local_midnight

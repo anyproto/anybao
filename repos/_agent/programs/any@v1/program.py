@@ -1131,7 +1131,16 @@ class _Client:
         if secs is None:
             raise ValueError(f'"{handle}": unreadable instant {value!r}')
         if fmt == "date":
-            secs = secs - (secs % 86400)   # a date lands on midnight UTC
+            # a date is a calendar day stored at midnight UTC. Flooring the
+            # raw instant lost a day east of UTC ("2026-10-09T00:00+02:00"
+            # is 22:00 UTC on the 8th — BOB-160 bench 1.2), so: an ISO
+            # string keeps the day as written; any other instant not already
+            # on a UTC midnight is read as a moment in the user's zone
+            if isinstance(value, str) and re.match(r"\d{4}-\d{2}-\d{2}", value):
+                secs = ts_s(instant(value[:10]))  # noqa: F821 - guest globals
+            elif secs % 86400:
+                secs += tz_offset()  # noqa: F821 - guest global
+            secs = secs - (secs % 86400)
         return instant(secs)  # noqa: F821 - guest global
 
     @staticmethod
@@ -2348,8 +2357,8 @@ class _Client:
         name mints an option; one unless config.multiple; values store
         an ARRAY of keys), `relation` (object names/ids/any:// links;
         one unless config.multiple), `date`/`datetime` (instant()/ISO/
-        epoch; a date lands on midnight UTC), `text`/`longtext`/
-        `markdown`/`url`/`email`/`phone` (a string), `number`/
+        epoch; a date is the day as written, or the user's day),
+        `text`/`longtext`/`markdown`/`url`/`email`/`phone` (a string), `number`/
         `currency`/`percent`/`rating`/`duration` (a number),
         `checkbox` (a bool), `period`/`money`/`geo` (the object). A
         property without a descriptor is its plain kind. `options` is
