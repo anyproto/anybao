@@ -3235,10 +3235,7 @@ class _Client:
             raise ValueError(
                 "that is the chat you are answering in: your reply lands there by "
                 "itself — just answer. chat_send is for other chats (only progress "
-                "bubbles, agent.done=false, go here). Testing a program that posts "
-                "here? Don't call it inline: schedule it once (a kind \"once\" "
-                "trigger at now()+30) and check effects.runs(filter={\"triggerId\": "
-                "slug})")
+                "bubbles, agent.done=false, go here)")
         return self._post_message(space, chat_id, body)
 
     def _post_message(self, space, chat_id, body):

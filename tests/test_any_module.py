@@ -2167,9 +2167,8 @@ def test_chat_send_refuses_a_final_post_into_the_answering_chat():
     g = load(fx)
     g["_answering_in"]("s1", "chat1")
     c = g["_Client"]("http://any", None)
-    with pytest.raises(ValueError, match="the chat you are answering in") as e:
+    with pytest.raises(ValueError, match="the chat you are answering in"):
         c.chat_send("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
-    assert "once" in str(e.value) and "triggerId" in str(e.value)   # the test recipe
     with pytest.raises(ValueError):
         c.chat_send("s1", "chat1", {"text": "Hi."})
     # progress bubbles and other chats go through; so does the loop's own path
