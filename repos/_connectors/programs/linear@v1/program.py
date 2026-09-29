@@ -146,12 +146,12 @@ def my_issues(first=None, after=None):
 
 @span("linear.list_issues", kind="getter")  # noqa: F821 - guest global
 def list_issues(first=None, after=None, updated_after=None):
-    """Issues across the workspace, newest-first. `updated_after`
-    (ISO-8601) makes it incremental: only updatedAt >= it.
+    """Issues across the workspace, newest-first.
+
+    `updated_after` (ISO-8601) makes it incremental: only updatedAt >= it.
 
     Returns `{ok, issues, hasNextPage, endCursor}` — pass
-    `after=endCursor` to page. Issue shape as my_issues.
-    """
+    `after=endCursor` to page. Issue shape as my_issues."""
     variables = {"first": _clamp_first(first), "after": after}
     if updated_after:
         variables["since"] = updated_after
@@ -245,11 +245,11 @@ def list_users():
 
 @span("linear.get_issue", kind="getter")  # noqa: F821 - guest global
 def get_issue(id):
-    """One issue with full detail (includes description Markdown). `id`
-    accepts the issue UUID or its identifier (e.g. "ENG-123").
+    """One issue with full detail (includes description Markdown).
 
-    Returns `{ok, issue}`.
-    """
+    `id` accepts the issue UUID or its identifier (e.g. "ENG-123").
+
+    Returns `{ok, issue}`."""
     if not id or not isinstance(id, str):
         return {"ok": False, "error": "id is required"}
     q = "query GetIssue($id: String!) { issue(id: $id) { " + _ISSUE_FIELDS_FULL + " } }"
@@ -289,13 +289,13 @@ def list_comments(issue_id, first=None, after=None):
 @span("linear.create_issue", kind="mutator")  # noqa: F821 - guest global
 def create_issue(team_id, title, description=None, state_id=None,
                  assignee_id=None, priority=None):
-    """Create an issue (Linear `issueCreate`). `team_id` is the team's
-    UUID (from list_teams); `description` is Markdown; `state_id` /
-    `assignee_id` are UUIDs (list_states / list_users); `priority` is
-    Linear's 0-4 scale (0 none, 1 urgent … 4 low).
+    """Create an issue (Linear `issueCreate`).
 
-    Returns `{ok, issue}` (full detail incl. identifier + url).
-    """
+    `team_id` is the team's UUID (from list_teams); `description` is Markdown;
+    `state_id` / `assignee_id` are UUIDs (list_states / list_users); `priority`
+    is Linear's 0-4 scale (0 none, 1 urgent … 4 low).
+
+    Returns `{ok, issue}` (full detail incl. identifier + url)."""
     if not team_id or not isinstance(team_id, str):
         return {"ok": False, "error": "team_id is required (the team's UUID, "
                                       "from list_teams)"}
@@ -365,12 +365,12 @@ def update_issue(id, title=None, description=None, state_id=None,
 
 @span("linear.create_comment", kind="mutator")  # noqa: F821 - guest global
 def create_comment(issue_id, body):
-    """Post a comment on an issue (Linear `commentCreate`). `issue_id`
-    is the issue's UUID; `body` is Markdown.
+    """Post a comment on an issue (Linear `commentCreate`).
+
+    `issue_id` is the issue's UUID; `body` is Markdown.
 
     Returns `{ok, comment: {id, body, createdAt, updatedAt, url,
-    user}}`.
-    """
+    user}}`."""
     if not issue_id or not isinstance(issue_id, str):
         return {"ok": False, "error": "issue_id is required (the issue's UUID)"}
     if not body or not isinstance(body, str):

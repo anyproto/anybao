@@ -1373,3 +1373,27 @@ def test_read_resolves_ref_through_any_and_uses_vision_tier():
     assert g["read"]({"mime": "image/png", "blob": png}, "dict?") == "a cat"
     with pytest.raises(TypeError):
         g["read"]("bare-file-id", "?")
+
+
+def test_a_system_list_is_one_cached_block_each_on_anthropic():
+    # stable + tail blocks: a change in the tail leaves the stable prefix cached
+    host = FakeHost({"provider": "anthropic", "model": "claude-x",
+                     "base_url": "https://api.example/",
+                     "api_key_ref": "llm.keys.anthropic"},
+                    body=ANTHROPIC_TOOL_RESP)
+    load(host)["chat"](MSGS, system=["STABLE", "", "TAIL"], tier="codegen",
+                       tools=[{"name": "run_cell"}])
+    mark = {"type": "ephemeral"}
+    assert host.posts[0]["json"]["system"] == [
+        {"type": "text", "text": "STABLE", "cache_control": mark},
+        {"type": "text", "text": "TAIL", "cache_control": mark}]
+
+
+def test_a_system_list_is_joined_where_blocks_buy_nothing():
+    host = FakeHost({"provider": "openai-compat", "model": "gpt-x",
+                     "base_url": "http://localhost:8000/v1",
+                     "api_key_ref": "llm.keys.local"},
+                    body=OPENAI_TOOL_RESP)
+    load(host)["chat"](MSGS, system=["STABLE", "TAIL"], tier="classify")
+    sys_msgs = [m for m in host.posts[0]["json"]["messages"] if m["role"] == "system"]
+    assert sys_msgs[0]["content"] == "STABLE\n\nTAIL"

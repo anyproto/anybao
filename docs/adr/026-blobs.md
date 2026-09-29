@@ -158,7 +158,7 @@ text = b.text()                   # bytes(b) decoded as UTF-8, for text/* payloa
 b2 = blob.from_bytes(data, mime="application/zip")   # guest bytes → Blob
 with tempfile.TemporaryFile() as w:                  # writer: chunks in …
     w.write(chunk)
-    b3 = w.blob                                       # … Blob out (finalised on close)
+b3 = w.blob                                           # … Blob out after close (open → raises)
 
 c.attach_file(space, object_id, "rose.jpg", b)       # any@v1, §5
 ```

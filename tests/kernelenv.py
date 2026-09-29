@@ -73,7 +73,7 @@ def local_source(spec, programs_dir=None):
 
 
 def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
-                module_source=None, shell=None):
+                module_source=None, shell=None, on_span=None):
     """A fresh kernel app module wired to test fakes. `effect(name,
     payload) -> output` serves pass-through effects; `any_client` /
     `llm_chat`, when given, shadow the real any@v1 / llm@v1 modules.
@@ -87,7 +87,8 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     binary has the feature → `sh`/`fs` bound in cells, ADR-024 §6);
     the default models a binary without it — the probe reads null
     and the names stay out of the namespace — unless `effect` chooses
-    to serve the key itself."""
+    to serve the key itself. `on_span(name, payload)`, when given, sees
+    every span.begin / span.end (they are absorbed either way)."""
     def host_effect(name, payload_json):
         payload = json.loads(payload_json)
         try:
@@ -118,6 +119,8 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                         src = local_source(spec.split(":")[-1], programs_dir)
                 out = {"objectId": spec, "marker": marker, "source": src}
             elif name in ("span.begin", "span.end"):
+                if on_span is not None:
+                    on_span(name, payload)
                 out = {}
             elif name == "test.any":
                 fn = getattr(any_client, payload["method"])

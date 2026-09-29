@@ -92,7 +92,10 @@ pre-overlay-sync; local-scope writes cannot create records) and
 `agent_trigger` (serve arms standing triggers). any@v1 (guest) ensures
 what only guest code writes, lazily on first use: `agent_brain` inside
 `get_brain`, `agent_log` inside the chat-log resolver — idempotent
-`create_type`/`create_dataset`, the enrich/gmailSync pattern.
+`create_type`/`create_dataset`, the enrich/gmailSync pattern. Ensuring
+an existing store adds the fields its draft declares and the stored
+definition lacks (never removes one): a field the code grows reaches
+every space on its next ensure (amendment 2026-09-29, `agent_turns.context`).
 
 The same rule covers the two former server builtins that carried code
 (amended 2026-08-26): `program` — ensured by `anyrt deploy` in the
@@ -146,7 +149,9 @@ gave; invariants stay harness-enforced (ADR-006 §4 unchanged).
 `idRule: user` (record id = zero-padded seq — lexical order stays
 insertion order), `deleteBy: author`, all fields write-once (the
 default). Turns: `seq` (number), `fromAgent`, `userName`, `userText`,
-`think`, `replies` (array), `effects` (array), `messageIds` (array),
+`think`, `replies` (array), `effects` (array — the reply's effect
+summary, `"name ×n"` strings, ADR-005 §5), `context` (string — the
+time + view line the message was sent with), `messageIds` (array),
 `traceRef`, `interrupted` (boolean), `llm` (object), and
 **`searchText`** (string) — client-materialized userText + replies
 concatenation (the ADR-016 computed-fields rule; the mapping takes
@@ -193,7 +198,12 @@ plumbing, never in the chat agent's inventory): `_list_datasets`,
 `{fieldDefId}` / `_remove_dataset_field(space, type_key,
 dataset_def_id, field_def_id)` — one field in or out of an existing
 definition (§1), keeping the declaration's pinned behaviour where
-remove + re-declare would drop it. Records stay public (`query`,
+remove + re-declare would drop it. The READ of declarations is public
+in a trimmed, model-facing shape: `list_datasets(space,
+type_or_object)` → `[{key, displayName?, idRule, fields: [{key,
+kind}], searchScope?, module?}]` (an object id resolves to its type),
+so the agent can discover a store it has no recipe for; `_list_datasets`
+keeps the full definitions for programs. Records stay public (`query`,
 `upsert_records`, `delete_records`).
 
 Memory verbs, over the generic surface: `bao_space()` (the runtime-wired

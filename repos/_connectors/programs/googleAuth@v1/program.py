@@ -1,7 +1,8 @@
+# ADR-011
 """Google account connection — one consent covers gmail/calendar/drive/sheets.
 
 connect(scopes?, timeout?) runs Google's consent in the user's browser
-(host-side OAuth, anybao ADR-011 — no token ever enters guest code)
+(host-side OAuth — no token ever enters guest code)
 → {ok, provider, grantedScopes, account}. status() → {connected,
 pending, scopes, account, expiresAt}; disconnect() revokes at Google
 AND deletes the local grant. Exposes _CRED, the shared credential ref

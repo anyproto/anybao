@@ -79,7 +79,7 @@ def test_ordinary_names_and_the_toolcaller_ctx_cell_pass():
 
 def test_kernel_names_are_derived_from_the_namespace():
     app = load_kernel()
-    ns = set(app._fresh_ns())
+    ns = set(app._fresh_ns()) - app._PREBOUND_MODULES
     assert ns <= app._KERNEL_NAMES
     assert {"print", "help", "sh", "fs", "ShellError"} <= app._KERNEL_NAMES
     assert "c" not in app._KERNEL_NAMES and "rec" not in app._KERNEL_NAMES

@@ -391,7 +391,10 @@ Server side, `agentconfig` stays a dynamic dataset with a declared
   enabled trigger that can never fire gets a `lastStatus` marker
   stamped onto its record by a per-tick health pass — `invalid_spec`
   (a cron whose spec yields no next occurrence, a `once` without a
-  numeric `at`, an event without a `(dataset, objectId)` source) or
+  numeric `at`, an event without a `(dataset, objectId)` source, or a
+  spec key its kind does not read — cron `cron`/`every_s`, once `at`,
+  event `dataset`/`objectId`/`spaceId`/`filter`; cron fields are UTC,
+  so an ignored `tz` would fire at the wrong hour unnoticed) or
   `unsupported_source` (an event source this runtime does not deliver
   — ADR-018 §2, v1 delivers `chat_messages` only; the earlier
   `unsupported_kind` marker is retired and cleared on sight).
