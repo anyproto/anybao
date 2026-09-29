@@ -1324,3 +1324,24 @@ def test_an_argument_count_error_is_taught_too():
           "error": {"type": "TypeError",
                     "message": "attach_file() too many positional arguments"}}
     assert "help(any.attach_file)" in g["render_digest"]("c1", cr, [])
+
+
+def test_the_turn_record_keeps_its_time_view_line_and_effect_counts():
+    # history renders both; the calls themselves stay in the trace
+    cell = {"ok": True, "prints": [], "last": None, "error": None}
+    w = World([tool_reply(), tool_reply(cid="cell_y"), done_reply("ok")],
+              cells=[dict(cell), dict(cell)])
+    w.effect_rows = [
+        {"seq": 3, "name": "any.create_object", "class": "mutate", "span": "s1"},
+        {"seq": 4, "effect": "http.get", "class": "read"},
+        {"seq": 5, "effect": "trace.effects_of", "class": "read"},   # history reads: not work
+        {"seq": 6, "effect": "module.resolve", "class": "read"}]     # use() loading: not work
+    run(w)
+    t = w.turns[0]
+    assert t["effects"] == ["any.create_object ×2", "http.get ×2"]
+    assert t["context"].startswith("[now: ") and t["context"].endswith("]")
+    assert "no view: currentUserSpace is None" in t["context"]
+    # a turn that ran no cell records no effect summary
+    w = World([done_reply("hi")])
+    run(w)
+    assert "effects" not in w.turns[0] and w.turns[0]["context"].startswith("[now: ")

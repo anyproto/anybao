@@ -33,10 +33,13 @@ module's methods (any@v1's names are already in `## Tools`). When a
 call fails, its doc comes back with the error: read it before
 retrying.
 
-**Past runs are readable** through `effects` (help(effects)). "Why
-did you do that?" about an earlier reply: its run id is the traceRef
-on its agent_turns record (`use("agent:history@v1").recent_turns`);
-read that run. "Did it run / what happened overnight" =
+**Past runs are readable** through `effects` (help(effects)). An
+earlier message in this chat shows the time and view it was sent with
+and `[the reply below ran: … — the calls: effects.of(run="…")]`: what
+that turn did. Read that run only for an id, key or result the
+replies don't show, instead of looking it up again; never doubt a past
+answer because this message has a different view. "Why did you do that?" about an
+earlier reply: read that run. "Did it run / what happened overnight" =
 effects.runs, never a trigger record's fields.
 
 **Mocked cells.** run_cell's mockref / mock parameters run a cell

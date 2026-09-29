@@ -304,6 +304,17 @@ def _mock_suffix(e):
     return f" ({st})"
 
 
+def _count_effects(entries, counts):
+    """A cell's immediate effects/spans → name counts (the turn's effect
+    summary; trace reads of its own history are not work done)."""
+    for e in entries:
+        if e.get("effect") in _TRACE_VIEWS or e.get("effect") == "module.resolve":
+            continue   # history reads and use() loading are not work done
+        name = _op_name(e)
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+
+
 def _side_effects(entries, mocked=False):
     entries = [e for e in entries if e.get("effect") not in _TRACE_VIEWS]
     if not entries:
@@ -665,11 +676,13 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     return texts
 
 
-def _run_model_cells(parts, results, offered):
+def _run_model_cells(parts, results, offered, effect_counts=None):
     """Run each tool_call part as a cell; a call llm@v1 flagged as
     malformed (`error`: unparseable arguments) or naming a tool not in
     `offered` is answered with an is_error result instead of a cell —
-    the model gets to retry. Returns the number of malformed calls."""
+    the model gets to retry. Returns the number of malformed calls.
+    `effect_counts` (name → times) accumulates what the cells ran, for
+    the turn record's effect summary."""
     malformed = 0
     for part in parts:
         if part["type"] != "tool_call":
@@ -749,6 +762,8 @@ def _run_model_cells(parts, results, offered):
                                             if err else None)}) or {}
         entries = effect("trace.effects_of",  # noqa: F821
                          {"span": sid})["records"]
+        if effect_counts is not None:
+            _count_effects(entries, effect_counts)
         results.append({"type": "tool_result", "call_id": cid,
                         "content": render_digest(cid, cr, entries, mock,
                                                  end.get("mockFilter"), full),
@@ -1173,10 +1188,11 @@ def main(args):
         ctx_code += ('\nrec = use("agent:recall@v1")'
                      '.recall(use("agent:any@v1"), baoSpaceConfig)')
     subcell(ctx_code, "_ctx")  # noqa: F821 - guest global
+    context_line = _context_suffix(ui_ctx)
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + _context_suffix(ui_ctx) + user_suffix}]},
+                            "text": user_text + context_line + user_suffix}]},
                 *plan["messages"]]
 
     def bubble(text, done):
@@ -1190,6 +1206,7 @@ def main(args):
 
     stats = {"inTokens": 0, "outTokens": 0,
              "cacheRead": 0, "cacheWrite": 0, "cells": 0}
+    effect_counts = {}
     tokens = 0
     turn = 0
     stop = "done"
@@ -1260,7 +1277,7 @@ def main(args):
             bubble(t, False)
         results = []
         malformed += _run_model_cells(reply["parts"], results,
-                                      [t["name"] for t in tools])
+                                      [t["name"] for t in tools], effect_counts)
         stats["cells"] += len(results)
         messages.append({"role": "user", "parts": results})
 
@@ -1276,6 +1293,13 @@ def main(args):
         try:
             c.append_turn(space, chat_id, {
                 "userText": user_text, "replies": replies, "interrupted": False,
+                # what the model saw beside the text (time + view) and what
+                # the turn ran — history renders both; the calls themselves
+                # stay in the trace (traceRef)
+                "context": context_line.strip(),
+                **({"effects": [f"{k} ×{n}" for k, n in sorted(
+                    effect_counts.items(), key=lambda kv: (-kv[1], kv[0]))]}
+                   if effect_counts else {}),
                 "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
                 "llm": {"stopReason": stop, **stats,
                         "promptFingerprint": prompt_fp,

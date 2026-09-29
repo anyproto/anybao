@@ -52,13 +52,35 @@ def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
 
 # --- boot window (token-budgeted hierarchical composition) ------------------
 
+MAX_EFFECT_NAMES = 8
+
+
+def _effects_note(turn):
+    """The turn's effect summary as one line: what the reply below ran,
+    by name and count, and how to read the calls — the calls themselves
+    stay in the trace, read on demand."""
+    eff = [e for e in turn.get("effects") or [] if isinstance(e, str)]
+    if not eff:
+        return ""
+    shown = ", ".join(eff[:MAX_EFFECT_NAMES])
+    if len(eff) > MAX_EFFECT_NAMES:
+        shown += f", +{len(eff) - MAX_EFFECT_NAMES} more"
+    ref = turn.get("traceRef")
+    how = f' — the calls: effects.of(run="{ref}")' if ref else ""
+    return f"[the reply below ran: {shown}{how}]"
+
+
 def _turn_messages(turn):
-    """A turn → a user message (userText) + an assistant message
-    (replies)."""
+    """A turn → a user message (userText, the time + view line it was
+    sent with, the effect summary of the reply) + an assistant message
+    (replies). The summary rides the USER side: roles keep alternating
+    and the model never sees it as its own text to imitate."""
     msgs = []
     ut = turn.get("userText", "")
-    if ut:
-        msgs.append({"role": "user", "parts": [{"type": "text", "text": ut}]})
+    extra = [x for x in (turn.get("context") or "", _effects_note(turn)) if x]
+    if ut or extra:
+        text = "\n\n".join([ut, *extra]) if ut else "\n\n".join(extra)
+        msgs.append({"role": "user", "parts": [{"type": "text", "text": text}]})
     replies = turn.get("replies", [])
     if replies:
         msgs.append({"role": "assistant",
@@ -84,7 +106,8 @@ def raw_tail(raw_turns, total_tokens=40000, raw_tail_fraction=0.5):
     included = []
     spent = 0
     for turn in reversed(raw_turns):  # newest first
-        cost = approx_tokens(turn.get("userText", "") + "\n".join(turn.get("replies", [])))
+        cost = sum(approx_tokens(p["text"]) for m in _turn_messages(turn)
+                   for p in m["parts"])
         if spent + cost > raw_budget and included:
             break
         included.append(turn)
@@ -105,8 +128,8 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
     double-cover); the chunks arrive as one leading compressed-context
     message."""
     included_turns = raw_tail(raw_turns, total_tokens, raw_tail_fraction)
-    spent = sum(approx_tokens(t.get("userText", "") + "\n".join(t.get("replies", [])))
-                for t in included_turns)
+    spent = sum(approx_tokens(p["text"]) for t in included_turns
+                for m in _turn_messages(t) for p in m["parts"])
     covered_min_seq = included_turns[0].get("seq", 0) if included_turns else None
 
     # fill the remainder with chunks ascending level, newest-first per level,

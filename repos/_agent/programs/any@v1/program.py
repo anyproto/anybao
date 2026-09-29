@@ -139,6 +139,7 @@ _TURNS_DATASET = {
         {"key": "think", "kind": "string"},
         {"key": "replies", "kind": "array"},
         {"key": "effects", "kind": "array"},
+        {"key": "context", "kind": "string"},
         {"key": "messageIds", "kind": "array"},
         {"key": "traceRef", "kind": "string"},
         {"key": "interrupted", "kind": "boolean"},
@@ -2703,6 +2704,19 @@ class _Client:
                         f"/v1/spaces/{space}/types/{tid}/datasets/{d.get('id')}",
                         body)
                     out["patched"] = sorted(list(set_ops) + unset)
+                # fields the draft declares that the stored def lacks are
+                # added (a field the code grew — agent_turns.context — would
+                # otherwise never reach an existing space); never removed
+                have_keys = {f.get("key") for f in d.get("fields") or []}
+                added = []
+                for f in ((draft or {}).get("fields") or []) if "fields" in d else []:
+                    if f.get("key") and f["key"] not in have_keys and not f.get("stamp"):
+                        self._call("post", f"/v1/spaces/{space}/types/{tid}/datasets/"
+                                   f"{d.get('id')}/fields", f)
+                        added.append(f["key"])
+                if added:
+                    self._ds_invalidate(space, type_id=tid)
+                    out["fieldsAdded"] = added
                 return out
         # one part per store, the dataset inline under the same key
         self._call("post", f"/v1/spaces/{space}/types/{tid}/parts",

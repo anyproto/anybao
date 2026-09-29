@@ -800,6 +800,27 @@ def test_create_dataset_patches_drifted_multifield_text():
     assert body == {"set": {"search.text": ["body", "notes"]}}
 
 
+def test_create_dataset_adds_the_fields_an_existing_def_lacks():
+    # a field the code grew (agent_turns.context) reaches a space whose
+    # store predates it; stamps and present fields are left alone
+    fx = wire(replies={
+        "/types/lg/datasets": {"datasets": [
+            {"id": "d1", "key": "agent_turns", "collection": "lg_agent_turns",
+             "fields": [{"key": "userText", "kind": "string"}]}]},
+        "/types": {"types": [{"id": "lg", "xKey": "agent_log"}]},
+        "/fields": {"fieldDefId": "f9"},
+    })
+    r = client(fx).create_dataset("s1", "agent_log", {
+        "key": "agent_turns",
+        "fields": [{"key": "userText", "kind": "string"},
+                   {"key": "context", "kind": "string"},
+                   {"key": "createdAt", "stamp": "createTime"}]})
+    assert r["fieldsAdded"] == ["context"]
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts == [("/v1/spaces/s1/types/lg/datasets/d1/fields",
+                      {"key": "context", "kind": "string"})]
+
+
 def test_create_dataset_single_element_text_array_is_not_drift():
     # The server stores a one-key array as the bare string; a draft
     # saying ["body"] against a stored "body" must NOT patch

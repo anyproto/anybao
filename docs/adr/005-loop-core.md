@@ -472,8 +472,17 @@ diagnosable from traces). The rest of the conversation prompt is
 assembled GUEST-SIDE: `history@v1` renders the boot window
 (hierarchical chunks message → raw turn window), `autorecall@v1`
 injects topical hits as a tool result (ADR-007 §5), and the current
-user message (timestamp + view suffix) closes it. The suffix rides the
-llm message only — the persisted turn keeps the raw `userText`.
+user message (timestamp + view suffix) closes it. The persisted turn
+keeps the raw `userText`, the suffix line as `context`, and the reply's
+effect summary as `effects` (`["any.create_object ×2", …]`, counted from
+the cells' immediate effects; trace reads and `use()` loading are not
+counted). The boot window renders a past turn's user message as
+`userText`, its `context` line, and `[the reply below ran: … — the
+calls: effects.of(run="<traceRef>")]` — on the USER side, so roles keep
+alternating and the model never imitates it; the calls themselves stay
+in the trace, read on demand (amendment 2026-09-29: without them a
+no-view follow-up retracted a correct view-based answer, and ids and
+keys were rediscovered every exchange).
 
 **System skills in full, the rest by index (amendment 2026-09-24,
 BOB-160).** Only `_`-prefixed skills are composed into the stable
