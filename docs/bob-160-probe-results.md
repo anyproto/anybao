@@ -169,13 +169,7 @@ Round 2 after the fix pass: 44 PASS / 5 PARTIAL / 1 FAIL (round 1: 35 / 12 / 3),
 
 claude-sonnet-5-5 on both sides; every arm × repeat on a FRESH staging account (the bao space is derived and undeletable, so a new account is the only clean reset); identical Garden fixtures; 82 questions (the 49 above + S12 records, S13 user view incl. a no-view follow-up, S14 a 14-exchange session, S15 everyday asks) × 3 repeats; graded blind (six conversations per series, shuffled, arm and ports masked) against per-question criteria. A = main b46e6b2, B = this PR at 5b3ad70, C = B + the first fix commits, D = the final build on the five series the last fixes touch.
 
-| per 82-question set | A (main) | B | C |
-|---|---:|---:|---:|
-| score (PASS 1, PARTIAL ½) | 76.2 | 78.5 | 77.7 |
-| FAIL | 8 | 1 | 5 |
-| wasted turns | 44 | 50 | 39 |
-| cost | $3.41 | $1.77 | $1.71 |
-| first-turn prompt (median) | 35.2k | 10.3k | ≈10.4k |
+Per 82-question set: A 76.2 / B 78.5 / C 77.7 (PASS 1, PARTIAL ½), FAILs 8 / 1 / 5, cost $3.41 / $1.77 / $1.71; the first-turn prompt is 35.2k tokens on main, 10.3k on the PR.
 
 C was graded by different grader instances than A/B (5.4 in particular was graded stricter); read B vs C as a tie on quality. On the 27 questions of S1/S2/S4/S5/S8, D scores 0.951 per question vs A 0.895 / B 0.907 / C 0.907, at $0.021 vs A's $0.041 (2 D runs lost to a provider 503, excluded).
 
