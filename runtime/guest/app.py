@@ -984,6 +984,12 @@ def _boundary_error(name, reason):
     )
 
 
+def _proxied(top):
+    if top not in _proxy_cache:
+        _proxy_cache[top] = _PROXIES[top]()
+    return _proxy_cache[top]
+
+
 def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
     top = name.split(".")[0]
     if _matches(name, _REFUSED):
@@ -993,9 +999,7 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name != top:
             raise _boundary_error(name, f"is outside the effect boundary: '{top}' is "
                                         f"proxied — import {top} and use what it exposes.")
-        if top not in _proxy_cache:
-            _proxy_cache[top] = _PROXIES[top]()
-        return _proxy_cache[top]
+        return _proxied(top)
     if _matches(name, _ALLOWED):
         return _b.__import__(name, globals, locals, fromlist, level)
     if top in _NOT_IN_IMAGE:
@@ -1409,6 +1413,10 @@ def _fresh_ns() -> dict:
         "Blob": Blob,          # bytes as handles (ADR-026 §4)
         "blob": blob,
         "BinaryBody": BinaryBody,
+        # the proxied datetime / tempfile, pre-bound like http: cells kept
+        # using them unimported (NameError, BOB-160 bench 2.5 / 4.3)
+        "datetime": _proxied("datetime"),
+        "tempfile": _proxied("tempfile"),
         "now": now,
         "tz_offset": tz_offset,
         "ts_s": ts_s,           # instants, ADR-019 §1
@@ -1496,7 +1504,10 @@ def _run_cell(code: str, cell_id: str) -> dict:
 # refuses both. Derived from the namespace itself — no second list to
 # drift — plus the per-cell printer, the curated `help` builtin and the
 # shell globals a `--features shell` binary binds (ADR-024 §6).
-_KERNEL_NAMES: frozenset = frozenset(_fresh_ns()) | {
+# datetime / tempfile are pre-bound conveniences, not kernel names:
+# `import datetime` rebinds the same proxy and must stay legal
+_PREBOUND_MODULES = frozenset({"datetime", "tempfile"})
+_KERNEL_NAMES: frozenset = (frozenset(_fresh_ns()) - _PREBOUND_MODULES) | {
     "print", "help", "sh", "fs", "ShellError",
 }
 _OWN_SCOPE = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
