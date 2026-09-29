@@ -141,6 +141,19 @@ def ts_s(v):
     return None
 
 
+def _instants_as_seconds(v):
+    """The run summary stores its times as unix seconds, so an instant
+    in a runs() filter (what every other server time takes) would match
+    nothing — the store never equates a `{"$date"}` with a number."""
+    if isinstance(v, dict):
+        if "$date" in v and len(v) == 1:
+            return ts_s(v)
+        return {k: _instants_as_seconds(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_instants_as_seconds(x) for x in v]
+    return v
+
+
 def instant(seconds):
     """The write / filter literal for an instant: `{"$date": <millis>}`.
     Takes unix seconds (`now()`, `ts_s(...)`); an instant passes
@@ -1175,18 +1188,20 @@ class _Effects:
         `[{id, program, device, startedAt, endedAt, durationMs, status,
         errorType, turns, cells, effects, mutations, tokens{in, out,
         cacheRead, cacheWrite}, costUsd, model, title}]` — `title` is
-        turn 1's user text, `startedAt` an epoch instant. `program` is
-        a substring (`"toolcaller"` = chat conversations; cron programs
-        by name); `filter`/`sort` are the any query forms over those
-        fields (`{"startedAt": {"$gte": ts}, "mutations": {"$gt": 0}}`,
-        `["-costUsd"]`) — the same language as `any.query`. `limit=0`
+        turn 1's user text, `startedAt`/`endedAt` unix SECONDS (plain
+        numbers). `program` is a substring (`"toolcaller"` = chat
+        conversations; cron programs by name); `filter`/`sort` are the
+        any query forms over those fields (`{"startedAt": {"$gte": ts},
+        "mutations": {"$gt": 0}}`, `["-costUsd"]`) — the same language
+        as `any.query`; an `instant(...)` in a filter is taken as its
+        seconds. `limit=0`
         = all (cap 1000). `id` feeds `run=`. This is the ground truth
         for whether/how often ANY program ran."""
         q = {"limit": limit}
         if program is not None:
             q["program"] = program
         if filter is not None:
-            q["filter"] = filter
+            q["filter"] = _instants_as_seconds(filter)
         if sort is not None:
             q["sort"] = sort
         return _effect("trace.runs", q)["runs"]
