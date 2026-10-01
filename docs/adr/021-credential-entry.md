@@ -1,6 +1,7 @@
 # ADR-021: Credential entry — request-in-chat, store-read secrets, the Credentials dashboard
 
-Status: **Accepted** (2026-08-26; §4 revised in review — the store is the
+Status: **Accepted** (2026-08-26; amended 2026-09-24: programs teach
+`local.key.*` via create_program's doc — BOB-160; §4 revised in review — the store is the
 source of truth, no runtime write surface; amended the same day: the
 value is **account-scoped**, not device-local). **§7 + §8 accepted
 2026-09-14** (BOB-94: host binding shipped, declared refs, the open
@@ -475,8 +476,8 @@ documented as never a credential; the kernel's `http` verbs document
 `help(http.get)` teaches the mechanism — the anyscribe run
 (BOB-87/102, 2026-09-13) showed bao reaching for `env()` because
 `help(http.get)` printed only `get(url, **kw)`. `_core` and
-`_meta_skill` teach `local.key.*` where programs are authored
-(ADR-010 §7).
+`programs@v1`'s create_program doc teach `local.key.*` where programs
+are authored (ADR-010 §7; amended 2026-09-24, BOB-160).
 
 ## Out of scope
 

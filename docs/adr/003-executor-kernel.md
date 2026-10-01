@@ -150,7 +150,10 @@ The setters (stop words in the chat, the control API's `POST
   degrading (`effects = use(...)` rebinds the trace facade and `del
   effects` cannot bring it back — the 2026-09-04 incident, BOB-92).
   The set is derived from the namespace constructor, never listed
-  twice; the toolcaller's bash `as=` check is a pre-check only.
+  twice; the toolcaller's bash `as=` check is a pre-check only. The
+  proxied `datetime` and `tempfile` are pre-bound in every cell too
+  (cells kept using them unimported) but are NOT reserved: `import
+  datetime` rebinds the same proxy and stays legal.
 - **`subcell(code, cell_id)` — nested cells inside a program.** A
   program that drives model turns (the `toolcaller`) runs each model
   cell through the guest-global `subcell`: same persistent namespace,

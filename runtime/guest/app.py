@@ -141,6 +141,19 @@ def ts_s(v):
     return None
 
 
+def _instants_as_seconds(v):
+    """The run summary stores its times as unix seconds, so an instant
+    in a runs() filter (what every other server time takes) would match
+    nothing — the store never equates a `{"$date"}` with a number."""
+    if isinstance(v, dict):
+        if "$date" in v and len(v) == 1:
+            return ts_s(v)
+        return {k: _instants_as_seconds(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_instants_as_seconds(x) for x in v]
+    return v
+
+
 def instant(seconds):
     """The write / filter literal for an instant: `{"$date": <millis>}`.
     Takes unix seconds (`now()`, `ts_s(...)`); an instant passes
@@ -293,14 +306,24 @@ class Blob:
 class _BlobWriter:
     """`tempfile.TemporaryFile()` in the guest (ADR-026 §4): a file-like
     object to write into; `close()` (or leaving the `with`) hands the
-    bytes to the host and sets `.blob`. Text mode encodes utf-8."""
+    bytes to the host and sets `.blob` — reading `.blob` while the
+    writer is open raises. Text mode encodes utf-8."""
 
     def __init__(self, mime="application/octet-stream", text=False):
         self.mime = mime
         self._text = text
         self._buf = io.StringIO() if text else io.BytesIO()
-        self.blob = None
+        self._blob = None
         self.closed = False
+
+    @property
+    def blob(self):
+        # read before close() used to give None, and the failure only
+        # surfaced later as from_bytes' "got NoneType" (BOB-160 bench)
+        if not self.closed:
+            raise ValueError("the writer is still open: .blob exists after close() "
+                             "(or after leaving the `with` block)")
+        return self._blob
 
     def write(self, data):
         return self._buf.write(data)
@@ -327,8 +350,8 @@ class _BlobWriter:
     def close(self):
         if not self.closed:
             self.closed = True
-            self.blob = blob.from_bytes(self.getvalue(), self.mime)
-        return self.blob
+            self._blob = blob.from_bytes(self.getvalue(), self.mime)
+        return self._blob
 
     def __enter__(self):
         return self
@@ -961,6 +984,12 @@ def _boundary_error(name, reason):
     )
 
 
+def _proxied(top):
+    if top not in _proxy_cache:
+        _proxy_cache[top] = _PROXIES[top]()
+    return _proxy_cache[top]
+
+
 def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
     top = name.split(".")[0]
     if _matches(name, _REFUSED):
@@ -970,9 +999,7 @@ def _guest_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name != top:
             raise _boundary_error(name, f"is outside the effect boundary: '{top}' is "
                                         f"proxied — import {top} and use what it exposes.")
-        if top not in _proxy_cache:
-            _proxy_cache[top] = _PROXIES[top]()
-        return _proxy_cache[top]
+        return _proxied(top)
     if _matches(name, _ALLOWED):
         return _b.__import__(name, globals, locals, fromlist, level)
     if top in _NOT_IN_IMAGE:
@@ -1007,7 +1034,8 @@ def describe(obj):
     """Render an object's API from its code (ADR-010 §2): function →
     `name(sig) [kind]` + full docstring; module/class/instance →
     docstring, then one `name(sig) [kind] — summary` line per public
-    method (`_`-names and `main` hidden, ADR-010 §1). ONE renderer:
+    method (`_`-names, `main` and `__any_listed__ = False` hidden,
+    ADR-010 §1). ONE renderer:
     help() prints this and the toolcaller's `## Tools` embeds it."""
     if inspect.isroutine(obj):
         doc = inspect.getdoc(obj) or ""
@@ -1023,7 +1051,9 @@ def describe(obj):
                  if isinstance(f, types.FunctionType)]
     lines = []
     for n, f in items:
-        if n.startswith("_") or n == "main":
+        # `_`-names, `main` and functions marked `__any_listed__ = False`
+        # (callable plumbing, ADR-010 §1) stay out of listings
+        if n.startswith("_") or n == "main" or getattr(f, "__any_listed__", True) is False:
             continue
         summary = _first_doc_line(f)
         lines.append("  " + _fn_heading(n, f)
@@ -1162,18 +1192,20 @@ class _Effects:
         `[{id, program, device, startedAt, endedAt, durationMs, status,
         errorType, turns, cells, effects, mutations, tokens{in, out,
         cacheRead, cacheWrite}, costUsd, model, title}]` — `title` is
-        turn 1's user text, `startedAt` an epoch instant. `program` is
-        a substring (`"toolcaller"` = chat conversations; cron programs
-        by name); `filter`/`sort` are the any query forms over those
-        fields (`{"startedAt": {"$gte": ts}, "mutations": {"$gt": 0}}`,
-        `["-costUsd"]`) — the same language as `any.query`. `limit=0`
+        turn 1's user text, `startedAt`/`endedAt` unix SECONDS (plain
+        numbers). `program` is a substring (`"toolcaller"` = chat
+        conversations; cron programs by name); `filter`/`sort` are the
+        any query forms over those fields (`{"startedAt": {"$gte": ts},
+        "mutations": {"$gt": 0}}`, `["-costUsd"]`) — the same language
+        as `any.query`; an `instant(...)` in a filter is taken as its
+        seconds. `limit=0`
         = all (cap 1000). `id` feeds `run=`. This is the ground truth
         for whether/how often ANY program ran."""
         q = {"limit": limit}
         if program is not None:
             q["program"] = program
         if filter is not None:
-            q["filter"] = filter
+            q["filter"] = _instants_as_seconds(filter)
         if sort is not None:
             q["sort"] = sort
         return _effect("trace.runs", q)["runs"]
@@ -1381,6 +1413,10 @@ def _fresh_ns() -> dict:
         "Blob": Blob,          # bytes as handles (ADR-026 §4)
         "blob": blob,
         "BinaryBody": BinaryBody,
+        # the proxied datetime / tempfile, pre-bound like http: cells kept
+        # using them unimported (NameError, BOB-160 bench 2.5 / 4.3)
+        "datetime": _proxied("datetime"),
+        "tempfile": _proxied("tempfile"),
         "now": now,
         "tz_offset": tz_offset,
         "ts_s": ts_s,           # instants, ADR-019 §1
@@ -1468,7 +1504,10 @@ def _run_cell(code: str, cell_id: str) -> dict:
 # refuses both. Derived from the namespace itself — no second list to
 # drift — plus the per-cell printer, the curated `help` builtin and the
 # shell globals a `--features shell` binary binds (ADR-024 §6).
-_KERNEL_NAMES: frozenset = frozenset(_fresh_ns()) | {
+# datetime / tempfile are pre-bound conveniences, not kernel names:
+# `import datetime` rebinds the same proxy and must stay legal
+_PREBOUND_MODULES = frozenset({"datetime", "tempfile"})
+_KERNEL_NAMES: frozenset = (frozenset(_fresh_ns()) - _PREBOUND_MODULES) | {
     "print", "help", "sh", "fs", "ShellError",
 }
 _OWN_SCOPE = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,

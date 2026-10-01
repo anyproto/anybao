@@ -1,6 +1,7 @@
 # ADR-013: Agent-authored programs — `create_program` in the working space
 
-Status: **Accepted** (2026-08-14), amended 2026-08-14 at implementation
+Status: **Accepted** (2026-08-14), amended 2026-09-24 (the authoring
+surface is programs@v1's docstrings — BOB-160), amended 2026-08-14 at implementation
 (§1 shadow-guard mechanism = the `overlays.aliases` `runtime.get` key;
 §3 syntax gate = `ast.parse`, adding `ast` to the tier-1 allowlist;
 §3 "every public method" = module-level public defs — the §3/ADR-010
@@ -107,10 +108,14 @@ principle holds).
   result drops `main()`/the module docstring (bobrik's self-heal,
   as a refusal instead of silent stub injection).
 - `delete_program(space, spec)`.
+- `read_program(space, spec)` → `{spec, objectId, source}` — the
+  source record, for a working-space program or an alias-qualified
+  shipped one (`agent:remind@v1`). help() shows only docstrings; the
+  model needs the code to edit a program or reuse a query it proved.
 
-Read side stays where it is (`list_programs`, `use()`, `help()` —
-ADR-010); no duplicate surface. Source is guest Python; the docs ARE
-the docstrings — bobrik's separate markdown side-channel does not
+Read side: `list_programs`, `use()`, `help()` (ADR-010) for the
+contract, `read_program` for the source itself. Source is guest
+Python; the docs ARE the docstrings — bobrik's separate markdown side-channel does not
 return.
 
 ### 3. Write-time validation — deploy parity, guest-implemented
@@ -166,8 +171,9 @@ make an authored watch periodic. Subagent recursion stays governed by
 gate, per the persistence-not-power argument in Context. Prompt cost
 is bounded by ADR-010's tiered surface: one summary line per tool in
 the inventory, depth on demand via `help()`. The skill teaching this
-surface lands in `_meta_skill` (which already owns "you can author
-skills" — programs are the sibling paragraph).
+surface lives in `programs@v1`'s docstrings — the module doc says
+when to write a program, create_program's says how (amendment
+2026-09-24, BOB-160: `_meta_skill` is gone; help() is the surface).
 
 ### 6. Versioning & promotion
 

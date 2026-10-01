@@ -1,8 +1,8 @@
+# ADR-017
 """Conversation history reads (turns/chunks) + the boot window.
 
-Turns and chunks live on the chat object in the user space. Expand
-any chunk by querying `agent_chunks` for its `#seq` and reading the
-raw turns in its `fromSeq`–`toSeq` range. `recent_turns` /
+Turns and chunks live on the chat's log child (`c.chat_log(space,
+chat_id)`), never on the chat itself. `recent_turns` /
 `chunks_at_level` take the any@v1 module as their first argument."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
@@ -21,11 +21,12 @@ def approx_tokens(text):
 
 def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
                trace_ref="", user_name="", from_agent="", llm=None):
+    # ADR-006 §1
     """The agent_turns v2 payload — seq omitted (server-assigned).
-    `outcome` is the loop outcome dict (`{"replies", "stop", …}`);
-    `replies` = what the user saw; `think` = narration that did NOT go
-    to chat (distinct, ADR-006 §1). `interrupted` + neutral stopReason
-    come from the outcome."""
+
+    `outcome` is the loop outcome dict (`{"replies", "stop", …}`); `replies` =
+    what the user saw; `think` = narration that did NOT go to chat
+    (distinct). `interrupted` + neutral stopReason come from the outcome."""
     body = {
         "userText": user_text,
         "replies": outcome["replies"],
@@ -51,13 +52,35 @@ def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
 
 # --- boot window (token-budgeted hierarchical composition) ------------------
 
+MAX_EFFECT_NAMES = 8
+
+
+def _effects_note(turn):
+    """The turn's effect summary as one line: what the reply below ran,
+    by name and count, and how to read the calls — the calls themselves
+    stay in the trace, read on demand."""
+    eff = [e for e in turn.get("effects") or [] if isinstance(e, str)]
+    if not eff:
+        return ""
+    shown = ", ".join(eff[:MAX_EFFECT_NAMES])
+    if len(eff) > MAX_EFFECT_NAMES:
+        shown += f", +{len(eff) - MAX_EFFECT_NAMES} more"
+    ref = turn.get("traceRef")
+    how = f' — the calls: effects.of(run="{ref}")' if ref else ""
+    return f"[the reply below ran: {shown}{how}]"
+
+
 def _turn_messages(turn):
-    """A turn → a user message (userText) + an assistant message
-    (replies)."""
+    """A turn → a user message (userText, the time + view line it was
+    sent with, the effect summary of the reply) + an assistant message
+    (replies). The summary rides the USER side: roles keep alternating
+    and the model never sees it as its own text to imitate."""
     msgs = []
     ut = turn.get("userText", "")
-    if ut:
-        msgs.append({"role": "user", "parts": [{"type": "text", "text": ut}]})
+    extra = [x for x in (turn.get("context") or "", _effects_note(turn)) if x]
+    if ut or extra:
+        text = "\n\n".join([ut, *extra]) if ut else "\n\n".join(extra)
+        msgs.append({"role": "user", "parts": [{"type": "text", "text": text}]})
     replies = turn.get("replies", [])
     if replies:
         msgs.append({"role": "assistant",
@@ -74,15 +97,17 @@ def _chunk_line(chunk):
 
 
 def raw_tail(raw_turns, total_tokens=40000, raw_tail_fraction=0.5):
+    # ADR-007 §5
     """The boot window's full-resolution slice, returned oldest→newest.
 
     Newest raw turns filling the raw-tail budget; the slice's min seq
-    is also the auto-recall deep-history guard boundary (ADR-007 §5)."""
+    is also the auto-recall deep-history guard boundary."""
     raw_budget = int(total_tokens * raw_tail_fraction)
     included = []
     spent = 0
     for turn in reversed(raw_turns):  # newest first
-        cost = approx_tokens(turn.get("userText", "") + "\n".join(turn.get("replies", [])))
+        cost = sum(approx_tokens(p["text"]) for m in _turn_messages(turn)
+                   for p in m["parts"])
         if spent + cost > raw_budget and included:
             break
         included.append(turn)
@@ -103,8 +128,8 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
     double-cover); the chunks arrive as one leading compressed-context
     message."""
     included_turns = raw_tail(raw_turns, total_tokens, raw_tail_fraction)
-    spent = sum(approx_tokens(t.get("userText", "") + "\n".join(t.get("replies", [])))
-                for t in included_turns)
+    spent = sum(approx_tokens(p["text"]) for t in included_turns
+                for m in _turn_messages(t) for p in m["parts"])
     covered_min_seq = included_turns[0].get("seq", 0) if included_turns else None
 
     # fill the remainder with chunks ascending level, newest-first per level,
@@ -138,12 +163,13 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
 
 @span(kind="getter")  # noqa: F821 - guest global
 def recent_turns(client, space, chat_id, limit):
-    """Newest AGENTLOG turns first (descending seq) — the agent's own
-    turn records, NOT the chat conversation. For what people said in a
-    chat, read its messages: `client.query(space, chat_id,
-    "chat_messages", sort=["-createdAt"], limit=n)`. Turns live on the
-    chat's log child (ADR-017). An empty [] here just means this agent
-    never logged turns on that chat."""
+    # ADR-017
+    """Newest AGENTLOG turns first — the agent's own turn records, NOT the chat.
+
+    Descending seq. For what people said in a chat, read its messages:
+    `client.query(space, chat_id, "chat_messages", sort=["-createdAt"],
+    limit=n)`. Turns live on the chat's log child. An empty [] here
+    just means this agent never logged turns on that chat."""
     log = client.chat_log(space, chat_id)["objectId"]
     return client.query(space, log, "agent_turns", sort=["-seq"], limit=limit)
 
@@ -158,10 +184,12 @@ def chunks_at_level(client, space, chat_id, level, limit):
 
 @span(kind="getter")  # noqa: F821 - guest global
 def activity(client, space, chat_id, unit="day", limit=90):
-    """Turns per calendar period, oldest first: [{"period": <instant>,
-    "turns": n}] — `unit` ∈ day | week | month. Native date arithmetic
-    over agent_turns.createdAt (ADR-019 §3, $dateTrunc); the periods
-    are UTC instants — render with fmt_ts."""
+    # ADR-019 §3
+    """Turns per calendar period, oldest first → [{period, turns}].
+
+    Returns [{"period": <instant>, "turns": n}] — `unit` ∈ day | week | month.
+    Native date arithmetic over agent_turns.createdAt ($dateTrunc);
+    the periods are UTC instants — render with fmt_ts."""
     log = client.chat_log(space, chat_id)["objectId"]
     r = client.aggregate(space, [
         {"$group": {"_id": {"$dateTrunc": {"date": "$createdAt", "unit": unit}},

@@ -171,7 +171,10 @@ never hit the 1 MiB body cap.
 - `effects.runs(filter=…, sort=…, limit=…)` gains the any-store
   filter form over the summary (`{"program": "extraction", "startedAt":
   {"$gte": …}, "mutations": {"$gt": 0}}`); the substring `program`
-  argument stays as sugar.
+  argument stays as sugar. The summary's `startedAt`/`endedAt` are
+  unix seconds; an instant (`{"$date": …}`) anywhere in the filter is
+  converted to seconds in the guest, since the store never matches a
+  `$date` against a number.
 - New: **`effects.query(pipeline, coll="records" | "runs" | "blobs")`**
   → `/v1/local/aggregate` on the named trace collection. The syscall
   (`trace.query`, class read) pins `coll` to the three trace

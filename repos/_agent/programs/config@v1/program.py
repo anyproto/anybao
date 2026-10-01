@@ -1,15 +1,13 @@
-"""Agent config store — the model behind each LLM tier and search
-tool (`llm.tier.*`, `search.provider.*`), plus any dotted key a
-program wants to keep (`myProgram.threshold`).
+"""Agent config store: the model behind each LLM tier and search tool.
 
-Rows in the home space, synced to every device, live for the next
-cell — a change never needs a restart or a file edit. `cfg.list(
-baoSpaceConfig)` shows everything; `cfg.get(key)`; `cfg.set(key,
-value)`; `cfg.set_model("search.provider.websearch",
-"gemini-3.7-flash")` swaps only the model. Provider values are
-`{provider, model, base_url, api_key_ref}` (+ `backend`/`profile`/
-`options` on LLM tiers). API keys are NOT config
-(the Credentials flow); there is no unset — set a value to null."""
+Dotted keys (`llm.tier.*`, `search.provider.*`, or a program's own
+`myProgram.threshold`), rows in the home space, synced to every
+device, live for the next cell — never a restart or a file edit.
+`cfg.list(baoSpaceConfig)`, `cfg.get(key)`, `cfg.set(key, value)`;
+`cfg.set_model("search.provider.websearch", "gemini-3.7-flash")` swaps
+only the model. Provider values are `{provider, model, base_url,
+api_key_ref}` (+ `backend`/`profile`/`options` on LLM tiers). API keys
+are NOT config (the Credentials flow); no unset — set null."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 

@@ -115,6 +115,7 @@ dependencies = [
 name = "any-ai"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "jsonschema",
  "process-wrap",
  "serde",

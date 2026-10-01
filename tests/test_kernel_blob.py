@@ -98,6 +98,10 @@ def test_from_bytes_and_tempfile_cross_as_blob_put():
     app._run_cell("import tempfile\nw = tempfile.NamedTemporaryFile('w+')\n"
                   "w.write('héllo')\nw.close()\nt = w.blob\n", "c2")
     assert app._ns["t"].size == len("héllo".encode())
+    # reading .blob while the writer is open raises, never None
+    res = app._run_cell("import tempfile\nw = tempfile.TemporaryFile()\n"
+                        "w.write(b'x')\nw.blob\n", "c2b")
+    assert res["ok"] is False and "close()" in res["error"]["message"]
     res = app._run_cell("import tempfile\ntempfile.mkdtemp()\n", "c3")
     assert res["ok"] is False and "ADR-024" in res["error"]["message"]
     del ns

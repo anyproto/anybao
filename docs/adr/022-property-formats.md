@@ -3,7 +3,8 @@
 Status: **Accepted** (2026-08-27); §1–§4 **superseded by ADR-027 §4**
 (2026-09-08): descriptors live in `xFormat` (`choice`, `relation`,
 `date`, …), the marker-xKey bridge, `xKind`, `meta.pos` and the
-archived marker are gone. §5's guidance stands in the skills.
+archived marker are gone. §5's guidance stands in the skills;
+§5 amended 2026-09-24 (no space-context skill — BOB-160).
 Date: 2026-08-26
 Builds on: ADR-006 §6 (xKey normalization at the client boundary),
 ADR-010 §8 (flat `any@v1` surface), ADR-019 (instants)
@@ -143,7 +144,7 @@ the trace, it didn't happen).
 | `select` | option key; option name (exact, then casefold); | the key |
 | `multiselect` | list of the above; a scalar → one-element list; deduped, order kept | list of keys |
 | `links` | object id; `any://<id>`; typed `any://o/<sid>/<id>` (normalized down); an object **name** — exact `any.name` match, then casefold-unique, within `format.filter` when declared; a list of any of these; a scalar → one-element list | `["any://<id>", …]` |
-| `date` | `instant(…)`, ISO date/datetime string, epoch seconds or millis | `{"$date": <midnight UTC>}`; ISO `YYYY-MM-DD` when the prop is legacy `kind: string` |
+| `date` | `instant(…)`, ISO date/datetime string, epoch seconds or millis | `{"$date": <midnight UTC>}` of the calendar day: an ISO string's day as written, any other instant's day in the user's zone (a value already on a UTC midnight is kept); ISO `YYYY-MM-DD` when the prop is legacy `kind: string` |
 | `datetime` | same inputs | `{"$date": …}`; RFC 3339 when legacy `kind: string` |
 | bare kind | the kind's JSON shape; `"42"` → 42 for `number` | verbatim after a client-side kind check that names the expected shape |
 | any | `None` | a `$unset` of `<typeId>.<propId>` via `/modify` (synced scope; account/local error naming the reason) |
@@ -182,6 +183,13 @@ the normalized record:
   beyond it the tail stays raw `any://` strings), memoized per cell.
   A missing object is `{"id", "name": None}`.
 - `date`/`datetime` stay instants (ADR-019).
+
+`aggregate` over a space's objects speaks the same names: a `$group`
+`_id` that is a plain `"$type.prop"` ref to a select property (alone
+or as a member of a compound `_id`) comes back as option names in the
+result's group key (the store names it `id`), as long as no stage
+after that `$group` reshapes it. Computed `_id`
+expressions and dataset-record pipelines stay raw.
 
 `normalize=False` returns the raw wire shape, unchanged. `filter` /
 `sort` accept the same display forms — `{"task.status": "In
@@ -232,8 +240,9 @@ on `add_property` so host tests can observe them.
 meta.pos}`; the §2 write table in five lines; "check `format` before
 writing someone else's type"; `any.tags` (free-form labels) vs a
 select; attach/detach for membership; option CRUD; the existing
-datetime-filter trap. `_space_context.md` lists formats and options
-with a space's types so the vocabulary precedes the write.
+datetime-filter trap. The vocabulary precedes the write through
+`list_properties` (amendment 2026-09-24, BOB-160: there is no
+space-context skill).
 `_memory.md` and ADR-007 say "links-format property".
 `docs/helper-style.md` drops "uses `kind` (not `format`)";
 `docs/debugging.md` shows how a resolution reads in a trace.

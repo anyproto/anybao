@@ -1,3 +1,4 @@
+# ADR-020
 """Model calls in the neutral message shape — the loop's own surface.
 
 Use for one-off structured judgments (classification, extraction,
@@ -6,7 +7,7 @@ scoring) inside a cell — a sub-call, not a way to talk to the user.
 text|tool_call|tool_result|thinking|file, …}`, the reply `{parts, stop:
 done|tool|length, usage: {in, out}}`. `read(file, prompt)` puts one
 `any` file (image / pdf / text — an `any://f/…` attachment) in front
-of the model and returns its answer (ADR-020). `profile(tier)` is the
+of the model and returns its answer. `profile(tier)` is the
 resolved model profile (backend + traits) the loop budgets from."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
@@ -329,10 +330,16 @@ class AnthropicAdapter:
         if traits["cache"] == "markers":
             self._mark_cache(api_msgs)
         if system:
-            block = {"type": "text", "text": system}
-            if traits["cache"] == "markers":
-                block["cache_control"] = {"type": "ephemeral"}
-            req["system"] = [block]
+            # a list is separate cache blocks: each gets its own breakpoint,
+            # so a change in a later block leaves the earlier ones cached
+            texts = system if isinstance(system, list) else [system]
+            blocks = []
+            for text in texts:
+                block = {"type": "text", "text": text}
+                if traits["cache"] == "markers":
+                    block["cache_control"] = {"type": "ephemeral"}
+                blocks.append(block)
+            req["system"] = blocks
         if tools:
             req["tools"] = [
                 {"name": t["name"], "description": t.get("description", ""),
@@ -1131,10 +1138,11 @@ _EXCERPT = 400
 
 @span(kind="getter")  # noqa: F821 - guest global
 def profile(tier="codegen"):
-    """The resolved profile of a tier: `{profile, backend, model,
-    traits}` — traits are the loop's budget inputs (`context_window`,
-    `max_output`, `prompt_style`, `instructions_at`, `tool_mode`,
-    `malformed_retries`; ADR-005 §1.3)."""
+    # ADR-005 §1.3
+    """The resolved profile of a tier → {profile, backend, model, traits}.
+
+    The traits are the loop's budget inputs (`context_window`, `max_output`,
+    `prompt_style`, `instructions_at`, `tool_mode`, `malformed_retries`)."""
     prov, name, backend, traits = _resolve(tier)
     return {"profile": name, "backend": backend, "model": prov["model"],
             "traits": traits}
@@ -1142,6 +1150,7 @@ def profile(tier="codegen"):
 
 @span(kind="getter")  # noqa: F821 - guest global
 def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
+    # ADR-026 §5
     """One model call; returns the neutral Reply.
 
     `messages`: `[{"role": "user"|"assistant", "parts": [Part]}]` —
@@ -1149,10 +1158,12 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     "file", "media_type", "data": <Blob | base64>, "name"?}` puts a
     file in the turn (image / pdf / text natively — a Blob from
     `any.file_content(...)["blob"]` / `http.get(...).blob` rides as its
-    ref, the host puts the bytes on the wire, ADR-026 §5; `read()` is
+    ref, the host puts the bytes on the wire; `read()` is
     the one-call form);
     `tool_call`/`tool_result`/`thinking` parts round-trip loop
-    traffic. `tier`: "codegen" (default, the strong model),
+    traffic. `system`: a text, or a list of texts cached as separate
+    blocks (stable first; joined for providers without cache markers).
+    `tier`: "codegen" (default, the strong model),
     "classify" (fast/cheap — one-off judgments) or "vision" (file
     reads). `tools`: `[{name,
     description, input_schema?}]`, empty for plain completions.
@@ -1168,6 +1179,13 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
     adapter = ADAPTERS[prov["provider"]]()
+    if isinstance(system, list):
+        # system blocks survive only where they buy something: native
+        # Anthropic with cache markers; everywhere else one joined text
+        system = [p for p in system if p]
+        if not (isinstance(adapter, AnthropicAdapter) and traits["cache"] == "markers"
+                and traits["system_role"] == "native" and traits["tool_mode"] != "fenced"):
+            system = "\n\n".join(system)
     messages, system, tools = _prepare(messages, system, tools or [], traits)
     req = adapter.build_request(messages, system, tools, prov["model"], traits)
     req.update(traits["sampling"])
@@ -1282,6 +1300,7 @@ def _post(payload, fold):
 
 @span(kind="getter")  # noqa: F821 - guest global
 def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
+    # ADR-020 §5
     """Ask the model about ONE file and return its answer text.
 
     `file`: an `any://f/<spaceId>/<fileId>` URI (the `[attachment …]`
@@ -1296,7 +1315,7 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     tier whose backend can.
     `prompt` is the question; `system` optional. Returns the reply's
     text (str). Bytes cross the wire once per read — re-read rather
-    than keeping files in the conversation (ADR-020 §5)."""
+    than keeping files in the conversation."""
     if isinstance(file, str):
         any_ = use("any@v1")  # noqa: F821 - guest global
         if not file.startswith("any://f/") and not space:

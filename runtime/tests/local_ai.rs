@@ -46,6 +46,9 @@ impl AiService for ScriptedModel {
         _: &CancelToken,
     ) -> any_ai::Result<GenerateResponse> {
         assert_eq!(request.harness.as_deref(), Some("codex"));
+        assert_eq!(request.model.as_deref(), Some("test-model"));
+        assert_eq!(request.effort, Some(any_ai::Effort::High));
+        assert_eq!(request.speed, Some(any_ai::Speed::Fast));
         let value = match self.0.fetch_add(1, Ordering::SeqCst) {
             0 => {
                 json!({"kind":"tools","text":"Calculating", "calls":[{"name":"run_cell", "arguments":"{\"code\":\"6 * 7\"}"}]})
@@ -105,7 +108,7 @@ fn broker(header: Value, service: Option<Arc<dyn AiService>>) -> Broker {
         TraceWriter::new(header),
         BTreeMap::from([(
             "llm.tier.codegen".into(),
-            json!({"provider":"any-ai","harness":"codex"}),
+            json!({"provider":"any-ai","harness":"codex", "model":"test-model", "effort":"high", "speed":"fast"}),
         )]),
         BTreeMap::new(),
         None,
@@ -150,6 +153,16 @@ fn wasm_bao_tool_cycle_records_and_replays_without_ai_service() {
     assert_eq!(live.value["final"]["parts"][0]["text"], "42");
     assert_eq!(live.value["final"]["stop"], "done");
     assert_eq!(model.0.load(Ordering::SeqCst), 2);
+    let resolved: Vec<_> = live
+        .broker
+        .writer
+        .records
+        .iter()
+        .filter(|record| record["effect"] == "ai.resolve")
+        .collect();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0]["output"]["effort"], "high");
+    assert_eq!(resolved[0]["output"]["speed"], "fast");
     assert_eq!(
         live.broker
             .writer

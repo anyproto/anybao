@@ -1,7 +1,8 @@
 # ADR-016: Email corpus on runtime dataset schemas
 
 Status: **Accepted** (2026-08-19; user-directed move after any PR #161
-landed runtime datasets)
+landed runtime datasets), amended 2026-09-24 (reading guidance lives in
+the on-demand `gmailSync` skill — BOB-160)
 Date: 2026-08-19
 Builds on: ADR-012 (gmail sync — §2 sync algorithm, §4 clean_html and
 the backfill chain all survive; §3 storage model superseded here, §5
@@ -177,8 +178,10 @@ and the next slices re-list the whole scope; dataset-keyed idempotency
 means every message re-ingests exactly once. Legacy `email` objects
 are left in place — deleting thousands of user-space objects is the
 user's call, not a sync side effect (memory rule: analyze, don't
-autofix); `_any.md` documents the corpus move so the agent reads the
-dataset, not the stale objects.
+autofix); the on-demand `gmailSync` skill documents reading the
+corpus, so the agent reads the dataset, not the stale objects
+(amendment 2026-09-24, BOB-160: the reading guidance moved there from
+the always-on `_any`).
 
 ## Consequences
 

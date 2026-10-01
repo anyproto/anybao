@@ -422,6 +422,78 @@ impl Broker {
             .ok_or_else(missing)
     }
 
+    /// ADR-030: expand only image data, after bounded reads, outside the trace.
+    fn sys_ai_run(
+        &self,
+        operation: any_ai::Operation,
+        payload: &Value,
+    ) -> Result<Value, EffectFailure> {
+        use base64::Engine as _;
+        if operation == any_ai::Operation::ImageGenerate && self.writer.blob_dir.is_none() {
+            return Err(EffectFailure {
+                type_: "ai.artifact_unavailable".into(),
+                message: "Image generation requires local artifact storage".into(),
+            });
+        }
+        let invalid = || EffectFailure {
+            type_: "ai.invalid_request".into(),
+            message: "Invalid or oversized local AI image reference".into(),
+        };
+        if serde_json::to_vec(payload).map_or(true, |v| v.len() > 20 * 1024 * 1024) {
+            return Err(invalid());
+        }
+        let mut expanded = payload.clone();
+        if let Some(images) = expanded.get_mut("images").and_then(Value::as_array_mut) {
+            if images.len() > 4 {
+                return Err(invalid());
+            }
+            for image in images {
+                let data = &image["data"];
+                if !crate::blob::is_raw_ref(data) {
+                    continue;
+                }
+                let limit = 5 * 1024 * 1024;
+                if data.get("encoding").is_some()
+                    || data["mime"] != image["mime"]
+                    || data["bytes"].as_u64().is_none_or(|n| n > limit)
+                {
+                    return Err(invalid());
+                }
+                let dir = self.writer.blob_dir.as_ref().ok_or_else(invalid)?;
+                let hash = data["__blob"].as_str().ok_or_else(invalid)?;
+                let bytes = dir
+                    .read_range(hash, 0, limit + 1)
+                    .map_err(|_| invalid())?
+                    .ok_or_else(invalid)?;
+                if bytes.len() as u64 > limit
+                    || Some(bytes.len() as u64) != data["bytes"].as_u64()
+                    || crate::blob::hash_of(&bytes) != hash
+                {
+                    return Err(invalid());
+                }
+                image["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+            }
+        }
+        let mut response =
+            self.ai
+                .run(operation, &expanded, self.interrupt.clone(), self.deadline)?;
+        if operation == any_ai::Operation::ImageGenerate {
+            let image = &response["content"]["image"];
+            let mime = image["mime"].as_str().ok_or_else(invalid)?;
+            let data = image["data"].as_str().ok_or_else(invalid)?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| invalid())?;
+            let dir = self.writer.blob_dir.as_ref().ok_or_else(invalid)?;
+            let reference = dir.put(&bytes, mime).map_err(|_| EffectFailure {
+                type_: "ai.artifact_failed".into(),
+                message: "Cannot persist generated image".into(),
+            })?;
+            response["content"]["image"]["data"] = reference;
+        }
+        Ok(response)
+    }
+
     /// ADR-026 §3: a raw ref anywhere inside a `json` payload is sent
     /// as the base64 of its bytes (the provider wire for images and
     /// PDFs); the recorded input keeps the ref.
@@ -1089,7 +1161,7 @@ impl Broker {
             // ADR-011 §5: the token lifecycle mutates device state
             "oauth.connect" | "oauth.disconnect" | "oauth.refresh" => "mutate",
             // ADR-006 §3: a store row + the live map
-            "config.set" => "mutate",
+            "config.set" | "ai.settings.set" => "mutate",
             // ADR-025 §3: a serve-state write folded into the next beat
             "bao.status" => "mutate",
             _ => "read",
@@ -1100,7 +1172,15 @@ impl Broker {
     // llm.chat / data.read / data.write / net.http; every other
     // syscall's cap is its own name (the reference-host default).
     fn cap_of(&self, name: &str, payload: &Value) -> String {
-        if name == "ai.generate" {
+        match name {
+            "ai.settings.get" => return "ai.settings.read".into(),
+            "ai.settings.set" => return "ai.settings.write".into(),
+            _ => {}
+        }
+        if matches!(
+            name,
+            "ai.generate" | "ai.resolve" | "ai.image_generate" | "ai.search" | "ai.models"
+        ) {
             return "llm.chat".into();
         }
         if let Some(verb) = name.strip_prefix("http.") {
@@ -1113,9 +1193,14 @@ impl Broker {
     // --- the syscall implementations -------------------------------------
     fn execute(&mut self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
         match name {
-            "ai.generate" => self
-                .ai
-                .generate(payload, self.interrupt.clone(), self.deadline),
+            "ai.settings.get" | "ai.settings.set" | "ai.models" => {
+                self.ai
+                    .control(name, payload, self.interrupt.clone(), self.deadline)
+            }
+            "ai.resolve" => self.ai.resolve(payload),
+            "ai.generate" => self.sys_ai_run(any_ai::Operation::Generate, payload),
+            "ai.image_generate" => self.sys_ai_run(any_ai::Operation::ImageGenerate, payload),
+            "ai.search" => self.sys_ai_run(any_ai::Operation::Search, payload),
             n if n.starts_with("http.") => self.sys_http(n, payload),
             "config.get" => self.sys_config_get(payload),
             "config.set" => self.sys_config_set(payload),

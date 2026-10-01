@@ -8,8 +8,7 @@ SKILLS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "skills"
 
 # The fixed lead order the composer honors (toolcaller SYSTEM_SKILL_ORDER);
 # `_soul` is the identity, outside the band (ADR-005 §5).
-SYSTEM_SKILL_ORDER = ("_core", "_any", "_coding", "_memory",
-                      "_space_context", "_meta_skill")
+SYSTEM_SKILL_ORDER = ("_core", "_any", "_coding", "_memory")
 
 
 def load_skills_dir(path: Path) -> dict[str, str]:
@@ -38,7 +37,7 @@ def test_soul_is_the_only_identity_and_carries_no_heading():
             f"{name} carries a second identity"
     core = skills["_core"]
     assert "## Conduct" in core
-    for rule in ("list it and ask", "wait for a yes", "Resolve first"):
+    for rule in ("list them and ask", "wait for a yes", "Resolve first"):
         assert rule in core
     assert "Conduct" not in soul
 
@@ -47,7 +46,7 @@ def test_core_skill_documents_the_real_surface():
     core = load_skills_dir(SKILLS_DIR)["_core"]
     for needle in ("run_cell", "values.get", "use(", 'use("agent:any@v1")',
                    "save_with_dedup", "spaceConfig", "currentUserSpace",
-                   "baoSpaceConfig", "any://", "batch"):
+                   "baoSpaceConfig", "any://"):
         assert needle in core, f"_core.md lost {needle!r}"
     # no residue of retired surfaces (no-backcompat: fresh shapes)
     for stale in ("console.log", "anyHelper.", "convmemory", "var result",

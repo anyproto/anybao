@@ -195,9 +195,10 @@ class Memory:
 
 @span(kind="setup")  # noqa: F821 - guest global
 def memory(client, llm_chat=None):
+    # ADR-017 §0
     """Bind the memory facade to the brain — then `help(m)`.
 
-    Memory lives in the bao space only (ADR-017 §0): no space to pick,
+    Memory lives in the bao space only: no space to pick,
     a fact ABOUT a space goes in `context`/`tags`. The brain is
     server-resolved, no object id needed.
 

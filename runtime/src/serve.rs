@@ -2320,9 +2320,8 @@ impl RunCtx {
         self.traces.expire(&self.cfg.agent_program, conv, jobs)
     }
 
-    fn broker(&self, spec: &str, run_id: String) -> Broker {
-        let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
-                                             "host": "rust"}));
+    fn broker(&self, spec: &str, run_id: String, args: &Value) -> Broker {
+        let mut writer = TraceWriter::new(served_run_header(spec, run_id, args));
         if let Err(e) = writer.stream_to(self.traces.as_ref()) {
             warn!("trace streaming unavailable ({e}); will write at run end");
         }
@@ -2376,7 +2375,7 @@ impl RunCtx {
         trigger: Option<&str>,
     ) -> Result<(String, RunResult)> {
         self.ensure_ready()?;
-        let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id));
+        let mut broker = self.broker(spec, run_id.unwrap_or_else(Self::new_run_id), args);
         broker.writer.trigger = trigger.map(str::to_string);
         let run_id = broker.writer.run_id();
         // the stamp + activity make this entry double as the presence
@@ -2447,7 +2446,7 @@ impl RunCtx {
     /// through the space resolver.
     pub fn run_value(&self, spec: &str, args: &Value, source: Option<&str>) -> Result<Value> {
         self.ensure_ready()?;
-        let mut broker = self.broker(spec, Self::new_run_id());
+        let mut broker = self.broker(spec, Self::new_run_id(), args);
         if let Some(src) = source {
             let inner = broker
                 .resolver
@@ -3951,11 +3950,31 @@ fn handle_control(
     }
 }
 
+// The CLI's strict replay starts from this header. Record arguments before
+// stream_to writes it, for both regular and inline/control runs.
+fn served_run_header(spec: &str, run_id: String, args: &Value) -> Value {
+    json!({"id": run_id, "program": spec, "host": "rust", "args": args})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Overlay;
     use crate::testutil::StubTransport;
+
+    #[test]
+    fn served_run_header_preserves_arguments_before_streaming_for_strict_replay() {
+        for args in [
+            json!({}),
+            json!({"prompt":"synthetic", "nested":{"limit":4}}),
+        ] {
+            let header = served_run_header("synthetic@v1", "run_test".into(), &args);
+            assert_eq!(header["program"], "synthetic@v1");
+            assert_eq!(header["id"], "run_test");
+            assert_eq!(header["args"], args);
+            assert_eq!(header["host"], "rust");
+        }
+    }
 
     #[test]
     fn program_gap_never_retries_a_local_ai_attempt() {

@@ -149,3 +149,24 @@ def test_activity_groups_turns_by_calendar_period_over_the_log():
         "_id": {"$dateTrunc": {"date": "$createdAt", "unit": "day"}},
         "turns": {"$count": {}}}}
     assert pipeline[1] == {"$sort": {"id": 1}}
+
+
+def test_a_past_turn_keeps_its_time_view_line_and_effect_summary():
+    # the next run lost where the user was and what the turn did: a
+    # no-view follow-up then "retracted" a correct view-based answer
+    turn = {"seq": 1, "userText": "What's this page about?",
+            "replies": ["It's Dune (Book, 1965)."],
+            "context": "[now: Tue 2026-09-29 13:23 +02:00 | user's view — space: sp1, object: o1]",
+            "effects": ["any.query_objects ×2", "any.get_markdown ×1"],
+            "traceRef": "run_abc"}
+    msgs = H["render_boot_window"]([turn], {}, total_tokens=10_000)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]   # roles still alternate
+    user = msgs[0]["parts"][0]["text"]
+    assert user.startswith("What's this page about?")
+    assert "user's view — space: sp1, object: o1" in user
+    assert ('[the reply below ran: any.query_objects ×2, any.get_markdown ×1'
+            ' — the calls: effects.of(run="run_abc")]') in user
+    assert msgs[1]["parts"][0]["text"] == "It's Dune (Book, 1965)."   # reply untouched
+    # an old turn without the new fields renders as before
+    old = H["render_boot_window"]([_turn(2, "q", ["a"])], {}, total_tokens=10_000)
+    assert old[0]["parts"][0]["text"] == "q"

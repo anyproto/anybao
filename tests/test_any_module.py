@@ -2,6 +2,7 @@
 exec-ing the module source with a fake `effect` global answering
 http.* (json wire replies) and config.get."""
 
+import inspect
 import json
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def wire(replies=None, status=200, config=None):
 BLOBS = {}   # the fake blob directory behind the kernel's blob.* effects
 
 
-def _kernel_effect(name, payload, now):
+def _kernel_effect(name, payload, now, offset_s=0):
     import base64
     import hashlib
     if name == "blob.put":
@@ -50,16 +51,17 @@ def _kernel_effect(name, payload, now):
     if name == "blob.read":
         raw = BLOBS[payload["hash"]][payload["offset"]:payload["offset"] + payload["length"]]
         return {"data": base64.b64encode(raw).decode(), "bytes": len(raw)}
-    return {"epoch": now, "offset_s": 0}
+    return {"epoch": now, "offset_s": offset_s}
 
 
-def load(fx, now=1_787_673_600.0):
-    # ts_s / instant / now are kernel globals (ADR-019 §1) — the real
-    # implementations, loaded from the guest kernel source
+def load(fx, now=1_787_673_600.0, offset_s=0):
+    # ts_s / instant / now / tz_offset are kernel globals (ADR-019 §1) —
+    # the real implementations, loaded from the guest kernel source
     from kernelenv import load_kernel
-    k = load_kernel(effect=lambda n, p: _kernel_effect(n, p, now))
+    k = load_kernel(effect=lambda n, p: _kernel_effect(n, p, now, offset_s))
     g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f),
          "use": None, "ts_s": k.ts_s, "instant": k.instant, "now": k.now,
+         "tz_offset": k.tz_offset,
          "Blob": k.Blob, "blob": k.blob}
     exec(compile(SRC, "any@v1.py", "exec"), g)
     return g
@@ -262,8 +264,9 @@ def test_create_type_refuses_catalog_types():
             {"id": "system:wiki/v1", "type": {"xKey": "wiki"}}]}]},
         "/bundles": {"bundles": [{"id": "system:collections/v1"}]}})
     c = client(fx)
-    with pytest.raises(ValueError, match="catalog app"):
+    with pytest.raises(ValueError, match="catalog app") as e:
         c.create_type("s1", {"name": "Wiki", "properties": [{"name": "Extra"}]})
+    assert '"xKey": "my_wiki"' in str(e.value)      # a free handle to retry with
     assert not any(v == "POST" for v, _, _ in fx.calls)      # nothing minted or reshaped
     # a server without a catalog reserves nothing
     fx = wire(replies={"/types": {"types": [], "typeId": "t9"},
@@ -468,6 +471,13 @@ def test_create_object_resolves_types_and_property_groups():
     assert body == {"type": "bafyTASK", "initialProperties": {
         "any": {"name": "Ship it"},                    # reserved: literal
         "bafyTASK": {"bafySTATUS": "open", "bafyPRIO": 3}}}
+
+
+def test_create_object_returns_the_link_to_paste():
+    sid = "bafyreispace0000000000000.abc"
+    fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
+    r = client(fx).create_object(sid, {"type": "task"})
+    assert r == {"objectId": "o9", "link": f"any://o/{sid}/o9"}
 
 
 def test_create_object_unknown_property_raises_never_drops():
@@ -790,6 +800,41 @@ def test_create_dataset_patches_drifted_multifield_text():
     assert body == {"set": {"search.text": ["body", "notes"]}}
 
 
+def test_create_dataset_adds_the_fields_an_existing_def_lacks():
+    # a field the code grew (agent_turns.context) reaches a space whose
+    # store predates it; stamps and present fields are left alone
+    fx = wire(replies={
+        "/types/lg/datasets": {"datasets": [
+            {"id": "d1", "key": "agent_turns", "collection": "lg_agent_turns",
+             "fields": [{"key": "userText", "kind": "string"}]}]},
+        "/types": {"types": [{"id": "lg", "xKey": "agent_log"}]},
+        "/fields": {"fieldDefId": "f9"},
+    })
+    r = client(fx).create_dataset("s1", "agent_log", {
+        "key": "agent_turns",
+        "fields": [{"key": "userText", "kind": "string"},
+                   {"key": "context", "kind": "string"},
+                   {"key": "createdAt", "stamp": "createTime"}]})
+    assert r["fieldsAdded"] == ["context"]
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts == [("/v1/spaces/s1/types/lg/datasets/d1/fields",
+                      {"key": "context", "kind": "string"})]
+    # a server refusing the add leaves the store usable — reported, not raised
+    base = wire(replies={
+        "/types/lg/datasets": {"datasets": [
+            {"id": "d1", "key": "agent_turns", "collection": "lg_agent_turns",
+             "fields": []}]},
+        "/types": {"types": [{"id": "lg", "xKey": "agent_log"}]}})
+
+    def refusing(name, payload):
+        if payload.get("url", "").endswith("/fields"):
+            return {"status": 404, "headers": {}, "body": "{}"}
+        return base(name, payload)
+    r = client(refusing).create_dataset("s1", "agent_log", {
+        "key": "agent_turns", "fields": [{"key": "context", "kind": "string"}]})
+    assert r["collection"] == "lg_agent_turns" and r["fieldsFailed"][0].startswith("context:")
+
+
 def test_create_dataset_single_element_text_array_is_not_drift():
     # The server stores a one-key array as the bare string; a draft
     # saying ["body"] against a stored "body" must NOT patch
@@ -1045,6 +1090,11 @@ def test_links_and_account_wide_backlinks_paths():
     assert c.backlinks_everywhere("any://o/s1/o1") == [
         {"spaceId": "s2", "object": [], "parts": []}]
     assert fx.urls[-1] == "/v1/backlinks?target=any%3A%2F%2Fo%2Fs1%2Fo1"
+    sid = "bafyreispace0000000000000.abc"
+    c.backlinks_everywhere(sid, "o1")                  # (space, id) builds the link
+    assert fx.urls[-1] == f"/v1/backlinks?target=any%3A%2F%2Fo%2F{sid}%2Fo1"
+    with pytest.raises(ValueError, match=r"any://o/<spaceId>/<objectId> — or \(space"):
+        c.backlinks_everywhere("o1")                   # a bare id: the signature, not a 400
 
 
 # --- markdown ---------------------------------------------------------------------
@@ -1117,6 +1167,18 @@ def test_markdown_writers_warn_on_a_missing_space_segment():
     r = c.edit_markdown("s1", "o1", [{"oldText": "a", "newText": "[s](any://s)"}])
     assert r["warnings"] == [
         "any://s: no space segment — a typed link is any://s/<spaceId>/<id>"]
+
+
+def test_link_templates_in_text_pass_silently():
+    # skill/doc text shows the shape; it is not a link to judge
+    fx = wire(replies={"/objects/query": {"records": [
+                           {"id": "o1", "any": {"type": "page"}}]},
+                       "/append": {"inserted": 1}})
+    r = client(fx).append_markdown(
+        "s1", "o1", "write `[Name](any://o/<spaceId>/<objectId>)`, files "
+        "any://f/<spaceId>/<fileId>, e.g. any://o/… — but not any://o/bafyobj1")
+    assert r["warnings"] == [
+        "any://o/bafyobj1: no space segment — a typed link is any://o/<spaceId>/<id>"]
 
 
 def test_well_shaped_and_legacy_links_pass_silently():
@@ -1597,7 +1659,7 @@ def test_dataset_field_helpers_are_private_on_the_flat_surface():
 
 def test_flat_functions_lift_method_docstrings():
     g = load(wire())
-    assert "envelope" in g["search"].__doc__       # ONE authored copy, lifted
+    assert "envelope" in g["search"].__doc__       # ONE authored copy, exported
     assert "objectId" in g["create_object"].__doc__
 
 
@@ -1744,7 +1806,7 @@ def test_get_space_trims_sync_internals():
 
 def test_search_types_kwarg_redirects_to_query_objects():
     # A18: the guessed types= kwarg gets the redirect, not a bare TypeError
-    g = load(wire())
+    g = load(wire(config={"any.base_url": "http://any"}))
     with pytest.raises(TypeError, match="any.type"):
         g["search"](SID, "q", types=["task"])
 
@@ -2036,10 +2098,184 @@ def test_setup_app_installs_and_reports_ids():
          "bundle": {"rootId": "r1"}},
         {"usecase": "crm", "id": "system:deal/v1", "installed": True,
          "bundle": {"rootId": "r2"}, "typeId": "r2",
-         "properties": {"stage": "pS", "amount": "pA"}}]}})
+         "properties": {"stage": "pS", "amount": "pA"}}]},
+        "/spaces/s1/types": {"types": [{"id": "r2", "xKey": "deal", "name": "Deal"}]}})
     assert client(fx).setup_app("s1", "crm") == [
         {"usecase": "contacts", "bundleId": "system:contacts/v1", "rootId": "r1",
          "installed": False},
         {"usecase": "crm", "bundleId": "system:deal/v1", "rootId": "r2",
-         "installed": True, "typeId": "r2", "properties": {"stage": "pS", "amount": "pA"}}]
-    assert fx.calls == [("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})]
+         "installed": True, "typeId": "r2", "xKey": "deal",
+         "properties": {"stage": "pS", "amount": "pA"}}]
+    # the install, then one fresh catalog read for the definitions' xKeys
+    assert fx.calls[0] == ("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})
+    assert [p for _, p, _ in fx.calls[1:]] == ["/v1/spaces/s1/types",
+                                               "/v1/spaces/s1/collections"]
+
+
+# --- get_skill: on-demand skill bodies by name (ADR-009 §3) -----------------
+
+def _skill_client(skills, aliases):
+    """A _Client whose skill reads come from `skills` {space: [(id, name,
+    body)]}; `overlays.aliases` served through runtime.get."""
+    c = client(wire(config={"overlays.aliases": aliases}), bao="bao")
+    c.list_types = lambda space: ([{"id": "t", "xKey": "agent_skill"}]
+                                  if space in skills else [])
+    c.query_objects = lambda space, filter=None, **kw: [
+        {"id": i, "any": {"name": n}} for i, n, _ in skills.get(space, [])]
+    c.get_markdown = lambda space, oid: next(b for i, _, b in skills[space] if i == oid)
+    return c
+
+
+def test_get_skill_looks_in_bao_then_agent_then_connectors():
+    c = _skill_client({"bao": [("b1", "review-pr", "# mine"), ("b2", "files", "  \n")],
+                       "ag": [("a1", "review-pr", "# shipped"), ("a2", "files", "# files")],
+                       "cn": [("c1", "files", "# conn files"), ("c2", "crm", "# crm")]},
+                      {"agent": "ag", "connectors": "cn"})
+    assert c.get_skill("review-pr") == "# mine"     # the user's shadows the shipped
+    assert c.get_skill("files") == "# files"        # a blank body never shadows
+    assert c.get_skill("crm") == "# crm"            # connectors last
+
+
+def test_get_skill_unknown_lists_the_known_ones():
+    c = _skill_client({"ag": [("a1", "files", "# f"), ("a0", "_core", "# c")],
+                       "cn": [("c2", "crm", "# crm")]}, {"agent": "ag", "connectors": "cn"})
+    with pytest.raises(LookupError, match=r"no skill named 'mail'; known: crm, files"):
+        c.get_skill("mail")
+
+
+def test_get_skill_without_overlays_reads_the_bao_space():
+    c = _skill_client({"bao": [("b1", "notes", "# n")]}, {})
+    assert c.get_skill("notes") == "# n"
+
+
+def test_get_skill_is_on_the_flat_surface_unscoped():
+    g = load(wire())
+    assert "get_skill" in g and g["get_skill"].__any_listed__
+    assert str(inspect.signature(g["get_skill"])) == "(name)"
+
+
+def _creating_client(existing=(), with_type=True):
+    c = _skill_client({"bao": list(existing)} if with_type else {}, {})
+    c.created_types, c.created = [], []
+    c.create_type = lambda space, body: c.created_types.append((space, body)) or {}
+    c.create_object = lambda space, body, *a, **kw: c.created.append((space, body)) or {
+        "objectId": "new1"}
+    return c
+
+
+def test_create_skill_saves_in_the_bao_space_with_its_line():
+    c = _creating_client()
+    assert c.create_skill("review-pr", "# Skill: review-pr\n\nSteps.", "When a PR needs review.") \
+        == {"objectId": "new1"}
+    (space, body), = c.created
+    assert space == "bao" and body["type"] == "agent_skill"
+    assert body["markdown"].startswith("# Skill")
+    assert body["initialProperties"] == {"any": {"name": "review-pr",
+                                                 "description": "When a PR needs review."},
+                                         "agent_skill": {"name": "review-pr"}}
+    assert c.created_types == []                     # the type exists: not re-minted
+
+
+def test_create_skill_mints_the_type_deploy_mints_when_missing():
+    c = _creating_client(with_type=False)
+    c.create_skill("plan-week", "steps")
+    (space, body), = c.created_types
+    assert space == "bao" and body["xKey"] == "agent_skill"
+    assert body["properties"] == [{"name": "Name", "xKey": "name", "kind": "string"}]
+
+
+def test_create_skill_refuses_system_names_and_duplicates():
+    c = _creating_client(existing=[("b1", "review-pr", "# mine")])
+    with pytest.raises(ValueError, match="leading '_'"):
+        c.create_skill("_core", "x")
+    with pytest.raises(ValueError, match="already have a skill named 'review-pr'"):
+        c.create_skill("review-pr", "x")
+    assert c.created == []
+
+
+# --- chat_send guard: the chat the loop answers in -------------------------
+
+def test_chat_send_refuses_a_final_post_into_the_answering_chat():
+    # the loop posts the reply itself; a model chat_send there duplicates it
+    fx = wire(replies={"/chat/messages": {"recordIds": ["m1"]}},
+              config={"any.base_url": "http://any", "bao.space": None})
+    g = load(fx)
+    g["_answering_in"]("s1", "chat1")
+    c = g["_Client"]("http://any", None)
+    with pytest.raises(ValueError, match="the chat you are answering in"):
+        c.chat_send("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
+    with pytest.raises(ValueError):
+        c.chat_send("s1", "chat1", {"text": "Hi."})
+    # progress bubbles and other chats go through; so does the loop's own path
+    c.chat_send("s1", "chat1", {"text": "working…", "agent": {"name": "bao", "done": False}})
+    c.chat_send("s2", "chat9", {"text": "Watering at 6", "agent": {"name": "bao", "done": True}})
+    g["_post_reply"]("s1", "chat1", {"text": "Hi.", "agent": {"name": "bao", "done": True}})
+    assert [p for _, p, _ in fx.calls].count("/v1/spaces/s1/objects/chat1/chat/messages") == 2
+
+
+def test_list_datasets_is_the_model_facing_store_listing():
+    fx = wire(replies={
+        "/spaces/s1/types": {"types": [{"id": "tM", "xKey": "mailbox", "name": "Mailbox"}]},
+        "/types/tM/datasets": {"datasets": [{
+            "id": "d1", "key": "email_messages", "collection": "tM_email_messages",
+            "partId": "p1", "displayName": "Email", "idRule": "user",
+            "search": {"text": "body", "scope": "email"},
+            "fields": [{"id": "f1", "key": "subject", "kind": "string", "scope": "synced"},
+                       {"id": "f2", "key": "internalDate", "kind": "number"}]}]}})
+    rows = client(fx).list_datasets("s1", "mailbox")
+    assert rows == [{"key": "email_messages", "idRule": "user", "displayName": "Email",
+                     "searchScope": "email",
+                     "fields": [{"key": "subject", "kind": "string"},
+                                {"key": "internalDate", "kind": "number"}]}]
+
+
+_CHOICE_CAT = {**_CAT, "/types/bafyTASK/properties": {"properties": [
+    {"id": "bafySTATUS", "name": "Status", "xKey": "status",
+     "xFormat": {"type": "choice", "options": {
+         "to_do": {"name": "To do"}, "done": {"name": "Done"}}}},
+    {"id": "bafyPRIO", "name": "Priority", "xKey": "priority"}]}}
+
+
+def test_aggregate_groups_a_choice_by_option_name_like_query_objects():
+    # the store groups by stored option KEYS; query_objects reads names —
+    # a skill built from aggregate's "to_do" never matched "To do"
+    fx = wire(replies={**_CHOICE_CAT, "/objects/aggregate": {"records": [
+        {"id": ["to_do"], "n": 3}, {"id": ["done"], "n": 1}, {"id": None, "n": 4}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": "$task.status",
+                                                "n": {"$sum": 1}}},
+                                    {"$sort": {"n": -1}}])
+    assert r["records"] == [{"id": ["To do"], "n": 3}, {"id": ["Done"], "n": 1},
+                            {"id": None, "n": 4}]   # the store names the group key `id`
+    # a compound _id maps its choice member; non-choice refs and a
+    # reshaping stage after the $group leave values as they came
+    fx = wire(replies={**_CHOICE_CAT, "/objects/aggregate": {"records": [
+        {"id": {"s": "done", "p": 2}, "n": 1}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": {"s": "$task.status",
+                                                        "p": "$task.priority"},
+                                                "n": {"$sum": 1}}}])
+    assert r["records"] == [{"id": {"s": "Done", "p": 2}, "n": 1}]
+    fx = wire(replies={**_CHOICE_CAT, "/objects/aggregate": {"records": [
+        {"id": "done", "n": 1}]}})
+    r = client(fx).aggregate("s1", [{"$group": {"_id": "$task.status", "n": {"$sum": 1}}},
+                                    {"$project": {"n": 1}}])
+    assert r["records"] == [{"id": "done", "n": 1}]
+
+
+
+def test_a_date_property_keeps_the_calendar_day_east_and_west_of_utc():
+    # the encoder floored the raw instant to UTC midnight: local midnight in
+    # +02:00 is 22:00 UTC the day before, so "due Friday" saved Thursday
+    enc = load(wire(), offset_s=7200)["_Client"]._encode_instant
+    day = {"$date": 1791504000000}                       # 2026-10-09T00:00Z
+    assert enc("due", "date", "2026-10-09T00:00:00+02:00") == day
+    assert enc("due", "date", "2026-10-09") == day
+    assert enc("due", "date", "2026-10-09T23:30:00-05:00") == day   # the day as written
+    enc = load(wire(), offset_s=7200)["_Client"]._encode_instant
+    local_midnight = {"$date": (1791504000 - 7200) * 1000}   # instant(...+02:00)
+    assert enc("due", "date", local_midnight) == day          # the user's day
+    assert enc("due", "date", day) == day                     # a stored date round-trips
+    west = load(wire(), offset_s=-5 * 3600)["_Client"]._encode_instant
+    assert west("due", "date", day) == day                    # never shifts a UTC midnight
+    assert west("due", "date", {"$date": (1791504000 + 5 * 3600) * 1000}) == day
+    # datetimes are untouched
+    assert enc("at", "datetime", local_midnight) == local_midnight
