@@ -9,7 +9,12 @@ cells freely; small focused cells fail more legibly than one big one.
 The tool result shows print() output, the last expression and a
 side-effects summary. A large value collapses to a stub naming the
 values.get(...) call that returns it: read that, never re-run the
-producing call. Walk it in slices (`print(v["text"][:2000])`).
+producing call. To read a text whole (a help() page, a skill body, a
+document), set `full_output: true` on the cell that first prints it:
+values then show whole up to ~8k tokens, while a plain print of
+anything past ~1k tokens returns only the stub. Slice
+(`print(v["text"][:2000])`) only what is longer, or a big structure you
+only need part of.
 
 ## Cell semantics
 
