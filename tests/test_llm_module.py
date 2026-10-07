@@ -1300,11 +1300,27 @@ def test_unsupported_media_raises_before_any_call():
     o = LLM["OpenAICompatAdapter"]()
     with pytest.raises(LLM["UnsupportedMedia"]):
         o.build_request(_file_msg("application/pdf"), "", [], "m", T())
+    with pytest.raises(LLM["UnsupportedMedia"]) as e:
+        o.build_request(_file_msg("application/zip"), "", [], "m", T())
+    assert "supported: image/*, text/*" in str(e.value)
     # images ride the openai wire as a data URI
     req = o.build_request(_file_msg("image/png"), "", [], "m", T())
     content = req["messages"][0]["content"]
     assert content[0] == {"type": "text", "text": "what is it?"}
     assert content[1]["image_url"]["url"] == f"data:image/png;base64,{PNG_B64}"
+
+
+def test_text_file_rides_the_openai_wire_as_a_titled_text_part():
+    # ADR-020 §3: no document part on this wire — the decoded text does
+    o = LLM["OpenAICompatAdapter"]()
+    req = o.build_request(_file_msg("text/markdown; charset=utf-8", TXT_B64, "notes.md"),
+                          "", [], "m", T())
+    assert req["messages"][0]["content"][1] == {
+        "type": "text", "text": '<document title="notes.md">\nhello, file\n</document>'}
+    # a Blob reads through the host; no name → no title
+    b = LLM["blob"].from_bytes(b"hello, file", "text/plain")
+    req = o.build_request(_file_msg("application/json", b), "", [], "m", T())
+    assert req["messages"][0]["content"][1]["text"] == "<document>\nhello, file\n</document>"
 
 
 def test_pdf_rides_the_openai_wire_as_a_file_part_when_the_backend_carries_it():

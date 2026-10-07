@@ -79,7 +79,7 @@ providers differ:
 |---|---|---|
 | `image/*` | `image` / base64 source | `image_url` data URI |
 | `application/pdf` | `document` / base64 source | by the tier's `pdf_input` carriage: `file` part `{filename, file_data: data URI}`, or the PDF data URI under `image_url` (Gemini's OpenAI layer); `none` = unsupported |
-| `text/*` | `document` / text source (decoded UTF-8; `name` → `title`) | unsupported |
+| `text/*` | `document` / text source (decoded UTF-8; `name` → `title`) | text part: the decoded UTF-8 inside `<document title="name">…</document>` (no document part on this wire) |
 | other | unsupported | unsupported |
 
 Unsupported raises `UnsupportedMedia(media_type, provider)` in

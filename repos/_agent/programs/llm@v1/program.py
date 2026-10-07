@@ -36,7 +36,7 @@ class UnsupportedMedia(Exception):
 
 # provider -> media classes carried natively (ADR-020 §3)
 _MEDIA = {"anthropic": ("image/*", "application/pdf", "text/*"),
-          "openai-compat": ("image/*",)}
+          "openai-compat": ("image/*", "text/*")}
 
 
 def _wire_data(data, mime, data_uri=False):
@@ -575,6 +575,13 @@ class OpenAICompatAdapter:
                     # PDF data URI under image_url is read as a document
                     content.append({"type": "image_url", "image_url": {
                         "url": _wire_data(f["data"], "application/pdf", data_uri=True)}})
+                elif cls == "text":
+                    # ADR-020 §3: the wire has no document part — the
+                    # decoded text rides as a text part, titled like
+                    # Anthropic's text document
+                    title = f' title="{f["name"]}"' if f.get("name") else ""
+                    content.append({"type": "text", "text":
+                                    f"<document{title}>\n{_text_of(f['data'])}\n</document>"})
                 else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
             msg = {"role": m["role"], "content": content}
