@@ -417,6 +417,9 @@ def test_unknown_trait_or_value_is_a_config_error():
     ("z-ai/glm-5.3-flash", "glm-5-flash"), ("z-ai/glm-5.3-flashx", "glm-5-flash"),
     ("~z-ai/glm-flash-latest", "glm-5-flash"), ("z-ai/glm-5-turbo", "glm-5"),
     ("z-ai/glm-4.7-flash", "glm"), ("inception/mercury-2.5", "mercury"),
+    # the any-ui local AI proxy's namespaced ids (BOB-188)
+    ("claude/opus-5.5", "claude-cli"), ("Claude/Sonnet-5", "claude-cli"),
+    ("codex/gpt-5.5", "codex-cli"), ("anthropic/claude-sonnet-5", "claude"),
 ])
 def test_profile_matches_on_model_name(model, profile):
     assert LLM["_profile_name"]({"model": model}) == profile
@@ -430,6 +433,18 @@ def test_profile_matches_on_model_name(model, profile):
 def test_vision_trait_follows_the_model_not_the_family(model, vision):
     assert LLM["_resolve_traits"]({"model": model})[1]["vision"] is vision
 
+
+
+@pytest.mark.parametrize("model", ["claude/opus-5.5", "codex/gpt-5.5"])
+def test_proxy_profiles_claim_only_what_a_cli_route_carries(model):
+    # a CLI login is not a raw API: no signed thinking round-trip, no
+    # cache breakpoints; images and native tools ride the openai wire
+    _, traits = LLM["_resolve_traits"]({"model": model})
+    assert traits["reasoning"] == "none"
+    assert traits["cache"] == "auto"
+    assert traits["vision"] is True
+    assert traits["tool_mode"] == "native"
+    assert traits["signed_tool_calls"] is False
 
 
 def test_explicit_profile_wins_and_unknown_fails():

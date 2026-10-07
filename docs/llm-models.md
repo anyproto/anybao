@@ -9,7 +9,7 @@ traits through `llm.profile(tier)` and never sees a wire.
 |---|---|---|
 | `ADAPTERS` | the wire family (`anthropic`, `openai-compat`) | message / tool / file / thinking block shapes, stop-reason normalization |
 | `BACKENDS` | where the model is served (`anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `groq`, `together`, `vllm`, `llamacpp`, `ollama`, `generic`) | URL path, credential header + `about` label/help, parameter spelling, cache markers, response/usage field unification |
-| `PROFILES` | the model family (`claude`, `gpt`, `gemini`, `deepseek-r1`, `deepseek`, `qwen3`, `llama`, `gemma`, `mistral`, `kimi-k3`, `kimi`, `deepseek-v4`, `glm-5-flash`, `glm-5`, `glm`, `mercury`; explicit-only `fenced`, `xml`, `generic`) | `traits` — deviations from `GENERIC_TRAITS` |
+| `PROFILES` | the model family (`claude`, `gpt`, `gemini`, `deepseek-r1`, `deepseek`, `qwen3`, `llama`, `gemma`, `mistral`, `kimi-k3`, `kimi`, `deepseek-v4`, `glm-5-flash`, `glm-5`, `glm`, `mercury`, `claude-cli`, `codex-cli`; explicit-only `fenced`, `xml`, `generic`) | `traits` — deviations from `GENERIC_TRAITS` |
 
 A tier row (`agent_config` `llm.tier.<tier>`) picks them:
 
@@ -116,9 +116,28 @@ All reasoning models on OpenRouter answer with `reasoning` +
 `reasoning_details`; the `reasoning: "roundtrip"` trait resends the
 details on the tool-result turn and every backend above accepted them.
 
+**The any-ui local AI proxy** (PRO-1365) serves a user's own Codex /
+Claude Code login as an OpenAI-compatible endpoint on loopback. A tier
+points at it like any self-hosted server — the `generic` backend, the
+proxy's bearer token as the key:
+
+```json
+{"provider": "openai-compat", "model": "claude/opus-5.5",
+ "base_url": "http://127.0.0.1:<port>/v1", "api_key_ref": "llm.key.<name>"}
+```
+
+Model ids are namespaced by the CLI (`claude/…`, `codex/…`) and match
+the `claude-cli` / `codex-cli` profiles, which list before the
+families they would otherwise hit: a CLI route has no signed-thinking
+round-trip and no cache breakpoints (`reasoning: none`, `cache: auto`),
+whatever the model. Images and native tools ride the openai wire;
+text files go as titled text parts (ADR-020 §3). The same endpoint
+serves `webSearch@v1` with `provider: "openai-compat"` (ADR-008 §3).
+
 Declared, not yet verified (no golden trace; needs a key / a host):
 `openrouter-deepseek-r1` (no system role, reasoning round-trip),
 `openrouter-qwen3`, `openrouter-gpt` (`max_completion_tokens`,
 `reasoning_effort`), `openrouter-gemma-fenced` (```cell tool
-carriage), `ollama-qwen3` (keyless local). Their profile traits are
+carriage), `ollama-qwen3` (keyless local), `proxy-claude-cli` /
+`proxy-codex-cli` (the any-ui local AI proxy). Their profile traits are
 model-card reads until the parity run says otherwise.

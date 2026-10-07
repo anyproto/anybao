@@ -166,6 +166,14 @@ GENERIC_TRAITS = {
 # (docs/llm-models.md lists the verified entries).
 
 PROFILES = {
+    # a model behind the any-ui local AI proxy (PRO-1365): a CLI login,
+    # not a raw API — no signed thinking round-trip, no cache markers,
+    # whatever the model family; ids are provider-namespaced, so these
+    # list before the families they would otherwise match (BOB-188)
+    "claude-cli": {"match": r"^claude/", "traits": {
+        "reasoning": "none", "context_window": 200000, "max_output": 32768}},
+    "codex-cli": {"match": r"^codex/", "traits": {
+        "reasoning": "none", "context_window": 128000, "max_output": 16384}},
     "claude": {"match": r"claude", "traits": {
         "reasoning": "roundtrip", "cache": "markers",
         "context_window": 200000, "max_output": 32768}},
