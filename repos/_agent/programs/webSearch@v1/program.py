@@ -8,11 +8,15 @@ the space, use `deepResearch@v1` instead."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
-# Gemini generateContent + the google_search grounding tool (ADR-008
-# §3); multi-query fan-out rides the batch effect (one guest→host
-# crossing). Provider/model from config `search.provider.websearch`;
-# the api key never enters the guest — the request names a credential
-# ref and the host injects the header (ADR-002).
+# Two wires, picked by the provider row's `provider` (ADR-008 §3):
+# `gemini` (default) = generateContent + the google_search grounding
+# tool; `openai-compat` = chat completions + `web_search_options`,
+# sources from the reply's `url_citation` annotations (OpenAI's search
+# models, the any-ui local AI proxy). Multi-query fan-out rides the
+# batch effect (one guest→host crossing). Provider/model from config
+# `search.provider.websearch`; the api key never enters the guest —
+# the request names a credential ref and the host injects the header
+# (ADR-002).
 
 import json
 
@@ -28,7 +32,19 @@ def _provider():
     return effect("config.get", {"key": "search.provider.websearch"})["value"]  # noqa: F821
 
 
+def _wire(prov):
+    wire = prov.get("provider") or "gemini"
+    if wire not in _WIRES:
+        raise ValueError(f"search.provider.websearch: unknown provider {wire!r}; "
+                         f"supported: {', '.join(_WIRES)}")
+    return wire
+
+
 def _request(prov, query):
+    return _WIRES[_wire(prov)][0](prov, query)
+
+
+def _gemini_request(prov, query):
     url = (prov["base_url"].rstrip("/")
            + "/v1beta/models/" + prov["model"] + ":generateContent")
     return {
@@ -55,6 +71,27 @@ def _host(base_url):
     return base_url.split("//", 1)[-1].split("/", 1)[0]
 
 
+def _openai_request(prov, query):
+    req = {
+        "url": prov["base_url"].rstrip("/") + "/chat/completions",
+        "json": {
+            "model": prov["model"],
+            "messages": [{"role": "system", "content": _SYSTEM},
+                         {"role": "user", "content": query}],
+            "web_search_options": {},
+        },
+        "timeout": _TIMEOUT_S,
+    }
+    # a self-hosted endpoint may need no key (`api_key_ref: null`); a
+    # named one is a bearer token bound to the base_url host (ADR-021 §8.1)
+    if prov.get("api_key_ref"):
+        host = _host(prov["base_url"])
+        req["credential"] = {"ref": prov["api_key_ref"], "header": "Authorization",
+                             "prefix": "Bearer ",
+                             "about": {"label": f"{host} API key", "hosts": [host]}}
+    return req
+
+
 # ADR-021 §8.1: the search tier's default key, declared with its host
 # (a tier re-pointed at another provider names that provider's ref)
 __any_credentials__ = [{"ref": "google.key.gemini",
@@ -63,10 +100,10 @@ __any_credentials__ = [{"ref": "google.key.gemini",
                                   "help": "https://aistudio.google.com/apikey"}}]
 
 
-def _parse(raw):
+def _parse(raw, wire="gemini"):
     """One batch item -> {ok, answer, sources, queries} | {ok: False, error}.
-    Sources dedup by url; grounding-redirect urls resolve later, in one
-    pass across all queries."""
+    Sources dedup by url; Gemini's grounding-redirect urls resolve
+    later, in one pass across all queries."""
     if isinstance(raw, dict) and set(raw) == {"error"}:  # batch item failure
         return {"ok": False,
                 "error": f"{raw['error']['type']}: {raw['error']['message']}"}
@@ -75,8 +112,13 @@ def _parse(raw):
     except (ValueError, KeyError):
         return {"ok": False, "error": f"unparseable response (status {raw.get('status')})"}
     if raw["status"] >= 400:
-        msg = (body.get("error") or {}).get("message") or f"HTTP {raw['status']}"
+        err = body.get("error") if isinstance(body, dict) else None
+        msg = (err.get("message") if isinstance(err, dict) else err) or f"HTTP {raw['status']}"
         return {"ok": False, "error": msg}
+    return _WIRES[wire][1](body)
+
+
+def _gemini_parse(body):
     cands = body.get("candidates") or []
     content = (cands[0].get("content") if cands else None) or {}
     parts = content.get("parts") or []
@@ -94,6 +136,29 @@ def _parse(raw):
                             "title": web.get("title") or web.get("domain") or ""})
     return {"ok": True, "answer": answer, "sources": sources,
             "queries": gm.get("webSearchQueries") or []}
+
+
+def _openai_parse(body):
+    choices = body.get("choices") or []
+    msg = (choices[0].get("message") if choices else None) or {}
+    answer = msg.get("content") or ""
+    if not answer:
+        return {"ok": False, "error": "empty response from the search model"}
+    sources, seen = [], set()
+    for a in msg.get("annotations") or []:
+        if a.get("type") != "url_citation":
+            continue
+        cite = a.get("url_citation") or {}
+        url = cite.get("url")
+        if url and url not in seen:
+            seen.add(url)
+            sources.append({"url": url, "title": cite.get("title") or ""})
+    return {"ok": True, "answer": answer, "sources": sources, "queries": []}
+
+
+# provider -> (request builder, body parser, sources are redirect urls)
+_WIRES = {"gemini": (_gemini_request, _gemini_parse, True),
+          "openai-compat": (_openai_request, _openai_parse, False)}
 
 
 def _resolve_redirects(parsed):
@@ -152,11 +217,15 @@ def search(*queries):
     if not queries:
         return []
     prov = _provider()
+    wire = _wire(prov)
     raws = effect("batch", {  # noqa: F821
         "name": "http.post",
         "payloads": [_request(prov, q) for q in queries]})["results"]
-    parsed = [_parse(r) for r in raws]
-    _resolve_redirects(parsed)
+    parsed = [_parse(r, wire) for r in raws]
+    # only Gemini's grounding urls are redirects; a GET of a real source
+    # url would touch the destination server (ADR-008 §2)
+    if _WIRES[wire][2]:
+        _resolve_redirects(parsed)
     return [_format(i + 1, q, p)
             for i, (q, p) in enumerate(zip(queries, parsed, strict=True))]
 
