@@ -1,0 +1,209 @@
+name: deploy-repos
+
+# Publishes repos/_agent and repos/_connectors to one channel's repo
+# spaces (ADR-009 §2) — the CI form of `anyrt deploy --addr <owner>
+# --source repos/<repo> --target <space>` (docs/environments.md
+# § Deploying, which stays the break-glass path).
+#
+# any-ui's release triggers this AFTER a successful publish, so a
+# deploy never reaches users before the anyrt that runs it: a deploy is
+# live on every serve at its next run, a new anyrt only with an any-ui
+# release. The dispatch names the exact anybao commit and any server
+# release that any-ui bundled, and this workflow deploys THAT commit
+# through THAT server — never whatever main is by now.
+#
+# Channel → spaces: `release` → deploy/stable.*, `prerelease` →
+# deploy/nightly.*. Per channel, deploy/<target>.toml is the anyrt host
+# config ([overlays] = the space ids + public guest invites) and
+# deploy/<target>.account is the owning repo account's id. The only
+# secret is the owner mnemonic: REPO_DEPLOY_ACCOUNTS = {"stable":
+# "<mnemonic>", "nightly": "<mnemonic>"}.
+#
+# Every run authorizes the owner account as a FRESH device (any init
+# --mnemonic-stdin derives the same account, new device key), so the
+# repo account gains one device per run.
+on:
+  repository_dispatch:
+    types: [deploy-repos]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "release (stable spaces) | prerelease (nightly spaces)"
+        required: true
+        type: choice
+        options: [release, prerelease]
+      anybao_sha:
+        description: "anybao commit to deploy (the one the any-ui release bundled)"
+        required: true
+      any_version:
+        description: "anyproto/any release tag to run the owner server on (any-ui's sdk_version)"
+        required: true
+      repos:
+        description: "both | agent | connectors"
+        required: false
+        default: both
+
+permissions:
+  contents: read
+
+# One deploy per channel at a time; a later one waits rather than
+# cancelling a deploy mid-sync.
+concurrency:
+  group: deploy-repos-${{ github.event.client_payload.channel || github.event.inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # No fallbacks: a dispatch that drops a field must fail, not deploy
+      # some default to the stable spaces (same rule as any-ui's CHANNEL).
+      CHANNEL: ${{ github.event.client_payload.channel || github.event.inputs.channel }}
+      ANYBAO_SHA: ${{ github.event.client_payload.anybao_sha || github.event.inputs.anybao_sha }}
+      ANY_VERSION: ${{ github.event.client_payload.any_version || github.event.inputs.any_version }}
+      REPOS: ${{ github.event.client_payload.repos || github.event.inputs.repos || 'both' }}
+      ADDR: http://127.0.0.1:7006
+      DATA_DIR: /tmp/any-owner
+    steps:
+      - name: resolve channel
+        id: target
+        run: |
+          set -euo pipefail
+          case "$CHANNEL" in
+            release)    target=stable ;;
+            prerelease) target=nightly ;;
+            *) echo "channel must be release|prerelease, got '$CHANNEL'" >&2; exit 1 ;;
+          esac
+          case "$REPOS" in both|agent|connectors) ;; *) echo "repos must be both|agent|connectors, got '$REPOS'" >&2; exit 1 ;; esac
+          [[ "$ANYBAO_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "anybao_sha must be a full commit sha, got '$ANYBAO_SHA'" >&2; exit 1; }
+          [ -n "$ANY_VERSION" ] || { echo "any_version is required" >&2; exit 1; }
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ANYBAO_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Only commits on main deploy anywhere: any-ui resolves anybao
+      # main, so anything else is a hand-typed sha.
+      - name: verify commit is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$ANYBAO_SHA" origin/main || {
+            echo "$ANYBAO_SHA is not on main; refusing to deploy" >&2
+            exit 1
+          }
+
+      - name: channel files
+        run: |
+          set -euo pipefail
+          t=${{ steps.target.outputs.target }}
+          for f in "deploy/$t.toml" "deploy/$t.account"; do
+            [ -f "$f" ] || { echo "$f missing at $ANYBAO_SHA — channel '$t' is not set up" >&2; exit 1; }
+          done
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - id: rust
+        run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+      # Read-only reuse of ci.yml's release tree; this job never saves.
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/target
+          key: cargo-stock-runtime-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+      - run: make runtime
+
+      - name: download any ${{ env.ANY_VERSION }}
+        env:
+          GH_TOKEN: ${{ github.token }} # anyproto/any is public
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/any"
+          gh release download "$ANY_VERSION" --repo anyproto/any \
+            --pattern 'any-*-linux-x86_64.tar.gz' --dir "$RUNNER_TEMP/any"
+          tar xzf "$RUNNER_TEMP"/any/any-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP/any"
+          echo "ANY=$RUNNER_TEMP/any/any" >> "$GITHUB_ENV"
+
+      - name: start the owner server
+        env:
+          ACCOUNTS: ${{ secrets.REPO_DEPLOY_ACCOUNTS }}
+        run: |
+          set -euo pipefail
+          t=${{ steps.target.outputs.target }}
+          mnemonic=$(jq -er --arg t "$t" '.[$t]' <<<"$ACCOUNTS") || {
+            echo "REPO_DEPLOY_ACCOUNTS has no '$t' key" >&2; exit 1; }
+          echo "::add-mask::$mnemonic"
+          "$ANY" init --config deploy/any-config.yml --data-dir "$DATA_DIR" --mnemonic-stdin <<<"$mnemonic"
+          nohup "$ANY" run --config deploy/any-config.yml --data-dir "$DATA_DIR" \
+            --addr "${ADDR#http://}" > "$RUNNER_TEMP/any.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/any.pid"
+
+      - name: wait for health + check the account
+        run: |
+          set -euo pipefail
+          want=$(tr -d '[:space:]' < deploy/${{ steps.target.outputs.target }}.account)
+          for _ in $(seq 120); do
+            h=$(curl -fsS "$ADDR/v1/health" 2>/dev/null) && [ "$(jq -r .bootstrapping <<<"$h")" = false ] && break
+            sleep 1
+          done
+          echo "$h" | jq .
+          got=$(jq -r .account <<<"$h")
+          [ "$got" = "$want" ] || { echo "owner server is account $got, expected $want" >&2; exit 1; }
+
+      # A fresh device starts with no space state. Deploy is hash-gated
+      # against what the space already holds, so deploying before the
+      # space synced would re-create every program and skill.
+      - name: wait for the spaces to sync
+        id: spaces
+        run: |
+          set -euo pipefail
+          cfg=deploy/${{ steps.target.outputs.target }}.toml
+          ids=()
+          for name in agent connectors; do
+            if [ "$REPOS" = both ] || [ "$REPOS" = "$name" ]; then
+              ids+=("$(sed -nE "s/^$name *= *\\{ *space *= *\"([^\"]+)\".*/\\1/p" "$cfg")")
+            fi
+          done
+          echo "ids=${ids[*]}" >> "$GITHUB_OUTPUT"
+          for id in "${ids[@]}"; do
+            [ -n "$id" ] || { echo "no space id in $cfg" >&2; exit 1; }
+            ./.github/scripts/wait-synced.sh "$ADDR" "$id" 600
+          done
+
+      - name: deploy
+        run: |
+          set -euo pipefail
+          cfg=deploy/${{ steps.target.outputs.target }}.toml
+          for name in agent connectors; do
+            if [ "$REPOS" = both ] || [ "$REPOS" = "$name" ]; then
+              echo "::group::deploy repos/_$name"
+              ./runtime/target/release/anyrt deploy --config-file "$cfg" --addr "$ADDR" \
+                --source "repos/_$name" --target "$name"
+              echo "::endgroup::"
+            fi
+          done
+
+      # The runner is the only device holding the new objects until they
+      # reach the sync nodes; stopping before "synced" loses the deploy.
+      - name: wait for the deploy to sync
+        run: |
+          set -euo pipefail
+          for id in ${{ steps.spaces.outputs.ids }}; do
+            ./.github/scripts/wait-synced.sh "$ADDR" "$id" 600
+          done
+
+      - name: stop the owner server
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/any.pid" ] && kill "$(cat "$RUNNER_TEMP/any.pid")" 2>/dev/null || true
+          tail -n 200 "$RUNNER_TEMP/any.log" 2>/dev/null || true

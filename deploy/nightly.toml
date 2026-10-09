@@ -1,0 +1,13 @@
+# Host config for the NIGHTLY channel: the repo spaces nightly any-ui
+# builds point at, deployed by .github/workflows/deploy-repos.yml after
+# every successful nightly (prerelease) any-ui release. Same shape as
+# anybao.toml (the stable channel); the invites are public read-only
+# guest keys. Owner: the nightly repo account (deploy/nightly.account).
+# The spaces carry the stable names (_agentrepo, _connectorsrepo) — any-ui
+# hides repo spaces by name; the ids tell the channels apart.
+[agent]
+space = "bao"
+
+[overlays]
+agent = { space = "bafyreih6dbflpt63a2izadnsth52anjppxlkb5dprumnpijyjtgpnryqqm.rspqcv0zl1s1", invite = "Nz7FjX2rv5B6bmM1nvS62juqjQpKr7bT6HxknfYemkZVbQXgQYUEFtMkDD5QJ5SjLUEuyiR6H68CohE7FR4nc4kJewfkS531YpHDXNDqb7wuAwkZ7g3yS4zauQrY4Ztev49TvuyQ9hnEe7Y1VkCq2LbA9MAd41B7hjCfUXyKGCSxLm671DRhRAg2gRnE5MC8r" }   # _agentrepo (nightly)
+connectors = { space = "bafyreihuok4cvtxt4mkcrumvmppzsccex3d2pq2mbgotjrdlmyn2aithie.rspqcv0zl1s1", invite = "Nz7FjX2rv5B6cVZTYgxX9UjysiDxLRkin14aNVKuQHwT1QEMdPxg2GFmaFCVGU9vMA1vh3ftT36jED3UTrTnQUs27769zNkwzpRnVdrH4xksKSrggCNsQce4wrqiC8zCrsfP1ACfChjQcjtM4RdBseCjkUpdRA56ni9yvyWXXMYx9WstHFpm3K8Ypyfg1QAeE" }   # _connectorsrepo (nightly)
