@@ -51,6 +51,18 @@ def _wire_data(data, mime, data_uri=False):
     return f"data:{mime};base64,{data}" if data_uri else data
 
 
+def _document(name, text):
+    """A text file as one framed text part (ADR-020 §3): the title
+    attribute escaped, a closing tag inside the body broken — the file
+    cannot end its own frame and pass as the prompt."""
+    title = ""
+    if name:
+        attr = name.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+        title = f' title="{attr}"'
+    body = text.replace("</document", "<\\/document")
+    return f"<document{title}>\n{body}\n</document>"
+
+
 def _text_of(data):
     """A text File part's payload as str: base64 decoded, or a Blob /
     ref read through the host."""
@@ -166,14 +178,6 @@ GENERIC_TRAITS = {
 # (docs/llm-models.md lists the verified entries).
 
 PROFILES = {
-    # a model behind the any-ui local AI proxy (PRO-1365): a CLI login,
-    # not a raw API — no signed thinking round-trip, no cache markers,
-    # whatever the model family; ids are provider-namespaced, so these
-    # list before the families they would otherwise match (BOB-188)
-    "claude-cli": {"match": r"^claude/", "traits": {
-        "reasoning": "none", "context_window": 200000, "max_output": 32768}},
-    "codex-cli": {"match": r"^codex/", "traits": {
-        "reasoning": "none", "context_window": 128000, "max_output": 16384}},
     "claude": {"match": r"claude", "traits": {
         "reasoning": "roundtrip", "cache": "markers",
         "context_window": 200000, "max_output": 32768}},
@@ -565,6 +569,9 @@ class OpenAICompatAdapter:
             if not (texts or files or calls):
                 return out
         if files:
+            # text documents ahead of the prompt, as on the Anthropic
+            # wire; images and PDFs after it (the recorded parity order)
+            docs = []
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
                 cls = _media_class(f["media_type"])
@@ -584,15 +591,12 @@ class OpenAICompatAdapter:
                     content.append({"type": "image_url", "image_url": {
                         "url": _wire_data(f["data"], "application/pdf", data_uri=True)}})
                 elif cls == "text":
-                    # ADR-020 §3: the wire has no document part — the
-                    # decoded text rides as a text part, titled like
-                    # Anthropic's text document
-                    title = f' title="{f["name"]}"' if f.get("name") else ""
-                    content.append({"type": "text", "text":
-                                    f"<document{title}>\n{_text_of(f['data'])}\n</document>"})
+                    # ADR-020 §3: the wire has no document part
+                    docs.append({"type": "text", "text": _document(f.get("name"),
+                                                                   _text_of(f["data"]))})
                 else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
-            msg = {"role": m["role"], "content": content}
+            msg = {"role": m["role"], "content": docs + content}
         else:
             # an assistant turn that only calls tools carries null, never ""
             msg = {"role": m["role"], "content": " ".join(texts) or None}
@@ -1040,6 +1044,12 @@ BACKENDS = {
                "normalize": _normalize_openai_compat, "stream": False},
     "generic": {"path": "/chat/completions", "credential": {**_BEARER, "label": "API key"},
                 "normalize": _normalize_openai_compat},
+    # the any-ui local AI proxy (PRO-1365): one CLI generation at a
+    # time, silent while queued or thinking — the plain JSON wire, and
+    # a total under the proxy's own 600 s so ours fires first and is
+    # not retried (ADR-005 §1.6)
+    "anyai": {"path": "/chat/completions", "credential": {**_BEARER, "label": "Local AI key"},
+              "normalize": _normalize_openai_compat, "stream": False, "timeout": 590},
 }
 
 # well-known hosts → backend, when the tier names none
@@ -1215,7 +1225,7 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     stream = bool(req.get("stream"))
     if not stream:
         req.pop("stream_options", None)
-    timeout = _timeout_of(prov)
+    timeout = _timeout_of(prov, be)
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
                "stream": stream, "timeout": timeout if stream else timeout["total"]}
@@ -1242,14 +1252,16 @@ def _fold(adapter, body, stream):
                           else f"non-JSON body: {body[:_EXCERPT]!r}")
 
 
-def _timeout_of(prov):
+def _timeout_of(prov, be):
     """A tier row's `timeout` as the `{idle, total}` the host takes:
     a plain number (the ADR-002 whole-request spelling) is the total,
-    an object overrides the defaults key by key, absent = defaults."""
+    an object overrides the defaults key by key, absent = defaults
+    (the backend's `timeout` is its default total)."""
+    base = {**_TIMEOUT, "total": be.get("timeout", _TIMEOUT["total"])}
     t = prov.get("timeout")
     if isinstance(t, (int, float)) and not isinstance(t, bool):
-        return {**_TIMEOUT, "total": t}
-    return {**_TIMEOUT, **(t or {})}
+        return {**base, "total": t}
+    return {**base, **(t or {})}
 
 
 def _retry_after(resp):

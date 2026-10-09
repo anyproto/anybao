@@ -113,12 +113,17 @@ unparseable body is `IncompleteReply` (an `LlmError` at 502, retried)
 — a cut stream is never a "done" reply. A tool input cut mid-JSON
 (`max_tokens`) folds to `{}` with an `error` on the part, the same
 shape as the OpenAI malformed-arguments case, so the loop answers it
-instead of dying. Timeouts are `{idle: 60, total: 900}`; a tier row's
-`timeout` (object, or a number = total) overrides. Streaming is per
+instead of dying. Timeouts are `{idle: 60, total: 900}`, a backend may
+set its own default `total`, and a tier row's `timeout` (object, or a
+number = total) overrides. Streaming is per
 tier: `stream: false` on the row (or in `options`) sends the plain
 JSON request with `total` as its whole-request cap; the local
 backends (`vllm`, `llamacpp`, `ollama`) default to off — no middlebox
-to keep alive, and usage-on-stream is not a given on every build. A
+to keep alive, and usage-on-stream is not a given on every build — and
+so does `anyai`, the any-ui local AI proxy (PRO-1365): it is silent
+while a CLI queues or thinks, past the idle cut, and its `total` of
+590 s sits under the proxy's own 600 s deadline, so bao's
+non-retried total fires first. A
 streamed reply whose provider sent no usage carries `usage.missing:
 true` with zeros: the toolcaller then budgets the context ceiling from
 a conservative prompt-size floor instead of a zero that would disable
