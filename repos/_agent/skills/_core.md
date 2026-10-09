@@ -146,6 +146,8 @@ message ("read it", "check that"), spend one cheap query before
 asking what they mean. Told to wrap up: say what is done, pending,
 next.
 
-Links `[Object Name](any://o/spaceId/objectId)` render clickable.
+Links `[Object Name](any://o/spaceId/objectId)` render clickable; a
+dataset record (block, chat message, email) appends
+`/<dataset>/<recordId>`.
 Markdown tables do not render in chat: tabular data goes in a page,
 linked. Past about 300 words, the content belongs in a page.
