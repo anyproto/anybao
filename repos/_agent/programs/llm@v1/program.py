@@ -27,16 +27,26 @@ class UnsupportedMedia(Exception):
     """A File part this provider's wire cannot carry (ADR-020 §3) —
     raised while building the request, before any http call."""
 
-    def __init__(self, media_type, provider):
+    def __init__(self, media_type, provider, supported=None):
         self.media_type = media_type
         self.provider = provider
-        supported = ", ".join(_MEDIA.get(provider, ())) or "none"
+        supported = ", ".join(supported or _MEDIA.get(provider, ())) or "none"
         super().__init__(f"{provider} cannot read {media_type!r} files; supported: {supported}")
+
+
+class FileTooLarge(Exception):
+    """A text file past what the openai wire inlines (ADR-020 §3) —
+    raised before its bytes are read, before any http call."""
+
+    def __init__(self, name, size):
+        self.size = size
+        super().__init__(f"{name or 'the file'} is {size} bytes; at most {_MAX_INLINE_TEXT} "
+                         "bytes of text ride inline — read a part of it instead")
 
 
 # provider -> media classes carried natively (ADR-020 §3)
 _MEDIA = {"anthropic": ("image/*", "application/pdf", "text/*"),
-          "openai-compat": ("image/*",)}
+          "openai-compat": ("image/*", "text/*")}
 
 
 def _wire_data(data, mime, data_uri=False):
@@ -49,6 +59,32 @@ def _wire_data(data, mime, data_uri=False):
     if isinstance(data, dict) and "__blob" in data:
         return {**data, "encoding": "data-uri"} if data_uri else data
     return f"data:{mime};base64,{data}" if data_uri else data
+
+
+# the openai wire inlines a text file whole: 1 MiB is past every
+# context window it could reach, and the any-ui proxy's input cap
+_MAX_INLINE_TEXT = 1 << 20
+
+
+def _size_of(data):
+    """A File part's payload size in bytes, without reading it."""
+    if isinstance(data, Blob):  # noqa: F821 - guest global
+        return data.size
+    if isinstance(data, dict) and "__blob" in data:
+        return int(data["bytes"])
+    return len(data) * 3 // 4
+
+
+def _document(name, text):
+    """A text file as one framed text part (ADR-020 §3): the title
+    attribute escaped, a closing tag inside the body broken — the file
+    cannot end its own frame and pass as the prompt."""
+    title = ""
+    if name:
+        attr = name.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+        title = f' title="{attr}"'
+    body = text.replace("</document", "<\\/document")
+    return f"<document{title}>\n{body}\n</document>"
 
 
 def _text_of(data):
@@ -557,6 +593,9 @@ class OpenAICompatAdapter:
             if not (texts or files or calls):
                 return out
         if files:
+            # text documents ahead of the prompt, as on the Anthropic
+            # wire; images and PDFs after it (the recorded parity order)
+            docs = []
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
                 cls = _media_class(f["media_type"])
@@ -575,9 +614,15 @@ class OpenAICompatAdapter:
                     # PDF data URI under image_url is read as a document
                     content.append({"type": "image_url", "image_url": {
                         "url": _wire_data(f["data"], "application/pdf", data_uri=True)}})
+                elif cls == "text":
+                    # ADR-020 §3: the wire has no document part
+                    if _size_of(f["data"]) > _MAX_INLINE_TEXT:
+                        raise FileTooLarge(f.get("name"), _size_of(f["data"]))
+                    docs.append({"type": "text", "text": _document(f.get("name"),
+                                                                   _text_of(f["data"]))})
                 else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
-            msg = {"role": m["role"], "content": content}
+            msg = {"role": m["role"], "content": docs + content}
         else:
             # an assistant turn that only calls tools carries null, never ""
             msg = {"role": m["role"], "content": " ".join(texts) or None}
@@ -769,7 +814,8 @@ def _prepare(messages, system, tools, traits):
         for m in messages:
             for p in m["parts"]:
                 if p["type"] == "file" and _media_class(p["media_type"]) == "image":
-                    raise UnsupportedMedia(p["media_type"], "this model (text-only)")
+                    raise UnsupportedMedia(p["media_type"], "this model (text-only)",
+                                           supported=("text/*",))
     if traits["tool_mode"] == "fenced" and tools:
         system = (system or "") + _FENCED_INSTR
         tools = []
@@ -1025,6 +1071,12 @@ BACKENDS = {
                "normalize": _normalize_openai_compat, "stream": False},
     "generic": {"path": "/chat/completions", "credential": {**_BEARER, "label": "API key"},
                 "normalize": _normalize_openai_compat},
+    # the any-ui local AI proxy (PRO-1365): one CLI generation at a
+    # time, silent while queued or thinking — the plain JSON wire, and
+    # a total under the proxy's own 600 s so ours fires first and is
+    # not retried (ADR-005 §1.6)
+    "anyai": {"path": "/chat/completions", "credential": {**_BEARER, "label": "Local AI key"},
+              "normalize": _normalize_openai_compat, "stream": False, "timeout": 590},
 }
 
 # well-known hosts → backend, when the tier names none
@@ -1200,7 +1252,7 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     stream = bool(req.get("stream"))
     if not stream:
         req.pop("stream_options", None)
-    timeout = _timeout_of(prov)
+    timeout = _timeout_of(prov, be)
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
                "stream": stream, "timeout": timeout if stream else timeout["total"]}
@@ -1227,14 +1279,16 @@ def _fold(adapter, body, stream):
                           else f"non-JSON body: {body[:_EXCERPT]!r}")
 
 
-def _timeout_of(prov):
+def _timeout_of(prov, be):
     """A tier row's `timeout` as the `{idle, total}` the host takes:
     a plain number (the ADR-002 whole-request spelling) is the total,
-    an object overrides the defaults key by key, absent = defaults."""
+    an object overrides the defaults key by key, absent = defaults
+    (the backend's `timeout` is its default total)."""
+    base = {**_TIMEOUT, "total": be.get("timeout", _TIMEOUT["total"])}
     t = prov.get("timeout")
     if isinstance(t, (int, float)) and not isinstance(t, bool):
-        return {**_TIMEOUT, "total": t}
-    return {**_TIMEOUT, **(t or {})}
+        return {**base, "total": t}
+    return {**base, **(t or {})}
 
 
 def _retry_after(resp):

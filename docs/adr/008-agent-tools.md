@@ -68,16 +68,30 @@ closer to bobrik's `redirect: manual`).
 
 ### 3. `webSearch@v1` (folder tool)
 
-- `search(*queries)` — each query is one Gemini `generateContent` call
-  with the `google_search` grounding tool at `thinking_level: low`
-  (a 4-8 sentence synthesis needs no deliberation and thinking tokens
-  bill at the output rate); multi-query fan-out goes
+- The `search.provider.websearch` row's `provider` picks the wire
+  (case-insensitive; absent = `gemini`; any other value is a config
+  error before any call), and its `timeout` (seconds, default 120)
+  caps each query:
+  - `gemini` — one `generateContent` call per query with the
+    `google_search` grounding tool at `thinking_level: low` (a 4-8
+    sentence synthesis needs no deliberation and thinking tokens bill
+    at the output rate); sources are the grounding chunks.
+  - `openai-compat` — one `POST {base_url}/chat/completions` per query
+    with `web_search_options: {}`; the answer is `message.content`,
+    sources are the `url_citation` annotations. OpenAI's search models
+    and the any-ui local AI proxy (PRO-1365) speak it. The key is a
+    bearer `api_key_ref` bound to the `base_url` host (ADR-021 §8.1),
+    `null` for a keyless endpoint.
+- `search(*queries)` — multi-query fan-out goes
   through the `batch` effect (one guest→host round-trip; host-side
   execution is sequential today — parallelizing `sys_batch` is a
   runtime follow-up, not this tool's concern).
-- Per query: the synthesized answer + grounding sources deduped by
-  domain, source urls unwrapped per §2 (best-effort — an unresolved
-  redirect keeps the original url). Returns a list of formatted
+- Per query: the synthesized answer + sources deduped by url, at most
+  10 (an any-ai search cites every hit). Any reply shape a wire does
+  not expect is an `[ERROR]` in that query's slot. Gemini's
+  grounding urls are redirects, unwrapped per §2 (best-effort — an
+  unresolved redirect keeps the original url); `url_citation` urls are
+  the real sources and are never fetched. Returns a list of formatted
   strings, one per query; a failed query yields an `[ERROR] …` string
   in place, never poisoning the batch.
 
@@ -85,7 +99,9 @@ closer to bobrik's `redirect: manual`).
 
 Four phases, mirroring bobrik's pipeline:
 
-1. Initial grounded call (same wire as §3, `search.provider.deepresearch`).
+1. Initial grounded call (§3's `gemini` wire, `search.provider.deepresearch`;
+   the row's `provider` must be `gemini` or absent — any other returns
+   `{ok: False, error}` before any call).
 2. Decomposition via `llm@v1` (`classify` tier): 3–7 follow-up
    questions + a short collection name, JSON-only reply. A failed
    parse degrades to a single research page.

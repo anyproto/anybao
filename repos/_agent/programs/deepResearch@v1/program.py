@@ -75,11 +75,14 @@ def _parse(raw):
                 "error": f"{raw['error']['type']}: {raw['error']['message']}"}
     try:
         body = json.loads(raw["body"])
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):  # TypeError: a raw-bytes blob ref
         return {"ok": False, "error": f"unparseable response (status {raw.get('status')})"}
+    if not isinstance(body, dict):
+        return {"ok": False, "error": f"unexpected response (status {raw['status']})"}
     if raw["status"] >= 400:
-        msg = (body.get("error") or {}).get("message") or f"HTTP {raw['status']}"
-        return {"ok": False, "error": msg}
+        err = body.get("error")
+        msg = (err.get("message") if isinstance(err, dict) else err) or f"HTTP {raw['status']}"
+        return {"ok": False, "error": str(msg)}
     cands = body.get("candidates") or []
     content = (cands[0].get("content") if cands else None) or {}
     parts = content.get("parts") or []
@@ -196,6 +199,11 @@ def research(space, question, opts=None):
 
     t0 = now()  # noqa: F821 - guest global
     prov = _provider()
+    # the Gemini wire only (ADR-008 §4) — another provider is a config
+    # error before any call, never its key sent as x-goog-api-key
+    if (prov.get("provider") or "gemini").lower() != "gemini":
+        return {"ok": False, "error": f"search.provider.deepresearch: unknown provider "
+                                      f"{prov['provider']!r}; supported: gemini"}
     timing = {}
 
     # phase 1 — initial grounded call

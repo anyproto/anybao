@@ -213,9 +213,10 @@ c.attach_file(space, object_id, "rose.jpg", b)       # any@v1, §5
   so the result is one shape; `list_files` is unchanged.
 - `llm.read` accepts a Blob; a `File` part's `data` is base64 **or a
   Blob ref** (ADR-020 §3) — the adapters place whatever they were
-  given into the provider JSON and the host expands it (§3). The
-  anthropic text-document path, which needs the decoded text in the
-  guest, calls `b.text()`.
+  given into the provider JSON and the host expands it (§3). The text
+  paths need the decoded text in the guest and call `b.text()`: the
+  anthropic text document, and the openai-compat text part (ADR-020
+  §3, ≤ 1 MiB) — there the decoded text is in the recorded request.
 
 ### 6. Retention and cleanup (amends ADR-023 §6)
 

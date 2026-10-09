@@ -79,12 +79,15 @@ providers differ:
 |---|---|---|
 | `image/*` | `image` / base64 source | `image_url` data URI |
 | `application/pdf` | `document` / base64 source | by the tier's `pdf_input` carriage: `file` part `{filename, file_data: data URI}`, or the PDF data URI under `image_url` (Gemini's OpenAI layer); `none` = unsupported |
-| `text/*` | `document` / text source (decoded UTF-8; `name` → `title`) | unsupported |
+| `text/*` | `document` / text source (decoded UTF-8; `name` → `title`) | text part ahead of the prompt: the decoded UTF-8 inside `<document title="name">…</document>`, the title escaped and a `</document` in the body broken (no document part on this wire) |
 | other | unsupported | unsupported |
 
 Unsupported raises `UnsupportedMedia(media_type, provider)` in
 `build_request` — *before* any http call, so the trace names the
-reason instead of a provider 400.
+reason instead of a provider 400. A text file past 1 MiB on the
+openai wire raises `FileTooLarge` the same way, sized from the ref
+before its bytes are read — inlined whole, it is past every context
+window the wire reaches.
 
 **`pdf_input` is the PDF carriage, granted by the backend — not a
 model-family trait** (ADR-005 §1.3 vocabulary: `none | file |
