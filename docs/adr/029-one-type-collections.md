@@ -139,8 +139,8 @@ never a user type, never the any-ui feature. The Collections app
   bao's own types do). Otherwise the call raises, naming the type and
   the fix — never a silent retype to `page`, never an attached second
   type.
-- **The default type.** `create_type` declares the shared body part
-  `{"key": "body", "datasets": [{"module": "editor", "shared": true}]}`
+- **The default type.** `create_type` declares the body part
+  `{"key": "body", "datasets": [{"module": "editor"}]}`
   on every type it mints and heals it onto an existing xKey on every
   ensure, so a type minted by any-ui or by an older bao gains a body
   the first time bao touches it. A user type is "page plus fields" by

@@ -202,7 +202,7 @@ def _validate_source(spec, code):
 
 # The `program` store, declared exactly as deploy declares it
 # (runtime/src/program_schema.rs is normative): a hidden user type by
-# xKey, four unindexed properties, a shared editor part (the docs body
+# xKey, four unindexed properties, a canonical editor part (the docs body
 # every program object holds through its type) and two datasets
 # WITHOUT a search mapping (source is code, never indexed — ADR-010
 # §5; ADR-027 §2/§3). programs@v1 is the writer in a working space, so
@@ -219,7 +219,7 @@ _PROGRAM_TYPE = {
         {"name": "Summary", "xKey": "summary", "kind": "string",
          "meta": {"index": "none"}}]}
 _PROGRAM_DATASETS = [
-    {"module": "editor", "shared": True},
+    {"module": "editor"},
     {"key": "program_source", "displayName": "Program Source",
      "idRule": "user", "deleteBy": "anyone", "dynamic": True,
      "fields": [{"key": "code", "kind": "string", "mutableBy": "any"}]},

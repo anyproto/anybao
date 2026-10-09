@@ -809,7 +809,7 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
 }
 
 /// Ensure the agent_skill type exists WITH its name property and its
-/// shared editor part — the skill's markdown body is held through the
+/// canonical editor part — the skill's markdown body is held through the
 /// type, never attached per object (ADR-027 §3) — and return (typeId,
 /// namePropId). Live-caught constraints: a fresh user type has no
 /// schema (property writes rejected until one is defined), and
@@ -840,7 +840,7 @@ fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)
         client.add_part(
             space,
             &tid,
-            &json!({"key": "body", "datasets": [{"module": "editor", "shared": true}]}),
+            &json!({"key": "body", "datasets": [{"module": "editor"}]}),
         )?;
     }
     for p in client.list_properties(space, &tid)? {

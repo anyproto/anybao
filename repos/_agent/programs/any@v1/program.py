@@ -302,7 +302,7 @@ _ROW_ROOT_KEYS = {"id", "author", "createdAt", "modifiedAt", "modifiedBy",
 # (ADR-029 §4).
 _SYNTHETIC_TYPES = {"any", "spaceIndex", "type", "collection"}
 # The default type (ADR-029 §3): a plain document — no fields, one
-# body (the shared `editor_blocks`). A create that names no type is a
+# body (the canonical `editor_blocks`). A create that names no type is a
 # page; a body needs the object's ONE type to declare an editor part.
 _PAGE_TYPE = "page"
 # The two built-in COLLECTIONS (ADR-029 §4/§6): the sidebar (a root
@@ -315,8 +315,9 @@ _BUILTIN_TYPE_IDS = frozenset({_PAGE_TYPE, "dataview"})
 _BUILTIN_COLLECTION_IDS = frozenset({_MINIAPP, _BIN})
 # the definition markers a definition row carries in `any.type`
 _DEF_MARKERS = ("__type__", "__collection__")
-# the shared body part every type bao mints declares (ADR-029 §3)
-_BODY_PART = {"key": "body", "datasets": [{"module": "editor", "shared": True}]}
+# the body part every type bao mints declares (ADR-029 §3): a keyless
+# editor dataset is the module's canonical collection (`editor_blocks`)
+_BODY_PART = {"key": "body", "datasets": [{"module": "editor"}]}
 _ANY_TYPES_ERR = (
     'there is no "any.types": an object has exactly ONE type — filter it '
     'with {"any.type": "<type xKey>"} (or {"$in": [...]}) — and any number '
@@ -1636,7 +1637,7 @@ class _Client:
         return out
 
     def _declares_body(self, space, type_ids):
-        """Whether any of `type_ids` declares the shared editor body."""
+        """Whether any of `type_ids` declares the editor body (`editor_blocks`)."""
         return any(d.get("collection") == "editor_blocks"
                    for tid in type_ids for d in self._datasets_of(space, tid))
 
@@ -1651,13 +1652,13 @@ class _Client:
         raise ValueError(
             f'type "{xkey}" declares no body (no editor part), so its objects '
             'cannot hold markdown. create_type(space, {"name": …, "xKey": '
-            f'"{xkey}"}}) once adds the shared body part to the type (every '
+            f'"{xkey}"}}) once adds the body part to the type (every '
             'type bao mints has one) — then write again. A plain document is '
             'type "page".')
 
     def _check_body(self, space, object_id):
         """The body gate for a write on an existing object: its type
-        must declare the shared editor collection (no write sets a
+        must declare the canonical editor collection (no write sets a
         type — ADR-029 §3)."""
         self._require_body(space, self._owners_of_object(space, object_id)["type"])
 
@@ -2158,8 +2159,8 @@ class _Client:
         return v
 
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
-    # The routes name the collection: the shared body `editor_blocks`
-    # an object holds while its ONE type declares a shared editor part
+    # The routes name the collection: the body `editor_blocks` an
+    # object holds while its ONE type declares an editor part
     # (`page`, or a type with a body — ADR-029 §3). A write on an
     # object whose type declares none errors with the fix; no write
     # sets a type.
@@ -2480,7 +2481,7 @@ class _Client:
         the kind may be omitted. xKeys default to a slug of the name.
         Idempotent: an existing USER type (by xKey) is reused, only
         MISSING properties are added. **Every type has a body**: the
-        shared editor part is declared on a new type and healed onto
+        editor body part is declared on a new type and healed onto
         an existing one that lacks it, so a user type is "page plus
         fields" — its objects hold markdown like a page does;
         `"body": false` opts out (bao's hidden stores). A name or
@@ -2529,7 +2530,7 @@ class _Client:
                 "addedProps": added}
 
     def _ensure_body_part(self, space, type_id):
-        """Declare the shared editor body on a type that lacks it (the
+        """Declare the editor body on a type that lacks it (the
         default-type rule, ADR-029 §3). True when added."""
         if self._declares_body(space, [type_id]):
             return False
@@ -2648,12 +2649,14 @@ class _Client:
             raise ValueError("create_dataset: \"name\" is not a dataset field — "
                              "the store is addressed by \"key\"")
         if (draft or {}).get("module") in ("editor", "chat"):
-            # a module part: the shared canonical collection (`editor`
+            # a module part: the module's canonical collection (`editor`
             # gives the type's objects the page body); `chat` is the
-            # server's — the wire refuses it
-            if not draft.get("shared"):
-                raise ValueError("create_dataset: a module dataset is shared "
-                                 "(the module's canonical collection)")
+            # server's — the wire refuses it. `shared` is a records-only
+            # flag: the wire 400s it on a module dataset
+            if "shared" in draft:
+                raise ValueError("create_dataset: a module dataset takes no "
+                                 "\"shared\" — it is always the module's "
+                                 "canonical collection; drop the field")
             canonical = "editor_blocks" if draft["module"] == "editor" else "chat_messages"
             for d in self._list_dataset_defs(space, type_key):
                 if d.get("collection") == canonical:
@@ -2661,7 +2664,7 @@ class _Client:
                             "created": False}
             self._call("post", f"/v1/spaces/{space}/types/{tid}/parts",
                        {"key": draft.get("part") or "body", "datasets": [
-                           {"module": draft["module"], "shared": True}]})
+                           {"module": draft["module"]}]})
             self._ds_invalidate(space, type_id=tid)
             d = next((d for d in self._datasets_of(space, tid)
                       if d.get("collection") == canonical), None) or {}
@@ -4021,7 +4024,7 @@ def _space(sc):
 def _list_datasets(spaceConfig, type_key):
     """The datasets a type declares (by xKey) → [defs].
 
-    Each def: {id, key, collection, module, shared?, partId,
+    Each def: {id, key, collection, module, shared?, indexes?, partId,
     displayName?, idRule, idPattern?, deleteBy, skipHistory?,
     search?, fields: [{id, key, kind, scope, required?, mutableBy,
     stamp?, xFormat?}], invalid?, invalidReason?}. `collection` is
@@ -4035,8 +4038,8 @@ def _list_datasets(spaceConfig, type_key):
 def _create_dataset(spaceConfig, type_key, draft):
     """Ensure a records dataset on a USER type — one part per store
     (ADR-016, ADR-027 §2). A module part instead — `{"module":
-    "editor", "shared": true, "part"?: "body"}` — gives the type's
-    objects the shared page body (`editor_blocks`).
+    "editor", "part"?: "body"}` — gives the type's objects the page
+    body (the canonical `editor_blocks`; `shared` is records-only).
 
     draft: {"key": "<store key>", "displayName"?, "idRule":
     "auto"|"user", "deleteBy": "anyone"|"author", "skipHistory"?,

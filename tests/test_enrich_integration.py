@@ -67,7 +67,7 @@ def test_propose_apply_roundtrip(client, fresh_space, enrich_mod):
 
     # the transcript: an object whose editor body holds the notes — the
     # body is declared on its ONE type (ADR-029 §3)
-    client.add_part(sp, tid, {"key": "body", "datasets": [{"module": "editor", "shared": True}]})
+    client.add_part(sp, tid, {"key": "body", "datasets": [{"module": "editor"}]})
     tr = client.create_object(sp, {
         "type": tid,
         "initialProperties": {"any": {"name": "Weekly sync"}}})["objectId"]
@@ -174,7 +174,7 @@ def test_propose_grounds_against_live_search(client, fresh_space,
     not asserted (indexing is async) — only the wire shape."""
     sp = fresh_space
     tid = client.create_type(sp, {"name": "Note", "xKey": "note"})["typeId"]
-    client.add_part(sp, tid, {"key": "body", "datasets": [{"module": "editor", "shared": True}]})
+    client.add_part(sp, tid, {"key": "body", "datasets": [{"module": "editor"}]})
     tr = client.create_object(sp, {
         "type": tid,                     # the body is the type's (ADR-029 §3)
         "initialProperties": {"any": {"name": "call notes"}}})["objectId"]

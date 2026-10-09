@@ -22,8 +22,9 @@ under every client, 116 commits past anybao's pin a176029. The
 contract now is: an object carries types; a type is properties plus
 **parts**; each part owns datasets served by a **module** (`records`,
 `editor`, `chat`); a dataset's records live in a **collection** the
-server computes — `<typeId>_<key>`, or the module's canonical
-collection when shared (`editor_blocks`, `chat_messages`). A
+server computes from the dataset key — `<typeId>_<key>`, or the
+module's canonical collection (`editor_blocks`, `chat_messages`) for
+a module dataset with no key. A
 **bundle** is one root object registered under a permanent id; it can
 be a type, an app (`miniapp` carrier) and an implementation of its
 type at once. The server ships a **usecase catalog** of well-known
@@ -82,6 +83,8 @@ recipe keeps its old root on disk; anybao never reads it, and a
 sidebar that still shows it is the client's leftover to hide.
 
 ### 2. Stores are parts; the collection is read, never composed
+
+**Amended 2026-10-09 (any v0.3.0):** the dataset key decides the collection — a module dataset with no key (or the module's canonical name) is the canonical collection, any other key `<typeId>_<key>`. `shared` is a records-only flag (one collection per space, read across objects); on a module dataset it is `400 dataset.decl_invalid`, and listings carry it only on records datasets. Every editor part is declared `{"module": "editor"}`; a canonical body is recognised by `collection == "editor_blocks"`. New declarations need a v0.3.0+ server, so the fleet moves together (§6); spaces declared earlier keep their stored declarations.
 
 Every harness store keeps its type and its bundle child (ADR-017 §0
 unchanged: `bao/v1` root, `bao/config/v1`, `bao/secrets/v1`,
@@ -173,9 +176,9 @@ The editor routes carry the collection: `…/editor/editor_blocks/markdown`
   (`POST …/properties/:objectId/attach/page`, idempotent). The guest
   catalog resolves `page` like the other hidden built-ins.
 - Deploy's objects — `program` and `agent_skill` — carry their body
-  through their **type**: both type ensures declare a shared editor
-  part (`{"key": "body", "datasets": [{"module": "editor", "shared":
-  true}]}`), so every existing and future program/skill object holds
+  through their **type**: both type ensures declare an editor part
+  (`{"key": "body", "datasets": [{"module": "editor"}]}` — keyless,
+  so the canonical collection), so every existing and future program/skill object holds
   `editor_blocks` without a per-object attach.
 - `deepResearch@v1` writes pages on the built-in `page`; it no longer
   mints a "Page" type (an xKey is required and `page` is reserved).

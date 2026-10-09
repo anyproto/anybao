@@ -37,7 +37,7 @@ def test_general_chat_is_derived_idempotent_and_the_only_chat(client, fresh_spac
     # the chat module is reserved: no client part may declare it
     with pytest.raises(AnyError) as ei:
         client.ensure_bundle(fresh_space, {"id": "mine/v1", "name": "m", "parts": [
-            {"key": "chat", "datasets": [{"module": "chat", "shared": True}]}]})
+            {"key": "chat", "datasets": [{"module": "chat"}]}]})
     assert ei.value.code == "dataset.module_reserved"
     # messages land on the root
     client.chat_send(fresh_space, root, {"text": "hello"})

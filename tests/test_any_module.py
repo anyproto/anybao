@@ -227,7 +227,7 @@ def test_object_type_property_creation_paths():
         ("GET", "/v1/spaces/s1/types/t1/properties"),   # xFormat.pos append (ADR-027 §4)
         ("POST", "/v1/spaces/s1/types/t1/properties")]
     part = next(b for v, p, b in fx.calls if p.endswith("/parts"))
-    assert part == {"key": "body", "datasets": [{"module": "editor", "shared": True}]}
+    assert part == {"key": "body", "datasets": [{"module": "editor"}]}
 
 
 # --- create_type: the anyHelper composite --------------------------------------
@@ -421,11 +421,11 @@ _ANY_PROPS = {"properties": [
     {"id": "name", "name": "Name", "kind": "string", "scope": "synced"},
     {"id": "description", "kind": "string", "scope": "synced"},
     {"id": "types", "kind": "array", "scope": "synced"}]}
-# `task` has a body: every type bao mints declares the shared editor
-# part (ADR-029 §3)
+# `task` has a body: every type bao mints declares the editor part
+# (ADR-029 §3)
 _TASK_BODY = {"datasets": [
     {"id": "dBODY", "key": "editor_blocks", "collection": "editor_blocks",
-     "module": "editor", "shared": True, "partId": "pBODY"}]}
+     "module": "editor", "partId": "pBODY"}]}
 _CAT = {
     "/types": {"types": [
         {"id": "bafyTASK", "name": "Task", "xKey": "task"},
@@ -855,22 +855,23 @@ def test_create_dataset_single_element_text_array_is_not_drift():
 
 
 def test_create_dataset_module_part_gives_the_type_a_body():
-    # a shared editor part (ADR-027 §3): declared under `body` unless the
-    # type already holds editor_blocks; no key on a module dataset
+    # an editor part (ADR-027 §3): declared under `body` unless the type
+    # already holds editor_blocks; no key on a module dataset, so it is
+    # the canonical collection; `shared` is records-only (any v0.3.0)
     fx = wire(replies={"/types": {"types": [{"id": "pr", "xKey": "program"}]},
                        "/types/pr/datasets": {"datasets": [
                            {"id": "d1", "key": "editor_blocks", "collection": "editor_blocks",
-                            "module": "editor", "shared": True}]}})
-    r = client(fx).create_dataset("s1", "program", {"module": "editor", "shared": True})
+                            "module": "editor"}]}})
+    r = client(fx).create_dataset("s1", "program", {"module": "editor"})
     assert r == {"datasetDefId": "d1", "collection": "editor_blocks", "created": False}
     assert not [c for c in fx.calls if c[0] == "POST"]
     fx = wire(replies={"/types": {"types": [{"id": "pr", "xKey": "program"}]},
                        "/parts": {"partId": "p1"}})
-    client(fx).create_dataset("s1", "program", {"module": "editor", "shared": True})
+    client(fx).create_dataset("s1", "program", {"module": "editor"})
     part = next(b for v, p, b in fx.calls if p.endswith("/parts"))
-    assert part == {"key": "body", "datasets": [{"module": "editor", "shared": True}]}
+    assert part == {"key": "body", "datasets": [{"module": "editor"}]}
     with pytest.raises(ValueError, match="shared"):
-        client(fx).create_dataset("s1", "program", {"module": "editor"})
+        client(fx).create_dataset("s1", "program", {"module": "editor", "shared": True})
 
 
 def test_create_dataset_declares_one_part_per_store():
@@ -2020,7 +2021,7 @@ def test_list_search_scopes_unions_fixed_and_declared():
     # records owner is walked once for its declared scopes
     fx = wire(replies={
         "/v1/spaces/s1/datasets": {"datasets": [
-            {"name": "chat_messages", "module": "chat", "shared": True,
+            {"name": "chat_messages", "module": "chat",
              "owners": ["bafyreichat0000000000000000"]},
             {"name": "bafyreimailbox00000000000000_email_messages", "module": "records",
              "owners": ["bafyreimailbox00000000000000"]},

@@ -116,7 +116,7 @@ impl Transport for StubTransport {
 /// number of collections (`any.collections`), property groups keyed
 /// by owner, types with parts whose datasets live in server-computed
 /// storage collections (`<typeId>_<key>`, or a module's canonical
-/// collection when shared), the write gate (an object holds a storage
+/// collection when keyless), the write gate (an object holds a storage
 /// collection only while its type declares it), the hidden built-in
 /// types `page` / `dataview` and collections `miniapp` / `bin`, the
 /// bundles registry with children, and the catalog's `general-chat`
@@ -226,7 +226,7 @@ fn err(status: u16, code: &str, message: impl Into<String>) -> (u16, Value) {
 }
 
 /// The registered built-in types every space has (hidden, static).
-/// `page` is the one with a part: the shared editor body.
+/// `page` is the one with a part: the canonical editor body.
 const BUILTIN_TYPES: [&str; 2] = ["page", "dataview"];
 /// The registered built-in collections (hidden, static): the sidebar
 /// and the bin.
@@ -264,7 +264,7 @@ impl State {
             (space.to_string(), "page".to_string()),
             vec![
                 json!({"id": "page_body", "key": "editor_blocks", "collection": "editor_blocks",
-                        "module": "editor", "shared": true, "partId": "page_body"}),
+                        "module": "editor", "partId": "page_body"}),
             ],
         );
     }
@@ -736,21 +736,27 @@ impl State {
         for ds in draft["datasets"].as_array().cloned().unwrap_or_default() {
             let module = ds["module"].as_str().unwrap_or("records").to_string();
             let shared = ds["shared"] == json!(true);
-            let (dkey, collection) = match (module.as_str(), shared) {
-                ("editor", true) => ("editor_blocks".to_string(), "editor_blocks".to_string()),
+            let dkey = ds["key"].as_str().filter(|k| !k.is_empty());
+            // the key decides the collection: none, or the module's
+            // canonical name, is the canonical collection; any other
+            // key is `<typeId>_<key>`. `shared` is records-only.
+            let (dkey, collection) = match (module.as_str(), dkey) {
                 ("chat", _) => return err(400, "dataset.module_reserved", "chat is the server's"),
-                ("records", true) => {
-                    return err(400, "dataset.shared_conflict", "records never shares")
+                ("editor", _) if ds.get("shared").is_some() => {
+                    return err(
+                        400,
+                        "dataset.decl_invalid",
+                        "only a records dataset is shared",
+                    )
                 }
-                (m, _) if m != "records" && m != "editor" => {
-                    return err(400, "dataset.module_unknown", format!("module {m:?}"))
+                ("editor", None | Some("editor_blocks")) => {
+                    ("editor_blocks".to_string(), "editor_blocks".to_string())
                 }
-                _ => {
-                    let Some(k) = ds["key"].as_str().filter(|k| !k.is_empty()) else {
-                        return err(400, "dataset.decl_invalid", "dataset key required");
-                    };
-                    (k.to_string(), format!("{tid}_{k}"))
+                ("records", None) => {
+                    return err(400, "dataset.decl_invalid", "dataset key required")
                 }
+                ("records" | "editor", Some(k)) => (k.to_string(), format!("{tid}_{k}")),
+                (m, _) => return err(400, "dataset.module_unknown", format!("module {m:?}")),
             };
             if ds.get("name").is_some() {
                 return err(
@@ -821,7 +827,7 @@ impl State {
                 vec![
                     json!({"id": format!("ds_{root}_chat"), "key": "chat_messages",
                             "collection": "chat_messages", "module": "chat",
-                            "shared": true, "partId": "chat"}),
+                            "partId": "chat"}),
                 ],
             );
             self.objects.insert(
@@ -910,7 +916,7 @@ impl State {
     }
 
     /// The editor write gate: the object's type must declare the
-    /// shared body (`page`, or a type with a shared editor part).
+    /// canonical body (`page`, or a type with an editor part).
     fn holds_body(&self, space: &str, oid: &str) -> bool {
         self.held_collections(space, oid)
             .iter()
