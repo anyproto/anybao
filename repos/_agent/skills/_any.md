@@ -86,7 +86,12 @@ that device runs bao. Never promise a switch you have not seen in
 `active`.
 
 **Links.** Write `[Name](any://o/<spaceId>/<objectId>)`; files are
-`any://f/<spaceId>/<fileId>`. The space segment is always the ID,
+`any://f/<spaceId>/<fileId>`. A record inside an object's dataset has
+its own link: `any://o/<spaceId>/<objectId>/<dataset>/<recordId>` —
+a block (`…/editor_blocks/<blockId>`), a chat message
+(`…/chat_messages/<msgId>`), any dataset row (an email:
+`…/<mailboxId>/email_messages/<messageId>`). Link the record, not its
+container, when you mean one row. The space segment is always the ID,
 never a name. Paste attach_file's `uri` as returned.
 
 **Files.** An attachment arrives as an `[attachment image:

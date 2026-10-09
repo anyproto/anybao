@@ -12,6 +12,8 @@ corpus); go live only for mail not yet synced.
 - Each gmail address has one mailbox object in the space:
   `query_objects(space, filter={"any.type": "mailbox"})`. Its mail is
   email_messages records, one per message, id = the Gmail message id.
+  Link one email as
+  `any://o/<space>/<mailbox_id>/email_messages/<messageId>`.
 - Read with `query(space, mailbox_id, "email_messages", filter=…,
   sort=["-internalDate"], limit=…)`, not query_objects. Fields are
   plain keys: threadId, from, to, cc, subject, date, labelIds,
