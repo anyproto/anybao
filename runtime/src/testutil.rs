@@ -1039,10 +1039,24 @@ impl Transport for FakeSpace {
                         "the object's type declares no such collection",
                     ));
                 }
+                // the reply counts the block diff; blank lines only
+                // separate blocks here (the server's canonical form
+                // puts one between every two), so they never count
                 let content = body["content"].as_str().unwrap_or("").to_string();
-                s.markdown
-                    .insert((sp.to_string(), oid.to_string()), content);
-                json!({"ok": true})
+                let blocks = |t: &str| -> Vec<String> {
+                    t.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(str::to_string)
+                        .collect()
+                };
+                let key = (sp.to_string(), oid.to_string());
+                let same = s.markdown.get(&key).map(|old| blocks(old)) == Some(blocks(&content));
+                s.markdown.insert(key, content);
+                if same {
+                    json!({"inserted": [], "updated": [], "deleted": [], "unchanged": 1})
+                } else {
+                    json!({"inserted": [], "updated": [oid], "deleted": [], "unchanged": 0})
+                }
             }
             ("POST", ["v1", "spaces", sp, "bundles"]) => return Ok(s.ensure_bundle(sp, &body)),
             ("GET", ["v1", "spaces", sp, "bundles"]) => {
