@@ -75,7 +75,8 @@ gitignored `configs/` and need `--config-file configs/<name>.toml`.
 Account mnemonics live OUTSIDE every repo dir, in `~/.any-accounts/`.
 
 `any`-server data dirs live in `~/any/any/datadirs/` (also gitignored):
-`repo-prod4` (:7006 prod repo account), `repo-prod4-test` (:7008, the
+`repo-prod4` (:7006 stable repo account), `repo-nightly` (:7011, the
+nightly repo account, any v0.3.0), `repo-prod4-test` (:7008, the
 repo account owning the `*-test` copies), `prod-test-user2` (:7007),
 `staging` (:7134, owns its own repo spaces). Every account was
 recreated 2026-09-18 on any `b5be51c` (ADR-029, CRDT mark 2). The `any` configs are
@@ -83,21 +84,38 @@ in `~/any/any/configs/` — `any-config.yml` (prod network) and
 `any-config-staging.yml` (staging); `staging.yml` stays at that repo's
 root because its e2e tests look for it there.
 
-## Deploying to the PROD repo spaces
+## Release channels: stable + nightly repo spaces
 
-The prod `_agentrepo` / `_connectorsrepo` spaces are owned by a
-dedicated **repo account** whose server runs locally at
-`http://127.0.0.1:7006` (data dir `~/any/any/datadirs/repo-prod4`, prod network —
-bring-up + ids: the local `docs/environments.md`). The
-`configs/anybao.toml` account only *joins* them as guest — `anyrt
-deploy --target agent` through it 403s (`space.read_only`). Deploy via
-the repo server, addressing the space by raw id (the ids live in
-`configs/anybao.toml [overlays]`):
+The repos ship on two channels, the same split as any-ui's releases.
+Each channel has its own pair of repo spaces on the prod network, owned
+by its own repo account (`deploy/<channel>.account`):
+
+| channel | spaces (`deploy/<channel>.toml`) | owner (local) | read by |
+|---|---|---|---|
+| stable | `_agentrepo` / `_connectorsrepo` (`deploy/stable.toml` -> `anybao.toml`) | `repo-prod4`, `:7006` | any-ui production releases |
+| nightly | `_agentrepo` / `_connectorsrepo` (same names as stable: any-ui hides repo spaces by name) | `repo-nightly`, `:7011` | any-ui nightly builds |
+
+**CI deploys, after the any-ui release.** any-ui's `release.yml`
+dispatches `.github/workflows/deploy-repos.yml` once a release has
+published, naming the anybao commit and the any server release it
+bundled. The workflow deploys that commit to the channel's spaces
+(`release` -> stable, `prerelease` -> nightly), so programs never reach
+users before the anyrt that runs them. The secret
+`REPO_DEPLOY_ACCOUNTS` = `{"stable": "<mnemonic>", "nightly":
+"<mnemonic>"}` holds the owner mnemonics; a re-run is a manual
+`workflow_dispatch` with the same inputs.
+
+**By hand (break-glass)** — through the owning server, by overlay name
+(a guest join 403s `space.read_only`):
 
 ```
-anyrt deploy --addr http://127.0.0.1:7006 --source repos/_agent \
-  --target <agent space id>          # same for repos/_connectors
+anyrt deploy --config-file deploy/stable.toml  --addr http://127.0.0.1:7006 --source repos/_agent --target agent
+anyrt deploy --config-file deploy/nightly.toml --addr http://127.0.0.1:7011 --source repos/_agent --target agent
+                                     # same with repos/_connectors --target connectors
 ```
+
+Poll `/v1/spaces/<id>/sync-status` until `synced` before stopping the
+owner server. Bring-up, ids, mnemonics: the local `docs/environments.md`.
 
 ## Prod-network TEST environment (`configs/anybao.prod.test.toml`)
 
