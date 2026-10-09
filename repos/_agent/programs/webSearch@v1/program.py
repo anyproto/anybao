@@ -26,6 +26,7 @@ _SYSTEM = (
     "versions. Do not add preamble or hedging — just the answer."
 )
 _TIMEOUT_S = 120
+_MAX_SOURCES = 10  # an any-ai search cites every hit (up to 64)
 
 
 def _provider():
@@ -33,15 +34,12 @@ def _provider():
 
 
 def _wire(prov):
+    """The provider row's wire (ADR-008 §3) — a config error before any call."""
     wire = prov.get("provider") or "gemini"
     if wire not in _WIRES:
         raise ValueError(f"search.provider.websearch: unknown provider {wire!r}; "
                          f"supported: {', '.join(_WIRES)}")
-    return wire
-
-
-def _request(prov, query):
-    return _WIRES[_wire(prov)][0](prov, query)
+    return _WIRES[wire]
 
 
 def _gemini_request(prov, query):
@@ -100,22 +98,36 @@ __any_credentials__ = [{"ref": "google.key.gemini",
                                   "help": "https://aistudio.google.com/apikey"}}]
 
 
-def _parse(raw, wire="gemini"):
-    """One batch item -> {ok, answer, sources, queries} | {ok: False, error}.
-    Sources dedup by url; Gemini's grounding-redirect urls resolve
-    later, in one pass across all queries."""
+def _parse(raw, wire):
+    """One batch item -> {ok, answer, sources} | {ok: False, error}.
+    Any body shape lands in its own slot — a 200 that is not the
+    wire's object is an error there, never a raise out of search()."""
     if isinstance(raw, dict) and set(raw) == {"error"}:  # batch item failure
         return {"ok": False,
                 "error": f"{raw['error']['type']}: {raw['error']['message']}"}
     try:
         body = json.loads(raw["body"])
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):  # TypeError: a raw-bytes blob ref
         return {"ok": False, "error": f"unparseable response (status {raw.get('status')})"}
+    if not isinstance(body, dict):
+        return {"ok": False, "error": f"unexpected response (status {raw['status']})"}
     if raw["status"] >= 400:
-        err = body.get("error") if isinstance(body, dict) else None
+        err = body.get("error")
         msg = (err.get("message") if isinstance(err, dict) else err) or f"HTTP {raw['status']}"
-        return {"ok": False, "error": msg}
-    return _WIRES[wire][1](body)
+        return {"ok": False, "error": str(msg)}
+    try:
+        return wire["parse"](body)
+    except (AttributeError, TypeError, IndexError, KeyError):
+        return {"ok": False, "error": f"malformed response (status {raw['status']})"}
+
+
+def _sources(pairs):
+    """(url, title) pairs -> sources, first url wins, capped."""
+    out = {}
+    for url, title in pairs:
+        if url and url not in out:
+            out[url] = {"url": url, "title": title or ""}
+    return list(out.values())[:_MAX_SOURCES]
 
 
 def _gemini_parse(body):
@@ -125,40 +137,33 @@ def _gemini_parse(body):
     if not parts:
         return {"ok": False, "error": "empty response from Gemini"}
     answer = "".join(p.get("text", "") for p in parts)
-    sources, seen = [], set()
     gm = cands[0].get("groundingMetadata") or {}
-    for chunk in gm.get("groundingChunks") or []:
-        web = chunk.get("web") or {}
-        uri = web.get("uri")
-        if uri and uri not in seen:
-            seen.add(uri)
-            sources.append({"url": uri,
-                            "title": web.get("title") or web.get("domain") or ""})
-    return {"ok": True, "answer": answer, "sources": sources,
-            "queries": gm.get("webSearchQueries") or []}
+    webs = [c.get("web") or {} for c in gm.get("groundingChunks") or []]
+    return {"ok": True, "answer": answer,
+            "sources": _sources((w.get("uri"), w.get("title") or w.get("domain"))
+                                for w in webs)}
 
 
 def _openai_parse(body):
     choices = body.get("choices") or []
     msg = (choices[0].get("message") if choices else None) or {}
     answer = msg.get("content") or ""
+    if isinstance(answer, list):  # content parts
+        answer = "".join(p.get("text", "") for p in answer if p.get("type") == "text")
     if not answer:
+        if msg.get("refusal"):
+            return {"ok": False, "error": f"refused: {msg['refusal']}"}
         return {"ok": False, "error": "empty response from the search model"}
-    sources, seen = [], set()
-    for a in msg.get("annotations") or []:
-        if a.get("type") != "url_citation":
-            continue
-        cite = a.get("url_citation") or {}
-        url = cite.get("url")
-        if url and url not in seen:
-            seen.add(url)
-            sources.append({"url": url, "title": cite.get("title") or ""})
-    return {"ok": True, "answer": answer, "sources": sources, "queries": []}
+    cites = [a.get("url_citation") or {} for a in msg.get("annotations") or []
+             if a.get("type") == "url_citation"]
+    return {"ok": True, "answer": str(answer),
+            "sources": _sources((c.get("url"), c.get("title")) for c in cites)}
 
 
-# provider -> (request builder, body parser, sources are redirect urls)
-_WIRES = {"gemini": (_gemini_request, _gemini_parse, True),
-          "openai-compat": (_openai_request, _openai_parse, False)}
+# provider -> its wire; `redirects`: the sources are grounding redirects
+_WIRES = {"gemini": {"request": _gemini_request, "parse": _gemini_parse, "redirects": True},
+          "openai-compat": {"request": _openai_request, "parse": _openai_parse,
+                            "redirects": False}}
 
 
 def _resolve_redirects(parsed):
@@ -220,11 +225,11 @@ def search(*queries):
     wire = _wire(prov)
     raws = effect("batch", {  # noqa: F821
         "name": "http.post",
-        "payloads": [_request(prov, q) for q in queries]})["results"]
+        "payloads": [wire["request"](prov, q) for q in queries]})["results"]
     parsed = [_parse(r, wire) for r in raws]
     # only Gemini's grounding urls are redirects; a GET of a real source
     # url would touch the destination server (ADR-008 §2)
-    if _WIRES[wire][2]:
+    if wire["redirects"]:
         _resolve_redirects(parsed)
     return [_format(i + 1, q, p)
             for i, (q, p) in enumerate(zip(queries, parsed, strict=True))]

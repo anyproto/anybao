@@ -139,3 +139,40 @@ def test_unknown_provider_is_a_config_error_before_any_call():
     with pytest.raises(ValueError, match="unknown provider 'bing'"):
         g["search"]("q")
     assert [c[0] for c in calls] == ["config.get"]
+
+
+def test_any_reply_shape_stays_in_its_slot():
+    # ADR-008 §3: a reply the wire does not expect is an [ERROR] in place
+    posts = [
+        {"status": 200, "body": "null"},
+        {"status": 200, "body": "[]"},
+        ok({"choices": [None]}),
+        openai_reply("fine", ["not-an-annotation"]),
+        {"status": 502, "body": {"__blob": "ab12", "bytes": 3, "mime": "application/octet-stream"}},
+        {"status": 401, "body": json.dumps({"error": "bad token"})},
+        ok({"choices": [{"message": {"content": None, "refusal": "not that one"}}]}),
+    ]
+    g, _ = load(PROXY, posts)
+    out = g["search"]("a", "b", "c", "d", "e", "f", "g")
+    assert out[0] == '[ERROR] query 1 ("a") failed: unexpected response (status 200)'
+    assert out[1] == '[ERROR] query 2 ("b") failed: unexpected response (status 200)'
+    assert out[2] == '[ERROR] query 3 ("c") failed: malformed response (status 200)'
+    assert out[3] == '[ERROR] query 4 ("d") failed: malformed response (status 200)'
+    assert out[4] == '[ERROR] query 5 ("e") failed: unparseable response (status 502)'
+    assert out[5] == '[ERROR] query 6 ("f") failed: bad token'
+    assert out[6] == '[ERROR] query 7 ("g") failed: refused: not that one'
+
+
+def test_content_parts_are_an_answer():
+    reply = ok({"choices": [{"message": {"content": [
+        {"type": "text", "text": "Rust "}, {"type": "text", "text": "2027."}]}}]})
+    g, _ = load(PROXY, [reply])
+    assert g["search"]("q") == ["[1] q\n\n\nRust 2027."]
+
+
+def test_sources_are_capped():
+    reply = openai_reply("many", [cite(f"https://s{i}.example", f"S{i}") for i in range(40)])
+    g, _ = load(PROXY, [reply])
+    out, = g["search"]("q")
+    assert out.count("https://s") == g["_MAX_SOURCES"] == 10
+    assert "https://s9.example" in out and "https://s10.example" not in out

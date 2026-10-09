@@ -33,7 +33,13 @@ _MAX_FOLLOW_UPS = 7
 
 
 def _provider():
-    return effect("config.get", {"key": "search.provider.deepresearch"})["value"]  # noqa: F821
+    prov = effect("config.get", {"key": "search.provider.deepresearch"})["value"]  # noqa: F821
+    # the Gemini wire only (ADR-008 §4) — another provider is a config
+    # error, never its key sent as x-goog-api-key
+    if (prov.get("provider") or "gemini") != "gemini":
+        raise ValueError(f"search.provider.deepresearch: unknown provider "
+                         f"{prov['provider']!r}; supported: gemini")
+    return prov
 
 
 def _request(prov, question):
@@ -75,11 +81,14 @@ def _parse(raw):
                 "error": f"{raw['error']['type']}: {raw['error']['message']}"}
     try:
         body = json.loads(raw["body"])
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):  # TypeError: a raw-bytes blob ref
         return {"ok": False, "error": f"unparseable response (status {raw.get('status')})"}
+    if not isinstance(body, dict):
+        return {"ok": False, "error": f"unexpected response (status {raw['status']})"}
     if raw["status"] >= 400:
-        msg = (body.get("error") or {}).get("message") or f"HTTP {raw['status']}"
-        return {"ok": False, "error": msg}
+        err = body.get("error")
+        msg = (err.get("message") if isinstance(err, dict) else err) or f"HTTP {raw['status']}"
+        return {"ok": False, "error": str(msg)}
     cands = body.get("candidates") or []
     content = (cands[0].get("content") if cands else None) or {}
     parts = content.get("parts") or []

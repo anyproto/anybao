@@ -85,7 +85,9 @@ closer to bobrik's `redirect: manual`).
   through the `batch` effect (one guest→host round-trip; host-side
   execution is sequential today — parallelizing `sys_batch` is a
   runtime follow-up, not this tool's concern).
-- Per query: the synthesized answer + sources deduped by url. Gemini's
+- Per query: the synthesized answer + sources deduped by url, at most
+  10 (an any-ai search cites every hit). Any reply shape a wire does
+  not expect is an `[ERROR]` in that query's slot. Gemini's
   grounding urls are redirects, unwrapped per §2 (best-effort — an
   unresolved redirect keeps the original url); `url_citation` urls are
   the real sources and are never fetched. Returns a list of formatted
@@ -96,7 +98,9 @@ closer to bobrik's `redirect: manual`).
 
 Four phases, mirroring bobrik's pipeline:
 
-1. Initial grounded call (same wire as §3, `search.provider.deepresearch`).
+1. Initial grounded call (§3's `gemini` wire, `search.provider.deepresearch`;
+   the row's `provider` must be `gemini` or absent — any other is a
+   config error before any call).
 2. Decomposition via `llm@v1` (`classify` tier): 3–7 follow-up
    questions + a short collection name, JSON-only reply. A failed
    parse degrades to a single research page.
