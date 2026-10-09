@@ -749,14 +749,27 @@ pub fn instant_ms(v: &Value) -> Option<i64> {
 pub const README_TYPE: &str = "page";
 
 /// The overlay's description object, from the source root's README.md.
-/// Hash-gated by content comparison (a fresh object reads back "").
 pub fn deploy_readme(client: &Client, space: &str, content: &str) -> anyhow::Result<&'static str> {
     let oid = ensure_typed(client, space, "README", README_TYPE)?;
-    if client.get_markdown(space, &oid)? == content {
-        return Ok("unchanged");
-    }
-    client.put_markdown(space, &oid, content)?;
-    Ok("updated")
+    put_body(client, space, &oid, content)
+}
+
+/// Write a markdown body → "updated" | "unchanged". The server's block
+/// diff decides, never a text compare: the read-back is any's
+/// canonical form (a blank line between every two blocks, so lists
+/// come back loose), which a hand-written source rarely matches, and
+/// a PUT whose diff is empty writes nothing (BOB-119).
+fn put_body(
+    client: &Client,
+    space: &str,
+    oid: &str,
+    content: &str,
+) -> anyhow::Result<&'static str> {
+    let res = client.put_markdown(space, oid, content)?;
+    let wrote = ["inserted", "updated", "deleted"]
+        .iter()
+        .any(|k| res[*k].as_array().is_some_and(|a| !a.is_empty()));
+    Ok(if wrote { "updated" } else { "unchanged" })
 }
 
 #[derive(Debug, Default)]
@@ -809,7 +822,7 @@ pub fn load_skills_dir(path: &Path) -> anyhow::Result<BTreeMap<String, String>> 
 }
 
 /// Ensure the agent_skill type exists WITH its name property and its
-/// shared editor part — the skill's markdown body is held through the
+/// canonical editor part — the skill's markdown body is held through the
 /// type, never attached per object (ADR-027 §3) — and return (typeId,
 /// namePropId). Live-caught constraints: a fresh user type has no
 /// schema (property writes rejected until one is defined), and
@@ -840,7 +853,7 @@ fn skill_schema(client: &Client, space: &str) -> anyhow::Result<(String, String)
         client.add_part(
             space,
             &tid,
-            &json!({"key": "body", "datasets": [{"module": "editor", "shared": true}]}),
+            &json!({"key": "body", "datasets": [{"module": "editor"}]}),
         )?;
     }
     for p in client.list_properties(space, &tid)? {
@@ -902,11 +915,7 @@ impl<'a> SkillDeployer<'a> {
 
     pub fn deploy_one(&self, name: &str, content: &str) -> anyhow::Result<&'static str> {
         if let Some(oid) = self.find(name)? {
-            if self.client.get_markdown(&self.space, &oid)? == content {
-                return Ok("unchanged");
-            }
-            self.client.put_markdown(&self.space, &oid, content)?;
-            return Ok("updated");
+            return put_body(self.client, &self.space, &oid, content);
         }
         let (tid, prop) = self.ensure_type()?;
         let res = self.client.create_object(
@@ -1422,6 +1431,21 @@ mod tests {
         assert_eq!(sd.deploy_one("_core", "core body").unwrap(), "created");
         assert_eq!(sd.deploy_one("_core", "core body").unwrap(), "unchanged");
         assert_eq!(sd.deploy_one("_core", "new body").unwrap(), "updated");
+    }
+
+    #[test]
+    fn skill_deploy_unchanged_against_the_canonical_read_back() {
+        // BOB-119: the server reads a tight list back loose; the PUT's
+        // block diff, not a text compare, decides "unchanged"
+        let c = client();
+        let sd = SkillDeployer::new(&c, "agent");
+        let src = "# Rules\n- one\n- two\n";
+        assert_eq!(sd.deploy_one("_soul", src).unwrap(), "created");
+        let oid = sd.find("_soul").unwrap().unwrap();
+        c.put_markdown("agent", &oid, "# Rules\n\n- one\n\n- two")
+            .unwrap();
+        assert_ne!(c.get_markdown("agent", &oid).unwrap(), src);
+        assert_eq!(sd.deploy_one("_soul", src).unwrap(), "unchanged");
     }
 
     #[test]

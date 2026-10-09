@@ -2,7 +2,7 @@
 //! ADR-017 §1, ADR-027 §2/§3, ADR-029 §7): one LISTED type per space
 //! keyed by xKey `program` — a class with a body that a picker may
 //! offer; a hand-made object is inert — four properties (`name`, `version`, `any_tool`,
-//! `summary` — none indexed), a shared editor part (`body` — the
+//! `summary` — none indexed), a canonical editor part (`body` — the
 //! program object's docs body, held through the type) and two records
 //! datasets, `program_source` and `program_manifest` (single record
 //! "main"; declared WITHOUT a `search` mapping, so the server never
@@ -47,12 +47,12 @@ const PROPS: [(&str, &str, &str); 4] = [
 /// resolves (its programs simply declare nothing until redeployed).
 pub const CREDENTIALS_PROP: (&str, &str, &str) = ("credentials", "Credentials", "string");
 
-/// The parts the type declares: the shared body first (the docs body
+/// The parts the type declares: the canonical body first (the docs body
 /// every program object holds through its type — no per-object
 /// attach), then one part per records store.
 fn part_drafts() -> [Value; 3] {
     [
-        json!({"key": "body", "datasets": [{"module": "editor", "shared": true}]}),
+        json!({"key": "body", "datasets": [{"module": "editor"}]}),
         json!({"key": SOURCE_KEY, "datasets": [{
             "key": SOURCE_KEY, "displayName": "Program Source",
             "idRule": "user", "deleteBy": "anyone", "dynamic": true,
@@ -138,7 +138,7 @@ impl ProgramSchema {
             props.insert(xkey.to_string(), pid.to_string());
         }
         // idempotent by dataset KEY; the body part has none of its own
-        // (a shared editor dataset lists under the canonical key)
+        // (a keyless editor dataset lists under the canonical key)
         let mut have = collections(c, space, &tid)?;
         for draft in part_drafts() {
             let ds = &draft["datasets"][0];
@@ -273,7 +273,7 @@ mod tests {
         assert!(s.credentials_prop().is_some());
         let ds = c.list_datasets("sp", &s.type_id).unwrap();
         let keys: Vec<&str> = ds.iter().filter_map(|d| d["key"].as_str()).collect();
-        // the shared body (held through the type) + the two stores
+        // the canonical body (held through the type) + the two stores
         assert_eq!(keys, vec!["editor_blocks", SOURCE_KEY, MANIFEST_KEY]);
         // never a search target
         assert!(ds.iter().all(|d| d.get("search").is_none()));

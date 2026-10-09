@@ -360,8 +360,8 @@ fn unwrap_envelope(status: u16, data: Value) -> Result<Value, AnyError> {
     Ok(data)
 }
 
-/// The editor module's canonical collection — the shared body an object
-/// holds while it carries `page` or a type with a shared editor part.
+/// The editor module's canonical collection — the body an object holds
+/// while it carries `page` or a type with an editor part.
 pub const EDITOR_BLOCKS: &str = "editor_blocks";
 
 /// Percent-encode one query-string value (RFC 3986 unreserved set).
@@ -738,8 +738,8 @@ impl Client {
     }
 
     // --- editor markdown (content, NOT markdown — wire landmine) ---
-    // The routes name the collection: the shared `editor_blocks` body
-    // an object holds while it carries `page` or a type with a shared
+    // The routes name the collection: the canonical `editor_blocks`
+    // body an object holds while it carries `page` or a type with an
     // editor part (ADR-027 §3). No write attaches a type: an object
     // without one answers 400 `dataset.not_declared`.
     pub fn get_markdown(&self, space_id: &str, object_id: &str) -> Result<String, AnyError> {
@@ -983,7 +983,7 @@ impl Client {
 
     /// GET /v1/spaces/{s}/types/{t}/datasets — the type's datasets,
     /// the flat compiled view: `[{id, key, collection, module, shared?,
-    /// partId, idRule, deleteBy, search?, fields, invalid?}]`. The
+    /// indexes?, partId, idRule, deleteBy, search?, fields, invalid?}]`. The
     /// `collection` is the address every read and write carries; it is
     /// read here, never composed (ADR-027 §2).
     pub fn list_datasets(&self, space_id: &str, type_id: &str) -> Result<Vec<Value>, AnyError> {
@@ -999,12 +999,14 @@ impl Client {
 
     /// POST /v1/spaces/{s}/types/{t}/parts — declare a part and the
     /// datasets under it in one change: `{key, name?, pos?, ui?,
-    /// datasets: [{key, module?, shared?, …records draft}]}` → `201
-    /// {partId}`. A records dataset lands in `<typeId>_<key>`, a
-    /// shared module dataset in the module's canonical collection.
-    /// Behavioral parts (module, shared, idRule, deleteBy, fields) pin
-    /// on first write; only the search.* leaves stay mutable (PATCH
-    /// …/datasets/:defId). 409 `dataset.key_conflict` on a key the
+    /// datasets: [{key?, module?, …records draft}]}` → `201
+    /// {partId}`. The dataset key decides the collection: a module
+    /// dataset with no key (or the module's canonical name) lands in
+    /// the canonical collection, any other key in `<typeId>_<key>`.
+    /// `shared` is records-only (400 `dataset.decl_invalid` on a
+    /// module dataset). Behavioral parts (module, shared, idRule,
+    /// deleteBy, fields) pin on first write; only the search.* leaves
+    /// stay mutable (PATCH …/datasets/:defId). 409 `dataset.key_conflict` on a key the
     /// type already declares.
     pub fn add_part(
         &self,
@@ -1535,7 +1537,7 @@ mod tests {
         assert_eq!(c.get_markdown("sp", "o").unwrap(), "# hi");
         c.put_markdown("sp", "o", "body").unwrap();
         let calls = log.lock().unwrap();
-        // the routes name the shared editor collection (ADR-027 §3)
+        // the routes name the canonical editor collection (ADR-027 §3)
         assert_eq!(
             calls[0],
             (
