@@ -27,11 +27,21 @@ class UnsupportedMedia(Exception):
     """A File part this provider's wire cannot carry (ADR-020 §3) —
     raised while building the request, before any http call."""
 
-    def __init__(self, media_type, provider):
+    def __init__(self, media_type, provider, supported=None):
         self.media_type = media_type
         self.provider = provider
-        supported = ", ".join(_MEDIA.get(provider, ())) or "none"
+        supported = ", ".join(supported or _MEDIA.get(provider, ())) or "none"
         super().__init__(f"{provider} cannot read {media_type!r} files; supported: {supported}")
+
+
+class FileTooLarge(Exception):
+    """A text file past what the openai wire inlines (ADR-020 §3) —
+    raised before its bytes are read, before any http call."""
+
+    def __init__(self, name, size):
+        self.size = size
+        super().__init__(f"{name or 'the file'} is {size} bytes; at most {_MAX_INLINE_TEXT} "
+                         "bytes of text ride inline — read a part of it instead")
 
 
 # provider -> media classes carried natively (ADR-020 §3)
@@ -49,6 +59,20 @@ def _wire_data(data, mime, data_uri=False):
     if isinstance(data, dict) and "__blob" in data:
         return {**data, "encoding": "data-uri"} if data_uri else data
     return f"data:{mime};base64,{data}" if data_uri else data
+
+
+# the openai wire inlines a text file whole: 1 MiB is past every
+# context window it could reach, and the any-ui proxy's input cap
+_MAX_INLINE_TEXT = 1 << 20
+
+
+def _size_of(data):
+    """A File part's payload size in bytes, without reading it."""
+    if isinstance(data, Blob):  # noqa: F821 - guest global
+        return data.size
+    if isinstance(data, dict) and "__blob" in data:
+        return int(data["bytes"])
+    return len(data) * 3 // 4
 
 
 def _document(name, text):
@@ -592,6 +616,8 @@ class OpenAICompatAdapter:
                         "url": _wire_data(f["data"], "application/pdf", data_uri=True)}})
                 elif cls == "text":
                     # ADR-020 §3: the wire has no document part
+                    if _size_of(f["data"]) > _MAX_INLINE_TEXT:
+                        raise FileTooLarge(f.get("name"), _size_of(f["data"]))
                     docs.append({"type": "text", "text": _document(f.get("name"),
                                                                    _text_of(f["data"]))})
                 else:
@@ -788,7 +814,8 @@ def _prepare(messages, system, tools, traits):
         for m in messages:
             for p in m["parts"]:
                 if p["type"] == "file" and _media_class(p["media_type"]) == "image":
-                    raise UnsupportedMedia(p["media_type"], "this model (text-only)")
+                    raise UnsupportedMedia(p["media_type"], "this model (text-only)",
+                                           supported=("text/*",))
     if traits["tool_mode"] == "fenced" and tools:
         system = (system or "") + _FENCED_INSTR
         tools = []

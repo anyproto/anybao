@@ -84,7 +84,10 @@ providers differ:
 
 Unsupported raises `UnsupportedMedia(media_type, provider)` in
 `build_request` — *before* any http call, so the trace names the
-reason instead of a provider 400.
+reason instead of a provider 400. A text file past 1 MiB on the
+openai wire raises `FileTooLarge` the same way, sized from the ref
+before its bytes are read — inlined whole, it is past every context
+window the wire reaches.
 
 **`pdf_input` is the PDF carriage, granted by the backend — not a
 model-family trait** (ADR-005 §1.3 vocabulary: `none | file |

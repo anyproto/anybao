@@ -316,6 +316,7 @@ def test_prepare_text_only_model_refuses_files_before_any_call():
     with pytest.raises(LLM["UnsupportedMedia"]) as e:
         LLM["_prepare"](msgs, "", [], T(vision=False))
     assert "text-only" in str(e.value)
+    assert str(e.value).endswith("supported: text/*")  # it still reads text files
     LLM["_prepare"](msgs, "", [], T())  # a vision model passes them through
     with pytest.raises(LLM["ConfigError"]):
         LLM["_check_traits"]({"vision": "yes"}, "x")
@@ -1345,6 +1346,15 @@ def test_text_file_rides_the_openai_wire_as_a_titled_text_part():
     b = LLM["blob"].from_bytes(b"hello, file", "text/plain")
     req = o.build_request(_file_msg("application/json", b), "", [], "m", T())
     assert req["messages"][0]["content"][0]["text"] == "<document>\nhello, file\n</document>"
+
+
+def test_an_oversized_text_file_refuses_before_its_bytes_are_read():
+    o = LLM["OpenAICompatAdapter"]()
+    big = {"__blob": "ab" * 32, "bytes": (1 << 20) + 1, "mime": "text/plain"}
+    # a ref the fake host never served: reading it would fail differently
+    with pytest.raises(LLM["FileTooLarge"]) as e:
+        o.build_request(_file_msg("text/plain", big, "huge.log"), "", [], "m", T())
+    assert str(e.value).startswith("huge.log is 1048577 bytes; at most 1048576")
 
 
 def test_a_text_file_cannot_close_its_own_document_frame():
