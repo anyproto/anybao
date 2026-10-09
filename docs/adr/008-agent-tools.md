@@ -69,8 +69,9 @@ closer to bobrik's `redirect: manual`).
 ### 3. `webSearch@v1` (folder tool)
 
 - The `search.provider.websearch` row's `provider` picks the wire
-  (absent = `gemini`; any other value is a config error before any
-  call):
+  (case-insensitive; absent = `gemini`; any other value is a config
+  error before any call), and its `timeout` (seconds, default 120)
+  caps each query:
   - `gemini` — one `generateContent` call per query with the
     `google_search` grounding tool at `thinking_level: low` (a 4-8
     sentence synthesis needs no deliberation and thinking tokens bill
@@ -99,8 +100,8 @@ closer to bobrik's `redirect: manual`).
 Four phases, mirroring bobrik's pipeline:
 
 1. Initial grounded call (§3's `gemini` wire, `search.provider.deepresearch`;
-   the row's `provider` must be `gemini` or absent — any other is a
-   config error before any call).
+   the row's `provider` must be `gemini` or absent — any other returns
+   `{ok: False, error}` before any call).
 2. Decomposition via `llm@v1` (`classify` tier): 3–7 follow-up
    questions + a short collection name, JSON-only reply. A failed
    parse degrades to a single research page.

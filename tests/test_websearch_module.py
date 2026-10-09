@@ -1,16 +1,13 @@
-"""programs/webSearch@v1 — the two search wires (ADR-008 §3), tested
-host-side by exec-ing the guest source with a fake `effect` global:
-the provider row picks the wire, each wire's request shape and parse,
-per-query failures in place, and redirect resolution only where the
-sources are redirects (Gemini grounding)."""
+"""programs/webSearch@v1 — the two search wires (ADR-008 §3) under the
+real guest kernel, only the effect boundary faked: the provider row
+picks the wire, each wire's request shape and parse, per-query
+failures in place, and redirect resolution only where the sources are
+redirects (Gemini grounding)."""
 
 import json
-from pathlib import Path
 
 import pytest
-
-SRC = (Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
-       / "webSearch@v1" / "program.py").read_text()
+from kernelenv import load_kernel
 
 GEMINI = {"provider": "gemini", "model": "gemini-3.7-flash",
           "base_url": "https://generativelanguage.googleapis.com",
@@ -20,7 +17,7 @@ PROXY = {"provider": "openai-compat", "model": "codex/gpt-5.5",
 
 
 def load(prov, posts=(), gets=None):
-    """The guest with a fake host: `config.get` returns `prov`, the
+    """webSearch@v1 with a fake host: `config.get` returns `prov`, the
     http.post batch answers `posts` in order, the http.get batch
     answers from `gets` (url -> location). Every effect is logged."""
     calls = []
@@ -38,9 +35,18 @@ def load(prov, posts=(), gets=None):
                                 for p in payload["payloads"]]}
         pytest.fail(f"unexpected effect {name!r}")
 
-    g = {"effect": effect, "span": lambda name=None, kind=None: (lambda f: f)}
-    exec(compile(SRC, "webSearch@v1.py", "exec"), g)
-    return g, calls
+    ws = load_kernel(effect=effect).use("webSearch@v1")
+    return _Mod(ws), calls
+
+
+class _Mod:
+    """`g["name"]` over the loaded module, the tests' one spelling."""
+
+    def __init__(self, mod):
+        self._mod = mod
+
+    def __getitem__(self, name):
+        return getattr(self._mod, name)
 
 
 def ok(body):
@@ -125,7 +131,8 @@ def test_gemini_stays_the_default_wire_and_resolves_redirects():
     }]}
     gets = {"https://vertexaisearch.cloud.google.com/r/1": "https://a.com/x",
             "https://vertexaisearch.cloud.google.com/r/2": "https://b.com/y"}
-    for prov in (GEMINI, {k: v for k, v in GEMINI.items() if k != "provider"}):
+    for prov in (GEMINI, {**GEMINI, "provider": "Gemini"},
+                 {k: v for k, v in GEMINI.items() if k != "provider"}):
         g, calls = load(prov, [ok(body)], gets)
         out, = g["search"]("q")
         assert out == "[1] q\nhttps://a.com/x\n\nAnswer.\n\nSources:\n- b.com — https://b.com/y"
@@ -176,3 +183,12 @@ def test_sources_are_capped():
     out, = g["search"]("q")
     assert out.count("https://s") == g["_MAX_SOURCES"] == 10
     assert "https://s9.example" in out and "https://s10.example" not in out
+
+
+def test_the_provider_row_timeout_caps_each_query():
+    g, calls = load({**PROXY, "timeout": 600}, [openai_reply("a")])
+    g["search"]("q")
+    assert [c for c in calls if c[0] == "batch"][0][1]["payloads"][0]["timeout"] == 600
+    g, calls = load(PROXY, [openai_reply("a")])
+    g["search"]("q")
+    assert [c for c in calls if c[0] == "batch"][0][1]["payloads"][0]["timeout"] == 120

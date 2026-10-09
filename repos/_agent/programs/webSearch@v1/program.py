@@ -25,7 +25,7 @@ _SYSTEM = (
     "answer in 4-8 sentences. Be concrete: cite numbers, dates, names, "
     "versions. Do not add preamble or hedging — just the answer."
 )
-_TIMEOUT_S = 120
+_TIMEOUT_S = 120  # per query; the provider row's `timeout` overrides
 _MAX_SOURCES = 10  # an any-ai search cites every hit (up to 64)
 
 
@@ -35,7 +35,7 @@ def _provider():
 
 def _wire(prov):
     """The provider row's wire (ADR-008 §3) — a config error before any call."""
-    wire = prov.get("provider") or "gemini"
+    wire = (prov.get("provider") or "gemini").lower()
     if wire not in _WIRES:
         raise ValueError(f"search.provider.websearch: unknown provider {wire!r}; "
                          f"supported: {', '.join(_WIRES)}")
@@ -55,13 +55,9 @@ def _gemini_request(prov, query):
             # thinking tokens bill at the output rate (ADR-008 §3)
             "generation_config": {"thinking_config": {"thinking_level": "low"}},
         },
-        "timeout": _TIMEOUT_S,
-        # `about` (ADR-021 §1): what the Credentials card shows when the
-        # key is missing — label, the only host it goes to, where to get it
-        "credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key",
-                       "about": {"label": "Gemini API key",
-                                 "hosts": [_host(prov["base_url"])],
-                                 "help": "https://aistudio.google.com/apikey"}},
+        "timeout": prov.get("timeout") or _TIMEOUT_S,
+        **_credential(prov, {"header": "x-goog-api-key", "label": "Gemini API key",
+                             "help": "https://aistudio.google.com/apikey"}),
     }
 
 
@@ -69,8 +65,25 @@ def _host(base_url):
     return base_url.split("//", 1)[-1].split("/", 1)[0]
 
 
+def _credential(prov, spec):
+    """`{"credential": …}` for the request, `{}` for a keyless row: the
+    ref + header, and `about` (ADR-021 §1) — what the Credentials card
+    shows when the key is missing: label, the only host it goes to
+    (the base_url host, ADR-021 §8.1), where to get it."""
+    if not prov.get("api_key_ref"):
+        return {}
+    host = _host(prov["base_url"])
+    about = {"label": spec.get("label") or f"{host} API key", "hosts": [host]}
+    if spec.get("help"):
+        about["help"] = spec["help"]
+    cred = {"ref": prov["api_key_ref"], "header": spec["header"], "about": about}
+    if spec.get("prefix"):
+        cred["prefix"] = spec["prefix"]
+    return {"credential": cred}
+
+
 def _openai_request(prov, query):
-    req = {
+    return {
         "url": prov["base_url"].rstrip("/") + "/chat/completions",
         "json": {
             "model": prov["model"],
@@ -78,16 +91,10 @@ def _openai_request(prov, query):
                          {"role": "user", "content": query}],
             "web_search_options": {},
         },
-        "timeout": _TIMEOUT_S,
+        "timeout": prov.get("timeout") or _TIMEOUT_S,
+        # a self-hosted endpoint may need no key (`api_key_ref: null`)
+        **_credential(prov, {"header": "Authorization", "prefix": "Bearer "}),
     }
-    # a self-hosted endpoint may need no key (`api_key_ref: null`); a
-    # named one is a bearer token bound to the base_url host (ADR-021 §8.1)
-    if prov.get("api_key_ref"):
-        host = _host(prov["base_url"])
-        req["credential"] = {"ref": prov["api_key_ref"], "header": "Authorization",
-                             "prefix": "Bearer ",
-                             "about": {"label": f"{host} API key", "hosts": [host]}}
-    return req
 
 
 # ADR-021 §8.1: the search tier's default key, declared with its host

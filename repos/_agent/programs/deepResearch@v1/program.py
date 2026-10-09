@@ -33,13 +33,7 @@ _MAX_FOLLOW_UPS = 7
 
 
 def _provider():
-    prov = effect("config.get", {"key": "search.provider.deepresearch"})["value"]  # noqa: F821
-    # the Gemini wire only (ADR-008 §4) — another provider is a config
-    # error, never its key sent as x-goog-api-key
-    if (prov.get("provider") or "gemini") != "gemini":
-        raise ValueError(f"search.provider.deepresearch: unknown provider "
-                         f"{prov['provider']!r}; supported: gemini")
-    return prov
+    return effect("config.get", {"key": "search.provider.deepresearch"})["value"]  # noqa: F821
 
 
 def _request(prov, question):
@@ -205,6 +199,11 @@ def research(space, question, opts=None):
 
     t0 = now()  # noqa: F821 - guest global
     prov = _provider()
+    # the Gemini wire only (ADR-008 §4) — another provider is a config
+    # error before any call, never its key sent as x-goog-api-key
+    if (prov.get("provider") or "gemini").lower() != "gemini":
+        return {"ok": False, "error": f"search.provider.deepresearch: unknown provider "
+                                      f"{prov['provider']!r}; supported: gemini"}
     timing = {}
 
     # phase 1 — initial grounded call
