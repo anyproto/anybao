@@ -1,0 +1,5 @@
+# any server config for the deploy runner. No network keys here, so the
+# server uses the embedded PROD nodeconf. Indexing is off: a deploy box
+# never searches, and the vector side would pull a model on every run.
+index:
+  enabled: false
