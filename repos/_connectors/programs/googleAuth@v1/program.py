@@ -52,9 +52,10 @@ def _friendly(msg):
     if msg.startswith("not_configured"):
         return msg + _CONFIGURE_HINT
     if msg.startswith("consent_timeout"):
-        return (msg + " — ask the user to finish the Google consent in their "
-                      "browser, then call status(): it flips to connected "
-                      "when they do.")
+        return (msg + " — ask the user to finish signing in from the link "
+                      "posted in this chat (on another device: send the "
+                      "address the browser lands on), then call status(): "
+                      "it flips to connected when they do.")
     if msg.startswith(("not_connected", "oauth_reconsent_required")):
         return msg + " — call connect() in a user-facing turn to (re)authorize."
     if msg.startswith("consent_denied"):
@@ -73,9 +74,11 @@ def _call(name, payload):
 def connect(scopes=None, timeout=None):
     """Run Google consent → {ok, provider, grantedScopes, account}.
 
-    Opens the browser on the serve machine and BLOCKS up to `timeout`
-    seconds (default 120) — call only from a user-facing turn. On
-    consent_timeout the window stays open ~5 min; poll status().
+    The host posts the sign-in link in this chat itself (don't repeat
+    it — you never see it) and BLOCKS up to `timeout` seconds (default
+    120) — call only from a user-facing turn. The user may sign in on
+    any device. On consent_timeout the link stays valid ~5 min; poll
+    status().
     scopes: optional list to override the default read-only union
     (gmail/calendar/drive-metadata/sheets); Google re-consents
     incrementally, so adding a scope later keeps earlier grants."""
