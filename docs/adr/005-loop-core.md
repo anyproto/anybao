@@ -57,8 +57,14 @@ and response are in the trace (ADR-001). Tiers: `codegen`, `classify`,
  "api_key_ref": "llm.key.<name>" | None,      # None = no credential (local servers)
  "backend": "<name>" | absent,                # where it is served; default: well-known host, else per provider
  "profile": "<name>" | absent,                # which model family; default: matched on `model`
+ "traits": {…} | absent,                      # trait overrides (1.3), merged over the profile's
  "options": {…} | absent}                     # raw request fields, merged last
 ```
+
+A tier's `traits` say what this endpoint can do whatever the model
+family: they merge over the resolved profile and are validated like
+it (an unknown trait, a wrong value or a non-object is a
+`ConfigError`), and `llm.profile(tier)` reports the merged set.
 
 Three things vary independently and are kept in three tables, each a
 pure, offline-testable transform in `llm@v1`:
@@ -156,6 +162,10 @@ traits = {
   "pdf_input":       "none" | "file" | "image_url",    # the PDF carriage on the wire — granted by the BACKEND, not the
                                                       # profile (ADR-020 §3): file part (openai/openrouter/anthropic),
                                                       # PDF data URI under image_url (gemini's OpenAI layer), none
+  "web_search":      bool,                            # the endpoint searches natively: openai-compat sends `web_search_options`
+                                                      # beside `tools` (the any-ui local AI proxy → Claude/Codex search,
+                                                      # OpenRouter); a tier trait, default false; the anthropic wire ignores
+                                                      # it; the reply's citations are not carried into the Reply
 }
 ```
 

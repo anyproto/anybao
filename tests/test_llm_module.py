@@ -435,6 +435,31 @@ def test_vision_trait_follows_the_model_not_the_family(model, vision):
 
 
 
+def test_tier_traits_override_the_profile_and_are_validated():
+    _, traits = LLM["_resolve_traits"](
+        {"model": "claude-x", "traits": {"web_search": True, "vision": False}})
+    assert traits["web_search"] is True and traits["vision"] is False
+    assert traits["cache"] == "markers"  # the profile's other deviations stay
+    assert LLM["_resolve_traits"]({"model": "claude-x"})[1]["web_search"] is False
+    for bad in ({"sparkle": True}, {"web_search": "yes"}, {"tool_mode": "telepathy"}):
+        with pytest.raises(LLM["ConfigError"]):
+            LLM["_resolve_traits"]({"model": "m", "traits": bad})
+    with pytest.raises(LLM["ConfigError"]):
+        LLM["_resolve_traits"]({"model": "m", "traits": ["web_search"]})
+
+
+def test_web_search_trait_asks_an_openai_endpoint_to_search_beside_the_tools():
+    row = {"provider": "openai-compat", "backend": "anyai", "model": "claude/claude-opus-5-5",
+           "base_url": "http://127.0.0.1:20123/v1", "api_key_ref": "llm.key.anyai"}
+    host = FakeHost({**row, "traits": {"web_search": True}}, body=OPENAI_FINAL)
+    load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    body = host.posts[0]["json"]
+    assert body["web_search_options"] == {} and body["tools"][0]["function"]["name"] == "run_cell"
+    host = FakeHost(row, body=OPENAI_FINAL)
+    load(host)["chat"](MSGS, tools=[{"name": "run_cell"}])
+    assert "web_search_options" not in host.posts[0]["json"]
+
+
 def test_anyai_backend_is_plain_json_under_the_proxy_deadline():
     # the any-ui local AI proxy (PRO-1365): silent while a CLI queues or
     # thinks, so no stream to idle-cut; its own deadline is 600 s

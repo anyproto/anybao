@@ -18,6 +18,7 @@ A tier row (`agent_config` `llm.tier.<tier>`) picks them:
  "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter",
  "backend": "openrouter",        // optional: inferred from a well-known host, else generic
  "profile": "deepseek-r1",       // optional: matched on `model`, else generic
+ "traits": {"vision": false},    // optional: this endpoint's trait overrides, merged over the profile
  "options": {"top_p": 0.95}}     // optional: raw request fields, merged last
 ```
 
@@ -55,7 +56,8 @@ key is fine.
 
 The traits vocabulary (`TRAITS`): `system_role`, `tool_mode`,
 `reasoning`, `thinking`, `cache`, `context_window`, `max_output`,
-`sampling`, `prompt_style`, `instructions_at`, `malformed_retries` —
+`sampling`, `prompt_style`, `instructions_at`, `malformed_retries`,
+`vision`, `signed_tool_calls`, `pdf_input`, `web_search` —
 values and defaults in the source, meaning in ADR-005 §1.3.
 
 ## Adding a model (or a backend)
@@ -132,7 +134,9 @@ to the model family's profile like any other id (`claude/…` →
 `claude`, `codex/…` → `generic`). The proxy carries images and native
 tools on the openai wire; text files go as titled text parts (ADR-020
 §3). The same endpoint serves `webSearch@v1` with
-`provider: "openai-compat"` (ADR-008 §3).
+`provider: "openai-compat"` (ADR-008 §3). With `"traits": {"web_search":
+true}` on the tier, the agent's own calls carry `web_search_options`
+and the CLI searches the web natively inside its turn.
 
 Declared, not yet verified (no golden trace; needs a key / a host):
 `openrouter-deepseek-r1` (no system role, reasoning round-trip),

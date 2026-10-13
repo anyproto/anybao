@@ -185,6 +185,7 @@ TRAITS = {
     "vision": bool,
     "signed_tool_calls": bool,
     "pdf_input": ("none", "file", "image_url"),
+    "web_search": bool,
 }
 
 GENERIC_TRAITS = {
@@ -192,7 +193,7 @@ GENERIC_TRAITS = {
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
     "instructions_at": "system", "malformed_retries": 2, "vision": True,
-    "signed_tool_calls": False, "pdf_input": "none",
+    "signed_tool_calls": False, "pdf_input": "none", "web_search": False,
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -283,10 +284,19 @@ def _profile_name(prov):
 
 
 def _resolve_traits(prov):
+    """GENERIC_TRAITS, then the profile's deviations, then the tier
+    row's own `traits` — what this endpoint can do (`web_search`,
+    `vision`) is the tier's to say, wherever the model family is."""
     name = _profile_name(prov)
     traits = dict(GENERIC_TRAITS)
     traits.update(PROFILES[name]["traits"])
     _check_traits(traits, f"profile {name!r}")
+    tier = prov.get("traits")
+    if tier is not None:
+        if not isinstance(tier, dict):
+            raise ConfigError("tier traits must be an object")
+        _check_traits(tier, "tier traits")
+        traits.update(tier)
     return name, traits
 
 
@@ -575,6 +585,10 @@ class OpenAICompatAdapter:
                               "parameters": t.get("input_schema", {"type": "object"})}}
                 for t in tools
             ]
+        if traits.get("web_search"):
+            # the endpoint searches natively, beside the tools (the any-ui
+            # local AI proxy → Claude/Codex search; OpenRouter)
+            req["web_search_options"] = {}
         return req
 
     def _to_openai_msgs(self, m, traits):
