@@ -1582,6 +1582,26 @@ impl Broker {
         let mut cur_url = url;
         let mut cur_verb = verb;
         let mut with_body = true;
+        // a plain request's cap is ureq's whole-request timeout; a timeout
+        // that ends it there is the total deadline, worded like a stream's
+        // so a caller can tell it from a stall worth retrying (ADR-002 §1)
+        let started = std::time::Instant::now();
+        let plain_failure = |message: String| {
+            let total_hit = !stream
+                && message.contains("timed out")
+                && started.elapsed() >= timeout_total.mul_f64(0.9);
+            EffectFailure {
+                type_: "URLError".into(),
+                message: if total_hit {
+                    format!(
+                        "request exceeded the total timeout of {}s: {message}",
+                        timeout_total.as_secs_f64()
+                    )
+                } else {
+                    message
+                },
+            }
+        };
         let resp = loop {
             let mut req = agent.request(&cur_verb, &cur_url);
             if !stream {
@@ -1622,12 +1642,7 @@ impl Broker {
             let resp = match sent {
                 Ok(r) => r,
                 Err(ureq::Error::Status(_, r)) => r, // non-2xx is data, not error
-                Err(e) => {
-                    return Err(EffectFailure {
-                        type_: "URLError".into(),
-                        message: e.to_string(),
-                    })
-                }
+                Err(e) => return Err(plain_failure(e.to_string())),
             };
             if hops_left == 0 || !matches!(resp.status(), 301 | 302 | 303 | 307 | 308) {
                 break resp;
@@ -1720,10 +1735,7 @@ impl Broker {
         } else {
             resp.into_reader()
                 .read_to_end(&mut bytes)
-                .map_err(|e| EffectFailure {
-                    type_: "URLError".into(),
-                    message: e.to_string(),
-                })?;
+                .map_err(|e| plain_failure(e.to_string()))?;
         }
         let force_text = payload.get("response").and_then(|r| r.as_str()) == Some("text");
         let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
@@ -4729,7 +4741,32 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.type_, "URLError");
+        // worded like the stream's total, so llm@v1 does not retry it
+        assert!(
+            err.message.contains("exceeded the total timeout"),
+            "{}",
+            err.message
+        );
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn http_plain_failure_before_the_total_is_not_the_total() {
+        // a refused connection fails at once: retryable, not the deadline
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut b = make_broker("run_refused");
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": format!("http://127.0.0.1:{port}/x"), "json": {},
+                       "timeout": {"total": 5}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(!err.message.contains("total timeout"), "{}", err.message);
     }
 
     #[test]

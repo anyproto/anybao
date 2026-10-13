@@ -802,6 +802,20 @@ def test_chat_gives_up_after_three_transport_attempts():
     assert host.outcomes == [OK]      # never reached
 
 
+def test_the_proxy_total_deadline_is_one_post_never_retried():
+    # a plain request that runs out its `total` is worded like a stream's
+    # (the host, ADR-002 §1): the CLI worked for 590 s, so no retry
+    row = {"provider": "openai-compat", "backend": "anyai", "model": "codex/gpt-5.5",
+           "base_url": "http://127.0.0.1:20123/v1", "api_key_ref": "llm.key.anyai"}
+    total = transport("request exceeded the total timeout of 590s: "
+                      "http://127.0.0.1:20123/v1/chat/completions: timed out reading response")
+    host = ScriptedHost([total, (200, OPENAI_FINAL)], prov=row)
+    with pytest.raises(EffectError) as e:
+        load(host)["chat"](MSGS)
+    assert "exceeded the total timeout" in str(e.value)
+    assert len(host.posts) == 1 and host.sleeps == []
+
+
 def test_chat_retries_a_stalled_read_like_any_transport_failure():
     # streamed (BOB-149): a stall costs the idle timeout, not 180 s, so
     # it gets the same three attempts as a DNS blip
