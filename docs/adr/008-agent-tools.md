@@ -81,7 +81,9 @@ closer to bobrik's `redirect: manual`).
     sources are the `url_citation` annotations. OpenAI's search models
     and the any-ui local AI proxy (PRO-1365) speak it. The key is a
     bearer `api_key_ref` bound to the `base_url` host (ADR-021 §8.1),
-    `null` for a keyless endpoint.
+    `null` for a keyless endpoint; its `about` is llm@v1's for the
+    same ref (a row with `backend: "anyai"` reads "Local AI key"), so
+    one key shows one card.
 - `search(*queries)` — multi-query fan-out goes
   through the `batch` effect (one guest→host round-trip; host-side
   execution is sequential today — parallelizing `sys_batch` is a
@@ -101,7 +103,10 @@ Four phases, mirroring bobrik's pipeline:
 
 1. Initial grounded call (§3's `gemini` wire, `search.provider.deepresearch`;
    the row's `provider` must be `gemini` or absent — any other returns
-   `{ok: False, error}` before any call).
+   `{ok: False, error}` before any call). As in §3: the row's `timeout`
+   caps each call (default 150), a keyless row sends no credential, the
+   credential carries its `about`, and each call keeps at most 10
+   sources.
 2. Decomposition via `llm@v1` (`classify` tier): 3–7 follow-up
    questions + a short collection name, JSON-only reply. A failed
    parse degrades to a single research page.

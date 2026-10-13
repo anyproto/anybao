@@ -28,8 +28,9 @@ _SYSTEM = (
     "- If sources conflict, note the disagreement\n"
     "- End with a brief summary of key findings"
 )
-_TIMEOUT_S = 150
+_TIMEOUT_S = 150  # per call; the provider row's `timeout` overrides
 _MAX_FOLLOW_UPS = 7
+_MAX_SOURCES = 10  # per grounded call, as webSearch@v1
 
 
 def _provider():
@@ -49,9 +50,20 @@ def _request(prov, question):
             "contents": [{"role": "user", "parts": [{"text": user}]}],
             "tools": [{"google_search": {}}],
         },
-        "timeout": _TIMEOUT_S,
-        "credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key"},
+        "timeout": prov.get("timeout") or _TIMEOUT_S,
+        **_credential(prov),
     }
+
+
+def _credential(prov):
+    """The Gemini credential as webSearch@v1 sends it (ADR-008 §3): ref +
+    header + `about` (ADR-021 §1), or `{}` for a keyless row."""
+    if not prov.get("api_key_ref"):
+        return {}
+    return {"credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key",
+                           "about": {"label": "Gemini API key",
+                                     "hosts": [_domain(prov["base_url"])],
+                                     "help": "https://aistudio.google.com/apikey"}}}
 
 
 # ADR-021 §8.1: the same declared ref as webSearch@v1 (one descriptor,
@@ -94,7 +106,7 @@ def _parse(raw):
     for chunk in gm.get("groundingChunks") or []:
         web = chunk.get("web") or {}
         key = web.get("domain") or web.get("title") or ""
-        if web.get("uri") and key not in seen:
+        if web.get("uri") and key not in seen and len(sources) < _MAX_SOURCES:
             seen.add(key)
             sources.append({"url": web["uri"],
                             "title": web.get("title") or key,

@@ -76,7 +76,16 @@ def test_openai_wire_request_shape():
     # a bearer ref bound to the base_url host — never a key value
     assert req["credential"] == {
         "ref": "llm.key.anyai", "header": "Authorization", "prefix": "Bearer ",
-        "about": {"label": "127.0.0.1:8765 API key", "hosts": ["127.0.0.1:8765"]}}
+        "about": {"label": "127.0.0.1:8765 API key", "hosts": ["127.0.0.1:8765"], "help": None}}
+
+
+def test_the_proxy_key_has_llm_v1s_label_and_about():
+    # one ref, one card: the anyai row's key reads as llm@v1 names it
+    g, calls = load({**PROXY, "backend": "anyai"}, [openai_reply("answer")])
+    g["search"]("q")
+    (_, batch), = [c for c in calls if c[0] == "batch"]
+    assert batch["payloads"][0]["credential"]["about"] == {
+        "label": "Local AI key", "hosts": ["127.0.0.1:8765"], "help": None}
 
 
 def test_openai_wire_without_a_key_sends_no_credential():
@@ -139,6 +148,31 @@ def test_gemini_stays_the_default_wire_and_resolves_redirects():
         req = [c for c in calls if c[0] == "batch"][0][1]["payloads"][0]
         assert req["url"].endswith("/v1beta/models/gemini-3.7-flash:generateContent")
         assert req["credential"]["header"] == "x-goog-api-key"
+
+
+def test_the_gemini_request_is_the_one_main_sends():
+    # the default wire's payload, whole — credential `about` included
+    g, calls = load(GEMINI, [ok({"candidates": [{"content": {"parts": [{"text": "A."}]}}]})], {})
+    g["search"]("rust 2027")
+    req = [c for c in calls if c[0] == "batch"][0][1]["payloads"][0]
+    assert req == {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/"
+               "gemini-3.7-flash:generateContent",
+        "json": {
+            "system_instruction": {"parts": [{"text": (
+                "You are a web-search backend. Given a query, search the web and "
+                "answer in 4-8 sentences. Be concrete: cite numbers, dates, names, "
+                "versions. Do not add preamble or hedging — just the answer.")}]},
+            "contents": [{"role": "user", "parts": [{"text": "rust 2027"}]}],
+            "tools": [{"google_search": {}}],
+            "generation_config": {"thinking_config": {"thinking_level": "low"}},
+        },
+        "timeout": 120,
+        "credential": {"ref": "google.key.gemini", "header": "x-goog-api-key",
+                       "about": {"label": "Gemini API key",
+                                 "hosts": ["generativelanguage.googleapis.com"],
+                                 "help": "https://aistudio.google.com/apikey"}},
+    }
 
 
 def test_unknown_provider_is_a_config_error_before_any_call():

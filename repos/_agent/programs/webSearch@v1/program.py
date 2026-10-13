@@ -65,17 +65,23 @@ def _host(base_url):
     return base_url.split("//", 1)[-1].split("/", 1)[0]
 
 
+# a row's `backend` names the key the way llm@v1's backend does, so one
+# ref shows one label whichever program asks for it first (ADR-021 §1)
+_BACKEND_LABELS = {"anyai": "Local AI key"}
+
+
 def _credential(prov, spec):
     """`{"credential": …}` for the request, `{}` for a keyless row: the
     ref + header, and `about` (ADR-021 §1) — what the Credentials card
     shows when the key is missing: label, the only host it goes to
-    (the base_url host, ADR-021 §8.1), where to get it."""
+    (the base_url host, ADR-021 §8.1), where to get it. The `about`
+    shape is llm@v1's."""
     if not prov.get("api_key_ref"):
         return {}
     host = _host(prov["base_url"])
-    about = {"label": spec.get("label") or f"{host} API key", "hosts": [host]}
-    if spec.get("help"):
-        about["help"] = spec["help"]
+    label = (spec.get("label") or _BACKEND_LABELS.get(prov.get("backend"))
+             or f"{host} API key")
+    about = {"label": label, "hosts": [host], "help": spec.get("help")}
     cred = {"ref": prov["api_key_ref"], "header": spec["header"], "about": about}
     if spec.get("prefix"):
         cred["prefix"] = spec["prefix"]
