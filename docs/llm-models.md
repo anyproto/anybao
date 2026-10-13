@@ -22,6 +22,12 @@ A tier row (`agent_config` `llm.tier.<tier>`) picks them:
  "options": {"top_p": 0.95}}     // optional: raw request fields, merged last
 ```
 
+A trait the tier sets wins over the backend's own grants and
+downgrades (ADR-005 §1.1): `"traits": {"pdf_input": "none"}` keeps PDFs
+off a backend that would carry them, and a trait the wire cannot honor
+(`cache: "markers"` off anthropic/openrouter, `web_search` off
+openai-compat) is a `ConfigError`.
+
 `api_key_ref: null` = a keyless local server: no credential on the
 request, no credential card in the chat.
 
@@ -131,12 +137,13 @@ token as the key:
 
 Model ids are namespaced by the CLI (`codex/…`, `claude/…`) and resolve
 to the model family's profile like any other id (`claude/…` →
-`claude`, `codex/…` → `generic`). The proxy carries images and native
+`claude`, `codex/gpt-…` → `gpt`). The proxy carries images and native
 tools on the openai wire; text files go as titled text parts (ADR-020
 §3). The same endpoint serves `webSearch@v1` with
 `provider: "openai-compat"` (ADR-008 §3). With `"traits": {"web_search":
 true}` on the tier, the agent's own calls carry `web_search_options`
-and the CLI searches the web natively inside its turn.
+and the CLI searches the web natively inside its turn (only an
+`openai-compat` tier can carry it; elsewhere it is a `ConfigError`).
 
 Declared, not yet verified (no golden trace; needs a key / a host):
 `openrouter-deepseek-r1` (no system role, reasoning round-trip),

@@ -64,7 +64,13 @@ and response are in the trace (ADR-001). Tiers: `codegen`, `classify`,
 A tier's `traits` say what this endpoint can do whatever the model
 family: they merge over the resolved profile and are validated like
 it (an unknown trait, a wrong value or a non-object is a
-`ConfigError`), and `llm.profile(tier)` reports the merged set.
+`ConfigError`), and `llm.profile(tier)` reports the merged set. A
+trait the tier sets is the endpoint's own word, so the backend never
+undoes it: the backend's PDF carriage grant applies only when the tier
+did not set `pdf_input`, and a tier's `cache: "markers"` on a backend
+that writes no breakpoints is a `ConfigError` (a profile's degrades to
+`auto`). Profiles match the family after a provider namespace too
+(`openai/gpt-5-mini`, `codex/gpt-5.5` → `gpt`).
 
 Three things vary independently and are kept in three tables, each a
 pure, offline-testable transform in `llm@v1`:
@@ -164,8 +170,9 @@ traits = {
                                                       # PDF data URI under image_url (gemini's OpenAI layer), none
   "web_search":      bool,                            # the endpoint searches natively: openai-compat sends `web_search_options`
                                                       # beside `tools` (the any-ui local AI proxy → Claude/Codex search,
-                                                      # OpenRouter); a tier trait, default false; the anthropic wire ignores
-                                                      # it; the reply's citations are not carried into the Reply
+                                                      # OpenRouter); a tier trait, default false; on any other provider it
+                                                      # is a ConfigError at resolve (no wire to carry it); the reply's
+                                                      # citations are not carried into the Reply
 }
 ```
 

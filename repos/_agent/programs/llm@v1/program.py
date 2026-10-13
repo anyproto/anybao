@@ -83,7 +83,7 @@ def _document(name, text):
     if name:
         attr = name.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
         title = f' title="{attr}"'
-    body = text.replace("</document", "<\\/document")
+    body = re.sub(r"(?i)</document", lambda m: "<\\/" + m.group(0)[2:], text)
     return f"<document{title}>\n{body}\n</document>"
 
 
@@ -206,7 +206,9 @@ PROFILES = {
     "claude": {"match": r"claude", "traits": {
         "reasoning": "roundtrip", "cache": "markers",
         "context_window": 200000, "max_output": 32768}},
-    "gpt": {"match": r"^(gpt-|o[1-9]|chatgpt)", "traits": {
+    # the family after a provider namespace too (`openai/gpt-5-mini`,
+    # the any-ui proxy's `codex/gpt-5.5`)
+    "gpt": {"match": r"(^|/)(gpt-|o[1-9]|chatgpt)", "traits": {
         "context_window": 128000, "max_output": 16384}},
     "gemini": {"match": r"gemini", "traits": {
         "context_window": 1000000, "max_output": 65536,
@@ -1170,15 +1172,22 @@ def _credential(prov, backend):
     return cred
 
 
-def _effective(traits, backend):
-    """Traits as this backend can honor them: `cache: "markers"` needs a
-    backend that writes breakpoints, else it is the implicit prefix
-    cache (`auto`); `pdf_input` (the PDF carriage) is granted by the
-    backend, whatever the model family says."""
+def _effective(traits, backend, tier=None):
+    """Traits as this backend can honor them: a profile's `cache:
+    "markers"` needs a backend that writes breakpoints, else it is the
+    implicit prefix cache (`auto`); `pdf_input` (the PDF carriage) is
+    granted by the backend, whatever the model family says. A trait the
+    tier row set itself (`tier`) is the endpoint's own word and wins —
+    and a tier asking for markers no hook can write is a ConfigError,
+    never a silent downgrade."""
+    tier = tier or {}
     if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
+        if "cache" in tier:
+            raise ConfigError(f"tier traits: cache='markers' needs a backend that writes "
+                              f"breakpoints ({', '.join(_MARKER_BACKENDS)}), not {backend!r}")
         traits = {**traits, "cache": "auto"}
     carriage = _PDF_CARRIAGE.get(backend)
-    if carriage and traits["pdf_input"] == "none":
+    if carriage and traits["pdf_input"] == "none" and "pdf_input" not in tier:
         traits = {**traits, "pdf_input": carriage}
     return traits
 
@@ -1188,8 +1197,12 @@ def _resolve(tier):
     if prov.get("provider") not in ADAPTERS:
         raise ConfigError(f"llm.tier.{tier}: unknown provider {prov.get('provider')!r}")
     name, traits = _resolve_traits(prov)
+    if traits["web_search"] and prov["provider"] != "openai-compat":
+        # only the openai-compat wire carries it (`web_search_options`)
+        raise ConfigError(f"llm.tier.{tier}: web_search needs provider 'openai-compat', "
+                          f"not {prov['provider']!r}")
     backend = _backend_name(prov)
-    return prov, name, backend, _effective(traits, backend)
+    return prov, name, backend, _effective(traits, backend, prov.get("traits"))
 
 
 # the streamed call's `{idle, total}` timeouts (ADR-005 §1.2, BOB-149)
@@ -1240,7 +1253,8 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     zeros are no count; `stream: false` on the tier row restores
     exact usage); a ≥400 provider status raises `LlmError(status,
     body_excerpt)`, a stream cut before its end `IncompleteReply`
-    after the retries."""
+    after the retries; a text file past 1 MiB on an openai-compat tier
+    raises `FileTooLarge` before any call — send a slice of it."""
     prov, _name, backend, traits = _resolve(tier)
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
@@ -1380,7 +1394,9 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     carries documents (Anthropic, OpenAI, Gemini, any model via
     OpenRouter — the `pdf_input` trait); anything else raises `UnsupportedMedia`
     before any call — convert to text first, or route the read to a
-    tier whose backend can.
+    tier whose backend can. A text file past 1 MiB on an openai-compat
+    tier raises `FileTooLarge` before any call: read a slice of it
+    (`blob.of(...).text()[:N]`) and pass that as text instead.
     `prompt` is the question; `system` optional. Returns the reply's
     text (str). Bytes cross the wire once per read — re-read rather
     than keeping files in the conversation."""
