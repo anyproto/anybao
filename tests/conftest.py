@@ -4,12 +4,15 @@ The unit-level guest tests (`test_*_module.py`, the sweeps, `test_rt_e2e`)
 are self-contained. This conftest serves only the `integration`-marked
 tests, which hit a REAL `any` server — the wire contract the offline
 fakes can't reach. It is deliberately dependency-free: a tiny stdlib
-HTTP client (no `anybao`/`anyrt` imports), a live-server probe that
-SKIPS when nothing is reachable, and a real-http guest shim.
+HTTP client (no `anybao`/`anyrt` imports), a live-server probe, and a
+real-http guest shim.
 
-Server: ANYBAO_TEST_SERVER (default http://127.0.0.1:7009), probed at
-/v1/health. Run the suite with `-m integration` and a server up
-(`any run --addr 127.0.0.1:7009`).
+Server: ANYBAO_TEST_SERVER, required, with no default. The tests create
+an `it-<hex>` space per test on whatever server they reach, so they must
+only ever reach a scratch one: selecting an integration test without the
+variable aborts the run, and an unreachable server fails it. Run them as
+`ANYBAO_TEST_SERVER=http://127.0.0.1:<port> uv run pytest -m integration`
+against a throwaway `any run --data-dir <scratch> --addr 127.0.0.1:<port>`.
 """
 
 from __future__ import annotations
@@ -25,7 +28,12 @@ from pathlib import Path
 import pytest
 from kernelenv import kernel_globals  # ts_s / instant / fmt_ts (ADR-019)
 
-DEFAULT_SERVER = "http://127.0.0.1:7009"
+SERVER_ENV = "ANYBAO_TEST_SERVER"
+MISSING_SERVER = (
+    f"{SERVER_ENV} is not set. Integration tests create a space per test on "
+    "the server they reach, so there is no default: point it at a scratch "
+    f"any server, e.g. {SERVER_ENV}=http://127.0.0.1:<port>"
+)
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
 
 
@@ -202,11 +210,22 @@ def _reachable(url: str) -> bool:
         return False
 
 
+def pytest_collection_modifyitems(config, items):
+    """Abort the whole run, before any test, when an integration test is
+    selected and no server is named: never fall back to some host."""
+    if not os.environ.get(SERVER_ENV) and any(
+        item.get_closest_marker("integration") for item in items
+    ):
+        raise pytest.UsageError(MISSING_SERVER)
+
+
 @pytest.fixture(scope="session")
 def any_server() -> str:
-    url = os.environ.get("ANYBAO_TEST_SERVER", DEFAULT_SERVER)
+    url = os.environ.get(SERVER_ENV)
+    if not url:
+        pytest.fail(MISSING_SERVER, pytrace=False)
     if not _reachable(url):
-        pytest.skip(f"no any server at {url} (set ANYBAO_TEST_SERVER or `any run --addr`)")
+        pytest.fail(f"{SERVER_ENV}={url} is not reachable (GET /v1/health)", pytrace=False)
     return url
 
 

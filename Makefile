@@ -42,9 +42,10 @@ test: kernel
 	$(MAKE) test-runtime FEATURES=shell
 	uv run pytest
 
-# Integration tests against a real any server (skipped without one).
-# Start a server first: `any run --addr 127.0.0.1:7009` (or set
-# ANYBAO_TEST_SERVER). Validates the wire contract offline fakes can't.
+# Integration tests against a real any server. They create a space per
+# test, so ANYBAO_TEST_SERVER is required and must name a SCRATCH server
+# (`any run --data-dir <scratch> --addr 127.0.0.1:<port>`); without it the
+# run aborts. Validates the wire contract offline fakes can't.
 test-integration: kernel
 	uv run pytest -m integration
 
