@@ -210,9 +210,11 @@ def _reachable(url: str) -> bool:
         return False
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config, items):
     """Abort the whole run, before any test, when an integration test is
-    selected and no server is named: never fall back to some host."""
+    selected and no server is named: never fall back to some host. Runs
+    last, after `-m 'not integration'` (the default addopts) deselects."""
     if not os.environ.get(SERVER_ENV) and any(
         item.get_closest_marker("integration") for item in items
     ):
