@@ -46,7 +46,9 @@ connect is `min(total, 30)`) and `total` s overall (checked between
 chunks, so a stream can overrun `total` by up to one `idle`), defaults
 60 / 900 (a stream with no `timeout` gets 900 / 60); the read loop also
 ends at the run's wall deadline and on the interrupt flag, like `sh.run`
-(ADR-024 §1); every end is a `URLError`; a timeout that is not a finite
+(ADR-024 §1); every end is a `URLError`, and the total deadline's —
+streamed or plain — says "exceeded the total timeout", which a caller
+tells from a stall worth retrying (llm@v1, ADR-005 §1.6); a timeout that is not a finite
 number of seconds in `(0, 86400]` is a `ValueError` before any request
 — BOB-149)
 returning a `Response` (`.status`, `.json()`, `.text`, and `.url` — the

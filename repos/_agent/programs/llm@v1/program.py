@@ -27,16 +27,26 @@ class UnsupportedMedia(Exception):
     """A File part this provider's wire cannot carry (ADR-020 §3) —
     raised while building the request, before any http call."""
 
-    def __init__(self, media_type, provider):
+    def __init__(self, media_type, provider, supported=None):
         self.media_type = media_type
         self.provider = provider
-        supported = ", ".join(_MEDIA.get(provider, ())) or "none"
+        supported = ", ".join(supported or _MEDIA.get(provider, ())) or "none"
         super().__init__(f"{provider} cannot read {media_type!r} files; supported: {supported}")
+
+
+class FileTooLarge(Exception):
+    """A text file past what the openai wire inlines (ADR-020 §3) —
+    raised before its bytes are read, before any http call."""
+
+    def __init__(self, name, size):
+        self.size = size
+        super().__init__(f"{name or 'the file'} is {size} bytes; at most {_MAX_INLINE_TEXT} "
+                         "bytes of text ride inline — read a part of it instead")
 
 
 # provider -> media classes carried natively (ADR-020 §3)
 _MEDIA = {"anthropic": ("image/*", "application/pdf", "text/*"),
-          "openai-compat": ("image/*",)}
+          "openai-compat": ("image/*", "text/*")}
 
 
 def _wire_data(data, mime, data_uri=False):
@@ -49,6 +59,32 @@ def _wire_data(data, mime, data_uri=False):
     if isinstance(data, dict) and "__blob" in data:
         return {**data, "encoding": "data-uri"} if data_uri else data
     return f"data:{mime};base64,{data}" if data_uri else data
+
+
+# the openai wire inlines a text file whole: 1 MiB is past every
+# context window it could reach, and the any-ui proxy's input cap
+_MAX_INLINE_TEXT = 1 << 20
+
+
+def _size_of(data):
+    """A File part's payload size in bytes, without reading it."""
+    if isinstance(data, Blob):  # noqa: F821 - guest global
+        return data.size
+    if isinstance(data, dict) and "__blob" in data:
+        return int(data["bytes"])
+    return len(data) * 3 // 4
+
+
+def _document(name, text):
+    """A text file as one framed text part (ADR-020 §3): the title
+    attribute escaped, a closing tag inside the body broken — the file
+    cannot end its own frame and pass as the prompt."""
+    title = ""
+    if name:
+        attr = name.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+        title = f' title="{attr}"'
+    body = re.sub(r"(?i)</document", lambda m: "<\\/" + m.group(0)[2:], text)
+    return f"<document{title}>\n{body}\n</document>"
 
 
 def _text_of(data):
@@ -149,6 +185,7 @@ TRAITS = {
     "vision": bool,
     "signed_tool_calls": bool,
     "pdf_input": ("none", "file", "image_url"),
+    "web_search": bool,
 }
 
 GENERIC_TRAITS = {
@@ -156,7 +193,7 @@ GENERIC_TRAITS = {
     "thinking": "default", "cache": "auto", "context_window": 128000,
     "max_output": 8192, "sampling": {}, "prompt_style": "full",
     "instructions_at": "system", "malformed_retries": 2, "vision": True,
-    "signed_tool_calls": False, "pdf_input": "none",
+    "signed_tool_calls": False, "pdf_input": "none", "web_search": False,
 }
 
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
@@ -169,7 +206,9 @@ PROFILES = {
     "claude": {"match": r"claude", "traits": {
         "reasoning": "roundtrip", "cache": "markers",
         "context_window": 200000, "max_output": 32768}},
-    "gpt": {"match": r"^(gpt-|o[1-9]|chatgpt)", "traits": {
+    # the family after a provider namespace too (`openai/gpt-5-mini`,
+    # the any-ui proxy's `codex/gpt-5.5`)
+    "gpt": {"match": r"(^|/)(gpt-|o[1-9]|chatgpt)", "traits": {
         "context_window": 128000, "max_output": 16384}},
     "gemini": {"match": r"gemini", "traits": {
         "context_window": 1000000, "max_output": 65536,
@@ -247,10 +286,19 @@ def _profile_name(prov):
 
 
 def _resolve_traits(prov):
+    """GENERIC_TRAITS, then the profile's deviations, then the tier
+    row's own `traits` — what this endpoint can do (`web_search`,
+    `vision`) is the tier's to say, wherever the model family is."""
     name = _profile_name(prov)
     traits = dict(GENERIC_TRAITS)
     traits.update(PROFILES[name]["traits"])
     _check_traits(traits, f"profile {name!r}")
+    tier = prov.get("traits")
+    if tier is not None:
+        if not isinstance(tier, dict):
+            raise ConfigError("tier traits must be an object")
+        _check_traits(tier, "tier traits")
+        traits.update(tier)
     return name, traits
 
 
@@ -539,6 +587,10 @@ class OpenAICompatAdapter:
                               "parameters": t.get("input_schema", {"type": "object"})}}
                 for t in tools
             ]
+        if traits.get("web_search"):
+            # the endpoint searches natively, beside the tools (the any-ui
+            # local AI proxy → Claude/Codex search; OpenRouter)
+            req["web_search_options"] = {}
         return req
 
     def _to_openai_msgs(self, m, traits):
@@ -557,6 +609,9 @@ class OpenAICompatAdapter:
             if not (texts or files or calls):
                 return out
         if files:
+            # text documents ahead of the prompt, as on the Anthropic
+            # wire; images and PDFs after it (the recorded parity order)
+            docs = []
             content = [{"type": "text", "text": " ".join(texts)}] if texts else []
             for f in files:
                 cls = _media_class(f["media_type"])
@@ -575,9 +630,15 @@ class OpenAICompatAdapter:
                     # PDF data URI under image_url is read as a document
                     content.append({"type": "image_url", "image_url": {
                         "url": _wire_data(f["data"], "application/pdf", data_uri=True)}})
+                elif cls == "text":
+                    # ADR-020 §3: the wire has no document part
+                    if _size_of(f["data"]) > _MAX_INLINE_TEXT:
+                        raise FileTooLarge(f.get("name"), _size_of(f["data"]))
+                    docs.append({"type": "text", "text": _document(f.get("name"),
+                                                                   _text_of(f["data"]))})
                 else:
                     raise UnsupportedMedia(f["media_type"], "openai-compat")
-            msg = {"role": m["role"], "content": content}
+            msg = {"role": m["role"], "content": docs + content}
         else:
             # an assistant turn that only calls tools carries null, never ""
             msg = {"role": m["role"], "content": " ".join(texts) or None}
@@ -769,7 +830,8 @@ def _prepare(messages, system, tools, traits):
         for m in messages:
             for p in m["parts"]:
                 if p["type"] == "file" and _media_class(p["media_type"]) == "image":
-                    raise UnsupportedMedia(p["media_type"], "this model (text-only)")
+                    raise UnsupportedMedia(p["media_type"], "this model (text-only)",
+                                           supported=("text/*",))
     if traits["tool_mode"] == "fenced" and tools:
         system = (system or "") + _FENCED_INSTR
         tools = []
@@ -1025,6 +1087,12 @@ BACKENDS = {
                "normalize": _normalize_openai_compat, "stream": False},
     "generic": {"path": "/chat/completions", "credential": {**_BEARER, "label": "API key"},
                 "normalize": _normalize_openai_compat},
+    # the any-ui local AI proxy (PRO-1365): one CLI generation at a
+    # time, silent while queued or thinking — the plain JSON wire, and
+    # a total under the proxy's own 600 s so ours fires first and is
+    # not retried (ADR-005 §1.6)
+    "anyai": {"path": "/chat/completions", "credential": {**_BEARER, "label": "Local AI key"},
+              "normalize": _normalize_openai_compat, "stream": False, "timeout": 590},
 }
 
 # well-known hosts → backend, when the tier names none
@@ -1104,15 +1172,22 @@ def _credential(prov, backend):
     return cred
 
 
-def _effective(traits, backend):
-    """Traits as this backend can honor them: `cache: "markers"` needs a
-    backend that writes breakpoints, else it is the implicit prefix
-    cache (`auto`); `pdf_input` (the PDF carriage) is granted by the
-    backend, whatever the model family says."""
+def _effective(traits, backend, tier=None):
+    """Traits as this backend can honor them: a profile's `cache:
+    "markers"` needs a backend that writes breakpoints, else it is the
+    implicit prefix cache (`auto`); `pdf_input` (the PDF carriage) is
+    granted by the backend, whatever the model family says. A trait the
+    tier row set itself (`tier`) is the endpoint's own word and wins —
+    and a tier asking for markers no hook can write is a ConfigError,
+    never a silent downgrade."""
+    tier = tier or {}
     if traits["cache"] == "markers" and backend not in _MARKER_BACKENDS:
+        if "cache" in tier:
+            raise ConfigError(f"tier traits: cache='markers' needs a backend that writes "
+                              f"breakpoints ({', '.join(_MARKER_BACKENDS)}), not {backend!r}")
         traits = {**traits, "cache": "auto"}
     carriage = _PDF_CARRIAGE.get(backend)
-    if carriage and traits["pdf_input"] == "none":
+    if carriage and traits["pdf_input"] == "none" and "pdf_input" not in tier:
         traits = {**traits, "pdf_input": carriage}
     return traits
 
@@ -1122,8 +1197,12 @@ def _resolve(tier):
     if prov.get("provider") not in ADAPTERS:
         raise ConfigError(f"llm.tier.{tier}: unknown provider {prov.get('provider')!r}")
     name, traits = _resolve_traits(prov)
+    if traits["web_search"] and prov["provider"] != "openai-compat":
+        # only the openai-compat wire carries it (`web_search_options`)
+        raise ConfigError(f"llm.tier.{tier}: web_search needs provider 'openai-compat', "
+                          f"not {prov['provider']!r}")
     backend = _backend_name(prov)
-    return prov, name, backend, _effective(traits, backend)
+    return prov, name, backend, _effective(traits, backend, prov.get("traits"))
 
 
 # the streamed call's `{idle, total}` timeouts (ADR-005 §1.2, BOB-149)
@@ -1174,7 +1253,8 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     zeros are no count; `stream: false` on the tier row restores
     exact usage); a ≥400 provider status raises `LlmError(status,
     body_excerpt)`, a stream cut before its end `IncompleteReply`
-    after the retries."""
+    after the retries; a text file past 1 MiB on an openai-compat tier
+    raises `FileTooLarge` before any call — send a slice of it."""
     prov, _name, backend, traits = _resolve(tier)
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
@@ -1200,7 +1280,7 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     stream = bool(req.get("stream"))
     if not stream:
         req.pop("stream_options", None)
-    timeout = _timeout_of(prov)
+    timeout = _timeout_of(prov, be)
     payload = {"url": prov["base_url"].rstrip("/") + be["path"],
                "headers": dict(be.get("headers", {})), "json": req,
                "stream": stream, "timeout": timeout if stream else timeout["total"]}
@@ -1227,14 +1307,16 @@ def _fold(adapter, body, stream):
                           else f"non-JSON body: {body[:_EXCERPT]!r}")
 
 
-def _timeout_of(prov):
+def _timeout_of(prov, be):
     """A tier row's `timeout` as the `{idle, total}` the host takes:
     a plain number (the ADR-002 whole-request spelling) is the total,
-    an object overrides the defaults key by key, absent = defaults."""
+    an object overrides the defaults key by key, absent = defaults
+    (the backend's `timeout` is its default total)."""
+    base = {**_TIMEOUT, "total": be.get("timeout", _TIMEOUT["total"])}
     t = prov.get("timeout")
     if isinstance(t, (int, float)) and not isinstance(t, bool):
-        return {**_TIMEOUT, "total": t}
-    return {**_TIMEOUT, **(t or {})}
+        return {**base, "total": t}
+    return {**base, **(t or {})}
 
 
 def _retry_after(resp):
@@ -1312,7 +1394,9 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     carries documents (Anthropic, OpenAI, Gemini, any model via
     OpenRouter — the `pdf_input` trait); anything else raises `UnsupportedMedia`
     before any call — convert to text first, or route the read to a
-    tier whose backend can.
+    tier whose backend can. A text file past 1 MiB on an openai-compat
+    tier raises `FileTooLarge` before any call: read a slice of it
+    (`blob.of(...).text()[:N]`) and pass that as text instead.
     `prompt` is the question; `system` optional. Returns the reply's
     text (str). Bytes cross the wire once per read — re-read rather
     than keeping files in the conversation."""

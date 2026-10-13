@@ -28,8 +28,9 @@ _SYSTEM = (
     "- If sources conflict, note the disagreement\n"
     "- End with a brief summary of key findings"
 )
-_TIMEOUT_S = 150
+_TIMEOUT_S = 150  # per call; the provider row's `timeout` overrides
 _MAX_FOLLOW_UPS = 7
+_MAX_SOURCES = 10  # per grounded call, as webSearch@v1
 
 
 def _provider():
@@ -49,9 +50,20 @@ def _request(prov, question):
             "contents": [{"role": "user", "parts": [{"text": user}]}],
             "tools": [{"google_search": {}}],
         },
-        "timeout": _TIMEOUT_S,
-        "credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key"},
+        "timeout": prov.get("timeout") or _TIMEOUT_S,
+        **_credential(prov),
     }
+
+
+def _credential(prov):
+    """The Gemini credential as webSearch@v1 sends it (ADR-008 §3): ref +
+    header + `about` (ADR-021 §1), or `{}` for a keyless row."""
+    if not prov.get("api_key_ref"):
+        return {}
+    return {"credential": {"ref": prov["api_key_ref"], "header": "x-goog-api-key",
+                           "about": {"label": "Gemini API key",
+                                     "hosts": [_domain(prov["base_url"])],
+                                     "help": "https://aistudio.google.com/apikey"}}}
 
 
 # ADR-021 §8.1: the same declared ref as webSearch@v1 (one descriptor,
@@ -75,11 +87,14 @@ def _parse(raw):
                 "error": f"{raw['error']['type']}: {raw['error']['message']}"}
     try:
         body = json.loads(raw["body"])
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):  # TypeError: a raw-bytes blob ref
         return {"ok": False, "error": f"unparseable response (status {raw.get('status')})"}
+    if not isinstance(body, dict):
+        return {"ok": False, "error": f"unexpected response (status {raw['status']})"}
     if raw["status"] >= 400:
-        msg = (body.get("error") or {}).get("message") or f"HTTP {raw['status']}"
-        return {"ok": False, "error": msg}
+        err = body.get("error")
+        msg = (err.get("message") if isinstance(err, dict) else err) or f"HTTP {raw['status']}"
+        return {"ok": False, "error": str(msg)}
     cands = body.get("candidates") or []
     content = (cands[0].get("content") if cands else None) or {}
     parts = content.get("parts") or []
@@ -91,7 +106,7 @@ def _parse(raw):
     for chunk in gm.get("groundingChunks") or []:
         web = chunk.get("web") or {}
         key = web.get("domain") or web.get("title") or ""
-        if web.get("uri") and key not in seen:
+        if web.get("uri") and key not in seen and len(sources) < _MAX_SOURCES:
             seen.add(key)
             sources.append({"url": web["uri"],
                             "title": web.get("title") or key,
@@ -196,6 +211,11 @@ def research(space, question, opts=None):
 
     t0 = now()  # noqa: F821 - guest global
     prov = _provider()
+    # the Gemini wire only (ADR-008 §4) — another provider is a config
+    # error before any call, never its key sent as x-goog-api-key
+    if (prov.get("provider") or "gemini").lower() != "gemini":
+        return {"ok": False, "error": f"search.provider.deepresearch: unknown provider "
+                                      f"{prov['provider']!r}; supported: gemini"}
     timing = {}
 
     # phase 1 — initial grounded call

@@ -8,7 +8,7 @@ traits through `llm.profile(tier)` and never sees a wire.
 | table | keyed by | owns |
 |---|---|---|
 | `ADAPTERS` | the wire family (`anthropic`, `openai-compat`) | message / tool / file / thinking block shapes, stop-reason normalization |
-| `BACKENDS` | where the model is served (`anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `groq`, `together`, `vllm`, `llamacpp`, `ollama`, `generic`) | URL path, credential header + `about` label/help, parameter spelling, cache markers, response/usage field unification |
+| `BACKENDS` | where the model is served (`anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `groq`, `together`, `vllm`, `llamacpp`, `ollama`, `anyai`, `generic`) | URL path, credential header + `about` label/help, parameter spelling, cache markers, response/usage field unification |
 | `PROFILES` | the model family (`claude`, `gpt`, `gemini`, `deepseek-r1`, `deepseek`, `qwen3`, `llama`, `gemma`, `mistral`, `kimi-k3`, `kimi`, `deepseek-v4`, `glm-5-flash`, `glm-5`, `glm`, `mercury`; explicit-only `fenced`, `xml`, `generic`) | `traits` — deviations from `GENERIC_TRAITS` |
 
 A tier row (`agent_config` `llm.tier.<tier>`) picks them:
@@ -18,8 +18,15 @@ A tier row (`agent_config` `llm.tier.<tier>`) picks them:
  "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "llm.key.openrouter",
  "backend": "openrouter",        // optional: inferred from a well-known host, else generic
  "profile": "deepseek-r1",       // optional: matched on `model`, else generic
+ "traits": {"vision": false},    // optional: this endpoint's trait overrides, merged over the profile
  "options": {"top_p": 0.95}}     // optional: raw request fields, merged last
 ```
+
+A trait the tier sets wins over the backend's own grants and
+downgrades (ADR-005 §1.1): `"traits": {"pdf_input": "none"}` keeps PDFs
+off a backend that would carry them, and a trait the wire cannot honor
+(`cache: "markers"` off anthropic/openrouter, `web_search` off
+openai-compat) is a `ConfigError`.
 
 `api_key_ref: null` = a keyless local server: no credential on the
 request, no credential card in the chat.
@@ -55,7 +62,8 @@ key is fine.
 
 The traits vocabulary (`TRAITS`): `system_role`, `tool_mode`,
 `reasoning`, `thinking`, `cache`, `context_window`, `max_output`,
-`sampling`, `prompt_style`, `instructions_at`, `malformed_retries` —
+`sampling`, `prompt_style`, `instructions_at`, `malformed_retries`,
+`vision`, `signed_tool_calls`, `pdf_input`, `web_search` —
 values and defaults in the source, meaning in ADR-005 §1.3.
 
 ## Adding a model (or a backend)
@@ -115,6 +123,37 @@ overrides), Gemini as a PDF data URI under `image_url`.
 All reasoning models on OpenRouter answer with `reasoning` +
 `reasoning_details`; the `reasoning: "roundtrip"` trait resends the
 details on the tool-result turn and every backend above accepted them.
+
+**The any-ui local AI proxy** (PRO-1365) serves a user's own Codex /
+Claude Code login as an OpenAI-compatible endpoint on loopback. A tier
+points at it through the `anyai` backend (plain JSON, a 590 s total
+under the proxy's own deadline — ADR-005 §1.2), the proxy's bearer
+token as the key:
+
+```json
+{"provider": "openai-compat", "backend": "anyai", "model": "codex/gpt-5.5",
+ "base_url": "http://127.0.0.1:<port>/v1", "api_key_ref": "llm.key.anyai"}
+```
+
+Model ids are namespaced by the CLI (`codex/…`, `claude/…`) and resolve
+to the model family's profile like any other id (`claude/…` →
+`claude`, `codex/gpt-…` → `gpt`). The proxy carries images and native
+tools on the openai wire; text files go as titled text parts (ADR-020
+§3). The same endpoint serves `webSearch@v1` (ADR-008 §3), with an
+explicit per-query `timeout` — the proxy runs one CLI generation at a
+time, and a CLI that searches often takes tens of seconds before it
+answers, past the 120 s default once it queues behind another call:
+
+```json
+{"provider": "openai-compat", "backend": "anyai", "model": "codex/gpt-5.5",
+ "base_url": "http://127.0.0.1:<port>/v1", "api_key_ref": "llm.key.anyai",
+ "timeout": 300}
+```
+
+With `"traits": {"web_search":
+true}` on the tier, the agent's own calls carry `web_search_options`
+and the CLI searches the web natively inside its turn (only an
+`openai-compat` tier can carry it; elsewhere it is a `ConfigError`).
 
 Declared, not yet verified (no golden trace; needs a key / a host):
 `openrouter-deepseek-r1` (no system role, reasoning round-trip),

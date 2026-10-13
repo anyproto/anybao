@@ -57,8 +57,20 @@ and response are in the trace (ADR-001). Tiers: `codegen`, `classify`,
  "api_key_ref": "llm.key.<name>" | None,      # None = no credential (local servers)
  "backend": "<name>" | absent,                # where it is served; default: well-known host, else per provider
  "profile": "<name>" | absent,                # which model family; default: matched on `model`
+ "traits": {…} | absent,                      # trait overrides (1.3), merged over the profile's
  "options": {…} | absent}                     # raw request fields, merged last
 ```
+
+A tier's `traits` say what this endpoint can do whatever the model
+family: they merge over the resolved profile and are validated like
+it (an unknown trait, a wrong value or a non-object is a
+`ConfigError`), and `llm.profile(tier)` reports the merged set. A
+trait the tier sets is the endpoint's own word, so the backend never
+undoes it: the backend's PDF carriage grant applies only when the tier
+did not set `pdf_input`, and a tier's `cache: "markers"` on a backend
+that writes no breakpoints is a `ConfigError` (a profile's degrades to
+`auto`). Profiles match the family after a provider namespace too
+(`openai/gpt-5-mini`, `codex/gpt-5.5` → `gpt`).
 
 Three things vary independently and are kept in three tables, each a
 pure, offline-testable transform in `llm@v1`:
@@ -113,12 +125,17 @@ unparseable body is `IncompleteReply` (an `LlmError` at 502, retried)
 — a cut stream is never a "done" reply. A tool input cut mid-JSON
 (`max_tokens`) folds to `{}` with an `error` on the part, the same
 shape as the OpenAI malformed-arguments case, so the loop answers it
-instead of dying. Timeouts are `{idle: 60, total: 900}`; a tier row's
-`timeout` (object, or a number = total) overrides. Streaming is per
+instead of dying. Timeouts are `{idle: 60, total: 900}`, a backend may
+set its own default `total`, and a tier row's `timeout` (object, or a
+number = total) overrides. Streaming is per
 tier: `stream: false` on the row (or in `options`) sends the plain
 JSON request with `total` as its whole-request cap; the local
 backends (`vllm`, `llamacpp`, `ollama`) default to off — no middlebox
-to keep alive, and usage-on-stream is not a given on every build. A
+to keep alive, and usage-on-stream is not a given on every build — and
+so does `anyai`, the any-ui local AI proxy (PRO-1365): it is silent
+while a CLI queues or thinks, past the idle cut, and its `total` of
+590 s sits under the proxy's own 600 s deadline, so bao's
+non-retried total fires first. A
 streamed reply whose provider sent no usage carries `usage.missing:
 true` with zeros: the toolcaller then budgets the context ceiling from
 a conservative prompt-size floor instead of a zero that would disable
@@ -151,6 +168,11 @@ traits = {
   "pdf_input":       "none" | "file" | "image_url",    # the PDF carriage on the wire — granted by the BACKEND, not the
                                                       # profile (ADR-020 §3): file part (openai/openrouter/anthropic),
                                                       # PDF data URI under image_url (gemini's OpenAI layer), none
+  "web_search":      bool,                            # the endpoint searches natively: openai-compat sends `web_search_options`
+                                                      # beside `tools` (the any-ui local AI proxy → Claude/Codex search,
+                                                      # OpenRouter); a tier trait, default false; on any other provider it
+                                                      # is a ConfigError at resolve (no wire to carry it); the reply's
+                                                      # citations are not carried into the Reply
 }
 ```
 
