@@ -139,8 +139,18 @@ Model ids are namespaced by the CLI (`codex/…`, `claude/…`) and resolve
 to the model family's profile like any other id (`claude/…` →
 `claude`, `codex/gpt-…` → `gpt`). The proxy carries images and native
 tools on the openai wire; text files go as titled text parts (ADR-020
-§3). The same endpoint serves `webSearch@v1` with
-`provider: "openai-compat"` (ADR-008 §3). With `"traits": {"web_search":
+§3). The same endpoint serves `webSearch@v1` (ADR-008 §3), with an
+explicit per-query `timeout` — the proxy runs one CLI generation at a
+time, and a CLI that searches often takes tens of seconds before it
+answers, past the 120 s default once it queues behind another call:
+
+```json
+{"provider": "openai-compat", "backend": "anyai", "model": "codex/gpt-5.5",
+ "base_url": "http://127.0.0.1:<port>/v1", "api_key_ref": "llm.key.anyai",
+ "timeout": 300}
+```
+
+With `"traits": {"web_search":
 true}` on the tier, the agent's own calls carry `web_search_options`
 and the CLI searches the web natively inside its turn (only an
 `openai-compat` tier can carry it; elsewhere it is a `ConfigError`).
