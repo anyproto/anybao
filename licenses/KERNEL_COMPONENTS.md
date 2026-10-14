@@ -1,8 +1,8 @@
 # Embedded Python kernel
 
-The kernel is produced by **componentize-py 0.25.1**. Python 3.13 in the
-build instructions is the host interpreter; this componentize-py
-release embeds a **CPython 3.14** fork.
+The kernel is produced by **componentize-py 0.25.1**, which embeds a
+**CPython 3.14** fork. The Python 3.14 in the build instructions is the
+host interpreter that runs componentize-py, not the embedded one.
 
 | Component | Pinned source | Notices |
 |---|---|---|

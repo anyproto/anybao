@@ -2,13 +2,13 @@
 # binary anyrt). Python remains only for the componentized guest kernel
 # build (componentize-py) and the guest-module + wire tests under tests/.
 # `[project]` exists so uv has a `requires-python` (without it, every
-# `uv run` / `uv sync` warns and defaults to `>=3.13` from the active
+# `uv run` / `uv sync` warns and defaults to `>=3.14` from the active
 # interpreter). `package = false` keeps this a non-package workspace.
 
 [project]
 name = "anybao"
 version = "0.0.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = "MIT"
 
 [tool.uv]
@@ -32,7 +32,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py314"
 # vendored guest libraries (ADR-012 §6) are upstream code — never linted
 extend-exclude = [
     "tests/fixtures",   # fixture INPUTS (bench generator scripts, goldens) — not code

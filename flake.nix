@@ -28,7 +28,7 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             uv
-            python313
+            python314
             basedpyright   # python LSP (emacs eglot/lsp-mode); resolves the
                            # uv venv via pyrightconfig.json
             ruff           # editor-facing ruff/ruff-lsp (CI uses the uv one)
@@ -41,7 +41,7 @@
           # interpreter so the environment stays nix-pinned.
           env = {
             UV_PYTHON_DOWNLOADS = "never";
-            UV_PYTHON = "python3.13";
+            UV_PYTHON = "python3.14";
           };
 
           shellHook = ''

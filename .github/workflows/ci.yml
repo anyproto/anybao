@@ -6,7 +6,7 @@ on:
   pull_request:
 
 # Stock toolchains, not `nix develop` (same as release.yml): the tree
-# needs only uv + python 3.13 (componentize-py -> kernel.wasm) and
+# needs only uv + python 3.14 (componentize-py -> kernel.wasm) and
 # stable rust — rustls-only, no native libs. The flake stays the local
 # dev shell; both it and the workflows take the rust channel from
 # rust-toolchain.toml, so the two can't drift apart silently.
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           enable-cache: true
           # one uv cache per leg: three jobs saving the same key at once
           # race, and the losers warn "Unable to reserve cache"
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           enable-cache: true
       - id: rust
         run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"

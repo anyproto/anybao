@@ -108,7 +108,7 @@ Never copy `wallet.key` between machines.
 ### 2. Build anyrt
 
 The canonical environment is the nix dev shell (`nix develop`, or
-`direnv allow`). Without nix you need a recent stable Rust, Python 3.13,
+`direnv allow`). Without nix you need a recent stable Rust, Python 3.14,
 and [`uv`](https://docs.astral.sh/uv/).
 
 ```sh
