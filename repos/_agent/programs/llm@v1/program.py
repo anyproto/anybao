@@ -587,9 +587,11 @@ class OpenAICompatAdapter:
                               "parameters": t.get("input_schema", {"type": "object"})}}
                 for t in tools
             ]
-        if traits.get("web_search"):
+        if traits.get("web_search") and tools:
             # the endpoint searches natively, beside the tools (the any-ui
-            # local AI proxy → Claude/Codex search; OpenRouter)
+            # local AI proxy → Claude/Codex search; OpenRouter). Tool runs
+            # only: a tool-less call with it is a web search (webSearch@v1),
+            # which the local proxy fails when nothing gets searched
             req["web_search_options"] = {}
         return req
 

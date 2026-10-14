@@ -151,7 +151,7 @@ answers, past the 120 s default once it queues behind another call:
 ```
 
 With `"traits": {"web_search":
-true}` on the tier, the agent's own calls carry `web_search_options`
+true}` on the tier, the agent's own calls (the ones with tools) carry `web_search_options`
 and the CLI searches the web natively inside its turn (only an
 `openai-compat` tier can carry it; elsewhere it is a `ConfigError`).
 

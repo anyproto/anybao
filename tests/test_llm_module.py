@@ -487,6 +487,18 @@ def test_web_search_trait_asks_an_openai_endpoint_to_search_beside_the_tools():
     assert "web_search_options" not in host.posts[0]["json"]
 
 
+def test_web_search_trait_leaves_a_tool_less_call_alone():
+    # a side call (extraction, classify, a cell's llm.chat) is not a web
+    # search: the local proxy runs one carrying web_search_options as a
+    # search and fails it when nothing gets searched
+    row = {"provider": "openai-compat", "backend": "anyai", "model": "claude/default",
+           "base_url": "http://127.0.0.1:20123/v1", "api_key_ref": "llm.key.anyai",
+           "traits": {"web_search": True}}
+    host = FakeHost(row, body=OPENAI_FINAL)
+    load(host)["chat"](MSGS)
+    assert "web_search_options" not in host.posts[0]["json"]
+
+
 def test_anyai_backend_is_plain_json_under_the_proxy_deadline():
     # the any-ui local AI proxy (PRO-1365): silent while a CLI queues or
     # thinks, so no stream to idle-cut; its own deadline is 600 s
