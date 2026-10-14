@@ -215,7 +215,7 @@ fn matches(got: Option<&Value>, want: &Value) -> bool {
             }
         });
     }
-    values.iter().any(|v| *v == want)
+    values.contains(&want)
 }
 
 fn err(status: u16, code: &str, message: impl Into<String>) -> (u16, Value) {
