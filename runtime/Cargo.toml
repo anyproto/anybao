@@ -16,12 +16,13 @@ name = "anyrt"
 path = "src/main.rs"
 
 [dependencies]
-# pinned to the wasmtime-py major the Python reference host embeds
-wasmtime = { version = "46", features = ["component-model"] }
-wasmtime-wasi = "46"
+# wasmtime + wasmtime-wasi move together (same major); sha2/base64
+# below track the versions wasmtime itself pulls, so the tree keeps one copy
+wasmtime = { version = "49", features = ["component-model"] }
+wasmtime-wasi = "49"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"          # default Map = BTreeMap → sorted keys = canonical JSON
-toml = "0.8"              # anybao.toml host config (ADR-009 §1)
+toml = "1"                # anybao.toml host config (ADR-009 §1)
 sha2 = "0.10"
 hex = "0.4"
 ureq = { version = "2", features = ["tls", "json"] }
@@ -31,7 +32,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.10"            # the WASI floor: per-run seed + its seeded stream (ADR-002 §4)
-cron = "0.12"            # trigger cron expressions (every_s needs nothing)
+cron = "0.17"            # trigger cron expressions (every_s needs nothing)
 chrono = "0.4"           # cron's time source
 tiny_http = "0.12"       # the localhost trigger control API
 tracing = "0.1"          # runtime logs (embedders subscribe or get silence)
