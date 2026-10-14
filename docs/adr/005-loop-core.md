@@ -169,7 +169,8 @@ traits = {
                                                       # profile (ADR-020 §3): file part (openai/openrouter/anthropic),
                                                       # PDF data URI under image_url (gemini's OpenAI layer), none
   "web_search":      bool,                            # the endpoint searches natively: openai-compat sends `web_search_options`
-                                                      # beside `tools` (the any-ui local AI proxy → Claude/Codex search,
+                                                      # beside `tools`, on calls with tools only (a tool-less call carrying it
+                                                      # is a web search, webSearch@v1) (the any-ui local AI proxy → Claude/Codex search,
                                                       # OpenRouter); a tier trait, default false; on any other provider it
                                                       # is a ConfigError at resolve (no wire to carry it); the reply's
                                                       # citations are not carried into the Reply
