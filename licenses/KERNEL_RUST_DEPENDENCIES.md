@@ -1,7 +1,7 @@
 # Embedded Python runtime: Rust dependency notices
 
-Generated with cargo-about 0.9.2 from componentize-py 0.24.0 at
-811ff834f1d6a0fb1b61a637f002dce36c10ee4a. Includes the embedded runtime and its build dependencies. Development-only
+Generated with cargo-about 0.9.2 from componentize-py 0.25.1 at
+2a53e46a0083619f2c85ac5f20abe4132cda4b88. Includes the embedded runtime and its build dependencies. Development-only
 dependencies are excluded. License selections follow the accompanying cargo-about configuration.
 
 ## Apache License 2.0
@@ -468,7 +468,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Applies to:
-- componentize-py-runtime 0.24.0
+- componentize-py-runtime 0.25.1
 - anyhow 1.0.102
 - itoa 1.0.18
 - libc 0.2.186
