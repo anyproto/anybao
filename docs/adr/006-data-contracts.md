@@ -126,6 +126,10 @@ reads the registry.
   `soulFingerprint` (16 hex — sha256 of the identity body; absent when
   the run composed no identity). Nested keys of the declared `object`
   field — no dataset field is added (ADR-017 §1).
+- **`bootAnchor`** (number, added 2026-10-16): the first raw-tail seq
+  of this run's boot window (§2). The next run keeps it or jumps it
+  forward; a chat with no turn yet starts fresh. `llm.bootTokensEst`
+  (nested, no field) is the rendered window's estimated size.
 - **`traceRef` replaces `debugRef`**: the trace (ADR-001 format, one
   object per run, spilled blobs as file attachments) is the single
   SOURCE OF TRUTH; "the debug log" becomes two VIEWS over it — agent-
@@ -207,10 +211,31 @@ failure. v2 chunk record:
   children are level-N-1 chunks (or turns at level 1). Drill-down is
   recursive: expand a chunk → its children (chunks or raw turns) —
   every summary keeps explicit pointers to what it covers (doctrine).
-- **Boot window becomes token-budgeted composition** (assembled by the
-  loop, ADR-005 §5): newest raw turns, then newest L1 chunks, then L2,
-  ... until the budget fills — ALL history present at decreasing
-  resolution; the fixed 8+8 count horizon is gone.
+- **Boot window = anchored raw tail + chunk summaries, cache-stable
+  across runs** (assembled by the loop, ADR-005 §5; amended
+  2026-10-16). The raw tail is every turn from the **anchor** seq
+  onward, at full resolution. The anchor sits on an L1 chunk boundary
+  (`toSeq + 1`, or the oldest unchunked turn) and is persisted on the
+  turn record (`bootAnchor`, §1). Hysteresis: a run keeps the previous
+  turn's anchor while the tail's estimated size stays under the
+  high-water mark (25k tokens); past it, the anchor jumps forward whole
+  chunks to the oldest boundary that brings the tail under the
+  low-water mark (12k). Between jumps the window of run N+1 is run N's
+  byte for byte plus the newest exchange, so the end of the boot window
+  is a cache breakpoint the next run reads (ADR-005 §1.4). The summary
+  message renders only chunks that end before the anchor — an L1
+  rollup inside the raw region never changes it; an anchor jump or a
+  new higher-level chunk (every ~100 turns) are the only rewrites.
+  Chunks fill the budget left after the tail, ascending by level,
+  newest first per level; a level-N chunk renders only where its
+  level-N−1 children did not all fit, and then replaces the ones that
+  did — no range is covered twice. Budget and marks are estimated real
+  tokens: `approx_tokens` is calibrated at 2.6 chars/token (toolcaller
+  traces, claude-sonnet-5, 2026-10-15 — the 4 chars/token proxy
+  under-counted by ~1.6×), and the estimate is recorded per turn as
+  `llm.bootTokensEst` beside the real usage, so drift shows in traces.
+  ALL history stays present at decreasing resolution; the fixed 8+8
+  count horizon is gone.
 - Rollup (L1 from turns, L2 from L1s, ...) runs as **trigger jobs**
   (§4), off the completion hot path.
 - Server validation: append-only stays; add `level` ≥ 1, range checks

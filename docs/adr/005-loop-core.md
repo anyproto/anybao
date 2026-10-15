@@ -189,9 +189,20 @@ trait that gates it — the config selects behavior, it never defines it.
 **1.4 Provider adapters.** `anthropic` — native; Thinking
 `provider_state` round-trips byte-exact; `cache_control` breakpoints at
 the end of each system block (a `system` list renders one block per
-text — §5's stable and tail blocks) and at the end of the conversation,
-set by the adapter with no caller hint (the loop's prefix is append-only, so each call writes the
-cache the next one reads). `openai-compat` — one adapter for every
+text — §5's stable and tail blocks), at the end of the conversation,
+and at any neutral text part the caller flags `cache: true` — the loop
+flags the last part of the boot window (§5), so run N+1 reads at that
+position what run N wrote (the window is append-only across runs,
+ADR-006 §2; within a run the prefix is append-only too, so each call
+writes the cache the next one reads). Four breakpoints at most —
+Anthropic's limit: the two system blocks, the boot end, the
+conversation end; a flagged part beyond that budget is left unmarked.
+TTL stays the default 5 minutes (decided 2026-10-16): of 185
+conversation starts in one month of a real chat, 114 came within 5
+minutes of the previous one and 148 within an hour; the 1-hour write
+costs 2× against 1.25×, and a longer TTL would have to apply to the
+system blocks ahead of it as well (longer TTLs come first), so it does
+not pay. `openai-compat` — one adapter for every
 `/chat/completions` server (OpenAI, OpenRouter, vLLM, llama.cpp,
 SGLang, ollama, Together, DeepSeek, Groq …); an assistant turn that
 carries tool calls sends `content: null`, never `""`; tool-call
@@ -222,8 +233,9 @@ stability: the system block, tool list and every `prepare` output are
 byte-stable across the turns of one conversation, and the per-turn
 context suffix rides the user message, never the system. `cache:
 "markers"` (Anthropic direct; Claude/Gemini through OpenRouter) adds
-explicit breakpoints — the backend writes them, at the same two
-positions; on a backend that cannot (`_MARKER_BACKENDS`) the
+explicit breakpoints — the backend writes them, at the same positions
+(system, the flagged part, the conversation end); on a backend that
+cannot (`_MARKER_BACKENDS`) the
 effective trait is `auto`, and `llm.profile(tier)` reports the
 effective value. Server state that must ride a tool call back (Gemini's
 `thought_signature`) is the call's `provider_state`, opaque to the
@@ -501,12 +513,20 @@ keeps the raw `userText`, the suffix line as `context`, and the reply's
 effect summary as `effects` (`["any.create_object ×2", …]`, counted from
 the cells' immediate effects; trace reads and `use()` loading are not
 counted). The boot window renders a past turn's user message as
-`userText`, its `context` line, and `[the reply below ran: … — the
-calls: effects.of(run="<traceRef>")]` — on the USER side, so roles keep
-alternating and the model never imitates it; the calls themselves stay
-in the trace, read on demand (amendment 2026-09-29: without them a
-no-view follow-up retracted a correct view-based answer, and ids and
-keys were rediscovered every exchange).
+`userText`, a compact form of its `context` line, and `[ran:
+<effect>×<n>, … · <traceRef>]` for the reply's effects — on the USER
+side, so roles keep alternating and the model never imitates it; the
+calls themselves stay in the trace, read on demand (amendment
+2026-09-29: without them a no-view follow-up retracted a correct
+view-based answer, and ids and keys were rediscovered every exchange).
+Compact (amendment 2026-10-16 — stamps and footers were 16% of the
+window, more than the user's own words): the stamp is the full `[<day>
+<date> <time> <offset> | <view>]` on the window's first turn and
+whenever the day or the view changes from the previous turn, else
+`[<time>]`; the footer drops clock reads (`time.now`) along with the
+trace reads, and how to read a run (`effects.of(run=…)`) is taught
+once in `_core`, not on every turn. The window's last part carries
+`cache: true` (§1.4).
 
 **System skills in full, the rest by index (amendment 2026-09-24,
 BOB-160).** Only `_`-prefixed skills are composed into the stable
