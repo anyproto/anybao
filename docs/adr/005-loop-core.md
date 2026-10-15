@@ -45,7 +45,8 @@ issues ONE `http.post` syscall (route-classified `read`/`llm.chat`),
 wrapped in an `llm.chat` span so the trace and the digest read it as
 one call. Because the crossing is a recorded effect, the full request
 and response are in the trace (ADR-001). Tiers: `codegen`, `classify`,
-`vision` (file reads — `llm.read`, ADR-020 §4).
+`vision` (file reads — `llm.read`, ADR-020 §4); `judge` is the
+typed-question tier with its own call shape, `llm.judge` (ADR-030).
 
 **1.1 Tier config** (`config.get("llm.tier.<tier>")`, rows in
 `agent_config`, ADR-006 §3):

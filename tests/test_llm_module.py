@@ -1541,3 +1541,142 @@ def test_a_system_list_is_joined_where_blocks_buy_nothing():
     load(host)["chat"](MSGS, system=["STABLE", "TAIL"], tier="classify")
     sys_msgs = [m for m in host.posts[0]["json"]["messages"] if m["role"] == "system"]
     assert sys_msgs[0]["content"] == "STABLE\n\nTAIL"
+
+
+# --- judge (ADR-030): typed questions over a state ---------------------------
+
+TYPESAFE_ROW = {"provider": "typesafe", "model": "jev-latest",
+                "base_url": "https://api.typesafe.ai/",
+                "api_key_ref": "llm.key.typesafe"}
+
+# recorded from a live call (2026-10-14, jev-1.13.0, 240 ms)
+TYPESAFE_RESP = {
+    "model": "jev-1.13.0",
+    "answers": {
+        "addressed": {"type": "noul", "noul": 0.98},
+        "mode": {"type": "choice", "choice": "reminder", "confidence": 1.0,
+                 "probabilities": {"reminder": 1.0, "answer": 0.0, "search": 0.0, "none": 0.0}},
+        "urgency": {"type": "score", "score": 0.51, "confidence": 0.27,
+                    "legend": {"0": "not urgent", "1": "soon", "2": "right now"},
+                    "probabilities": {"0": 0.49, "1": 0.51, "2": 0.0}}},
+    "usage": {"input_tokens": 448, "output_tokens": 79},
+}
+
+STATE = {"chat": [{"from": "user", "text": "remind me tomorrow at 9 to call the dentist"}]}
+QUESTIONS = {
+    "addressed": {"type": "noul",
+                  "instructions": "Is the last message in `chat` asking the assistant to act?"},
+    "mode": {"type": "choice", "instructions": "Which action does it ask for?",
+             "criteria": {"reminder": "schedule a reminder", "answer": "answer from knowledge",
+                          "search": "look something up", "none": None}},
+    "urgency": {"type": "score", "instructions": "How urgent is it?",
+                "criteria": ["not urgent", "soon", "right now"]},
+}
+
+
+class JudgeHost(ScriptedHost):
+    """`llm.tier.<judge>` answers from `rows` — an absent key raises the
+    broker's ConfigError, as `sys_config_get` does."""
+
+    def __init__(self, outcomes, rows):
+        super().__init__(outcomes)
+        self.rows = rows
+
+    def __call__(self, name, payload):
+        if name == "config.get":
+            self.config_keys.append(payload["key"])
+            if payload["key"] not in self.rows:
+                raise EffectError(f"ConfigError: no config value for {payload['key']!r}")
+            return {"value": self.rows[payload["key"]]}
+        return super().__call__(name, payload)
+
+
+def test_judge_typesafe_wire_credential_and_answers():
+    host = JudgeHost([(200, TYPESAFE_RESP)], {"llm.tier.judge": TYPESAFE_ROW})
+    out = load(host)["judge"](STATE, QUESTIONS)
+    assert host.config_keys == ["llm.tier.judge"]
+    post = host.posts[0]
+    assert post["url"] == "https://api.typesafe.ai/v1/systemone"
+    assert post["json"] == {"model": "jev-latest", "state": STATE, "questions": QUESTIONS}
+    assert post["stream"] is False and post["timeout"] == 30
+    assert post["headers"] == {}
+    # the credential names the ref + header — never a key value
+    cred = post["credential"]
+    assert (cred["ref"], cred["header"], cred["prefix"]) == (
+        "llm.key.typesafe", "Authorization", "Bearer ")
+    assert cred["about"]["hosts"] == ["api.typesafe.ai"]
+    assert out["model"] == "jev-1.13.0" and "emulated" not in out
+    assert out["usage"] == {"in": 448, "out": 79}
+    assert out["answers"]["addressed"]["noul"] == 0.98
+    assert out["answers"]["mode"]["choice"] == "reminder"
+    assert out["answers"]["urgency"]["confidence"] == 0.27
+
+
+def test_judge_long_context_header_and_options():
+    row = {**TYPESAFE_ROW, "long_context": True, "timeout": 90,
+           "options": {"model": "jev-1.14.0"}}
+    host = JudgeHost([(200, TYPESAFE_RESP)], {"llm.tier.judge": row})
+    load(host)["judge"]("text", {"q": {"type": "noul", "instructions": "?"}})
+    post = host.posts[0]
+    assert post["headers"] == {"TypeSafe-Danger-Zone-Long-Context": "true"}
+    assert post["timeout"] == 90 and post["json"]["model"] == "jev-1.14.0"
+
+
+def test_judge_declares_the_host_bound_key():
+    refs = {c["ref"]: c["about"]["hosts"] for c in LLM["__any_credentials__"]}
+    assert refs["llm.key.typesafe"] == ["api.typesafe.ai"]
+
+
+def test_judge_retries_overloaded_and_raises_validation_status():
+    host = JudgeHost([(529, "overloaded"), (200, TYPESAFE_RESP)],
+                     {"llm.tier.judge": TYPESAFE_ROW})
+    assert load(host)["judge"](STATE, QUESTIONS)["answers"]
+    assert len(host.posts) == 2 and host.sleeps == [1]
+    host = JudgeHost([(422, '{"detail": "questions.q.criteria"}')],
+                     {"llm.tier.judge": TYPESAFE_ROW})
+    g = load(host)
+    with pytest.raises(g["LlmError"]) as e:
+        g["judge"](STATE, QUESTIONS)
+    assert e.value.status == 422 and len(host.posts) == 1
+
+
+@pytest.mark.parametrize("questions, msg", [
+    ({}, "non-empty"),
+    ({"q": {"type": "maybe", "instructions": "?"}}, "noul, choice or score"),
+    ({"q": {"type": "noul"}}, "instructions"),
+    ({"q": {"type": "noul", "instructions": "?", "criteria": {"yes": "y"}}}, "noul criteria"),
+    ({"q": {"type": "choice", "instructions": "?", "criteria": {}}}, "choice criteria"),
+    ({"q": {"type": "choice", "instructions": "?",
+            "criteria": {str(i): None for i in range(256)}}}, "choice criteria"),
+    ({"q": {"type": "score", "instructions": "?", "criteria": ["one"]}}, "score criteria"),
+    ({"q": {"type": "score", "instructions": "?", "criteria": list("abcdefghijk")}},
+     "score criteria"),
+], ids=["empty", "type", "instructions", "noul-crit", "choice-0", "choice-256", "score-1",
+        "score-11"])
+def test_judge_refuses_malformed_questions_before_any_call(questions, msg):
+    with pytest.raises(ValueError, match=msg):
+        load()["judge"]("s", questions)   # load() fails on any effect
+
+
+def test_judge_refuses_a_chat_provider_on_the_judge_tier():
+    host = JudgeHost([], {"llm.tier.judge": {"provider": "anthropic", "model": "m",
+                                             "base_url": "https://api.anthropic.com"}})
+    g = load(host)
+    with pytest.raises(g["ConfigError"], match="not a judge wire"):
+        g["judge"](STATE, QUESTIONS)
+
+
+def test_judge_without_a_tier_raises_never_falls_back():
+    host = JudgeHost([], {"llm.tier.classify": {"provider": "anthropic", "model": "m",
+                                                "base_url": "https://api.anthropic.com"}})
+    g = load(host)
+    assert g["judge_available"]() is False
+    with pytest.raises(g["JudgeUnavailable"], match="judge_available"):
+        g["judge"](STATE, QUESTIONS)
+    assert host.posts == []   # no chat call on classify
+
+
+def test_judge_available_with_a_tier():
+    host = JudgeHost([], {"llm.tier.judge": TYPESAFE_ROW})
+    assert load(host)["judge_available"]() is True
+    assert host.posts == []

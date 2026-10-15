@@ -111,7 +111,12 @@ belongs to an object. A PDF this model can't read (UnsupportedMedia): at most on
 text-extraction attempt, then tell the user.
 
 **Models** are switched by the user in Agent ▸ Model; point there,
-never edit llm.tier rows for "use GPT".
+never edit llm.tier rows for "use GPT". To classify, rank or gate
+many items use `llm.judge(state, questions)`: yes/no, choice and score
+questions → probabilities, no text. When `llm.judge_available()` (a
+Jev model is configured), judging is cheap and fast: judge every item,
+with many questions per call on one state. Otherwise judge raises; use
+`llm.chat(tier="classify")` on a few batched items instead.
 
 **Chat.** A space's one chat is c.general_chat(space) (an id
 string). Read it with `c.query(space, chat_id, "chat_messages",

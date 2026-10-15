@@ -7,8 +7,9 @@ scoring) inside a cell — a sub-call, not a way to talk to the user.
 text|tool_call|tool_result|thinking|file, …}`, the reply `{parts, stop:
 done|tool|length, usage: {in, out}}`. `read(file, prompt)` puts one
 `any` file (image / pdf / text — an `any://f/…` attachment) in front
-of the model and returns its answer. `profile(tier)` is the
-resolved model profile (backend + traits) the loop budgets from."""
+of the model and returns its answer. `judge(state, questions)`: typed
+yes/no / choice / score questions → probabilities, no text — the cheap
+way to classify or gate. `profile(tier)`: the resolved profile."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -1137,7 +1138,11 @@ __any_credentials__ = [
                "help": "https://console.groq.com/keys"}},
     {"ref": "llm.key.together",
      "about": {"label": "Together API key", "hosts": ["api.together.xyz"],
-               "help": "https://api.together.ai/settings/api-keys"}}
+               "help": "https://api.together.ai/settings/api-keys"}},
+    # the judge wire (ADR-030 §4)
+    {"ref": "llm.key.typesafe",
+     "about": {"label": "TypeSafe API key", "hosts": ["api.typesafe.ai"],
+               "help": "https://console.typesafe.ai"}}
 ]
 
 
@@ -1417,3 +1422,145 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
     reply = chat([{"role": "user", "parts": [part, {"type": "text", "text": prompt}]}],
                  system=system, tier=tier, max_tokens=max_tokens)
     return "\n".join(p["text"] for p in reply["parts"] if p["type"] == "text")
+
+
+# --- Judge (ADR-030): typed questions over a state ---------------------------
+# A second call shape beside `chat`: noul / choice / score questions,
+# answered with probabilities. Its wires are their own table, keyed by
+# the judge tier's `provider`; an absent tier raises, never emulated.
+
+class JudgeUnavailable(Exception):
+    """No judge tier configured (ADR-030 §3) — `judge()` never falls
+    back to a chat model; the caller keeps its regular path."""
+
+
+_JUDGE_TIMEOUT_S = 30
+_CHOICE_MAX = 255
+_SCORE_LEVELS = (2, 10)
+
+
+def _check_questions(questions):
+    """ADR-030 §1: a malformed question fails here, before any call."""
+    if not isinstance(questions, dict) or not questions:
+        raise ValueError("questions must be a non-empty {id: Question} dict")
+    for qid, q in questions.items():
+        where = f"question {qid!r}"
+        if not isinstance(q, dict) or q.get("type") not in ("noul", "choice", "score"):
+            raise ValueError(f"{where}: type must be noul, choice or score")
+        if q.get("instructions") in (None, ""):
+            raise ValueError(f"{where}: instructions are required")
+        crit = q.get("criteria")
+        if q["type"] == "noul":
+            if crit is not None and (not isinstance(crit, dict)
+                                     or set(crit) - {"true", "false"}):
+                raise ValueError(f"{where}: noul criteria are {{'true': …, 'false': …}}")
+        elif q["type"] == "choice":
+            if not isinstance(crit, dict) or not 1 <= len(crit) <= _CHOICE_MAX:
+                raise ValueError(f"{where}: choice criteria are 1..{_CHOICE_MAX} "
+                                 "{option: description | None}")
+        elif not isinstance(crit, list) or not _SCORE_LEVELS[0] <= len(crit) <= _SCORE_LEVELS[1]:
+            raise ValueError(f"{where}: score criteria are {_SCORE_LEVELS[0]}.."
+                             f"{_SCORE_LEVELS[1]} ordered levels")
+
+
+def _typesafe_request(state, questions, prov):
+    req = {"model": prov["model"], "state": state, "questions": questions}
+    req.update(prov.get("options") or {})
+    return req
+
+
+def _typesafe_headers(prov):
+    # 262k context instead of 64k — slower and less accurate (ADR-030 §2)
+    return {"TypeSafe-Danger-Zone-Long-Context": "true"} if prov.get("long_context") else {}
+
+
+def _typesafe_normalize(raw):
+    u = raw.get("usage") or {}
+    return {"answers": raw.get("answers") or {}, "model": raw.get("model"),
+            "usage": {"in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0)}}
+
+
+JUDGES = {
+    "typesafe": {"path": "/v1/systemone",
+                 "credential": {**_BEARER, "label": "TypeSafe API key",
+                                "help": "https://console.typesafe.ai"},
+                 "request": _typesafe_request, "headers": _typesafe_headers,
+                 "normalize": _typesafe_normalize},
+}
+
+
+def _judge_row(tier):
+    """The judge tier row, or None when the space has none (ADR-030 §3:
+    unseeded — no credential card for a feature nobody turned on)."""
+    try:
+        prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821
+    except EffectError as e:  # noqa: F821 - guest global
+        if str(e).startswith("ConfigError: no config value"):
+            return None
+        raise
+    if prov.get("provider") not in JUDGES:
+        raise ConfigError(f"llm.tier.{tier}: {prov.get('provider')!r} is not a judge wire "
+                          f"({', '.join(JUDGES)})")
+    return prov
+
+
+def _judge_credential(prov, wire):
+    ref = prov.get("api_key_ref")
+    if not ref:
+        return None
+    spec = JUDGES[wire]["credential"]
+    cred = {"ref": ref, "header": spec["header"],
+            "about": {"label": spec["label"], "hosts": [_host(prov["base_url"])],
+                      "help": spec.get("help")}}
+    if spec.get("prefix"):
+        cred["prefix"] = spec["prefix"]
+    return cred
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def judge_available(tier="judge"):
+    # ADR-030 §3
+    """True when a judge model (Jev) is configured; no call is made.
+
+    Check before fanning out: when True, judge every item with many
+    questions per call; when False, keep the regular
+    `chat(tier="classify")` path. A configured tier whose key is
+    missing still counts — the first call asks for the key."""
+    return _judge_row(tier) is not None
+
+
+@span(kind="getter")  # noqa: F821 - guest global
+def judge(state, questions, tier="judge"):
+    # ADR-030
+    """Typed questions about a state → calibrated answers, no text.
+
+    `state`: the content judged (str, or a JSON dict/list — a chat log,
+    a record; point questions at fields by name in backticks).
+    `questions`: `{id: Question}` — ask everything that shares a state in
+    ONE call. Question is `{"type": "noul", "instructions", "criteria"?:
+    {"true", "false"}}` (yes/no), `{"type": "choice", "instructions",
+    "criteria": {option: description | None}}` (1..255 options) or
+    `{"type": "score", "instructions", "criteria": [level, …]}` (2..10
+    ordered levels). Returns `{answers: {id: Answer}, model, usage: {in,
+    out}}` — Answer `{type: "noul", noul: P(yes)}`, `{type: "choice",
+    choice, probabilities, confidence}`, `{type: "score", score,
+    probabilities, legend, confidence}`. Needs a judge model: check
+    `judge_available()` first — with none this raises `JudgeUnavailable`
+    (no chat fallback; keep your `classify` path). An answer is advice:
+    never use it as a security check (the state can steer it). A
+    malformed question raises `ValueError` before any call."""
+    _check_questions(questions)
+    prov = _judge_row(tier)
+    if prov is None:
+        raise JudgeUnavailable(f"no llm.tier.{tier} row — check judge_available() and "
+                               "keep the regular chat(tier='classify') path")
+    wire = JUDGES[prov["provider"]]
+    payload = {"url": prov["base_url"].rstrip("/") + wire["path"],
+               "headers": wire["headers"](prov),
+               "json": wire["request"](state, questions, prov),
+               "stream": False, "timeout": prov.get("timeout", _JUDGE_TIMEOUT_S)}
+    cred = _judge_credential(prov, prov["provider"])
+    if cred:
+        payload["credential"] = cred
+    raw = _post(payload, lambda body: _fold(None, body, False))
+    return wire["normalize"](raw)
