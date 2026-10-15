@@ -4,8 +4,11 @@
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
 kernel: bin/kernel.wasm
 
+# compileall first: from a tree without .pyc files the pre-init snapshot
+# keeps the compiler's heap (+2 MB today, +25 MB with pypdf; ADR-031 §7)
 bin/kernel.wasm: runtime/guest/app.py runtime/wit/kernel.wit
 	mkdir -p bin
+	uv run python -m compileall -q runtime/guest
 	uv run componentize-py -d runtime/wit -w kernel componentize -p runtime/guest app -o bin/kernel.wasm
 
 # The Rust runtime (runtime/target/release/anyrt). The kernel wasm is
