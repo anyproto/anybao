@@ -44,6 +44,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 028 | Mock mode surfaced — the mock spec on `anyrt run` and `run_cell`, strict replay as a verb, traceDiff views | Accepted |
 | 029 | One type per object, collections — classes and tags, the default type, membership verbs, the fleet cut | Accepted |
 | 030 | The judge tier — typed questions over a state (`llm.judge`, TypeSafe Jev first) | Accepted |
+| 031 | toMarkdown — one conversion program for HTML and PDF, pypdf in the kernel; fuel as a metric | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
