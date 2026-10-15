@@ -91,11 +91,97 @@ def test_boot_window_skips_double_covered_l1_chunk():
     assert "covered range" not in joined    # double-covered chunk skipped
 
 
-def test_raw_tail_min_seq_is_the_guard_boundary():
-    turns = [_turn(i, "q" * 400, ["a" * 400]) for i in range(10)]
-    tail = H["raw_tail"](turns, total_tokens=1000, raw_tail_fraction=0.5)
-    assert tail and tail[-1]["seq"] == 9            # newest kept
-    assert tail == turns[tail[0]["seq"]:]           # a contiguous newest slice
+def _sized(seq, chars=1000):
+    # ~1000 chars per exchange ≈ 400 estimated tokens, like the real chat
+    return _turn(seq, "q" * (chars // 4), ["a" * (chars * 3 // 4)])
+
+
+def test_raw_tail_is_every_turn_from_the_anchor():
+    turns = [_sized(i) for i in range(1, 11)]
+    assert H["raw_tail"](turns, 7) == turns[6:]
+    assert H["raw_tail"](turns, None) == []
+
+
+def test_anchor_is_kept_under_high_water_and_jumps_whole_chunks_past_it():
+    # ADR-006 §2 hysteresis: 10 turns ≈ 4k tokens per L1 chunk
+    turns = [_sized(i) for i in range(1, 61)]
+    l1 = [_chunk(n, 1, n * 10 - 9, n * 10, f"L1 #{n}") for n in range(1, 7)]
+    high, low = 10_000, 5_000
+    # a fresh chat: the oldest boundary whose tail fits under low-water
+    a = H["choose_anchor"](turns, l1, None, high, low)
+    assert a == 51                                      # turns 51–60 ≈ 4k < 5k
+    # kept while the tail (from 41: ~8k) stays under high-water …
+    assert H["choose_anchor"](turns, l1, 41, high, low) == 41
+    # … and jumps forward, whole chunks, once it crosses (from 31: ~12k)
+    assert H["choose_anchor"](turns, l1, 31, high, low) == 51
+    # never backwards, even when nothing fits under low-water
+    assert H["choose_anchor"](turns, [], 58, 100, 50) >= 58
+    # one giant newest turn: the tail is that turn
+    giant = turns[:-1] + [_sized(60, 100_000)]
+    assert H["choose_anchor"](giant, l1, None, high, low) == 60
+    # an anchor older than the fetched turns forces a jump (fetch limit)
+    assert H["choose_anchor"](turns[20:], l1, 5, high, low) >= 21
+    assert H["choose_anchor"]([], l1, 5, high, low) is None
+
+
+def test_water_marks_scale_down_for_a_small_budget():
+    assert H["water_marks"](40_000) == (25_000, 12_000)
+    assert H["water_marks"](8_192) == (5_120, 2_457)
+
+
+def _rollup(turns, batch=10):
+    """rollup@v1 in miniature: L1 per `batch` complete turns, L2 per
+    `batch` L1s — the pyramid as it stands after the newest turn."""
+    chunks = {}
+    units = [(t["seq"], t["seq"], t["seq"]) for t in turns]
+    seq, level = 0, 1
+    while len(units) >= batch:
+        rows = []
+        for i in range(0, len(units) - len(units) % batch, batch):
+            seq += 1
+            g = units[i:i + batch]
+            frm = g[0][0] if level == 1 else g[0][2]
+            to = g[-1][1] if level == 1 else g[-1][2]
+            rows.append({"seq": seq, "level": level, "fromSeq": frm, "toSeq": to,
+                         "summary": f"L{level} #{seq} " + "s" * 200})
+        chunks[level] = rows
+        units = [(r["fromSeq"], r["toSeq"], r["seq"]) for r in rows]
+        level += 1
+    return chunks
+
+
+def test_300_turns_each_window_is_a_byte_prefix_of_the_next_except_at_jumps():
+    # ADR-006 §2: between anchor jumps run N+1's window extends run N's
+    # byte for byte (the cache read at the boot end); a jump, or a new
+    # L2 chunk, are the only rewrites — and there are few of them
+    import random
+    rnd = random.Random(300)
+    turns = [_sized(i, rnd.randint(300, 2500)) for i in range(1, 301)]
+    budget = 40_000
+    high, low = H["water_marks"](budget)
+    prev_anchor, prev_msgs, prev_l2 = None, None, 0
+    jumps, rewrites = 0, 0
+    for n in range(1, 301):
+        seen = turns[:n - 1]                    # the turns before this run's message
+        chunks = _rollup(seen)
+        chunks = {k: v for k, v in chunks.items() if v}
+        anchor = H["choose_anchor"](seen, chunks.get(1, []), prev_anchor, high, low)
+        msgs = H["render_boot_window"](seen, chunks, total_tokens=budget, anchor=anchor)
+        tail_cost = sum(H["approx_tokens"](p["text"]) for m in msgs for p in m["parts"]
+                        if not p["text"].startswith("[earlier context"))
+        n_l2 = len(chunks.get(2, []))
+        if prev_msgs is not None:
+            if anchor != prev_anchor:
+                jumps += 1
+                assert tail_cost <= low                      # a jump lands under low-water
+            elif n_l2 != prev_l2:
+                rewrites += 1
+            else:
+                assert tail_cost <= high
+                assert msgs[:len(prev_msgs)] == prev_msgs, n   # byte-prefix extension
+        prev_anchor, prev_msgs, prev_l2 = anchor, msgs, n_l2
+    assert 0 < jumps <= 20, jumps
+    assert rewrites <= 3, rewrites
 
 
 def test_approx_tokens_two_and_a_half_chars_per_token():

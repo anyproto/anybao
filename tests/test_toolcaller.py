@@ -37,6 +37,7 @@ class World:
                        "prompt_style": "full", "instructions_at": "system",
                        "malformed_retries": 2, **(traits or {})}
         self.boot_budgets = []
+        self.anchor_calls = []
         self.cells = list(cells or [])
         self.mail = list(mailbox or [])
         self.llm_calls = []
@@ -145,15 +146,20 @@ class World:
                 return []
 
             @staticmethod
-            def render_boot_window(turns, chunks, total_tokens=40000):
+            def render_boot_window(turns, chunks, total_tokens=40000, anchor=None):
                 w.boot_budgets.append(total_tokens)
                 return [{"role": "user", "parts": [{"type": "text",
                                                     "text": "[earlier context]"}]}] \
                     if turns else []
 
             @staticmethod
-            def raw_tail(turns, total_tokens=40000):
-                return turns
+            def water_marks(total_tokens):
+                return min(25_000, total_tokens * 5 // 8), min(12_000, total_tokens * 3 // 10)
+
+            @staticmethod
+            def choose_anchor(turns, l1, prev_anchor, high=25_000, low=12_000):
+                w.anchor_calls.append((prev_anchor, high, low))
+                return turns[0]["seq"] if turns else None
 
             @staticmethod
             def approx_tokens(text):
@@ -1372,3 +1378,38 @@ def test_the_turn_records_the_boot_window_estimate_beside_real_usage():
     w = World([done_reply("ok")])
     run(w)
     assert "bootTokensEst" not in w.turns[0]["llm"]
+
+
+def test_the_raw_tail_anchor_is_carried_from_the_previous_turn_and_persisted():
+    # ADR-006 §2: the newest turn's bootAnchor feeds choose_anchor; the
+    # chosen anchor is persisted on this turn and bounds auto-recall
+    w = World([done_reply("ok")])
+
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 7, "userText": "a", "replies": ["r"]},
+                                         {"seq": 6, "userText": "b", "replies": ["r"],
+                                          "bootAnchor": 4}])
+            if spec == "autorecall@v1":
+                real = mod.plan
+
+                def plan(c, s, q, boot_min_seq, policy=None):
+                    w.boot_min_seqs.append(boot_min_seq)
+                    return real(c, s, q, boot_min_seq)
+                mod.plan = staticmethod(plan)
+            return mod
+
+    w.boot_min_seqs = []
+    w.__class__ = type("W4", (WithHistory,), {})
+    run(w)
+    # prev anchor + the marks for this world's budget (128k window → 32k)
+    assert w.anchor_calls == [(4, 20_000, 9_600)]
+    assert w.turns[0]["bootAnchor"] == 6                 # the fake: oldest fetched seq
+    assert w.boot_min_seqs == [6]                        # auto-recall's deep-history guard
+    # no history → no anchor recorded
+    w = World([done_reply("ok")])
+    run(w)
+    assert "bootAnchor" not in w.turns[0]

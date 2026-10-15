@@ -226,8 +226,9 @@ failure. v2 chunk record:
   message renders only chunks that end before the anchor — an L1
   rollup inside the raw region never changes it; an anchor jump or a
   new higher-level chunk (every ~100 turns) are the only rewrites.
-  Chunks fill the budget left after the tail, ascending by level,
-  newest first per level; a level-N chunk renders only where its
+  Chunks fill a fixed budget — the window budget minus the high-water
+  mark, so the summary message does not shrink as the tail grows —
+  ascending by level, newest first per level; a level-N chunk renders only where its
   level-N−1 children did not all fit, and then replaces the ones that
   did — no range is covered twice. Budget and marks are estimated real
   tokens: `approx_tokens` is calibrated at 2.5 chars/token
@@ -236,7 +237,9 @@ failure. v2 chunk record:
   the 4 chars/token proxy under-counted by ~1.6×), and the estimate is recorded per turn as
   `llm.bootTokensEst` beside the real usage, so drift shows in traces.
   ALL history stays present at decreasing resolution; the fixed 8+8
-  count horizon is gone.
+  count horizon is gone. Known limit: the loop fetches the newest 100
+  chunks per level, so past ~1000 turns a new L1 rollup shifts the
+  fetched set and rewrites the summary message once per 10 turns.
 - Rollup (L1 from turns, L2 from L1s, ...) runs as **trigger jobs**
   (§4), off the completion hot path.
 - Server validation: append-only stays; add `level` ≥ 1, range checks

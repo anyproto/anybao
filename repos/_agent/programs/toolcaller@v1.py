@@ -1161,6 +1161,7 @@ def main(args):
 
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
+    anchor = None
     if quiet:
         boot, plan = [], {"messages": [], "injected": []}
     else:
@@ -1170,10 +1171,17 @@ def main(args):
             got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
             if got:
                 chunks[lvl] = got
-        boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens)
-        tail = hist.raw_tail(turns, total_tokens=boot_tokens)
-        boot_min_seq = tail[0].get("seq") if tail else None
-        plan = ar.plan(c, space, user_text, boot_min_seq)
+        # the raw tail is anchored (ADR-006 §2): the previous turn's
+        # anchor stays until the tail outgrows the high-water mark, so
+        # this window extends the last run's byte for byte — the cache
+        # entry at its end (flagged below, ADR-005 §1.4) is a read
+        prev_anchor = next((t.get("bootAnchor") for t in reversed(turns)
+                            if t.get("bootAnchor")), None)
+        anchor = hist.choose_anchor(turns, chunks.get(1, []), prev_anchor,
+                                    *hist.water_marks(boot_tokens))
+        boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens,
+                                       anchor=anchor)
+        plan = ar.plan(c, space, user_text, anchor)
     # the window's estimated size, recorded beside turn 1's real usage
     # so the estimator's drift is visible in traces (ADR-006 §2)
     boot_est = sum(hist.approx_tokens(p.get("text", ""))
@@ -1301,6 +1309,7 @@ def main(args):
                 # the turn ran — history renders both; the calls themselves
                 # stay in the trace (traceRef)
                 "context": context_line.strip(),
+                **({"bootAnchor": anchor} if anchor is not None else {}),
                 **({"effects": [f"{k} ×{n}" for k, n in sorted(
                     effect_counts.items(), key=lambda kv: (-kv[1], kv[0]))]}
                    if effect_counts else {}),

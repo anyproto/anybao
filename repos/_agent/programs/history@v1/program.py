@@ -103,42 +103,88 @@ def _chunk_line(chunk):
     return f"— {chunk.get('summary', '')}  [chunk #{seq} (L{lvl}), {unit} {frm}–{to}]"
 
 
-def raw_tail(raw_turns, total_tokens=40000, raw_tail_fraction=0.5):
-    # ADR-007 §5
-    """The boot window's full-resolution slice, returned oldest→newest.
+HIGH_WATER = 25_000   # ADR-006 §2: the raw tail jumps past this …
+LOW_WATER = 12_000    # … to the oldest L1 boundary under this
 
-    Newest raw turns filling the raw-tail budget; the slice's min seq
-    is also the auto-recall deep-history guard boundary."""
-    raw_budget = int(total_tokens * raw_tail_fraction)
-    included = []
-    spent = 0
-    for turn in reversed(raw_turns):  # newest first
-        cost = sum(approx_tokens(p["text"]) for m in _turn_messages(turn)
-                   for p in m["parts"])
-        if spent + cost > raw_budget and included:
+
+def water_marks(total_tokens):
+    """(high, low) raw-tail marks for a window budget — the ADR-006 §2
+    defaults, scaled down for a small budget so summaries keep room."""
+    high = min(HIGH_WATER, total_tokens * 5 // 8)
+    return high, min(LOW_WATER, high * LOW_WATER // HIGH_WATER)
+
+
+def _turn_cost(turn):
+    return sum(approx_tokens(p["text"]) for m in _turn_messages(turn)
+               for p in m["parts"])
+
+
+def choose_anchor(raw_turns, l1_chunks, prev_anchor, high_water=HIGH_WATER,
+                  low_water=LOW_WATER):
+    # ADR-006 §2
+    """The raw tail's first seq for this run — kept or jumped forward.
+
+    `raw_turns` ascending by seq (the fetched newest), `l1_chunks` the
+    L1 rollups, `prev_anchor` the previous turn's `bootAnchor`. The
+    previous anchor stays while the tail from it is under `high_water`
+    estimated tokens; past it (or when it predates the fetched turns)
+    the anchor jumps forward, never back, to the oldest L1 boundary
+    (`toSeq + 1`) that brings the tail under `low_water` — whole
+    chunks, so the summaries can cover what the tail drops. With no
+    boundary that fits (rollup lagging, one giant turn) the newest
+    turns under `low_water` form the tail. None without turns."""
+    if not raw_turns:
+        return None
+    oldest, newest = raw_turns[0].get("seq", 0), raw_turns[-1].get("seq", 0)
+
+    def cost_from(a):
+        return sum(_turn_cost(t) for t in raw_turns if t.get("seq", 0) >= a)
+
+    if prev_anchor is not None and oldest <= prev_anchor <= newest \
+            and cost_from(prev_anchor) <= high_water:
+        return prev_anchor
+    floor = prev_anchor + 1 if prev_anchor is not None else oldest
+    boundaries = sorted({c.get("toSeq", -1) + 1 for c in l1_chunks} | {oldest})
+    for b in boundaries:   # oldest first: the smallest jump that fits
+        if max(floor, oldest) <= b <= newest and cost_from(b) <= low_water:
+            return b
+    anchor, spent = newest, 0
+    for turn in reversed(raw_turns):
+        cost = _turn_cost(turn)
+        if spent + cost > low_water and turn.get("seq") != newest:
             break
-        included.append(turn)
-        spent += cost
-    included.reverse()
-    return included
+        anchor, spent = turn.get("seq", 0), spent + cost
+    return max(anchor, floor) if prev_anchor is not None else anchor
+
+
+def raw_tail(raw_turns, anchor):
+    # ADR-007 §5
+    """The boot window's full-resolution slice: every turn from the
+    anchor seq on, oldest→newest; the anchor is also the auto-recall
+    deep-history guard boundary."""
+    if anchor is None:
+        return []
+    return [t for t in raw_turns if t.get("seq", 0) >= anchor]
 
 
 def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
-                       raw_tail_fraction=0.5):
+                       anchor=None):
     """Compose the boot context as neutral messages, oldest→newest.
 
-    Newest raw turns (full resolution) up to the raw-tail budget, then
-    chunks ascending by level filling the rest — all history at
-    decreasing resolution, constant-size by budget. `raw_turns`
-    ascending by seq; `chunks_by_level` = level → chunks ascending by
-    seq. Skips chunks fully covered by the included raw tail (no
-    double-cover); the chunks arrive as one leading compressed-context
-    message."""
-    included_turns = raw_tail(raw_turns, total_tokens, raw_tail_fraction)
-    spent = sum(approx_tokens(p["text"]) for t in included_turns
-                for m in _turn_messages(t) for p in m["parts"])
-    covered_min_seq = included_turns[0].get("seq", 0) if included_turns else None
-    chunks = _fill_chunks(chunks_by_level, total_tokens - spent, covered_min_seq)
+    The raw tail from `anchor` (full resolution; `choose_anchor` when
+    None — a fresh choice, no previous run), preceded by one
+    compressed-context message of chunk lines for everything that ends
+    before the anchor, ascending by level, newest first per level, no
+    range twice (`_fill_chunks`). The summary budget is the window
+    budget minus the high-water mark — fixed between anchor jumps, so
+    the message is byte-stable while the tail grows (ADR-006 §2).
+    `raw_turns` ascending by seq; `chunks_by_level` = level → chunks
+    ascending by seq."""
+    high, low = water_marks(total_tokens)
+    if anchor is None:
+        anchor = choose_anchor(raw_turns, chunks_by_level.get(1, []), None, high, low)
+    included_turns = raw_tail(raw_turns, anchor)
+    chunks = _fill_chunks(chunks_by_level, max(0, total_tokens - high), anchor)
 
     messages = []
     if chunks:
