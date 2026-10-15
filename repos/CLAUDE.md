@@ -56,7 +56,9 @@ anyrt deploy --source repos/_connectors --target connectors [--config-file confi
   kernel allowlist.
 - Cross-repo deps are alias-qualified (`use("agent:llm@v1")`);
   unqualified specs resolve in the OWNING repo's space only.
-- Published overlay versions are frozen — edits bump `name@vN`.
+- Programs are edited in place (deploy is a hash-gated upsert); bump
+  `name@vN` only for a breaking interface change — the old version
+  stays in the space until deleted by hand.
 
 ## Testing
 
