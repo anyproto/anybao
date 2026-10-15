@@ -26,6 +26,7 @@ from email.utils import getaddresses  # tier-1 stdlib (ADR-012 §6)
 _gm = use("gmail@v1")  # noqa: F821 - `use` is the guest global; same repo
 _any = use("agent:any@v1")  # noqa: F821 - cross-repo dep, alias-qualified (ADR-009)
 _prog = use("agent:progress@v1")  # noqa: F821 - progress interface (ADR-014)
+_tomd = use("agent:toMarkdown@v1")  # noqa: F821 - the html converter (ADR-031 §2)
 
 _DEFAULT_Q = "newer_than:1y"  # §2: whole-history is opt-in
 _SLICE = 200                  # §2: soft cap per tick (trace containment)
@@ -107,7 +108,7 @@ _SKIPPED_KEEP = 1000      # newest skipped entries kept for retry_skipped
 _JOB = "gmail-backfill"   # progress@v1 job key (ADR-014)
 
 
-# --- clean_html (§4) — five passes over bs4 + markdownify ------------------
+# --- clean_html (§4) — email passes around toMarkdown.html (ADR-031 §2) -----
 
 _QUOTE_MARKERS = ["gmail_quote", "yahoo_quoted", "moz-cite-prefix",
                   "OutlookMessageHeader"]
@@ -121,22 +122,6 @@ _TRACKING_PARAMS = re.compile(
     r"[?&](utm_[a-z]+|lipi|midToken|midSig|trk|trkEmail|eid|otpToken|"
     r"gclid|fbclid|mc_[ce]id|refId|trackingId|origin|si)=[^&#]*", re.I)
 _MAX_HREF = 300
-_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|max-height\s*:\s*0", re.I)
-# §4 depth bound: markdownify recurses 2 Python frames per element level
-# under the kernel's 1000-frame limit (RecursionError at ~493 levels), and
-# bs4's html.parser has no implied end tags — Word/Outlook exports and
-# unmarked reply chains nest unclosed <p>/<div>/<font> hundreds deep in a
-# few KB. Browsers cap the tree the same way (Gecko 200, Blink 512):
-# elements deeper than this become siblings of the element at the cap.
-_MAX_DEPTH = 200
-# markdownify prefixes every line once per enclosing blockquote, so an
-# unmarked reply chain N deep costs N²/2 "> " marks (403 KB of markdown
-# for 400 replies, measured). Deeper quotes flatten to this level.
-_MAX_QUOTE_DEPTH = 5
-_BLOCK_WRAPPERS = {"div", "p", "center", "section", "article"}
-_INLINE_WRAPPERS = {"span", "font"}
-_BLOCKS = _BLOCK_WRAPPERS | {"blockquote", "ul", "ol", "li", "pre", "hr",
-                             "h1", "h2", "h3", "h4", "h5", "h6"}
 _HEX2 = re.compile(r"[0-9a-fA-F]{2}")
 
 
@@ -175,103 +160,27 @@ def _unwrap_tracking(href):
     return href
 
 
-def _sole_tag_child(tag, Tag, Comment):
-    """The one element child of `tag` when every other child is
-    whitespace or a comment; None otherwise."""
-    sole = None
-    for c in tag.contents:
-        if isinstance(c, Tag):
-            if sole is not None:
-                return None
-            sole = c
-        elif not isinstance(c, Comment) and str(c).strip():
-            return None
-    return sole
-
-
-def _collapse_wrapper_chains(soup, Tag, Comment):
-    """§4: unwrap a wrapper whose only child is a like wrapper — block in
-    block (div>div>p), inline in inline (font>font>span). Lossless for
-    markdown (markdownify passes span/font through; a block child keeps
-    the block break) and iterative: find_all snapshots, unwrap is O(k)."""
-    for tag in soup.find_all(list(_BLOCK_WRAPPERS | _INLINE_WRAPPERS)):
-        child = _sole_tag_child(tag, Tag, Comment)
-        if child is None:
-            continue
-        like = _BLOCKS if tag.name in _BLOCK_WRAPPERS else _INLINE_WRAPPERS
-        if child.name in like:
-            tag.unwrap()
-
-
-def _cap_quote_depth(soup, Tag, cap=_MAX_QUOTE_DEPTH):
-    """§4: a blockquote nested deeper than `cap` quote levels unwraps —
-    its text stays, quoted at the cap. Collected on one explicit-stack
-    walk, unwrapped after (unwrap is local; the marks don't interact)."""
-    deep, stack = [], [(soup, 0)]
-    while stack:
-        node, q = stack.pop()
-        for c in node.contents:
-            if not isinstance(c, Tag):
-                continue
-            cq = q + 1 if c.name == "blockquote" else q
-            if cq > cap and c.name == "blockquote":
-                deep.append(c)
-            stack.append((c, cq))
-    for bq in deep:
-        bq.unwrap()
-
-
-def _cap_depth(soup, Tag, cap=_MAX_DEPTH):
-    """§4: browser-style depth cap. An element `cap` levels down keeps
-    its leading text; from its first element child on, its content is
-    lifted out as following siblings (document order preserved), so the
-    lifted elements sit at the cap and are bounded in turn. Explicit
-    stack, every element visited once, O(n)."""
-    stack = [(soup, 0)]
-    while stack:
-        node, d = stack.pop()
-        if d < cap:
-            stack.extend((c, d + 1) for c in node.contents if isinstance(c, Tag))
-            continue
-        first = next((i for i, c in enumerate(node.contents) if isinstance(c, Tag)), None)
-        if first is None:
-            continue
-        tail = node.contents[first:]
-        for c in reversed(tail):
-            node.insert_after(c)
-        stack.extend((c, d) for c in tail if isinstance(c, Tag))
-
-
 @span("gmailSync.clean_html", kind="getter")  # noqa: F821 - guest global
 def clean_html(html):
-    # ADR-012 §4 (the named filter)
+    # ADR-012 §4 (the named filter); the generic conversion is
+    # toMarkdown.html (ADR-031 §2)
     """Email HTML → {markdown, signature}.
 
-    Five passes: layout-table flattening, quoted-chain + preheader +
-    tracking-pixel removal, link hygiene (tracker unwrap, utm strip),
-    notification-footer trim, signature split (signatures are persona
-    raw material, returned separately) — with the tree depth-bounded
-    (wrapper-chain collapse, quote-depth cap, browser-style depth cap) before the
-    recursive markdown conversion, and plain text as the last resort.
+    Email passes around the shared converter (toMarkdown.html: layout
+    tables, hidden blocks, pixels, depth bound, markdown): quoted-chain
+    removal, link hygiene (tracker unwrap, utm strip) before it;
+    notification-footer trim and signature split (signatures are
+    persona raw material, returned separately) after it.
     Pure compute — fuel-priced at ~15M/KB of input."""
-    from bs4 import BeautifulSoup, Comment, Tag
-    from markdownify import markdownify as _md
+    from bs4 import BeautifulSoup
 
     soup = BeautifulSoup((html or "")[:_HTML_CAP], "html.parser")
 
-    for tag in soup(["script", "style", "head", "title", "meta", "link"]):
-        tag.decompose()
-    for tag in soup.find_all(style=_HIDDEN_STYLE):
-        tag.decompose()
     for marker in _QUOTE_MARKERS:
         for tag in soup.find_all(class_=re.compile(marker)):
             tag.decompose()
     for bq in soup.find_all("blockquote", attrs={"type": "cite"}):
         bq.decompose()
-    for img in soup.find_all("img"):
-        w, h = img.get("width") or "", img.get("height") or ""
-        if str(w) in ("0", "1") or str(h) in ("0", "1") or not img.get("alt"):
-            img.decompose()
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if href.startswith("mailto:"):
@@ -292,25 +201,8 @@ def clean_html(html):
             a.replace_with(a.get_text(" ", strip=True))   # still huge → text
             continue
         a["href"] = href
-    # an anchor whose whole content was a (stripped) image renders as an
-    # empty [](…) / [[ artifact — unwrap it before conversion
-    for a in soup.find_all("a"):
-        if not a.get_text(strip=True):
-            a.unwrap()
-    # email tables are layout, not data — cells become blocks (§4 pass 1)
-    for cell in soup.find_all(["td", "th"]):
-        cell.name = "div"
-    for scaffold in soup.find_all(["table", "tbody", "thead", "tfoot", "tr"]):
-        scaffold.unwrap()
-    # depth bound (after the table pass, so its div chains collapse too)
-    _collapse_wrapper_chains(soup, Tag, Comment)
-    _cap_quote_depth(soup, Tag)
-    _cap_depth(soup, Tag)
 
-    try:
-        text = _md(str(soup), heading_style="ATX", strip=["img"])
-    except RecursionError:
-        text = soup.get_text("\n")   # bs4 walks iteratively; never lose the mail
+    text = _tomd.html(str(soup))["markdown"]
     # strong footer markers cut anywhere; weak ones only in the tail fifth
     m = re.search(r"^\s*(—\s*\n\s*)?(Reply to this email directly\b|"
                   r"You are receiving this (email )?because\b)", text, re.M)
@@ -325,9 +217,6 @@ def clean_html(html):
     m = re.search(r"\n--\s*\n", text)
     if m:
         text, sig = text[:m.start()], text[m.end():]
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"^[ \t|]+$", "", text, flags=re.M)
     return {"markdown": text.strip(), "signature": sig.strip()}
 
 

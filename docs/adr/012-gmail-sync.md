@@ -211,6 +211,13 @@ converter still degrades to bs4's iterative plain text rather than
 failing the message. Replacing the recursive converter with a
 streaming one is BOB-120.
 
+*Amended 2026-10-15 (ADR-031 §2):* the conversion is shared —
+`agent:toMarkdown@v1`'s `html()` owns pass (1), the hidden-block and
+pixel drops, the depth bound and the plain-text fallback. `clean_html`
+runs the quoted-chain removal and link hygiene on its own soup, hands
+the serialized tree to `html()`, then trims footers and splits the
+signature on the markdown it gets back.
+
 ### 5. People — one person spine, shared with any-ui
 
 There is no sync-private contact type. The person spine is the

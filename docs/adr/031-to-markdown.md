@@ -59,12 +59,13 @@ methods are pure compute.
 
 Moves here unchanged in behaviour: script/style/head/meta drop, hidden
 elements (`display:none`, `max-height:0`), layout-table flattening,
-empty-anchor and alt-less image drop, the three depth bounds
+1×1 tracking pixels, alt-less images and the empty anchors they leave,
+the three depth bounds
 (wrapper-chain collapse, quote-depth cap 5, browser-style depth cap
 200), markdownify, and the plain-text fallback on `RecursionError`.
 
 Stays in `gmailSync`: quoted-chain markers and cited blockquotes,
-tracking pixels, tracker-link unwrap and tracking-param strip,
+tracker-link unwrap and tracking-param strip,
 notification-footer trim, the signature split. `clean_html` runs
 those on its own soup, serializes, and hands the string to `html()`;
 its `{markdown, signature}` contract is unchanged. gmailSync is edited
