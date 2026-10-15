@@ -230,9 +230,10 @@ failure. v2 chunk record:
   newest first per level; a level-N chunk renders only where its
   level-N−1 children did not all fit, and then replaces the ones that
   did — no range is covered twice. Budget and marks are estimated real
-  tokens: `approx_tokens` is calibrated at 2.6 chars/token (toolcaller
-  traces, claude-sonnet-5, 2026-10-15 — the 4 chars/token proxy
-  under-counted by ~1.6×), and the estimate is recorded per turn as
+  tokens: `approx_tokens` is calibrated at 2.5 chars/token
+  (`count_tokens` over 186 real turns, claude-sonnet-5, 2026-10-16:
+  2.47 overall, 2.9 on chunk summaries, 1.6 on the `[now: …]` stamps —
+  the 4 chars/token proxy under-counted by ~1.6×), and the estimate is recorded per turn as
   `llm.bootTokensEst` beside the real usage, so drift shows in traces.
   ALL history stays present at decreasing resolution; the fixed 8+8
   count horizon is gone.

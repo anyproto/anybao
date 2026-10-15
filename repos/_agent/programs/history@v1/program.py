@@ -14,9 +14,16 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # history at decreasing resolution). rollup@v1 produces the pyramid.
 
 
+CHARS_PER_TOKEN = 2.5   # ADR-006 §2: count_tokens over 186 real turns, sonnet-5
+
+
 def approx_tokens(text):
-    """Cheap proxy tokenizer — ~4 chars/token."""
-    return (len(text) + 3) // 4
+    """Estimated real tokens — len / 2.5, rounded up (ADR-006 §2).
+
+    Chat history is ids, `any://` links and code: 2.5 chars/token
+    measured, not the 4 of English prose. The window records its
+    estimate as `llm.bootTokensEst` beside the real usage."""
+    return (len(text) * 2 + 4) // 5
 
 
 def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
@@ -131,32 +138,99 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
     spent = sum(approx_tokens(p["text"]) for t in included_turns
                 for m in _turn_messages(t) for p in m["parts"])
     covered_min_seq = included_turns[0].get("seq", 0) if included_turns else None
-
-    # fill the remainder with chunks ascending level, newest-first per level,
-    # skipping any chunk whose range is fully inside the included raw tail
-    remaining = total_tokens - spent
-    chunk_lines = []
-    for level in sorted(chunks_by_level):
-        for chunk in reversed(chunks_by_level[level]):
-            if level == 1 and covered_min_seq is not None \
-                    and chunk.get("toSeq", -1) >= covered_min_seq:
-                continue  # already present at full resolution
-            line = _chunk_line(chunk)
-            cost = approx_tokens(line)
-            if cost > remaining:
-                break
-            chunk_lines.append(line)
-            remaining -= cost
+    chunks = _fill_chunks(chunks_by_level, total_tokens - spent, covered_min_seq)
 
     messages = []
-    if chunk_lines:
-        chunk_lines.reverse()  # oldest→newest
+    if chunks:
         body = ("[earlier context, compressed — expand a chunk by its #seq]\n"
-                + "\n".join(chunk_lines))
+                + "\n".join(_chunk_line(c) for c in chunks))
         messages.append({"role": "user", "parts": [{"type": "text", "text": body}]})
     for turn in included_turns:
         messages.extend(_turn_messages(turn))
     return messages
+
+
+def _fill_chunks(chunks_by_level, budget, covered_min_seq):
+    """The summary message's chunks, oldest→newest, within `budget`
+    tokens — no range covered twice (ADR-006 §2).
+
+    Levels ascend, newest first per level: L1 chunks inside the raw
+    tail (`toSeq >= covered_min_seq`) are skipped; a level-N chunk is
+    rendered only where its level-N−1 children did not all fit, and
+    then it replaces the ones that did — the newest material keeps the
+    finest resolution, older material degrades whole."""
+    chosen = {}      # level -> {seq: chunk} rendered at this level
+    covered = {}     # level -> seqs present at this or a finer resolution
+    remaining = budget
+    for level in sorted(chunks_by_level):
+        chosen[level], covered[level] = {}, set()
+        for chunk in reversed(chunks_by_level[level]):
+            seq = chunk.get("seq")
+            if covered_min_seq is not None \
+                    and _turn_span(chunk, chunks_by_level)[1] >= covered_min_seq:
+                covered[level].add(seq)   # (partly) in the raw tail: never summarized
+                continue
+            if level > 1:
+                kids = _children(chunk, chunks_by_level)
+                if kids and all(k in covered[level - 1] for k in kids):
+                    covered[level].add(seq)   # present whole, at finer resolution
+                    continue
+                # a partial cover is replaced whole: every rendered
+                # descendant, at every level below, gives way
+                remaining += _evict(chunk, chunks_by_level, chosen, covered)
+            cost = approx_tokens(_chunk_line(chunk))
+            if cost > remaining:
+                break
+            chosen[level][seq] = chunk
+            covered[level].add(seq)
+            remaining -= cost
+    out = [c for lvl in chosen for c in chosen[lvl].values()]
+    # reading order: by the oldest turn each chunk covers (fetch limits
+    # can leave a higher chunk's children unfetched — older than any)
+    out.sort(key=lambda c: (_turn_span(c, chunks_by_level)[0], c.get("level", 1)))
+    return out
+
+
+def _children(chunk, chunks_by_level):
+    """The fetched level-N−1 chunk seqs a level-N chunk covers."""
+    return [c.get("seq") for c in _child_chunks(chunk, chunks_by_level)]
+
+
+def _child_chunks(chunk, chunks_by_level):
+    lvl = chunk.get("level", 1)
+    return [c for c in chunks_by_level.get(lvl - 1, [])
+            if chunk.get("fromSeq", 0) <= c.get("seq", -1) <= chunk.get("toSeq", -1)]
+
+
+def _evict(chunk, chunks_by_level, chosen, covered):
+    """Drop every rendered descendant of `chunk` (all levels below);
+    returns the tokens given back."""
+    freed = 0
+    lvl = chunk.get("level", 1)
+    if lvl <= 1:
+        return 0
+    for kid in _child_chunks(chunk, chunks_by_level):
+        gone = chosen.get(lvl - 1, {}).pop(kid.get("seq"), None)
+        if gone is not None:
+            freed += approx_tokens(_chunk_line(gone))
+        covered.get(lvl - 1, set()).discard(kid.get("seq"))
+        freed += _evict(kid, chunks_by_level, chosen, covered)
+    return freed
+
+
+def _turn_span(chunk, chunks_by_level):
+    """(oldest, newest) TURN seq a chunk covers — L1 directly, higher
+    levels through their fetched children; none fetched → (-1, -1),
+    older than anything in hand."""
+    lvl = chunk.get("level", 1)
+    if lvl <= 1:
+        return chunk.get("fromSeq", 0), chunk.get("toSeq", -1)
+    spans = [_turn_span(c, chunks_by_level)
+             for c in chunks_by_level.get(lvl - 1, [])
+             if chunk.get("fromSeq", 0) <= c.get("seq", -1) <= chunk.get("toSeq", -1)]
+    if not spans:
+        return -1, -1
+    return min(s[0] for s in spans), max(s[1] for s in spans)
 
 
 # --- thin reads over the any@v1 client ---------------------------------------

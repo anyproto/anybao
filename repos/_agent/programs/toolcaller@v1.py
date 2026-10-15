@@ -1174,6 +1174,10 @@ def main(args):
         tail = hist.raw_tail(turns, total_tokens=boot_tokens)
         boot_min_seq = tail[0].get("seq") if tail else None
         plan = ar.plan(c, space, user_text, boot_min_seq)
+    # the window's estimated size, recorded beside turn 1's real usage
+    # so the estimator's drift is visible in traces (ADR-006 §2)
+    boot_est = sum(hist.approx_tokens(p.get("text", ""))
+                   for m in boot for p in m["parts"])
 
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
@@ -1302,6 +1306,7 @@ def main(args):
                    if effect_counts else {}),
                 "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
                 "llm": {"stopReason": stop, **stats,
+                        **({"bootTokensEst": boot_est} if boot else {}),
                         "promptFingerprint": prompt_fp,
                         **({"soulFingerprint": soul_fp} if soul_fp else {})}})
             if plan["injected"]:

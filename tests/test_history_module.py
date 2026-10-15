@@ -2,6 +2,7 @@
 host-side by exec-ing the guest source (the module is pure except the
 client-taking thin reads, so no guest globals are needed)."""
 
+import json
 from pathlib import Path
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
@@ -97,10 +98,121 @@ def test_raw_tail_min_seq_is_the_guard_boundary():
     assert tail == turns[tail[0]["seq"]:]           # a contiguous newest slice
 
 
-def test_approx_tokens_four_chars_per_token():
+def test_approx_tokens_two_and_a_half_chars_per_token():
+    # ADR-006 §2: history is ids, links and code — 2.5 chars/token
     assert H["approx_tokens"]("") == 0
-    assert H["approx_tokens"]("abcd") == 1
+    assert H["approx_tokens"]("ab") == 1
+    assert H["approx_tokens"]("abc") == 2
     assert H["approx_tokens"]("abcde") == 2
+    assert H["approx_tokens"]("a" * 250) == 100
+
+
+def test_approx_tokens_within_15pct_of_count_tokens_on_history_like_text():
+    # a synthetic history-like conversation (prose, bafy ids, any://
+    # links, code, stamps, footers), token-counted once with the
+    # count_tokens API (claude-sonnet-5, 2026-10-16) — the estimator
+    # must land within ±15% of the real count
+    fx = json.loads((Path(__file__).parent / "fixtures"
+                     / "boot-window-calibration.json").read_text())
+    est = sum(H["approx_tokens"](m["content"]) for m in fx["messages"])
+    assert fx["chars"] == sum(len(m["content"]) for m in fx["messages"])
+    assert abs(est - fx["tokens"]) / fx["tokens"] < 0.15, (est, fx["tokens"])
+
+
+def _tree(n_turns, batch=10):
+    """A rollup pyramid over n_turns: L1 per `batch` turns, L2 per
+    `batch` L1s, … — contiguous, non-overlapping, like rollup@v1."""
+    chunks = {}
+    seq = 0
+    units = [(i, i) for i in range(1, n_turns + 1)]     # (fromSeq, toSeq) in turns
+    level = 1
+    while len(units) >= batch:
+        rows = []
+        for i in range(0, len(units) - len(units) % batch, batch):
+            seq += 1
+            group = units[i:i + batch]
+            # level-1 ranges are turn seqs; higher levels range over child chunk seqs
+            frm = group[0][0] if level == 1 else group[0][2]
+            to = group[-1][1] if level == 1 else group[-1][2]
+            rows.append({"seq": seq, "level": level, "fromSeq": frm, "toSeq": to,
+                         "summary": f"L{level} #{seq}"})
+        chunks[level] = rows
+        units = [(r["fromSeq"], r["toSeq"], r["seq"]) for r in rows]
+        level += 1
+    return chunks
+
+
+def _turn_cover(chunk, chunks):
+    """The turn seqs a chunk covers (recursively through its children)."""
+    if chunk["level"] == 1:
+        return set(range(chunk["fromSeq"], chunk["toSeq"] + 1))
+    out = set()
+    for c in chunks[chunk["level"] - 1]:
+        if chunk["fromSeq"] <= c["seq"] <= chunk["toSeq"]:
+            out |= _turn_cover(c, chunks)
+    return out
+
+
+def test_no_turn_is_covered_twice_across_levels_and_the_raw_tail():
+    # property: over random pyramids, raw tails and budgets, every turn
+    # seq appears at most once — raw, or in exactly one chunk line
+    import random
+    rnd = random.Random(20261016)
+    for _ in range(150):
+        n = rnd.randint(1, 400)
+        chunks = _tree(n, batch=rnd.choice((3, 5, 10)))
+        raw_from = rnd.randint(max(1, n - 30), n)
+        turns = [_turn(i, f"q{i}", [f"a{i}"]) for i in range(raw_from, n + 1)]
+        msgs = H["render_boot_window"](turns, chunks,
+                                       total_tokens=rnd.choice((200, 1000, 5000, 40000)))
+        seen = {}
+        for m in msgs:   # the raw turns the window actually holds
+            text = m["parts"][0]["text"]
+            if m["role"] == "user" and text.startswith("q"):
+                seen[int(text[1:])] = "raw"
+        if msgs and msgs[0]["parts"][0]["text"].startswith("[earlier context"):
+            for line in msgs[0]["parts"][0]["text"].splitlines()[1:]:
+                seq = int(line.split("[chunk #")[1].split(" ")[0])
+                level = int(line.split("(L")[1].split(")")[0])
+                chunk = next(c for c in chunks[level] if c["seq"] == seq)
+                for s in _turn_cover(chunk, chunks):
+                    assert s not in seen, (n, raw_from, seq, level, s, seen[s])
+                    seen[s] = f"L{level}#{seq}"
+
+
+def test_a_partial_lower_cover_is_replaced_by_its_parent_chunk():
+    # L1 #1–10 over turns 1–100, L2 #11 over L1 #1–10; the budget fits
+    # only the newest few L1 lines → the L2 replaces them whole (older
+    # material degrades as a unit; nothing is listed twice)
+    chunks = _tree(100)
+    turns = [_turn(101, "q", ["a"])]
+    line = H["_chunk_line"](chunks[1][0])
+    budget = H["approx_tokens"](line) * 3 + 2 + H["approx_tokens"]("qa")
+    msgs = H["render_boot_window"](turns, chunks, total_tokens=budget)
+    body = msgs[0]["parts"][0]["text"]
+    assert "L2 #11" in body and "L1 #" not in body
+
+
+def test_a_parent_chunk_is_skipped_when_all_its_children_fit():
+    chunks = _tree(100)
+    turns = [_turn(101, "q", ["a"])]
+    msgs = H["render_boot_window"](turns, chunks, total_tokens=40_000)
+    body = msgs[0]["parts"][0]["text"]
+    assert all(f"L1 #{i}" in body for i in range(1, 11)) and "L2 #11" not in body
+
+
+def test_a_parent_chunk_overlapping_the_raw_tail_is_never_rendered():
+    # the raw tail starts inside L1 #10 (turns 91–100): neither L1 #10
+    # nor its parent L2 #11 may summarize what is present raw
+    chunks = _tree(100)
+    turns = [_turn(i, f"q{i}", [f"a{i}"]) for i in range(95, 101)]
+    line = H["_chunk_line"](chunks[1][0])
+    raw_cost = sum(H["approx_tokens"](p["text"]) for t in turns
+                   for m in H["_turn_messages"](t) for p in m["parts"])
+    budget = H["approx_tokens"](line) * 2 + 2 + raw_cost
+    msgs = H["render_boot_window"](turns, chunks, total_tokens=budget)
+    body = msgs[0]["parts"][0]["text"]
+    assert "L1 #10" not in body and "L2 #11" not in body
 
 
 class FakeClient:

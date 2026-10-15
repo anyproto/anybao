@@ -155,6 +155,10 @@ class World:
             def raw_tail(turns, total_tokens=40000):
                 return turns
 
+            @staticmethod
+            def approx_tokens(text):
+                return (len(text) * 2 + 4) // 5
+
         class Ar:
             @staticmethod
             def plan(c, s, q, boot_min_seq, policy=None):
@@ -1345,3 +1349,26 @@ def test_the_turn_record_keeps_its_time_view_line_and_effect_counts():
     w = World([done_reply("hi")])
     run(w)
     assert "effects" not in w.turns[0] and w.turns[0]["context"].startswith("[now: ")
+
+
+def test_the_turn_records_the_boot_window_estimate_beside_real_usage():
+    # ADR-006 §2: llm.bootTokensEst = the rendered window's estimated
+    # size, so the estimator's drift against turn 1's usage is visible
+    w = World([done_reply("ok")])
+
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 1, "userText": "old", "replies": ["r"]}])
+            return mod
+
+    w.__class__ = type("W3", (WithHistory,), {})
+    run(w)
+    # the fake window is one message, "[earlier context]" = 17 chars → 7 tokens
+    assert w.turns[0]["llm"]["bootTokensEst"] == 7
+    # no history → no window → no estimate
+    w = World([done_reply("ok")])
+    run(w)
+    assert "bootTokensEst" not in w.turns[0]["llm"]

@@ -1,0 +1,200 @@
+{
+"model": "claude-sonnet-5",
+"countedAt": "2026-10-16",
+"chars": 29662,
+"tokens": 12672,
+"messages": [
+{
+"role": "user",
+"content": "Email recall id name was email of plan query link wiki github created github.\n\n[now: Wed 2026-10-02 05:46 +02:00 | user's view — space: bafyreida6w2xz5h32wdob6oujiqjfz46esihktvh5wdeufweeyei2hltpu.u4ei4vn6b47e, object: bafyreiz3ct2f6zzumbpnxwab2dnpcol3tm6fmgaql4ebivxng3mzgkdail.lqzxx4vpt6qy]\n\n[the reply below ran: any.query_objects ×2, any.get_markdown ×1, time.now ×27 — the calls: effects.of(run=\"run_255418c0bf70dbac\")]"
+},
+{
+"role": "assistant",
+"content": "Page is linear property and memory the chunk title link to recall memory were note wiki property in memory link type summary is link space property value type record page value query of and title field recall chunk note created link was the result and for and are are space a to dataset linear calendar are collection are type link are object were memory result calendar collection object is page were to record was id was summary a turn meeting in task value a record query property is were the a query field list recall with github github meeting github collection email field updated are page record query title is property is summary github."
+},
+{
+"role": "user",
+"content": "Is with task record to summary object in for and dataset name were id chunk meeting object github linear query object collection page were task.\n\n[now: Mon 2026-10-25 12:30 +02:00 | user's view — space: bafyreihbrtktrlnwp6x5pa43c2iw74tkd2u4snpzpnqs5kay2psddkryqc.n263qoxiw5gv, object: bafyreipdohgqhm5zrmwekd2abwfnoekt3htnpquixrtuxshwlce3ntliph.bo3r34glj7cu]\n\n[the reply below ran: any.query_objects ×3, any.get_markdown ×1, time.now ×13 — the calls: effects.of(run=\"run_6be0dfb29fc923c2\")]"
+},
+{
+"role": "assistant",
+"content": "Github page title title in turn space to record to link memory github title linear dataset updated linear object meeting record collection query field in dataset meeting calendar wiki for linear space memory value task the query field recall linear were name created calendar updated the of object turn email recall are the linear meeting turn plan in with email were plan title field a meeting link type the chunk were recall memory title link and in value and for updated email and wiki are name a were collection the recall is."
+},
+{
+"role": "user",
+"content": "Link meeting updated turn record and plan chunk meeting collection linear id email the linear and created field title calendar field updated email type.\n\n[now: Tue 2026-10-20 17:19 +02:00 | user's view — space: bafyreihgnx273tdaijctczrojfdocthlnmb2wn2ncsgfc5nblkdskcma75.o24cg2yc356d, object: bafyreie5rvjtrhsb5fktixdpybhbqgsuss64qs4ulnn7kkrt74z5jiptof.xf3p62buims4]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×38 — the calls: effects.of(run=\"run_39a61ba82b5927c2\")]"
+},
+{
+"role": "assistant",
+"content": "Page a record memory updated value collection dataset space collection were updated chunk wiki calendar field value summary summary with recall collection were updated collection field list page title list note list object dataset a email a created type page linear note link recall summary task was created page wiki were the and recall chunk linear to object title of dataset created link object collection query note dataset page for with task summary link title is recall page linear updated name id chunk plan to memory meeting and updated linear list space list space note created recall title meeting record title result field updated the space object were.\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreixre5be66h2eumu73hstogri6yfolt5s3jfpg624ouep3cg564tdo.tkgulia3lzil\", filter={\"type\": \"summary\"}, limit=38)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```\n\n| id | name |\n|---|---|\n| bafyreiarszwkvwco7rmtqc6xrw2akxbl2aihwvdwvlaoqxct7ntnziylyo.t7l76jaqbnfi | The list. |\n| bafyreibaxumwvzeqrdirb5tnfztgtqas4awf5mtgntwbf23n2cyujl7gyp.fvkdbndbnnvv | Space summary. |\n| bafyreitb2ssqxbe32cit5ibzp3kxsx6ue475sbmt5fo4yycrofssv2mrgx.vtlabmxj3ass | Is note. |"
+},
+{
+"role": "user",
+"content": "Recall name with recall note are github to a result the type query list value were the recall summary space wiki list property link plan.\n\n[now: Mon 2026-10-15 17:57 +02:00 | user's view — space: bafyreiuhany5j2q3en7eon4enewvr4mlkd7ree2n7ftq5xxvcmc2inmkjm.gbeutavoebho, object: bafyreiobuxbczgvjqsimtgnmyzuthqs6m63biv5l6mdbbpphcr6pf5efb2.fjqguezgkuw3]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×3 — the calls: effects.of(run=\"run_6896f837580dc028\")]"
+},
+{
+"role": "assistant",
+"content": "Property collection a created title link of list wiki field chunk with and memory calendar task the task the collection list wiki with meeting summary linear chunk summary note type query was dataset was and for result and were github note name page link task memory of calendar task for note summary id email meeting updated were plan page dataset for created property property link result link note summary id email list chunk query value task space space name object is list linear link a of page plan calendar value wiki list page were collection with linear recall the updated field plan query object calendar field note value calendar value were wiki with list is query result are to in collection created email.\n\n- Link id page. any://o/bafyreiqmaahbrgjhnou7pn7tpry4p6z3svbqp5ggygv6u6vfikhhvbbgxl.7xde6yzjqjtz\n- Link for github. any://o/bafyreioa4vvonts2jvsig2frm4ctp7z4op3d2ap7wigqv4gageuxcb3ewo.j7sowujed4uj\n- Result list a. any://o/bafyreivteobihxswv4qeggkpd3ledeg5xp2ldijrecb3bbw3r7yjgxqutn.nktkuvw4nm7w\n- In task are. any://o/bafyreiz4wo6oahntgrl4daat3wimr7wbqwr67emcafs4sx45wvhiam7o7g.w3f72tt5km3v"
+},
+{
+"role": "user",
+"content": "Of meeting field calendar result and field in github is meeting summary object was note and were dataset type title of is updated result in were are github result id updated created.\n\n[now: Fri 2026-10-01 07:45 +02:00 | user's view — space: bafyreiczluqi2wghibvrm5ed3x7bxq4z3jd37dit6r7jbo4np2iitswe24.obqbdrm3fmye, object: bafyreic4c2mfaib5rfhqab5b24trvxwzhwxoni5ztpdmpfz6mr6kmvr2de.uqtefi72t3xy]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×6 — the calls: effects.of(run=\"run_8980b91eb0c26b38\")]"
+},
+{
+"role": "assistant",
+"content": "Page plan are github recall is summary of field query link field created object task dataset id calendar created title plan object id with object to updated email id title memory email email field email of link type with page page title link the to list email title turn the page note wiki type note value type turn dataset list and and updated name are meeting github."
+},
+{
+"role": "user",
+"content": "The type id task query property the calendar linear with chunk in recall are list calendar for.\n\n[now: Tue 2026-10-21 18:43 +02:00 | user's view — space: bafyreixljc6xahre6bpbbtzp2xxc2htats4cunv72rwso4ewhkqpbh6jst.z2girmyw2ugf, object: bafyrei2udowvo2tfhfozcublixw4crjngbg4sie2k3ahy4qwe7x366kke2.phuvwv7vvtcv]\n\n[the reply below ran: any.query_objects ×3, any.get_markdown ×1, time.now ×18 — the calls: effects.of(run=\"run_d5ac1d2862b59384\")]"
+},
+{
+"role": "assistant",
+"content": "Link in field are with title collection summary page link wiki summary chunk of recall is field page chunk plan task value the field title property type collection collection was and the field id email collection linear were calendar summary object for are linear space field property are calendar."
+},
+{
+"role": "user",
+"content": "Dataset is github record collection is linear link chunk github chunk list name field title the wiki calendar chunk field of turn id type summary of chunk linear property.\n\n[now: Fri 2026-10-28 06:39 +02:00 | user's view — space: bafyreidtf45toommbk2aubxqalxckud3aqaukeaimjbzl5z2zgglpyzmdg.7mbiuwovhvg3, object: bafyreism3lur4mqfvqd4skkqaiaigesvtrklsbkixn4vtmwmw7n6vrdrax.wqrkml2eoapc]\n\n[the reply below ran: any.query_objects ×3, any.get_markdown ×1, time.now ×6 — the calls: effects.of(run=\"run_a6895cecf34e1031\")]"
+},
+{
+"role": "assistant",
+"content": "Chunk a linear title in is list plan in linear linear query for is created result is was page chunk chunk property task memory field is field is email page calendar summary recall link of the query collection collection to were were link github to the a page chunk plan property type.\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreimdyrb5rj2gstk6u64cajr7lph4l22edigxmhdsiu3h56rai5l5ns.xhsijrotme3n\", filter={\"type\": \"linear\"}, limit=19)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+},
+{
+"role": "user",
+"content": "Calendar wiki link memory value note linear with note value.\n\n[now: Wed 2026-10-25 05:20 +02:00 | user's view — space: bafyreivkpwo4m4zumbtud6rqb2gvfcmotvzbfn74mr2z5v5hj4h3r22qov.ls4eoykjzxbu, object: bafyreitkurimrea4deomekyyvtpqqvq6gewsyadukyixmjhdgt64xjiecz.b7nvhu4t6o6n]\n\n[the reply below ran: any.query_objects ×5, any.get_markdown ×1, time.now ×31 — the calls: effects.of(run=\"run_72d871da4435b10d\")]"
+},
+{
+"role": "assistant",
+"content": "The github to task with title dataset title property collection wiki collection list meeting dataset recall space summary collection summary and are title and in value collection property recall task in link link meeting a updated for result plan field property updated name to page query was of page in property summary dataset for task id summary list field summary dataset linear result updated for turn to chunk list result title name with to recall id.\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreixf3yt7q4lnr5kp7dglk772vqcaudycdvbh26e7p5eou3mqlicsyw.mh6qg3goxmsn\", filter={\"type\": \"of\"}, limit=16)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+},
+{
+"role": "user",
+"content": "Updated in memory chunk result github plan the is.\n\n[now: Tue 2026-10-26 23:37 +02:00 | user's view — space: bafyreik3clrfcb3cwihbnl2qwtnm2b7gwnj2am5kqxy2npjwyj76aq5hko.q436l65fbfug, object: bafyrei5vrdlajs6phpqt24cstocc3p2xuy75zq6gtanjp3x6ewedvklj45.klvnw5ys5sc4]\n\n[the reply below ran: any.query_objects ×1, any.get_markdown ×1, time.now ×27 — the calls: effects.of(run=\"run_b8693c680361bde3\")]"
+},
+{
+"role": "assistant",
+"content": "Note value recall recall are email field of meeting in chunk chunk property github property list to with name wiki memory type calendar task the meeting turn space turn was task chunk query are property the turn summary recall object a calendar meeting to to title title task linear property record a were and memory id id was memory memory created and note with note plan note property chunk turn memory chunk with calendar list result dataset email task meeting id dataset memory record task memory was linear linear memory dataset with name value are id were id was github of note of github turn collection memory result name was recall name memory plan email recall wiki and link to wiki dataset created turn recall calendar field memory space recall of id space note created memory link plan was to updated calendar list with page summary space object recall link are link for chunk.\n\n- Email turn type. any://o/bafyreikx4uehh272szlzzh52pvl3snn2yync4cairch6kxv2ajiesnisxb.h4acpb5bmxrd\n- Wiki for turn. any://o/bafyrei2ozouuijmuywgkgd2vrrzqw54oppfknq6tcgl2rlmtpq4wkfa6mw.zqgjs557dtgn"
+},
+{
+"role": "user",
+"content": "A property is turn and was record recall page.\n\n[now: Fri 2026-10-03 17:31 +02:00 | user's view — space: bafyreixcefkvwsxbdobpeilascrb356s647it7wf3q2fgjmadsi6yrnj65.w7k763widomu, object: bafyreiaklwpz4m2q25xkuskjyv2qozn6ieqie7j3vtp6pjiiwj7cjayoat.w4vowgl4t2oj]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×23 — the calls: effects.of(run=\"run_33ba5b1fbd75e314\")]"
+},
+{
+"role": "assistant",
+"content": "Result meeting and were with the created link were value to calendar the plan is linear type property email page chunk a meeting name calendar title id are recall query value task space a a updated calendar the collection for wiki with result of was collection email link email field type dataset and email for note was query."
+},
+{
+"role": "user",
+"content": "Is to with were record and github property was linear note name collection collection created created title list name in wiki in memory dataset record meeting.\n\n[now: Wed 2026-10-28 02:45 +02:00 | user's view — space: bafyrei2evbcqvsegjygwsyvaottkvwsksshb4rzlld5ug3wm3ysbzs3s3v.gwm4eimfoere, object: bafyrei3offtzs2zyfy7t5ichmckpusbxbiztbujw2e2hxtcyu6xm4prbsf.54r5m3mblact]\n\n[the reply below ran: any.query_objects ×1, any.get_markdown ×1, time.now ×34 — the calls: effects.of(run=\"run_914e4f8a3241bb0a\")]"
+},
+{
+"role": "assistant",
+"content": "Link id of was field a title the were linear created are with dataset field plan were query property to email for linear collection record were link task collection are email created name dataset in memory plan created created a to collection dataset email recall meeting the are list page value note chunk task type id updated list property memory query a updated wiki with is recall title of and property title dataset and linear linear query list is github value calendar meeting with a email field task name wiki plan query note is page field property page name property query and calendar record memory with task note note space and result.\n\n- Property meeting was. any://o/bafyreiniyhmvis4y3r7ubw7r4soxo3lveu5uxe3y2cukr6negnylxcbn4c.afnpjlbkpqkb\n- Space object linear. any://o/bafyreikc35akp3wfy2i2yie3ed7r6qgwaedkwtralgxud2cb3xhaydjf52.nxokvvtmngoq\n- Email list are. any://o/bafyreiwiegmrmr4qaqggimdfvnz4c6boyunof7pcfc2sdogwz46ugaogag.shj26izbiqz5\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreilwe67zucw5hiwrff6urchubz3k4rni5cgbyy2czcgotjwzdn62b4.mywwzp3r4xog\", filter={\"type\": \"link\"}, limit=42)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+},
+{
+"role": "user",
+"content": "To to type name summary page was was and name object field in task the and the recall created record the wiki and property property space github collection collection turn value.\n\n[now: Wed 2026-10-27 00:49 +02:00 | user's view — space: bafyreit3p6jrnh6g3tvkktlpqueeylsipgqgzc5gvujopnunn2t4nt7elx.e53gz3o34ash, object: bafyreirl3hstvzokjqweg6etyic4nsfyiuj75z2i4ztjuooczte36mf5h5.scsghfekvoba]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×17 — the calls: effects.of(run=\"run_1434739b3f4f02a1\")]"
+},
+{
+"role": "assistant",
+"content": "Result chunk memory recall a recall task and id email recall for chunk linear linear record result object result property summary space name to calendar summary task in result summary object task title type calendar github meeting space id value memory type turn property list github type page is page is result result query page field is name are memory title calendar type calendar were link for page dataset record email created wiki list space calendar a calendar for record meeting recall value recall is updated meeting meeting for for property query chunk calendar github was list type calendar with are to were to summary linear for is memory name query task name space type summary turn with object plan space name wiki type page query field."
+},
+{
+"role": "user",
+"content": "Summary memory task meeting property page in note meeting title plan email summary list turn.\n\n[now: Thu 2026-10-19 08:55 +02:00 | user's view — space: bafyreirwv4ggiah67x5of6yh2qkcwp75q7gmjlraivtlildwane3gtwri7.w67szxebyq6d, object: bafyrei5bf4eopgsfp57bfhgrongacnp3xme2npxmvt6dmthfan5xpcmbzo.jcbztba3hxeh]\n\n[the reply below ran: any.query_objects ×5, any.get_markdown ×1, time.now ×9 — the calls: effects.of(run=\"run_48f3c6a8afccff79\")]"
+},
+{
+"role": "assistant",
+"content": "Dataset is property field note title space link plan to was note with field github page space link email name link wiki task for link space record recall linear summary meeting updated was chunk result dataset title name was recall for created in collection a was property page record are type and list name the object of.\n\n- Note a link. any://o/bafyrein4zdy7f36u5gcgxwaozg2fhvb5csstvswyrcgkfome22tyywlf7j.lkiircok7j6l\n- Name value summary. any://o/bafyreiyaf34svemejqpsmi3difhhtr5242llox5mz63barp7p6cjuswlff.sf5ezk5dsxwc\n- Value result plan. any://o/bafyrei3semrcqbjjishlycpwmayuczojynefjm6ddqidyblbki7vj2r3hd.awng42i7z4r5\n- Email type calendar. any://o/bafyreiq2rimractpgpsgxlwvhik64qbg33ezrqxi4ziign36xwdqjsxzle.hi27mstik5qd\n- Linear collection type. any://o/bafyrei5opoaizhupmyua3rtyz2vezmo4zwaud65b52iw6sg2hvlrruam3r.qov3ectrdzlv\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreigdo2hmyt2mob5z6lrnetb2omapwdcdkiwlzr5rr4r25ydfxa5cxb.5rtkeo3kcfee\", filter={\"type\": \"wiki\"}, limit=13)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```\n\n| id | name |\n|---|---|\n| bafyreilyrhfozyhr2xvbjcuxqlpwgg5hr2u5mpn6fuiarzsjyjdrffejvh.u7xmkzlf7g7i | Title meeting. |\n| bafyreih7pxwuszhjv52whcfwbmojcylr6rnz2ueukprrdx7c44exkyecza.w4qavc6xexfo | Task query. |\n| bafyrei4nfzw3bdm6fuuu54pt6nhkzk4oiqcbkv3k66cukfju5tlhkkftro.qo22zd63g3q5 | Result turn. |"
+},
+{
+"role": "user",
+"content": "Value result calendar turn chunk plan and memory email object created in result link calendar property with field to page.\n\n[now: Tue 2026-10-07 09:43 +02:00 | user's view — space: bafyreifkw5nqpc7c5o4fo36e6yshtjs72zrla3xalw5pcr3lwsajmkfq62.qkt5qfriqh3f, object: bafyreidkvae4czgo3kfna3onjypfu5bn6xuycaz42fj6d5v5e7vuibf2lb.ymxiuvm766xv]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×35 — the calls: effects.of(run=\"run_0f2f89ab93094993\")]"
+},
+{
+"role": "assistant",
+"content": "Summary dataset with object linear id type for chunk space were type created type name and the summary created record a collection email value field calendar in object with link github calendar result summary email plan title space in page collection record record memory id page space chunk dataset list note recall value updated record was in for of calendar summary property chunk were value name were space memory title was to query were updated note note value created memory meeting in record plan meeting turn type created plan are field in page value chunk a list email are with are with were updated and collection chunk query property updated record chunk dataset a collection id was id field for wiki record page name memory the plan to email collection type title turn result github the field email query in.\n\n- Recall collection summary. any://o/bafyreijr4ckotdcshzvqccqqborcjtqdybfnamgva5we5pfnwnskatziff.msmnnqkj7eva\n- Page list chunk. any://o/bafyrei6qz6i63o2hiheiea2tewbtnaq54ftnyapkb4pzkxsgd4z65j7hgx.ruucpfy7onma\n- Result was query. any://o/bafyreizqogklr3atnavz2nbfk5tkoksms6ky2xfkfbohmkfsgf53xluynl.iwe3dxl2gjzn\n- Note chunk of. any://o/bafyreilzdim4vnsrofjodz7ilwmgdjgsdtb5c5a5vvvc5mz3ccthsrfqeg.t7k7cdufop6o\n- With id object. any://o/bafyreivg5xy5t5bqkzw35uwz4rpblzzsq63dqgvtlgwdctivcgwqgtsuym.bmqek4myszhe\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreibp4apj6trdqw25stxk3ibmvlkjwo6visxk5wem2hz4iio5hcwhyz.4pqbutzehgwp\", filter={\"type\": \"recall\"}, limit=28)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+},
+{
+"role": "user",
+"content": "Type in type name meeting updated the result record created was page the value and meeting for in memory collection of in link to property are were object task summary chunk object and github.\n\n[now: Tue 2026-10-27 05:53 +02:00 | user's view — space: bafyreit63v4jiaygy6iy63a7od6qfiamtaxunhrtcmnjucnwh7brkahr4q.5zbwo6rcre4n, object: bafyreiiaikr7kdfjqd7t66wfde3kfiklsrxfjkf2kakzef4jjzf3i6lj2l.4zkgqctr3e5g]\n\n[the reply below ran: any.query_objects ×2, any.get_markdown ×1, time.now ×8 — the calls: effects.of(run=\"run_12689447ce089ebd\")]"
+},
+{
+"role": "assistant",
+"content": "Query of query space of id object of was dataset page type plan email meeting wiki dataset list chunk property for github object page was in value and plan updated was collection updated calendar dataset id plan for chunk collection wiki turn was memory space note note link result task of in the result to email space wiki dataset was dataset turn record meeting id email of field field query page to link with is the to title."
+},
+{
+"role": "user",
+"content": "Object linear the to with was email a space and to.\n\n[now: Thu 2026-10-10 13:42 +02:00 | user's view — space: bafyreinpvexudvzv7mwmrbp3jrdsdi55ntyjza5sbehsigjjxp5vitogzf.x2fzayqvcaz5, object: bafyrei4hzzal54kg54yzr6ekxlfosj6xbhu2hyucnq2ujquj7am5n7gqgs.4g54t5m3edq2]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×10 — the calls: effects.of(run=\"run_0ae8ea60e970322a\")]"
+},
+{
+"role": "assistant",
+"content": "Note page title list field page was were space is calendar meeting chunk updated chunk chunk query name record a github are linear value type github created type wiki the turn to a collection a github plan linear query recall linear calendar email field dataset value were turn wiki title was of meeting id of the plan record created task summary summary and task github of in is linear created recall value result github title of wiki record recall chunk are a page.\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreikzy3cap6bfamko6anutrrsxo4vizs7dz5nlqk5yuhv6unas7xxaq.iedet2zbe23s\", filter={\"type\": \"email\"}, limit=26)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+},
+{
+"role": "user",
+"content": "Result were list note were plan updated value updated field meeting memory github record query for name in note summary record recall turn value id object field.\n\n[now: Wed 2026-10-16 12:38 +02:00 | user's view — space: bafyreibl74nyjq732zw4avsihaingpdi455643fzbm4zm55antubs4kbit.x5qttzovq2rh, object: bafyrei2sjuxo4x5tb2dlxy7akiuuvzp2gu56h53m5jlskh73yj3j3cz6yj.rx5ulbyapwz3]\n\n[the reply below ran: any.query_objects ×1, any.get_markdown ×1, time.now ×35 — the calls: effects.of(run=\"run_4663368adfcecbcd\")]"
+},
+{
+"role": "assistant",
+"content": "Memory the the for collection space linear property and for chunk were linear field updated email wiki property updated page the email of chunk and task task note task memory to record created id created id query object created memory field property recall was to collection wiki record object updated chunk to record turn id object a github for was dataset title chunk dataset is record with property linear for type title meeting name recall object are to title are property the linear note object value note summary space to turn of.\n\n- Name type wiki. any://o/bafyreiklwg4tzrq2fzrtspb3fihajqnpefv77fagyxuykg7q6t6w3msrh6.ttmgdguzsbih\n- Updated dataset field. any://o/bafyreirevzqw3ciyn72a3ieyhxbra2lfcf2wkdfehdeluo74ghddm4odgl.vqn3a72pbnvz\n- With type were. any://o/bafyrei5ka7b3fq66caoupyvp2l4lqauilkndmibt5h26jqbuf3azx6de5w.3oadnmdvk6un\n- Type page a. any://o/bafyreicqkpljkvs3t3tnbgisfzyza7y3fzxh53a2zzgkakuhipwwxgvbd7.6yw5dx5kqiee\n- Are query and. any://o/bafyreidk6mrmef4ckhg7vb6pdz326vae3vyubb7niwo3zg4ydqxzjrzd5c.5pcfqfwivoel\n- Of list memory. any://o/bafyreicyail3k3lfvtc3eexzpejsrzjnkoud543zfripzjym7nsefyiqte.6wpef2dvtwof"
+},
+{
+"role": "user",
+"content": "Page to updated type list is meeting github summary updated were github memory turn in object memory plan query title is id to plan recall query meeting.\n\n[now: Wed 2026-10-14 20:34 +02:00 | user's view — space: bafyreihfi2oxmiromeo7yocsbsvgmihgjf6wk5dfy4gbphqxfbenbutelo.3u6lvowdzlid, object: bafyreisv7tfpq53wkbpmuhn7cxldf6l7vhc6wm5pidhslefnp7wsd2ltf2.riivad7ux3bn]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×10 — the calls: effects.of(run=\"run_4e95dc91173a6ea7\")]"
+},
+{
+"role": "assistant",
+"content": "Wiki recall result linear wiki created note turn email was dataset object id with calendar collection dataset page with updated link type link turn to note was dataset summary linear value email type field created object chunk title note and result."
+},
+{
+"role": "user",
+"content": "Collection recall updated recall page linear recall was email in github updated the linear record was was title recall plan created meeting a to plan property were recall was summary for chunk note to field.\n\n[now: Thu 2026-10-07 00:44 +02:00 | user's view — space: bafyreimcwspyma7nyapu4uaazlgchv2a5bln4macwemqvjtqvofffy2xlo.upxptozy2mhb, object: bafyrei6hppjrtwoe66g2jlg4hz5nhi2nkbmodcvanqnfn7r6bs3yd6gdbv.mwxrnsmmmuch]\n\n[the reply below ran: any.query_objects ×1, any.get_markdown ×1, time.now ×7 — the calls: effects.of(run=\"run_c3d1fbce05d06ab0\")]"
+},
+{
+"role": "assistant",
+"content": "Note name linear a to recall for property were to link object title for is space result space to summary list title link updated email summary page type chunk link meeting linear was to link note is were are recall memory collection calendar are page for space github email in task the task type list collection recall note the in property list for value for property collection id a space result result id title note was note calendar email name of turn dataset space memory value with wiki query were object note in are summary result property github linear linear object is github summary wiki chunk id chunk linear for is github is wiki and in the task task dataset linear property page link space were title plan note in linear record type was property property github wiki email value id name updated of query id collection with link chunk to are plan id."
+},
+{
+"role": "user",
+"content": "Query title the for plan were to wiki space id updated dataset object collection summary property the memory meeting with wiki was.\n\n[now: Tue 2026-10-09 19:09 +02:00 | user's view — space: bafyreizn6qoft3obdiyoe72ss63iez3dsjebpkkzanpqfnxywlrfvsp3x5.ydg53ktvug7m, object: bafyreijjz2vl5wjwtmr7vpsg3xgg7wz4qycw5nkciyfg7y7qzvj2b4kqpi.dywejilbyn5h]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×31 — the calls: effects.of(run=\"run_f9e1553fe7ea2a82\")]"
+},
+{
+"role": "assistant",
+"content": "To collection for linear created for were record was collection a query calendar a space chunk summary are are query in linear are value note were space query note to link with with email object email name linear created the space name chunk link recall meeting recall and email collection email property id query title plan type calendar note github query linear page task dataset is result updated list title dataset page meeting were record summary turn the a list link wiki plan title wiki page a email field were property with calendar result property property with."
+},
+{
+"role": "user",
+"content": "The plan link github is created query title memory page summary turn for name value link email to collection email recall calendar with memory.\n\n[now: Fri 2026-10-17 21:59 +02:00 | user's view — space: bafyreit3dyc26qd7zbhduswdzqjlqy2shknhzmugp4ov23x5zems5lbokq.mrtrxkkeiwk5, object: bafyreiackuwzisfqzziaq7gbnuueonxdv3tsfxgkyi6whgk563g7cmckug.kyf52z2y3kni]\n\n[the reply below ran: any.query_objects ×2, any.get_markdown ×1, time.now ×7 — the calls: effects.of(run=\"run_53813415814b5d85\")]"
+},
+{
+"role": "assistant",
+"content": "Chunk meeting was value dataset value result created with page a created linear wiki with page plan meeting query collection with query value query id memory memory page note list linear and a recall calendar dataset value was github page record chunk collection wiki field summary is and to recall to was turn title name calendar query property query updated were object record page linear created result updated github memory query."
+},
+{
+"role": "user",
+"content": "List recall memory updated created turn task updated is was were id.\n\n[now: Fri 2026-10-12 07:32 +02:00 | user's view — space: bafyreiymmdzbzll4nshy4um3fyvrexsg4u6gqkczgrg7esdg7a62jyqk54.4ggekwoprole, object: bafyrei4tvv6j6px27nnxeba7a2l26trn75ajcjsfzyjqzk322ekxanyg3c.b4yqmw2mibf7]\n\n[the reply below ran: any.query_objects ×4, any.get_markdown ×1, time.now ×30 — the calls: effects.of(run=\"run_72bbf3eaf48fb8a3\")]"
+},
+{
+"role": "assistant",
+"content": "List and email are object value memory to value object github updated query space chunk plan of was memory with to meeting query space of property plan linear turn record wiki created name space property memory plan meeting page created query to field turn plan recall list turn were turn was result calendar created github wiki of page chunk property created recall is result space value in the value for dataset github chunk link and field page name meeting list chunk link plan of summary name created recall for the created property to name of note updated were email the updated for chunk plan in title for id note title was for page of title list task linear are the plan query to chunk summary the and property chunk for github recall field and in summary of dataset note plan page was record task property link collection id created and task name."
+},
+{
+"role": "user",
+"content": "Link of space id of calendar turn.\n\n[now: Thu 2026-10-01 10:14 +02:00 | user's view — space: bafyreikckrm2j35x5s22n3at7q6dpgvnpnz4dvgt7xa6d65osu3sjflqty.i34yiaujpnj7, object: bafyrei3p3slzndcro32u7kks6fsr6eqlx4xf3jetgy5glnhvrwkwon6xr7.aeuchn5khvph]\n\n[the reply below ran: any.query_objects ×3, any.get_markdown ×1, time.now ×26 — the calls: effects.of(run=\"run_c9a34572684f66c7\")]"
+},
+{
+"role": "assistant",
+"content": "Field field to page space and github the memory result chunk and chunk field recall page task space link the type query were value linear calendar space meeting dataset in list type to link list were the and name wiki name result id of query of link updated name turn with github to meeting result recall type note created dataset note id and list of github created list page created plan space object updated list note turn chunk were and value the chunk are field list plan chunk of to field of property task created task summary for query updated id was was chunk field in title id a with with recall object list for property property dataset link plan wiki wiki is updated dataset turn space dataset name linear note field property name record were updated updated.\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreis3pd6h43dcqb7fwhybob55pwfut7dzozffqj7tbmx2c3zheln42h.uocngq7ahb3i\", filter={\"type\": \"value\"}, limit=23)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+},
+{
+"role": "user",
+"content": "Object to in type updated property was list memory query for in wiki of result for id memory name turn id plan updated created of were are with memory.\n\n[now: Thu 2026-10-06 19:55 +02:00 | user's view — space: bafyreitacyzlh2ggaltmglb5jzusxwe37qgye5erymqdcgcecweow5upxu.pprm2c5a3unw, object: bafyreiibgplhz27dy6kzq2phidjzlsuzacgbboiaxwetz3pntysowopxvj.p2xkvvox7xne]\n\n[the reply below ran: any.query_objects ×2, any.get_markdown ×1, time.now ×36 — the calls: effects.of(run=\"run_d233288ad8e53a21\")]"
+},
+{
+"role": "assistant",
+"content": "Query were collection chunk space wiki github for page title were calendar for updated with memory plan record the wiki record in github in created link record the plan id object are the the to turn created were was linear created with were plan note value were summary field are were field page were value link type dataset created linear value list in created a result email space in was turn note link title link updated.\n\n```python\na = use(\"any@v1\")\nrows = a.query_objects(\"bafyreio6cmpj4fjiyd6jr2tj2lah2fwax7fu52lu3unso4dwwoyo3xfpjf.kjycmcx4ekew\", filter={\"type\": \"email\"}, limit=33)\nprint([(r[\"id\"], r.get(\"name\")) for r in rows][:5])\n```"
+}
+]
+}
