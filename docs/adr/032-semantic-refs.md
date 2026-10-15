@@ -1,24 +1,40 @@
-# ADR-030: Semantic refs — names for the ids a conversation touched
+# ADR-032: Semantic refs — names for the ids a conversation touched
 
-Status: **Proposed** (2026-09-25), experiment on `exp/semantic-ids`
+Status: **Proposed** (2026-09-25, revised 2026-10-16), experiment on
+`exp/semantic-ids`
 Date: 2026-09-25
-Builds on: ADR-005 §4/§5 (digest, boot window, message suffix),
-ADR-006 §1 (agent_turns), ADR-010 §8 (bound cell globals),
-ADR-017 §0 (the chat's log child)
+Builds on: ADR-005 §1.4/§4/§5 (the boot-end cache breakpoint, digest,
+boot window, message suffix), ADR-006 §1/§2 (agent_turns, the
+anchored boot window), ADR-010 §8 (bound cell globals), ADR-017 §0
+(the chat's log child)
 Amends (if accepted): ADR-005 §5 (the message suffix gains a refs
-line; the final reply gains chips for what the run changed), ADR-010
-§8 (a `refs` global; object arguments accept a ref)
-Tracks: Linear BOB-160, bullet 3 ("automap ids to semantic meanings");
-evidence in `docs/bob-160-probe-results.md` (rounds 1 and 2)
+line; the final reply gains chips for what the run changed), ADR-006
+§1 (a `refs` field), ADR-010 §8 (a `refs` global; object arguments
+accept a ref)
+Tracks: Linear BOB-179 (from BOB-160 bullet 3, "automap ids to
+semantic meanings"); evidence in `docs/bob-160-probe-results.md`
+(rounds 1 and 2) and the boot-window calibration of 2026-10-16
 
 ## Context
 
 The kernel lives for one message. Everything a run learned (the id
 of the page it just created, the file it attached, the folder it
 found) dies with it. The next message starts from the boot window,
-which carries each past turn as its user text and its replies, and
-nothing else (`history@v1 render_boot_window`). An id survives only
-if the model happened to write it into a reply.
+which carries each past turn as its user text, a compact time + view
+stamp, a `[ran: <effect>×<n> · run_<id>]` footer and its replies
+(`history@v1 render_boot_window`, ADR-005 §5). The footer points at
+the run's effects, which hold every id the turn touched, but reading
+them back is a cell per lookup. An id survives in the prompt only if
+the model happened to write it into a reply.
+
+Ids are also the most expensive text in the window. The 2026-10-16
+calibration (`count_tokens` over 186 real turns, claude-sonnet-5)
+measured 2.5 chars/token for the window as a whole and 1.6 for the
+`[now: … | user's view — space: <id>, object: <id>]` stamps: a
+64-character id is ~40 tokens, and a typed `any://o/` link ~45. The
+compact stamps (ADR-005 §5) now repeat a view only when it changes;
+the ids themselves are still there, in every reply that carries a
+link and in every call that passes one.
 
 The probe sweeps measured what that costs:
 
@@ -81,21 +97,41 @@ query over 200 rows is not 200 things the user talked about. At most
 
 ### 3. Persist — on the turn record
 
-The refs ride the `agent_turns` record as a `refs` field (the dataset
-is dynamic: no declaration change). The turn log already syncs across
-devices and survives restarts; refs inherit that.
+The refs ride the `agent_turns` record as a `refs` field, declared in
+any@v1's `_TURNS_DATASET` (kind `array`) like `bootAnchor` (ADR-006
+§1): the dataset has a declared field list, and the field-growth path
+adds a new field to existing spaces on first boot. The turn log
+already syncs across devices and survives restarts; refs inherit
+that.
 
 ### 4. Rebind — a `refs` global, names in the message
 
 At run start the loop collects refs from the raw turns in the boot
-window (newest wins a name; the same name in two spaces is kept apart
-as `Dune (Garden)` / `Dune (Books)`), and:
+window — the turns from the anchor on (ADR-006 §2), the same set the
+window renders, so the table is stable between anchor jumps (newest
+wins a name; the same name in two spaces is kept apart as `Dune
+(Garden)` / `Dune (Books)`), and:
 
 - binds `refs` in the cell prelude next to `baoSpaceConfig`:
   `refs["Dune"]` → the ref dict;
 - adds one line to the user message suffix, names only:
   `[refs: Dune (book, Garden) · Books (folder, Garden) · demo.png
   (file on Dune)]`, capped at ~15 entries. No ids in the prompt.
+
+**Placement is load-bearing.** The line rides the current user
+message, after the `[now: …]` stamp, and nowhere earlier: the system
+tail and the boot window sit ahead of the boot-end cache breakpoint
+(ADR-005 §1.4), and anything per-run placed there rewrites the
+window's cache on every start — the lesson of the user's-space apps
+line (ADR-005 §5, 2026-10-16). Like that line, the refs line is
+llm-only: the persisted turn keeps the raw `[now: …]` stamp as
+`context` and the refs as the `refs` field, never the rendered line.
+A mid-run inject with a view gets the same line, rebuilt.
+
+Refs behind the anchor go with the raw turns that carried them. The
+summary message's chunk lines (ADR-006 §2) are where an older name
+could live on — a rollup that keeps the chunk's refs is open question
+5.
 
 ### 5. Use — any@v1 takes a ref where it takes an object
 
@@ -120,7 +156,12 @@ carries the links whether or not the model wrote them.
 - Weaker models gain the most: they read a name list and pass a
   name, instead of carrying 60-character strings across messages.
 - Cost: the refs line is ~50–150 tokens per message; it rides the
-  message suffix, outside the cached system blocks.
+  message suffix, outside the cached prefix (system blocks and boot
+  window), so it never costs a cache write. The saving it buys is on
+  the other side: replies and calls that name things instead of
+  carrying 40-token ids, and lookups that do not happen — the
+  2026-10-16 replay put the window's stamps and footers at ~2k tokens
+  with ids in them; names would roughly halve that.
 - Staleness: a renamed object keeps its old name until the next turn
   touches it; a deleted one 404s on use. Both are ordinary errors.
 - Chips on every write may be noisy for bulk jobs (40 Sprouts): chips
@@ -152,6 +193,14 @@ carries the links whether or not the model wrote them.
    user named?
 4. Scope: this chat's turns only (the boot window), or refs from
    other chats of the same bao?
+5. Beyond the anchor: should rollup@v1 carry a chunk's refs (names
+   only) into the chunk record, so the summary message can name what
+   the raw turns no longer show, or do refs end where the raw tail
+   ends?
+6. The view stamp names a space by id today. With refs in hand the
+   stamp could name it (`space: Garden`) and drop the 1.6-chars/token
+   ids from the window altogether — decide with §4, since the stamp
+   is persisted as `context` and rendered on every past turn.
 
 ## Verification
 
