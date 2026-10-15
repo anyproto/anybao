@@ -165,7 +165,8 @@ memory near the system prompt gets treated as ground truth) and §1a:
   hits = *"related past discussion, <date>"* — chunk summary / turn
   one-liner + drill-down pointer (`chunk #N, turns a–b`), body on
   demand, capped at 2–3. Guards: **deep-history only** (hits already
-  covered by the boot window are skipped — auto-recall is the TOPICAL
+  covered by the boot window are skipped — the window's anchor seq,
+  ADR-006 §2, is the boundary; auto-recall is the TOPICAL
   channel complementing the window's RECENCY channel); pointers not
   bodies; relevance threshold so generic messages inject nothing.
   The write-side rule is untouched: chunks never become memory items.

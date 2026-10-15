@@ -378,6 +378,11 @@ class AnthropicAdapter:
                "max_tokens": traits["max_output"]}
         if traits["cache"] == "markers":
             self._mark_cache(api_msgs)
+            # Anthropic allows 4 breakpoints: the system blocks, the
+            # conversation end, and caller-flagged parts (`cache: true`
+            # — the boot end, ADR-005 §1.4) while the budget lasts
+            n_system = len(system) if isinstance(system, list) else (1 if system else 0)
+            self._cap_breakpoints(api_msgs, 4 - n_system)
         if system:
             # a list is separate cache blocks: each gets its own breakpoint,
             # so a change in a later block leaves the earlier ones cached
@@ -402,7 +407,10 @@ class AnthropicAdapter:
         for p in m["parts"]:
             t = p["type"]
             if t == "text":
-                blocks.append({"type": "text", "text": p["text"]})
+                block = {"type": "text", "text": p["text"]}
+                if p.get("cache") and traits["cache"] == "markers":
+                    block["cache_control"] = {"type": "ephemeral"}   # ADR-005 §1.4
+                blocks.append(block)
             elif t == "tool_call":
                 blocks.append({"type": "tool_use", "id": p["id"],
                                "name": p["name"], "input": p["args"] or {}})
@@ -445,6 +453,14 @@ class AnthropicAdapter:
                 block["title"] = p["name"]
             return block
         raise UnsupportedMedia(mt, "anthropic")
+
+    @staticmethod
+    def _cap_breakpoints(api_msgs, limit):
+        """At most `limit` markers in the messages: the conversation
+        end always, then the newest flagged parts — older flags drop."""
+        marked = [b for msg in api_msgs for b in msg["content"] if "cache_control" in b]
+        for b in marked[:max(0, len(marked) - limit)]:
+            del b["cache_control"]
 
     @staticmethod
     def _mark_cache(api_msgs):
@@ -647,6 +663,12 @@ class OpenAICompatAdapter:
             msg = {"role": m["role"], "content": " ".join(texts) or None}
             if msg["content"] is None and not calls:
                 msg["content"] = ""
+            if texts and traits["cache"] == "markers" \
+                    and any(p.get("cache") for p in m["parts"] if p["type"] == "text"):
+                # a caller-flagged breakpoint (ADR-005 §1.4) — OpenRouter
+                # takes Anthropic's marker on a content part
+                msg["content"] = [{"type": "text", "text": msg["content"],
+                                   "cache_control": {"type": "ephemeral"}}]
         if calls:
             msg["tool_calls"] = []
             for c in calls:

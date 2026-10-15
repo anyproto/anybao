@@ -37,6 +37,7 @@ class World:
                        "prompt_style": "full", "instructions_at": "system",
                        "malformed_retries": 2, **(traits or {})}
         self.boot_budgets = []
+        self.anchor_calls = []
         self.cells = list(cells or [])
         self.mail = list(mailbox or [])
         self.llm_calls = []
@@ -145,15 +146,24 @@ class World:
                 return []
 
             @staticmethod
-            def render_boot_window(turns, chunks, total_tokens=40000):
+            def render_boot_window(turns, chunks, total_tokens=40000, anchor=None):
                 w.boot_budgets.append(total_tokens)
                 return [{"role": "user", "parts": [{"type": "text",
                                                     "text": "[earlier context]"}]}] \
                     if turns else []
 
             @staticmethod
-            def raw_tail(turns, total_tokens=40000):
-                return turns
+            def water_marks(total_tokens):
+                return min(25_000, total_tokens * 5 // 8), min(12_000, total_tokens * 3 // 10)
+
+            @staticmethod
+            def choose_anchor(turns, l1, prev_anchor, high=25_000, low=12_000):
+                w.anchor_calls.append((prev_anchor, high, low))
+                return turns[0]["seq"] if turns else None
+
+            @staticmethod
+            def approx_tokens(text):
+                return (len(text) * 2 + 4) // 5
 
         class Ar:
             @staticmethod
@@ -430,15 +440,21 @@ def test_user_message_carries_timestamp_and_view_context():
     call = w.llm_calls[0]
     user = call["messages"][-1]["parts"][0]["text"]
     assert user.startswith("go\n\n[now: ")
-    assert user.endswith("user's view — space: sp9, object: ob3, view: object]")
+    assert "user's view — space: sp9, object: ob3, view: object]\n" in user
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
     assert "`s1`" in call["system"] and "`c1`" in call["system"]
-    # the installed apps ride it (ADR-027 §5): agent space + the
-    # user's space, hidden entries out
+    # the installed apps (ADR-027 §5), hidden entries out: the agent
+    # space's ride the system tail; the user's space's ride the message
+    # with its view, so a view change leaves the tail cached (ADR-005 §5)
     assert "- apps in the agent space: Wiki (wiki): A tree of pages\n" in call["system"]
-    assert "- apps in the user's space: Wiki (wiki): A tree of pages\n" in call["system"]
+    assert "apps in the user's space" not in call["system"]
+    assert user.endswith("view: object]\n- apps in the user's space: Wiki (wiki): A tree of pages")
     assert "General" not in call["system"].split("## Runtime context")[1]
+    # a view on the agent space itself adds no line
+    w2 = World([done_reply()])
+    run(w2, uiContext={"spaceId": "s1"})
+    assert "apps in the user's space" not in w2.llm_calls[0]["messages"][-1]["parts"][0]["text"]
     # the persisted turn keeps the raw userText — suffix is llm-only
     assert w.turns[0]["userText"] == "go"
     # the same view is bound as cell globals before the loop (ADR-010 §8)
@@ -464,7 +480,7 @@ def test_empty_view_fields_are_dropped_from_the_binding():
     w = World([done_reply()])
     run(w, uiContext={"spaceId": "sp9", "objectId": "", "view": "grid"})
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
-    assert user.endswith("user's view — space: sp9, view: grid]")
+    assert "user's view — space: sp9, view: grid]\n- apps in the user's space" in user
     assert "currentUserSpace = {'spaceId': 'sp9', 'view': 'grid'}" in w.preludes[0]
 
 
@@ -477,7 +493,8 @@ def test_injected_message_carries_its_own_view_and_rebinds_the_global():
                 if m["role"] == "user"
                 and m["parts"][0].get("text", "").startswith("also here")]
     assert injected
-    assert injected[0]["parts"][0]["text"].endswith(
+    assert "- apps in the user's space: Wiki" in injected[0]["parts"][0]["text"]
+    assert injected[0]["parts"][0]["text"].split("\n- apps in")[0].endswith(
         "user's view — space: sp2, object: ob7]")
     # opener bound sp9; the inject rebinds to where the user is NOW
     assert "currentUserSpace = {'spaceId': 'sp9'}" in w.preludes[0]
@@ -1335,7 +1352,8 @@ def test_the_turn_record_keeps_its_time_view_line_and_effect_counts():
         {"seq": 3, "name": "any.create_object", "class": "mutate", "span": "s1"},
         {"seq": 4, "effect": "http.get", "class": "read"},
         {"seq": 5, "effect": "trace.effects_of", "class": "read"},   # history reads: not work
-        {"seq": 6, "effect": "module.resolve", "class": "read"}]     # use() loading: not work
+        {"seq": 6, "effect": "module.resolve", "class": "read"},     # use() loading: not work
+        {"seq": 7, "effect": "time.now", "class": "read"}]           # the clock: not work
     run(w)
     t = w.turns[0]
     assert t["effects"] == ["any.create_object ×2", "http.get ×2"]
@@ -1345,3 +1363,86 @@ def test_the_turn_record_keeps_its_time_view_line_and_effect_counts():
     w = World([done_reply("hi")])
     run(w)
     assert "effects" not in w.turns[0] and w.turns[0]["context"].startswith("[now: ")
+
+
+def test_the_turn_records_the_boot_window_estimate_beside_real_usage():
+    # ADR-006 §2: llm.bootTokensEst = the rendered window's estimated
+    # size, so the estimator's drift against turn 1's usage is visible
+    w = World([done_reply("ok")])
+
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 1, "userText": "old", "replies": ["r"]}])
+            return mod
+
+    w.__class__ = type("W3", (WithHistory,), {})
+    run(w)
+    # the fake window is one message, "[earlier context]" = 17 chars → 7 tokens
+    assert w.turns[0]["llm"]["bootTokensEst"] == 7
+    # no history → no window → no estimate
+    w = World([done_reply("ok")])
+    run(w)
+    assert "bootTokensEst" not in w.turns[0]["llm"]
+
+
+def test_the_raw_tail_anchor_is_carried_from_the_previous_turn_and_persisted():
+    # ADR-006 §2: the newest turn's bootAnchor feeds choose_anchor; the
+    # chosen anchor is persisted on this turn and bounds auto-recall
+    w = World([done_reply("ok")])
+
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 7, "userText": "a", "replies": ["r"]},
+                                         {"seq": 6, "userText": "b", "replies": ["r"],
+                                          "bootAnchor": 4}])
+            if spec == "autorecall@v1":
+                real = mod.plan
+
+                def plan(c, s, q, boot_min_seq, policy=None):
+                    w.boot_min_seqs.append(boot_min_seq)
+                    return real(c, s, q, boot_min_seq)
+                mod.plan = staticmethod(plan)
+            return mod
+
+    w.boot_min_seqs = []
+    w.__class__ = type("W4", (WithHistory,), {})
+    run(w)
+    # prev anchor + the marks for this world's budget (128k window → 32k)
+    assert w.anchor_calls == [(4, 20_000, 9_600)]
+    assert w.turns[0]["bootAnchor"] == 6                 # the fake: oldest fetched seq
+    assert w.boot_min_seqs == [6]                        # auto-recall's deep-history guard
+    # no history → no anchor recorded
+    w = World([done_reply("ok")])
+    run(w)
+    assert "bootAnchor" not in w.turns[0]
+
+
+def test_the_boot_window_end_is_flagged_as_a_cache_breakpoint():
+    # ADR-005 §1.4: the last part of the boot window carries cache: true
+    # — run N+1 reads at that position what run N wrote; the current
+    # user message after it is never flagged
+    w = World([done_reply("ok")])
+
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 1, "userText": "old", "replies": ["r"]}])
+            return mod
+
+    w.__class__ = type("W5", (WithHistory,), {})
+    run(w)
+    msgs = w.llm_calls[0]["messages"]
+    assert msgs[0]["parts"][-1] == {"type": "text", "text": "[earlier context]", "cache": True}
+    assert "cache" not in msgs[1]["parts"][0]
+    # no window → nothing flagged
+    w = World([done_reply("ok")])
+    run(w)
+    assert all("cache" not in p for m in w.llm_calls[0]["messages"] for p in m["parts"])

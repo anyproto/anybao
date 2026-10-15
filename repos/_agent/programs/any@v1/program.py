@@ -140,6 +140,7 @@ _TURNS_DATASET = {
         {"key": "replies", "kind": "array"},
         {"key": "effects", "kind": "array"},
         {"key": "context", "kind": "string"},
+        {"key": "bootAnchor", "kind": "number"},
         {"key": "messageIds", "kind": "array"},
         {"key": "traceRef", "kind": "string"},
         {"key": "interrupted", "kind": "boolean"},
@@ -3201,9 +3202,10 @@ class _Client:
         """Append an agent_turns record on the chat's log child (harness-level).
 
         Conversations write these for you. Fields: `{seq?, fromAgent?,
-        userName?, userText?, think?, replies?, effects?, messageIds?,
-        traceRef?, interrupted?, llm?}` — llm subkeys `{stopReason, inTokens,
-        outTokens, cacheRead, cacheWrite, model, costUsd, fuelUsed, cells}`. seq
+        userName?, userText?, think?, replies?, effects?, context?,
+        bootAnchor?, messageIds?, traceRef?, interrupted?, llm?}` — llm
+        subkeys `{stopReason, inTokens, outTokens, cacheRead, cacheWrite,
+        bootTokensEst, model, costUsd, fuelUsed, cells}`. seq
         absent → one past the highest id ever written, deleted rows included
         (client-assigned; safe under the ADR-015 single active writer, a
         duplicate seq write rejects). Returns {recordIds, seq}."""

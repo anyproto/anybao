@@ -186,13 +186,16 @@ def approx_tokens(text):
 APPS_CAP = 15
 
 
-def _apps_lines(c, space, ui_ctx):
+def _apps_lines(c, space, ui_ctx, which=("agent space", "user's space")):
     """The installed apps of the agent space and of the user's current
     space (ADR-027 §5) — one `name (usecase): description` per app,
     capped; beyond the cap the model calls `list_apps`. Apps are data:
     the line is what lets the model know a wiki or a CRM exists
     without guessing. A space whose list cannot be read contributes
-    nothing (the model can still ask)."""
+    nothing (the model can still ask). `which` picks the lines: the
+    agent space's rides the system tail, the user's space's rides the
+    message with its view (ADR-005 §5) — a view on the agent space
+    adds nothing."""
     out = []
     seen = []
     for label, sid in (("agent space", space),
@@ -200,6 +203,8 @@ def _apps_lines(c, space, ui_ctx):
         if not sid or sid in seen:
             continue
         seen.append(sid)
+        if label not in which:
+            continue
         try:
             apps = [a for a in c.list_apps(sid) if not a.get("hidden")]
         except Exception:  # noqa: BLE001 — an unreadable list is not a run failure
@@ -218,6 +223,15 @@ def _apps_lines(c, space, ui_ctx):
         more = f"; +{len(apps) - APPS_CAP} more (`list_apps`)" if len(apps) > APPS_CAP else ""
         out.append(f"- apps in the {label}: " + "; ".join(items) + more)
     return "".join(line + "\n" for line in out)
+
+
+def _view_apps(c, space, ui_ctx):
+    """The user's-space apps line for a message's view suffix (ADR-005
+    §5) — after the stamp, never in the system tail: the tail sits
+    ahead of the boot window, and a view change must not rewrite the
+    window's cache."""
+    line = _apps_lines(c, space, ui_ctx, which=("user's space",))
+    return "\n" + line.rstrip("\n") if line else ""
 
 
 def _view(ctx):
@@ -308,8 +322,8 @@ def _count_effects(entries, counts):
     """A cell's immediate effects/spans → name counts (the turn's effect
     summary; trace reads of its own history are not work done)."""
     for e in entries:
-        if e.get("effect") in _TRACE_VIEWS or e.get("effect") == "module.resolve":
-            continue   # history reads and use() loading are not work done
+        if e.get("effect") in _TRACE_VIEWS or e.get("effect") in ("module.resolve", "time.now"):
+            continue   # history reads, use() loading and the clock are not work done
         name = _op_name(e)
         if name:
             counts[name] = counts.get(name, 0) + 1
@@ -1127,14 +1141,16 @@ def main(args):
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
-        + _apps_lines(c, space, ui_ctx) +
+        + _apps_lines(c, space, None) +
         "- bound cell globals (spaceConfig args): `currentUserSpace` (the "
         "user's view), `baoSpaceConfig` (this agent space)\n"
         "- other spaces: `list_spaces()` rows")
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
     # user message for models that weight recency over the system block
-    # everything below changes with the run's surroundings (the view's
-    # apps, the device): it rides the TAIL cache block, never the stable one
+    # everything below changes with the run's surroundings (the device,
+    # the memory categories): it rides the TAIL cache block, never the
+    # stable one; the view's apps ride the message (_view_apps), so a
+    # view change leaves the tail — and the boot window after it — cached
     if traits["instructions_at"] == "system":
         tail += runtime_ctx
         user_suffix = ""
@@ -1161,6 +1177,7 @@ def main(args):
 
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
+    anchor = None
     if quiet:
         boot, plan = [], {"messages": [], "injected": []}
     else:
@@ -1170,10 +1187,23 @@ def main(args):
             got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
             if got:
                 chunks[lvl] = got
-        boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens)
-        tail = hist.raw_tail(turns, total_tokens=boot_tokens)
-        boot_min_seq = tail[0].get("seq") if tail else None
-        plan = ar.plan(c, space, user_text, boot_min_seq)
+        # the raw tail is anchored (ADR-006 §2): the previous turn's
+        # anchor stays until the tail outgrows the high-water mark, so
+        # this window extends the last run's byte for byte — the cache
+        # entry at its end (flagged below, ADR-005 §1.4) is a read
+        prev_anchor = next((t.get("bootAnchor") for t in reversed(turns)
+                            if t.get("bootAnchor")), None)
+        anchor = hist.choose_anchor(turns, chunks.get(1, []), prev_anchor,
+                                    *hist.water_marks(boot_tokens))
+        boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens,
+                                       anchor=anchor)
+        if boot:
+            boot[-1]["parts"][-1]["cache"] = True   # the boot-end breakpoint
+        plan = ar.plan(c, space, user_text, anchor)
+    # the window's estimated size, recorded beside turn 1's real usage
+    # so the estimator's drift is visible in traces (ADR-006 §2)
+    boot_est = sum(hist.approx_tokens(p.get("text", ""))
+                   for m in boot for p in m["parts"])
 
     # bound space globals (ADR-010 §8): cell code resolves "here" the
     # same way the prompt's view line does
@@ -1192,7 +1222,8 @@ def main(args):
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + context_line + user_suffix}]},
+                            "text": user_text + context_line
+                            + _view_apps(c, space, ui_ctx) + user_suffix}]},
                 *plan["messages"]]
 
     def bubble(text, done):
@@ -1226,7 +1257,8 @@ def main(args):
                     subcell(f"currentUserSpace = {ui_ctx!r}", "_ctx")  # noqa: F821
                 messages.append({"role": "user",
                                  "parts": [{"type": "text",
-                                            "text": msg["text"] + _context_suffix(inj_ctx)}]})
+                                            "text": msg["text"] + _context_suffix(inj_ctx)
+                                            + _view_apps(c, space, inj_ctx)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"
         if turn >= max_turns:
@@ -1297,11 +1329,13 @@ def main(args):
                 # the turn ran — history renders both; the calls themselves
                 # stay in the trace (traceRef)
                 "context": context_line.strip(),
+                **({"bootAnchor": anchor} if anchor is not None else {}),
                 **({"effects": [f"{k} ×{n}" for k, n in sorted(
                     effect_counts.items(), key=lambda kv: (-kv[1], kv[0]))]}
                    if effect_counts else {}),
                 "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
                 "llm": {"stopReason": stop, **stats,
+                        **({"bootTokensEst": boot_est} if boot else {}),
                         "promptFingerprint": prompt_fp,
                         **({"soulFingerprint": soul_fp} if soul_fp else {})}})
             if plan["injected"]:

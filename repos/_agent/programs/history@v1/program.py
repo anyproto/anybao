@@ -7,6 +7,8 @@ chat_id)`), never on the chat itself. `recent_turns` /
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
+import re  # noqa: E402 - the tool marker leads, as in every tool program
+
 # Loop plumbing context (ADR-006 §1/§2): build_turn shapes the
 # agent_turns v2 payload the loop persists; raw_tail /
 # render_boot_window compose the hierarchical boot window (newest raw
@@ -14,9 +16,16 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # history at decreasing resolution). rollup@v1 produces the pyramid.
 
 
+CHARS_PER_TOKEN = 2.5   # ADR-006 §2: count_tokens over 186 real turns, sonnet-5
+
+
 def approx_tokens(text):
-    """Cheap proxy tokenizer — ~4 chars/token."""
-    return (len(text) + 3) // 4
+    """Estimated real tokens — len / 2.5, rounded up (ADR-006 §2).
+
+    Chat history is ids, `any://` links and code: 2.5 chars/token
+    measured, not the 4 of English prose. The window records its
+    estimate as `llm.bootTokensEst` beside the real usage."""
+    return (len(text) * 2 + 4) // 5
 
 
 def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
@@ -53,31 +62,56 @@ def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
 # --- boot window (token-budgeted hierarchical composition) ------------------
 
 MAX_EFFECT_NAMES = 8
+_NOT_WORK = ("time.now", "trace.")   # ADR-005 §5: clock + trace reads are noise
 
 
 def _effects_note(turn):
-    """The turn's effect summary as one line: what the reply below ran,
-    by name and count, and how to read the calls — the calls themselves
-    stay in the trace, read on demand."""
-    eff = [e for e in turn.get("effects") or [] if isinstance(e, str)]
+    """The turn's effect summary as one line — `[ran: <name>×<n>, … ·
+    <run id>]`: what the reply below ran, by name and count; the calls
+    themselves stay in the trace (how to read a run is taught in
+    `_core`, not here). Clock and trace reads are dropped."""
+    eff = [e.replace(" ×", "×") for e in turn.get("effects") or []
+           if isinstance(e, str) and not e.startswith(_NOT_WORK)]
     if not eff:
         return ""
     shown = ", ".join(eff[:MAX_EFFECT_NAMES])
     if len(eff) > MAX_EFFECT_NAMES:
         shown += f", +{len(eff) - MAX_EFFECT_NAMES} more"
     ref = turn.get("traceRef")
-    how = f' — the calls: effects.of(run="{ref}")' if ref else ""
-    return f"[the reply below ran: {shown}{how}]"
+    return f"[ran: {shown}{' · ' + ref if ref else ''}]"
 
 
-def _turn_messages(turn):
-    """A turn → a user message (userText, the time + view line it was
-    sent with, the effect summary of the reply) + an assistant message
-    (replies). The summary rides the USER side: roles keep alternating
-    and the model never sees it as its own text to imitate."""
+_STAMP = re.compile(r"^\[now: (?P<day>[A-Za-z]{3} \d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2})"
+                    r"(?P<off> [+-]\d{2}:\d{2})? \| (?P<view>.*)\]$")
+
+
+def _stamp(context, prev):
+    """A past turn's `[now: …]` line, compact (ADR-005 §5): the full
+    `[<day> <date> <time> <offset> | <view>]` on the first turn and
+    when the day or the view changed from the previous turn, else
+    `[<time>]` (with ` | <view>` only when the view changed). Returns
+    (line, (day, view)) — the state the next turn compares against; an
+    unparseable line renders verbatim."""
+    m = _STAMP.match(context or "")
+    if not m:
+        return context, prev
+    day, view = m["day"], m["view"]
+    pday, pview = prev or (None, None)
+    when = f"{day} {m['time']}{m['off'] or ''}" if day != pday else m["time"]
+    line = f"[{when} | {view}]" if view != pview else f"[{when}]"
+    return line, (day, view)
+
+
+def _turn_messages(turn, prev=None):
+    """A turn → a user message (userText, the compact time + view line
+    it was sent with, the effect summary of the reply) + an assistant
+    message (replies). The summary rides the USER side: roles keep
+    alternating and the model never sees it as its own text to
+    imitate. `prev` = the previous turn's stamp state (`_stamp`)."""
     msgs = []
     ut = turn.get("userText", "")
-    extra = [x for x in (turn.get("context") or "", _effects_note(turn)) if x]
+    stamp, _state = _stamp(turn.get("context") or "", prev)
+    extra = [x for x in (stamp, _effects_note(turn)) if x]
     if ut or extra:
         text = "\n\n".join([ut, *extra]) if ut else "\n\n".join(extra)
         msgs.append({"role": "user", "parts": [{"type": "text", "text": text}]})
@@ -96,67 +130,184 @@ def _chunk_line(chunk):
     return f"— {chunk.get('summary', '')}  [chunk #{seq} (L{lvl}), {unit} {frm}–{to}]"
 
 
-def raw_tail(raw_turns, total_tokens=40000, raw_tail_fraction=0.5):
-    # ADR-007 §5
-    """The boot window's full-resolution slice, returned oldest→newest.
+HIGH_WATER = 25_000   # ADR-006 §2: the raw tail jumps past this …
+LOW_WATER = 12_000    # … to the oldest L1 boundary under this
 
-    Newest raw turns filling the raw-tail budget; the slice's min seq
-    is also the auto-recall deep-history guard boundary."""
-    raw_budget = int(total_tokens * raw_tail_fraction)
-    included = []
-    spent = 0
-    for turn in reversed(raw_turns):  # newest first
-        cost = sum(approx_tokens(p["text"]) for m in _turn_messages(turn)
-                   for p in m["parts"])
-        if spent + cost > raw_budget and included:
+
+def water_marks(total_tokens):
+    """(high, low) raw-tail marks for a window budget (ADR-006 §2).
+
+    The defaults, scaled down for a small budget so summaries keep room."""
+    high = min(HIGH_WATER, total_tokens * 5 // 8)
+    return high, min(LOW_WATER, high * LOW_WATER // HIGH_WATER)
+
+
+def _turn_cost(turn):
+    return sum(approx_tokens(p["text"]) for m in _turn_messages(turn)
+               for p in m["parts"])
+
+
+def choose_anchor(raw_turns, l1_chunks, prev_anchor, high_water=HIGH_WATER,
+                  low_water=LOW_WATER):
+    # ADR-006 §2
+    """The raw tail's first seq for this run — kept or jumped forward.
+
+    `raw_turns` ascending by seq (the fetched newest), `l1_chunks` the
+    L1 rollups, `prev_anchor` the previous turn's `bootAnchor`. The
+    previous anchor stays while the tail from it is under `high_water`
+    estimated tokens; past it (or when it predates the fetched turns)
+    the anchor jumps forward, never back, to the oldest L1 boundary
+    (`toSeq + 1`) that brings the tail under `low_water` — whole
+    chunks, so the summaries can cover what the tail drops. With no
+    boundary that fits (rollup lagging, one giant turn) the newest
+    turns under `low_water` form the tail. None without turns."""
+    if not raw_turns:
+        return None
+    oldest, newest = raw_turns[0].get("seq", 0), raw_turns[-1].get("seq", 0)
+
+    def cost_from(a):
+        return sum(_turn_cost(t) for t in raw_turns if t.get("seq", 0) >= a)
+
+    if prev_anchor is not None and oldest <= prev_anchor <= newest \
+            and cost_from(prev_anchor) <= high_water:
+        return prev_anchor
+    floor = prev_anchor + 1 if prev_anchor is not None else oldest
+    boundaries = sorted({c.get("toSeq", -1) + 1 for c in l1_chunks} | {oldest})
+    for b in boundaries:   # oldest first: the smallest jump that fits
+        if max(floor, oldest) <= b <= newest and cost_from(b) <= low_water:
+            return b
+    anchor, spent = newest, 0
+    for turn in reversed(raw_turns):
+        cost = _turn_cost(turn)
+        if spent + cost > low_water and turn.get("seq") != newest:
             break
-        included.append(turn)
-        spent += cost
-    included.reverse()
-    return included
+        anchor, spent = turn.get("seq", 0), spent + cost
+    return max(anchor, floor) if prev_anchor is not None else anchor
+
+
+def raw_tail(raw_turns, anchor):
+    # ADR-007 §5
+    """The boot window's raw slice — every turn from the anchor seq on.
+
+    Oldest→newest; the anchor is also the auto-recall deep-history
+    guard boundary."""
+    if anchor is None:
+        return []
+    return [t for t in raw_turns if t.get("seq", 0) >= anchor]
 
 
 def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
-                       raw_tail_fraction=0.5):
+                       anchor=None):
     """Compose the boot context as neutral messages, oldest→newest.
 
-    Newest raw turns (full resolution) up to the raw-tail budget, then
-    chunks ascending by level filling the rest — all history at
-    decreasing resolution, constant-size by budget. `raw_turns`
-    ascending by seq; `chunks_by_level` = level → chunks ascending by
-    seq. Skips chunks fully covered by the included raw tail (no
-    double-cover); the chunks arrive as one leading compressed-context
-    message."""
-    included_turns = raw_tail(raw_turns, total_tokens, raw_tail_fraction)
-    spent = sum(approx_tokens(p["text"]) for t in included_turns
-                for m in _turn_messages(t) for p in m["parts"])
-    covered_min_seq = included_turns[0].get("seq", 0) if included_turns else None
-
-    # fill the remainder with chunks ascending level, newest-first per level,
-    # skipping any chunk whose range is fully inside the included raw tail
-    remaining = total_tokens - spent
-    chunk_lines = []
-    for level in sorted(chunks_by_level):
-        for chunk in reversed(chunks_by_level[level]):
-            if level == 1 and covered_min_seq is not None \
-                    and chunk.get("toSeq", -1) >= covered_min_seq:
-                continue  # already present at full resolution
-            line = _chunk_line(chunk)
-            cost = approx_tokens(line)
-            if cost > remaining:
-                break
-            chunk_lines.append(line)
-            remaining -= cost
+    The raw tail from `anchor` (full resolution; `choose_anchor` when
+    None — a fresh choice, no previous run), preceded by one
+    compressed-context message of chunk lines for everything that ends
+    before the anchor, ascending by level, newest first per level, no
+    range twice (`_fill_chunks`). The summary budget is the window
+    budget minus the high-water mark — fixed between anchor jumps, so
+    the message is byte-stable while the tail grows (ADR-006 §2).
+    `raw_turns` ascending by seq; `chunks_by_level` = level → chunks
+    ascending by seq."""
+    high, low = water_marks(total_tokens)
+    if anchor is None:
+        anchor = choose_anchor(raw_turns, chunks_by_level.get(1, []), None, high, low)
+    included_turns = raw_tail(raw_turns, anchor)
+    chunks = _fill_chunks(chunks_by_level, max(0, total_tokens - high), anchor)
 
     messages = []
-    if chunk_lines:
-        chunk_lines.reverse()  # oldest→newest
+    if chunks:
         body = ("[earlier context, compressed — expand a chunk by its #seq]\n"
-                + "\n".join(chunk_lines))
+                + "\n".join(_chunk_line(c) for c in chunks))
         messages.append({"role": "user", "parts": [{"type": "text", "text": body}]})
+    state = None   # the previous turn's stamp (day, view) — compact stamps
     for turn in included_turns:
-        messages.extend(_turn_messages(turn))
+        messages.extend(_turn_messages(turn, state))
+        state = _stamp(turn.get("context") or "", state)[1]
     return messages
+
+
+def _fill_chunks(chunks_by_level, budget, covered_min_seq):
+    """The summary message's chunks, oldest→newest, within `budget`
+    tokens — no range covered twice (ADR-006 §2).
+
+    Levels ascend, newest first per level: L1 chunks inside the raw
+    tail (`toSeq >= covered_min_seq`) are skipped; a level-N chunk is
+    rendered only where its level-N−1 children did not all fit, and
+    then it replaces the ones that did — the newest material keeps the
+    finest resolution, older material degrades whole."""
+    chosen = {}      # level -> {seq: chunk} rendered at this level
+    covered = {}     # level -> seqs present at this or a finer resolution
+    remaining = budget
+    for level in sorted(chunks_by_level):
+        chosen[level], covered[level] = {}, set()
+        for chunk in reversed(chunks_by_level[level]):
+            seq = chunk.get("seq")
+            if covered_min_seq is not None \
+                    and _turn_span(chunk, chunks_by_level)[1] >= covered_min_seq:
+                covered[level].add(seq)   # (partly) in the raw tail: never summarized
+                continue
+            if level > 1:
+                kids = _children(chunk, chunks_by_level)
+                if kids and all(k in covered[level - 1] for k in kids):
+                    covered[level].add(seq)   # present whole, at finer resolution
+                    continue
+                # a partial cover is replaced whole: every rendered
+                # descendant, at every level below, gives way
+                remaining += _evict(chunk, chunks_by_level, chosen, covered)
+            cost = approx_tokens(_chunk_line(chunk))
+            if cost > remaining:
+                break
+            chosen[level][seq] = chunk
+            covered[level].add(seq)
+            remaining -= cost
+    out = [c for lvl in chosen for c in chosen[lvl].values()]
+    # reading order: by the oldest turn each chunk covers (fetch limits
+    # can leave a higher chunk's children unfetched — older than any)
+    out.sort(key=lambda c: (_turn_span(c, chunks_by_level)[0], c.get("level", 1)))
+    return out
+
+
+def _children(chunk, chunks_by_level):
+    """The fetched level-N−1 chunk seqs a level-N chunk covers."""
+    return [c.get("seq") for c in _child_chunks(chunk, chunks_by_level)]
+
+
+def _child_chunks(chunk, chunks_by_level):
+    lvl = chunk.get("level", 1)
+    return [c for c in chunks_by_level.get(lvl - 1, [])
+            if chunk.get("fromSeq", 0) <= c.get("seq", -1) <= chunk.get("toSeq", -1)]
+
+
+def _evict(chunk, chunks_by_level, chosen, covered):
+    """Drop every rendered descendant of `chunk` (all levels below);
+    returns the tokens given back."""
+    freed = 0
+    lvl = chunk.get("level", 1)
+    if lvl <= 1:
+        return 0
+    for kid in _child_chunks(chunk, chunks_by_level):
+        gone = chosen.get(lvl - 1, {}).pop(kid.get("seq"), None)
+        if gone is not None:
+            freed += approx_tokens(_chunk_line(gone))
+        covered.get(lvl - 1, set()).discard(kid.get("seq"))
+        freed += _evict(kid, chunks_by_level, chosen, covered)
+    return freed
+
+
+def _turn_span(chunk, chunks_by_level):
+    """(oldest, newest) TURN seq a chunk covers — L1 directly, higher
+    levels through their fetched children; none fetched → (-1, -1),
+    older than anything in hand."""
+    lvl = chunk.get("level", 1)
+    if lvl <= 1:
+        return chunk.get("fromSeq", 0), chunk.get("toSeq", -1)
+    spans = [_turn_span(c, chunks_by_level)
+             for c in chunks_by_level.get(lvl - 1, [])
+             if chunk.get("fromSeq", 0) <= c.get("seq", -1) <= chunk.get("toSeq", -1)]
+    if not spans:
+        return -1, -1
+    return min(s[0] for s in spans), max(s[1] for s in spans)
 
 
 # --- thin reads over the any@v1 client ---------------------------------------
