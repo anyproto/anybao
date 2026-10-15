@@ -6,7 +6,13 @@ pub struct Classifier {
 }
 
 const ANY_READ_POST_SUFFIXES: [&str; 4] = ["/query", "/objects/query", "/search", "/aggregate"];
-const LLM_PATH_SUFFIXES: [&str; 3] = ["/v1/messages", "/chat/completions", "/v1/complete"];
+// `/v1/systemone`: the judge wire (ADR-030 §4) — replays and mocks as a model call
+const LLM_PATH_SUFFIXES: [&str; 4] = [
+    "/v1/messages",
+    "/chat/completions",
+    "/v1/complete",
+    "/v1/systemone",
+];
 
 fn split_url(url: &str) -> (&str, &str) {
     // (netloc, path) — no external url crate needed for this shape
@@ -94,6 +100,14 @@ mod tests {
         assert_eq!(
             c.cap("POST", "http://any.local:8080/v1/spaces/s1/objects"),
             "data.write"
+        );
+        assert_eq!(
+            c.cap("POST", "https://api.typesafe.ai/v1/systemone"),
+            "llm.chat" // the judge wire (ADR-030 §4)
+        );
+        assert_eq!(
+            c.kind("POST", "https://api.typesafe.ai/v1/systemone"),
+            "read"
         );
         assert_eq!(c.cap("GET", "https://example.com/x"), "net.http");
         assert_eq!(c.cap("POST", "https://example.com/x"), "net.http");
