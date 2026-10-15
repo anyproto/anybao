@@ -121,10 +121,10 @@ The neutral part and `read()` are unchanged: a PDF read on a tier
 whose backend cannot carry it still raises before any call, and the
 answer is to route that read to a tier whose backend can. `tool_mode: "fenced"` (ADR-005 §1.3)
 changes nothing here — file parts still route by the tier's adapter.
-Files a provider cannot read natively (docx, …) are the guest's job:
-convert to text and send a `text/plain` File part — the neutral shape
-needs no change for that (an ADR-013 agent-authored program is the
-natural home).
+Files a provider cannot read natively are the guest's job: convert to
+text and send a `text/plain` File part — the neutral shape needs no
+change for that. `agent:toMarkdown@v1` (ADR-031) converts PDF and HTML;
+other formats (docx, …) take an ADR-013 agent-authored program.
 
 ### 4. `llm.read(file, prompt, tier="vision")` and the `vision` tier
 

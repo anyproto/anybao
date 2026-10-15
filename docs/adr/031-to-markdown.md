@@ -75,28 +75,34 @@ in place, still `@v1`.
 
 Text comes from vendored `pypdf` (§7) through its `visitor_text`
 hook, which gives each fragment its text, font, font size and matrix.
-Fragments group into lines (text, effective size, bold, y); the
-passes, in order:
+Fragments group into lines — text, size (the one most of the line's
+characters are set in), bold (every fragment in a bold face), rotated,
+y — and the passes run over the converted pages, in order:
 
 1. **Running headers/footers** — a line among a page's first or last
-   two whose digit-normalized text recurs on at least half of the
-   pages (≥ 3 pages) is dropped.
-2. **Headings** — a short line (< 120 chars, no terminal period) set
-   at ≥ 1.15× the body size (the size carrying the most characters),
-   or in a bold face at body size, becomes a heading; levels rank the
-   distinct heading sizes, capped at `####`. **Figure guard**: a run
-   of consecutive heading candidates that are tiny fragments (axis
-   labels, diagram text) stays body text.
+   two (one, on a page of six lines or fewer) whose digit-normalized
+   text recurs on at least half of the pages (≥ 3 pages) is dropped.
+2. **Headings** — a candidate is a line under 120 chars, with at least
+   3 letters, not rotated, not ending in `.`/`,`/`;`/`:`, and set at
+   ≥ 1.15× the body size (the size carrying the most characters) or in
+   a bold face at body size. **Figure guard**: a run of consecutive
+   candidates stays body text when it is 5+ long, or 3+ long with a
+   median under 12 chars (axis labels, diagram text). Levels rank the
+   surviving size candidates' distinct sizes, largest `#`, capped at
+   `####`; bold-at-body headings take the next level down.
 3. **Paragraphs** — wrapped lines join; a vertical gap over 1.6× the
    line size breaks; a trailing hyphen joins only into a lowercase
    continuation; a page break ends a paragraph only after terminal
-   punctuation.
-4. **Lists** — bullet glyphs and `1.` / `a)` markers start `- ` items.
+   punctuation; body text opening with `#` is escaped (`\#`).
+4. **Lists** — bullet glyphs and `1.` / `a)` markers start `- ` items;
+   consecutive items form one list.
 5. **Form fields** — AcroForm values (`get_fields`) with a value
-   append as a `Fields` list; `fields` counts them.
+   append as a `Fields` list on a call starting at page 1; `fields`
+   counts them.
 
 Tables come through as their cell text in reading order; images are
-ignored.
+ignored. Diagram text set at heading sizes can still surface as
+headings — font size and position do not separate it from a title.
 
 ### 4. Page-bounded calls
 
