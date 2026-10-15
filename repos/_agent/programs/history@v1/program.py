@@ -135,8 +135,9 @@ LOW_WATER = 12_000    # … to the oldest L1 boundary under this
 
 
 def water_marks(total_tokens):
-    """(high, low) raw-tail marks for a window budget — the ADR-006 §2
-    defaults, scaled down for a small budget so summaries keep room."""
+    """(high, low) raw-tail marks for a window budget (ADR-006 §2).
+
+    The defaults, scaled down for a small budget so summaries keep room."""
     high = min(HIGH_WATER, total_tokens * 5 // 8)
     return high, min(LOW_WATER, high * LOW_WATER // HIGH_WATER)
 
