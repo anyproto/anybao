@@ -308,8 +308,8 @@ def _count_effects(entries, counts):
     """A cell's immediate effects/spans → name counts (the turn's effect
     summary; trace reads of its own history are not work done)."""
     for e in entries:
-        if e.get("effect") in _TRACE_VIEWS or e.get("effect") == "module.resolve":
-            continue   # history reads and use() loading are not work done
+        if e.get("effect") in _TRACE_VIEWS or e.get("effect") in ("module.resolve", "time.now"):
+            continue   # history reads, use() loading and the clock are not work done
         name = _op_name(e)
         if name:
             counts[name] = counts.get(name, 0) + 1

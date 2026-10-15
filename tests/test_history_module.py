@@ -361,10 +361,52 @@ def test_a_past_turn_keeps_its_time_view_line_and_effect_summary():
     assert [m["role"] for m in msgs] == ["user", "assistant"]   # roles still alternate
     user = msgs[0]["parts"][0]["text"]
     assert user.startswith("What's this page about?")
-    assert "user's view — space: sp1, object: o1" in user
-    assert ('[the reply below ran: any.query_objects ×2, any.get_markdown ×1'
-            ' — the calls: effects.of(run="run_abc")]') in user
+    assert "[Tue 2026-09-29 13:23 +02:00 | user's view — space: sp1, object: o1]" in user
+    assert "[ran: any.query_objects×2, any.get_markdown×1 · run_abc]" in user
     assert msgs[1]["parts"][0]["text"] == "It's Dune (Book, 1965)."   # reply untouched
     # an old turn without the new fields renders as before
     old = H["render_boot_window"]([_turn(2, "q", ["a"])], {}, total_tokens=10_000)
     assert old[0]["parts"][0]["text"] == "q"
+
+
+def _ctx(day, time, view="no view: currentUserSpace is None"):
+    return f"[now: {day} {time} +02:00 | {view}]"
+
+
+def test_stamps_go_compact_after_the_first_turn_until_the_day_or_view_changes():
+    # ADR-005 §5: full stamp first; [HH:MM] while the day and the view
+    # hold; the view again when it changes; the date again on a new day
+    v1 = "user's view — space: sp1"
+    def turn(seq, text, ctx):
+        return {"seq": seq, "userText": text, "replies": ["r"], "context": ctx}
+    turns = [
+        turn(1, "a", _ctx("Thu 2026-10-15", "18:10", v1)),
+        turn(2, "b", _ctx("Thu 2026-10-15", "18:12", v1)),
+        turn(3, "c", _ctx("Thu 2026-10-15", "18:30")),
+        turn(4, "d", _ctx("Fri 2026-10-16", "09:00")),
+        turn(5, "e", "[something else]"),
+    ]
+    msgs = H["render_boot_window"](turns, {}, total_tokens=10_000)
+    users = [m["parts"][0]["text"] for m in msgs if m["role"] == "user"]
+    assert users[0] == "a\n\n[Thu 2026-10-15 18:10 +02:00 | user's view — space: sp1]"
+    assert users[1] == "b\n\n[18:12]"
+    assert users[2] == "c\n\n[18:30 | no view: currentUserSpace is None]"
+    assert users[3] == "d\n\n[Fri 2026-10-16 09:00 +02:00]"
+    assert users[4] == "e\n\n[something else]"           # unparseable: verbatim
+    # the compact form is a real saving on the stamps alone
+    full = sum(len(t["context"]) for t in turns[:4])
+    compact = sum(len(u.split("\n\n", 1)[1]) for u in users[:4])
+    assert compact < full * 0.6
+
+
+def test_effects_footer_is_compact_and_drops_clock_and_trace_reads():
+    turn = {"seq": 1, "userText": "q", "replies": ["r"], "traceRef": "run_x",
+            "effects": ["time.now ×46", "any.query_objects ×3", "trace.effects_of ×2",
+                        "any.upsert_record ×2"]}
+    def user_text(t):
+        return H["render_boot_window"]([t], {}, total_tokens=10_000)[0]["parts"][0]["text"]
+    assert user_text(turn) == "q\n\n[ran: any.query_objects×3, any.upsert_record×2 · run_x]"
+    # noise only → no footer at all; no trace ref → no ref
+    assert user_text({**turn, "effects": ["time.now ×1"]}) == "q"
+    no_ref = {**turn, "traceRef": ""}
+    assert "[ran: any.query_objects×3, any.upsert_record×2]" in user_text(no_ref)

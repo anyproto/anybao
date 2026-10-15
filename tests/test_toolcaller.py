@@ -1345,7 +1345,8 @@ def test_the_turn_record_keeps_its_time_view_line_and_effect_counts():
         {"seq": 3, "name": "any.create_object", "class": "mutate", "span": "s1"},
         {"seq": 4, "effect": "http.get", "class": "read"},
         {"seq": 5, "effect": "trace.effects_of", "class": "read"},   # history reads: not work
-        {"seq": 6, "effect": "module.resolve", "class": "read"}]     # use() loading: not work
+        {"seq": 6, "effect": "module.resolve", "class": "read"},     # use() loading: not work
+        {"seq": 7, "effect": "time.now", "class": "read"}]           # the clock: not work
     run(w)
     t = w.turns[0]
     assert t["effects"] == ["any.create_object ×2", "http.get ×2"]

@@ -40,8 +40,9 @@ retrying.
 
 **Past runs are readable** through `effects` (help(effects)). An
 earlier message in this chat shows the time and view it was sent with
-and `[the reply below ran: … — the calls: effects.of(run="…")]`: what
-that turn did. Read that run only for an id, key or result the
+(a bare `[HH:MM]` means the same day and view as the message before)
+and `[ran: <effect>×<n>, … · run_<id>]`: what that turn did. Read that
+run — `effects.of(run="run_<id>")` — only for an id, key or result the
 replies don't show, instead of looking it up again; never doubt a past
 answer because this message has a different view. "Why did you do that?" about an
 earlier reply: read that run. "Did it run / what happened overnight" =

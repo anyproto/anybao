@@ -7,6 +7,8 @@ chat_id)`), never on the chat itself. `recent_turns` /
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
+import re  # noqa: E402 - the tool marker leads, as in every tool program
+
 # Loop plumbing context (ADR-006 §1/§2): build_turn shapes the
 # agent_turns v2 payload the loop persists; raw_tail /
 # render_boot_window compose the hierarchical boot window (newest raw
@@ -60,31 +62,56 @@ def build_turn(*, user_text, outcome, think="", effects=None, message_ids=None,
 # --- boot window (token-budgeted hierarchical composition) ------------------
 
 MAX_EFFECT_NAMES = 8
+_NOT_WORK = ("time.now", "trace.")   # ADR-005 §5: clock + trace reads are noise
 
 
 def _effects_note(turn):
-    """The turn's effect summary as one line: what the reply below ran,
-    by name and count, and how to read the calls — the calls themselves
-    stay in the trace, read on demand."""
-    eff = [e for e in turn.get("effects") or [] if isinstance(e, str)]
+    """The turn's effect summary as one line — `[ran: <name>×<n>, … ·
+    <run id>]`: what the reply below ran, by name and count; the calls
+    themselves stay in the trace (how to read a run is taught in
+    `_core`, not here). Clock and trace reads are dropped."""
+    eff = [e.replace(" ×", "×") for e in turn.get("effects") or []
+           if isinstance(e, str) and not e.startswith(_NOT_WORK)]
     if not eff:
         return ""
     shown = ", ".join(eff[:MAX_EFFECT_NAMES])
     if len(eff) > MAX_EFFECT_NAMES:
         shown += f", +{len(eff) - MAX_EFFECT_NAMES} more"
     ref = turn.get("traceRef")
-    how = f' — the calls: effects.of(run="{ref}")' if ref else ""
-    return f"[the reply below ran: {shown}{how}]"
+    return f"[ran: {shown}{' · ' + ref if ref else ''}]"
 
 
-def _turn_messages(turn):
-    """A turn → a user message (userText, the time + view line it was
-    sent with, the effect summary of the reply) + an assistant message
-    (replies). The summary rides the USER side: roles keep alternating
-    and the model never sees it as its own text to imitate."""
+_STAMP = re.compile(r"^\[now: (?P<day>[A-Za-z]{3} \d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2})"
+                    r"(?P<off> [+-]\d{2}:\d{2})? \| (?P<view>.*)\]$")
+
+
+def _stamp(context, prev):
+    """A past turn's `[now: …]` line, compact (ADR-005 §5): the full
+    `[<day> <date> <time> <offset> | <view>]` on the first turn and
+    when the day or the view changed from the previous turn, else
+    `[<time>]` (with ` | <view>` only when the view changed). Returns
+    (line, (day, view)) — the state the next turn compares against; an
+    unparseable line renders verbatim."""
+    m = _STAMP.match(context or "")
+    if not m:
+        return context, prev
+    day, view = m["day"], m["view"]
+    pday, pview = prev or (None, None)
+    when = f"{day} {m['time']}{m['off'] or ''}" if day != pday else m["time"]
+    line = f"[{when} | {view}]" if view != pview else f"[{when}]"
+    return line, (day, view)
+
+
+def _turn_messages(turn, prev=None):
+    """A turn → a user message (userText, the compact time + view line
+    it was sent with, the effect summary of the reply) + an assistant
+    message (replies). The summary rides the USER side: roles keep
+    alternating and the model never sees it as its own text to
+    imitate. `prev` = the previous turn's stamp state (`_stamp`)."""
     msgs = []
     ut = turn.get("userText", "")
-    extra = [x for x in (turn.get("context") or "", _effects_note(turn)) if x]
+    stamp, _state = _stamp(turn.get("context") or "", prev)
+    extra = [x for x in (stamp, _effects_note(turn)) if x]
     if ut or extra:
         text = "\n\n".join([ut, *extra]) if ut else "\n\n".join(extra)
         msgs.append({"role": "user", "parts": [{"type": "text", "text": text}]})
@@ -191,8 +218,10 @@ def render_boot_window(raw_turns, chunks_by_level, total_tokens=40000,
         body = ("[earlier context, compressed — expand a chunk by its #seq]\n"
                 + "\n".join(_chunk_line(c) for c in chunks))
         messages.append({"role": "user", "parts": [{"type": "text", "text": body}]})
+    state = None   # the previous turn's stamp (day, view) — compact stamps
     for turn in included_turns:
-        messages.extend(_turn_messages(turn))
+        messages.extend(_turn_messages(turn, state))
+        state = _stamp(turn.get("context") or "", state)[1]
     return messages
 
 
