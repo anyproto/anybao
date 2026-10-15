@@ -186,13 +186,16 @@ def approx_tokens(text):
 APPS_CAP = 15
 
 
-def _apps_lines(c, space, ui_ctx):
+def _apps_lines(c, space, ui_ctx, which=("agent space", "user's space")):
     """The installed apps of the agent space and of the user's current
     space (ADR-027 §5) — one `name (usecase): description` per app,
     capped; beyond the cap the model calls `list_apps`. Apps are data:
     the line is what lets the model know a wiki or a CRM exists
     without guessing. A space whose list cannot be read contributes
-    nothing (the model can still ask)."""
+    nothing (the model can still ask). `which` picks the lines: the
+    agent space's rides the system tail, the user's space's rides the
+    message with its view (ADR-005 §5) — a view on the agent space
+    adds nothing."""
     out = []
     seen = []
     for label, sid in (("agent space", space),
@@ -200,6 +203,8 @@ def _apps_lines(c, space, ui_ctx):
         if not sid or sid in seen:
             continue
         seen.append(sid)
+        if label not in which:
+            continue
         try:
             apps = [a for a in c.list_apps(sid) if not a.get("hidden")]
         except Exception:  # noqa: BLE001 — an unreadable list is not a run failure
@@ -218,6 +223,15 @@ def _apps_lines(c, space, ui_ctx):
         more = f"; +{len(apps) - APPS_CAP} more (`list_apps`)" if len(apps) > APPS_CAP else ""
         out.append(f"- apps in the {label}: " + "; ".join(items) + more)
     return "".join(line + "\n" for line in out)
+
+
+def _view_apps(c, space, ui_ctx):
+    """The user's-space apps line for a message's view suffix (ADR-005
+    §5) — after the stamp, never in the system tail: the tail sits
+    ahead of the boot window, and a view change must not rewrite the
+    window's cache."""
+    line = _apps_lines(c, space, ui_ctx, which=("user's space",))
+    return "\n" + line.rstrip("\n") if line else ""
 
 
 def _view(ctx):
@@ -1127,14 +1141,16 @@ def main(args):
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
         f"- chat object: `{chat_id}`\n"
         f"- agent name: {agent_name}\n"
-        + _apps_lines(c, space, ui_ctx) +
+        + _apps_lines(c, space, None) +
         "- bound cell globals (spaceConfig args): `currentUserSpace` (the "
         "user's view), `baoSpaceConfig` (this agent space)\n"
         "- other spaces: `list_spaces()` rows")
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
     # user message for models that weight recency over the system block
-    # everything below changes with the run's surroundings (the view's
-    # apps, the device): it rides the TAIL cache block, never the stable one
+    # everything below changes with the run's surroundings (the device,
+    # the memory categories): it rides the TAIL cache block, never the
+    # stable one; the view's apps ride the message (_view_apps), so a
+    # view change leaves the tail — and the boot window after it — cached
     if traits["instructions_at"] == "system":
         tail += runtime_ctx
         user_suffix = ""
@@ -1206,7 +1222,8 @@ def main(args):
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + context_line + user_suffix}]},
+                            "text": user_text + context_line
+                            + _view_apps(c, space, ui_ctx) + user_suffix}]},
                 *plan["messages"]]
 
     def bubble(text, done):
@@ -1240,7 +1257,8 @@ def main(args):
                     subcell(f"currentUserSpace = {ui_ctx!r}", "_ctx")  # noqa: F821
                 messages.append({"role": "user",
                                  "parts": [{"type": "text",
-                                            "text": msg["text"] + _context_suffix(inj_ctx)}]})
+                                            "text": msg["text"] + _context_suffix(inj_ctx)
+                                            + _view_apps(c, space, inj_ctx)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"
         if turn >= max_turns:

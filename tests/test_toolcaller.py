@@ -440,15 +440,21 @@ def test_user_message_carries_timestamp_and_view_context():
     call = w.llm_calls[0]
     user = call["messages"][-1]["parts"][0]["text"]
     assert user.startswith("go\n\n[now: ")
-    assert user.endswith("user's view — space: sp9, object: ob3, view: object]")
+    assert "user's view — space: sp9, object: ob3, view: object]\n" in user
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
     assert "`s1`" in call["system"] and "`c1`" in call["system"]
-    # the installed apps ride it (ADR-027 §5): agent space + the
-    # user's space, hidden entries out
+    # the installed apps (ADR-027 §5), hidden entries out: the agent
+    # space's ride the system tail; the user's space's ride the message
+    # with its view, so a view change leaves the tail cached (ADR-005 §5)
     assert "- apps in the agent space: Wiki (wiki): A tree of pages\n" in call["system"]
-    assert "- apps in the user's space: Wiki (wiki): A tree of pages\n" in call["system"]
+    assert "apps in the user's space" not in call["system"]
+    assert user.endswith("view: object]\n- apps in the user's space: Wiki (wiki): A tree of pages")
     assert "General" not in call["system"].split("## Runtime context")[1]
+    # a view on the agent space itself adds no line
+    w2 = World([done_reply()])
+    run(w2, uiContext={"spaceId": "s1"})
+    assert "apps in the user's space" not in w2.llm_calls[0]["messages"][-1]["parts"][0]["text"]
     # the persisted turn keeps the raw userText — suffix is llm-only
     assert w.turns[0]["userText"] == "go"
     # the same view is bound as cell globals before the loop (ADR-010 §8)
@@ -474,7 +480,7 @@ def test_empty_view_fields_are_dropped_from_the_binding():
     w = World([done_reply()])
     run(w, uiContext={"spaceId": "sp9", "objectId": "", "view": "grid"})
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
-    assert user.endswith("user's view — space: sp9, view: grid]")
+    assert "user's view — space: sp9, view: grid]\n- apps in the user's space" in user
     assert "currentUserSpace = {'spaceId': 'sp9', 'view': 'grid'}" in w.preludes[0]
 
 
@@ -487,7 +493,8 @@ def test_injected_message_carries_its_own_view_and_rebinds_the_global():
                 if m["role"] == "user"
                 and m["parts"][0].get("text", "").startswith("also here")]
     assert injected
-    assert injected[0]["parts"][0]["text"].endswith(
+    assert "- apps in the user's space: Wiki" in injected[0]["parts"][0]["text"]
+    assert injected[0]["parts"][0]["text"].split("\n- apps in")[0].endswith(
         "user's view — space: sp2, object: ob7]")
     # opener bound sp9; the inject rebinds to where the user is NOW
     assert "currentUserSpace = {'spaceId': 'sp9'}" in w.preludes[0]

@@ -558,7 +558,13 @@ inject as `context`). The toolcaller turns it into the
 message and binds it as the `currentUserSpace` cell global (ADR-010
 §8); a message without a view says so (`[now: … | no view:
 currentUserSpace is None]`) and binds `None`; an inject with a view rebinds the global, so "here" in code and
-in prose always mean the newest message's view. Nothing is read from
+in prose always mean the newest message's view. The apps of the
+user's space (ADR-027 §5) ride the same message, a line after the
+stamp, not the system tail (amendment 2026-10-16): the tail sits
+ahead of the boot window, so a tail rewrite — a view on another
+space, a new memory category — would also rewrite the window's cache
+(§1.4); only the agent space's apps stay in the tail. The llm-only
+suffix is not persisted; the turn keeps the `[now: …]` line alone. Nothing is read from
 the space and nothing is written to it: there is no pointer object, no
 staleness age, no live re-read — the message IS the record of where
 the user was, durable in the chat and self-describing in every trace.
