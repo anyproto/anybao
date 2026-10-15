@@ -187,9 +187,10 @@ def choose_anchor(raw_turns, l1_chunks, prev_anchor, high_water=HIGH_WATER,
 
 def raw_tail(raw_turns, anchor):
     # ADR-007 §5
-    """The boot window's full-resolution slice: every turn from the
-    anchor seq on, oldest→newest; the anchor is also the auto-recall
-    deep-history guard boundary."""
+    """The boot window's raw slice — every turn from the anchor seq on.
+
+    Oldest→newest; the anchor is also the auto-recall deep-history
+    guard boundary."""
     if anchor is None:
         return []
     return [t for t in raw_turns if t.get("seq", 0) >= anchor]
