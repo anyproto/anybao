@@ -256,6 +256,51 @@ def test_anthropic_cache_breakpoint_on_conversation_end():
     assert req["system"] == [{"type": "text", "text": "S"}]
 
 
+def test_anthropic_caller_flagged_part_is_a_breakpoint_within_the_four():
+    # ADR-005 §1.4: a neutral text part flagged cache: true (the boot
+    # end) gets its own marker; with two system blocks that makes four
+    boot_end = {"type": "text", "text": "last boot reply", "cache": True}
+    msgs = [
+        {"role": "user", "parts": [{"type": "text", "text": "old"}]},
+        {"role": "assistant", "parts": [boot_end]},
+        {"role": "user", "parts": [{"type": "text", "text": "now"}]},
+    ]
+    req = LLM["AnthropicAdapter"]().build_request(msgs, ["S1", "S2"], [], "m", CLAUDE)
+    marks = [b for m in req["messages"] for b in m["content"] if "cache_control" in b]
+    assert [b["text"] for b in marks] == ["last boot reply", "now"]
+    assert all("cache_control" in b for b in req["system"])
+    assert "cache" not in req["messages"][1]["content"][0]       # the flag never hits the wire
+    # the neutral part itself is untouched
+    assert boot_end == {"type": "text", "text": "last boot reply", "cache": True}
+    # beyond the budget (three system blocks) the flag is dropped, the
+    # conversation end stays
+    req = LLM["AnthropicAdapter"]().build_request(msgs, ["S1", "S2", "S3"], [], "m", CLAUDE)
+    marks = [b["text"] for m in req["messages"] for b in m["content"] if "cache_control" in b]
+    assert marks == ["now"]
+    # cache: auto → the flag is inert
+    req = LLM["AnthropicAdapter"]().build_request(msgs, "S", [], "m", T())
+    assert not any("cache_control" in b for m in req["messages"] for b in m["content"])
+
+
+def test_openai_compat_caller_flagged_part_is_a_content_marker_on_marker_backends():
+    boot_end = {"type": "text", "text": "last boot reply", "cache": True}
+    msgs = [{"role": "assistant", "parts": [boot_end]},
+            {"role": "user", "parts": [{"type": "text", "text": "now"}]}]
+    wire = LLM["OpenAICompatAdapter"]().build_request(
+        msgs, "S", [], "m", T(cache="markers"))["messages"]
+    assert wire[1]["content"] == [{"type": "text", "text": "last boot reply",
+                                   "cache_control": {"type": "ephemeral"}}]
+    assert wire[2]["content"] == "now"
+    # the OpenRouter pass still marks the system text and the last message
+    req = LLM["_mark_openrouter_cache"]({"messages": wire})
+    assert req["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert req["messages"][2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert req["messages"][1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    # implicit prefix caching (cache: auto): plain text, no marker
+    wire = LLM["OpenAICompatAdapter"]().build_request(msgs, "S", [], "m", T())["messages"]
+    assert wire[1]["content"] == "last boot reply"
+
+
 def test_anthropic_cache_breakpoint_skips_thinking_and_keeps_it_verbatim():
     signed = {"type": "thinking", "thinking": "hmm", "signature": "SIG"}
     msgs = [{"role": "assistant", "parts": [

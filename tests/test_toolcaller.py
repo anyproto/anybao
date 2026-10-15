@@ -1413,3 +1413,28 @@ def test_the_raw_tail_anchor_is_carried_from_the_previous_turn_and_persisted():
     w = World([done_reply("ok")])
     run(w)
     assert "bootAnchor" not in w.turns[0]
+
+
+def test_the_boot_window_end_is_flagged_as_a_cache_breakpoint():
+    # ADR-005 §1.4: the last part of the boot window carries cache: true
+    # — run N+1 reads at that position what run N wrote; the current
+    # user message after it is never flagged
+    w = World([done_reply("ok")])
+
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 1, "userText": "old", "replies": ["r"]}])
+            return mod
+
+    w.__class__ = type("W5", (WithHistory,), {})
+    run(w)
+    msgs = w.llm_calls[0]["messages"]
+    assert msgs[0]["parts"][-1] == {"type": "text", "text": "[earlier context]", "cache": True}
+    assert "cache" not in msgs[1]["parts"][0]
+    # no window → nothing flagged
+    w = World([done_reply("ok")])
+    run(w)
+    assert all("cache" not in p for m in w.llm_calls[0]["messages"] for p in m["parts"])

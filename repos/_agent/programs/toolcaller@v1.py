@@ -1181,6 +1181,8 @@ def main(args):
                                     *hist.water_marks(boot_tokens))
         boot = hist.render_boot_window(turns, chunks, total_tokens=boot_tokens,
                                        anchor=anchor)
+        if boot:
+            boot[-1]["parts"][-1]["cache"] = True   # the boot-end breakpoint
         plan = ar.plan(c, space, user_text, anchor)
     # the window's estimated size, recorded beside turn 1's real usage
     # so the estimator's drift is visible in traces (ADR-006 §2)
