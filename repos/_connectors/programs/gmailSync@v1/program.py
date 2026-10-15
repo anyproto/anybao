@@ -34,7 +34,7 @@ _FUEL_FLOOR = 4_000_000_000   # checkpoint when remaining drops below;
 # checked at tick entry, between list pages, and per MESSAGE in the
 # write loops — one message (fetch+clean+write) stays well under this,
 # so a check failure can never strand a half-converted chunk. The
-# budget is per RUN: a conversation calling sync_now shares its 50B
+# budget is per RUN: a conversation calling sync_now shares its 250B
 # across every turn (seen live: two runs died at the wall before the
 # entry/per-message checks existed).
 _HTML_CAP = 300_000           # pathological bodies; clean_html input cap
@@ -939,7 +939,7 @@ def sync_now(space, q=None, max_messages=None):
     search syntax (exclusions are negative terms like -from:x; falls
     back to newer_than:1y ONLY on a never-armed sync — an existing
     sync's coverage is status().q). FUEL: each synced message costs ~0.3-0.6B of
-    the RUN's 50B budget, shared with every other turn of a
+    the RUN's 250B budget, shared with every other turn of a
     conversation — from chat, pass max_messages (≤50) and call
     repeatedly, or better register the cron and let ticks run alone.
     The tick self-checkpoints on low fuel (fuelStop: True) — nothing

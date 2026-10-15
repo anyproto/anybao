@@ -8,7 +8,7 @@ as the doc surface), ADR-012 §2/§4/§6 (the backlog governor,
 `clean_html`, the vendored trio), ADR-020 (file input), ADR-026 §4
 (the guest `Blob`)
 Amends: ADR-002 §4 (tier 1b gains `pypdf`; the codec pre-imports),
-ADR-003 §2 (fuel is a metric and an advisory budget, not a trap),
+ADR-003 §2 (the per-run fuel budget is 250 G),
 ADR-012 §4 (the generic passes move here; gmailSync keeps the email
 passes) and §6 (the vendored set), ADR-020 (the "guest's job"
 conversion home), ADR-026 Consequences (`pdf.text` is a guest
@@ -35,9 +35,8 @@ separate feature.
 The constraint is the kernel: guest code is CPython in wasm, so a
 converter must be pure Python and deterministic. The probe ran pypdf
 in the kernel at ~3× native, with output identical to host CPython —
-and found the cliff elsewhere: the 50 G per-run fuel trap, about 5 s
-of compute, cut off a 117-page document. Wall-clock deadlines already
-bound every run, so the trap guards nothing the deadline does not.
+and found the cliff elsewhere: the 50 G per-run fuel budget, about
+4.5 s of compute, cut off a 117-page document.
 
 ## Decision
 
@@ -121,18 +120,13 @@ model-native read (ADR-020) instead.
   pure-Python alternative spends ~45 G on AES-256 key derivation
   alone; one rule for all handlers keeps the refusal predictable.
 
-### 6. Fuel is a metric (amends ADR-003 §2)
+### 6. The per-run fuel budget is 250 G (amends ADR-003 §2)
 
-The store runs with unlimited fuel: no `FuelExhausted` trap. Metering
-stays on — `fuel_used` is recorded per run exactly as before, the
-compute-cost metric ADR-003 §2 names. The runaway bound is the
-wall-clock deadline every run already carries (serve 1200 s,
-`anyrt run --timeout-s`), and the interrupt.
-
-`fuel.state` keeps its shape. `budget` stays 50 G as an **advisory**
-pacing figure and `remaining` is `budget − used`, floored at 0:
-cooperative batch jobs (gmailSync's backlog governor, ADR-012 §2)
-still size their slices by it, and nothing traps when it reaches 0.
+`FUEL_PER_CELL` is 250 G, about 20–25 s of pure compute: a ~100-page
+text PDF converts inside one run with room left for the conversation
+around it, and fuel stays the deterministic runaway ceiling.
+`FuelExhausted`, `fuel.state` and gmailSync's backlog governor
+(ADR-012 §2) are unchanged; the governor's slices simply grow.
 
 ### 7. Kernel amendment (ADR-002 §4, ADR-012 §6)
 
@@ -167,11 +161,9 @@ still size their slices by it, and nothing traps when it reaches 0.
   the native read as the better path for layout-heavy files.
 - The kernel grows 5.6 MB (23.0 → 28.6 MB), and so does every
   `anyrt` binary.
-- A run's compute is bounded by time alone. A text page costs ~0.4 G
-  fuel (~40 ms), a figure-heavy one up to ~3.6 G; a 117-page document
-  converts in about 5 s.
-- A runaway cell burns until its deadline instead of stopping at 50 G:
-  up to 20 minutes of one core under serve.
+- A text page costs ~0.4 G fuel (~40 ms), a figure-heavy one up to
+  ~3.6 G; a 117-page document (~50 G) converts in one run.
+- A runaway cell stops after ~20–25 s of compute instead of ~4.5 s.
 
 ## Open questions
 
