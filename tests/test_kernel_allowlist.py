@@ -76,6 +76,7 @@ USES = {
     "ast": "ast.parse('x = 1')",
     "bs4": "bs4.BeautifulSoup('<b>x</b>', 'html.parser').text",
     "markdownify": "markdownify.markdownify('<b>x</b>')",
+    "pypdf": "len(pypdf.PdfWriter().pages)",
 }
 
 

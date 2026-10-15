@@ -8,7 +8,7 @@ own licenses; the project's MIT license does not replace them.
 |---|---|
 | Rust runtime dependencies, including the optional shell feature | [Locked dependency notices](licenses/RUST_DEPENDENCIES.md) |
 | Embedded Python runtime and its Rust dependencies | [Kernel sources and notices](licenses/KERNEL_COMPONENTS.md) |
-| Beautiful Soup, Soup Sieve, markdownify, six, typing_extensions | [Versions](runtime/guest/VENDORED.md) and [original notices](runtime/guest/licenses/) |
+| Beautiful Soup, Soup Sieve, markdownify, pypdf, six, typing_extensions | [Versions](runtime/guest/VENDORED.md) and [original notices](runtime/guest/licenses/) |
 
 Binary release archives include this file, `LICENSE`, `licenses/`, and
 `runtime/guest/licenses/`. Preserve the applicable notices when

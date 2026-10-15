@@ -30,10 +30,33 @@ import decimal  # noqa: F401
 import difflib  # noqa: F401
 import email.header  # noqa: F401  (tier-1, ADR-012 §6; email is lazy —
 import email.utils  # noqa: F401   literal submodule imports bundle them)
-import encodings.ascii  # noqa: F401  (codecs the admitted modules load lazily:
-import encodings.cp437  # noqa: F401   zipfile names, email/quopri bodies —
-import encodings.latin_1  # noqa: F401  componentize-py bundles only what it sees)
+
+# codecs the admitted modules load lazily — componentize-py bundles only
+# what it sees: zipfile names, email/quopri bodies, pypdf strings (ADR-031 §7)
+import encodings.ascii  # noqa: F401
+import encodings.big5  # noqa: F401
+import encodings.charmap  # noqa: F401
+import encodings.cp437  # noqa: F401
+import encodings.cp932  # noqa: F401
+import encodings.cp950  # noqa: F401
+import encodings.cp1250  # noqa: F401
+import encodings.cp1252  # noqa: F401
+import encodings.cp1254  # noqa: F401
+import encodings.cp1257  # noqa: F401
+import encodings.euc_jp  # noqa: F401
+import encodings.euc_kr  # noqa: F401
+import encodings.gb2312  # noqa: F401
+import encodings.gbk  # noqa: F401
+import encodings.iso8859_15  # noqa: F401
+import encodings.latin_1  # noqa: F401
+import encodings.mac_roman  # noqa: F401
+import encodings.shift_jis  # noqa: F401
 import encodings.utf_16  # noqa: F401
+import encodings.utf_16_be  # noqa: F401
+import encodings.utf_16_le  # noqa: F401
+import encodings.utf_32  # noqa: F401
+import encodings.utf_32_be  # noqa: F401
+import encodings.utf_32_le  # noqa: F401
 import enum  # noqa: F401
 import fnmatch  # noqa: F401
 import fractions  # noqa: F401
@@ -80,6 +103,7 @@ import zipfile  # noqa: F401
 
 import bs4  # noqa: F401  (vendored, ADR-012 §6 — with soupsieve/typing_extensions)
 import markdownify  # noqa: F401  (vendored, ADR-012 §6 — with six)
+import pypdf  # noqa: F401  (vendored, ADR-031 §7)
 import wit_world
 
 
@@ -917,7 +941,7 @@ _PROXIES = {
 # once against the kernel image; deterministic, no ambient authority).
 # Entries are dotted names: an entry admits itself and its submodules
 # (`urllib.parse`, never `urllib.request`). inspect: ADR-010 §2; ast:
-# ADR-013 §3; html/email + the vendored trio: ADR-012 §6; random/uuid/
+# ADR-013 §3; html/email + the vendored set: ADR-012 §6, ADR-031 §7; random/uuid/
 # secrets are pure on the WASI floor. six/typing_extensions are
 # bundled as internals of the vendored packages but stay un-importable.
 _ALLOWED = {
@@ -939,8 +963,8 @@ _ALLOWED = {
     "uuid", "random", "secrets",
     # introspection
     "inspect", "ast",
-    # vendored pure-Python (runtime/guest/, ADR-012 §6)
-    "bs4", "soupsieve", "markdownify",
+    # vendored pure-Python (runtime/guest/, ADR-012 §6, ADR-031 §7)
+    "bs4", "soupsieve", "markdownify", "pypdf",
 }
 
 # refused with a pointer (ADR-002 §4): the message names where the
