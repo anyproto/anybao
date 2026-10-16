@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -262,6 +262,15 @@ enum RefKind {
     Undeclared,
 }
 
+/// ADR-032 §8: what a revoked run's effects get — no request was made,
+/// or its late result was dropped.
+fn revoked_failure(name: &str) -> EffectFailure {
+    EffectFailure {
+        type_: "revoked".into(),
+        message: format!("{name}: the run was revoked (the serve is draining)"),
+    }
+}
+
 pub struct Broker {
     pub writer: TraceWriter,
     /// space-backed module resolution (serve); None = programs_dir only
@@ -302,6 +311,10 @@ pub struct Broker {
     /// kills its child on it, ADR-024 §1).
     #[allow(dead_code)] // consulted by the serve wiring in main.rs (next round)
     pub interrupt: Arc<AtomicBool>,
+    /// Revocation (ADR-032 §8 step 5): once set, `call` issues no new
+    /// request and drops a result that lands late. The serve's drain
+    /// sets it at its deadline; the trace writer shares it.
+    pub revoked: Arc<AtomicBool>,
     /// The running cell's wall deadline, set by the runner; `sh.run`
     /// clamps its timeout to it (ADR-024 §1). None = no cell budget.
     pub deadline: Option<Instant>,
@@ -530,6 +543,7 @@ impl Broker {
             activity: None,
             fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
+            revoked: Arc::new(AtomicBool::new(false)),
             deadline: None,
             classifier,
             trace_store: None,
@@ -879,6 +893,9 @@ impl Broker {
     }
 
     pub fn call(&mut self, name: &str, payload: Value) -> Result<Value, EffectFailure> {
+        if self.revoked.load(Ordering::Relaxed) {
+            return Err(revoked_failure(name));
+        }
         // ADR-026 §4: `blob.put`'s normaliser materialises — the bytes go
         // to the directory here, the recorded input is the ref (its key
         // is content-addressed; replay re-mints the same ref).
@@ -1045,6 +1062,10 @@ impl Broker {
         self.bump(class);
         let t0 = Instant::now();
         let result = self.execute(name, &payload);
+        if self.revoked.load(Ordering::Relaxed) {
+            // landed after the drain deadline: dropped, never recorded
+            return Err(revoked_failure(name));
+        }
         let dur_ms = t0.elapsed().as_millis() as i64;
         let mut meta = Map::new();
         meta.insert("durMs".into(), json!(dur_ms));
@@ -1174,7 +1195,17 @@ impl Broker {
                     .get("seconds")
                     .and_then(|s| s.as_f64())
                     .unwrap_or(0.0);
-                std::thread::sleep(std::time::Duration::from_secs_f64(secs.min(300.0)));
+                // a drain's hard break must not wait out the timer
+                // (ADR-032 §8 step 4): the interrupt ends the wait
+                let until =
+                    Instant::now() + std::time::Duration::from_secs_f64(secs.clamp(0.0, 300.0));
+                while !self.interrupt.load(Ordering::Relaxed) {
+                    let now = Instant::now();
+                    if now >= until {
+                        break;
+                    }
+                    std::thread::sleep((until - now).min(std::time::Duration::from_millis(50)));
+                }
                 Ok(json!({"slept": payload.get("seconds").cloned().unwrap_or(Value::Null)}))
             }
             "env.get" => {
@@ -1736,7 +1767,7 @@ impl Broker {
                         )
                     }));
                 }
-                if self.interrupt.load(std::sync::atomic::Ordering::Relaxed) {
+                if self.interrupt.load(Ordering::Relaxed) || self.revoked.load(Ordering::Relaxed) {
                     return Err(url_error(format!("{final_url}: stream interrupted")));
                 }
                 match reader.read(&mut buf) {
@@ -3608,6 +3639,42 @@ mod tests {
             b2.writer.records[1]["meta"]["engine"]["backend"],
             "cranelift-jit"
         );
+    }
+
+    /// ADR-032 §8 step 5: a revoked broker issues nothing and records
+    /// nothing; a result landing after revocation is dropped.
+    #[test]
+    fn revoked_calls_make_no_request_and_drop_late_results() {
+        let mut b = make_broker("rv1");
+        b.revoked.store(true, Ordering::Relaxed);
+        let err = b.call("uuid4", json!({})).unwrap_err();
+        assert_eq!(err.type_, "revoked");
+        assert_eq!(b.writer.records.len(), 1, "header only");
+
+        let mut b = make_broker("rv2");
+        let flag = b.revoked.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let err = b.call("sleep", json!({"seconds": 0.3})).unwrap_err();
+        t.join().unwrap();
+        assert_eq!(err.type_, "revoked");
+        assert_eq!(b.writer.records.len(), 1, "the late result is not recorded");
+    }
+
+    /// ADR-032 §8 step 4: `sleep` waits on the run's interrupt.
+    #[test]
+    fn sleep_ends_on_the_interrupt() {
+        let mut b = make_broker("sl1");
+        let flag = b.interrupt.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let t0 = Instant::now();
+        b.call("sleep", json!({"seconds": 30})).unwrap();
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

@@ -73,6 +73,6 @@ pub(crate) mod bindings {
     });
 }
 
-pub use config::{Config, ConfigBuilder};
+pub use config::{Config, ConfigBuilder, ServeMode};
 pub use runner::{run_program, Cage, RunOutcome};
-pub use serve::{start, AgentHandle, RunCtx};
+pub use serve::{start, AgentHandle, DrainReport, RunCtx};

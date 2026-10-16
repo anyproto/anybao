@@ -384,12 +384,31 @@ without a restart (ADR-009). Baking them in couples two release cycles.
   returns, no run sends a new request to the `any` server or a
   provider. A request already on the wire may still complete
   server-side.
+
+  Implementation notes (amended 2026-10-16): admission closing means
+  the chat watch disconnects as on standby (nothing enters the
+  seen-set, so the next host's snapshot answers the backlog), and the
+  ticker, event triggers, `POST /run` and `AgentHandle::run` start
+  nothing. The revoked flag is one per serve, shared by every run's
+  broker and trace writer: the drain revokes every live run at once,
+  so a per-run flag would carry the same bit. Revocation also covers
+  the run's own host-side writes, which are requests to the `any`
+  server too: the trace writer stops streaming and refuses `dump`,
+  `RunCtx::run` skips the summary, and the conversation thread posts
+  nothing. Streams (`http` with `stream`) check the interrupt and the
+  revoked flag between chunks, under their idle read timeout.
+  The handle methods route through the control API's own handler, so
+  the two surfaces cannot drift.
 - Serve mode: `[agent] mode = "full" | "chat-only"`, default `full`.
   `chat-only` keeps the trigger ticker, because it also probes overlay
   readiness, drains conversations deferred during boot (ADR-009 §8)
   and reconciles trigger ownership. It stops firing cron and once
   triggers. The retention thread is skipped. Presence and election
   stay, so a phone still beats and can hand off its claim.
+  *Amended in implementation (2026-10-16):* chat-only also starts no
+  ADR-018 event source (event triggers are triggers, and need a process
+  that outlives a turn), and it adopts no ownerless trigger record even
+  while active: it would own records it never fires.
 
 ### 9. The phone as host (relates ADR-015, ADR-025)
 
@@ -502,3 +521,9 @@ CI job) so the fallback is a flag, not a project.
 1. Android `memory_init_cow`: confirm on the Pixel that `memfd_create`
    is allowed in the app's seccomp profile, and keep CoW images on if
    so.
+2. §9's hand-off sends `activate {app: "bao", peerId}` for another
+   device. `anyapi::Client::activate_device` documents the server's
+   `POST /v1/devices/activate` as claiming for THIS device only ("no
+   remote activation, SYN-165 v1"). Confirm the server accepts
+   `peerId`, or file the upstream ticket; the runtime ships only the
+   target choice (`election::handoff_target`) until then.

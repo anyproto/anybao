@@ -232,6 +232,13 @@ RunCtx}`; `runner::{Cage, RunOutcome, run_program}`; `replay`;
   acceptable for its callers (trigger polls and election reads
   tolerate the latency). Loopback-only, same trust domain as the CLI.
 
+*Amended 2026-10-16 (ADR-032 §8):* `[agent] control = false` turns
+the control listener off (`control_port = 0` still means an ephemeral
+port); `AgentHandle` carries the control operations as methods
+(`status`, `break_run`, `run`, `set_trigger_enabled`) and gains
+`stop_with_drain(deadline)`; `[agent] mode = "chat-only"` serves
+conversations only.
+
 ### 7. Capability forward-compat (note, not scope)
 
 `module.resolve` already records `{spaceId, sourceHash}` per load;

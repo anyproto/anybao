@@ -10,7 +10,7 @@ use crate::anyapi::{AnyError, Client};
 use crate::broker::{
     Broker, DeclaredCredentials, PresenceState, SecretSource, SharedMailbox, SharedPresence,
 };
-use crate::config::Config;
+use crate::config::{Config, ServeMode};
 use crate::resolver::{AnyModuleResolver, ModuleResolver};
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
@@ -1511,14 +1511,141 @@ fn run_stamp(run_id: &str, spec: &str, args: &Value) -> Value {
 /// The embedder's handle on a running agent (ADR-009 §6): `ctx` is the
 /// per-turn API (`RunCtx::run`); `stop()` flips the shutdown flag and
 /// joins the watch/ticker/control threads. In-flight conversation
-/// threads are not joined — a running turn finishes on its own.
+/// threads are not joined — a running turn finishes on its own. The
+/// control API's operations are methods here too (ADR-032 §8), so an
+/// embedder needs no socket to talk to itself.
 pub struct AgentHandle {
     pub ctx: Arc<RunCtx>,
+    shared: Arc<Shared>,
     shutdown: Arc<AtomicBool>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
+/// What `stop_with_drain` did with the runs live when it began
+/// (ADR-032 §8): ended after the soft break, after the hard break, or
+/// revoked at the deadline and left to finish into a closed broker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DrainReport {
+    pub drained: usize,
+    pub interrupted: usize,
+    pub revoked: usize,
+}
+
+/// Steps 2–5 of the drain over the live-run table: soft break, hard
+/// break at half the deadline, revoke at the deadline.
+fn drain_runs(
+    live_runs: &Mutex<BTreeMap<String, crate::triggers::LiveRun>>,
+    revoked: &AtomicBool,
+    deadline: Duration,
+) -> DrainReport {
+    let t0 = std::time::Instant::now();
+    let alive = || -> std::collections::BTreeSet<String> {
+        live_runs.lock().unwrap().keys().cloned().collect()
+    };
+    let wait_until = |until: Duration| {
+        while t0.elapsed() < until && !live_runs.lock().unwrap().is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let initial = alive();
+    // 2. soft: a `break` item in each mailbox, the run stops at its
+    // next turn boundary (ADR-005 §3)
+    for live in live_runs.lock().unwrap().values() {
+        crate::triggers::break_live_run(live, false);
+    }
+    wait_until(deadline / 2);
+    let after_soft: std::collections::BTreeSet<String> =
+        alive().intersection(&initial).cloned().collect();
+    // 3. hard: the interrupt flag; the epoch callback traps it in Wasm,
+    // and host waits (sleep, streams, sh.run) observe it (step 4)
+    for (id, live) in live_runs.lock().unwrap().iter() {
+        if after_soft.contains(id) {
+            crate::triggers::break_live_run(live, true);
+        }
+    }
+    wait_until(deadline);
+    let after_hard: std::collections::BTreeSet<String> =
+        alive().intersection(&after_soft).cloned().collect();
+    // 5. revoke: the brokers issue no new request and drop late results
+    revoked.store(true, Ordering::Relaxed);
+    DrainReport {
+        drained: initial.len() - after_soft.len(),
+        interrupted: after_soft.len() - after_hard.len(),
+        revoked: after_hard.len(),
+    }
+}
+
 impl AgentHandle {
+    /// `GET /status`: what the next presence beat would carry.
+    pub fn status(&self) -> Result<Value> {
+        handle_control(&self.shared, &self.ctx, "GET", "/status", "")
+    }
+
+    /// `POST /break/<runId>`: break any run in flight (ADR-005 §3).
+    pub fn break_run(&self, run_id: &str, hard: bool) -> Result<Value> {
+        let body = json!({"hard": hard}).to_string();
+        handle_control(
+            &self.shared,
+            &self.ctx,
+            "POST",
+            &format!("/break/{run_id}"),
+            &body,
+        )
+    }
+
+    /// `POST /triggers/<id>/enable|disable`, written through to the
+    /// dataset (ADR-006 §4).
+    pub fn set_trigger_enabled(&self, id: &str, enabled: bool) -> Result<Value> {
+        let verb = if enabled { "enable" } else { "disable" };
+        handle_control(
+            &self.shared,
+            &self.ctx,
+            "POST",
+            &format!("/triggers/{id}/{verb}"),
+            "",
+        )
+    }
+
+    /// `POST /run` for a deployed program, on its own run thread
+    /// (ADR-032 §6); join for the CLI run envelope.
+    pub fn run(&self, program: &str, args: Value) -> std::thread::JoinHandle<Result<Value>> {
+        let (ctx, program) = (self.ctx.clone(), program.to_string());
+        crate::runner::spawn_run_thread("anyrt-handle-run", move || {
+            if ctx.draining.load(Ordering::Relaxed) {
+                anyhow::bail!("draining: no new runs (ADR-032 §8)");
+            }
+            ctx.run_value(&program, &args, None)
+        })
+    }
+
+    /// Stop before the `any` server this serve depends on goes away
+    /// (suspend, sign-out), ADR-032 §8: close admission, soft-break
+    /// every live run, hard-break at half the deadline, revoke what is
+    /// left at the deadline, then stop the service threads within what
+    /// remains. After it returns no run sends a new request to the
+    /// `any` server or a provider; one already on the wire may still
+    /// complete server-side.
+    pub fn stop_with_drain(mut self, deadline: Duration) -> DrainReport {
+        let t0 = std::time::Instant::now();
+        // 1. admission
+        self.ctx.draining.store(true, Ordering::Relaxed);
+        let report = drain_runs(&self.ctx.live_runs, &self.ctx.revoked, deadline);
+        // 6. service threads, each join bounded by what is left
+        self.shutdown.store(true, Ordering::Relaxed);
+        for t in self.threads.drain(..) {
+            while !t.is_finished() && t0.elapsed() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            }
+        }
+        #[cfg(feature = "shell")]
+        crate::shell::kill_all();
+        info!("drained: {report:?} in {:.2}s", t0.elapsed().as_secs_f64());
+        report
+    }
+
     /// The lib embedder's secret write (ADR-021 §4): the same two-step
     /// row write the boot seeds use — no restart, the next credentialed
     /// effect reads the row. Empty `value` deletes. Errors on a server
@@ -2072,14 +2199,22 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         live_runs: Mutex::new(BTreeMap::new()),
         status: Default::default(),
         shutdown: shutdown.clone(),
+        draining: Arc::new(AtomicBool::new(false)),
+        revoked: Arc::new(AtomicBool::new(false)),
     });
 
+    // the ticker stays in chat-only (ADR-032 §8): it also probes overlay
+    // readiness, drains the boot backlog and reconciles trigger records
     let mut threads = vec![
-        control_api(shared.clone(), ctx.clone(), shutdown.clone()),
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
-        retention_thread(ctx.clone(), shutdown.clone()),
         presence_thread(shared.clone(), ctx.clone(), shutdown.clone()),
     ];
+    if ctx.cfg.control {
+        threads.push(control_api(shared.clone(), ctx.clone(), shutdown.clone()));
+    }
+    if ctx.cfg.mode == ServeMode::Full {
+        threads.push(retention_thread(ctx.clone(), shutdown.clone()));
+    }
     if election.enabled {
         threads.push(election_thread(
             shared.clone(),
@@ -2101,7 +2236,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
                 // chat-responder record (ADR-018 §3) — not merely muted:
                 // nothing lands in the seen-set, so a later takeover's
                 // snapshot yields the whole missed backlog (ADR-015 §3)
-                if !answers_chat(&shared) {
+                if !answers_chat(&shared) || ctx.draining.load(Ordering::Relaxed) {
                     sliced_sleep(Duration::from_millis(500), &stop);
                     continue;
                 }
@@ -2118,6 +2253,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
 
     Ok(AgentHandle {
         ctx,
+        shared,
         shutdown,
         threads,
     })
@@ -2227,6 +2363,13 @@ pub struct RunCtx {
     pub code_cache: Option<crate::codecache::CodeCache>,
     /// the serve's shutdown flag: the compile job is skipped once set
     pub shutdown: Arc<AtomicBool>,
+    /// admission closed (ADR-032 §8 step 1): no new conversation,
+    /// trigger fire or control run; the chat stays unanswered for
+    /// whichever device hosts next
+    pub draining: Arc<AtomicBool>,
+    /// revocation (ADR-032 §8 step 5), shared by every run's broker and
+    /// trace writer: no new request to the `any` server or a provider
+    pub revoked: Arc<AtomicBool>,
 }
 
 impl RunCtx {
@@ -2344,6 +2487,8 @@ impl RunCtx {
             self.aliases.clone(),
         )));
         b.code_cache = self.code_cache.clone();
+        b.revoked = self.revoked.clone();
+        b.writer.revoked = Some(self.revoked.clone());
         b
     }
 
@@ -2383,6 +2528,10 @@ impl RunCtx {
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
         self.live_runs.lock().unwrap().remove(&run_id);
         let mut outcome = outcome?;
+        if self.revoked.load(Ordering::Relaxed) {
+            // ADR-032 §8: no trace write, no summary — nothing goes out
+            anyhow::bail!("run {run_id} revoked at the drain deadline");
+        }
         // ADR-005 §3: a failed trailing log append leaves the run ok
         // and names itself in the result — surface it here, since the
         // chat wrapper never reads the value
@@ -2426,7 +2575,10 @@ impl RunCtx {
     /// idle would never run on a phone that gets suspended.
     pub fn fill_code_cache(&self, misses: &[crate::codecache::CodeMiss]) {
         let Some(cc) = &self.code_cache else { return };
-        if misses.is_empty() || self.shutdown.load(Ordering::Relaxed) {
+        if misses.is_empty()
+            || self.shutdown.load(Ordering::Relaxed)
+            || self.draining.load(Ordering::Relaxed)
+        {
             return;
         }
         let t0 = std::time::Instant::now();
@@ -2476,6 +2628,9 @@ impl RunCtx {
         let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
         self.live_runs.lock().unwrap().remove(&run_id);
         let mut outcome = outcome?;
+        if self.revoked.load(Ordering::Relaxed) {
+            anyhow::bail!("run {run_id} revoked at the drain deadline");
+        }
         let summary = outcome
             .broker
             .writer
@@ -2808,6 +2963,12 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
 /// ONE watcher lock: the watch thread and the ticker's backlog drain
 /// may race to start.
 fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
+    if ctx.draining.load(Ordering::Relaxed) {
+        // admission closed (ADR-032 §8): left unanswered in the chat,
+        // for whichever device hosts next
+        info!("draining: not answering {:?}", preview(&input.text));
+        return;
+    }
     let mailbox: SharedMailbox = Default::default();
     let interrupt = Arc::new(AtomicBool::new(false));
     {
@@ -2855,6 +3016,11 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
             Some(run_id),
             Some(&shared.chat_watch_id),
         );
+        if ctx.revoked.load(Ordering::Relaxed) {
+            // past the drain deadline (ADR-032 §8): nothing more goes out
+            shared.watcher.lock().unwrap().conversation_done(&ctx.chat);
+            return;
+        }
         // Take the run down FIRST: a message typed while the terminal
         // bubbles post must start a fresh run, not inject into this
         // dead mailbox (its id would enter `seen` and the message
@@ -3014,7 +3180,10 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
         // shutdown and stand-down (ADR-015 §3) are observed per frame —
         // the read itself blocks until the server's next event/heartbeat
         // (ADR-009 open Q3); returning drops the stream
-        if stop.load(Ordering::Relaxed) || !answers_chat(shared) {
+        if stop.load(Ordering::Relaxed)
+            || !answers_chat(shared)
+            || ctx.draining.load(Ordering::Relaxed)
+        {
             return Ok(());
         }
         match frame.event.as_str() {
@@ -3256,7 +3425,13 @@ fn trigger_ticker(
                     }
                 }
             }
-            let active = ctx.verdict.lock().unwrap().active;
+            if ctx.draining.load(Ordering::Relaxed) {
+                continue; // admission closed (ADR-032 §8)
+            }
+            let chat_only = ctx.cfg.mode == ServeMode::ChatOnly;
+            // chat-only adopts no ownerless trigger (ADR-032 §8): it would
+            // own records it never fires
+            let active = ctx.verdict.lock().unwrap().active && !chat_only;
             if answers_chat(&shared) {
                 // answer user messages deferred while overlays were syncing
                 let deferred: Vec<ChatInput> = std::mem::take(&mut *shared.backlog.lock().unwrap());
@@ -3324,8 +3499,13 @@ fn trigger_ticker(
                             &trigger_to_record(t),
                         );
                     }
-                    reconcile_event_sources(&shared, &ctx, &stop);
+                    if !chat_only {
+                        reconcile_event_sources(&shared, &ctx, &stop);
+                    }
                 }
+            }
+            if chat_only {
+                continue; // no cron, once or event trigger fires (ADR-032 §8)
             }
             let due: Vec<Trigger> = {
                 let mut reg = shared.triggers.lock().unwrap();
@@ -3346,6 +3526,9 @@ fn trigger_ticker(
             };
             for t in due {
                 let rr = run_trigger_program(&ctx, &t.id, &t.program, &t.args);
+                if ctx.revoked.load(Ordering::Relaxed) {
+                    return;
+                }
                 finish_run(&shared, &ctx, &t.id, &rr);
                 ctx.fill_code_cache(&rr.code_misses);
             }
@@ -3519,7 +3702,13 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, space: &str, object_id: &str, recor
             t.id,
             record.get("id").and_then(|v| v.as_str()).unwrap_or("")
         );
+        if ctx.draining.load(Ordering::Relaxed) {
+            return;
+        }
         let rr = run_trigger_program(ctx, &t.id, &t.program, &args);
+        if ctx.revoked.load(Ordering::Relaxed) {
+            return;
+        }
         finish_run(shared, ctx, &t.id, &rr);
         ctx.fill_code_cache(&rr.code_misses);
     }
@@ -3943,6 +4132,9 @@ fn handle_control(
         // first so a long run never stalls the ticker.
         ("POST", ["run"]) => {
             drop(reg);
+            if ctx.draining.load(Ordering::Relaxed) {
+                anyhow::bail!("draining: no new runs (ADR-032 §8)");
+            }
             let req: Map<String, Value> = serde_json::from_str(body)
                 .context("body must be JSON: {program | source, args?}")?;
             let source = req.get("source").and_then(|v| v.as_str());
@@ -3957,6 +4149,72 @@ fn handle_control(
             ctx.run_value(spec, &args, source)
         }
         _ => anyhow::bail!("no route: {method} {path}"),
+    }
+}
+
+/// ADR-032 §8: the drain's run phases against simulated runs — one
+/// heeds the soft break, one only the hard break, one neither.
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+    use crate::triggers::LiveRun;
+
+    fn spawn_run(table: &Arc<Mutex<BTreeMap<String, LiveRun>>>, id: &str, heeds: &'static str) {
+        let live = LiveRun::default();
+        table.lock().unwrap().insert(id.into(), live.clone());
+        let (table, id) = (table.clone(), id.to_string());
+        std::thread::spawn(move || loop {
+            let soft = live
+                .mailbox
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "break");
+            let hard = live.interrupt.load(Ordering::Relaxed);
+            if (heeds == "soft" && soft) || (heeds == "hard" && hard) {
+                table.lock().unwrap().remove(&id);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        });
+    }
+
+    #[test]
+    fn soft_then_hard_then_revoke() {
+        let table = Arc::new(Mutex::new(BTreeMap::new()));
+        spawn_run(&table, "run_soft", "soft");
+        spawn_run(&table, "run_hard", "hard");
+        spawn_run(&table, "run_stuck", "never");
+        let revoked = AtomicBool::new(false);
+        let t0 = std::time::Instant::now();
+        let report = drain_runs(&table, &revoked, Duration::from_millis(400));
+        assert_eq!(
+            report,
+            DrainReport {
+                drained: 1,
+                interrupted: 1,
+                revoked: 1
+            }
+        );
+        assert!(revoked.load(Ordering::Relaxed));
+        let took = t0.elapsed();
+        assert!(took >= Duration::from_millis(400) && took < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn nothing_live_returns_at_once() {
+        let table = Mutex::new(BTreeMap::new());
+        let revoked = AtomicBool::new(false);
+        let t0 = std::time::Instant::now();
+        assert_eq!(
+            drain_runs(&table, &revoked, Duration::from_secs(10)),
+            DrainReport::default()
+        );
+        assert!(t0.elapsed() < Duration::from_secs(1));
+        assert!(
+            revoked.load(Ordering::Relaxed),
+            "late starters are revoked too"
+        );
     }
 }
 
