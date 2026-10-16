@@ -315,6 +315,38 @@ Expected effect: from the second run of a program version, a
 toolcaller run drops from ~4 G to ~0.5 G plus ~0.1 to 0.3 G per model
 cell, on every platform.
 
+Implementation notes (amended 2026-10-16):
+
+- The export returns empty bytes for source that does not compile
+  (never a valid marshal), so the WIT signature stays `list<u8>` and a
+  trap is never the error channel. `use()` and the export share one
+  `_compile_program(source, filename)`, so the cached object is the
+  one a miss would have built.
+- The compile job's instantiate spends from the first key's budget.
+  A key that traps (budget, deadline) drops its Store; the next key
+  instantiates a fresh one.
+- Where it runs: after the chat reply is posted (conversation
+  thread), after `finish_run` (trigger and event-source runs), before
+  the control API's `POST /run` response (once per program version;
+  never for an inline `source`, whose every edit would be a new key),
+  and after `anyrt run` prints its result. Replays note no misses: the
+  recorded resolve output is returned without running the hook.
+- `Config.code_cache_dir`: `Config::load` sets
+  `<config dir>/cache/code` (`/cache/` is gitignored at the repo
+  root); `ConfigBuilder::code_cache_dir` for embedders; unset = no
+  cache, no `code`, no `codeCache` meta.
+- The `code` field is a text spill only as part of the whole resolve
+  output: the trace spills a record's output as one unit (ADR-001
+  §7), `source` included, so it is the output, not each field, that
+  is content-addressed.
+- Measured (2026-10-16, M-series Mac, `code_cache_tests`): loading the
+  five conversation programs (`any@v1`, `llm@v1`, `toolcaller@v1`,
+  `history@v1`, `autorecall@v1`) through a loader program costs
+  3.09 G fuel cold and 0.16 G warm (19×); a strict replay of the warm
+  run spends exactly its fuel with the cache gone; with no cache
+  configured a run spends the same fuel as a cold run. A full
+  toolcaller run (model cells included) is not measured yet.
+
 Baking shipped programs into the kernel snapshot was considered and
 rejected. Programs are space-resident and deployed after a release
 without a restart (ADR-009). Baking them in couples two release cycles.

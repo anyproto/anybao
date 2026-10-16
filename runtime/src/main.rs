@@ -493,6 +493,12 @@ fn run_cmd(spec: String, args: Value, opts: RunOpts, how: RunHow) -> Result<()> 
     broker.runtime = runtime;
     broker.oauth = Some(oauth_state);
     broker.trace_store = Some(store.clone());
+    // the compiled-code cache beside the config file (ADR-032 §7)
+    let code_cache = host
+        .code_cache_dir
+        .as_deref()
+        .map(|d| anyrt::codecache::CodeCache::new(d, &cage.kernel_sha256));
+    broker.code_cache = code_cache.clone();
     match &how {
         RunHow::Live => {}
         RunHow::Mock(spec_v) => {
@@ -538,6 +544,10 @@ fn run_cmd(spec: String, args: Value, opts: RunOpts, how: RunHow) -> Result<()> 
         "durationMs": out.duration_ms, "fuelUsed": out.fuel_used,
         "value": out.value, "error": out.error})
     );
+    // the result is out: now the compile job (ADR-032 §7)
+    if let Some(cc) = &code_cache {
+        runner::compile_code(&cage, cc, &out.broker.code_misses, &AtomicBool::new(false));
+    }
     if out.status != "ok" {
         std::process::exit(1);
     }

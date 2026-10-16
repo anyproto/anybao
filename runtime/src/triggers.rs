@@ -76,6 +76,9 @@ pub struct RunResult {
     /// Whether the run recorded any mutating effect — a miss-deferred
     /// message is re-run only when it did not (ADR-009 §8).
     pub mutated: bool,
+    /// Code-cache keys the run missed (ADR-032 §7): the caller hands
+    /// them to `RunCtx::fill_code_cache` once the run's output is out.
+    pub code_misses: Vec<crate::codecache::CodeMiss>,
 }
 
 pub struct Scheduler {
@@ -1517,6 +1520,7 @@ mod tests {
             missing_secrets: Vec::new(),
             missing_programs: Vec::new(),
             mutated: false,
+            code_misses: Vec::new(),
         };
         for _ in 0..3 {
             sched.record_run(&mut tr, &fail);

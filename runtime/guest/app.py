@@ -74,6 +74,7 @@ import io as _io  # (guest sees the proxy: minus open/open_code/FileIO)
 import ipaddress  # noqa: F401
 import itertools  # noqa: F401
 import json
+import marshal  # the compiled-code cache (ADR-032 §7)
 import math  # noqa: F401
 import mimetypes as _mimetypes  # (guest sees the proxy: built-in table only)
 import operator  # noqa: F401
@@ -1366,6 +1367,13 @@ def span(name=None, kind=None):
 _module_cache: dict = {}   # (objectId, marker) -> module object
 
 
+def _compile_program(source, filename):
+    """The one compile of program source (ADR-032 §7): use() on a miss
+    and the compile-module export share it, so a cached code object is
+    the one use() would have built (same flags, same filename)."""
+    return compile(source, filename, "exec")
+
+
 def _bound_use(owner):
     """A use() carrying its OWNER's identity (ADR-004 §2.4/§5): every
     loaded module gets its own binding, so its use() calls resolve in
@@ -1384,7 +1392,14 @@ def _bound_use(owner):
         mod.__dict__.update(_fresh_ns())
         mod.__dict__["use"] = _bound_use(r["objectId"])
         mod.__dict__["print"] = _module_print
-        exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
+        # a code-cache hit (ADR-032 §7) carries the host-compiled code;
+        # it is the same compile, so it runs the same as a miss
+        code = r.get("code")
+        if code is not None:
+            obj = marshal.loads(base64.b64decode(code))
+        else:
+            obj = _compile_program(r["source"], f"<{spec}>")
+        exec(obj, mod.__dict__)
         _module_cache[ck] = mod
         return mod
     return use
@@ -1591,6 +1606,15 @@ def _guard_kernel_names(tree):
 class WitWorld:
     def run_cell(self, code: str, cell_id: str) -> str:
         return json.dumps(_run_cell(code, cell_id))
+
+    def compile_module(self, source: str, filename: str) -> bytes:
+        """ADR-032 §7: compile + marshal, nothing else — no cell path,
+        no guard, no printers. Empty bytes = not compilable (never a
+        valid marshal), so the host caches nothing."""
+        try:
+            return marshal.dumps(_compile_program(source, filename))
+        except Exception:
+            return b""
 
     def reset_ns(self) -> None:
         global _ns, _shell_info

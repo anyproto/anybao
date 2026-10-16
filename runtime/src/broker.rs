@@ -375,6 +375,11 @@ pub struct Broker {
     span_stack: Vec<SpanFrame>,
     span_n: u64,
     resolve_cache: BTreeMap<String, Value>,
+    /// The compiled-code cache, read-only to the run (ADR-032 §7);
+    /// None = off (no `code`, no `codeCache` meta).
+    pub code_cache: Option<crate::codecache::CodeCache>,
+    /// Keys this run missed, for the compile job after it.
+    pub code_misses: Vec<crate::codecache::CodeMiss>,
 }
 
 /// ADR-026 §3: the media types whose bodies come back as `body` text;
@@ -550,6 +555,8 @@ impl Broker {
             span_stack: Vec::new(),
             span_n: 0,
             resolve_cache: BTreeMap::new(),
+            code_cache: None,
+            code_misses: Vec::new(),
         }
     }
 
@@ -1996,7 +2003,28 @@ impl Broker {
         Ok(json!({"ok": true}))
     }
 
+    /// ADR-004 §3 resolution, then the ADR-032 §7 code-cache hook: a
+    /// hit adds `code` + `codeHash`, a miss is noted for the compile
+    /// job; either way `meta.codeCache` says which.
     fn sys_module_resolve(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        let mut out = self.resolve_module_source(payload)?;
+        let spec = payload.get("spec").and_then(|s| s.as_str()).unwrap_or("");
+        if let Some(cc) = &self.code_cache {
+            if let Some((hit, miss)) = cc.serve(spec, &mut out) {
+                if let Some(m) = miss {
+                    if !self.code_misses.contains(&m) {
+                        self.code_misses.push(m);
+                    }
+                }
+                self.extra_meta
+                    .get_or_insert_with(Map::new)
+                    .insert("codeCache".into(), json!(if hit { "hit" } else { "miss" }));
+            }
+        }
+        Ok(out)
+    }
+
+    fn resolve_module_source(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let spec = payload
             .get("spec")
             .and_then(|s| s.as_str())

@@ -2041,6 +2041,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         chat_watch_id,
     });
 
+    let (code_cache_dir, cage_sha) = (cfg.code_cache_dir.clone(), cage.kernel_sha256.clone());
     let ctx = Arc::new(RunCtx {
         cage,
         waiting: Mutex::new(WaitSet::overlays(pending)),
@@ -2065,8 +2066,12 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         verdict: Mutex::new(election.verdict.clone()),
         self_peer: election.self_peer.clone(),
         pruned: election.pruned,
+        code_cache: code_cache_dir
+            .as_deref()
+            .map(|d| crate::codecache::CodeCache::new(d, &cage_sha)),
         live_runs: Mutex::new(BTreeMap::new()),
         status: Default::default(),
+        shutdown: shutdown.clone(),
     });
 
     let mut threads = vec![
@@ -2218,6 +2223,10 @@ pub struct RunCtx {
     /// serve-shared presence state (ADR-025): the `bao.status` syscall's
     /// write target + the presence thread's read; sole publisher = serve
     pub status: SharedPresence,
+    /// the compiled-code cache (ADR-032 §7); None = off
+    pub code_cache: Option<crate::codecache::CodeCache>,
+    /// the serve's shutdown flag: the compile job is skipped once set
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl RunCtx {
@@ -2334,6 +2343,7 @@ impl RunCtx {
             None,
             self.aliases.clone(),
         )));
+        b.code_cache = self.code_cache.clone();
         b
     }
 
@@ -2405,8 +2415,27 @@ impl RunCtx {
                 missing_secrets: outcome.broker.missing_secrets.clone(),
                 missing_programs: outcome.broker.missing_programs.clone(),
                 mutated: outcome.broker.mutations > 0,
+                code_misses: std::mem::take(&mut outcome.broker.code_misses),
             },
         ))
+    }
+
+    /// The compile job (ADR-032 §7) for what a run missed: on the run's
+    /// own thread, after its output is out (the reply posted, the
+    /// trigger finished). Skipped once shutdown is set — batching it on
+    /// idle would never run on a phone that gets suspended.
+    pub fn fill_code_cache(&self, misses: &[crate::codecache::CodeMiss]) {
+        let Some(cc) = &self.code_cache else { return };
+        if misses.is_empty() || self.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let n = crate::runner::compile_code(&self.cage, cc, misses, &self.shutdown);
+        info!(
+            "code cache: {n}/{} compiled in {:.2}s",
+            misses.len(),
+            t0.elapsed().as_secs_f64()
+        );
     }
 
     /// One-shot program run for the control API's POST /run
@@ -2453,14 +2482,21 @@ impl RunCtx {
             .dump(self.traces.as_ref())
             .map_err(|e| anyhow::anyhow!("trace.unpersisted: run {run_id}: {e:#}"))?;
         self.publish_run(summary, None);
-        Ok(json!({
+        let envelope = json!({
             "status": outcome.status,
             "value": outcome.value,
             "error": outcome.error,
             "traceRef": run_id,
             "durationMs": outcome.duration_ms,
             "fuelUsed": outcome.fuel_used,
-        }))
+        });
+        // the compile job (ADR-032 §7), before the response: once per
+        // program version; never for inline debugging sources, whose
+        // every edit would be a new key
+        if source.is_none() {
+            self.fill_code_cache(&outcome.broker.code_misses);
+        }
+        Ok(envelope)
     }
 }
 
@@ -2961,6 +2997,10 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                 );
             }
         }
+        // the reply is posted: now the compile job (ADR-032 §7)
+        if let Ok((_, rr)) = &result {
+            ctx.fill_code_cache(&rr.code_misses);
+        }
     });
 }
 
@@ -3307,6 +3347,7 @@ fn trigger_ticker(
             for t in due {
                 let rr = run_trigger_program(&ctx, &t.id, &t.program, &t.args);
                 finish_run(&shared, &ctx, &t.id, &rr);
+                ctx.fill_code_cache(&rr.code_misses);
             }
         }
     })
@@ -3328,6 +3369,7 @@ fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Val
             missing_secrets: Vec::new(),
             missing_programs: Vec::new(),
             mutated: false,
+            code_misses: Vec::new(),
         })
 }
 
@@ -3479,6 +3521,7 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, space: &str, object_id: &str, recor
         );
         let rr = run_trigger_program(ctx, &t.id, &t.program, &args);
         finish_run(shared, ctx, &t.id, &rr);
+        ctx.fill_code_cache(&rr.code_misses);
     }
 }
 

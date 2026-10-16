@@ -13,6 +13,7 @@ pub mod anyapi;
 pub mod blob;
 pub mod broker;
 pub mod caps;
+pub mod codecache;
 pub mod config;
 pub mod deploy;
 pub mod drift;

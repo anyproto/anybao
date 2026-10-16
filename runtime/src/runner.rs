@@ -586,6 +586,116 @@ pub struct RunOutcome {
     pub broker: Broker, // carries the finished trace
 }
 
+/// The WASI the guest sees (ADR-002 §4): a frozen wall clock, a
+/// counter monotonic clock, one seed behind both entropy sources.
+fn floor_wasi(started_at: f64, seed: &[u8; 32]) -> wasmtime_wasi::WasiCtx {
+    WasiCtxBuilder::new()
+        .inherit_stderr() // guest tracebacks; no fs/net granted
+        .env("PYTHONHASHSEED", "0") // determinism pin
+        .wall_clock(FloorWallClock(Duration::from_secs_f64(started_at.max(0.0))))
+        .monotonic_clock(FloorMonotonic(AtomicU64::new(0)))
+        .secure_random(FloorRng::new(seed, 1))
+        .insecure_random(FloorRng::new(seed, 2))
+        .insecure_random_seed(u128::from_le_bytes(
+            seed[..16].try_into().expect("16 of 32 seed bytes"),
+        ))
+        .build()
+}
+
+/// The compile job's budget per key (ADR-032 §7): compile costs about
+/// the parse, ~11 M fuel/KB, so ~2.2 G for `any@v1`.
+pub const COMPILE_FUEL: u64 = 20_000_000_000;
+pub const COMPILE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The compile job (ADR-032 §7): fill the code cache for the keys a run
+/// missed. A fresh Store with no program loaded, a closed broker (every
+/// effect refused) and a zero-seeded WASI floor, so `compile-module`
+/// reaches nothing; per key its own fuel and deadline, and a key that
+/// exceeds them is not cached. Cache maintenance, not a run: it writes
+/// no trace. Stops between keys once `stop` is set. Returns how many
+/// keys it stored.
+pub fn compile_code(
+    cage: &Cage,
+    cache: &crate::codecache::CodeCache,
+    misses: &[crate::codecache::CodeMiss],
+    stop: &AtomicBool,
+) -> usize {
+    let mut stored = 0;
+    let mut slot: Option<(Store<Host>, bindings::Kernel)> = None;
+    let deadline = Arc::new(std::sync::Mutex::new(Instant::now()));
+    for miss in misses {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        *deadline.lock().unwrap() = Instant::now() + COMPILE_DEADLINE;
+        if slot.is_none() {
+            match compile_store(cage, deadline.clone()) {
+                Ok(s) => slot = Some(s),
+                Err(e) => {
+                    tracing::warn!("code cache: compile store unavailable ({e:#})");
+                    return stored;
+                }
+            }
+        }
+        let (store, kernel) = slot.as_mut().expect("just set");
+        if store.set_fuel(COMPILE_FUEL).is_err() {
+            return stored;
+        }
+        match kernel.call_compile_module(&mut *store, &miss.source, &miss.filename()) {
+            Ok(code) if !code.is_empty() => match cache.put(&miss.spec, &miss.source_hash, &code) {
+                Ok(()) => stored += 1,
+                Err(e) => tracing::warn!("code cache: store {} failed ({e})", miss.spec),
+            },
+            Ok(_) => tracing::debug!("code cache: {} does not compile", miss.spec),
+            Err(e) => {
+                // over budget, or a trap: this key stays uncached, and
+                // a trapped instance is not reused
+                tracing::info!("code cache: {} not cached ({e})", miss.spec);
+                slot = None;
+            }
+        }
+    }
+    stored
+}
+
+/// The compile job's Store: nothing loaded, nothing reachable.
+fn compile_store(
+    cage: &Cage,
+    deadline: Arc<std::sync::Mutex<Instant>>,
+) -> Result<(Store<Host>, bindings::Kernel)> {
+    let mut broker = Broker::new(
+        crate::trace::TraceWriter::new(json!({"id": "codecache", "startedAt": 0.0,
+                                              "seed": hex::encode([0u8; 32])})),
+        Default::default(),
+        Default::default(),
+        None,
+        crate::routes::Classifier::new(None),
+    );
+    broker.grants = Some(crate::caps::GrantSet::of(Vec::<String>::new()));
+    let mut store = Store::new(
+        &cage.engine,
+        Host {
+            wasi: floor_wasi(0.0, &[0u8; 32]),
+            table: ResourceTable::new(),
+            broker,
+            limits: RunLimits::new(memory_limit(cage.platform)),
+        },
+    );
+    store.limiter(|h| &mut h.limits);
+    // the instantiate (the kernel's start) spends from the first key's
+    // budget and deadline
+    store.set_fuel(COMPILE_FUEL)?;
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(move |_| {
+        if Instant::now() > *deadline.lock().unwrap() {
+            return Err(wasmtime::Error::msg("compile deadline"));
+        }
+        Ok(UpdateDeadline::Continue(1))
+    });
+    let kernel = bindings::Kernel::instantiate(&mut store, &cage.component, &cage.linker)?;
+    Ok((store, kernel))
+}
+
 /// Run `spec`'s main(args) in a fresh store. `interrupt` may be
 /// flipped from any thread (the watcher's hard break). Runs on the
 /// caller's thread, which must have a [`RUN_THREAD_STACK`] stack
@@ -605,21 +715,7 @@ pub fn run_program(
     // the epoch bump alone could not reach (ADR-003 §2 amendment)
     broker.interrupt = interrupt.clone();
     let floor = broker.writer.floor();
-    let wasi = WasiCtxBuilder::new()
-        .inherit_stderr() // guest tracebacks; no fs/net granted
-        .env("PYTHONHASHSEED", "0") // determinism pin
-        // the rest of the floor (ADR-002 §4): frozen wall clock,
-        // counter monotonic, one recorded seed behind both entropy sources
-        .wall_clock(FloorWallClock(Duration::from_secs_f64(
-            floor.started_at.max(0.0),
-        )))
-        .monotonic_clock(FloorMonotonic(AtomicU64::new(0)))
-        .secure_random(FloorRng::new(&floor.seed, 1))
-        .insecure_random(FloorRng::new(&floor.seed, 2))
-        .insecure_random_seed(u128::from_le_bytes(
-            floor.seed[..16].try_into().expect("16 of 32 seed bytes"),
-        ))
-        .build();
+    let wasi = floor_wasi(floor.started_at, &floor.seed);
     let mut store = Store::new(
         &cage.engine,
         Host {
@@ -935,6 +1031,113 @@ mod stack_tests {
             "{:?}",
             out.error
         );
+    }
+}
+
+/// ADR-032 §7 end to end on the real agent programs: a cold run misses
+/// and notes its keys, the compile job fills the cache, a warm run
+/// loads the same modules from code for a fraction of the fuel, and a
+/// strict replay of the warm run spends exactly its fuel.
+#[cfg(test)]
+mod code_cache_tests {
+    use super::*;
+    use crate::broker::{Broker, Mode};
+    use crate::codecache::CodeCache;
+    use crate::replay::ReplayCursor;
+    use crate::resolver::{InlineResolver, LocalDirResolver};
+    use crate::routes::Classifier;
+    use crate::trace::TraceWriter;
+    use std::collections::BTreeMap;
+
+    const ENTRY: &str = "def main(args):\n    for s in args[\"specs\"]:\n        use(s)\n    return len(args[\"specs\"])\n";
+
+    fn run(cage: &Cage, cc: Option<&CodeCache>, replay: Option<&TraceWriter>) -> RunOutcome {
+        let programs =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../repos/_agent/programs");
+        let mut broker = Broker::new(
+            TraceWriter::new(json!({"id": "cc", "program": "loader@v1"})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            Classifier::new(None),
+        );
+        broker.resolver = Some(Box::new(InlineResolver {
+            spec: "loader@v1".into(),
+            source: ENTRY.into(),
+            inner: Box::new(LocalDirResolver::new(programs)),
+        }));
+        broker.code_cache = cc.cloned();
+        if let Some(w) = replay {
+            broker.mode = Mode::Replay;
+            broker.cursor = Some(ReplayCursor::new(&w.records));
+            broker.blobs = w.blobs.iter().cloned().collect();
+        }
+        let specs = [
+            "any@v1",
+            "llm@v1",
+            "toolcaller@v1",
+            "history@v1",
+            "autorecall@v1",
+        ];
+        run_program(
+            cage,
+            broker,
+            "loader@v1",
+            &json!({"specs": specs}),
+            Default::default(),
+            Arc::new(AtomicBool::new(false)),
+            60.0,
+        )
+        .unwrap()
+    }
+
+    fn code_cache_meta(out: &RunOutcome) -> Vec<String> {
+        out.broker
+            .writer
+            .records
+            .iter()
+            .filter(|r| r["effect"] == "module.resolve")
+            .map(|r| r["meta"]["codeCache"].as_str().unwrap_or("-").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn cold_miss_compile_warm_hit_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let cage = Cage::embedded().unwrap();
+        let cc = CodeCache::new(dir.path(), &cage.kernel_sha256);
+
+        let cold = run(&cage, Some(&cc), None);
+        assert_eq!(cold.status, "ok", "{:?}", cold.error);
+        assert!(code_cache_meta(&cold).iter().all(|m| m == "miss"));
+        let misses = cold.broker.code_misses.clone();
+        assert!(misses.len() >= 5, "{misses:?}");
+
+        let stored = compile_code(&cage, &cc, &misses, &AtomicBool::new(false));
+        assert_eq!(stored, misses.len());
+
+        let warm = run(&cage, Some(&cc), None);
+        assert_eq!(warm.status, "ok", "{:?}", warm.error);
+        assert!(code_cache_meta(&warm).iter().all(|m| m == "hit"));
+        assert!(warm.broker.code_misses.is_empty());
+        eprintln!(
+            "code cache: cold {} fuel, warm {} fuel ({} modules)",
+            cold.fuel_used,
+            warm.fuel_used,
+            misses.len()
+        );
+        assert!(warm.fuel_used * 2 < cold.fuel_used, "the parse is the cost");
+
+        // replay serves the recorded outputs, code included: same fuel
+        // even with the cache gone
+        let replayed = run(&cage, None, Some(&warm.broker.writer));
+        assert_eq!(replayed.status, "ok", "{:?}", replayed.error);
+        assert_eq!(replayed.fuel_used, warm.fuel_used);
+
+        // no cache configured: no code, no codeCache meta
+        let off = run(&cage, None, None);
+        assert!(code_cache_meta(&off).iter().all(|m| m == "-"));
+        assert_eq!(off.fuel_used, cold.fuel_used);
     }
 }
 

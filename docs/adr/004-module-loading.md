@@ -107,6 +107,15 @@ Guest-side module objects persist across cells (kernel semantics), but
 fresh module instance on next `use()` (v1's clear-cache-per-call
 behavior, now precise instead of wholesale).
 
+*Amended 2026-10-16 (ADR-032 §7):* beside this source cache the host
+keeps a compiled-code cache keyed `(kernel_sha256, spec, sourceHash)`,
+written only by a trusted compile job after a run. On a hit the
+`module.resolve` output also carries `code` (the marshalled code
+object, base64) and `codeHash`, and the guest loads it with
+`marshal.loads` instead of compiling; `meta.codeCache` records
+hit/miss. The record stays self-contained (§3): a replay loads the
+recorded code.
+
 ### 5. Capability attenuation plumbing
 
 Each loaded module is tagged with its identity `(space, program,

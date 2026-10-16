@@ -147,6 +147,9 @@ pub struct Config {
     /// explicit local kernel override (dev, ADR-009 §4);
     /// None = the kernel embedded in the binary
     pub kernel: Option<PathBuf>,
+    /// the compiled-code cache root (ADR-032 §7): `load` puts it at
+    /// `<config dir>/cache/code`; None (a builder default) = no cache
+    pub code_cache_dir: Option<PathBuf>,
     /// guest-visible config map (pre-`bootstrap`)
     pub config: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, String>,
@@ -183,6 +186,7 @@ impl Default for Config {
             retain_conversations_s: Some(60 * 86_400),
             retain_jobs_s: Some(30 * 86_400),
             kernel: None,
+            code_cache_dir: None,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
             secret_overrides: BTreeMap::new(),
@@ -209,6 +213,13 @@ pub struct ConfigBuilder {
 }
 
 impl ConfigBuilder {
+    /// The compiled-code cache root (ADR-032 §7), device-local and
+    /// safe to delete; unset = no cache.
+    pub fn code_cache_dir(mut self, v: impl Into<PathBuf>) -> Self {
+        self.cfg.code_cache_dir = Some(v.into());
+        self
+    }
+
     pub fn addr(mut self, v: impl Into<String>) -> Self {
         self.cfg.addr = v.into();
         self
@@ -342,6 +353,7 @@ impl Config {
             cfg.secret_overrides.append(&mut parse_secrets_env(&t));
         }
         cfg.traces_dir = absolute(config_dir.join(&cfg.traces_dir));
+        cfg.code_cache_dir = Some(absolute(config_dir.join("cache").join("code")));
         Ok(cfg)
     }
 
