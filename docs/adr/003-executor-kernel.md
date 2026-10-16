@@ -354,8 +354,12 @@ something is off), now backed by the log instead of a parallel store.
 | hard break      | epoch bump (always lands)              |
 
 Defaults config-injected (ADR-002 policy rule); every limit hit is
-recorded (a `cell.interrupted` marker in the trace via the cell's
-terminal record) and surfaces as `CellResult.interrupted` + `error`.
+recorded in the trace via the cell's terminal record. *Amended
+2026-10-16 (ADR-032 §5):* fuel and memory limits surface as `error`
+with a typed reason (`FuelExhausted`, `MemoryLimit`), the run's status
+`error`; breaks and the wall timeout surface as `interrupted`. The
+memory cap is implemented: 1 GiB of linear memory on desktop, 512 MiB
+on mobile, a `StoreLimits` limiter with `trap_on_grow_failure`.
 
 **Metrics are first-class (review 2026-07-07)** — sobek could measure
 none of this; wasmtime measures all of it for free, so every cell's
@@ -422,6 +426,11 @@ loop" problem disappears: there is no C on the guest side).
   malloc fails ⇒ ordinary `MemoryError` inside the cell — **cell
   fails, kernel namespace survives** (vs an OS kill destroying the
   conversation state). Dropping the store frees everything.
+  *Amended 2026-10-16 (ADR-032 §5):* a denied growth traps instead
+  (`trap_on_grow_failure`), ending the run with a typed `MemoryLimit`
+  error like `FuelExhausted`: a soft `MemoryError` lets guest code
+  catch it and limp on at the cap. The limiter also records the
+  peak, the `mem_pages` metric on the cell record.
 
 Nuance: epoch checks run only in guest code — while inside a host
 function (an effect), interruption is cooperative. Host functions are

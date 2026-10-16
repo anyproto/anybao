@@ -631,6 +631,7 @@ fn kernel_check(kernel: Option<&Path>, runs: usize) -> Result<()> {
             "{}",
             json!({"status": out.0.status, "loadMs": load_ms,
                    "runMs": out.1, "fuelUsed": out.0.fuel_used,
+                   "memPages": out.0.mem_pages,
                    "precompiled": cfg!(feature = "precompiled-kernel") && kernel.is_none(),
                    "engine": cage.engine_meta(), "kernelSha256": cage.kernel_sha256,
                    "value": out.0.value, "error": out.0.error})
