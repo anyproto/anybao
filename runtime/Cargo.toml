@@ -20,6 +20,7 @@ path = "src/main.rs"
 # below track the versions wasmtime itself pulls, so the tree keeps one copy
 wasmtime = { version = "49", features = ["component-model"] }
 wasmtime-wasi = "49"
+wasmtime-environ = "49"  # only for VERSION in kernel.boot's meta (ADR-032 §2); same copy wasmtime pins
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"          # default Map = BTreeMap → sorted keys = canonical JSON
 toml = "1"                # anybao.toml host config (ADR-009 §1)
@@ -46,6 +47,16 @@ libc = { version = "0.2", optional = true }  # `shell`: killpg on timeout/break 
 [features]
 default = []
 shell = ["dep:libc"]
+# ADR-032 §2: embed bin/kernel.cwasm (+ its .sha256 sidecar), the
+# kernel compiled at build time by `anyrt kernel compile`, in place of
+# bin/kernel.wasm. Phones boot without running Cranelift.
+precompiled-kernel = []
+# ADR-032 §2: `anyrt kernel compile --target <foreign triple>` — every
+# Cranelift backend (pulley64 included), for the build host
+cross-compile = ["wasmtime/all-arch"]
+# ADR-032 §1/§11: the Pulley backend — the engine targets pulley64 and
+# interprets (the iOS fallback). Pairs with a pulley64 `.cwasm`.
+pulley = ["wasmtime/pulley"]
 
 [dev-dependencies]
 tempfile = "3"

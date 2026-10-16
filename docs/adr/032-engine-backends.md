@@ -77,7 +77,10 @@ on iOS devices, and would need its own ADR (an ADR-003 amendment:
 - `anyrt kernel compile --target <triple> -o bin/kernel.cwasm` compiles
   the embedded or `--kernel` wasm for a target. A foreign target needs
   a host build with feature `cross-compile` (`wasmtime/all-arch`). It
-  writes `kernel.cwasm.sha256`, the sha256 of the source wasm.
+  writes `kernel.cwasm.sha256`, the sha256 of the source wasm. The
+  §4 platform knobs follow from the triple; `pulley64` runs anywhere,
+  so it takes `--platform desktop|android|ios` (amended in
+  implementation, 2026-10-16).
 - Feature `precompiled-kernel` embeds `kernel.cwasm` and its sidecar in
   place of `kernel.wasm`. Default builds are unchanged. The `.cwasm` is
   built in the same job as the binary, every time, and never shipped
@@ -88,13 +91,19 @@ on iOS devices, and would need its own ADR (an ADR-003 amendment:
   gains `engine: {backend, target, wasmtime}` so a trace says what ran
   it. It goes in `meta`, not `input`: the replay key hashes the whole
   input (`trace.rs`), and a phone's trace must replay on a desktop.
+  A replay restamps it with the engine that replayed. `target` is the
+  build's triple (`pulley64` on the Pulley backend); `wasmtime` is the
+  linked crate's version.
 - The compile cache (`wasmtime::Cache::from_file`) is skipped in
   `precompiled-kernel` builds.
 - `anyrt kernel check` loads the kernel and runs one built-in program
   with one effect, with no server, and prints `{loadMs, runMs,
-  fuelUsed, precompiled}`. It is the on-device smoke test. It records
-  into the in-memory `TraceWriter` the unit tests use and writes no
-  trace anywhere, so it does not need the ADR-023 store.
+  fuelUsed, precompiled}` (plus `status`, `engine`, `kernelSha256`). It
+  is the on-device smoke test. It records into the in-memory
+  `TraceWriter` the unit tests use and writes no trace anywhere, so it
+  does not need the ADR-023 store. Its effect is `mailbox.drain`,
+  whose reply is constant, so `fuelUsed` is equal on every backend and
+  the check doubles as the §1 fuel-parity test.
 
 ### 3. Signed in-place loading on iOS
 
@@ -365,6 +374,9 @@ without a restart (ADR-009). Baking them in couples two release cycles.
 | `deserialize` vs in-place load, Pixel (median of 5) | load 94 vs 30 ms; RSS after load 107 vs 13.3 MB; peak 133 vs 68 MB; fuel identical (490.55 M) | Android branch, `kernel check` |
 | first instantiate after in-place load | ~50 ms slower (first-touch page faults) | Android branch |
 | Store teardown | 130 to 140 ms with either loader (likely one frame deregistration per function) | Android branch |
+| `kernel check` fuel, three backends | 490 285 509 on `cranelift-jit`, `cranelift-aot` and `pulley` alike | M-series Mac, 2026-10-16 |
+| `kernel check` run, M-series Mac | ~65 ms AOT, ~1 240 ms Pulley (~18×, above the ~10× assumed below) | same |
+| `.cwasm` size by target | 46 MB aarch64-apple-darwin / aarch64-linux-android, 61 MB aarch64-apple-ios (explicit bounds checks, no guard pages), 46 MB pulley64 | same |
 
 Estimates for an iPhone 13 Pro Max, assumed between the desktop box
 and the Pixel (which runs at about half the desktop's fuel rate). A p50 turn: ~0.4 to 1 s on `cranelift-aot`, ~4.5 s on `pulley`.
@@ -374,10 +386,12 @@ assumes explicit bounds checks cost 1.1 to 1.3× over guard pages.
 
 ### 11. Fallback ladder
 
-`cranelift-aot` (iOS) → `pulley` (same feature, target `pulley64`) →
-wasm2c (new ADR). The backend is chosen at build time, and a build
-ships one. The Pulley build stays compiled in CI so the fallback is a
-flag, not a project.
+`cranelift-aot` (iOS) → `pulley` (`precompiled-kernel` plus feature
+`pulley` = `wasmtime/pulley`, the engine targeting `pulley64`, with a
+`kernel compile --target pulley64` artifact) → wasm2c (new ADR). The
+backend is chosen at build time, and a build ships one. The Pulley
+build stays compiled in CI (`make runtime-pulley`, the `precompiled`
+CI job) so the fallback is a flag, not a project.
 
 ## Consequences
 

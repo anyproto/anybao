@@ -142,6 +142,13 @@ enum Cmd {
         #[arg(long)]
         config_file: Option<PathBuf>,
     },
+    /// the guest kernel: the precompiled artifact a
+    /// `precompiled-kernel` build embeds, and an offline self-check
+    /// (ADR-032 §2)
+    Kernel {
+        #[command(subcommand)]
+        cmd: KernelCmd,
+    },
     /// trace tooling over a serve's any local store (ADR-023 §7)
     Trace {
         #[command(subcommand)]
@@ -157,6 +164,36 @@ enum Cmd {
         /// (new/removed stay human-triaged)
         #[arg(long)]
         refresh: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KernelCmd {
+    /// compile the kernel for a target into a .cwasm plus its .sha256
+    /// sidecar (the source wasm's hash); a foreign target needs a
+    /// `cross-compile` build of this binary
+    Compile {
+        /// target triple, e.g. aarch64-linux-android, aarch64-apple-ios,
+        /// pulley64
+        #[arg(long)]
+        target: String,
+        /// desktop | android | ios [default: from the triple; required
+        /// for pulley64]
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// kernel wasm [default: the embedded kernel]
+        #[arg(long)]
+        kernel: Option<PathBuf>,
+    },
+    /// load the kernel and run one built-in program with one effect —
+    /// no server, no trace store; prints {loadMs, runMs, fuelUsed,
+    /// precompiled, ...} as JSON (the on-device smoke test)
+    Check {
+        /// kernel wasm [default: the embedded kernel]
+        #[arg(long)]
+        kernel: Option<PathBuf>,
     },
 }
 
@@ -403,13 +440,7 @@ fn run_cmd(spec: String, args: Value, opts: RunOpts, how: RunHow) -> Result<()> 
         .with_context(|| format!("trace store: space {trace_space} on {any_base}"))?,
     );
     let any_base = Some(any_base);
-    // kernel is embedded (ADR-009 §4); --kernel is a dev override
-    let cage = match &kernel {
-        Some(path) => runner::Cage::new(
-            &std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?,
-        )?,
-        None => runner::Cage::embedded()?,
-    };
+    let cage = load_cage(kernel.as_deref())?;
     let run_id = format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
     // the header names the program AND its args (a replay reads both
     // back, ADR-028 §4); a mocked run records its spec; a replay keeps
@@ -547,6 +578,133 @@ fn trace_store(
     }
 }
 
+/// The cage over the embedded kernel (ADR-009 §4), or a `--kernel`
+/// dev override.
+fn load_cage(kernel: Option<&Path>) -> Result<Arc<runner::Cage>> {
+    match kernel {
+        Some(path) => runner::Cage::new(
+            &std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?,
+        ),
+        None => runner::Cage::embedded(),
+    }
+}
+
+/// `kernel check`'s program (ADR-032 §2): CPython work, stdlib
+/// imports and one effect — everything a run needs but a server. The
+/// effect's reply is constant, so `fuelUsed` is too: equal across
+/// backends (ADR-032 §1).
+const KERNEL_CHECK_PROGRAM: &str = r#"import hashlib, json, re, zlib
+
+
+def main(args):
+    blob = json.dumps([{"i": i, "s": str(i)} for i in range(1000)]).encode()
+    return {"squares": sum(i * i for i in range(200000)),
+            "sha256": hashlib.sha256(blob).hexdigest()[:16],
+            "zlib": len(zlib.compress(blob)),
+            "words": len(re.findall(r"\w+", "the kernel runs offline")),
+            "mailbox": effect("mailbox.drain", {})}
+"#;
+
+/// The check serves its entry inline and refuses every other import:
+/// nothing reaches a disk or a server.
+struct NoImports;
+
+impl resolver::ModuleResolver for NoImports {
+    fn resolve(&mut self, spec: &str, _frm: Option<&str>) -> Result<Value, resolver::ResolveError> {
+        Err(resolver::ResolveError::NotFound(spec.to_string()))
+    }
+}
+
+/// ADR-032 §2: load + one run, into the in-memory `TraceWriter` (no
+/// ADR-023 store). Exit 1 unless the run is ok.
+fn kernel_check(kernel: Option<&Path>) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    let cage = load_cage(kernel)?;
+    let load_ms = t0.elapsed().as_millis();
+    let spec = "kernelcheck@v1";
+    let mut broker = broker::Broker::new(
+        trace::TraceWriter::new(json!({"id": "run_kernelcheck", "program": spec})),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        None,
+        routes::Classifier::new(None),
+    );
+    broker.resolver = Some(Box::new(resolver::InlineResolver {
+        spec: spec.into(),
+        source: KERNEL_CHECK_PROGRAM.into(),
+        inner: Box::new(NoImports),
+    }));
+    let t1 = std::time::Instant::now();
+    let out = runner::run_program(
+        &cage,
+        broker,
+        spec,
+        &json!({}),
+        Default::default(),
+        Arc::new(AtomicBool::new(false)),
+        60.0,
+    )?;
+    println!(
+        "{}",
+        json!({"status": out.status, "loadMs": load_ms,
+               "runMs": t1.elapsed().as_millis(), "fuelUsed": out.fuel_used,
+               "precompiled": cfg!(feature = "precompiled-kernel") && kernel.is_none(),
+               "engine": cage.engine_meta(), "kernelSha256": cage.kernel_sha256,
+               "value": out.value, "error": out.error})
+    );
+    if out.status != "ok" {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// ADR-032 §2: the `.cwasm` and its sidecar, the source wasm's sha256.
+fn kernel_compile(
+    target: &str,
+    platform: Option<&str>,
+    out: &Path,
+    kernel: Option<&Path>,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let platform = match platform {
+        Some(p) => runner::Platform::parse(p)
+            .ok_or_else(|| anyhow::anyhow!("--platform {p}: desktop | android | ios"))?,
+        None => runner::Platform::of_target(target)
+            .ok_or_else(|| anyhow::anyhow!("--target {target} runs anywhere: pass --platform"))?,
+    };
+    let wasm = match kernel {
+        Some(path) => {
+            std::fs::read(path).with_context(|| format!("kernel at {}", path.display()))?
+        }
+        None => embedded_wasm()?,
+    };
+    let t0 = std::time::Instant::now();
+    let cwasm = runner::precompile(&wasm, target, platform)
+        .with_context(|| format!("compiling the kernel for {target}"))?;
+    std::fs::write(out, &cwasm).with_context(|| format!("writing {}", out.display()))?;
+    let mut sidecar = out.as_os_str().to_owned();
+    sidecar.push(".sha256");
+    std::fs::write(&sidecar, hex::encode(Sha256::digest(&wasm)) + "\n")?;
+    eprintln!(
+        "{target} ({platform:?}): {} bytes -> {} ({} bytes, {:.1}s)",
+        wasm.len(),
+        out.display(),
+        cwasm.len(),
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "precompiled-kernel"))]
+fn embedded_wasm() -> Result<Vec<u8>> {
+    Ok(runner::EMBEDDED_KERNEL.to_vec())
+}
+
+#[cfg(feature = "precompiled-kernel")]
+fn embedded_wasm() -> Result<Vec<u8>> {
+    anyhow::bail!("this build embeds a precompiled kernel, not its wasm: pass --kernel")
+}
+
 fn load_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, Value>> {
     match path {
         None => Ok(BTreeMap::new()),
@@ -667,6 +825,18 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Kernel {
+            cmd:
+                KernelCmd::Compile {
+                    target,
+                    platform,
+                    out,
+                    kernel,
+                },
+        } => kernel_compile(&target, platform.as_deref(), &out, kernel.as_deref()),
+        Cmd::Kernel {
+            cmd: KernelCmd::Check { kernel },
+        } => kernel_check(kernel.as_deref()),
         Cmd::Trace {
             cmd:
                 TraceCmd::Ls {
