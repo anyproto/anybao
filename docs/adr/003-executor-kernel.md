@@ -96,6 +96,11 @@ class CellResult:
     interrupted: bool                # True on break/timeout/fuel-exhausted
 ```
 
+*Amended 2026-10-16 (ADR-032 §7):* the kernel world gains one more
+export, `compile-module(source, filename) -> list<u8>` — compile and
+marshal, nothing else, called only by the host's compile job on a
+Store with a closed broker. It is not a cell path.
+
 One executor instance per conversation. The host runs ONE `run_cell` —
 the program's `main` (a conversation is `toolcaller@v1`); the model's
 per-turn cells run inside it through the guest-global `subcell` (§3).

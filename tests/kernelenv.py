@@ -80,7 +80,7 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     `programs_dir` overrides the source root (another repo's tests —
     e.g. repos/_connectors — resolve their own programs/).
     `module_source(spec)`, when given, is consulted first for other
-    specs: return source text, `{"source", "marker"?}` (marker drives
+    specs: return source text, `{"source", "marker"?, "code"?}` (marker drives
     the guest probe cache — bump it to model an edited program,
     ADR-004 §4), or None to fall through to programs_dir.
     `shell`, when given, is what `runtime.get("shell")` returns (the
@@ -94,7 +94,7 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
         try:
             if name == "module.resolve":
                 spec = payload["spec"]
-                marker = "m0"
+                marker, code = "m0", None
                 # alias-qualified cross-repo specs ("agent:any@v1",
                 # ADR-009) shim identically — the alias names a space,
                 # the module is the same
@@ -109,6 +109,7 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                         if isinstance(hit, dict):
                             src = hit.get("source")
                             marker = hit.get("marker", marker)
+                            code = hit.get("code")
                         elif hit is not None:
                             src = hit
                     if src is None:
@@ -118,6 +119,8 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
                         # the same bare-name source
                         src = local_source(spec.split(":")[-1], programs_dir)
                 out = {"objectId": spec, "marker": marker, "source": src}
+                if code is not None:   # a code-cache hit (ADR-032 §7)
+                    out["code"] = code
             elif name in ("span.begin", "span.end"):
                 if on_span is not None:
                     on_span(name, payload)

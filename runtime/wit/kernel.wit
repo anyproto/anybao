@@ -12,4 +12,9 @@ world kernel {
 
   // Drop the kernel namespace and value store (agent reset, ADR-003).
   export reset-ns: func();
+
+  // Compile program source and marshal the code object (ADR-032 §7):
+  // the host's compiled-code cache, filled by a trusted compile job.
+  // Runs nothing else; empty = not compilable.
+  export compile-module: func(source: string, filename: string) -> list<u8>;
 }

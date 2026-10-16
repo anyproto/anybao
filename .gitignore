@@ -10,6 +10,7 @@ result
 bin/
 runtime/target/
 traces/
+/cache/
 *.log
 traces-test/
 anybao.test.toml
