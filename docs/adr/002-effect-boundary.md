@@ -151,14 +151,16 @@ Cells execute in a constructed namespace containing **only**:
      static analysis sees from `app.py`, so every admitted module is
      imported there literally — and so are the codecs those modules
      load lazily (`cp437` for zip entry names, `latin-1`/`ascii` for
-     mail bodies): a zip read failed on `unknown encoding: cp437`
-     until it was.
-  1b. *Vendored pure-Python third-party* (ADR-012 §6): `bs4` +
-     `soupsieve`, `markdownify` — bundled verbatim into the kernel
+     mail bodies, `utf-16-be` and the CJK/Windows code pages for pypdf
+     strings): a zip read failed on `unknown encoding: cp437` until it
+     was, a one-page PDF on `utf-16-be`.
+  1b. *Vendored pure-Python third-party* (ADR-012 §6, ADR-031 §7):
+     `bs4` + `soupsieve`, `markdownify`, `pypdf` — bundled verbatim into the kernel
      image from `runtime/guest/` (versions + licenses in
      `runtime/guest/VENDORED.md`), importable through the same
      allowlist; bs4 runs on the stdlib `html.parser` backend (no
-     lxml). Their internal deps (`six`, `typing_extensions`) are
+     lxml); pypdf decrypts nothing beyond RC4 (its AES providers are
+     C libraries, not bundled). Their internal deps (`six`, `typing_extensions`) are
      bundled but NOT guest-importable — the allowlist names only the
      supported surface.
   2. *Proxied stdlib* — the API is wanted, the ambient part is

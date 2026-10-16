@@ -39,6 +39,7 @@ extend-exclude = [
     "runtime/guest/bs4",
     "runtime/guest/soupsieve",
     "runtime/guest/markdownify",
+    "runtime/guest/pypdf",
     "runtime/guest/six.py",
     "runtime/guest/typing_extensions.py",
 ]

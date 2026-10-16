@@ -253,9 +253,10 @@ record that names it.
   `tarfile`, `gzip`, `csv`, …) under ADR-002 §4 as amended alongside;
   the determinism those modules need (timestamps in archives, seeds)
   comes from the WASI floor, not from proxies.
-- Host pure ops over blobs (`image.resize`, `pdf.text`, hash → hash)
-  are the natural next step but are **separate features**, each
-  admitted on the ADR-002 §4 test; none is part of this ADR.
+- Host pure ops over blobs (`image.resize`, hash → hash) are the
+  natural next step but are **separate features**, each admitted on the
+  ADR-002 §4 test; none is part of this ADR. PDF text is a guest
+  program, `agent:toMarkdown@v1` (ADR-031), not a host op.
 
 ## Open questions
 

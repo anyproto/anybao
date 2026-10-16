@@ -257,7 +257,7 @@ def backends():
     server.shutdown()
 
 
-def run_rt(base, spec, args, extra=(), cmd="run", tier=None):
+def run_rt(base, spec, args, extra=(), cmd="run", tier=None, programs=None):
     """`anyrt run <spec> --args …` (or `anyrt replay <run_id>` with
     cmd="replay": `spec` is then the run id) against the fake. `tier`
     adds fields to both tier rows (e.g. a `timeout`)."""
@@ -274,7 +274,7 @@ def run_rt(base, spec, args, extra=(), cmd="run", tier=None):
     head = [spec, "--args", json.dumps(args)] if cmd == "run" else [spec]
     proc = subprocess.run(
         [rt_binary(), cmd, *head, *extra,
-         "--kernel", KERNEL, "--programs", ROOT / "repos" / "_agent" / "programs",
+         "--kernel", KERNEL, "--programs", programs or ROOT / "repos" / "_agent" / "programs",
          "--traces-dir", scratch / "traces",
          "--config", scratch / "config.json",
          "--secrets-file", scratch / "secrets.env"],
@@ -528,3 +528,55 @@ def test_stalled_stream_is_retried_through_the_binary(backends):
     assert "idle" in posts[0]["error"]["message"]
     # the stall cost the idle timeout, not the whole-request cap
     assert posts[0]["meta"]["durMs"] < 3000
+
+
+def test_kernel_image_has_every_preimported_codec(backends):
+    # ADR-002 §4 / ADR-031 §7: a lazily-loaded codec exists only if
+    # app.py imports it literally — host-side tests always have them, so
+    # only the wasm image can show one missing (pypdf's CMap path needs
+    # utf-16-be; a one-page PDF failed on it before the pre-imports)
+    import re
+
+    FakeBackends.reset([])
+    app_py = (ROOT / "runtime" / "guest" / "app.py").read_text()
+    codecs = re.findall(r"^import encodings\.(\w+)", app_py, re.M)
+    assert "utf_16_be" in codecs and "gbk" in codecs
+    programs = Path(tempfile.mkdtemp())
+    (programs / "codecs@v1.py").write_text(
+        "def main(args):\n"
+        "    missing = []\n"
+        "    for c in args['codecs']:\n"
+        "        try:\n"
+        "            'x'.encode(c)\n"
+        "        except LookupError:\n"
+        "            missing.append(c)\n"
+        "    return missing\n")
+    proc, out, _ = run_rt(backends, "codecs@v1", {"codecs": codecs}, programs=programs)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["value"] == [], f"codecs missing from the kernel image: {out['value']}"
+
+
+def test_pdf_converts_in_the_wasm_kernel(backends):
+    # ADR-031 §7: pypdf runs in the wasm image, non-ASCII text strings
+    # included (the form value is UTF-16BE with a byte-order mark).
+    import base64
+    import shutil
+
+    from pdfgen import body_lines, pdf
+    FakeBackends.reset([])
+    programs = Path(tempfile.mkdtemp())
+    shutil.copytree(ROOT / "repos" / "_agent" / "programs" / "toMarkdown@v1",
+                    programs / "toMarkdown@v1")
+    (programs / "pdfcheck@v1.py").write_text(
+        "import base64\n"
+        "def main(args):\n"
+        "    return use('toMarkdown@v1').pdf(base64.b64decode(args['pdf']))\n")
+    doc = pdf([[("Report", 20, False, 720)]
+               + body_lines(["Body text converted inside the kernel."], top=680)],
+              fields={"city": "Zürich – Привет"})
+    proc, out, _ = run_rt(backends, "pdfcheck@v1",
+                          {"pdf": base64.b64encode(doc).decode()}, programs=programs)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["status"] == "ok", out
+    assert out["value"]["markdown"] == ("# Report\n\nBody text converted inside the kernel."
+                                        "\n\n## Fields\n\n- city: Zürich – Привет")

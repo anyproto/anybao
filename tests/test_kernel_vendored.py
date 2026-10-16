@@ -1,6 +1,7 @@
-"""Vendored html stack in the guest kernel (ADR-012 §6, ADR-002 §4/1b):
-bs4 + markdownify importable and working under the REAL kernel import
-gate; internals (six, typing_extensions) stay outside the allowlist."""
+"""Vendored packages in the guest kernel (ADR-012 §6, ADR-031 §7, ADR-002
+§4/1b): bs4 + markdownify + pypdf importable and working under the REAL
+kernel import gate; internals (six, typing_extensions) stay outside the
+allowlist."""
 
 import pytest
 from kernelenv import load_kernel
@@ -35,6 +36,23 @@ def test_markdownify_converts_under_guest_import_gate():
         f"md = markdownify.markdownify({HTML!r})\n"
     )
     assert "Invoice" in ns["md"] and "**regards**" in ns["md"]
+
+
+def test_pypdf_roundtrips_under_guest_import_gate():
+    # a non-ASCII title is written UTF-16BE — the codec pypdf's string
+    # paths need (pre-imported in app.py, ADR-031 §7)
+    ns = guest_exec(
+        "import io\n"
+        "import pypdf\n"
+        "w = pypdf.PdfWriter()\n"
+        "w.add_blank_page(width=200, height=200)\n"
+        "w.add_metadata({'/Title': 'Привет, PDF'})\n"
+        "buf = io.BytesIO()\n"
+        "w.write(buf)\n"
+        "r = pypdf.PdfReader(io.BytesIO(buf.getvalue()))\n"
+        "title, pages = r.metadata.title, len(r.pages)\n"
+    )
+    assert ns["title"] == "Привет, PDF" and ns["pages"] == 1
 
 
 def test_tier1_html_and_email_importable():

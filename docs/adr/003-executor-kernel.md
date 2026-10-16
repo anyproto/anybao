@@ -397,6 +397,9 @@ loop" problem disappears: there is no C on the guest side).
   *Amended 2026-08-11 (gmail-sync sizing, ADR-012):* the per-run
   budget is **50B** (was 5B ≈ 2s of pure compute — starved legitimate
   data jobs; 50B ≈ tens of seconds, still a hard runaway ceiling).
+  *Amended 2026-10-15 (ADR-031 §6):* the per-run budget is **250B**
+  (50B measured ≈ 4.5 s of pure compute and cut off a 117-page PDF
+  conversion; 250B ≈ 20–25 s).
   Exhaustion surfaces as a typed **`FuelExhausted`** error whose
   message says what works (split into smaller chunks) — the trap is
   deterministic, so a verbatim retry can never succeed, and serve

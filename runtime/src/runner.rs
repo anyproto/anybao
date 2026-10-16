@@ -107,11 +107,10 @@ impl rand::TryRng for FloorRng {
 }
 
 pub const EPOCH_TICK_MS: u64 = 10;
-/// Per-run compute budget (ADR-003 §2 fuel; bumped 5B→50B 2026-08-11:
-/// ≈20s of pure compute — data jobs like mail sync parse megabytes of
-/// JSON per tick and 5B starved a ~300-message batch run while still
-/// being hours away from the runaway-loop ceiling fuel exists for).
-pub const FUEL_PER_CELL: u64 = 50_000_000_000;
+/// Per-run compute budget (ADR-003 §2 fuel, ADR-031 §6): 250B ≈ 20-25s
+/// of pure compute — room for a ~100-page PDF conversion or a mail-sync
+/// batch inside a conversation, still a hard runaway ceiling.
+pub const FUEL_PER_CELL: u64 = 250_000_000_000;
 
 pub struct Host {
     pub wasi: wasmtime_wasi::WasiCtx,
