@@ -183,12 +183,9 @@ pub static EMBEDDED_KERNEL: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.wasm"));
 
 /// `precompiled-kernel` builds (ADR-032 §2): the kernel as machine
-/// code, compiled at build time by `anyrt kernel compile` in the same
-/// job. The sidecar is the source wasm's sha256, so `kernel.boot`'s
-/// provenance is the wasm's whatever form ships.
-#[cfg(feature = "precompiled-kernel")]
-pub static EMBEDDED_KERNEL_CWASM: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.cwasm"));
+/// code (`kernel_image`, loaded in place, §3). The sidecar is the
+/// source wasm's sha256, so `kernel.boot`'s provenance is the wasm's
+/// whatever form ships.
 #[cfg(feature = "precompiled-kernel")]
 const EMBEDDED_KERNEL_SHA256: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -341,20 +338,12 @@ impl Cage {
         Cage::new(EMBEDDED_KERNEL)
     }
 
-    /// The embedded precompiled kernel (ADR-032 §2): no Cranelift runs.
+    /// The embedded precompiled kernel (ADR-032 §2), used in place
+    /// (§3): no Cranelift runs, nothing is copied or made executable.
     #[cfg(feature = "precompiled-kernel")]
     pub fn embedded() -> Result<Arc<Self>> {
         let platform = Platform::host();
-        let engine = Engine::new(&engine_config(platform, None)?)?;
-        // SAFETY: the bytes are this build's own `anyrt kernel compile`
-        // output, embedded at build time — never input.
-        let component =
-            unsafe { Component::deserialize(&engine, EMBEDDED_KERNEL_CWASM) }.map_err(|e| {
-                anyhow::anyhow!(
-                    "the embedded precompiled kernel does not fit this engine ({e}); \
-                     rebuild bin/kernel.cwasm with this anyrt (ADR-032 §2)"
-                )
-            })?;
+        let (engine, component) = crate::kernel_image::load(platform)?;
         let backend = if PULLEY_TARGET.is_some() {
             Backend::Pulley
         } else {

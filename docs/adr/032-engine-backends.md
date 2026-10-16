@@ -135,9 +135,26 @@ Android uses the same loader, with the bytes in a `.text.bao_kernel`
 section of `libanyrt.so`. On the Pixel 9 Pro it passed 20+ `kernel
 check` runs and removed the second resident copy that `deserialize`
 makes (§10). The `.text` offset inside the `.cwasm` is 0x4000 on Darwin
-and 0x10000 on Linux aarch64, so 16 KiB alignment covers both. The hook
+and 0x10000 on Linux aarch64 (0x1000 on x86_64 Linux, the CI host), so
+16 KiB alignment covers all three. The hook
 is not part of Wasmtime's compatibility check, so one `.cwasm` loads
 with either loader.
+
+Implementation notes (amended 2026-10-16): the loader is
+`runtime/src/kernel_image.rs`. The image's length comes from a
+compile-time `include_bytes!(..).len()`, which also makes rustc rebuild
+when the `.cwasm` changes (`.incbin` alone is invisible to it); the
+bytes are emitted once. The hook's `required_alignment` is 4 KiB, the
+smallest `.text` offset above, since it changes no protection. A
+`precompiled-kernel` build that boots a `--kernel` wasm compiles it on
+an engine without the hook (Android and desktop only; iOS cannot JIT).
+The proof runs as `tools/hardened_kernel_check.sh` (CI job
+`precompiled-aot-macos-hardened`): ad-hoc signed with the hardened
+runtime and no entitlements, 40 `kernel check` runs, then `vmmap` on
+the live process finds no writable+executable and no anonymous
+executable region. Negative controls: the JIT build and the copying
+`deserialize` loader, signed the same way, are SIGKILLed by the
+kernel on their first unsigned code page.
 
 ### 4. Engine configuration: frozen and per-platform
 
@@ -376,6 +393,9 @@ without a restart (ADR-009). Baking them in couples two release cycles.
 | Store teardown | 130 to 140 ms with either loader (likely one frame deregistration per function) | Android branch |
 | `kernel check` fuel, three backends | 490 285 509 on `cranelift-jit`, `cranelift-aot` and `pulley` alike | M-series Mac, 2026-10-16 |
 | `kernel check` run, M-series Mac | ~65 ms AOT, ~1 240 ms Pulley (~18×, above the ~10× assumed below) | same |
+| in-place vs copying load, macOS hardened runtime | load 3–15 ms; peak RSS 66 vs 130 MB; copying and JIT builds SIGKILLed under hardened runtime | M-series Mac, 2026-10-16 |
+| iOS knobs on desktop (bounds checks, no CoW) | 61 vs 56 ms per `kernel check` run, ~1.1× | same, knobs forced on a macOS build |
+| iOS simulator, `aarch64-apple-ios-sim` | `kernel check` ok, same fuel; 0.8–1.1 s per run (simulator-spawned process, not a device number) | same |
 | `.cwasm` size by target | 46 MB aarch64-apple-darwin / aarch64-linux-android, 61 MB aarch64-apple-ios (explicit bounds checks, no guard pages), 46 MB pulley64 | same |
 
 Estimates for an iPhone 13 Pro Max, assumed between the desktop box
