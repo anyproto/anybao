@@ -410,6 +410,26 @@ pub fn engine_config(platform: Platform, target: Option<&str>) -> Result<Config>
     Ok(cfg)
 }
 
+/// The stack of every thread that runs Wasm (ADR-032 §6). Native Wasm
+/// frames live on the host thread's stack, so it must clearly exceed
+/// [`MAX_WASM_STACK`] plus the host frames under an effect; Rust's
+/// 2 MiB spawn default is not that by design.
+pub const RUN_THREAD_STACK: usize = 4 << 20;
+
+/// Spawn a thread that may run Wasm (ADR-032 §6), named for the logs.
+/// Panics if the OS refuses a thread, as `std::thread::spawn` does.
+pub fn spawn_run_thread<F, T>(name: &str, f: F) -> std::thread::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(RUN_THREAD_STACK)
+        .spawn(f)
+        .expect("failed to spawn a run thread")
+}
+
 /// A `pulley` build's engine interprets pulley64 (ADR-032 §11).
 const PULLEY_TARGET: Option<&str> = if cfg!(feature = "pulley") {
     Some("pulley64")
@@ -567,7 +587,9 @@ pub struct RunOutcome {
 }
 
 /// Run `spec`'s main(args) in a fresh store. `interrupt` may be
-/// flipped from any thread (the watcher's hard break).
+/// flipped from any thread (the watcher's hard break). Runs on the
+/// caller's thread, which must have a [`RUN_THREAD_STACK`] stack
+/// (ADR-032 §6): [`spawn_run_thread`], or a main thread.
 pub fn run_program(
     cage: &Cage,
     mut broker: Broker,
@@ -858,6 +880,61 @@ mod memory_tests {
         assert_eq!(err["type"], "MemoryLimit", "{err}");
         assert!(err["message"].as_str().unwrap().contains("memory cap"));
         assert!(over.mem_pages * 65_536 <= memory_limit(cage.platform) as u64);
+    }
+}
+
+/// ADR-032 §6: on a run thread, C-level recursion in the kernel ends
+/// as a recorded trap — the Wasm stack limit trips before the host
+/// stack does.
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+    use crate::broker::Broker;
+    use crate::routes::Classifier;
+    use crate::trace::TraceWriter;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn deep_c_recursion_on_a_run_thread_is_a_trap_not_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("deep@v1.py"),
+            "import json\n\ndef main(args):\n    \
+             return len(json.loads(\"[\" * 2_000_000 + \"]\" * 2_000_000))\n",
+        )
+        .unwrap();
+        let cage = Cage::embedded().unwrap();
+        let path = dir.path().to_path_buf();
+        let out = spawn_run_thread("anyrt-test-run", move || {
+            let broker = Broker::new(
+                TraceWriter::new(json!({"id": "deep", "program": "deep@v1"})),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                Some(path),
+                Classifier::new(None),
+            );
+            run_program(
+                &cage,
+                broker,
+                "deep@v1",
+                &json!({}),
+                Default::default(),
+                Arc::new(AtomicBool::new(false)),
+                60.0,
+            )
+            .unwrap()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(out.status, "error");
+        // json's C scanner recurses without a Python-level check, so
+        // it is the Wasm stack limit (MAX_WASM_STACK) that ends it
+        assert_eq!(
+            out.error.as_ref().unwrap()["type"],
+            "Trap",
+            "{:?}",
+            out.error
+        );
     }
 }
 

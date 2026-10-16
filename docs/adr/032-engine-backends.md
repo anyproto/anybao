@@ -242,7 +242,10 @@ under an effect.
 - Threads anyrt spawns for runs (chat conversations, the trigger
   ticker, the control API, the §7 compile job) are built with
   `thread::Builder::stack_size(4 MiB)`. Today they get Rust's 2 MiB
-  default by accident.
+  default by accident. *Amended in implementation (2026-10-16):* the
+  ADR-018 event-source threads fire event triggers inline, so they run
+  Wasm too and get the same stack. All of them go through
+  `runner::spawn_run_thread`, which names the thread (`anyrt-…`).
 - `RunCtx::run` and the CLI run on the caller's thread today. They
   stay that way and document the requirement. `AgentHandle::run` (§8)
   spawns. An embedder that calls `RunCtx::run` directly must call it
