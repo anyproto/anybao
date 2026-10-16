@@ -2337,6 +2337,9 @@ impl RunCtx {
         b
     }
 
+    /// Runs on the caller's thread, which needs a
+    /// [`crate::runner::RUN_THREAD_STACK`] stack (ADR-032 §6); an
+    /// embedder calls it from [`crate::runner::spawn_run_thread`].
     pub fn run(
         &self,
         spec: &str,
@@ -2792,7 +2795,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
     }
     let shared = shared.clone();
     let ctx = ctx.clone();
-    std::thread::spawn(move || {
+    crate::runner::spawn_run_thread("anyrt-conversation", move || {
         let run_id = RunCtx::new_run_id();
         // agent code resolves through the explicit alias (ADR-009 §2);
         // codeSpace lets the guest read overlay data (skills) directly.
@@ -3174,7 +3177,8 @@ fn trigger_ticker(
     ctx: Arc<RunCtx>,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
+    // fires cron/once triggers inline (ADR-032 §6)
+    crate::runner::spawn_run_thread("anyrt-triggers", move || {
         // "why isn't it firing" must be answerable from the log
         // (ADR-006 §4 observability): gate and reconcile failures log
         // on TRANSITIONS — visible without flooding a 5s loop.
@@ -3381,7 +3385,10 @@ fn reconcile_event_sources(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &Arc<A
         live.insert((space.clone(), object_id.clone()), flag.clone());
         info!("event source started: chat {object_id} in space {space} → {trigger_ids:?}");
         let (shared, ctx, stop) = (shared.clone(), ctx.clone(), stop.clone());
-        std::thread::spawn(move || event_source_thread(shared, ctx, space, object_id, flag, stop));
+        // fires event triggers inline: runs Wasm (ADR-032 §6)
+        crate::runner::spawn_run_thread("anyrt-event-source", move || {
+            event_source_thread(shared, ctx, space, object_id, flag, stop)
+        });
     }
 }
 
@@ -3718,7 +3725,8 @@ fn control_api(
     ctx: Arc<RunCtx>,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
+    // `POST /run` runs programs inline (ADR-009 §6, ADR-032 §6)
+    crate::runner::spawn_run_thread("anyrt-control", move || {
         let server = match tiny_http::Server::http(("127.0.0.1", ctx.cfg.control_port)) {
             Ok(s) => s,
             Err(e) => {
