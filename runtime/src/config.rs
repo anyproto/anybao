@@ -112,6 +112,33 @@ pub struct AgentSection {
     pub space: Option<String>,
     pub name: Option<String>,
     pub control_port: Option<u16>,
+    /// `false` = no control listener (ADR-032 §8); the port is unused
+    pub control: Option<bool>,
+    /// `"full"` (default) | `"chat-only"` (ADR-032 §8)
+    pub mode: Option<String>,
+}
+
+/// What a serve runs (ADR-032 §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServeMode {
+    /// conversations, triggers, retention
+    #[default]
+    Full,
+    /// conversations only: the ticker probes readiness, drains the boot
+    /// backlog and keeps trigger records reconciled, but fires no cron,
+    /// once or event trigger and adopts none; no retention thread. A
+    /// phone's mode — triggers need a process that outlives a turn.
+    ChatOnly,
+}
+
+impl ServeMode {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "full" => Ok(ServeMode::Full),
+            "chat-only" => Ok(ServeMode::ChatOnly),
+            other => anyhow::bail!("[agent] mode = {other:?}: \"full\" | \"chat-only\""),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -128,7 +155,12 @@ pub struct Config {
     pub addr: String,
     pub agent_space: String,
     pub agent_name: String,
+    /// `0` = an ephemeral port (a shipped client writes it, BOB-110)
     pub control_port: u16,
+    /// the loopback control API at all (ADR-032 §8): an embedder that
+    /// holds the `AgentHandle` needs no socket to talk to itself
+    pub control: bool,
+    pub mode: ServeMode,
     pub overlays: BTreeMap<String, Overlay>,
     /// `paths.traces`: the raw-blob directory (ADR-026 §1) — the bytes
     /// behind `{__blob, bytes, mime}` refs sit at `<traces_dir>/blobs/`.
@@ -181,6 +213,8 @@ impl Default for Config {
             agent_space: "bao".into(),
             agent_name: "bao".into(),
             control_port: 7010,
+            control: true,
+            mode: ServeMode::Full,
             overlays: BTreeMap::new(),
             traces_dir: "traces".into(),
             retain_conversations_s: Some(60 * 86_400),
@@ -237,6 +271,18 @@ impl ConfigBuilder {
 
     pub fn control_port(mut self, v: u16) -> Self {
         self.cfg.control_port = v;
+        self
+    }
+
+    /// `false` = no control listener (ADR-032 §8).
+    pub fn control(mut self, v: bool) -> Self {
+        self.cfg.control = v;
+        self
+    }
+
+    /// Full or chat-only serve (ADR-032 §8).
+    pub fn mode(mut self, v: ServeMode) -> Self {
+        self.cfg.mode = v;
         self
     }
 
@@ -375,6 +421,12 @@ impl Config {
         }
         if let Some(port) = fc.agent.control_port {
             c.control_port = port;
+        }
+        if let Some(control) = fc.agent.control {
+            c.control = control;
+        }
+        if let Some(mode) = fc.agent.mode {
+            c.mode = ServeMode::parse(&mode)?;
         }
         c.overlays = fc
             .overlays
@@ -551,6 +603,22 @@ traces = "t"
 "agent.persona" = "terse"
 "llm.tier.chat" = { provider = "anthropic", model = "m" }
 "#;
+
+    /// ADR-032 §8: `control = false`, `mode = "chat-only"`; port 0
+    /// still means ephemeral, never "off".
+    #[test]
+    fn control_and_mode_parse() {
+        let d = Config::from_toml("").unwrap();
+        assert!(d.control);
+        assert_eq!(d.mode, ServeMode::Full);
+        let c =
+            Config::from_toml("[agent]\ncontrol = false\ncontrol_port = 0\nmode = \"chat-only\"\n")
+                .unwrap();
+        assert!(!c.control);
+        assert_eq!(c.control_port, 0);
+        assert_eq!(c.mode, ServeMode::ChatOnly);
+        assert!(Config::from_toml("[agent]\nmode = \"phone\"\n").is_err());
+    }
 
     #[test]
     fn full_example_parses() {

@@ -53,6 +53,9 @@ pub struct TraceWriter {
     /// Text spills the sink refused (ADR-026 §2: the sink stays; these
     /// get one more try at `dump`).
     failed_blobs: Vec<(String, String)>,
+    /// Revocation (ADR-032 §8 step 5): once set, nothing more reaches
+    /// the store — records stay in memory, `dump` refuses.
+    pub revoked: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// What the guest's ambient calls see (ADR-002 §4, the WASI floor):
@@ -89,6 +92,7 @@ impl TraceWriter {
             blob_dir: None,
             raw_text: BTreeSet::new(),
             failed_blobs: Vec::new(),
+            revoked: None,
         };
         w.push(json!({"kind": "header", "schema": SCHEMA, "run": run}));
         w
@@ -149,7 +153,16 @@ impl TraceWriter {
         }
     }
 
+    fn is_revoked(&self) -> bool {
+        self.revoked
+            .as_ref()
+            .is_some_and(|r| r.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     fn push(&mut self, rec: Value) {
+        if self.is_revoked() {
+            self.sink = None;
+        }
         if let Some(sink) = self.sink.as_mut() {
             if sink.append(&rec).is_err() {
                 tracing::warn!("trace stream write failed; buffering until dump");
@@ -190,6 +203,9 @@ impl TraceWriter {
             self.raw_text.insert(hash.clone());
             self.blobs.push((hash, text));
             return r;
+        }
+        if self.is_revoked() {
+            self.sink = None;
         }
         if let Some(sink) = self.sink.as_mut() {
             if let Err(e) = sink.append_blob(&hash, &text) {
@@ -322,6 +338,9 @@ impl TraceWriter {
     /// summary (ADR-023 §1) for the host to publish.
     pub fn dump(&mut self, store: &dyn TraceStore) -> anyhow::Result<Value> {
         let run = self.run_id();
+        if self.is_revoked() {
+            anyhow::bail!("run {run} was revoked; its trace stays unwritten (ADR-032 §8)");
+        }
         // the text-blob store never sees a raw-written spill (ADR-026 §2):
         // partition by MOVE (a streamed run's bodies are large, BOB-149),
         // then put every blob back for the summary — order is not
@@ -353,6 +372,32 @@ impl TraceWriter {
             self.started_at,
             self.trigger.as_deref(),
         )
+    }
+}
+
+/// ADR-032 §8 step 5: a revoked writer stops streaming and refuses to
+/// land the run.
+#[cfg(test)]
+mod revoke_tests {
+    use super::*;
+    use crate::tracestore::MemTraceStore;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn revoked_writer_writes_nothing_more() {
+        let store = MemTraceStore::new();
+        let mut w = TraceWriter::new(json!({"id": "rv"}));
+        let flag = Arc::new(AtomicBool::new(false));
+        w.revoked = Some(flag.clone());
+        w.stream_to(&store).unwrap();
+        w.cell("a", true, None, false, json!({}));
+        let before = store.records("rv").len();
+        flag.store(true, Ordering::Relaxed);
+        w.cell("b", true, None, false, json!({}));
+        assert_eq!(store.records("rv").len(), before);
+        assert_eq!(w.records.len(), 3, "kept in memory");
+        assert!(w.dump(&store).is_err());
     }
 }
 

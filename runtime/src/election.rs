@@ -119,6 +119,34 @@ fn has_app(d: &Value, app: &str) -> bool {
     d["apps"].get(app).is_some_and(|v| !v.is_null())
 }
 
+/// A beat this recent means the device is up (ADR-032 §9, ADR-025).
+pub const BEAT_FRESH_S: f64 = 60.0;
+
+/// The device a phone hands its claim to when it stops hosting
+/// (ADR-032 §9): among the rows that carry `apps.<app>`, other than
+/// this one, the freshest beat no older than [`BEAT_FRESH_S`]. None =
+/// no such device is beating, and the phone keeps the claim. `beats`
+/// maps peer id to the last ADR-025 beat time (seconds), which the
+/// caller tracks from the event bus.
+pub fn handoff_target(
+    reply: &Value,
+    beats: &std::collections::BTreeMap<String, f64>,
+    self_peer: &str,
+    app: &str,
+    now: f64,
+) -> Option<String> {
+    reply["devices"]
+        .as_array()?
+        .iter()
+        .filter(|d| has_app(d, app))
+        .filter_map(peer_of)
+        .filter(|p| *p != self_peer)
+        .filter_map(|p| beats.get(p).map(|t| (p, *t)))
+        .filter(|(_, t)| now - t <= BEAT_FRESH_S)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(p, _)| p.to_string())
+}
+
 /// The ADR-015 §2 rule over one `GET /v1/devices` reply. `winner` is
 /// the server's verdict; rows are only consulted for existence — a
 /// dangling winner (claim without a row, or a row without the app)
@@ -261,6 +289,34 @@ fn boot_with(client: &Client, version: &str, retry_delay: std::time::Duration) -
 
 #[cfg(test)]
 mod tests {
+
+    /// ADR-032 §9: only devices with bao installed, never self, the
+    /// freshest live beat; nobody beating = keep the claim.
+    #[test]
+    fn handoff_picks_the_freshest_beating_bao_device() {
+        let reply = json!({"devices": [
+            {"id": "phone", "apps": {"bao": {}}},
+            {"id": "desk", "apps": {"bao": {}}},
+            {"id": "laptop", "apps": {"bao": {}}},
+            {"id": "tv", "apps": {}},
+            {"peerId": "old", "apps": {"bao": null}},
+        ]});
+        let beats: std::collections::BTreeMap<String, f64> = [
+            ("phone", 1000.0),
+            ("desk", 990.0),
+            ("laptop", 995.0),
+            ("tv", 999.0),
+            ("old", 999.0),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let pick = |now| handoff_target(&reply, &beats, "phone", "bao", now);
+        assert_eq!(pick(1000.0).as_deref(), Some("laptop"));
+        assert_eq!(pick(1052.0).as_deref(), Some("laptop"), "desk is stale");
+        assert_eq!(pick(1100.0), None, "nobody beating: keep the claim");
+    }
+
     use super::*;
     use crate::testutil::StubTransport;
 
