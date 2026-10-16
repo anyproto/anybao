@@ -1,8 +1,8 @@
 //! Managed OAuth credentials (ADR-011): provider descriptors and the
 //! host-held token lifecycle behind `connector.oauth.<provider>` refs.
 //! Custody rule (ADR-011 §1): no token — access, refresh, or
-//! authorization code — is ever returned to guest code, written to a
-//! synced field, or recorded in a trace. The broker resolves managed
+//! authorization code — is ever returned to guest code, written by the
+//! host to a synced field, or recorded in a trace. The broker resolves managed
 //! refs through `OauthState` at injection time (ADR-011 §6); this
 //! module owns the state and the refresh-token exchange.
 
@@ -10,7 +10,7 @@ use crate::broker::EffectFailure;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -110,20 +110,73 @@ enum FlowState {
     Done(Result<FlowOutcome, (String, String)>),
 }
 
-/// One consent flow: the joinable wait handle `connect` blocks on.
-/// The receiver thread owns the listener; this is only the outcome.
+/// One consent flow: the joinable wait handle `connect` blocks on, and
+/// what either receiver — the loopback listener or a pasted callback
+/// (ADR-011 §5.1) — needs to finish it. The first callback to `claim`
+/// the flow exchanges the code; later ones are refused.
 struct ConsentFlow {
     state: Mutex<FlowState>,
     cond: Condvar,
+    claimed: AtomicBool,
+    /// `connect` calls blocked on this flow right now.
+    waiters: AtomicUsize,
+    p: FlowParams,
 }
 
-/// What the receiver thread needs from its spawn site.
+impl ConsentFlow {
+    fn new(p: FlowParams) -> Self {
+        ConsentFlow {
+            state: Mutex::new(FlowState::Pending),
+            cond: Condvar::new(),
+            claimed: AtomicBool::new(false),
+            waiters: AtomicUsize::new(0),
+            p,
+        }
+    }
+
+    fn claim(&self) -> bool {
+        !self.claimed.swap(true, Ordering::SeqCst)
+    }
+
+    fn pending(&self) -> bool {
+        matches!(
+            *self.state.lock().expect("oauth flow lock poisoned"),
+            FlowState::Pending
+        )
+    }
+}
+
+/// Decrements the flow's waiter count on every `connect` exit path.
+struct Waiting<'a>(&'a ConsentFlow);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.waiters.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The flow's protocol secrets: generated on this host and sent nowhere
+/// but the token endpoint (ADR-011 §5.1).
 struct FlowParams {
     provider: String,
     desc: ProviderDescriptor,
     redirect_uri: String,
     verifier: String,
     state_tok: String,
+}
+
+/// What a pasted callback did (ADR-011 §5.1 transport B).
+pub enum Pasted {
+    /// No pending flow carries this `state`: expired, already used, or
+    /// never this host's.
+    NoFlow,
+    /// The flow finished; `account` on success. `awaited` = a
+    /// `connect` call was blocked on it and reports the outcome itself.
+    Done {
+        provider: String,
+        outcome: Result<Option<String>, (String, String)>,
+        awaited: bool,
+    },
 }
 
 /// One per process, shared across runs/threads: per-run broker
@@ -153,6 +206,9 @@ pub struct OauthState {
     /// Wiring sets these before the Arc: lib-mode consent delivery and
     /// the serve shutdown flag flow threads observe.
     pub consent: Option<ConsentHook>,
+    /// Serve: posts each consent URL where every client of the chat
+    /// sees it (ADR-011 §5.1 transport B), on top of the local delivery.
+    pub announce: Option<ConsentHook>,
     pub shutdown: Arc<AtomicBool>,
     /// Long-lived client for token-endpoint calls.
     agent: ureq::Agent,
@@ -187,6 +243,7 @@ impl OauthState {
             meta: Mutex::new(BTreeMap::new()),
             persist,
             consent: None,
+            announce: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             agent: ureq::agent(),
         }
@@ -461,6 +518,8 @@ impl OauthState {
             .unwrap_or(CONNECT_TIMEOUT_S)
             .clamp(0.05, CONSENT_WINDOW_S);
         let deadline = Instant::now() + Duration::from_secs_f64(timeout);
+        flow.waiters.fetch_add(1, Ordering::SeqCst);
+        let _waiting = Waiting(&flow);
         let mut st = flow.state.lock().expect("oauth flow lock poisoned");
         loop {
             match &*st {
@@ -499,21 +558,16 @@ impl OauthState {
         }
         let handle = format!("{OAUTH_REF_PREFIX}{provider}");
         let connected = self.secret(&format!("{handle}.refresh")).is_some();
-        // pending = a flow entry whose outcome is not in yet. The receiver
-        // thread marks Done and notifies BEFORE it drops the map entry, so
-        // a status read right after connect() returns can still see the
+        // pending = a flow entry whose outcome is not in yet. `finish`
+        // marks Done and notifies BEFORE it drops the map entry, so a
+        // status read right after connect() returns can still see the
         // entry — that window is not "pending".
         let pending = self
             .flows
             .lock()
             .expect("oauth flows lock poisoned")
             .get(provider)
-            .is_some_and(|f| {
-                matches!(
-                    *f.state.lock().expect("oauth flow lock poisoned"),
-                    FlowState::Pending
-                )
-            });
+            .is_some_and(|f| f.pending());
         let meta = self.meta.lock().expect("oauth meta lock poisoned");
         let scopes = meta
             .get(&format!("{handle}.granted_scopes"))
@@ -549,6 +603,7 @@ impl OauthState {
             .expect("oauth flows lock poisoned")
             .remove(provider)
         {
+            flow.claim(); // no callback starts an exchange after this
             let mut st = flow.state.lock().expect("oauth flow lock poisoned");
             if matches!(*st, FlowState::Pending) {
                 *st = FlowState::Done(Err((
@@ -651,21 +706,17 @@ impl OauthState {
             .collect();
         let url = format!("{}?{}", desc.authorize_url, query.join("&"));
 
-        let flow = Arc::new(ConsentFlow {
-            state: Mutex::new(FlowState::Pending),
-            cond: Condvar::new(),
-        });
+        let flow = Arc::new(ConsentFlow::new(FlowParams {
+            provider: provider.to_string(),
+            desc: desc.clone(),
+            redirect_uri,
+            verifier,
+            state_tok,
+        }));
         {
             let state = self.clone();
             let flow = flow.clone();
-            let params = FlowParams {
-                provider: provider.to_string(),
-                desc: desc.clone(),
-                redirect_uri,
-                verifier,
-                state_tok,
-            };
-            std::thread::spawn(move || state.run_flow(server, flow, params));
+            std::thread::spawn(move || state.run_flow(server, flow));
         }
         self.deliver_consent(ConsentRequest {
             provider: provider.to_string(),
@@ -674,9 +725,16 @@ impl OauthState {
         Ok(flow)
     }
 
-    /// Hook → system browser → the URL on the host log (the honest CLI
-    /// path; host-side output, the guest never sees it — ADR-011 §5.1).
+    /// The chat announce (serve), then hook → system browser → the URL
+    /// on the host log (the honest CLI path). Host-side output only —
+    /// the guest never sees it (ADR-011 §5.1).
     fn deliver_consent(&self, req: ConsentRequest) {
+        if let Some(a) = &self.announce {
+            (a.0)(ConsentRequest {
+                provider: req.provider.clone(),
+                url: req.url.clone(),
+            });
+        }
         if let Some(h) = &self.consent {
             (h.0)(req);
             return;
@@ -698,33 +756,27 @@ impl OauthState {
         );
     }
 
-    /// The receiver: single-use, bounded by the 5-minute window and the
-    /// shutdown flag; `state` mismatch tears it down (a forged or
-    /// replayed redirect gets no retries against a live verifier).
-    fn run_flow(self: Arc<Self>, server: tiny_http::Server, flow: Arc<ConsentFlow>, p: FlowParams) {
-        let FlowParams {
-            provider,
-            desc,
-            redirect_uri,
-            verifier,
-            state_tok,
-        } = p;
+    /// The loopback receiver: bounded by the 5-minute window and the
+    /// shutdown flag, gone once the flow is done by either path. `state`
+    /// mismatch tears the flow down (a forged or replayed redirect gets
+    /// no retries against a live verifier).
+    fn run_flow(self: Arc<Self>, server: tiny_http::Server, flow: Arc<ConsentFlow>) {
         let deadline = Instant::now() + Duration::from_secs_f64(CONSENT_WINDOW_S);
-        let outcome: Result<FlowOutcome, (String, String)> = loop {
-            if Instant::now() >= deadline {
-                break Err((
-                    "consent_timeout".into(),
-                    "the consent window expired — re-run connect".into(),
-                ));
+        loop {
+            if !flow.pending() {
+                return; // finished by a pasted callback, or cancelled by disconnect
             }
-            if self.shutdown.load(Ordering::Relaxed)
-                || !matches!(
-                    *flow.state.lock().expect("oauth flow lock poisoned"),
-                    FlowState::Pending
-                )
-            {
-                // shut down or cancelled (disconnect) — nothing to publish
-                break Err(("consent_timeout".into(), "cancelled".into()));
+            let shutdown = self.shutdown.load(Ordering::Relaxed);
+            if shutdown || Instant::now() >= deadline {
+                if flow.claim() {
+                    let why = if shutdown {
+                        "cancelled"
+                    } else {
+                        "the consent window expired — re-run connect"
+                    };
+                    self.finish(&flow, Err(("consent_timeout".into(), why.into())));
+                }
+                return;
             }
             let Ok(Some(req)) = server.recv_timeout(Duration::from_millis(250)) else {
                 continue;
@@ -737,39 +789,102 @@ impl OauthState {
                 continue;
             }
             let q = parse_query(query);
-            if q.get("state").map(String::as_str) != Some(state_tok.as_str()) {
+            if q.get("state") != Some(&flow.p.state_tok) {
                 let _ = req.respond(
                     tiny_http::Response::from_string("state mismatch").with_status_code(400),
                 );
-                break Err((
-                    "state_mismatch".into(),
-                    "the authorization response carried a wrong state — re-run connect".into(),
-                ));
+                if flow.claim() {
+                    self.finish(
+                        &flow,
+                        Err((
+                            "state_mismatch".into(),
+                            "the authorization response carried a wrong state — re-run connect"
+                                .into(),
+                        )),
+                    );
+                }
+                return;
             }
-            if let Some(e) = q.get("error") {
+            if !flow.claim() {
                 let _ = req.respond(tiny_http::Response::from_string(
-                    "authorization was denied — you can close this tab",
+                    "this sign-in was already completed — you can close this tab",
                 ));
-                break Err((
-                    "consent_denied".into(),
-                    format!("the provider reported {e:?}"),
-                ));
+                continue;
             }
-            let Some(code) = q.get("code") else {
-                let _ = req.respond(
-                    tiny_http::Response::from_string("missing code").with_status_code(400),
-                );
-                break Err((
-                    "token_exchange_failed".into(),
-                    "the redirect carried neither code nor error".into(),
-                ));
+            let (status, page) = if q.contains_key("error") {
+                (200, "authorization was denied — you can close this tab")
+            } else if q.contains_key("code") {
+                (200, "authorized — you can close this tab")
+            } else {
+                (400, "missing code")
             };
-            let _ = req.respond(tiny_http::Response::from_string(
-                "authorized — you can close this tab",
-            ));
-            break self.exchange_code(&provider, &desc, code, &redirect_uri, &verifier);
-        };
+            let _ = req.respond(tiny_http::Response::from_string(page).with_status_code(status));
+            let outcome = self.callback_outcome(&flow, &q);
+            self.finish(&flow, outcome);
+            return;
+        }
+    }
 
+    /// A callback URL the human pasted into chat (ADR-011 §5.1 transport
+    /// B); `query` comes from [`pasted_callback`]. Finishes the pending
+    /// flow whose `state` it carries, exchanging the code with that
+    /// flow's verifier. A paste matching no flow leaves every flow alone:
+    /// an old address pasted by mistake must not kill a live sign-in.
+    pub fn complete_pasted(&self, query: &str) -> Pasted {
+        let q = parse_query(query);
+        let Some(state_tok) = q.get("state") else {
+            return Pasted::NoFlow;
+        };
+        let flow = self
+            .flows
+            .lock()
+            .expect("oauth flows lock poisoned")
+            .values()
+            .find(|f| &f.p.state_tok == state_tok)
+            .cloned();
+        let Some(flow) = flow.filter(|f| f.claim()) else {
+            return Pasted::NoFlow;
+        };
+        let outcome = self.callback_outcome(&flow, &q);
+        let awaited = flow.waiters.load(Ordering::SeqCst) > 0;
+        let reported = match &outcome {
+            Ok(o) => Ok(o.account.clone()),
+            Err(e) => Err(e.clone()),
+        };
+        self.finish(&flow, outcome);
+        Pasted::Done {
+            provider: flow.p.provider.clone(),
+            outcome: reported,
+            awaited,
+        }
+    }
+
+    /// A state-checked, claimed callback → the flow's outcome: the
+    /// provider's refusal, or the code exchanged with the flow's verifier.
+    fn callback_outcome(
+        &self,
+        flow: &ConsentFlow,
+        q: &BTreeMap<String, String>,
+    ) -> Result<FlowOutcome, (String, String)> {
+        if let Some(e) = q.get("error") {
+            return Err((
+                "consent_denied".into(),
+                format!("the provider reported {e:?}"),
+            ));
+        }
+        let Some(code) = q.get("code") else {
+            return Err((
+                "token_exchange_failed".into(),
+                "the redirect carried neither code nor error".into(),
+            ));
+        };
+        let p = &flow.p;
+        self.exchange_code(&p.provider, &p.desc, code, &p.redirect_uri, &p.verifier)
+    }
+
+    /// Publish the outcome to `connect` waiters, THEN drop the map entry
+    /// (the order `status` relies on).
+    fn finish(&self, flow: &Arc<ConsentFlow>, outcome: Result<FlowOutcome, (String, String)>) {
         {
             let mut st = flow.state.lock().expect("oauth flow lock poisoned");
             if matches!(*st, FlowState::Pending) {
@@ -777,13 +892,10 @@ impl OauthState {
                 flow.cond.notify_all();
             }
         }
+        let provider = &flow.p.provider;
         let mut flows = self.flows.lock().expect("oauth flows lock poisoned");
-        if flows
-            .get(&provider)
-            .map(|f| Arc::ptr_eq(f, &flow))
-            .unwrap_or(false)
-        {
-            flows.remove(&provider);
+        if flows.get(provider).is_some_and(|f| Arc::ptr_eq(f, flow)) {
+            flows.remove(provider);
         }
     }
 
@@ -1031,6 +1143,33 @@ pub(crate) fn parse_query(query: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The query of the first `127.0.0.1:<port>/oauth/callback?…` address in
+/// a chat message: where the browser lands after consent on a device
+/// that is not this host (ADR-011 §5.1 transport B). Only a callback
+/// carrying `state` and a `code` or `error` counts. Markdown backslash
+/// escapes are dropped — a query never holds a bare backslash.
+pub fn pasted_callback(text: &str) -> Option<String> {
+    const HOST: &str = "127.0.0.1:";
+    const PATH: &str = "/oauth/callback?";
+    let mut rest = text;
+    while let Some(i) = rest.find(HOST) {
+        rest = &rest[i + HOST.len()..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let Some(tail) = rest[digits..].strip_prefix(PATH).filter(|_| digits > 0) else {
+            continue;
+        };
+        let end = tail
+            .find(|c: char| c.is_whitespace() || "()<>[]\"'`#".contains(c))
+            .unwrap_or(tail.len());
+        let query = tail[..end].replace('\\', "");
+        let q = parse_query(&query);
+        if q.contains_key("state") && (q.contains_key("code") || q.contains_key("error")) {
+            return Some(query);
+        }
+    }
+    None
+}
+
 /// The email claim off an id_token, decoded WITHOUT verification — the
 /// token arrived over TLS directly from the token endpoint we chose
 /// (ADR-011 §5); it is display metadata, not an authority.
@@ -1268,14 +1407,8 @@ mod tests {
         (state, url_slot, calls)
     }
 
-    /// Play the human+browser: wait for the consent URL, then hit the
-    /// loopback receiver. Returns the consent URL's query params.
-    fn complete_consent(
-        url_slot: &Arc<Mutex<Option<String>>>,
-        code: &str,
-        wrong_state: bool,
-        error: Option<&str>,
-    ) -> BTreeMap<String, String> {
+    /// Wait for the consent URL; returns its query params.
+    fn consent_query(url_slot: &Arc<Mutex<Option<String>>>) -> BTreeMap<String, String> {
         let deadline = Instant::now() + Duration::from_secs(3);
         let url = loop {
             if let Some(u) = url_slot.lock().unwrap().clone() {
@@ -1284,7 +1417,18 @@ mod tests {
             assert!(Instant::now() < deadline, "consent URL never delivered");
             std::thread::sleep(Duration::from_millis(20));
         };
-        let q = parse_query(url.split_once('?').expect("consent url has a query").1);
+        parse_query(url.split_once('?').expect("consent url has a query").1)
+    }
+
+    /// Play the human+browser: wait for the consent URL, then hit the
+    /// loopback receiver. Returns the consent URL's query params.
+    fn complete_consent(
+        url_slot: &Arc<Mutex<Option<String>>>,
+        code: &str,
+        wrong_state: bool,
+        error: Option<&str>,
+    ) -> BTreeMap<String, String> {
+        let q = consent_query(url_slot);
         let redirect = q["redirect_uri"].clone();
         let state_tok = if wrong_state { "WRONG" } else { &q["state"] };
         let cb = match error {
@@ -1348,25 +1492,32 @@ mod tests {
         // used to report pending: true from the lingering entry (CI
         // flake in connect_full_flow, 2026-09-14).
         let state = seeded_state("http://127.0.0.1:1/token", None);
-        state.flows.lock().unwrap().insert(
-            "testprov".into(),
-            Arc::new(ConsentFlow {
-                state: Mutex::new(FlowState::Done(Ok(FlowOutcome {
-                    granted_scopes: vec!["s1".into()],
-                    account: None,
-                }))),
-                cond: Condvar::new(),
-            }),
-        );
+        let flow = || {
+            ConsentFlow::new(FlowParams {
+                provider: "testprov".into(),
+                desc: state.providers["testprov"].clone(),
+                redirect_uri: String::new(),
+                verifier: String::new(),
+                state_tok: String::new(),
+            })
+        };
+        let done = flow();
+        *done.state.lock().unwrap() = FlowState::Done(Ok(FlowOutcome {
+            granted_scopes: vec!["s1".into()],
+            account: None,
+        }));
+        state
+            .flows
+            .lock()
+            .unwrap()
+            .insert("testprov".into(), Arc::new(done));
         assert_eq!(state.status("testprov").unwrap()["pending"], json!(false));
         // a flow still waiting on consent is the real pending
-        state.flows.lock().unwrap().insert(
-            "testprov".into(),
-            Arc::new(ConsentFlow {
-                state: Mutex::new(FlowState::Pending),
-                cond: Condvar::new(),
-            }),
-        );
+        state
+            .flows
+            .lock()
+            .unwrap()
+            .insert("testprov".into(), Arc::new(flow()));
         assert_eq!(state.status("testprov").unwrap()["pending"], json!(true));
     }
 
@@ -1452,6 +1603,158 @@ mod tests {
         complete_consent(&url_slot, "authcode4", false, None);
         let out = waiter.join().unwrap().unwrap();
         assert_eq!(out["ok"], json!(true));
+    }
+
+    // --- pasted callbacks (ADR-011 §5.1 transport B) --------------------
+
+    /// The address a browser on another device lands on after consent.
+    fn landed_address(url_slot: &Arc<Mutex<Option<String>>>, code: &str) -> String {
+        let q = consent_query(url_slot);
+        format!(
+            "{}?state={}&code={code}&scope=s1%20s2",
+            q["redirect_uri"], q["state"]
+        )
+    }
+
+    fn wait_connected(state: &OauthState) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while state.status("testprov").unwrap()["connected"] != json!(true) {
+            assert!(Instant::now() < deadline, "the grant never landed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn pasted_callback_finds_the_loopback_address() {
+        let q = "state=abc&code=4%2F0Ab_c-d&scope=s1";
+        for text in [
+            format!("http://127.0.0.1:53682/oauth/callback?{q}"),
+            format!("here: http://127.0.0.1:53682/oauth/callback?{q} thanks"),
+            format!(
+                "[http://127.0.0.1:1/oauth/callback?{q}](http://127.0.0.1:1/oauth/callback?{q})"
+            ),
+            format!("<127.0.0.1:53682/oauth/callback?{q}#>"),
+            format!("http://127.0.0.1:7010/x then http://127.0.0.1:5/oauth/callback?{q}"),
+        ] {
+            assert_eq!(pasted_callback(&text).as_deref(), Some(q), "{text}");
+        }
+        assert_eq!(
+            pasted_callback("http://127.0.0.1:9/oauth/callback?state=s&code=a\\_b").as_deref(),
+            Some("state=s&code=a_b")
+        );
+        assert!(
+            pasted_callback("127.0.0.1:5/oauth/callback?error=access_denied&state=s").is_some()
+        );
+        for text in [
+            "http://127.0.0.1:53682/oauth/callback?code=x",
+            "http://127.0.0.1:53682/oauth/callback?state=s",
+            "https://example.com/oauth/callback?state=s&code=x",
+            "http://127.0.0.1:/oauth/callback?state=s&code=x",
+            "http://127.0.0.1:7010/other?state=s&code=x",
+            "connect my google account",
+        ] {
+            assert_eq!(pasted_callback(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn paste_completes_a_blocked_connect() {
+        let (token_url, bodies) = capturing_endpoint(full_token_response());
+        let (state, url_slot, _) = connect_state(&token_url, "");
+        let s2 = state.clone();
+        let waiter = std::thread::spawn(move || s2.connect("testprov", None, Some(5.0), None));
+        let text = format!("done: {}", landed_address(&url_slot, "pastedcode"));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while state.flows.lock().unwrap()["testprov"]
+            .waiters
+            .load(Ordering::SeqCst)
+            == 0
+        {
+            assert!(Instant::now() < deadline, "connect never blocked");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let query = pasted_callback(&text).unwrap();
+        let Pasted::Done {
+            provider,
+            outcome,
+            awaited,
+        } = state.complete_pasted(&query)
+        else {
+            panic!("the pending flow did not match its own callback");
+        };
+        assert_eq!(provider, "testprov");
+        assert_eq!(outcome, Ok(Some("u@example.com".to_string())));
+        assert!(awaited);
+        assert_eq!(waiter.join().unwrap().unwrap()["ok"], json!(true));
+
+        // the exchange presented this host's verifier + redirect_uri
+        let q = consent_query(&url_slot);
+        let body = parse_query(&bodies.lock().unwrap()[0]);
+        assert_eq!(body["code"], "pastedcode");
+        assert_eq!(body["redirect_uri"], q["redirect_uri"]);
+        let challenge = b64url_nopad(&Sha256::digest(body["code_verifier"].as_bytes()));
+        assert_eq!(challenge, q["code_challenge"]);
+        // single use
+        assert!(matches!(state.complete_pasted(&query), Pasted::NoFlow));
+    }
+
+    #[test]
+    fn late_paste_is_reported_by_nobody_else() {
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let (state, url_slot, _) = connect_state(&token_url, "");
+        let err = state
+            .connect("testprov", None, Some(0.1), None)
+            .unwrap_err();
+        assert_eq!(err.type_, "consent_timeout");
+        let query = pasted_callback(&landed_address(&url_slot, "latecode")).unwrap();
+        let Pasted::Done {
+            outcome, awaited, ..
+        } = state.complete_pasted(&query)
+        else {
+            panic!("the pending flow did not match its own callback");
+        };
+        assert!(outcome.is_ok());
+        assert!(!awaited);
+        let st = state.status("testprov").unwrap();
+        assert_eq!(st["connected"], json!(true));
+        assert_eq!(st["pending"], json!(false));
+    }
+
+    #[test]
+    fn foreign_paste_leaves_the_live_flow_alone() {
+        let (token_url, bodies) = capturing_endpoint(full_token_response());
+        let (state, url_slot, _) = connect_state(&token_url, "");
+        let _ = state.connect("testprov", None, Some(0.1), None);
+        let stale = pasted_callback("http://127.0.0.1:1/oauth/callback?state=old&code=x").unwrap();
+        assert!(matches!(state.complete_pasted(&stale), Pasted::NoFlow));
+        assert!(bodies.lock().unwrap().is_empty());
+        assert_eq!(state.status("testprov").unwrap()["pending"], json!(true));
+        // the live flow still completes through the loopback receiver
+        complete_consent(&url_slot, "authcode5", false, None);
+        wait_connected(&state);
+    }
+
+    #[test]
+    fn announce_rides_along_the_local_delivery() {
+        let mut state = OauthState::new(test_provider("http://127.0.0.1:1/token"), None);
+        let seen: Arc<Mutex<Vec<(&str, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (a, h) = (seen.clone(), seen.clone());
+        state.announce = Some(ConsentHook(Arc::new(move |r: ConsentRequest| {
+            a.lock().unwrap().push(("announce", r.url))
+        })));
+        state.consent = Some(ConsentHook(Arc::new(move |r: ConsentRequest| {
+            h.lock().unwrap().push(("hook", r.url))
+        })));
+        let state = Arc::new(state);
+        state.seed(&mut BTreeMap::from([(
+            "connector.oauth.testprov.client_id".to_string(),
+            "cid".to_string(),
+        )]));
+        let _ = state.connect("testprov", None, Some(0.05), None);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!((seen[0].0, seen[1].0), ("announce", "hook"));
+        assert_eq!(seen[0].1, seen[1].1);
     }
 
     /// ADR-021 §4: the store answers first — a `.client_id` rotated

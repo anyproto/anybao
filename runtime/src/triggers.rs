@@ -746,6 +746,10 @@ pub enum WatchAction {
     /// (not-yet-started) messages for the chat are cancelled by it —
     /// the caller drops its backlog (ADR-005 §3).
     BreakIdle,
+    /// The human pasted an OAuth callback address (ADR-011 §5.1
+    /// transport B) — its query, for `OauthState::complete_pasted`.
+    /// Never injected, never starts a run.
+    OauthCallback(String),
     Start,
 }
 
@@ -1018,6 +1022,17 @@ impl Watcher {
                 (Some(_), None) => WatchAction::BreakIdle,
                 _ => WatchAction::Skip,
             };
+        }
+        if let Some(query) = record
+            .get("text")
+            .and_then(|t| t.as_str())
+            .filter(|_| record.get("agent").is_none())
+            .and_then(crate::oauth::pasted_callback)
+        {
+            // a human's paste carrying an authorization code: the host
+            // finishes the sign-in, no run or model ever sees it
+            // (ADR-011 §5.1). Agent-posted text never completes one.
+            return WatchAction::OauthCallback(query);
         }
         if let Some(live) = self.live.get(chat_id) {
             let input = Self::input(record);
@@ -1555,6 +1570,31 @@ mod tests {
         w.conversation_done("c1");
         let m4 = json!({"id": "m4", "text": "fresh"});
         assert!(matches!(w.on_message("c1", &m4), WatchAction::Start));
+    }
+
+    #[test]
+    fn pasted_oauth_callback_never_reaches_a_run() {
+        let mut w = Watcher::new("bao");
+        let mb: crate::broker::SharedMailbox = Default::default();
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
+        let paste = json!({"id": "p1",
+            "text": "http://127.0.0.1:5123/oauth/callback?state=s1&code=c1"});
+        let WatchAction::OauthCallback(q) = w.on_message("c1", &paste) else {
+            panic!("a pasted callback must be routed to the host");
+        };
+        assert_eq!(q, "state=s1&code=c1");
+        assert!(mb.lock().unwrap().is_empty()); // not injected into the live run
+        assert!(matches!(w.on_message("c1", &paste), WatchAction::Dup));
+        // agent-posted text (a trigger nudge) never completes a sign-in
+        let nudge = json!({"id": "p2", "agent": {"name": "trigger:x"},
+            "text": "http://127.0.0.1:5123/oauth/callback?state=s1&code=c1"});
+        assert!(matches!(w.on_message("c1", &nudge), WatchAction::Inject));
     }
 
     #[test]

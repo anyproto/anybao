@@ -83,7 +83,9 @@ a traceback.
 no stored key — the host runs consent (`googleAuth.connect()`), holds
 the refresh token device-local, and refreshes/injects access tokens
 at request time. One consent covers gmail/googleCalendar/googleDrive/
-googleSheets. Seed the BYO Google Cloud *Desktop app* client through
+googleSheets. The sign-in link arrives in bao's chat; on a device
+other than bao's, paste the address the browser lands on after
+approving back into the chat to finish. Seed the BYO Google Cloud *Desktop app* client through
 the same .env path (`connector.oauth.google.client_id` /
 `.client_secret`); a missing grant surfaces as a typed
 `not_connected` error pointing at `googleAuth.connect()`.

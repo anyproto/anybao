@@ -1872,6 +1872,29 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut oauth_state = crate::oauth::OauthState::new(crate::oauth::builtin_providers(), persist);
     oauth_state.consent = cfg.consent_hook.clone();
+    {
+        // ADR-011 §5.1 transport B: the sign-in link goes to the chat,
+        // host-authored, so the human can open it on any device. Posted
+        // off-thread: connect holds the flow map while it delivers.
+        let (client, space, chat, name) = (
+            client.clone(),
+            space.clone(),
+            chat.clone(),
+            cfg.agent_name.clone(),
+        );
+        oauth_state.announce = Some(crate::oauth::ConsentHook(Arc::new(
+            move |req: crate::oauth::ConsentRequest| {
+                let (client, space, chat) = (client.clone(), space.clone(), chat.clone());
+                let msg = json!({"text": consent_message(&req.provider, &req.url),
+                                 "agent": {"name": name, "done": true}});
+                std::thread::spawn(move || {
+                    if let Err(e) = client.chat_send(&space, &chat, &msg) {
+                        warn!("oauth: could not post the sign-in link ({e})");
+                    }
+                });
+            },
+        )));
+    }
     oauth_state.shutdown = shutdown.clone();
     oauth_state.source = secret_store
         .clone()
@@ -2524,6 +2547,92 @@ fn tier_identity(row: &Value) -> [Option<String>; 4] {
     })
 }
 
+/// "google" → "Google": the provider handle as people say it.
+fn provider_label(provider: &str) -> String {
+    let mut c = provider.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// The host-authored sign-in bubble (ADR-011 §5.1 transport B). It
+/// names the URL's host: the one thing a human can check before
+/// trusting a link.
+fn consent_message(provider: &str, url: &str) -> String {
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|r| r.split(['/', '?']).next())
+        .unwrap_or(url);
+    format!(
+        "Sign in to {} to connect it: [open the sign-in page]({url}) ({host}). \
+         Signing in on another device? After you approve, the browser lands on a \
+         page that won't load — copy its address and send it here. The link works \
+         for 5 minutes.",
+        provider_label(provider)
+    )
+}
+
+/// A pasted OAuth callback (ADR-011 §5.1 transport B): finish the
+/// sign-in off the watch thread (the code exchange is a network call)
+/// and post the result — unless a blocked `connect` hands it to the
+/// model, whose reply reports it.
+fn on_oauth_paste(ctx: &Arc<RunCtx>, query: String) {
+    use crate::oauth::Pasted;
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let (text, failed) = match ctx.oauth.complete_pasted(&query) {
+            Pasted::NoFlow => {
+                info!("oauth: pasted callback matches no pending sign-in");
+                (
+                    "That address doesn't match a sign-in in progress — it expired or \
+                     was already used. Ask me to connect again."
+                        .to_string(),
+                    true,
+                )
+            }
+            Pasted::Done {
+                provider,
+                outcome,
+                awaited,
+            } => {
+                info!(
+                    "oauth: {provider} sign-in finished from a pasted callback ({})",
+                    if outcome.is_ok() { "ok" } else { "failed" }
+                );
+                if awaited {
+                    return;
+                }
+                match outcome {
+                    Ok(account) => (
+                        format!(
+                            "{} connected{}.",
+                            provider_label(&provider),
+                            account.map(|a| format!(" as {a}")).unwrap_or_default()
+                        ),
+                        false,
+                    ),
+                    Err((t, m)) => (
+                        format!("{} sign-in failed — {t}: {m}", provider_label(&provider)),
+                        true,
+                    ),
+                }
+            }
+        };
+        let mut agent = json!({"name": ctx.cfg.agent_name, "done": true});
+        if failed {
+            agent["outcome"] = json!("error");
+        }
+        if let Err(e) = ctx.client.chat_send(
+            &ctx.space,
+            &ctx.chat,
+            &json!({"text": text, "agent": agent}),
+        ) {
+            warn!("oauth: could not post the sign-in result ({e})");
+        }
+    });
+}
+
 fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     let Some(store) = &ctx.secret_store else {
         return 0;
@@ -2996,6 +3105,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     match &action {
                         WatchAction::Break { live, hard } => on_break(&ctx.chat, live, *hard),
+                        WatchAction::OauthCallback(query) => on_oauth_paste(ctx, query.clone()),
                         WatchAction::BreakIdle => {
                             // the stop cancels messages still deferred on
                             // overlay sync — nothing must start for them
@@ -3034,6 +3144,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .on_message(&ctx.chat, &record);
                     match &action {
                         WatchAction::Break { live, hard } => on_break(&ctx.chat, live, *hard),
+                        WatchAction::OauthCallback(query) => on_oauth_paste(ctx, query.clone()),
                         WatchAction::BreakIdle => {
                             // the stop cancels messages still deferred on
                             // overlay sync — nothing must start for them
@@ -3914,6 +4025,14 @@ mod tests {
     use super::*;
     use crate::config::Overlay;
     use crate::testutil::StubTransport;
+
+    #[test]
+    fn consent_message_names_the_host_and_links_the_url() {
+        let url = "https://accounts.google.com/o/oauth2/v2/auth?state=s&scope=a%20b";
+        let text = consent_message("google", url);
+        assert!(text.starts_with("Sign in to Google "));
+        assert!(text.contains(&format!("]({url}) (accounts.google.com)")));
+    }
 
     fn overlay(space: &str, invite: Option<&str>) -> Overlay {
         Overlay {
