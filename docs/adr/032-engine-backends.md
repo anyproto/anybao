@@ -224,6 +224,14 @@ fuel and memory limits surface as `error` with a typed reason, as the
 code already does for fuel; breaks surface as `interrupted`. Today a
 model cell can pull a 60 MB body into linear memory with no bound.
 
+Implementation notes (2026-10-16): the limiter (`RunLimits`) types a
+refused growth as `MemoryLimitHit`, which the runner downcasts from
+the trap. `mem_pages` is the peak since instantiation, so it counts
+the kernel's initial memory (364 pages, 22.75 MiB, for `kernel
+check`); Wasm memory never shrinks, so the peak equals the size after
+the cell, as ADR-003 §5 defines it. It rides the cell record's
+`metrics`, which replay does not match.
+
 ### 6. Run threads
 
 Wasm executes only on threads with a stack of at least 4 MiB. With

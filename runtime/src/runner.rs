@@ -115,6 +115,113 @@ pub struct Host {
     pub wasi: wasmtime_wasi::WasiCtx,
     pub table: ResourceTable,
     pub broker: Broker,
+    pub limits: RunLimits,
+}
+
+/// The run's linear-memory cap (ADR-032 §5): per memory, and the kernel
+/// has one, so it is the run's.
+pub fn memory_limit(platform: Platform) -> usize {
+    if platform.is_mobile() {
+        512 << 20
+    } else {
+        1 << 30
+    }
+}
+
+/// A growth the cap refused (ADR-032 §5): the trap's typed cause, which
+/// the runner reports as `MemoryLimit`.
+#[derive(Debug)]
+pub struct MemoryLimitHit {
+    pub desired: usize,
+    pub limit: usize,
+}
+
+impl std::fmt::Display for MemoryLimitHit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "linear memory growth to {} bytes refused (cap {})",
+            self.desired, self.limit
+        )
+    }
+}
+
+impl std::error::Error for MemoryLimitHit {}
+
+/// `StoreLimits` with `trap_on_grow_failure`, plus the peak size it does
+/// not collect: ADR-003 §5's `mem_pages`.
+pub struct RunLimits {
+    inner: wasmtime::StoreLimits,
+    limit: usize,
+    pub peak_bytes: usize,
+}
+
+impl RunLimits {
+    pub fn new(limit: usize) -> Self {
+        RunLimits {
+            inner: wasmtime::StoreLimitsBuilder::new()
+                .memory_size(limit)
+                .trap_on_grow_failure(true)
+                .build(),
+            limit,
+            peak_bytes: 0,
+        }
+    }
+
+    /// The peak linear-memory size in 64 KiB wasm pages.
+    pub fn peak_pages(&self) -> u64 {
+        (self.peak_bytes / 65_536) as u64
+    }
+}
+
+impl wasmtime::ResourceLimiter for RunLimits {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        match self.inner.memory_growing(current, desired, maximum) {
+            Ok(true) => {
+                self.peak_bytes = self.peak_bytes.max(desired);
+                Ok(true)
+            }
+            Ok(false) => Ok(false),
+            Err(_) => Err(wasmtime::Error::new(MemoryLimitHit {
+                desired,
+                limit: self.limit,
+            })),
+        }
+    }
+
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.inner.memory_grow_failed(error)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.inner.table_growing(current, desired, maximum)
+    }
+
+    fn table_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.inner.table_grow_failed(error)
+    }
+
+    fn instances(&self) -> usize {
+        self.inner.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.inner.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.inner.memories()
+    }
 }
 
 pub struct HostData;
@@ -452,6 +559,8 @@ pub struct RunOutcome {
     pub status: String, // ok | error | interrupted
     pub duration_ms: i64,
     pub fuel_used: u64,
+    /// peak linear memory, 64 KiB pages (ADR-003 §5 `mem_pages`)
+    pub mem_pages: u64,
     pub value: Value,
     pub error: Option<Value>,
     pub broker: Broker, // carries the finished trace
@@ -495,8 +604,10 @@ pub fn run_program(
             wasi,
             table: ResourceTable::new(),
             broker,
+            limits: RunLimits::new(memory_limit(cage.platform)),
         },
     );
+    store.limiter(|h| &mut h.limits);
     store.set_fuel(FUEL_PER_CELL)?;
     // Live fuel gauge for the `fuel.state` syscall: host fns can't
     // reach the store, but the epoch callback can — it refreshes the
@@ -579,18 +690,28 @@ pub fn run_program(
                                 into smaller chunks (fewer items per call/batch) and, in \
                                 long loops, check effect(\"fuel.state\") to checkpoint \
                                 and stop before the budget runs out.")})
+                } else if let Some(hit) = e.downcast_ref::<MemoryLimitHit>() {
+                    // deterministic like fuel: same work, same growth
+                    json!({"type": "MemoryLimit",
+                           "message": format!(
+                               "run exceeded its memory cap ({} MiB of linear memory; \
+                                {hit}). Retrying the same work will hit the same wall — \
+                                hold less at once: process large bodies and documents \
+                                in pieces, and drop what you no longer need.",
+                               hit.limit >> 20)})
                 } else {
                     json!({"type": "Trap", "message": e.to_string()})
                 }
             })
         });
     let mut host = store.into_data();
+    let mem_pages = host.limits.peak_pages();
     host.broker.cell_done(
         "main",
         ok,
         error.clone(),
         interrupted,
-        json!({"duration_ms": duration_ms, "fuel_used": fuel_used}),
+        json!({"duration_ms": duration_ms, "fuel_used": fuel_used, "mem_pages": mem_pages}),
     );
     let value = reply["prints"]
         .as_array()
@@ -608,6 +729,7 @@ pub fn run_program(
         },
         duration_ms,
         fuel_used,
+        mem_pages,
         value,
         error,
         broker: host.broker,
@@ -661,6 +783,81 @@ mod engine_tests {
         assert_eq!(Platform::Desktop.epoch_tick_ms(), 10);
         assert_eq!(Platform::Android.epoch_tick_ms(), 50);
         assert_eq!(Platform::Ios.epoch_tick_ms(), 50);
+    }
+}
+
+/// ADR-032 §5: the cap traps as a typed `MemoryLimit` error, and the
+/// peak is recorded as `mem_pages`.
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use crate::broker::Broker;
+    use crate::routes::Classifier;
+    use crate::trace::TraceWriter;
+    use std::collections::BTreeMap;
+    use wasmtime::ResourceLimiter;
+
+    #[test]
+    fn limiter_tracks_the_peak_and_types_the_refusal() {
+        let mut l = RunLimits::new(4 << 20);
+        assert!(l.memory_growing(0, 1 << 20, None).unwrap());
+        assert!(l.memory_growing(1 << 20, 3 << 20, None).unwrap());
+        assert_eq!(l.peak_pages(), 48);
+        let err = l.memory_growing(3 << 20, 5 << 20, None).unwrap_err();
+        let hit = err.downcast_ref::<MemoryLimitHit>().unwrap();
+        assert_eq!((hit.desired, hit.limit), (5 << 20, 4 << 20));
+        assert_eq!(l.peak_pages(), 48, "a refused growth is not a peak");
+        assert_eq!(memory_limit(Platform::Desktop), 1 << 30);
+        assert_eq!(memory_limit(Platform::Ios), 512 << 20);
+    }
+
+    fn run(dir: &std::path::Path, cage: &Cage, spec: &str) -> RunOutcome {
+        let broker = Broker::new(
+            TraceWriter::new(json!({"id": "mem", "program": spec})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Some(dir.to_path_buf()),
+            Classifier::new(None),
+        );
+        run_program(
+            cage,
+            broker,
+            spec,
+            &json!({}),
+            Default::default(),
+            Arc::new(AtomicBool::new(false)),
+            60.0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_run_over_the_cap_ends_with_memory_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("small@v1.py"),
+            "def main(args):\n    return len(bytearray(8 << 20))\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("huge@v1.py"),
+            "def main(args):\n    return len(bytearray(1536 << 20))\n",
+        )
+        .unwrap();
+        let cage = Cage::embedded().unwrap();
+
+        let ok = run(dir.path(), &cage, "small@v1");
+        assert_eq!(ok.status, "ok", "{:?}", ok.error);
+        assert!(ok.mem_pages > 128, "8 MiB live: {} pages", ok.mem_pages);
+        let cell = ok.broker.writer.records.last().unwrap();
+        assert_eq!(cell["metrics"]["mem_pages"], json!(ok.mem_pages));
+
+        let over = run(dir.path(), &cage, "huge@v1");
+        assert_eq!(over.status, "error");
+        let err = over.error.unwrap();
+        assert_eq!(err["type"], "MemoryLimit", "{err}");
+        assert!(err["message"].as_str().unwrap().contains("memory cap"));
+        assert!(over.mem_pages * 65_536 <= memory_limit(cage.platform) as u64);
     }
 }
 
