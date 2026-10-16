@@ -98,26 +98,43 @@ jobs:
       # that pair overflowed the runner disk while tarring the cache.
       - run: uv run pytest
 
-  # ADR-032 §2/§11: the precompiled-kernel builds on this host — the
-  # cranelift-aot artifact and the Pulley fallback — compile, pass
+  # ADR-032 §2/§3/§11: the precompiled-kernel builds — cranelift-aot
+  # through the in-place loader, and the Pulley fallback — compile, pass
   # clippy, and run `kernel check` (fuel must match the JIT build's).
+  # On macOS the aot build also runs signed with the hardened runtime and
+  # no JIT entitlement (the §3 proof), and an iOS-simulator build runs in
+  # a booted simulator (the plumbing gate; no signed-code constraint).
   precompiled:
     name: precompiled-${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: aot
+          - name: aot-linux
+            os: ubuntu-latest
             target: runtime-precompiled
             bin: runtime/target/precompiled/release/anyrt
             features: precompiled-kernel
             dir: runtime/target/precompiled
-          - name: pulley
+          - name: pulley-linux
+            os: ubuntu-latest
             target: runtime-pulley
             bin: runtime/target/pulley/release/anyrt
             features: precompiled-kernel,pulley
             dir: runtime/target/pulley
-    runs-on: ubuntu-latest
+          - name: aot-macos-hardened
+            os: macos-latest
+            target: runtime-precompiled
+            bin: runtime/target/precompiled/release/anyrt
+            features: precompiled-kernel
+            dir: runtime/target/precompiled
+            check: tools/hardened_kernel_check.sh runtime/target/precompiled/release/anyrt
+          - name: ios-sim
+            os: macos-latest
+            target: runtime-ios-sim
+            rust-target: aarch64-apple-ios-sim
+            check: tools/ios_sim_kernel_check.sh runtime/target/ios-sim/aarch64-apple-ios-sim/release/anyrt
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
@@ -131,6 +148,7 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.toolchain }}
           components: clippy
+          targets: ${{ matrix.rust-target }}
       - uses: actions/cache@v6
         with:
           path: |
@@ -139,5 +157,9 @@ jobs:
             runtime/target
           key: cargo-stock-precompiled-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
       - run: make ${{ matrix.target }}
-      - run: cargo clippy --features ${{ matrix.features }} --target-dir ${{ matrix.dir }} --manifest-path runtime/Cargo.toml -- -D warnings
-      - run: ${{ matrix.bin }} kernel check
+      - if: matrix.features
+        run: cargo clippy --features ${{ matrix.features }} --target-dir ${{ matrix.dir }} --manifest-path runtime/Cargo.toml -- -D warnings
+      - if: matrix.bin
+        run: ${{ matrix.bin }} kernel check
+      - if: matrix.check
+        run: ${{ matrix.check }}

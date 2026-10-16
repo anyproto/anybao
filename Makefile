@@ -1,4 +1,4 @@
-.PHONY: api-drift kernel runtime runtime-shell runtime-cross kernel-cwasm runtime-precompiled runtime-pulley runtime-android kernel-check-precompiled runtime-check test test-runtime test-integration lint licenses-check
+.PHONY: api-drift kernel runtime runtime-shell runtime-cross kernel-cwasm runtime-precompiled runtime-pulley runtime-ios-sim runtime-android kernel-check-precompiled runtime-check test test-runtime test-integration lint licenses-check
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
@@ -54,6 +54,12 @@ runtime-pulley:
 kernel-check-precompiled: runtime runtime-precompiled
 	runtime/target/release/anyrt kernel check
 	runtime/target/precompiled/release/anyrt kernel check
+
+# iOS simulator (iOS knobs, in-place loader): the CI plumbing gate,
+# tools/ios_sim_kernel_check.sh runs it. Needs the rustup target.
+runtime-ios-sim:
+	$(MAKE) kernel-cwasm CWASM_TARGET=aarch64-apple-ios-sim
+	cargo build --release --features precompiled-kernel --target aarch64-apple-ios-sim --target-dir runtime/target/ios-sim --manifest-path runtime/Cargo.toml
 
 # The phone build: anyrt for aarch64-linux-android with the kernel
 # precompiled here, so the phone never runs Cranelift. The app ships the

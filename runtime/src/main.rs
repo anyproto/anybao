@@ -194,6 +194,10 @@ enum KernelCmd {
         /// kernel wasm [default: the embedded kernel]
         #[arg(long)]
         kernel: Option<PathBuf>,
+        /// run the program this many times in one process, one JSON
+        /// line each (warm-run timings; a live process to inspect)
+        #[arg(long, default_value_t = 1)]
+        runs: usize,
     },
 }
 
@@ -617,10 +621,28 @@ impl resolver::ModuleResolver for NoImports {
 
 /// ADR-032 §2: load + one run, into the in-memory `TraceWriter` (no
 /// ADR-023 store). Exit 1 unless the run is ok.
-fn kernel_check(kernel: Option<&Path>) -> Result<()> {
+fn kernel_check(kernel: Option<&Path>, runs: usize) -> Result<()> {
     let t0 = std::time::Instant::now();
     let cage = load_cage(kernel)?;
     let load_ms = t0.elapsed().as_millis();
+    for _ in 0..runs.max(1) {
+        let out = kernel_check_run(&cage)?;
+        println!(
+            "{}",
+            json!({"status": out.0.status, "loadMs": load_ms,
+                   "runMs": out.1, "fuelUsed": out.0.fuel_used,
+                   "precompiled": cfg!(feature = "precompiled-kernel") && kernel.is_none(),
+                   "engine": cage.engine_meta(), "kernelSha256": cage.kernel_sha256,
+                   "value": out.0.value, "error": out.0.error})
+        );
+        if out.0.status != "ok" {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+fn kernel_check_run(cage: &runner::Cage) -> Result<(runner::RunOutcome, u128)> {
     let spec = "kernelcheck@v1";
     let mut broker = broker::Broker::new(
         trace::TraceWriter::new(json!({"id": "run_kernelcheck", "program": spec})),
@@ -636,7 +658,7 @@ fn kernel_check(kernel: Option<&Path>) -> Result<()> {
     }));
     let t1 = std::time::Instant::now();
     let out = runner::run_program(
-        &cage,
+        cage,
         broker,
         spec,
         &json!({}),
@@ -644,18 +666,7 @@ fn kernel_check(kernel: Option<&Path>) -> Result<()> {
         Arc::new(AtomicBool::new(false)),
         60.0,
     )?;
-    println!(
-        "{}",
-        json!({"status": out.status, "loadMs": load_ms,
-               "runMs": t1.elapsed().as_millis(), "fuelUsed": out.fuel_used,
-               "precompiled": cfg!(feature = "precompiled-kernel") && kernel.is_none(),
-               "engine": cage.engine_meta(), "kernelSha256": cage.kernel_sha256,
-               "value": out.value, "error": out.error})
-    );
-    if out.status != "ok" {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok((out, t1.elapsed().as_millis()))
 }
 
 /// ADR-032 §2: the `.cwasm` and its sidecar, the source wasm's sha256.
@@ -835,8 +846,8 @@ fn main() -> Result<()> {
                 },
         } => kernel_compile(&target, platform.as_deref(), &out, kernel.as_deref()),
         Cmd::Kernel {
-            cmd: KernelCmd::Check { kernel },
-        } => kernel_check(kernel.as_deref()),
+            cmd: KernelCmd::Check { kernel, runs },
+        } => kernel_check(kernel.as_deref(), runs),
         Cmd::Trace {
             cmd:
                 TraceCmd::Ls {
