@@ -4,8 +4,8 @@
     "licenses/about-kernel.toml": "7e2c509b1f099b014a57b8f014bfd7cfcd7f605994455a3293f250c15fb29c33",
     "licenses/about.hbs": "5a6477fb92658777d465d9dc678d2b600fc7850f11fc9d05f66c24bf9bf657f2",
     "licenses/about.toml": "9ca46f995d57c1c6a4134e48e34c06d03f8858b81598a19efcbd9080b6df6acc",
-    "runtime/Cargo.lock": "7f40c0dfc832249db12cc7ece51a8477e48eb3e8e770b6908327deb30ad17294",
-    "runtime/Cargo.toml": "8a623dbeabc99bb16322571a72d80fec6c2c058d63d8723820f5b7943854814d",
+    "runtime/Cargo.lock": "46a383b960a6bbf8b2057194e942788888d90056dc5b57c6b614b575996a7918",
+    "runtime/Cargo.toml": "b5383708b614c586c04aab1f1fb2ff2de2894e7bb010f7bd4735a9936ca58595",
     "runtime/guest/VENDORED.md": "d878d7db06cc1a7a307fd1772494e2ac7bc7a054ba48d0904d2524d1e1f23333"
   },
   "notices": {

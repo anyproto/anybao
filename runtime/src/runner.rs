@@ -106,7 +106,6 @@ impl rand::TryRng for FloorRng {
     }
 }
 
-pub const EPOCH_TICK_MS: u64 = 10;
 /// Per-run compute budget (ADR-003 §2 fuel, ADR-031 §6): 250B ≈ 20-25s
 /// of pure compute — room for a ~100-page PDF conversion or a mail-sync
 /// batch inside a conversation, still a hard runaway ceiling.
@@ -178,8 +177,149 @@ impl crate::bindings::KernelImports for &mut Host {
 /// artifact cache, no load-order question (the wasmtime *compile*
 /// cache in `Cage::new` is a different thing). `make kernel` must run
 /// before the crate builds (the Makefile runtime targets depend on it).
-pub const EMBEDDED_KERNEL: &[u8] =
+/// A `static`: a `const` is copied into every crate that reads it.
+#[cfg(not(feature = "precompiled-kernel"))]
+pub static EMBEDDED_KERNEL: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.wasm"));
+
+/// `precompiled-kernel` builds (ADR-032 §2): the kernel as machine
+/// code, compiled at build time by `anyrt kernel compile` in the same
+/// job. The sidecar is the source wasm's sha256, so `kernel.boot`'s
+/// provenance is the wasm's whatever form ships.
+#[cfg(feature = "precompiled-kernel")]
+pub static EMBEDDED_KERNEL_CWASM: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.cwasm"));
+#[cfg(feature = "precompiled-kernel")]
+const EMBEDDED_KERNEL_SHA256: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../bin/kernel.cwasm.sha256"
+));
+
+/// How the engine gets machine code for the kernel (ADR-032 §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// Cranelift at boot (+ the ADR-009 §4 compile cache)
+    CraneliftJit,
+    /// `anyrt kernel compile` at build time, embedded
+    CraneliftAot,
+    /// a pulley64 artifact, interpreted
+    Pulley,
+}
+
+impl Backend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Backend::CraneliftJit => "cranelift-jit",
+            Backend::CraneliftAot => "cranelift-aot",
+            Backend::Pulley => "pulley",
+        }
+    }
+}
+
+/// Which per-platform knobs the engine takes (ADR-032 §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Platform {
+    Desktop,
+    Android,
+    Ios,
+}
+
+impl Platform {
+    /// The platform this binary runs on.
+    pub const fn host() -> Self {
+        if cfg!(target_os = "ios") {
+            Platform::Ios
+        } else if cfg!(target_os = "android") {
+            Platform::Android
+        } else {
+            Platform::Desktop
+        }
+    }
+
+    /// The platform a target triple runs on; None for `pulley64`,
+    /// which runs anywhere (the caller names the platform).
+    pub fn of_target(triple: &str) -> Option<Self> {
+        if triple.starts_with("pulley") {
+            None
+        } else if triple.contains("-apple-ios") {
+            Some(Platform::Ios)
+        } else if triple.contains("android") {
+            Some(Platform::Android)
+        } else {
+            Some(Platform::Desktop)
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "desktop" => Some(Platform::Desktop),
+            "android" => Some(Platform::Android),
+            "ios" => Some(Platform::Ios),
+            _ => None,
+        }
+    }
+
+    pub fn is_mobile(self) -> bool {
+        self != Platform::Desktop
+    }
+
+    /// The epoch ticker's period (ADR-032 §4): break/deadline latency
+    /// and the `fuel.state` gauge's staleness.
+    pub fn epoch_tick_ms(self) -> u64 {
+        if self.is_mobile() {
+            50
+        } else {
+            10
+        }
+    }
+}
+
+/// Wasm's default stack limit, pinned so an upstream change cannot move
+/// a deterministic stack-overflow trap (ADR-032 §4).
+pub const MAX_WASM_STACK: usize = 512 * 1024;
+
+/// The ONE engine configuration (ADR-032 §4), shared by `kernel
+/// compile` and every loader: a precompiled artifact loads only into
+/// an engine configured exactly like the one that compiled it.
+/// `target` None = the host (or pulley64 in a `pulley` build).
+pub fn engine_config(platform: Platform, target: Option<&str>) -> Result<Config> {
+    let mut cfg = Config::new();
+    // frozen everywhere: these move deterministic traps or budgets
+    cfg.consume_fuel(true);
+    cfg.epoch_interruption(true);
+    cfg.max_wasm_stack(MAX_WASM_STACK);
+    cfg.wasm_simd(true);
+    cfg.native_unwind_info(false);
+    cfg.cranelift_nan_canonicalization(false);
+    if let Some(t) = target.or(PULLEY_TARGET) {
+        cfg.target(t)?;
+    }
+    if platform == Platform::Ios {
+        // no signal handlers, no guard pages, no memfd images; the
+        // trap setting changes codegen, so the precompile takes it too
+        cfg.signals_based_traps(false);
+        cfg.memory_guard_size(0);
+        cfg.memory_reservation(0);
+        cfg.memory_reservation_for_growth(128 << 20);
+        cfg.memory_init_cow(false);
+    }
+    Ok(cfg)
+}
+
+/// A `pulley` build's engine interprets pulley64 (ADR-032 §11).
+const PULLEY_TARGET: Option<&str> = if cfg!(feature = "pulley") {
+    Some("pulley64")
+} else {
+    None
+};
+
+/// Compile `kernel_bytes` for `target` on `platform` into the artifact
+/// a `precompiled-kernel` build embeds. A foreign target needs a
+/// `cross-compile` build of anyrt.
+pub fn precompile(kernel_bytes: &[u8], target: &str, platform: Platform) -> Result<Vec<u8>> {
+    let engine = Engine::new(&engine_config(platform, Some(target))?)?;
+    Ok(engine.precompile_component(kernel_bytes)?)
+}
 
 /// Process-wide cage: compile once, instantiate per run.
 pub struct Cage {
@@ -187,6 +327,8 @@ pub struct Cage {
     pub component: Component,
     pub linker: Linker<Host>,
     pub kernel_sha256: String,
+    pub backend: Backend,
+    pub platform: Platform,
     ticker_stop: Arc<AtomicBool>,
     ticker: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -194,35 +336,91 @@ pub struct Cage {
 impl Cage {
     /// The embedded kernel — the normal path; `new` stays for dev
     /// overrides (`--kernel <path>`) and embedders with custom builds.
+    #[cfg(not(feature = "precompiled-kernel"))]
     pub fn embedded() -> Result<Arc<Self>> {
         Cage::new(EMBEDDED_KERNEL)
     }
 
+    /// The embedded precompiled kernel (ADR-032 §2): no Cranelift runs.
+    #[cfg(feature = "precompiled-kernel")]
+    pub fn embedded() -> Result<Arc<Self>> {
+        let platform = Platform::host();
+        let engine = Engine::new(&engine_config(platform, None)?)?;
+        // SAFETY: the bytes are this build's own `anyrt kernel compile`
+        // output, embedded at build time — never input.
+        let component =
+            unsafe { Component::deserialize(&engine, EMBEDDED_KERNEL_CWASM) }.map_err(|e| {
+                anyhow::anyhow!(
+                    "the embedded precompiled kernel does not fit this engine ({e}); \
+                     rebuild bin/kernel.cwasm with this anyrt (ADR-032 §2)"
+                )
+            })?;
+        let backend = if PULLEY_TARGET.is_some() {
+            Backend::Pulley
+        } else {
+            Backend::CraneliftAot
+        };
+        Cage::assemble(
+            engine,
+            component,
+            EMBEDDED_KERNEL_SHA256.trim().to_string(),
+            backend,
+            platform,
+        )
+    }
+
+    /// Compile `kernel_bytes` at boot. On desktop, through wasmtime's
+    /// on-disk compile cache (ADR-009 §4): keyed by engine config +
+    /// wasm hash, compilation latency only. Mobile and precompiled
+    /// builds skip it (ADR-032 §4). Best-effort: an unusable cache dir
+    /// must not fail the boot.
     pub fn new(kernel_bytes: &[u8]) -> Result<Arc<Self>> {
         use sha2::{Digest, Sha256};
-        let mut cfg = Config::new();
-        cfg.consume_fuel(true);
-        cfg.epoch_interruption(true);
-        // On-disk compile cache (ADR-009 §4): keyed by engine config +
-        // wasm hash, so a rebuilt kernel invalidates itself. Compilation
-        // latency only — execution and the trace are untouched.
-        // Best-effort: an unusable cache dir must not fail the boot.
-        match wasmtime::Cache::from_file(None) {
-            Ok(cache) => {
-                cfg.cache(Some(cache));
+        let platform = Platform::host();
+        let mut cfg = engine_config(platform, None)?;
+        if !platform.is_mobile() && !cfg!(feature = "precompiled-kernel") {
+            match wasmtime::Cache::from_file(None) {
+                Ok(cache) => {
+                    cfg.cache(Some(cache));
+                }
+                Err(e) => {
+                    tracing::warn!("wasmtime compile cache unavailable ({e}); compiling cold")
+                }
             }
-            Err(e) => tracing::warn!("wasmtime compile cache unavailable ({e}); compiling cold"),
         }
         let engine = Engine::new(&cfg)?;
         let component = Component::from_binary(&engine, kernel_bytes)?;
+        let backend = if PULLEY_TARGET.is_some() {
+            Backend::Pulley
+        } else {
+            Backend::CraneliftJit
+        };
+        Cage::assemble(
+            engine,
+            component,
+            hex::encode(Sha256::digest(kernel_bytes)),
+            backend,
+            platform,
+        )
+    }
+
+    /// The linker + epoch ticker around a compiled component.
+    fn assemble(
+        engine: Engine,
+        component: Component,
+        kernel_sha256: String,
+        backend: Backend,
+        platform: Platform,
+    ) -> Result<Arc<Self>> {
         let mut linker: Linker<Host> = Linker::new(&engine);
         add_to_linker_sync(&mut linker)?;
         bindings::Kernel::add_to_linker::<Host, HostData>(&mut linker, |h| h)?;
         let ticker_stop = Arc::new(AtomicBool::new(false));
         let (ticker_engine, stop) = (engine.clone(), ticker_stop.clone());
+        let tick = Duration::from_millis(platform.epoch_tick_ms());
         let ticker = std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
+                std::thread::sleep(tick);
                 ticker_engine.increment_epoch();
             }
         });
@@ -230,10 +428,23 @@ impl Cage {
             engine,
             component,
             linker,
-            kernel_sha256: hex::encode(Sha256::digest(kernel_bytes)),
+            kernel_sha256,
+            backend,
+            platform,
             ticker_stop,
             ticker: std::sync::Mutex::new(Some(ticker)),
         }))
+    }
+
+    /// What ran the kernel, for `kernel.boot`'s meta (ADR-032 §2) —
+    /// meta, not input: the replay key hashes the input, and a phone's
+    /// trace must replay on a desktop.
+    pub fn engine_meta(&self) -> Value {
+        json!({
+            "backend": self.backend.as_str(),
+            "target": PULLEY_TARGET.unwrap_or(env!("ANYRT_TARGET")),
+            "wasmtime": wasmtime_environ::VERSION,
+        })
     }
 }
 
@@ -300,7 +511,7 @@ pub fn run_program(
     store.set_fuel(FUEL_PER_CELL)?;
     // Live fuel gauge for the `fuel.state` syscall: host fns can't
     // reach the store, but the epoch callback can — it refreshes the
-    // shared gauge every tick (≤EPOCH_TICK_MS staleness, fine for
+    // shared gauge every tick (≤ one epoch tick stale, fine for
     // checkpoint-before-exhaustion decisions).
     let gauge = store.data().broker.fuel_gauge.clone();
     gauge.store(FUEL_PER_CELL, Ordering::Relaxed);
@@ -325,10 +536,13 @@ pub fn run_program(
     store
         .data_mut()
         .broker
-        .call(
+        .call_with_meta(
             "kernel.boot",
             json!({"kernel_sha256": cage.kernel_sha256, "hashseed": "0",
                    "trace_schema": 2}),
+            [("engine".to_string(), cage.engine_meta())]
+                .into_iter()
+                .collect(),
         )
         .ok();
 
@@ -409,6 +623,56 @@ pub fn run_program(
         error,
         broker: host.broker,
     })
+}
+
+/// ADR-032 §4: compile and load share one configuration, and the
+/// per-platform knobs are part of the artifact.
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    const HOST: &str = env!("ANYRT_TARGET");
+
+    #[test]
+    fn precompiled_artifact_loads_into_the_engine_that_matches() {
+        let cwasm = precompile(b"(component)", HOST, Platform::host()).unwrap();
+        let engine = Engine::new(&engine_config(Platform::host(), None).unwrap()).unwrap();
+        // SAFETY: produced just above by this engine configuration
+        unsafe { Component::deserialize(&engine, &cwasm) }.unwrap();
+    }
+
+    #[test]
+    fn ios_knobs_are_part_of_the_artifact() {
+        // same triple, iOS knobs (no signals-based traps, no guards):
+        // a desktop engine must refuse it rather than run it
+        let cwasm = precompile(b"(component)", HOST, Platform::Ios).unwrap();
+        let desktop = Engine::new(&engine_config(Platform::Desktop, None).unwrap()).unwrap();
+        // SAFETY: a fresh artifact; the call is expected to refuse it
+        assert!(unsafe { Component::deserialize(&desktop, &cwasm) }.is_err());
+        let ios = Engine::new(&engine_config(Platform::Ios, None).unwrap()).unwrap();
+        // SAFETY: produced above with this configuration
+        unsafe { Component::deserialize(&ios, &cwasm) }.unwrap();
+    }
+
+    #[test]
+    fn platforms_and_ticks() {
+        assert_eq!(
+            Platform::of_target("aarch64-apple-ios"),
+            Some(Platform::Ios)
+        );
+        assert_eq!(
+            Platform::of_target("aarch64-linux-android"),
+            Some(Platform::Android)
+        );
+        assert_eq!(
+            Platform::of_target("x86_64-unknown-linux-gnu"),
+            Some(Platform::Desktop)
+        );
+        assert_eq!(Platform::of_target("pulley64"), None);
+        assert_eq!(Platform::Desktop.epoch_tick_ms(), 10);
+        assert_eq!(Platform::Android.epoch_tick_ms(), 50);
+        assert_eq!(Platform::Ios.epoch_tick_ms(), 50);
+    }
 }
 
 #[cfg(all(test, feature = "shell"))]
@@ -531,6 +795,16 @@ return {\"r\": [random.random() for _ in range(3)], \"shuffled\": xs,\n         
         assert_eq!(one.status, "ok", "{:?}", one.error);
         let header = one.broker.writer.records[0]["run"].clone();
         assert_eq!(header["seed"].as_str().map(str::len), Some(64));
+        // ADR-032 §2: the engine rides kernel.boot's meta, never its input
+        let boot = one
+            .broker
+            .writer
+            .records
+            .iter()
+            .find(|r| r["effect"] == "kernel.boot")
+            .unwrap();
+        assert_eq!(boot["meta"]["engine"], cage.engine_meta());
+        assert!(boot["input"].get("engine").is_none());
         let started = header["startedAt"].as_f64().unwrap();
 
         // the frozen wall clock IS the header's startedAt (UTC = local: no TZ)

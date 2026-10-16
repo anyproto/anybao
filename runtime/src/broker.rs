@@ -295,7 +295,7 @@ pub struct Broker {
     pub activity: Option<SharedActivity>,
     /// Remaining fuel, refreshed by the runner's epoch callback every
     /// tick (host fns can't reach the store). Read by `fuel.state`;
-    /// ≤EPOCH_TICK_MS stale — a checkpoint signal, not an exact meter.
+    /// ≤ one epoch tick stale — a checkpoint signal, not an exact meter.
     pub fuel_gauge: Arc<std::sync::atomic::AtomicU64>,
     /// Shared interrupt flag for the serve loop (exposed for wiring;
     /// not yet consulted by the pipeline — except by `sh.run`, which
@@ -369,6 +369,9 @@ pub struct Broker {
     /// Host-emit depth (ADR-011 §6): >0 while a syscall re-enters
     /// `call` to record its own nested effect (`oauth.refresh`).
     hosted: u32,
+    /// Host-supplied meta for the next record `call` writes (ADR-032 §2:
+    /// `kernel.boot`'s `engine`); never part of the input or its key.
+    extra_meta: Option<Map<String, Value>>,
     span_stack: Vec<SpanFrame>,
     span_n: u64,
     resolve_cache: BTreeMap<String, Value>,
@@ -543,6 +546,7 @@ impl Broker {
             declared: None,
             used_refs: BTreeSet::new(),
             hosted: 0,
+            extra_meta: None,
             span_stack: Vec::new(),
             span_n: 0,
             resolve_cache: BTreeMap::new(),
@@ -852,6 +856,21 @@ impl Broker {
         Ok(resolve_blobs(output, &self.blobs))
     }
 
+    /// [`Broker::call`] with host meta merged into the record's meta
+    /// (ADR-032 §2) — live and replayed alike, so a replay names the
+    /// engine that replayed it.
+    pub fn call_with_meta(
+        &mut self,
+        name: &str,
+        payload: Value,
+        meta: Map<String, Value>,
+    ) -> Result<Value, EffectFailure> {
+        self.extra_meta = Some(meta);
+        let out = self.call(name, payload);
+        self.extra_meta = None;
+        out
+    }
+
     pub fn call(&mut self, name: &str, payload: Value) -> Result<Value, EffectFailure> {
         // ADR-026 §4: `blob.put`'s normaliser materialises — the bytes go
         // to the directory here, the recorded input is the ref (its key
@@ -943,6 +962,9 @@ impl Broker {
                 .unwrap_or_default();
             meta.insert("mocked".into(), json!(true));
             meta.insert("class".into(), json!(class));
+            if let Some(extra) = self.extra_meta.take() {
+                meta.extend(extra);
+            }
             let out = self.record_mocked(name, canonical, &key, span.as_deref(), &rec, meta)?;
             // ADR-026 §4: the record holds the ref, the directory the
             // bytes — a replayed read is served from the directory
@@ -1023,6 +1045,9 @@ impl Broker {
         meta.insert("class".into(), json!(class));
         if unmatched_live {
             meta.insert("mock".into(), json!({"unmatched": true}));
+        }
+        if let Some(extra) = self.extra_meta.take() {
+            meta.extend(extra);
         }
         if self.hosted > 0 {
             // ADR-011 §6: mark host-emitted records — replay drains on
@@ -3523,6 +3548,38 @@ mod tests {
         let out = b_live.call("kernel.boot", json!({"pin": 1})).unwrap();
         assert_eq!(out, json!({"pin": 1}));
         assert!(b_live.writer.records[2]["meta"].get("mock").is_none());
+    }
+
+    /// ADR-032 §2: host meta lands on the record, not in its input or
+    /// key; a replay on another engine matches and restamps it.
+    #[test]
+    fn call_with_meta_stamps_meta_not_the_key() {
+        let engine = |b: &str| {
+            [("engine".to_string(), json!({"backend": b}))]
+                .into_iter()
+                .collect()
+        };
+        let mut b1 = make_broker("em1");
+        b1.call_with_meta("kernel.boot", json!({"pin": 1}), engine("cranelift-aot"))
+            .unwrap();
+        let rec = b1.writer.records[1].clone();
+        assert_eq!(rec["meta"]["engine"]["backend"], "cranelift-aot");
+        assert_eq!(
+            rec["key"],
+            json!(input_key("kernel.boot", &json!({"pin": 1})))
+        );
+        b1.call("uuid4", json!({})).unwrap();
+        assert!(b1.writer.records[2]["meta"].get("engine").is_none());
+
+        let mut b2 = make_broker("em2");
+        b2.mode = Mode::Replay;
+        b2.cursor = Some(ReplayCursor::new(&b1.writer.records));
+        b2.call_with_meta("kernel.boot", json!({"pin": 1}), engine("cranelift-jit"))
+            .unwrap();
+        assert_eq!(
+            b2.writer.records[1]["meta"]["engine"]["backend"],
+            "cranelift-jit"
+        );
     }
 
     #[test]

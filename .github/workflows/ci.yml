@@ -97,3 +97,47 @@ jobs:
       # test leg so no job carries a debug test tree AND a release tree:
       # that pair overflowed the runner disk while tarring the cache.
       - run: uv run pytest
+
+  # ADR-032 §2/§11: the precompiled-kernel builds on this host — the
+  # cranelift-aot artifact and the Pulley fallback — compile, pass
+  # clippy, and run `kernel check` (fuel must match the JIT build's).
+  precompiled:
+    name: precompiled-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: aot
+            target: runtime-precompiled
+            bin: runtime/target/precompiled/release/anyrt
+            features: precompiled-kernel
+            dir: runtime/target/precompiled
+          - name: pulley
+            target: runtime-pulley
+            bin: runtime/target/pulley/release/anyrt
+            features: precompiled-kernel,pulley
+            dir: runtime/target/pulley
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-suffix: precompiled-${{ matrix.name }}
+      - id: rust
+        run: echo "toolchain=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+          components: clippy
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/target
+          key: cargo-stock-precompiled-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('runtime/Cargo.lock') }}
+      - run: make ${{ matrix.target }}
+      - run: cargo clippy --features ${{ matrix.features }} --target-dir ${{ matrix.dir }} --manifest-path runtime/Cargo.toml -- -D warnings
+      - run: ${{ matrix.bin }} kernel check
