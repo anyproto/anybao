@@ -162,7 +162,14 @@ jobs:
 
       # A fresh device starts with no space state. Deploy is hash-gated
       # against what the space already holds, so deploying before the
-      # space synced would re-create every program and skill.
+      # space synced would re-create every program and skill — and a
+      # fresh device says "synced" for the few objects it has so far
+      # (wait-synced.sh), so the wait also needs a floor: the programs
+      # and skills the source tree publishes, which the space already
+      # holds (plus README + type rows as slack for brand-new programs;
+      # a commit adding more new programs than that times out here —
+      # deploy it by hand once). Then refuse a space whose shape is
+      # already wrong.
       - name: wait for the spaces to sync
         id: spaces
         run: |
@@ -171,14 +178,17 @@ jobs:
           ids=()
           for name in agent connectors; do
             if [ "$REPOS" = both ] || [ "$REPOS" = "$name" ]; then
-              ids+=("$(sed -nE "s/^$name *= *\\{ *space *= *\"([^\"]+)\".*/\\1/p" "$cfg")")
+              id=$(sed -nE "s/^$name *= *\\{ *space *= *\"([^\"]+)\".*/\\1/p" "$cfg")
+              [ -n "$id" ] || { echo "no space id for $name in $cfg" >&2; exit 1; }
+              src=repos/_$name
+              floor=$(( $(find "$src/programs" -mindepth 1 -maxdepth 1 | wc -l)
+                      + $(find "$src/skills" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l) ))
+              ./.github/scripts/wait-synced.sh "$ADDR" "$id" 600 "$floor"
+              ./.github/scripts/check-repo-space.sh "$ADDR" "$id"
+              ids+=("$id")
             fi
           done
           echo "ids=${ids[*]}" >> "$GITHUB_OUTPUT"
-          for id in "${ids[@]}"; do
-            [ -n "$id" ] || { echo "no space id in $cfg" >&2; exit 1; }
-            ./.github/scripts/wait-synced.sh "$ADDR" "$id" 600
-          done
 
       - name: deploy
         run: |
