@@ -408,6 +408,7 @@ impl State {
         if let Some(colls) = body["collections"].as_array().filter(|c| !c.is_empty()) {
             props["any"]["collections"] = json!(colls);
         }
+        props["_applySeq"] = json!(1);
         self.objects.insert((space.to_string(), oid.clone()), props);
         (201, json!({"objectId": oid}))
     }
@@ -419,8 +420,16 @@ impl State {
             .objects
             .iter()
             .filter(|((sp, _), _)| sp == space)
-            .filter(|(_, props)| {
-                filter.is_none_or(|f| f.iter().all(|(k, want)| matches(group_get(props, k), want)))
+            .filter(|((_, oid), props)| {
+                filter.is_none_or(|f| {
+                    f.iter().all(|(k, want)| {
+                        if k == "id" {
+                            want == oid
+                        } else {
+                            matches(group_get(props, k), want)
+                        }
+                    })
+                })
             })
             .take(limit)
             .map(|((_, oid), props)| {
@@ -471,6 +480,47 @@ impl State {
     fn modify(&mut self, space: &str, body: &Value) -> (u16, Value) {
         let oid = body["objectId"].as_str().unwrap_or("").to_string();
         let dataset = body["dataset"].as_str().unwrap_or("").to_string();
+        let object_key = (space.to_string(), oid.clone());
+        let object_seq = self
+            .objects
+            .get(&object_key)
+            .and_then(|row| row["_applySeq"].as_u64())
+            .unwrap_or(0);
+        let dataset_seq = if dataset == "objects" {
+            object_seq
+        } else {
+            self.datasets
+                .get(&(space.to_string(), oid.clone(), dataset.clone()))
+                .into_iter()
+                .flat_map(|rows| rows.values())
+                .filter_map(|row| row["_applySeq"].as_u64())
+                .max()
+                .unwrap_or(0)
+        };
+        if body["ifUnchangedSince"]
+            .as_u64()
+            .is_some_and(|seq| dataset_seq > seq)
+            || body["ifObjectUnchangedSince"]
+                .as_u64()
+                .is_some_and(|seq| object_seq > seq)
+        {
+            return err(409, "write.precondition_failed", "stale read");
+        }
+        if dataset == "objects" {
+            let row = self.objects.get_mut(&object_key).unwrap();
+            for rec in body["records"].as_array().into_iter().flatten() {
+                for op in rec["ops"].as_array().into_iter().flatten() {
+                    let (group, field) = op["path"].as_str().unwrap().split_once('.').unwrap();
+                    if op["type"] == "$unset" {
+                        row[group].as_object_mut().unwrap().remove(field);
+                    } else {
+                        row[group][field] = op["value"].clone();
+                    }
+                }
+            }
+            row["_applySeq"] = json!(object_seq + 1);
+            return (200, json!({}));
+        }
         if !self.records_collection_known(space, &dataset) {
             return err(
                 400,
@@ -499,6 +549,7 @@ impl State {
                         *seq += 1;
                         let mut stored = op["value"].clone();
                         stored["_addSeq"] = json!(*seq);
+                        stored["_applySeq"] = json!(object_seq + 1);
                         self.datasets
                             .entry(key.clone())
                             .or_default()
@@ -512,6 +563,9 @@ impl State {
                     _ => {}
                 }
             }
+        }
+        if let Some(row) = self.objects.get_mut(&object_key) {
+            row["_applySeq"] = json!(object_seq + 1);
         }
         (200, json!({"ok": true}))
     }
@@ -529,6 +583,7 @@ impl State {
                 group.insert(k.clone(), v.clone());
             }
         }
+        props["_applySeq"] = json!(props["_applySeq"].as_u64().unwrap_or(0) + 1);
         json!({"ok": true})
     }
 
@@ -747,13 +802,13 @@ impl State {
                         400,
                         "dataset.decl_invalid",
                         "only a records dataset is shared",
-                    )
+                    );
                 }
                 ("editor", None | Some("editor_blocks")) => {
                     ("editor_blocks".to_string(), "editor_blocks".to_string())
                 }
                 ("records", None) => {
-                    return err(400, "dataset.decl_invalid", "dataset key required")
+                    return err(400, "dataset.decl_invalid", "dataset key required");
                 }
                 ("records" | "editor", Some(k)) => (k.to_string(), format!("{tid}_{k}")),
                 (m, _) => return err(400, "dataset.module_unknown", format!("module {m:?}")),
@@ -940,6 +995,7 @@ impl Transport for FakeSpace {
                 let sp = body["spaceId"].as_str().unwrap_or("").to_string();
                 return Ok(s.catalog_setup(usecase, &sp));
             }
+            ("GET", ["v1", "health"]) => json!({"capabilities": ["conditional-writes"]}),
             ("POST", ["v1", "spaces", sp, "objects", "query"]) => s.query_objects(sp, &body),
             ("POST", ["v1", "spaces", sp, "objects"]) => return Ok(s.create_object(sp, &body)),
             ("POST", ["v1", "spaces", sp, "query"]) => s.query(sp, &body),

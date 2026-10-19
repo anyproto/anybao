@@ -679,6 +679,10 @@ impl Client {
     }
 
     // --- objects ---
+    pub fn health(&self) -> Result<Value, AnyError> {
+        self.call("GET", "/v1/health", None)
+    }
+
     pub fn create_object(&self, space_id: &str, body: &Value) -> Result<Value, AnyError> {
         self.call(
             "POST",

@@ -127,10 +127,9 @@ pub struct AnyModuleResolver {
     /// chain's `frm` resolves transitive imports against this
     /// (ADR-004 §2.4)
     origins: BTreeMap<String, String>,
-    /// space → its `program` schema (None = no program type there;
-    /// types don't change mid-run, so a space with programs is cached
-    /// for the resolver's life; a miss is re-probed — a deploy may
-    /// land later)
+    /// space → its `program` schema. Missing types and legacy schemas
+    /// without the publication property are re-probed: deployment may
+    /// install or upgrade the schema during the resolver's lifetime.
     schemas: BTreeMap<String, ProgramSchema>,
 }
 
@@ -153,7 +152,11 @@ impl AnyModuleResolver {
     }
 
     fn schema_in(&mut self, space: &str) -> Result<Option<ProgramSchema>, AnyError> {
-        if let Some(s) = self.schemas.get(space) {
+        if let Some(s) = self
+            .schemas
+            .get(space)
+            .filter(|s| s.deployment_prop().is_some())
+        {
             return Ok(Some(s.clone()));
         }
         let found = ProgramSchema::lookup(&self.client, space)?;
@@ -176,7 +179,7 @@ impl AnyModuleResolver {
             spec: format!("{name}@{version}"),
             msg,
         };
-        let Some(s) = self.schema_in(space)? else {
+        let Some(mut s) = self.schema_in(space)? else {
             return Err(missing(format!(
                 "program not found: {spec} (space {space} has no programs)"
             )));
@@ -184,9 +187,31 @@ impl AnyModuleResolver {
         let recs = self.client.query_objects(
             space,
             &json!({"filter": {s.path("name"): name, s.path("version"): version},
-                    "limit": 1}),
+                    "limit": 100}),
         )?;
-        let Some(oid) = recs.first().and_then(|r| r["id"].as_str()) else {
+        // A deployer may add the optional publication property between the
+        // schema lookup and this query. Refresh after reading rows so a pending
+        // row cannot be interpreted with the pre-installation property map.
+        if s.deployment_prop().is_none() {
+            if let Some(current) = self.schema_in(space)? {
+                s = current;
+            }
+        }
+        let published: Vec<_> = recs
+            .iter()
+            .filter(|row| s.read(row).get("deployment_fingerprint").is_none())
+            .collect();
+        if published.len() > 1 {
+            return Err(ResolveError::NotFound(format!(
+                "program {spec} has multiple published copies; resolve the conflict"
+            )));
+        }
+        let Some(oid) = published.first().and_then(|r| r["id"].as_str()) else {
+            if !recs.is_empty() {
+                return Err(missing(format!(
+                    "program {spec} installation is incomplete"
+                )));
+            }
             return Err(missing(format!(
                 "program not found: {spec} (space {space})"
             )));
@@ -372,6 +397,154 @@ mod tests {
         let oid = res["objectId"].as_str().unwrap().to_string();
         c.upsert_record(space, &oid, &s.source, "main", &json!({"code": code}))
             .unwrap();
+    }
+
+    /// Simulate a resolver that learned the program schema before a newer
+    /// deployer added the optional pending-publication property.
+    struct LegacySchemaView {
+        inner: FakeSpace,
+        upgraded: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        upgrade_on_query: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::anyapi::Transport for LegacySchemaView {
+        fn send(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+        ) -> Result<(u16, Value), AnyError> {
+            if path.ends_with("/objects/query")
+                && self
+                    .upgrade_on_query
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.upgraded
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let (status, mut result) = self.inner.send(method, path, body)?;
+            if path.ends_with("/properties")
+                && !self.upgraded.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                if let Some(properties) = result["properties"].as_array_mut() {
+                    properties.retain(|p| p["xKey"] != "deployment_fingerprint");
+                }
+            }
+            Ok((status, result))
+        }
+
+        fn open_stream(
+            &self,
+            path: &str,
+            body: Option<&Value>,
+        ) -> Result<Box<dyn Iterator<Item = String>>, AnyError> {
+            self.inner.open_stream(path, body)
+        }
+    }
+
+    fn seed_pending_program(c: &Client, name: &str) -> String {
+        let s = ProgramSchema::ensure(c, "cur").unwrap();
+        let result = c
+            .create_object(
+                "cur",
+                &json!({
+                    "type": s.type_id,
+                    "initialProperties": {s.type_id.clone(): s.group(&[
+                        ("name", json!(name)), ("version", json!("v1")),
+                        ("any_tool", json!(false)),
+                        ("deployment_fingerprint", json!("pending-bundle-fingerprint")),
+                    ])},
+                }),
+            )
+            .unwrap();
+        let oid = result["objectId"].as_str().unwrap().to_owned();
+        // This is the interrupted interval after source, before manifest/publish.
+        c.upsert_record("cur", &oid, &s.source, "main", &json!({"code": CODE}))
+            .unwrap();
+        oid
+    }
+
+    #[test]
+    fn warmed_legacy_schema_cannot_resolve_pending_install() {
+        let upgraded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let c = std::sync::Arc::new(Client::with_transport(Box::new(LegacySchemaView {
+            inner: FakeSpace::new(),
+            upgraded: upgraded.clone(),
+            upgrade_on_query: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })));
+        seed_program(&c, "cur", "existing", "v1", CODE);
+        upgraded.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut r = AnyModuleResolver::new(c.clone(), "cur", None, BTreeMap::new());
+        assert_eq!(r.resolve("existing@v1", None).unwrap()["source"], CODE);
+
+        upgraded.store(true, std::sync::atomic::Ordering::SeqCst);
+        seed_pending_program(&c, "installing");
+        let err = r
+            .resolve("installing@v1", None)
+            .expect_err("a cached pre-upgrade schema must not hide the pending marker");
+        assert!(err.to_string().contains("incomplete"), "{err}");
+    }
+
+    #[test]
+    fn schema_upgrade_between_schema_read_and_object_query_cannot_expose_pending_source() {
+        let upgraded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let upgrade_on_query = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c = std::sync::Arc::new(Client::with_transport(Box::new(LegacySchemaView {
+            inner: FakeSpace::new(),
+            upgraded: upgraded.clone(),
+            upgrade_on_query: upgrade_on_query.clone(),
+        })));
+        seed_pending_program(&c, "installing");
+        // The schema endpoint still answers its old snapshot. The publication
+        // property becomes visible immediately before the object query returns.
+        upgraded.store(false, std::sync::atomic::Ordering::SeqCst);
+        upgrade_on_query.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut r = AnyModuleResolver::new(c, "cur", None, BTreeMap::new());
+        let error = r
+            .resolve("installing@v1", None)
+            .expect_err("new pending row must be read using the post-query schema");
+        assert!(error.to_string().contains("incomplete"), "{error}");
+    }
+
+    #[test]
+    fn pending_duplicate_does_not_mask_published_program() {
+        let c = std::sync::Arc::new(Client::with_transport(Box::new(FakeSpace::new())));
+        let pending = seed_pending_program(&c, "tool");
+        seed_program(&c, "cur", "tool", "v1", CODE);
+        let mut r = AnyModuleResolver::new(c, "cur", None, BTreeMap::new());
+        let out = r
+            .resolve("tool@v1", None)
+            .expect("published duplicate remains usable");
+        assert_ne!(out["objectId"], pending);
+        assert_eq!(out["source"], CODE);
+    }
+
+    #[test]
+    fn published_duplicates_are_ambiguous_for_resolve_and_deploy() {
+        let c = std::sync::Arc::new(Client::with_transport(Box::new(FakeSpace::new())));
+        seed_program(&c, "cur", "tool", "v1", CODE);
+        seed_program(&c, "cur", "tool", "v1", "def main(args):\n    return 2\n");
+        let before = c.query_objects("cur", &json!({})).unwrap();
+        let mut r = AnyModuleResolver::new(c.clone(), "cur", None, BTreeMap::new());
+        let error = r
+            .resolve("tool@v1", None)
+            .expect_err("ambiguous code must not execute");
+        assert!(
+            error.to_string().contains("multiple published copies"),
+            "{error}"
+        );
+        let source = crate::deploy::ProgramSource::new("tool", "v1", CODE);
+        for frozen in [false, true] {
+            let error = crate::deploy::Deployer::new(&c, "cur")
+                .frozen(frozen)
+                .deploy_one(&source)
+                .expect_err("ambiguous code must not be overwritten or adopted");
+            assert!(
+                error.to_string().contains("multiple published copies"),
+                "{error}"
+            );
+        }
+        assert_eq!(c.query_objects("cur", &json!({})).unwrap(), before);
     }
 
     #[test]

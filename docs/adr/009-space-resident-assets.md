@@ -129,6 +129,30 @@ aliases — the "no aliases" gap closes. `anyrt run`'s local-dir mode
 stays as the offline dev/test path (the two worlds still never mix
 within a run).
 
+#### Recoverable frozen publication
+
+Frozen deployment creates an inert program with a `deployment_fingerprint`
+property containing the intended source/metadata/manifest fingerprint and
+`any_tool=false`. Its version is `__installing__:<version>` until publication,
+so even readers with an older cached schema cannot resolve it by the public
+version. This marker is written in the creation change. The resolver
+refuses marked programs until publication, so partial installs cannot run.
+
+A retry only fills absent source/manifest records. It first reads and validates
+marked metadata, then reads records including tombstones. Existing bytes must
+match exactly; edited metadata, differing records and tombstones are conflicts,
+never permission to overwrite. Each insertion carries both the dataset and
+object-row revision guards; publication rereads all pieces, then atomically
+sets the public version and `any_tool`, and removes the marker with an object-row guard. All operation
+rejections are errors, even with HTTP 200. A lost response is resolved by the
+same reads on retry. Unmarked legacy partial objects are never adopted.
+
+This requires the server's `conditional-writes` health capability; missing
+support refuses deployment before writes. Revisions cover changes applied on
+this device, not unseen offline peer edits. Multiple published copies of one spec are an explicit conflict in both deploy
+and resolution; a pending copy cannot mask a published one. Concurrent installers may race;
+a stale guard returns a retryable conflict and never overwrites the winner.
+
 ### 3. Skills: two tiers, guest-merged
 
 Shipped skills deploy to the `agent` overlay; user skills live in the

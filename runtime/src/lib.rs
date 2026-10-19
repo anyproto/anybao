@@ -15,6 +15,8 @@ pub mod broker;
 pub mod caps;
 pub mod config;
 pub mod deploy;
+#[cfg(test)]
+mod deploy_recovery_tests;
 pub mod drift;
 pub mod election;
 pub mod oauth;

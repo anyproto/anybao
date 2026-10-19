@@ -46,6 +46,8 @@ const PROPS: [(&str, &str, &str); 4] = [
 /// OPTIONAL at lookup: a space deployed before this property still
 /// resolves (its programs simply declare nothing until redeployed).
 pub const CREDENTIALS_PROP: (&str, &str, &str) = ("credentials", "Credentials", "string");
+pub const DEPLOYMENT_PROP: (&str, &str, &str) =
+    ("deployment_fingerprint", "Pending deployment", "string");
 
 /// The parts the type declares: the canonical body first (the docs body
 /// every program object holds through its type — no per-object
@@ -121,7 +123,11 @@ impl ProgramSchema {
             }
         };
         let mut props = prop_map(c, space, &tid)?;
-        for (xkey, name, kind) in PROPS.iter().copied().chain([CREDENTIALS_PROP]) {
+        for (xkey, name, kind) in PROPS
+            .iter()
+            .copied()
+            .chain([CREDENTIALS_PROP, DEPLOYMENT_PROP])
+        {
             if props.contains_key(xkey) {
                 continue;
             }
@@ -176,6 +182,10 @@ impl ProgramSchema {
     /// deployed before ADR-021 §8.1 — nothing declared there).
     pub fn credentials_prop(&self) -> Option<&str> {
         self.props.get(CREDENTIALS_PROP.0).map(String::as_str)
+    }
+
+    pub fn deployment_prop(&self) -> Option<&str> {
+        self.props.get(DEPLOYMENT_PROP.0).map(String::as_str)
     }
 
     /// The id-keyed property group `{propId: value}` for a write.
@@ -268,8 +278,8 @@ mod tests {
             .filter(|t| t["builtIn"] != json!(true))
             .collect();
         assert_eq!(user_types.len(), 1);
-        // the four required props + the optional `credentials` (ADR-021 §8.1)
-        assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 5);
+        // Four required props, credentials and the pending deployment marker.
+        assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 6);
         assert!(s.credentials_prop().is_some());
         let ds = c.list_datasets("sp", &s.type_id).unwrap();
         let keys: Vec<&str> = ds.iter().filter_map(|d| d["key"].as_str()).collect();

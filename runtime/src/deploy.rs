@@ -552,11 +552,29 @@ impl<'a> Deployer<'a> {
     /// group) — the props feed the in-space fingerprint.
     fn find_program(&self, name: &str, version: &str) -> anyhow::Result<Option<(String, Value)>> {
         let s = self.schema()?;
-        let recs = self.client.query_objects(
+        let mut recs = self.client.query_objects(
             &self.space,
-            &json!({"filter": {s.path("name"): name, s.path("version"): version},
-                    "limit": 1}),
+            &json!({"filter": {s.path("name"): name, s.path("version"): {"$in": [version, format!("__installing__:{version}")]}},
+                    "limit": 100}),
         )?;
+        if recs
+            .iter()
+            .filter(|row| s.read(row).get("deployment_fingerprint").is_none())
+            .count()
+            > 1
+        {
+            anyhow::bail!(
+                "{}@{} has multiple published copies; resolve the conflict",
+                name,
+                version
+            );
+        }
+        recs.sort_by_key(|row| {
+            (
+                s.read(row).get("deployment_fingerprint").is_some(),
+                row["id"].as_str().unwrap_or_default().to_owned(),
+            )
+        });
         Ok(recs
             .first()
             .and_then(|r| r["id"].as_str().map(|id| (id.to_string(), s.read(r)))))
@@ -593,8 +611,24 @@ impl<'a> Deployer<'a> {
     /// contract before any write.
     pub fn deploy_one(&self, p: &ProgramSource) -> anyhow::Result<&'static str> {
         p.validate()?;
+        if self.frozen {
+            let health = self.client.health()?;
+            anyhow::ensure!(
+                health["capabilities"]
+                    .as_array()
+                    .is_some_and(|caps| caps.iter().any(|cap| cap == "conditional-writes")),
+                "Server does not support conditional-writes; upgrade before installing frozen programs"
+            );
+        }
         let found = self.find_program(&p.name, &p.version)?;
         if let Some((ref existing, ref props)) = found {
+            if props.get("deployment_fingerprint").is_some() {
+                if !self.frozen {
+                    return Err(FrozenVersionError(p.spec()).into());
+                }
+                self.finish_pending(existing, p)?;
+                return Ok("created");
+            }
             if self.in_space_fingerprint(existing, props)?.as_deref()
                 == Some(p.fingerprint().as_str())
             {
@@ -610,16 +644,30 @@ impl<'a> Deployer<'a> {
         let s = self.schema()?;
         let (oid, status) = match found {
             None => {
+                let mut group = s.group(&[
+                    ("name", json!(p.name)),
+                    (
+                        "version",
+                        json!(if self.frozen {
+                            format!("__installing__:{}", p.version)
+                        } else {
+                            p.version.clone()
+                        }),
+                    ),
+                    ("any_tool", json!(any_tool && !self.frozen)),
+                    ("summary", json!(summary)),
+                    ("credentials", json!(credentials)),
+                ]);
+                if self.frozen {
+                    group[s.prop("deployment_fingerprint")] = json!(p.fingerprint());
+                }
                 let res = self.client.create_object(
                     &self.space,
                     &json!({
                     "type": s.type_id,
                     "initialProperties": {
                         "any": {"name": p.name},
-                        s.type_id.clone(): s.group(&[
-                            ("name", json!(p.name)), ("version", json!(p.version)),
-                            ("any_tool", json!(any_tool)), ("summary", json!(summary)),
-                            ("credentials", json!(credentials))]),
+                        s.type_id.clone(): group,
                     }}),
                 )?;
                 let oid = res["objectId"]
@@ -643,6 +691,11 @@ impl<'a> Deployer<'a> {
             }
         };
 
+        if self.frozen {
+            self.finish_pending(&oid, p)?;
+            return Ok(status);
+        }
+
         self.client.upsert_record(
             &self.space,
             &oid,
@@ -664,6 +717,102 @@ impl<'a> Deployer<'a> {
             self.clear_dataset(&oid, &s.manifest)?;
         }
         Ok(status)
+    }
+
+    // ADR-009 §2: a pending frozen install only fills absent records.
+    fn pending_snapshot(&self, oid: &str, p: &ProgramSource) -> anyhow::Result<u64> {
+        let s = self.schema()?;
+        let rows = self
+            .client
+            .query_objects(&self.space, &json!({"filter": {"id": oid}, "limit": 1}))?;
+        let row = rows.first().ok_or_else(|| FrozenVersionError(p.spec()))?;
+        let props = s.read(row);
+        let expected = json!({"name": p.name, "version": format!("__installing__:{}", p.version),
+            "summary": p.summary(), "credentials": p.credentials_json(),
+            "any_tool": false, "deployment_fingerprint": p.fingerprint()});
+        if expected
+            .as_object()
+            .unwrap()
+            .iter()
+            .any(|(key, value)| &props[key] != value)
+            || row["any"]["name"] != p.name
+            || row["any"]["type"] != s.type_id
+        {
+            return Err(FrozenVersionError(p.spec()).into());
+        }
+        row["_applySeq"]
+            .as_u64()
+            .filter(|seq| *seq > 0)
+            .ok_or_else(|| anyhow::anyhow!("Pending program has no object revision"))
+    }
+
+    fn checked_modify(&self, body: &Value) -> anyhow::Result<()> {
+        let result = self.client.modify(&self.space, body)?;
+        anyhow::ensure!(
+            result["rejections"].as_array().is_none_or(Vec::is_empty),
+            "Program installation write rejected: {}",
+            result["rejections"]
+        );
+        Ok(())
+    }
+
+    fn pending_records(&self, oid: &str, dataset: &str) -> anyhow::Result<Vec<Value>> {
+        Ok(self
+            .client
+            .query(&self.space, oid, dataset, &json!({"includeDeleted": true}))?)
+    }
+
+    fn record_matches(records: &[Value], field: &str, expected: &Value) -> bool {
+        records.len() == 1
+            && records[0]["id"] == "main"
+            && records[0].get("_deletedAt").is_none()
+            && &records[0][field] == expected
+    }
+
+    fn finish_pending(&self, oid: &str, p: &ProgramSource) -> anyhow::Result<()> {
+        let s = self.schema()?;
+        for (dataset, field, expected, required) in [
+            (&s.source, "code", json!(p.code), true),
+            (
+                &s.manifest,
+                "manifest",
+                p.manifest.clone(),
+                truthy(&p.manifest),
+            ),
+        ] {
+            let object_seq = self.pending_snapshot(oid, p)?;
+            let records = self.pending_records(oid, dataset)?;
+            if records.is_empty() {
+                if required {
+                    self.checked_modify(&json!({"objectId": oid, "dataset": dataset,
+                        "ifUnchangedSince": 0, "ifObjectUnchangedSince": object_seq,
+                        "records": [{"id": "main", "upsert": true,
+                            "ops": [{"type": "$set", "value": {field: expected}}]}]}))?;
+                }
+            } else if !required || !Self::record_matches(&records, field, &expected) {
+                return Err(FrozenVersionError(p.spec()).into());
+            }
+        }
+        // Re-read metadata BEFORE both datasets; the final object guard covers
+        // any synced edit that arrives while verifying or publishing them.
+        let object_seq = self.pending_snapshot(oid, p)?;
+        let source = self.pending_records(oid, &s.source)?;
+        let manifest = self.pending_records(oid, &s.manifest)?;
+        let manifest_matches = if truthy(&p.manifest) {
+            Self::record_matches(&manifest, "manifest", &p.manifest)
+        } else {
+            manifest.is_empty()
+        };
+        if !Self::record_matches(&source, "code", &json!(p.code)) || !manifest_matches {
+            return Err(FrozenVersionError(p.spec()).into());
+        }
+        self.checked_modify(&json!({"objectId": oid, "dataset": "objects",
+        "ifUnchangedSince": object_seq,
+        "records": [{"id": oid, "ops": [
+            {"type": "$set", "path": s.path("any_tool"), "value": p.any_tool()},
+            {"type": "$set", "path": s.path("version"), "value": p.version},
+            {"type": "$unset", "path": s.path("deployment_fingerprint")}
+        ]}]}))
     }
 
     fn clear_dataset(&self, oid: &str, dataset: &str) -> Result<(), AnyError> {
