@@ -4,7 +4,9 @@
 
 use anyhow::{Context, Result};
 use anyrt::tracestore::TraceStore as _;
-use anyrt::{anyapi, config, deploy, drift, oauth, resolver, runner, serve, stats, trace, view};
+use anyrt::{
+    anyapi, config, deploy, drift, kernel_check, oauth, resolver, runner, serve, stats, trace, view,
+};
 use anyrt::{broker, routes};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -603,81 +605,20 @@ fn load_cage(kernel: Option<&Path>) -> Result<Arc<runner::Cage>> {
     }
 }
 
-/// `kernel check`'s program (ADR-032 §2): CPython work, stdlib
-/// imports and one effect — everything a run needs but a server. The
-/// effect's reply is constant, so `fuelUsed` is too: equal across
-/// backends (ADR-032 §1).
-const KERNEL_CHECK_PROGRAM: &str = r#"import hashlib, json, re, zlib
-
-
-def main(args):
-    blob = json.dumps([{"i": i, "s": str(i)} for i in range(1000)]).encode()
-    return {"squares": sum(i * i for i in range(200000)),
-            "sha256": hashlib.sha256(blob).hexdigest()[:16],
-            "zlib": len(zlib.compress(blob)),
-            "words": len(re.findall(r"\w+", "the kernel runs offline")),
-            "mailbox": effect("mailbox.drain", {})}
-"#;
-
-/// The check serves its entry inline and refuses every other import:
-/// nothing reaches a disk or a server.
-struct NoImports;
-
-impl resolver::ModuleResolver for NoImports {
-    fn resolve(&mut self, spec: &str, _frm: Option<&str>) -> Result<Value, resolver::ResolveError> {
-        Err(resolver::ResolveError::NotFound(spec.to_string()))
-    }
-}
-
-/// ADR-032 §2: load + one run, into the in-memory `TraceWriter` (no
-/// ADR-023 store). Exit 1 unless the run is ok.
+/// ADR-032 §2: load + `runs` runs, one JSON line each. Exit 1 unless
+/// every run is ok.
 fn kernel_check(kernel: Option<&Path>, runs: usize) -> Result<()> {
     let t0 = std::time::Instant::now();
     let cage = load_cage(kernel)?;
     let load_ms = t0.elapsed().as_millis();
-    for _ in 0..runs.max(1) {
-        let out = kernel_check_run(&cage)?;
-        println!(
-            "{}",
-            json!({"status": out.0.status, "loadMs": load_ms,
-                   "runMs": out.1, "fuelUsed": out.0.fuel_used,
-                   "memPages": out.0.mem_pages,
-                   "precompiled": cfg!(feature = "precompiled-kernel") && kernel.is_none(),
-                   "engine": cage.engine_meta(), "kernelSha256": cage.kernel_sha256,
-                   "value": out.0.value, "error": out.0.error})
-        );
-        if out.0.status != "ok" {
+    let precompiled = cfg!(feature = "precompiled-kernel") && kernel.is_none();
+    for report in kernel_check::check(&cage, load_ms, runs, precompiled)? {
+        println!("{report}");
+        if report["status"] != "ok" {
             std::process::exit(1);
         }
     }
     Ok(())
-}
-
-fn kernel_check_run(cage: &runner::Cage) -> Result<(runner::RunOutcome, u128)> {
-    let spec = "kernelcheck@v1";
-    let mut broker = broker::Broker::new(
-        trace::TraceWriter::new(json!({"id": "run_kernelcheck", "program": spec})),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        None,
-        routes::Classifier::new(None),
-    );
-    broker.resolver = Some(Box::new(resolver::InlineResolver {
-        spec: spec.into(),
-        source: KERNEL_CHECK_PROGRAM.into(),
-        inner: Box::new(NoImports),
-    }));
-    let t1 = std::time::Instant::now();
-    let out = runner::run_program(
-        cage,
-        broker,
-        spec,
-        &json!({}),
-        Default::default(),
-        Arc::new(AtomicBool::new(false)),
-        60.0,
-    )?;
-    Ok((out, t1.elapsed().as_millis()))
 }
 
 /// ADR-032 §2: the `.cwasm` and its sidecar, the source wasm's sha256.

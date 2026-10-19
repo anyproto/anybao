@@ -132,6 +132,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyrt-ffi"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "anyrt",
+ "serde_json",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,19 @@
+[package]
+name = "anyrt-ffi"
+version = "0.7.0"
+edition = "2021"
+license = "MIT"
+description = "anyrt's C embedding: a static library for apps that run the runtime in their own process (iOS)"
+
+[lib]
+name = "anyrt"
+crate-type = ["staticlib"]
+
+[dependencies]
+anyrt = { path = "..", features = ["precompiled-kernel"] }
+serde_json = "1"
+anyhow = "1"
+
+[features]
+# a pulley64 kernel, interpreted (ADR-032 §11)
+pulley = ["anyrt/pulley"]

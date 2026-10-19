@@ -1,4 +1,4 @@
-.PHONY: api-drift kernel runtime runtime-shell runtime-cross kernel-cwasm runtime-precompiled runtime-pulley runtime-ios-sim runtime-android kernel-check-precompiled runtime-check test test-runtime test-integration lint licenses-check
+.PHONY: api-drift kernel runtime runtime-ios runtime-shell runtime-cross kernel-cwasm runtime-precompiled runtime-pulley runtime-ios-sim runtime-android kernel-check-precompiled runtime-check test test-runtime test-integration lint licenses-check
 
 # Componentized CPython guest (runtime/guest + runtime/wit -> bin/kernel.wasm).
 # ~1.4s build; the guest tests need it. Artifact is gitignored.
@@ -60,6 +60,28 @@ kernel-check-precompiled: runtime runtime-precompiled
 runtime-ios-sim:
 	$(MAKE) kernel-cwasm CWASM_TARGET=aarch64-apple-ios-sim
 	cargo build --release --features precompiled-kernel --target aarch64-apple-ios-sim --target-dir runtime/target/ios-sim --manifest-path runtime/Cargo.toml
+
+# iOS device + simulator: anyrt-ffi's static library (runtime/ffi, C
+# header in runtime/ffi/include/Anyrt) with the kernel precompiled here for
+# each slice, packaged as bin/anyrt.xcframework for the app to link.
+# PULLEY=1 builds the interpreted fallback (ADR-032 §11) into
+# bin/anyrt-pulley.xcframework. Needs the rustup ios targets.
+IOS_DEPLOYMENT_TARGET ?= 26.0
+IOS_NAME := anyrt$(if $(PULLEY),-pulley)
+IOS_TARGET_DIR := runtime/target/$(IOS_NAME)-ios
+IOS_FFI_BUILD = IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) cargo build --release -p anyrt-ffi \
+	$(if $(PULLEY),--features pulley) --target-dir $(IOS_TARGET_DIR) --manifest-path runtime/Cargo.toml
+IOS_CWASM = $(MAKE) kernel-cwasm $(if $(PULLEY),CWASM_TARGET=pulley64 CWASM_PLATFORM=ios,CWASM_TARGET=$(1))
+runtime-ios:
+	$(call IOS_CWASM,aarch64-apple-ios)
+	$(IOS_FFI_BUILD) --target aarch64-apple-ios
+	$(call IOS_CWASM,aarch64-apple-ios-sim)
+	$(IOS_FFI_BUILD) --target aarch64-apple-ios-sim
+	rm -rf bin/$(IOS_NAME).xcframework
+	xcodebuild -create-xcframework \
+		-library $(IOS_TARGET_DIR)/aarch64-apple-ios/release/libanyrt.a -headers runtime/ffi/include \
+		-library $(IOS_TARGET_DIR)/aarch64-apple-ios-sim/release/libanyrt.a -headers runtime/ffi/include \
+		-output bin/$(IOS_NAME).xcframework
 
 # The phone build: anyrt for aarch64-linux-android with the kernel
 # precompiled here, so the phone never runs Cranelift. The app ships the

@@ -18,6 +18,7 @@ pub mod config;
 pub mod deploy;
 pub mod drift;
 pub mod election;
+pub mod kernel_check;
 #[cfg(feature = "precompiled-kernel")]
 pub mod kernel_image;
 pub mod oauth;
