@@ -1,7 +1,8 @@
 # ADR-011: OAuth credentials — host-held tokens, `oauth.*` effects, provider descriptors
 
 Status: **Accepted** (2026-07-31; amended in review — open questions
-resolved, §4 host binding deferred)
+resolved, §4 host binding deferred; amended 2026-10-12 — §5.1
+transport B is paste-back over the chat, built)
 Date: 2026-07-30
 Builds on: ADR-002 (effect boundary — credential injection is a
 boundary fact, §Design rationale "Secrets"), ADR-006 §3 (secrets on the derived object —
@@ -251,14 +252,13 @@ The host trait is `ConsentTransport`: given a consent URL, deliver it
 to the human and yield an authorization code (+ the redirect URI used,
 which must match what the exchange sends).
 
-**Local and remote are the same flow — only the listener moves.** A
+**Local and remote are the same flow — only the way back differs.** A
 remote `anyrt` is still operated from an app; the app is simply not on
-the serve's machine. So both transports run the identical RFC 8252
-native-app pattern (system browser + loopback receiver on the human's
-machine), and the only variable is *whose* 127.0.0.1 hosts the
-receiver and how the code gets back. There is no second protocol to
-design for remote, and no protocol difference to security-review
-twice.
+the serve's machine. Every transport runs the identical RFC 8252
+native-app pattern (system browser + the serve's loopback redirect
+URI), and the only variable is how the redirect's `{code, state}`
+reaches the serve. There is no second protocol to design for remote,
+and no protocol difference to security-review twice.
 
 Two invariants hold across every transport, and they are what make the
 seam safe rather than merely convenient:
@@ -289,35 +289,48 @@ seam safe rather than merely convenient:
   sibling, but stays a **separate ephemeral listener** — the control
   port is long-lived and shouldn't accept OAuth callbacks outside a
   flow window.
-- **B. Delegated (designed here, not built).** For a remote `anyrt`:
-  the human isn't at the serve machine, so the *receiver* moves to the
-  client — transport A's listener, relocated. The host emits a request
-  over the message channel the "easy UI to insert initial secrets"
-  task specifies — the chat message's `agent` field, the one channel
-  every client sees (desktop and mobile alike), rather than a
-  desktop-only command channel. Three hops, and the shape is forced by
-  the invariants above:
-  1. serve → client: `{kind: "oauth", provider, scopes}`.
-  2. client → serve: the `redirect_uri` it has **already bound** on
-     its own loopback. The port belongs to the client's machine, and
-     the exchange must present the same URI the authorize request
-     carried — hence a handshake rather than one message. A fixed
-     client port (with an ephemeral fallback) collapses this hop, at
-     the cost of a port the client must be able to claim.
-  3. serve → client: the consent URL (challenge + `state` built
-     serve-side); client opens the system browser, captures the
-     redirect, returns **only `{code, state}`**.
+- **B. Paste-back over the chat (amended 2026-10-12; replaces the
+  client-receiver handshake first designed here).** For a human who
+  isn't at the serve machine. Nothing is relocated: the authorize
+  request carries the serve's own loopback `redirect_uri`, so after
+  consent the browser on the human's device is sent to *that device's*
+  127.0.0.1, where nothing listens. The page fails to load, and its
+  address holds `{code, state}`. Two legs, both over the bao chat —
+  the one channel every client (desktop and mobile) sees:
+  1. serve → human: a **host-authored** chat message carrying the
+     consent URL and naming its host (`OauthState.announce`). Serve
+     posts it for every flow, next to transport A's delivery — the
+     serve cannot know where the human is. The §1 corollary holds:
+     the model never writes the link, and the message is not a turn
+     the history window replays.
+  2. human → serve: the failed page's address, pasted into the chat.
+     The chat watcher routes a **human** message holding
+     `127.0.0.1:<port>/oauth/callback?…` with `state` and a `code` or
+     `error` to the host (`WatchAction::OauthCallback`) — it neither
+     starts nor joins a run, so the code never reaches the model, the
+     LLM provider, or a trace. Agent-posted text never counts. The
+     host finds the pending flow by `state` and exchanges with that
+     flow's verifier and redirect URI.
 
-  The serve exchanges the code with the verifier that never left it.
-  **Why the code and not tokens:** an intercepted authorization code
-  is single-use and dies in minutes; an intercepted refresh token is
-  durable account access. The write path needs exactly the trust level
-  secret insertion needs — no more — and the exposure window is orders
-  of magnitude smaller.
-  Prerequisite (upstream, not this ADR): the `agent` field on chat
-  messages does not exist yet. Specify it verb-extensible —
-  `agent.request {kind: "secret" | "oauth", …}` — so this is a second
-  verb on shipped plumbing rather than new plumbing.
+  Both receivers serve one flow; the first callback to claim it wins.
+  A paste matching no pending flow (expired, used, foreign) changes
+  nothing and gets a host reply — unlike a wrong `state` at the
+  loopback listener, an old address pasted by mistake must not kill a
+  live sign-in. When no `connect` is still blocked on the flow, the
+  host posts the outcome itself.
+
+  The pasted code lands in a synced field — written there by the
+  human, never by the host. It is single-use, exchanged within
+  seconds, and worthless without the verifier that never left the
+  serve. **Why the code and not tokens:** an intercepted authorization
+  code is single-use and dies in minutes; an intercepted refresh token
+  is durable account access.
+  The handshake (the client binds its own loopback receiver and
+  returns `{code, state}` over an `agent.request` message) needed a
+  receiver in every client and a port it can claim; the paste needs
+  neither and keeps both invariants. A client that later captures the
+  landing address itself only automates leg 2 — the serve side is
+  unchanged.
 - **Device authorization grant (RFC 8628) is rejected as the remote
   backbone**, and the reason is recorded so nobody re-proposes it:
   Google restricts the device flow to a small scope list (profile,
@@ -481,8 +494,9 @@ One topic = one commit; the ADR is accepted before any code lands.
 4. §7 — `googleAuth@v1` + the four Google connectors, hardened
    through `repos/_connectors/testing-flow.md` (the per-connector
    question checklist on the :7009 rig).
-5. Transport B when remote instances become real, gated on the
-   upstream `agent` message field.
+5. Transport B — paste-back over the chat (§5.1, amended
+   2026-10-12): the host-authored consent message, the watcher's
+   callback routing, one flow claimed by either receiver.
 
 ## Consequences
 
