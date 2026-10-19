@@ -681,15 +681,7 @@ impl OauthState {
             (h.0)(req);
             return;
         }
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        let opened = std::process::Command::new(opener)
-            .arg(&req.url)
-            .spawn()
-            .is_ok();
+        let opened = system_browser(&req.url).spawn().is_ok();
         tracing::warn!(
             "oauth: authorize {} in a browser{}: {}",
             req.provider,
@@ -1040,10 +1032,36 @@ fn id_token_email(id_token: &str) -> Option<String> {
     claims["email"].as_str().map(str::to_string)
 }
 
+/// `rundll32 url.dll,FileProtocolHandler` is the Windows opener: Windows has
+/// no `xdg-open`, and `cmd /c start` splits the URL at its first `&`.
+fn system_browser(url: &str) -> std::process::Command {
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    command.arg(url);
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn system_browser_passes_the_url_as_one_argument() {
+        let url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=a&state=b";
+        let command = system_browser(url);
+        assert_eq!(command.get_args().last(), Some(std::ffi::OsStr::new(url)));
+        if cfg!(windows) {
+            assert_eq!(command.get_program(), "rundll32");
+        }
+    }
 
     /// A descriptor pointed at a test-local token endpoint.
     fn test_provider(token_url: &str) -> BTreeMap<String, ProviderDescriptor> {
