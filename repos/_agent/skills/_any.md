@@ -121,9 +121,10 @@ with many questions per call on one state. Otherwise judge raises; use
 
 **Chat.** A space's one chat is c.general_chat(space) (an id
 string). Read it with `c.query(space, chat_id, "chat_messages",
-sort=["-createdAt"], limit=n)`. Posting as
-yourself needs the agent marker: `{"text": …, "agent": {"name":
-"bao", "done": true}}`; without it the message shows as the user's.
+sort=["-createdAt"], limit=n)`. Posting elsewhere needs
+`{"text": …, "agent": {"name": <author label>, "done": true}}` — the
+name is what the chat shows as sender, not a signature in the text
+(`help(c.chat_send)`).
 Never chat_send into the chat you are answering in: your reply goes
 there already. A user message with empty text and `control.kind ==
 "break"` means the user pressed Stop.

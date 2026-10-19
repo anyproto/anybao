@@ -3248,7 +3248,10 @@ class _Client:
         `body`: `{"text": ...}` — accepted fields exactly `{text,
         replyToMessageId?, agent?, attachments?}`; the body passes through
         verbatim and the server rejects any other key (400 request.unknown_field
-        naming the set). The chat id for a space's conversation is
+        naming the set). `agent.name` is the rendered author line, free text:
+        "from X" / "on my behalf" means `name` = "X", no signature in `text`;
+        in the chat you are answering in it must be your own agent name
+        (`trigger:` is reserved). The chat id for a space's conversation is
         `general_chat(space)` — never a queried or created chat. To READ
         messages: `query(space, chat_id, "chat_messages", sort=["-createdAt"],
         limit=n)` (agent_turns is the agentlog, not the conversation). A typed
