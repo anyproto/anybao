@@ -2538,6 +2538,24 @@ impl RunCtx {
         if let Some(e) = outcome.value.get("logError").and_then(|v| v.as_str()) {
             warn!("run {run_id}: agent_turns append failed after the reply landed — {e}");
         }
+        let cache = |verdict: &str| {
+            outcome
+                .broker
+                .writer
+                .records
+                .iter()
+                .filter(|r| r["effect"] == "module.resolve" && r["meta"]["codeCache"] == verdict)
+                .count()
+        };
+        info!(
+            "run {run_id} {spec}: {} fuel={} {}ms mem_pages={} code_cache hit={} miss={}",
+            outcome.status,
+            outcome.fuel_used,
+            outcome.duration_ms,
+            outcome.mem_pages,
+            cache("hit"),
+            cache("miss")
+        );
         // ADR-023 §3: a run whose trace could not be landed is a failed
         // run, named — never a silent gap
         let summary = outcome

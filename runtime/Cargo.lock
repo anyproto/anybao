@@ -138,6 +138,7 @@ dependencies = [
  "anyhow",
  "anyrt",
  "serde_json",
+ "tracing-subscriber",
 ]
 
 [[package]]
