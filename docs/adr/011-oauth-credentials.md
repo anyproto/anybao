@@ -281,7 +281,8 @@ seam safe rather than merely convenient:
   (`ConfigBuilder::consent_hook` — a new ADR-009 §6 surface; any-ui
   opens it, because the serve may be a headless daemon and the *app*
   is what owns a browser session); else the system browser via the
-  host (`xdg-open`/`open`, no new crate); else stderr, which is the
+  host (`open` on macOS, `rundll32 url.dll,FileProtocolHandler` on
+  Windows, `xdg-open` elsewhere; no new crate); else stderr, which is the
   CLI's honest path. Bind
   before issuing the URL — a URL whose receiver isn't listening
   produces a dead-end consent. Serve already runs a `tiny_http`
