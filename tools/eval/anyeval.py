@@ -10,13 +10,20 @@ the final answer + cell transcript. `compare` diffs two result files.
 Usage (rig running per docs/testing-agent-changes.md):
   python3 tools/eval/anyeval.py run --label baseline \\
       --questions tools/eval/questions/anyv1.jsonl [--filter q01 q02] \\
-      [--repeat 1] [--no-judge]
+      [--repeat 1] [--no-judge] [--addr http://127.0.0.1:7009] \\
+      [--bao bao] [--traces traces-prod-user3] \\
+      [--secrets-file configs/.connectors.env]
   python3 tools/eval/anyeval.py compare tools/eval/results/baseline.jsonl \\
       tools/eval/results/candidate.jsonl
 
-Everything goes through the effect boundary: wipe/send and the judge
-are scratch guest programs run by `anyrt run`, so the eval itself
-leaves traces. Deliberately ad-hoc — a dev instrument, no CI wiring.
+Everything goes through the effect boundary: wipe/send, the trace
+reader and the judge are scratch guest programs run by `anyrt run`, so
+the eval itself leaves traces. A conversation's trace lives in the
+serve's any local store, scoped to its bao space (ADR-023 §1): the
+reader finds the new toolcaller run with `effects.runs()` and walks
+its `llm.chat` spans; `--bao` names that space on `--addr`, `--traces`
+is the serve's raw-blob dir (ADR-026 §7). Deliberately ad-hoc — a dev
+instrument, no CI wiring.
 """
 
 import argparse
@@ -26,32 +33,37 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ANYRT = ROOT / "runtime/target/release/anyrt"
 RESULTS = Path(__file__).resolve().parent / "results"
 
-# guest helper: wipe the agentlog datasets on the target chat, then send
-# the question as the user (no `agent` field = user input). Discovers the
-# space/chat by name so ids never go stale.
+# guest helper: wipe the target chat's messages and its log child's
+# agentlog datasets (ADR-017: agent_turns/agent_chunks live on the
+# `bao/log/v1` child, never on the chat), then send the question as the
+# user (no `agent` field = user input). The flat any@v1 surface
+# (ADR-010 §8) resolves the space NAME on every call, so ids never go
+# stale.
 WIPE_SEND = '''
 def main(args):
-    c = use("any@v1").client()  # noqa: F821 - guest global
-    space = next(s["id"] for s in c.list_spaces()
-                 if s.get("name") == args["space"] and s.get("status") == "active")
-    r = c._call("get", f"/v1/spaces/{space}")
-    chat = (r.get("space") or r)["generalChatObjectId"]
-    for ds in ("chat_messages", "agent_turns", "agent_chunks"):
-        ids = [r["id"] for r in c.query(space, chat, ds, limit=2000)
+    a = use("any@v1")  # noqa: F821 - guest global
+    space = a.get_space(args["space"])["id"]
+    chat = a.general_chat(space)
+    log = a.chat_log(space, chat)["objectId"]
+    wiped = {}
+    for obj, ds in ((chat, "chat_messages"), (log, "agent_turns"),
+                    (log, "agent_chunks")):
+        ids = [r["id"] for r in a.query(space, obj, ds, limit=2000)
                if r.get("id")]
         if ids:
-            r = c._call("post", f"/v1/spaces/{space}/delete-records",
-                        {"objectId": chat, "dataset": ds, "recordIds": ids})
+            r = a.delete_records(space, obj, ds, ids)
             if r.get("rejections"):
                 return {"error": f"wipe rejected: {r['rejections']}"}
-    c.chat_send(space, chat, {"text": args["text"]})
-    return {"ok": True}
+        wiped[ds] = len(ids)
+    a.chat_send(space, chat, {"text": args["text"]})
+    return {"ok": True, "wiped": wiped}
 '''
 
 # guest judge: one classify-tier llm@v1 call, strict-JSON verdict.
@@ -86,13 +98,85 @@ def main(args):
         return {"pass": None, "reason": f"unparseable verdict: {text[:120]}"}
 '''
 
+# guest reader over the serve's trace store (ADR-023): `op: "ids"` lists
+# the toolcaller run ids the finder knows; `op: "find"` picks the new
+# toolcaller run (not in `before`, title = the question) and returns
+# its metrics + transcript. A run has a summary only once it finished
+# (the sink writes `trace_runs` at finish), so "listed" = "completed".
+# Cron programs (extraction/rollup/…) share the store — the program
+# filter keeps them out.
+READ = '''
+def main(args):
+    runs = effects.runs("toolcaller", limit=0)  # noqa: F821 - guest global
+    if args.get("op") == "ids":
+        return {"ids": [r["id"] for r in runs]}
+    before = set(args.get("before") or [])
+    new = [r for r in runs if r["id"] not in before]
+    if not new:
+        return {"run": None}
+    head = (args.get("question") or "")[:40]
+    pick = next((r for r in new if (r.get("title") or "").startswith(head)),
+                None) or new[0]
+    rid = pick["id"]
+    spans = effects.query([  # noqa: F821
+        {"$match": {"runId": rid, "kind": "span", "name": "llm.chat",
+                    "phase": "end"}},
+        {"$project": {"seq": 1}}, {"$sort": {"seq": 1}}])
+    usage = {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0}
+    cells, help_calls, answer = [], 0, ""
+    for sp in spans:
+        out = effects.get(sp["seq"], run=rid).get("output") or {}  # noqa: F821
+        for k in usage:
+            usage[k] += (out.get("usage") or {}).get(k, 0) or 0
+        texts, code = [], None
+        for p in out.get("parts") or []:
+            if p.get("type") == "tool_call":
+                code = (p.get("args") or {}).get("code", "")
+            elif p.get("type") == "text":
+                texts.append(p.get("text", ""))
+        if code is not None:
+            cells.append(code)
+            help_calls += code.count("help(") + code.count("inspect.getdoc")
+        if out.get("stop") != "tool" and texts:
+            answer = "\\n".join(texts)
+    errors = [str(r.get("error"))[:160] for r in effects.query([  # noqa: F821
+        {"$match": {"runId": rid, "error": {"$ne": None}}},
+        {"$project": {"error": 1}}, {"$sort": {"seq": 1}}])]
+    return {"run": rid, "status": pick.get("status"),
+            "turns": len(spans), "cells": len(cells),
+            "effects": pick.get("effects") or 0,
+            "error_records": len(errors), "help_calls": help_calls,
+            "duration_ms": pick.get("durationMs") or 0, "usage": usage,
+            "_cell_sources": cells, "_errors": errors, "_answer": answer}
+'''
 
-def anyrt_run(programs, name, args_obj, addr=None):
+
+def bao_space_id(addr, name):
+    """The serve's home space on `addr` — its local store holds the
+    traces (ADR-023 §1). A raw id passes through."""
+    if "." in name:
+        return name
+    with urllib.request.urlopen(f"{addr}/v1/spaces", timeout=10) as r:
+        body = json.load(r)
+    spaces = body.get("spaces") if isinstance(body, dict) else body
+    for s in spaces or []:
+        if s.get("name") == name and s.get("status", "active") == "active":
+            return s["id"]
+    sys.exit(f"no active space named {name!r} on {addr} (--bao)")
+
+
+def anyrt_run(programs, name, args_obj, rig):
+    """One scratch guest run against the rig: `rig` = {addr, config,
+    traces, secrets} — the JSON config names `bao.space`, so the run's
+    trace (and the reader's `effects.*`) land in / read the serve's
+    store; `secrets` is the serve's --secrets-file (the judge's LLM
+    key — `run` reads no env)."""
     cmd = [str(ANYRT), "run", name, "--programs", str(programs),
-           "--traces-dir", str(ROOT / "traces"),
+           "--addr", rig["addr"], "--config", str(rig["config"]),
+           "--traces-dir", str(rig["traces"]),
            "--args", json.dumps(args_obj)]
-    if addr:
-        cmd += ["--addr", addr]
+    if rig.get("secrets"):
+        cmd += ["--secrets-file", str(rig["secrets"])]
     out = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
     line = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else "{}"
     res = json.loads(line)
@@ -102,64 +186,17 @@ def anyrt_run(programs, name, args_obj, addr=None):
     return res["value"]
 
 
-def parse_trace(path):
-    """Metrics + transcript from one toolcaller run file."""
-    turns, cells, errors, help_calls = 0, [], [], 0
-    usage = {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0}
-    effects = duration_ms = 0
-    answer = ""
-    with open(path) as f:
-        for line in f:
-            rec = json.loads(line)
-            if rec.get("error") is not None:
-                errors.append(str(rec["error"])[:160])
-            kind = rec.get("kind")
-            if kind == "effect":
-                effects += 1
-            elif kind == "cell":
-                duration_ms = (rec.get("metrics") or {}).get("duration_ms", 0)
-            elif kind == "span" and rec.get("name") == "llm.chat" \
-                    and rec.get("phase") == "end":
-                turns += 1
-                out = rec.get("output") or {}
-                for k in usage:
-                    usage[k] += (out.get("usage") or {}).get(k, 0) or 0
-                texts, code = [], None
-                for p in out.get("parts") or []:
-                    if p.get("type") == "tool_call":
-                        code = (p.get("args") or {}).get("code", "")
-                    elif p.get("type") == "text":
-                        texts.append(p.get("text", ""))
-                if code is not None:
-                    cells.append(code)
-                    help_calls += code.count("help(") + code.count("inspect.getdoc")
-                if out.get("stop") != "tool" and texts:
-                    answer = "\n".join(texts)
-    return {"turns": turns, "cells": len(cells), "effects": effects,
-            "error_records": len(errors), "help_calls": help_calls,
-            "duration_ms": duration_ms, "usage": usage,
-            "_cell_sources": cells, "_errors": errors, "_answer": answer}
-
-
-def wait_for_run(traces_dir, before, timeout_s):
-    """A new TOOLCALLER run whose main cell has finished (kind:'cell'
-    record). Cron programs (extraction/rollup/…) also drop run files —
-    match the header's program or a concurrent cron run gets scored."""
+def wait_for_run(programs, rig, before, question, timeout_s):
+    """Metrics + transcript of the new TOOLCALLER run, polled from the
+    store through the reader program until it is listed (= finished)."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        for p in sorted(traces_dir.glob("run_*.jsonl")):
-            if p.name in before:
-                continue
-            with open(p) as f:
-                header = f.readline()
-            if "toolcaller" not in header:
-                before.add(p.name)   # cron run — never the conversation
-                continue
-            tail = p.read_text()[-4000:]
-            if '"kind":"cell"' in tail or '"kind": "cell"' in tail:
-                time.sleep(1)  # let serve finish trailing writes
-                return p
-        time.sleep(2)
+        m = anyrt_run(programs, "evalread@v1",
+                      {"op": "find", "before": sorted(before),
+                       "question": question}, rig)
+        if m.get("run"):
+            return m
+        time.sleep(3)
     raise TimeoutError(f"no completed run after {timeout_s}s — is serve up?")
 
 
@@ -170,24 +207,29 @@ def cmd_run(a):
         questions = [q for q in questions if q["id"] in a.filter]
     if not questions:
         sys.exit("no questions selected")
-    traces_dir = ROOT / a.traces
     programs = Path(tempfile.mkdtemp(prefix="anyeval-"))
     shutil.copytree(ROOT / "repos/_agent/programs", programs,
                     dirs_exist_ok=True)
     (programs / "evalwipe@v1.py").write_text(WIPE_SEND)
     (programs / "evaljudge@v1.py").write_text(JUDGE)
+    (programs / "evalread@v1.py").write_text(READ)
+    config = programs / "run-config.json"
+    config.write_text(json.dumps({"bao.space": bao_space_id(a.addr, a.bao)}))
+    rig = {"addr": a.addr, "config": config, "traces": ROOT / a.traces,
+           "secrets": a.secrets_file}
     RESULTS.mkdir(parents=True, exist_ok=True)
     out_path = Path(a.out) if a.out else RESULTS / f"{a.label}.jsonl"
     rows = []
     with open(out_path, "w") as out:
         for q in questions:
             for rep in range(a.repeat):
-                before = {p.name for p in traces_dir.glob("run_*.jsonl")}
+                before = anyrt_run(programs, "evalread@v1", {"op": "ids"},
+                                   rig)["ids"]
                 anyrt_run(programs, "evalwipe@v1",
-                          {"space": a.space, "text": q["question"]},
-                          addr=a.addr)
-                run = wait_for_run(traces_dir, before, a.timeout)
-                m = parse_trace(run)
+                          {"space": a.space, "text": q["question"]}, rig)
+                m = wait_for_run(programs, rig, before, q["question"],
+                                 a.timeout)
+                run = m["run"]
                 verdict = None
                 if not a.no_judge:
                     cells_txt = "\n---\n".join(m["_cell_sources"]) or "(none)"
@@ -195,9 +237,9 @@ def cmd_run(a):
                         "question": q["question"], "expect": q["expect"],
                         "cells": cells_txt[:6000],
                         "errors": "; ".join(m["_errors"])[:1500],
-                        "answer": m["_answer"][:4000]})
+                        "answer": m["_answer"][:4000]}, rig)
                 row = {"id": q["id"], "rep": rep, "question": q["question"],
-                       "expect": q["expect"], "run": run.stem,
+                       "expect": q["expect"], "run": run,
                        **{k: v for k, v in m.items() if not k.startswith("_")},
                        "verdict": verdict}
                 out.write(json.dumps(row) + "\n")
@@ -207,7 +249,7 @@ def cmd_run(a):
                     {True: "PASS", False: "FAIL"}.get(verdict.get("pass"), "?")
                 print(f"{q['id']} rep{rep}: turns={m['turns']} "
                       f"tok_out={m['usage']['out']} errs={m['error_records']} "
-                      f"help={m['help_calls']} {v}  ({run.stem})")
+                      f"help={m['help_calls']} {v}  ({run})")
     print(f"\n{len(rows)} rows -> {out_path}")
 
 
@@ -266,8 +308,14 @@ def main():
     r.add_argument("--filter", nargs="*", help="question ids to run")
     r.add_argument("--repeat", type=int, default=1)
     r.add_argument("--space", default="bao")
-    r.add_argument("--addr", default="http://127.0.0.1:7009")
-    r.add_argument("--traces", default="traces-test")
+    r.add_argument("--addr", default="http://127.0.0.1:7009",
+                   help="the rig's any server; its local store holds the traces")
+    r.add_argument("--bao", default="bao",
+                   help="the serve's home space on --addr (name or id)")
+    r.add_argument("--traces", default="traces",
+                   help="the serve's raw-blob dir (ADR-026 §7), for blob refs")
+    r.add_argument("--secrets-file",
+                   help="the serve's secrets file; the judge needs its LLM key")
     r.add_argument("--timeout", type=int, default=240)
     r.add_argument("--no-judge", action="store_true")
     r.add_argument("--out")
