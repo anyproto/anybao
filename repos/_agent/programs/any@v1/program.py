@@ -1825,7 +1825,8 @@ class _Client:
         INSTANT: `createdAt`/`modifiedAt` and every `date`/`datetime` property
         read as `{"$date": "<RFC 3339>"}` (`ts_s(v)` → seconds) and a filter
         compares them only to `instant(seconds)` — a bare number raises here
-        (server-side it would silently match every row)."""
+        (server-side it would silently match every row). The space's own
+        index object (`spaceIndex` part, no `any` block) is omitted."""
         unknown = set(opts) - {"filter", "sort", "limit", "offset"}
         if unknown:
             # an unvisited key (e.g. `filters=`) would make the server
@@ -1845,7 +1846,16 @@ class _Client:
                           opts).get("records", [])
         if not normalize:
             return recs
-        out = [self._normalize_record(space, r) for r in recs]
+        # The space's own index object (the row behind the space's
+        # name/icon, `spaceIndexObjectId` on the space row) sits in
+        # the objects index with ONLY its `spaceIndex` part — no
+        # `any` block — and is the one row that part key identifies
+        # (the handle is reserved, ADR-006 §6). Nothing on this
+        # surface can name or act on it (ADR-029 §4), so an
+        # unfiltered query omits it like list_types omits the meta
+        # rows — an `o["any"]` over every row never hits it.
+        out = [self._normalize_record(space, r) for r in recs
+               if "spaceIndex" not in r]
         self._hydrate_links(space, out)   # ADR-022 §3
         return out
 

@@ -167,6 +167,10 @@ On `any@v1` (flat and `c.`), named for what a human says:
 included (bao's machinery, the catalog's hidden types), the four meta
 rows `any`, `spaceIndex`, `type`, `collection` **omitted** — they
 were listed-and-guarded, now they are neither offered nor nameable.
+The same rule covers the one OBJECT a meta row owns: the space's
+index object (`spaceIndexObjectId`, a `spaceIndex` part and no `any`
+block) is omitted from `query_objects` reads — an unfiltered query
+of an empty space returns `[]`, not a row the model cannot act on.
 `attach_type` and `detach_type` do not exist; `patch_collection`
 exists only if `patch_type` is on the surface at implementation time.
 

@@ -448,6 +448,17 @@ def test_query_objects_normalizes_user_groups_keeps_builtins():
                    "task": {"status": "open", "priority": 3}}
 
 
+def test_query_objects_omits_the_space_index_object():
+    # the space's own index object carries ONLY its spaceIndex part (no
+    # `any` block): an unfiltered read drops it (ADR-029 §4), the raw
+    # passthrough keeps the wire shape
+    rows = [{"id": "idx", "spaceIndex": {"name": "", "spaceType": "any.space"}},
+            {"id": "o1", "any": {"name": "Ship", "type": "bafyTASK"}}]
+    fx = wire(replies={**_CAT, "/objects/query": {"records": rows}})
+    assert [r["id"] for r in client(fx).query_objects("s1", filter={})] == ["o1"]
+    assert client(fx).query_objects("s1", filter={}, normalize=False) == rows
+
+
 def test_query_objects_resolves_filter_and_sort_xkey_paths():
     fx = wire(replies={**_CAT, "/objects/query": {"records": []}})
     client(fx).query_objects("s1", filter={"any.type": "task",
