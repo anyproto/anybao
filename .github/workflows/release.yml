@@ -29,6 +29,15 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} is not on main; refusing to release" >&2
             exit 1
           }
+      # any-ui nightly builds main, not a tag, so the version must be on main
+      # before the tag: bump runtime/Cargo.toml in a PR, then tag.
+      - name: verify tag matches the anyrt crate version
+        run: |
+          crate=$(sed -nE '/^\[package\]/,/^\[/{s/^version *= *"([^"]+)".*/\1/p;}' runtime/Cargo.toml | head -n1)
+          if [ "v${crate}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match runtime/Cargo.toml version ${crate}; bump it on main first" >&2
+            exit 1
+          fi
 
   build:
     needs: verify
