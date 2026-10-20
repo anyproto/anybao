@@ -3,7 +3,8 @@
 Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
 embedded, §8), 2026-07-23 (§4 compile cache, §8 snapshot backlog +
 deferred messages), 2026-09-16 (§8 readiness = usable, miss-driven
-program waits), 2026-09-24 (§3 on-demand skills)
+program waits), 2026-09-24 (§3 on-demand skills), 2026-10-20 (§8
+window floor, BOB-204)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -285,6 +286,17 @@ mechanics are:
   (walking newest→oldest). The watcher's seen-set dedups across
   reconnect snapshots; the window is the subscribe limit (64) — an
   unanswered message older than that stays dropped, by construction.
+  **Window floor (amended 2026-10-20, BOB-204)**: an `added` record in
+  a `changes` frame entered the visible window; it is a NEW message
+  only when its `createdAt` is not older than every row the window
+  holds. A deletion inside the window makes the server promote the
+  row past the limit as `added` with its stored doc — an answered
+  message from days ago, absent from the seen-set (which only knows
+  the unanswered backlog), that a live run would take as its next
+  user turn. The watcher keeps the window's rows per chat (the
+  snapshot seeds them, `added` joins, `removed` leaves) and refuses a
+  record below the floor as history. An inject carries the record's
+  `messageId` and `createdAt` so the trace names what entered a run.
   **Name-scoped self-skip (amended 2026-08-16)**: "agent-authored"
   means THIS agent's own `agent.name` (or a nameless agent record —
   the conservative read of legacy rows), for both the watcher skip and

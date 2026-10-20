@@ -2778,7 +2778,9 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                 .lock()
                 .unwrap()
                 .push_back(json!({"kind": "inject", "text": input.text,
-                                  "context": input.context}));
+                                  "context": input.context,
+                                  "messageId": input.message_id,
+                                  "createdAt": input.created_at}));
             return;
         }
         w.live.insert(
@@ -2953,6 +2955,8 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     ChatInput {
                         text: item["text"].as_str().unwrap_or_default().to_string(),
                         context: item["context"].clone(),
+                        message_id: item["messageId"].as_str().unwrap_or_default().to_string(),
+                        created_at: item["createdAt"].clone(),
                         deferrals: 0,
                     },
                 );
@@ -2982,6 +2986,16 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             // down or booting — are answered instead of dropped. The
             // watcher's seen-set dedups across reconnect snapshots.
             "snapshot" => {
+                // the window floor (ADR-009 §8): every visible row, so a
+                // row the server later promotes from past the limit is
+                // recognised as history
+                shared.watcher.lock().unwrap().seed_window(
+                    &ctx.chat,
+                    frame.data["records"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                );
                 let backlog = snapshot_backlog(&frame.data, &ctx.cfg.agent_name);
                 if backlog.is_empty() {
                     continue;
@@ -3033,6 +3047,12 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                         .unwrap()
                         .on_message(&ctx.chat, &record);
                     match &action {
+                        WatchAction::Stale { floor } => warn!(
+                            "chat message {} (created {}) re-entered the window below its \
+                             floor {floor} — promoted history, not input (ADR-009 §8)",
+                            record["id"].as_str().unwrap_or(""),
+                            crate::triggers::created_at(&record).unwrap_or("?")
+                        ),
                         WatchAction::Break { live, hard } => on_break(&ctx.chat, live, *hard),
                         WatchAction::BreakIdle => {
                             // the stop cancels messages still deferred on
@@ -3072,6 +3092,9 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                             }
                         }
                     }
+                }
+                for id in removed_in(&frame.data) {
+                    shared.watcher.lock().unwrap().forget(&ctx.chat, &id);
                 }
             }
             other => anyhow::bail!("unexpected frame {other:?}"),
@@ -3163,6 +3186,25 @@ fn records_in(data: &Value) -> Vec<Value> {
                 let mut rec = entry["doc"].as_object().cloned().unwrap_or_default();
                 rec.insert("id".into(), entry["id"].clone());
                 out.push(Value::Object(rec));
+            }
+        }
+    }
+    out
+}
+
+/// The ids that LEFT the window in a `changes` frame (`removed`:
+/// deleted, displaced past the limit, filtered out) — the window floor
+/// (ADR-009 §8) moves with them. An `added` entry is "entered the
+/// window", not "new": a deletion promotes the row past the limit, and
+/// only the floor tells that promotion from a message.
+fn removed_in(data: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(batches) = data.as_array() {
+        for batch in batches {
+            for entry in batch["removed"].as_array().unwrap_or(&Vec::new()) {
+                if let Some(id) = entry["id"].as_str() {
+                    out.push(id.to_string());
+                }
             }
         }
     }
@@ -3430,6 +3472,9 @@ fn event_source_thread(
                             for record in state.fresh(records_in(&frame.data), &ctx.cfg.agent_name)
                             {
                                 fire_event(&shared, &ctx, &space, &object_id, &record);
+                            }
+                            for id in removed_in(&frame.data) {
+                                state.forget(&id);
                             }
                         }
                         other => {

@@ -446,6 +446,7 @@ pub fn desired_event_sources(
 #[derive(Default)]
 pub struct EventSource {
     seen: std::collections::BTreeSet<String>,
+    window: Window,
 }
 
 fn message_id(record: &Value) -> Option<&str> {
@@ -455,8 +456,77 @@ fn message_id(record: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// A record's `createdAt` instant (ADR-019: `{"$date": "<RFC 3339,
+/// UTC>"}`) as its string — instants carry one fixed layout, so string
+/// order is time order.
+pub fn created_at(record: &Value) -> Option<&str> {
+    record.get("createdAt")?.get("$date")?.as_str()
+}
+
+/// The visible rows of one `chat_messages` subscription window, id →
+/// createdAt (ADR-009 §8 window floor; ADR-018 §2). The server ships
+/// an `added` record for anything that ENTERS the visible window — a
+/// new message, but also an old row promoted from past the limit when
+/// a visible row is deleted. A record older than every visible row did
+/// not arrive, it was promoted: history, never input (BOB-204).
+#[derive(Default)]
+pub struct Window {
+    rows: BTreeMap<String, String>,
+}
+
+/// `Window::admit`'s verdict on an `added` record.
+#[derive(Debug, PartialEq)]
+pub enum Admit {
+    New,
+    /// Older than every visible row (`floor` = the oldest's createdAt).
+    Promoted {
+        floor: String,
+    },
+}
+
+impl Window {
+    /// Replace the rows with a snapshot's (a reconnect re-seeds).
+    pub fn seed(&mut self, records: &[Value]) {
+        self.rows.clear();
+        for r in records {
+            if let (Some(id), Some(at)) = (message_id(r), created_at(r)) {
+                self.rows.insert(id.to_string(), at.to_string());
+            }
+        }
+    }
+
+    /// The oldest visible row's createdAt.
+    pub fn floor(&self) -> Option<&str> {
+        self.rows.values().map(String::as_str).min()
+    }
+
+    /// Judge an `added` record: new input joins the rows; a record with
+    /// no id or stamp cannot be judged and passes as new.
+    pub fn admit(&mut self, record: &Value) -> Admit {
+        let (Some(id), Some(at)) = (message_id(record), created_at(record)) else {
+            return Admit::New;
+        };
+        if let Some(floor) = self.floor() {
+            if at < floor {
+                return Admit::Promoted {
+                    floor: floor.to_string(),
+                };
+            }
+        }
+        self.rows.insert(id.to_string(), at.to_string());
+        Admit::New
+    }
+
+    /// A `removed` entry: the row left the window (deleted, displaced
+    /// past the limit, or filtered out).
+    pub fn forget(&mut self, id: &str) {
+        self.rows.remove(id);
+    }
+}
+
 impl EventSource {
     pub fn seed(&mut self, records: &[Value]) {
+        self.window.seed(records);
         for r in records {
             if let Some(id) = message_id(r) {
                 self.seen.insert(id.to_string());
@@ -473,12 +543,27 @@ impl EventSource {
             if !self.seen.insert(id.to_string()) {
                 continue;
             }
+            // every row counts for the floor, own bubbles included
+            let admit = self.window.admit(&r);
             if Watcher::is_self_message(&r, self_name) {
+                continue;
+            }
+            if let Admit::Promoted { floor } = admit {
+                tracing::warn!(
+                    "event source: message {id} (created {}) re-entered the window below \
+                     its floor {floor} — promoted history, not an event (ADR-018 §2)",
+                    created_at(&r).unwrap_or("?")
+                );
                 continue;
             }
             out.push(r);
         }
         out
+    }
+
+    /// A `removed` entry: the row left the window.
+    pub fn forget(&mut self, id: &str) {
+        self.window.forget(id);
     }
 }
 
@@ -687,6 +772,11 @@ pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger
 pub struct ChatInput {
     pub text: String,
     pub context: Value,
+    /// The chat record's id and `createdAt` — ride the inject so the
+    /// trace names what entered a live run and when it was written
+    /// (BOB-204). Empty / Null for a message the record did not stamp.
+    pub message_id: String,
+    pub created_at: Value,
     /// How many times this message was deferred on a program miss
     /// (ADR-009 §8): at most one deferral, then the failure is final.
     pub deferrals: u32,
@@ -707,6 +797,9 @@ pub struct ChatInput {
 #[derive(Default)]
 pub struct Watcher {
     seen: std::collections::BTreeSet<String>,
+    /// Per chat, the subscription window's visible rows (ADR-009 §8
+    /// window floor).
+    windows: BTreeMap<String, Window>,
     pub live: BTreeMap<String, LiveRun>,
     /// This agent's chat identity (`agent.name` on its own bubbles).
     pub self_name: String,
@@ -732,6 +825,12 @@ pub struct LiveRun {
 pub enum WatchAction {
     Dup,
     Skip,
+    /// An `added` record older than every row in the window: promoted
+    /// from past the limit by the server, not a new message (ADR-009
+    /// §8 window floor). `floor` = the oldest visible row's createdAt.
+    Stale {
+        floor: String,
+    },
     Inject,
     /// A `break` control record landed on a live run. Soft: the break
     /// item is in the mailbox and the caller arms the grace escalation
@@ -823,6 +922,8 @@ impl Watcher {
         ChatInput {
             text: Self::attributed_text(record),
             context: Self::view_context(record),
+            message_id: message_id(record).unwrap_or_default().to_string(),
+            created_at: record.get("createdAt").cloned().unwrap_or(Value::Null),
             deferrals: 0,
         }
     }
@@ -1000,13 +1101,39 @@ impl Watcher {
         out
     }
 
+    /// A snapshot frame: the window's visible rows (ADR-009 §8 window
+    /// floor) — every row, answered history included.
+    pub fn seed_window(&mut self, chat_id: &str, records: &[Value]) {
+        self.windows
+            .entry(chat_id.to_string())
+            .or_default()
+            .seed(records);
+    }
+
+    /// A `removed` entry: the row left the chat's window.
+    pub fn forget(&mut self, chat_id: &str, id: &str) {
+        if let Some(w) = self.windows.get_mut(chat_id) {
+            w.forget(id);
+        }
+    }
+
     pub fn on_message(&mut self, chat_id: &str, record: &Value) -> WatchAction {
         let msg_id = record.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if !msg_id.is_empty() && !self.seen.insert(msg_id.to_string()) {
             return WatchAction::Dup;
         }
+        // every row counts for the floor, own bubbles included; only
+        // user-side input can be refused as promoted
+        let admit = self
+            .windows
+            .entry(chat_id.to_string())
+            .or_default()
+            .admit(record);
         if Self::is_self_message(record, &self.self_name) {
             return WatchAction::Skip; // own bubble — never self-trigger
+        }
+        if let Admit::Promoted { floor } = admit {
+            return WatchAction::Stale { floor };
         }
         if is_control(record) {
             // a break lands on the live run; with nothing running it
@@ -1022,7 +1149,8 @@ impl Watcher {
         if let Some(live) = self.live.get(chat_id) {
             let input = Self::input(record);
             live.mailbox.lock().unwrap().push_back(json!({
-                "kind": "inject", "text": input.text, "context": input.context}));
+                "kind": "inject", "text": input.text, "context": input.context,
+                "messageId": input.message_id, "createdAt": input.created_at}));
             return WatchAction::Inject;
         }
         WatchAction::Start
@@ -1523,6 +1651,143 @@ mod tests {
         }
         assert!(!tr.enabled);
         assert_eq!(tr.last_status.as_deref(), Some("auto_disabled"));
+    }
+
+    fn rec_at(id: &str, at: &str) -> Value {
+        json!({"id": id, "text": "m", "createdAt": {"$date": at}})
+    }
+
+    #[test]
+    fn window_refuses_a_row_promoted_from_below_its_floor() {
+        let mut w = Window::default();
+        w.seed(&[
+            rec_at("c", "2026-10-20T10:37:00.000Z"),
+            rec_at("b", "2026-10-20T10:31:00.000Z"),
+        ]);
+        assert_eq!(w.floor(), Some("2026-10-20T10:31:00.000Z"));
+        // a new message is not older than the floor: input, and it joins
+        assert_eq!(
+            w.admit(&rec_at("d", "2026-10-20T10:38:00.000Z")),
+            Admit::New
+        );
+        // the oldest row is displaced past the limit: the floor moves up
+        w.forget("b");
+        assert_eq!(w.floor(), Some("2026-10-20T10:37:00.000Z"));
+        // a visible row is deleted and the server promotes the row past
+        // the limit (BOB-204): older than every visible row — not input
+        // (only d is left, so the floor is d's stamp)
+        w.forget("c");
+        assert_eq!(
+            w.admit(&rec_at("a", "2026-10-14T08:56:53.000Z")),
+            Admit::Promoted {
+                floor: "2026-10-20T10:38:00.000Z".into()
+            }
+        );
+        // the refused row never lowers the floor
+        assert_eq!(w.floor(), Some("2026-10-20T10:38:00.000Z"));
+        // the same second as the floor is not older: input
+        assert_eq!(
+            w.admit(&rec_at("e", "2026-10-20T10:38:00.000Z")),
+            Admit::New
+        );
+        // no stamp: cannot be judged, passes
+        assert_eq!(w.admit(&json!({"id": "x", "text": "m"})), Admit::New);
+        // a reconnect snapshot replaces the rows
+        w.seed(&[rec_at("z", "2026-10-21T00:00:00.000Z")]);
+        assert_eq!(w.floor(), Some("2026-10-21T00:00:00.000Z"));
+        // an empty window judges nothing
+        assert_eq!(
+            Window::default().admit(&rec_at("a", "2020-01-01T00:00:00.000Z")),
+            Admit::New
+        );
+    }
+
+    #[test]
+    fn a_promoted_old_message_never_injects_into_a_live_run() {
+        let mut w = Watcher::new("bao");
+        // the window at the run's 59th turn: the user's request and the
+        // run's own narration bubbles (own rows count for the floor)
+        w.seed_window(
+            "c1",
+            &[
+                json!({"id": "b9576", "text": "Scheduling the real trigger…",
+                       "agent": {"name": "bao", "done": false},
+                       "createdAt": {"$date": "2026-10-20T10:37:40.000Z"}}),
+                rec_at("u9537", "2026-10-20T10:31:00.000Z"),
+            ],
+        );
+        let mb: crate::broker::SharedMailbox = Default::default();
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
+        // BOB-204: the 6-day-old, answered message re-enters as `added`
+        let stale = json!({"id": "fWsk9MrCjT",
+                           "text": "another 15 book recommendations in Alpha",
+                           "createdAt": {"$date": "2026-10-14T08:56:53.000Z"}});
+        assert!(matches!(
+            w.on_message("c1", &stale),
+            WatchAction::Stale { ref floor } if floor == "2026-10-20T10:31:00.000Z"
+        ));
+        assert!(mb.lock().unwrap().is_empty());
+        // …and with no run live it does not start one either
+        w.conversation_done("c1");
+        let stale2 = json!({"id": "fWsk9MrCjU", "text": "old",
+                            "createdAt": {"$date": "2026-10-14T09:00:00.000Z"}});
+        assert!(matches!(
+            w.on_message("c1", &stale2),
+            WatchAction::Stale { .. }
+        ));
+        // a real new message starts, and an inject names its record
+        w.live.insert(
+            "c1".into(),
+            LiveRun {
+                mailbox: mb.clone(),
+                ..Default::default()
+            },
+        );
+        let fresh = json!({"id": "n1", "text": "also check cohorts",
+                           "createdAt": {"$date": "2026-10-20T10:38:10.000Z"}});
+        assert!(matches!(w.on_message("c1", &fresh), WatchAction::Inject));
+        let item = mb.lock().unwrap().pop_front().unwrap();
+        assert_eq!(item["messageId"], "n1");
+        assert_eq!(item["createdAt"]["$date"], "2026-10-20T10:38:10.000Z");
+        // a self bubble arriving as `added` keeps the floor honest: after
+        // the user's row is displaced, the floor is the bubble's stamp
+        let bubble = json!({"id": "b2", "text": "working", "agent": {"name": "bao", "done": false},
+                            "createdAt": {"$date": "2026-10-20T10:38:20.000Z"}});
+        assert!(matches!(w.on_message("c1", &bubble), WatchAction::Skip));
+        w.forget("c1", "u9537");
+        w.forget("c1", "b9576");
+        w.forget("c1", "n1");
+        let between = json!({"id": "n2", "text": "late",
+                             "createdAt": {"$date": "2026-10-20T10:38:15.000Z"}});
+        assert!(matches!(
+            w.on_message("c1", &between),
+            WatchAction::Stale { .. }
+        ));
+    }
+
+    #[test]
+    fn event_source_drops_a_promoted_row() {
+        let mut src = EventSource::default();
+        src.seed(&[
+            rec_at("m3", "2026-10-20T10:37:00.000Z"),
+            rec_at("m2", "2026-10-20T10:31:00.000Z"),
+        ]);
+        src.forget("m2");
+        let out = src.fresh(
+            vec![
+                rec_at("m1", "2026-10-14T08:56:53.000Z"), // promoted after a deletion
+                rec_at("m4", "2026-10-20T10:38:00.000Z"), // new
+            ],
+            "bao",
+        );
+        let ids: Vec<&str> = out.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["m4"]);
     }
 
     #[test]

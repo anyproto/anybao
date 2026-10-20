@@ -1,6 +1,6 @@
 # ADR-018: Event triggers — chat-message sources, and the chat watcher as a trigger
 
-Status: **Accepted** (2026-08-24)
+Status: **Accepted** (2026-08-24), amended 2026-10-20 (§2 window floor, BOB-204)
 Date: 2026-08-24
 Builds on: ADR-006 §4 (trigger contract, device pins, reconcile),
 ADR-009 §8 (chat watch, snapshot backlog, deferred conversations),
@@ -91,6 +91,17 @@ Consequences that follow, and are intended:
   is never input: not for event triggers, not for the chat
   responder. Self-authored messages (the agent's own name — the
   ADR-009 §8 name-scoped rule) never fire.
+  **Window floor (amended 2026-10-20, BOB-204)**: `added` means the
+  record ENTERED the watch's visible window (`sort: -createdAt`,
+  `limit: 64`), not that it was written. The server holds one row past
+  the limit and ships it as `added`, with its stored doc, when a
+  visible row is deleted. Each watch therefore keeps the window's rows
+  (seeded by the snapshot, moved by `added` / `removed`) and treats an
+  `added` record whose `createdAt` is older than every visible row as
+  promoted history: it never fires, for event triggers or the chat
+  responder. The floor is a record-level rule, not a cursor: a record
+  without a stamp passes, and the same second as the floor is not
+  older.
 - **Missed-occurrence rule**: live-only, mirroring cron — a message
   that arrives while the owner is down or disconnected does not fire
   the trigger (no replay, no backlog). The one exception is the chat
