@@ -3856,23 +3856,51 @@ class _Client:
 
     # --- files (files v2; ADR-020 §2) -----------------------------------------
     @staticmethod
-    def _file_ref(space, file):
-        """(space, fileId, query) from an `any://f/<sid>/<fid>[?…]` URI or
-        a bare fileId (space stays the given one)."""
-        if isinstance(file, dict):
-            file = file.get("link") or file.get("fileId") or file.get("id") or ""
-        if not isinstance(file, str) or not file:
-            raise TypeError(f"file must be an any://f/ URI or a fileId, got {file!r}")
-        query = ""
-        if "?" in file:
-            file, query = file.split("?", 1)
-        if file.startswith("any://f/"):
-            parts = file[len("any://f/"):].split("/")
-            if len(parts) != 2 or not all(parts):
+    def _parse_file_link(link):
+        """(spaceId, fileId, query) from an `any://f/<sid>/<fid>[?…]` link."""
+        link, _, query = link.partition("?")
+        parts = link[len("any://f/"):].split("/")
+        if len(parts) != 2 or not all(parts):
+            raise AnyError(400, "request.invalid_field",
+                           f"malformed file link {link!r} (any://f/<spaceId>/<fileId>)")
+        return parts[0], parts[1], query
+
+    def _file_target(self, fn, first, second):
+        """(spaceId, fileId, query) for the file functions' three forms:
+        `fn(link)`, `fn(spaceConfig, fileId)`, `fn(spaceConfig, link)`.
+        A FileInfo / attachment dict stands in for the link. Anything
+        else is a TypeError naming the forms; a link whose space is not
+        the given one is refused rather than silently rerouted."""
+        forms = (f"{fn}(link) | {fn}(spaceConfig, fileId) | {fn}(spaceConfig, link)"
+                 " — link is any://f/<spaceId>/<fileId>")
+        if isinstance(second, dict):
+            second = (second.get("uri") or second.get("link")
+                      or second.get("fileId") or second.get("id"))
+        if second is None:
+            if isinstance(first, dict):
+                first = first.get("uri") or first.get("link")
+            if not isinstance(first, str) or not first.startswith("any://f/"):
+                raise TypeError(
+                    f"{fn}({first!r}): one argument must be a file link; forms: {forms}")
+            return self._parse_file_link(first)
+        if not isinstance(second, str) or not second:
+            raise TypeError(
+                f"{fn}: file must be a fileId or a file link, got {second!r}; forms: {forms}")
+        if second.startswith("any://") and not second.startswith("any://f/"):
+            raise TypeError(
+                f"{fn}: {second!r} is not a file link; forms: {forms}")
+        if second.startswith("any://f/"):
+            sid, fid, query = self._parse_file_link(second)
+            space = self._resolve_space(_sid(first))
+            if sid != space:
                 raise AnyError(400, "request.invalid_field",
-                               f"malformed file URI {file!r} (any://f/<spaceId>/<fileId>)")
-            space, file = parts
-        return space, file, query
+                               f"link {second!r} is in space {sid}, not the given {space}: "
+                               f"pass just the link, or the matching space")
+            return sid, fid, query
+        fid, _, query = second.partition("?")
+        if "/" in fid or not fid:
+            raise TypeError(f"{fn}: {second!r} is not a fileId; forms: {forms}")
+        return self._resolve_space(_sid(first)), fid, query
 
     @_public('getter')
     def list_files(self, space, object_id=None):
@@ -3884,17 +3912,19 @@ class _Client:
         q = f"?objectId={object_id}" if object_id else ""
         return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
 
-    @_public('getter')
-    def file_content(self, space, file):
+    @_public('getter', scoped=False)
+    def file_content(self, link, file=None):
         # ADR-026 §5
         """The file as a Blob → {fileId, mime, size, blob}.
 
-        `file` is an `any://f/<spaceId>/<fileId>` URI (a chat `[attachment …]`
-        line; `?variant=thumb` passes through) or a bare fileId in `space`.
-        `blob` is a handle, zero bytes in the cell: pass it to `llm.read`, a
-        File part, `attach_file`, an http `body=`; `bytes(blob)` / `blob.text()`
-        pull the payload in only when you must."""
-        space, file_id, query = self._file_ref(space, file)
+        `file_content(link)` with the `any://f/<spaceId>/<fileId>` link (a
+        chat `[attachment …]` line, attach_file's `uri`; `?variant=thumb`
+        passes through). Also `file_content(spaceConfig, fileId)` and
+        `file_content(spaceConfig, link)` — the link's space must be that
+        space. `blob` is a handle, zero bytes in the cell: pass it to
+        `llm.read`, a File part, `attach_file`, an http `body=`;
+        `bytes(blob)` / `blob.text()` pull the payload in only when you must."""
+        space, file_id, query = self._file_target("file_content", link, file)
         url = self._base + f"/v1/spaces/{space}/files/{file_id}/content"
         if query:
             url += "?" + query
@@ -3952,6 +3982,23 @@ class _Client:
         if info.get("fileId"):
             info["uri"] = f"any://f/{space}/{info['fileId']}"
         return info
+
+    @_public('mutator', scoped=False)
+    def delete_file(self, link, file=None):
+        """Delete a file for every member of the space; returns {} (wire: 204).
+
+        `delete_file(link)` with the `any://f/<spaceId>/<fileId>` link; also
+        `delete_file(spaceConfig, fileId)` and `delete_file(spaceConfig, link)`
+        (the link's space must be that space). Permanent, no bin: the payload
+        row goes in one synced change and the file leaves the object's
+        attachments on every device; a variant goes with its original. The
+        object itself stays — a file is an attachment, so to drop one file
+        use this; to drop the whole page trash() the object. A link still
+        pointing at the file is dead after this: edit the markdown that
+        embeds it. Already gone → 404 file.not_found. Confirm the id with
+        list_files before deleting."""
+        space, file_id, _ = self._file_target("delete_file", link, file)
+        return self._call("delete", f"/v1/spaces/{space}/files/{file_id}")
 
 
 def _urlquote(s):

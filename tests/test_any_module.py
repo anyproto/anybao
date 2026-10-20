@@ -1925,22 +1925,35 @@ def test_file_content_returns_a_blob_and_parses_refs():
         if name in ("config.get", "runtime.get"):
             return {"value": "http://any"}
         assert name == "http.get" and "response" not in payload
+        if payload["url"].endswith("/v1/spaces"):
+            return {"status": 200, "headers": {}, "body": json.dumps({"spaces": []})}
         return {"status": 200, "headers": {"content-type": "image/png"},
                 "body": dict(REF)}
 
     g = load(fx)
     c = g["_Client"]("http://any")
-    r = c.file_content("s-given", "any://f/s-in-uri/file9?variant=thumb")
+    # the link alone carries the space
+    r = c.file_content("any://f/s-in-uri/file9?variant=thumb")
     assert (r["fileId"], r["mime"], r["size"]) == ("file9", "image/png", 11)
     assert isinstance(r["blob"], g["Blob"]) and r["blob"].sha256 == REF["__blob"]
     assert seen[-1][1]["url"] == "http://any/v1/spaces/s-in-uri/files/file9/content?variant=thumb"
-    # bare fileId → the given space
+    # (space, bare fileId) → the given space; (space, link) must agree
     c.file_content("s-given", "file9")
     assert seen[-1][1]["url"] == "http://any/v1/spaces/s-given/files/file9/content"
-    # malformed URI is refused before any call
+    c.file_content("s-in-uri", "any://f/s-in-uri/file9")
+    assert seen[-1][1]["url"] == "http://any/v1/spaces/s-in-uri/files/file9/content"
+    with pytest.raises(g["AnyError"]) as e:
+        c.file_content("s-given", "any://f/s-in-uri/file9")
+    assert e.value.code == "request.invalid_field" and "s-in-uri" in str(e.value)
+    # a bare fileId alone, or a non-file link, is a TypeError naming the forms
     n = len(seen)
+    with pytest.raises(TypeError, match=r"file_content\(link\)"):
+        c.file_content("file9")
+    with pytest.raises(TypeError, match="not a file link"):
+        c.file_content("s-given", "any://o/s-given/obj")
+    # malformed link is refused before any call
     with pytest.raises(g["AnyError"]):
-        c.file_content("s", "any://f/onlyone")
+        c.file_content("any://f/onlyone")
     assert len(seen) == n
 
 
@@ -1948,7 +1961,7 @@ def test_file_content_text_file_is_still_a_blob():
     # a text/* file comes back as text (ADR-026 §3) — wrapped into a handle
     fx = lambda n, p: {"status": 200, "headers": {"content-type": "text/markdown"},  # noqa: E731
                        "body": "# hi\n"}
-    r = load(fx)["_Client"]("http://any").file_content("s", "f1")
+    r = load(fx)["_Client"]("http://any").file_content("any://f/s/f1")
     assert r["mime"] == "text/markdown" and r["size"] == 5
     assert r["blob"].text() == "# hi\n"
 
@@ -2003,6 +2016,31 @@ def test_list_files_narrows_by_object():
     assert c.list_files("s1", "o1") == [{"fileId": "f1", "mime": "text/plain"}]
     assert fx.calls == [("GET", "/v1/spaces/s1/files", None)]
     assert fx.urls == ["/v1/spaces/s1/files?objectId=o1"]
+
+
+def test_delete_file_takes_a_link_or_space_and_id():
+    fx = wire()
+    c = client(fx)
+    assert c.delete_file("any://f/s-in-uri/f9") == {}
+    assert c.delete_file(SID, "f9") == {}
+    assert c.delete_file(SID, f"any://f/{SID}/f9") == {}
+    deletes = [x for x in fx.calls if x[0] == "DELETE"]
+    assert deletes == [("DELETE", "/v1/spaces/s-in-uri/files/f9", None),
+                       ("DELETE", f"/v1/spaces/{SID}/files/f9", None),
+                       ("DELETE", f"/v1/spaces/{SID}/files/f9", None)]
+    # attach_file's FileInfo (with uri) is accepted as the link
+    assert c.delete_file({"fileId": "f9", "uri": "any://f/s-in-uri/f9"}) == {}
+    assert fx.calls[-1] == ("DELETE", "/v1/spaces/s-in-uri/files/f9", None)
+    n = len(fx.calls)
+    g = load(wire())
+    with pytest.raises(g["AnyError"]) as e:
+        g["_Client"]("http://any").delete_file("any://f/onlyone")
+    assert e.value.code == "request.invalid_field"
+    with pytest.raises(TypeError, match=r"delete_file\(spaceConfig, fileId\)"):
+        c.delete_file("f9")
+    with pytest.raises(TypeError, match="not a fileId"):
+        c.delete_file(SID, "s-in-uri/f9")
+    assert len(fx.calls) == n
 
 
 def test_file_not_available_carries_sync_hint():
