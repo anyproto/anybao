@@ -1433,7 +1433,7 @@ def read(file, prompt, tier="vision", system="", max_tokens=None, space=None):
         any_ = use("any@v1")  # noqa: F821 - guest global
         if not file.startswith("any://f/") and not space:
             raise TypeError("a bare fileId needs space=; or pass the any://f/ URI")
-        file = any_.file_content(space or file.split("/")[3], file)
+        file = any_.file_content(space, file) if space else any_.file_content(file)
     if isinstance(file, Blob):  # noqa: F821 - guest global
         file = {"mime": file.mime, "blob": file}
     part = {"type": "file",

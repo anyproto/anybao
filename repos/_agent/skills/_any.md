@@ -107,8 +107,9 @@ render only from any://f/ links: attach_file the image, then write
 `![alt](uri)`, never an html `<img>`. From the web:
 `c.attach_file(space, obj_id, name, http.get(url).blob)`. Put the
 returned uri in your reply so later turns can find it. A file always
-belongs to an object. A PDF this model can't read (UnsupportedMedia): one
-`use("agent:toMarkdown@v1").pdf(c.file_content(space, uri)["blob"])` (50 pages
+belongs to an object; delete_file(uri) drops one attachment for every
+member (permanent, no bin) — then remove the link that embedded it. A PDF this model can't read (UnsupportedMedia): one
+`use("agent:toMarkdown@v1").pdf(c.file_content(uri)["blob"])` (50 pages
 a call, `next` continues); `scanned`, PdfEncrypted or TooLarge → tell the user.
 
 **Models** are switched by the user in Agent ▸ Model; point there,

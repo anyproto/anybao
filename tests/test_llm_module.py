@@ -1540,15 +1540,15 @@ def test_read_resolves_ref_through_any_and_uses_vision_tier():
     fetched = []
 
     class FakeAny:
-        def file_content(self, space, file):
-            fetched.append((space, file))
+        def file_content(self, *args):
+            fetched.append(args)
             return {"fileId": "f1", "mime": "image/png", "size": 8, "data": PNG_B64}
 
     g = load(host)
     g["use"] = lambda spec: FakeAny() if spec == "any@v1" else pytest.fail(spec)
     out = g["read"]("any://f/sp1/f1", "what is it?")
     assert out == "a cat"
-    assert fetched == [("sp1", "any://f/sp1/f1")]
+    assert fetched == [("any://f/sp1/f1",)]      # the link alone carries the space
     assert host.config_keys == ["llm.tier.vision"]
     content = host.posts[0]["json"]["messages"][0]["content"]
     assert content[0]["type"] == "image" and content[1]["text"] == "what is it?"
