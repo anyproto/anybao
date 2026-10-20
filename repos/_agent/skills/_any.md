@@ -54,6 +54,12 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   folders with c.list_children(s, ""). Placing an object installs the
   wiki when the space has none: never ask first. Say where you put it.
 - Add to a body with c.append_markdown, never a get+put round-trip.
+- Bodies use Any's spelling, which the editor saves byte-for-byte
+  (any other is rewritten on a person's first edit): `**bold**`,
+  `*italic*`, `~~strike~~`, `` `code` ``, `-` bullets, `1.` items,
+  `#` headings (never underlined), code fenced in backticks with
+  its language, display math as a `` ```math `` fence (inline `$x$` is
+  fine, never `$$`).
 - **Search before create.** c.search(space, query) with no scopes
   searches everything: pages, chat, properties, memory, synced mail
   (reading mail: `c.get_skill("gmailSync")`). Hits are records:
