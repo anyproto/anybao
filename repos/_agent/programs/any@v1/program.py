@@ -2183,12 +2183,10 @@ class _Client:
         missing) is reported under `warnings` (and printed), never rewritten —
         fix the text and write again.
 
-        Bodies use Any's spelling, which the editor saves byte-for-byte
-        (any other is rewritten on a person's first edit): `**bold**`,
-        `*italic*`, `~~strike~~`, `` `code` ``, `-` bullets, `1.` items,
-        `#` headings (never underlined), code fenced in backticks with
-        its language, display math as a ```math fence (inline `$x$` is
-        fine, never `$$`)."""
+        Write bodies in Any's spelling; anything else is rewritten on
+        the first human edit: `**bold**` `*italic*` `~~strike~~`, `-`
+        bullets, `#` headings, backtick fences with a language, display
+        math as a ```math fence (inline `$x$` is fine, `$$` never)."""
         self._check_body(space, object_id)
         r = self._call("put", self._md_path(space, object_id),
                        {"content": content})
@@ -2209,14 +2207,7 @@ class _Client:
         disambiguate) / overlapping_edits. Returns PUT's {inserted,
         updated, deleted, unchanged}; a no-op edit is a clean 200. A
         mis-shaped `any://` link in a newText → `warnings` (see
-        put_markdown).
-
-        Bodies use Any's spelling, which the editor saves byte-for-byte
-        (any other is rewritten on a person's first edit): `**bold**`,
-        `*italic*`, `~~strike~~`, `` `code` ``, `-` bullets, `1.` items,
-        `#` headings (never underlined), code fenced in backticks with
-        its language, display math as a ```math fence (inline `$x$` is
-        fine, never `$$`)."""
+        put_markdown), which also states the body spelling."""
         r = self._call("patch", self._md_path(space, object_id),
                        {"edits": edits})
         texts = [e.get("newText") for e in (edits or []) if isinstance(e, dict)]
@@ -2228,14 +2219,8 @@ class _Client:
 
         No read-modify-write, so it can't clobber the body the way a
         get+put race can. Returns the api.MarkdownSetResponse dict, plus
-        `warnings` for a mis-shaped `any://` link (see put_markdown).
-
-        Bodies use Any's spelling, which the editor saves byte-for-byte
-        (any other is rewritten on a person's first edit): `**bold**`,
-        `*italic*`, `~~strike~~`, `` `code` ``, `-` bullets, `1.` items,
-        `#` headings (never underlined), code fenced in backticks with
-        its language, display math as a ```math fence (inline `$x$` is
-        fine, never `$$`)."""
+        `warnings` for a mis-shaped `any://` link (see put_markdown,
+        which also states the body spelling)."""
         self._check_body(space, object_id)
         r = self._call("post", self._md_path(space, object_id, "/append"),
                        {"content": content})
