@@ -218,6 +218,9 @@ polls `query` (no subscribe on local collections). `show
 --traces-dir` (default `traces`) is the serve's raw-blob directory
 beside that server (ADR-026 §7); against a remote serve a raw ref
 renders as its stub. `anyrt trace blob <hash>` reads that directory.
+For scripts (`tools/eval/anyeval.py`), `ls --json` prints the finished
+runs' summary rows and `show --json` the run's blob-resolved records,
+one JSON object per line.
 
 **Off-box.** The collections leave a machine as the any server's
 local-store export (`GET /v1/local/export`, any docs/26-local-store.md

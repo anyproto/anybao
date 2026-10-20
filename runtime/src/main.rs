@@ -176,6 +176,10 @@ enum TraceCmd {
         /// max rows, 0 = all
         #[arg(short = 'n', long, default_value_t = 30)]
         limit: usize,
+        /// finished runs' summary rows as JSON lines (in-flight runs
+        /// have no summary yet and are left out)
+        #[arg(long)]
+        json: bool,
     },
     /// human-side render of one run (turns = llm.chat spans)
     Show {
@@ -201,6 +205,9 @@ enum TraceCmd {
         /// live inside its mockable set
         #[arg(long)]
         unmocked: bool,
+        /// every record, blob-resolved, as JSON lines
+        #[arg(long)]
+        json: bool,
         #[arg(long, default_value = config::DEFAULT_ADDR)]
         addr: String,
         #[arg(long, default_value = "bao")]
@@ -672,12 +679,19 @@ fn main() -> Result<()> {
                 TraceCmd::Ls {
                     program,
                     limit,
+                    json,
                     addr,
                     space,
                 },
         } => {
             let store = trace_store(&addr, &space, None)?;
-            print!("{}", view::list(store.as_ref(), program.as_deref(), limit)?);
+            if json {
+                for row in view::list_data(store.as_ref(), program.as_deref(), limit)? {
+                    println!("{row}");
+                }
+            } else {
+                print!("{}", view::list(store.as_ref(), program.as_deref(), limit)?);
+            }
             Ok(())
         }
         Cmd::Trace {
@@ -690,6 +704,7 @@ fn main() -> Result<()> {
                     boot,
                     seq,
                     unmocked,
+                    json,
                     addr,
                     space,
                     traces_dir,
@@ -701,6 +716,11 @@ fn main() -> Result<()> {
                 (Some(n), _, _) => print!("{}", view::show_record(store, &id, n)?),
                 (None, true, _) => print!("{}", view::stats(store, &id)?),
                 (None, false, true) => print!("{}", view::unmocked(store, &id)?),
+                (None, false, false) if json => {
+                    for rec in store.load_resolved(&id)? {
+                        println!("{rec}");
+                    }
+                }
                 (None, false, false) => print!(
                     "{}",
                     view::render(store, &id, &view::ShowOpts { full, system, boot })?
