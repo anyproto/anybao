@@ -3868,17 +3868,21 @@ class _Client:
         forms = (f"{fn}(link) | {fn}(spaceConfig, fileId) | {fn}(spaceConfig, link)"
                  " — link is any://f/<spaceId>/<fileId>")
         if isinstance(second, dict):
-            second = second.get("uri") or second.get("link") or second.get("fileId") or second.get("id")
+            second = (second.get("uri") or second.get("link")
+                      or second.get("fileId") or second.get("id"))
         if second is None:
             if isinstance(first, dict):
                 first = first.get("uri") or first.get("link")
             if not isinstance(first, str) or not first.startswith("any://f/"):
-                raise TypeError(f"{fn}({first!r}): one argument must be a file link; forms: {forms}")
+                raise TypeError(
+                    f"{fn}({first!r}): one argument must be a file link; forms: {forms}")
             return self._parse_file_link(first)
         if not isinstance(second, str) or not second:
-            raise TypeError(f"{fn}: file must be a fileId or a file link, got {second!r}; forms: {forms}")
+            raise TypeError(
+                f"{fn}: file must be a fileId or a file link, got {second!r}; forms: {forms}")
         if second.startswith("any://") and not second.startswith("any://f/"):
-            raise TypeError(f"{fn}: {second!r} is not a file link; forms: {forms}")
+            raise TypeError(
+                f"{fn}: {second!r} is not a file link; forms: {forms}")
         if second.startswith("any://f/"):
             sid, fid, query = self._parse_file_link(second)
             space = self._resolve_space(_sid(first))
