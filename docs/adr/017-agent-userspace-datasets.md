@@ -78,7 +78,7 @@ serve, to be decided when it lands:
 
 **Amended 2026-09-17 (ADR-029 §7):** `program` and `agent_skill` are LISTED (minted without `hidden`; `hidden: false` healed onto an existing hidden row at ensure) — classes with a body a user may open. The store types stay hidden and bodiless.
 
-**Amended 2026-10-21 (ADR-027 §2):** `agent_brain` is LISTED as well (same mint + heal; bodiless; the derived brain object is named `Agent Brain` once) — a client renders its memory records. The other store types stay hidden.
+**Amended 2026-10-21 (ADR-027 §2):** `agent_brain` is LISTED as well (same mint + heal; bodiless; the derived brain object is named `Agent Brain` once) — a client renders its memory records. The other store types stay hidden. `agent_memory_items.chatId` is stamped by the writer: `create_memory` defaults it to the chat the loop is answering in, extraction passes the chat it scans, a store-wide sweep (reflection) leaves it empty.
 
 Five user types, same type/dataset names as before (the built-ins are
 deleted; no coexistence). Declarations use the runtime-dataset field

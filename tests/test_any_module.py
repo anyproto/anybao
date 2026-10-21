@@ -1358,6 +1358,34 @@ def _brain_calls(fx):
             or p.endswith("/collections/setup") or p.endswith("/set/any")]
 
 
+def _memory_sets(fx):
+    create = next(b for v, p, b in fx.calls if p.endswith("/modify"))
+    return {op["path"]: op["value"] for op in create["records"][0]["ops"]}
+
+
+def test_memory_chat_id_defaults_to_the_answering_chat():
+    # the loop binds the chat it answers in; a memory saved from that
+    # turn carries it. Nothing bound (a cron sweep) → no chatId at all;
+    # an explicit chatId (extraction's scanned chat) wins.
+    fx = wire(replies=_brain_wire())
+    g = load(fx)
+    c = g["_Client"]("http://any", "s1")
+    c.create_memory({"category": "fact", "context": "x"})
+    assert "chatId" not in _memory_sets(fx)
+    fx = wire(replies=_brain_wire())
+    g = load(fx)
+    g["_answering_in"]("s1", "chat9")
+    c = g["_Client"]("http://any", "s1")
+    c.create_memory({"category": "fact", "context": "x"})
+    assert _memory_sets(fx)["chatId"] == "chat9"
+    fx = wire(replies=_brain_wire())
+    g = load(fx)
+    g["_answering_in"]("s1", "chat9")
+    c = g["_Client"]("http://any", "s1")
+    c.create_memory({"category": "fact", "context": "x", "chatId": "chat2"})
+    assert _memory_sets(fx)["chatId"] == "chat2"
+
+
 def test_brain_type_listed_row_is_left_alone():
     # ADR-027 §2: the brain is a LISTED store. A row already listed
     # gets no PATCH, no collections-app setup and no name write.

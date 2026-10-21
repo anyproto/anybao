@@ -3813,8 +3813,12 @@ class _Client:
         `{fromSeq}`; both create-only (not evolvable). Stray keys
         raise. Scoring defaults when absent: confidence 5, importance
         5, salience 10, accessCount 0, validFrom now. `validFrom` is an
-        instant — `instant(seconds)` (ADR-019 §2)."""
+        instant — `instant(seconds)` (ADR-019 §2). `chatId` defaults to
+        the chat the loop is answering in (`_answering_in`); a cron
+        writer passes its own, a store-wide sweep leaves it empty."""
         f = dict(fields or {})
+        if "chatId" not in f and _ANSWERING is not None:
+            f["chatId"] = _ANSWERING[1]
         allowed = set(_MEM_MUTABLE) | set(_MEM_CREATE_ONLY)
         unknown = sorted(set(f) - allowed)
         if unknown:
