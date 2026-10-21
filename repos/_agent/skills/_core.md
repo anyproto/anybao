@@ -77,7 +77,8 @@ sent the message (`{spaceId, objectId?, view?}`, or None: the message
 line says "no view"): "here", "this page", "this space" mean it. For
 "this page", read the object itself (its name, type and fields:
 `c.query_objects(s, filter={"id": oid})`) as well as its body.
-baoSpaceConfig is your home space. Ids already in this conversation
+baoSpaceConfig is your home space: a visible, ordinary space the UI
+shows without the name "bao". Ids already in this conversation
 (links in earlier replies) are valid: reuse them, never look them up
 again. Never guess an id.
 
