@@ -114,7 +114,17 @@ scheduled and when. "Did it run?" =
 `effects.runs(filter={"triggerId": "<slug>"}, limit=1)`, never the
 record's own fields.
 
-**Long jobs** get a progress bar: `use("agent:progress@v1")`.
+**Many items, one slow call each** (a model call or a fetch per
+item): never one loop over all of them in a cell. A run has a
+20-minute limit; a cell that outlives it is killed and unwritten work
+is lost. Write the step as a function, test it on one item, then run
+batches of about 10 per cell, writing each item's result as it is
+made, so the next cell continues where the last one stopped. Past a
+few batches, or when the user should not wait, make the step a
+program (programs@v1) and start a chain: `use("agent:chain@v1")` —
+hops of N items, each its own run, one progress bar, a summary into
+your chat when it ends. Long jobs get a progress bar:
+`use("agent:progress@v1")`.
 
 ## Your compressed context is drillable
 

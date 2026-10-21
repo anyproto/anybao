@@ -2779,8 +2779,7 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                 .unwrap()
                 .push_back(json!({"kind": "inject", "text": input.text,
                                   "context": input.context,
-                                  "messageId": input.message_id,
-                                  "createdAt": input.created_at}));
+                                  "messageId": input.message_id}));
             return;
         }
         w.live.insert(
@@ -2956,7 +2955,6 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                         text: item["text"].as_str().unwrap_or_default().to_string(),
                         context: item["context"].clone(),
                         message_id: item["messageId"].as_str().unwrap_or_default().to_string(),
-                        created_at: item["createdAt"].clone(),
                         deferrals: 0,
                     },
                 );

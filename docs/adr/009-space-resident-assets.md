@@ -296,8 +296,7 @@ mechanics are:
   turn. The watch drops an `added` without `ops` before the watcher
   sees it. Timestamps play no part: `createdAt` is the author's
   clock and is never compared (ADR-019). An inject carries the
-  record's `messageId` and `createdAt` as labels so the trace names
-  what entered a run.
+  record's `messageId` so the trace names what entered a run.
   **Name-scoped self-skip (amended 2026-08-16)**: "agent-authored"
   means THIS agent's own `agent.name` (or a nameless agent record —
   the conservative read of legacy rows), for both the watcher skip and
