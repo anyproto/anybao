@@ -205,7 +205,7 @@ def test_object_type_property_creation_paths():
     fx = wire(replies={"/types": {"types": [{"id": "t1"}], "typeId": "t2"}})
     c = client(fx)
     c.create_object("s1", {})
-    c.create_type("s1", {"name": "T"})
+    c.create_type("s1", {"name": "T", "icon": "🧪"})
     c.add_property("s1", "t1", {"name": "P"})
     # the catalog spans BOTH definition surfaces (one handle namespace,
     # ADR-029 §2): every catalog read is a types + a collections GET
@@ -238,14 +238,17 @@ def test_create_type_composite_fans_out_properties():
         "/bundles": {"bundles": [{"id": "system:collections/v1"}], "synced": True},
         "/types/t9/properties": {"properties": [], "propId": "p1"}})
     r = client(fx).create_type("s1", {
-        "name": "Comic Book",
+        "name": "Comic Book", "icon": {"glyph": "book-open", "color": "teal"},
         "properties": [{"name": "Author"}, {"name": "year", "kind": "number"}]})
     assert r == {"typeId": "t9", "xKey": "comic_book", "created": True,
                  "addedProps": {"author": "p1", "year": "p1"}}
     posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
     # slugged xKey on the type, no inline properties on the wire
     assert posts[0] == ("/v1/spaces/s1/types",
-                        {"name": "Comic Book", "xKey": "comic_book"})
+                        {"name": "Comic Book", "xKey": "comic_book",
+                         "iconCid": 'icon:v2:{"assignment":{"kind":"pack","ref":'
+                                    '{"packId":"io.anyproto.lucide","glyphId":'
+                                    '"book-open"}},"color":"teal"}'})
     # each property appended to the display order (xFormat.pos, ADR-027 §4)
     assert posts[1][1] == {"name": "Author", "xKey": "author", "kind": "string",
                            "xFormat": {"pos": "a0"}}
@@ -281,7 +284,7 @@ def test_create_type_refuses_catalog_types():
             return fx404(name, payload)
         return ok(name, payload)
     fx_mixed.calls = ok.calls
-    assert client(fx_mixed).create_type("s1", {"name": "Plant"})["created"] is True
+    assert client(fx_mixed).create_type("s1", {"name": "Plant", "icon": "🌱"})["created"] is True
 
 
 def test_collection_key_is_shape_based_and_offline():
@@ -302,6 +305,76 @@ def test_aggregate_over_records_needs_object_and_dataset():
         c.aggregate("s1", [{"$count": "n"}], object_id="o1")
 
 
+def test_create_type_needs_an_icon_on_a_listed_type():
+    # a listed type is minted with its glyph (`iconCid` = `any.icon`,
+    # the client's icon:v2 string) or not at all; a hidden one needs
+    # none; the shape is checked before any wire write
+    fx = wire(replies={"/types": {"types": [], "typeId": "t9"},
+                       "/types/any/properties": {},
+                       "/bundles": {"bundles": [{"id": "system:collections/v1"}]}})
+    c = client(fx)
+    with pytest.raises(ValueError, match='needs an "icon".*"Plant" object.*emoji'):
+        c.create_type("s1", {"name": "Plant"})
+    assert not [p for v, p, _ in fx.calls if v == "POST"]
+    with pytest.raises(ValueError, match='"icon.color" .mauve. is not one of'):
+        c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "mauve"}})
+    with pytest.raises(ValueError, match='"icon.glyph" must be a Lucide icon name'):
+        c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf icon"}})
+    with pytest.raises(ValueError, match='"icon.emoji" must be ONE emoji'):
+        c.create_type("s1", {"name": "Plant", "icon": {"emoji": "plant"}})
+    with pytest.raises(ValueError, match='"icon" must be'):
+        c.create_type("s1", {"name": "Plant", "icon": {"color": "green"}})
+    assert not [p for v, p, _ in fx.calls if v == "POST"]
+    c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "green"}})
+    c.create_type("s1", {"name": "Agent Thing", "hidden": True})
+    posts = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/types")]
+    assert posts == [
+        {"name": "Plant", "xKey": "plant",
+         "iconCid": 'icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
+                    '"io.anyproto.lucide","glyphId":"leaf"}},"color":"green"}'},
+        {"name": "Agent Thing", "xKey": "agent_thing", "hidden": True}]
+
+
+def test_create_type_heals_a_missing_icon_only():
+    # an existing row without an icon takes the caller's (one PATCH); a
+    # row that has one keeps it — the user's pick is never overwritten;
+    # a caller without an icon leaves the row alone (no refuse on reuse)
+    def fx_for(row):
+        return wire(replies={"/types": {"types": [row]},
+                             "/types/t9/datasets": _TASK_BODY,
+                             "/types/t9/properties": {"properties": [], "propId": "p1"}})
+    bare = {"id": "t9", "name": "Task", "xKey": "task"}
+    fx = fx_for(bare)
+    client(fx).create_type("s1", {"name": "Task", "icon": "✅"})
+    assert [(v, p, b) for v, p, b in fx.calls if v == "PATCH"] == [
+        ("PATCH", "/v1/spaces/s1/types/t9",
+         {"iconCid": 'icon:v2:{"assignment":{"kind":"emoji","grapheme":"✅"},'
+                     '"color":"grey"}'})]
+    fx = fx_for({**bare, "iconCid": "icon:v2:{}"})
+    client(fx).create_type("s1", {"name": "Task", "icon": "✅"})
+    assert not [p for v, p, _ in fx.calls if v == "PATCH"]
+    fx = fx_for(bare)
+    client(fx).create_type("s1", {"name": "Task", "properties": [{"name": "due"}]})
+    assert not [p for v, p, _ in fx.calls if v == "PATCH"]
+
+
+def test_set_type_icon():
+    fx = wire(replies={"/types": {"types": [
+        {"id": "t9", "name": "Task", "xKey": "task", "iconCid": "icon:v2:{}"},
+        {"id": "page", "name": "Page", "xKey": "page", "builtIn": True}]}})
+    c = client(fx)
+    r = c.set_type_icon("s1", "task", {"glyph": "circle-check", "color": "green"})
+    assert r == {"typeId": "t9",
+                 "icon": 'icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
+                         '"io.anyproto.lucide","glyphId":"circle-check"}},'
+                         '"color":"green"}'}
+    assert fx.calls[-1] == ("PATCH", "/v1/spaces/s1/types/t9", {"iconCid": r["icon"]})
+    with pytest.raises(ValueError, match="builtin or catalog type"):
+        c.set_type_icon("s1", "page", "📄")
+    with pytest.raises(ValueError, match='"nope" is not a type'):
+        c.set_type_icon("s1", "nope", "📄")
+
+
 def test_create_type_sets_up_the_collections_app_once():
     # a listed user type is invisible in the client until the space
     # has the collections app (ADR-027 §5): minted once per space
@@ -309,8 +382,8 @@ def test_create_type_sets_up_the_collections_app_once():
                        "/bundles": {"bundles": [], "synced": True},
                        "/types/t9/properties": {"properties": []}})
     c = client(fx)
-    c.create_type("s1", {"name": "Plant"})
-    c.create_type("s1", {"name": "Pot"})
+    c.create_type("s1", {"name": "Plant", "icon": "🌱"})
+    c.create_type("s1", {"name": "Pot", "icon": "🪴"})
     c.create_type("s1", {"name": "Agent Thing", "hidden": True})   # hidden: never
     setups = [(v, p, b) for v, p, b in fx.calls if p.endswith("/collections/setup")]
     assert setups == [("POST", "/v1/catalog/collections/setup", {"spaceId": "s1"})]
@@ -386,10 +459,13 @@ def test_create_type_row_root_key_errors():
     assert [v for v, _, _ in fx.calls if v == "POST"] == []
     fx = wire(replies={"/types/any/properties": {},
                        "/types": {"types": [], "typeId": "tA"}})
-    r = client(fx).create_type("s1", {"name": "Author", "xKey": "author_type"})
+    r = client(fx).create_type("s1", {"name": "Author", "xKey": "author_type",
+                                      "icon": "✍️"})
     assert r["xKey"] == "author_type" and r["created"]
     assert ("POST", "/v1/spaces/s1/types",
-            {"name": "Author", "xKey": "author_type"}) in fx.calls
+            {"name": "Author", "xKey": "author_type",
+             "iconCid": 'icon:v2:{"assignment":{"kind":"emoji","grapheme":"✍️"},'
+                        '"color":"grey"}'}) in fx.calls
 
 
 def test_create_object_rejects_synthetic_types():
@@ -1301,6 +1377,10 @@ def test_backlinks_unwraps_and_null_degrades_to_empty():
 
 # --- agent memory ---------------------------------------------------------------------
 
+_BRAIN_ICON = ('icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
+               '"io.anyproto.lucide","glyphId":"brain"}},"color":"purple"}')
+
+
 def _brain_wire():
     # agent_brain store pre-exists (type + datasets with matching
     # search leaves), brain child derives to brain1
@@ -1313,7 +1393,8 @@ def _brain_wire():
             {"id": "d2", "key": "agent_job_state", "collection": "br_agent_job_state"},
             {"id": "d3", "key": "agent_roi_injections",
              "collection": "br_agent_roi_injections"}]},
-        "/types": {"types": [{"id": "br", "xKey": "agent_brain"}]},
+        "/types": {"types": [{"id": "br", "xKey": "agent_brain",
+                              "iconCid": "icon:v2:{}"}]},
         "/children": {"objectId": "brain1"},
         "/modify": {"recordIds": ["m1"]},
     }
@@ -1396,9 +1477,10 @@ def test_brain_type_listed_row_is_left_alone():
 
 
 def test_brain_type_hidden_row_is_healed_and_named():
-    # a row an older writer minted hidden: healed with ONE PATCH, the
-    # collections app set up (a listed type is invisible without it,
-    # ADR-027 §5) and the brain object named — once per run
+    # a row an older writer minted hidden and iconless: healed with one
+    # PATCH per leaf (the icon, then `hidden`), the collections app set
+    # up (a listed type is invisible without it, ADR-027 §5) and the
+    # brain object named — once per run
     replies = _brain_wire()
     replies["/types"] = {"types": [{"id": "br", "xKey": "agent_brain",
                                     "hidden": True}]}
@@ -1407,6 +1489,7 @@ def test_brain_type_hidden_row_is_healed_and_named():
     assert c.get_brain() == {"objectId": "brain1"}
     assert c.get_brain() == {"objectId": "brain1"}
     assert _brain_calls(fx) == [
+        ("PATCH", "/v1/spaces/s1/types/br", {"iconCid": _BRAIN_ICON}),
         ("PATCH", "/v1/spaces/s1/types/br", {"hidden": False}),
         ("POST", "/v1/catalog/collections/setup", {"spaceId": "s1"}),
         ("POST", "/v1/spaces/s1/properties/brain1/set/any",
@@ -1432,7 +1515,8 @@ def test_brain_type_is_minted_listed_and_named():
     assert c.get_brain() == {"objectId": "brain1"}
     mint = next(b for v, p, b in fx.calls
                 if v == "POST" and p == "/v1/spaces/s1/types")
-    assert mint == {"name": "Agent Brain", "xKey": "agent_brain"}
+    assert mint == {"name": "Agent Brain", "xKey": "agent_brain",
+                    "iconCid": _BRAIN_ICON}
     assert ("POST", "/v1/spaces/s1/properties/brain1/set/any",
             {"patch": {"name": "Agent Brain"}}) in fx.calls
     assert not any(p.endswith("/types/t1") for v, p, _ in fx.calls)   # no heal

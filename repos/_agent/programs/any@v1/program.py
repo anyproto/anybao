@@ -323,6 +323,46 @@ _DEF_MARKERS = ("__type__", "__collection__")
 # the body part every type bao mints declares (ADR-029 §3): a keyless
 # editor dataset is the module's canonical collection (`editor_blocks`)
 _BODY_PART = {"key": "body", "datasets": [{"module": "editor"}]}
+
+# A definition's icon is the client's `icon:v2:` string in `any.icon`
+# (the wire's `iconCid`, ADR-029 §3): one emoji, or a glyph of the
+# Lucide pack plus one of the client's ten colours. The shape and the
+# palette are any-ui's `content-icons` contract; the pack id is the
+# one the client registers for Lucide.
+_ICON_PREFIX = "icon:v2:"
+_ICON_LUCIDE = "io.anyproto.lucide"
+_ICON_COLORS = ("yellow", "orange", "red", "pink", "purple", "blue",
+                "ice", "teal", "green", "grey")
+_ICON_GLYPH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_ICON_SHAPE = ('{"emoji": "📚"} or {"glyph": "<lucide name, e.g. receipt>", '
+               '"color"?: ' + "|".join(_ICON_COLORS) + "}")
+
+
+def _format_icon(icon):
+    """An `icon` draft -> the stored `icon:v2:` string; ValueError
+    names the shape. A string draft is taken as the emoji."""
+    if isinstance(icon, str):
+        icon = {"emoji": icon}
+    if not isinstance(icon, dict) or not (icon.get("emoji") or icon.get("glyph")):
+        raise ValueError(f'"icon" must be {_ICON_SHAPE}')
+    color = icon.get("color") or "grey"
+    if color not in _ICON_COLORS:
+        raise ValueError(f'"icon.color" {color!r} is not one of {"|".join(_ICON_COLORS)}')
+    if icon.get("emoji"):
+        e = icon["emoji"]
+        if (not isinstance(e, str) or not 0 < len(e) <= 10
+                or any(ch.isascii() for ch in e)):
+            raise ValueError(f'"icon.emoji" must be ONE emoji, got {e!r}; or {_ICON_SHAPE}')
+        assignment = {"kind": "emoji", "grapheme": e}
+    else:
+        g = icon["glyph"]
+        if not isinstance(g, str) or len(g) > 256 or not _ICON_GLYPH_RE.match(g):
+            raise ValueError(
+                f'"icon.glyph" must be a Lucide icon name like "receipt" / '
+                f'"book-open", got {g!r}')
+        assignment = {"kind": "pack", "ref": {"packId": _ICON_LUCIDE, "glyphId": g}}
+    return _ICON_PREFIX + json.dumps({"assignment": assignment, "color": color},
+                                     separators=(",", ":"), ensure_ascii=False)
 _ANY_TYPES_ERR = (
     'there is no "any.types": an object has exactly ONE type — filter it '
     'with {"any.type": "<type xKey>"} (or {"$in": [...]}) — and any number '
@@ -2491,11 +2531,20 @@ class _Client:
     @_public('mutator')
     def create_type(self, space, body):
         # ADR-029 §3
-        """Create a type — what an object IS — with its properties (composite ensure).
+        """Create a type — what an object IS — with its icon and properties (composite ensure).
 
-        body: {"name", "xKey"?, "description"?, "hidden"?, "layout"?,
-        "body"?: false, "properties"?: [{"name", "xKey"?, "kind"?,
-        "xFormat"?}]}. kind ∈ string | number | boolean | array |
+        body: {"name", "icon", "xKey"?, "description"?, "hidden"?,
+        "layout"?, "body"?: false, "properties"?: [{"name", "xKey"?,
+        "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
+        type** — the glyph the user sees on every object of it and in
+        every picker; a mint without one ERRORS. `{"emoji": "📚"}` or
+        `{"glyph": "<Lucide icon name>", "color"?: yellow | orange | red
+        | pink | purple | blue | ice | teal | green | grey}` (default
+        grey) — pick what the type IS: `{"glyph": "receipt", "color":
+        "teal"}` for an invoice, `{"emoji": "🌱"}` for a plant. A
+        hidden type needs none. On an existing type the icon is healed
+        only when it has none (the user's pick is never overwritten;
+        `set_type_icon` changes it). kind ∈ string | number | boolean | array |
         object | datetime — NOTHING else ("text" and "date" are
         descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}},
         a pick-list {"xFormat": {"type": "choice", "options": ["To do",
@@ -2532,16 +2581,27 @@ class _Client:
                 '"weight" does not exist: an object has exactly one type, '
                 "nothing ranks them")
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        icon = _format_icon(body["icon"]) if body.get("icon") else None
         row = self._definition_guards(space, xkey, "type")
         tid = row["id"] if row else None
         created = False
         if tid is None:
-            req = {k: body[k] for k in ("name", "description", "iconCid",
-                                        "hidden", "layout")
+            if icon is None and not body.get("hidden"):
+                raise ValueError(
+                    f'a type needs an "icon" — the glyph the user sees on every '
+                    f'"{body.get("name")}" object and in every picker. Pass '
+                    f'"icon": {_ICON_SHAPE} and call create_type again.')
+            req = {k: body[k] for k in ("name", "description", "hidden", "layout")
                    if k in body}
             req["xKey"] = xkey
+            if icon is not None:
+                req["iconCid"] = icon
             tid = self._call("post", f"/v1/spaces/{space}/types", req)["typeId"]
             created = True
+        elif icon is not None and not row.get("iconCid"):
+            # heal an icon onto a row minted before the rule; a row
+            # that has one keeps it (the user's pick wins)
+            self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"iconCid": icon})
         added = self._add_missing_props(space, tid, props)
         if want_body:
             self._ensure_body_part(space, tid)
@@ -2559,6 +2619,30 @@ class _Client:
         self._call("post", f"/v1/spaces/{space}/types/{type_id}/parts", _BODY_PART)
         self._ds_invalidate(space, type_id=type_id)
         return True
+
+    @_public('mutator')
+    def set_type_icon(self, space, type_key, icon):
+        """Change a user type's icon — the glyph on its objects and in pickers.
+
+        `icon`: {"emoji": "📚"} or {"glyph": "<Lucide icon name>",
+        "color"?: yellow | orange | red | pink | purple | blue | ice |
+        teal | green | grey} — the shape create_type takes. `type_key`
+        is the type's xKey (or id); a builtin or a catalog type ERRORS
+        (their icons are the client's). Returns {"typeId", "icon"}."""
+        value = _format_icon(icon)
+        cat = self._catalog(space)
+        tid = self._resolve_def(space, type_key)
+        row = cat["by_id"].get(tid) if tid else None
+        if row is None or row.get("kind") != "type":
+            raise ValueError(
+                f'"{type_key}" is not a type. Types: {self._type_handles(space)}')
+        if not self._is_user_def(row) or row.get("xKey") in self._catalog_handles():
+            raise ValueError(
+                f'"{type_key}" is a builtin or catalog type — its icon is the '
+                "client's; only a user type's icon can be set.")
+        self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"iconCid": value})
+        self._cat_invalidate(space)
+        return {"typeId": tid, "icon": value}
 
     @_public('mutator')
     def create_collection(self, space, body):
@@ -3615,7 +3699,7 @@ class _Client:
         return out
 
     # --- agent memory (write path; reads go through /query on the brain) --------
-    def _ensure_store(self, space, xkey, name, datasets, listed=False):
+    def _ensure_store(self, space, xkey, name, datasets, listed=False, icon=None):
         """Lazily provision a guest-owned agent store (ADR-017 §1,
         ADR-027 §2): ensure the bodiless user type by xKey + one part
         per dataset draft. Hidden unless `listed` (the brain): a listed
@@ -3630,6 +3714,8 @@ class _Client:
         decl = {"name": name, "xKey": xkey, "body": False}
         if not listed:
             decl["hidden"] = True
+        if icon is not None:
+            decl["icon"] = icon
         made = self.create_type(space, decl)
         if made["created"]:
             self._minted_stores.add(key)
@@ -3710,6 +3796,7 @@ class _Client:
                    for t in self.list_types(space)):
             # the shape deploy mints in the overlays (deploy.rs skill_schema)
             self.create_type(space, {"name": "Agent Skill", "xKey": "agent_skill",
+                                     "icon": {"glyph": "sparkles", "color": "yellow"},
                                      "properties": [{"name": "Name", "xKey": "name",
                                                      "kind": "string"}]})
         props = {"name": name}
@@ -3780,7 +3867,8 @@ class _Client:
         key = (space, "agent_brain")
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
-                            _ROI_DATASET], listed=True)
+                            _ROI_DATASET], listed=True,
+                           icon={"glyph": "brain", "color": "purple"})
         child = self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
         if key in self._minted_stores:
             # once per account: on the mint, or on the heal of a hidden row

@@ -31,7 +31,10 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   instants. A new option name creates the option (check
   createdOptions). None clears a property.
 - New definitions: c.create_type / c.create_collection (help() for
-  the property drafts). Re-tag with add_to_collection /
+  the property drafts). A type takes an `icon` — `{"emoji": "📚"}` or
+  `{"glyph": "<Lucide name>", "color": …}` — that says what the type
+  IS; a mint without one errors. c.set_type_icon changes it. Re-tag
+  with add_to_collection /
   remove_from_collection; change what an object is with c.set_type.
   Never edit any.type or any.collections by hand.
 - Queries: `c.query_objects(s, filter={"any.type": "book",

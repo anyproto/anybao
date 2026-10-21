@@ -92,7 +92,8 @@ class FakeBackends(BaseHTTPRequestHandler):
         if path.endswith("/types"):
             # the brain is a LISTED store (ADR-027 §2): no heal, no PATCH
             return self._reply({"types": [
-                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain"},
+                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain",
+                 "iconCid": "icon:v2:{}"},
                 {"id": "lg", "name": "Agent Log", "xKey": "agent_log", "hidden": True}]})
         if path.endswith("/v1/catalog"):
             return self._reply({"usecases": []})

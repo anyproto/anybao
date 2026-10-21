@@ -49,6 +49,7 @@ _BOUNDARY = "anybao_gmail_sync"
 # Collections and opens as its inbox layout (ADR-016 §1).
 MAILBOX_TYPE = {
     "name": "Mailbox", "xKey": "mailbox",
+    "icon": {"glyph": "mail", "color": "blue"},
     "properties": [{"name": "address"}],
 }
 _DATASET = "email_messages"
