@@ -205,7 +205,7 @@ def test_object_type_property_creation_paths():
     fx = wire(replies={"/types": {"types": [{"id": "t1"}], "typeId": "t2"}})
     c = client(fx)
     c.create_object("s1", {})
-    c.create_type("s1", {"name": "T", "icon": "🧪"})
+    c.create_type("s1", {"name": "T", "icon": {"glyph": "flask-conical"}})
     c.add_property("s1", "t1", {"name": "P"})
     # the catalog spans BOTH definition surfaces (one handle namespace,
     # ADR-029 §2): every catalog read is a types + a collections GET
@@ -284,7 +284,8 @@ def test_create_type_refuses_catalog_types():
             return fx404(name, payload)
         return ok(name, payload)
     fx_mixed.calls = ok.calls
-    assert client(fx_mixed).create_type("s1", {"name": "Plant", "icon": "🌱"})["created"] is True
+    r = client(fx_mixed).create_type("s1", {"name": "Plant", "icon": {"glyph": "sprout"}})
+    assert r["created"] is True
 
 
 def test_collection_key_is_shape_based_and_offline():
@@ -313,16 +314,19 @@ def test_create_type_needs_an_icon_on_a_listed_type():
                        "/types/any/properties": {},
                        "/bundles": {"bundles": [{"id": "system:collections/v1"}]}})
     c = client(fx)
-    with pytest.raises(ValueError, match='needs an "icon".*"Plant" object.*emoji'):
+    with pytest.raises(ValueError, match='needs an "icon".*"Plant" object.*Lucide'):
         c.create_type("s1", {"name": "Plant"})
     assert not [p for v, p, _ in fx.calls if v == "POST"]
     with pytest.raises(ValueError, match='"icon.color" .mauve. is not one of'):
         c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "mauve"}})
     with pytest.raises(ValueError, match='"icon.glyph" must be a Lucide icon name'):
         c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf icon"}})
-    with pytest.raises(ValueError, match='"icon.emoji" must be ONE emoji'):
-        c.create_type("s1", {"name": "Plant", "icon": {"emoji": "plant"}})
-    with pytest.raises(ValueError, match='"icon" must be'):
+    # an emoji is an OBJECT's icon — the client's type picker has none
+    with pytest.raises(ValueError, match='a type.s "icon" must be .*"glyph"'):
+        c.create_type("s1", {"name": "Plant", "icon": {"emoji": "🌱"}})
+    with pytest.raises(ValueError, match='a type.s "icon" must be'):
+        c.create_type("s1", {"name": "Plant", "icon": "🌱"})
+    with pytest.raises(ValueError, match='a type.s "icon" must be'):
         c.create_type("s1", {"name": "Plant", "icon": {"color": "green"}})
     assert not [p for v, p, _ in fx.calls if v == "POST"]
     c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "green"}})
@@ -345,13 +349,13 @@ def test_create_type_heals_a_missing_icon_only():
                              "/types/t9/properties": {"properties": [], "propId": "p1"}})
     bare = {"id": "t9", "name": "Task", "xKey": "task"}
     fx = fx_for(bare)
-    client(fx).create_type("s1", {"name": "Task", "icon": "✅"})
+    client(fx).create_type("s1", {"name": "Task", "icon": {"glyph": "circle-check"}})
     assert [(v, p, b) for v, p, b in fx.calls if v == "PATCH"] == [
         ("PATCH", "/v1/spaces/s1/types/t9",
-         {"iconCid": 'icon:v2:{"assignment":{"kind":"emoji","grapheme":"✅"},'
-                     '"color":"grey"}'})]
+         {"iconCid": 'icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
+                     '"io.anyproto.lucide","glyphId":"circle-check"}},"color":"grey"}'})]
     fx = fx_for({**bare, "iconCid": "icon:v2:{}"})
-    client(fx).create_type("s1", {"name": "Task", "icon": "✅"})
+    client(fx).create_type("s1", {"name": "Task", "icon": {"glyph": "circle-check"}})
     assert not [p for v, p, _ in fx.calls if v == "PATCH"]
     fx = fx_for(bare)
     client(fx).create_type("s1", {"name": "Task", "properties": [{"name": "due"}]})
@@ -370,9 +374,36 @@ def test_set_type_icon():
                          '"color":"green"}'}
     assert fx.calls[-1] == ("PATCH", "/v1/spaces/s1/types/t9", {"iconCid": r["icon"]})
     with pytest.raises(ValueError, match="builtin or catalog type"):
-        c.set_type_icon("s1", "page", "📄")
+        c.set_type_icon("s1", "page", {"glyph": "file"})
     with pytest.raises(ValueError, match='"nope" is not a type'):
-        c.set_type_icon("s1", "nope", "📄")
+        c.set_type_icon("s1", "nope", {"glyph": "file"})
+    with pytest.raises(ValueError, match='a type.s "icon" must be'):
+        c.set_type_icon("s1", "task", "📄")
+
+
+def test_object_icon_is_an_emoji_or_a_picture():
+    # an object's own mark rides `any.icon`: an emoji as the client's
+    # icon:v2 string, a picture as its any://f/ link verbatim, None
+    # clears; a glyph is a TYPE's icon and is refused here
+    fx = wire(replies={"/types": {"types": [{"id": "page", "xKey": "page", "builtIn": True}]},
+                       "/objects": {"objectId": "o1"}})
+    c = client(fx)
+    c.create_object("s1", {"name": "Basil", "icon": "🌱"})
+    post = next(b for v, p, b in fx.calls if v == "POST" and p.endswith("/objects"))
+    assert post["initialProperties"]["any"] == {
+        "name": "Basil",
+        "icon": 'icon:v2:{"assignment":{"kind":"emoji","grapheme":"🌱"},"color":"grey"}'}
+    c.update_object("s1", "o1", {"icon": {"picture": "any://f/s1/fid9"}})
+    assert fx.calls[-1] == ("POST", "/v1/spaces/s1/properties/o1/set/any",
+                            {"patch": {"icon": "any://f/s1/fid9"}})
+    c.update_object("s1", "o1", {"icon": None})
+    assert fx.calls[-1][2] == {"patch": {"icon": ""}}
+    with pytest.raises(ValueError, match='an object.s "icon" must be'):
+        c.create_object("s1", {"name": "Basil", "icon": {"glyph": "sprout"}})
+    with pytest.raises(ValueError, match='"icon.picture" must be the any://f/'):
+        c.update_object("s1", "o1", {"icon": {"picture": "https://x/y.png"}})
+    with pytest.raises(ValueError, match='"icon.emoji" must be ONE emoji'):
+        c.update_object("s1", "o1", {"icon": {"emoji": "basil"}})
 
 
 def test_create_type_sets_up_the_collections_app_once():
@@ -382,8 +413,8 @@ def test_create_type_sets_up_the_collections_app_once():
                        "/bundles": {"bundles": [], "synced": True},
                        "/types/t9/properties": {"properties": []}})
     c = client(fx)
-    c.create_type("s1", {"name": "Plant", "icon": "🌱"})
-    c.create_type("s1", {"name": "Pot", "icon": "🪴"})
+    c.create_type("s1", {"name": "Plant", "icon": {"glyph": "sprout"}})
+    c.create_type("s1", {"name": "Pot", "icon": {"glyph": "flower-2"}})
     c.create_type("s1", {"name": "Agent Thing", "hidden": True})   # hidden: never
     setups = [(v, p, b) for v, p, b in fx.calls if p.endswith("/collections/setup")]
     assert setups == [("POST", "/v1/catalog/collections/setup", {"spaceId": "s1"})]
@@ -460,12 +491,13 @@ def test_create_type_row_root_key_errors():
     fx = wire(replies={"/types/any/properties": {},
                        "/types": {"types": [], "typeId": "tA"}})
     r = client(fx).create_type("s1", {"name": "Author", "xKey": "author_type",
-                                      "icon": "✍️"})
+                                      "icon": {"glyph": "pen-line"}})
     assert r["xKey"] == "author_type" and r["created"]
     assert ("POST", "/v1/spaces/s1/types",
             {"name": "Author", "xKey": "author_type",
-             "iconCid": 'icon:v2:{"assignment":{"kind":"emoji","grapheme":"✍️"},'
-                        '"color":"grey"}'}) in fx.calls
+             "iconCid": 'icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
+                        '"io.anyproto.lucide","glyphId":"pen-line"}},"color":"grey"}'}
+            ) in fx.calls
 
 
 def test_create_object_rejects_synthetic_types():

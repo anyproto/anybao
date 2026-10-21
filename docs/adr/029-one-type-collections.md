@@ -147,16 +147,24 @@ never a user type, never the any-ui feature. The Collections app
   construction. `body=False` opts out; `_ensure_store` passes it —
   the store types stay bodiless. `weight` is not accepted anywhere.
 - **A listed type has an icon.** `create_type` takes `icon` —
-  `{"emoji": "📚"}` or `{"glyph": "<Lucide name>", "color"?: <one of
-  the client's ten>}` — and refuses to MINT a listed type without
-  one: the glyph is what the user sees on every object of the type
-  and in every picker, and an iconless mint is indistinguishable from
-  `page`. The guest formats it into the client's `icon:v2:` string
-  and sends it as the wire's `iconCid` (stored at `any.icon`, the key
-  any-ui reads and writes). A hidden type needs none. On an existing
-  type the icon is healed only onto a row that has none — the user's
-  pick is never overwritten; `set_type_icon` changes it. Internal
-  listed mints (the brain, `agent_skill`, the mailbox) declare theirs.
+  `{"glyph": "<Lucide name>", "color"?: <one of the client's ten>}`,
+  a Lucide glyph only (the client's type picker shows no emoji) — and
+  refuses to MINT a listed type without one: the glyph is what the
+  user sees on every object of the type and in every picker, and an
+  iconless mint is indistinguishable from `page`. The guest formats
+  it into the client's `icon:v2:` string and sends it as the wire's
+  `iconCid` (stored at `any.icon`, the key any-ui reads and writes).
+  A hidden type needs none. On an existing type the icon is healed
+  only onto a row that has none — the user's pick is never
+  overwritten; `set_type_icon` changes it. Internal listed mints (the
+  brain, `agent_skill`, the mailbox) declare theirs.
+- **An object's own icon is an emoji or a picture.** `icon` on
+  `create_object` / `update_object` — `{"emoji": "🌱"}` (stored as the
+  `icon:v2:` emoji string) or `{"picture": "<any://f/… link>"}` (the
+  link verbatim, what the client's picture menu writes) — routes into
+  `any.icon` beside `name` / `description`; `None` clears it. Optional:
+  without one an object wears its type's glyph. A glyph is refused on
+  an object, an emoji on a type.
 - `parent=` files the object under the wiki collection (§5); `folder`
   is a wiki column. The object's type is whatever the caller said.
 
@@ -299,7 +307,7 @@ convention), one pointer line per affected section:
 |-----|--------|
 | 006 §6 | the catalog spans types AND collections (one handle namespace); `any.type` / `any.collections` values speak xKeys; `collection` is the fourth synthetic row; the BOB-68 row-root guard covers collection handles; `any.types` is an error |
 | 010 §5 | `program` is listed, not hidden |
-| 010 §8 | `create_object` takes `type` / `collections` (default `page`); `set_type`, `add_to_collection`, `remove_from_collection`, `trash`, `restore`, `list_collections`, `create_collection`; `list_types` hides the meta rows; `create_type` takes `icon` (required on a listed mint), `set_type_icon` |
+| 010 §8 | `create_object` takes `type` / `collections` (default `page`); `set_type`, `add_to_collection`, `remove_from_collection`, `trash`, `restore`, `list_collections`, `create_collection`; `list_types` hides the meta rows; `create_type` takes `icon` (a Lucide glyph, required on a listed mint), `set_type_icon`; `create_object` / `update_object` take `icon` (emoji or picture) |
 | 017 §0, §1 | `bao/v1` root is `rootType: page`; children carry one `type`; `agent_skill` / `program` listed, the stores hidden |
 | 022 §3 | link stubs `{id, name, type, collections}` |
 | 027 §2 | the hidden set loses `program` and `agent_skill` |
