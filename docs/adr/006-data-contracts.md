@@ -514,10 +514,13 @@ mechanism, in the same layer — a guest helper, not the host):
   back xKey-nested — user-type groups keyed by type xKey, their props by
   prop xKey. `filter`/`sort` accept readable xKey paths
   (`task.status`, `-task.priority`) and an `any.types` xKey value, all
-  resolved to the server's id paths. `normalize=False` returns the raw
-  id-keyed shape for the few internal callers that need the ids
-  themselves (graph edges in `recall.neighbors` are identified by
-  type/prop id).
+  resolved to the server's id paths. The space's own index object
+  (the `spaceIndexObjectId` row: a `spaceIndex` part and no `any`
+  block) is omitted — the surface can neither name nor act on it
+  (ADR-029 §4). `normalize=False` returns the raw
+  id-keyed shape, that row included, for the few internal callers
+  that need the ids themselves (graph edges in `recall.neighbors` are
+  identified by type/prop id).
 
 **Amended 2026-08-21 (any PR #176 — meta-type xkey).** The server
 stores a type's handle in the meta-type namespace (`type.xkey`); the
