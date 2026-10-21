@@ -75,3 +75,27 @@ def test_attributed_tags_are_stripped_too():
     out, warnings = guard(src)
     assert out == CANONICAL + "<div></div>"
     assert warnings is not None
+
+
+def test_strip_keeps_the_regex_edges():
+    # each runtime tag leaves with its indentation, trailing blanks and newline;
+    # a tag whose src sits after its `>`, or one with a body, is left alone
+    src = ('  \t<script src=\'./react.js"></script>  \n'
+           '<script src="./react-dom.js">\n  </script>'
+           '<script>x</script> src="./useAnytypeState.js"\n'
+           '<script src="./useAnytypeState.js">go()</script>')
+    out, _ = guard(src)
+    assert out == (CANONICAL
+                   + '<script>x</script> src="./useAnytypeState.js"\n'
+                   + '<script src="./useAnytypeState.js">go()</script>')
+
+
+def test_hostile_source_is_guarded_in_linear_time():
+    # each shape drove `[ \t]*<script[^>]*src=` quadratic: minutes at the
+    # server's body cap, inside a guest whose wall deadline then kills the edit
+    import time
+    for src in (" " * 100_000, "<script " * 12_500, "<script " * 12_500 + ">",
+                '<script src="./react.js">' + " " * 100_000):
+        start = time.perf_counter()
+        guard(src)
+        assert time.perf_counter() - start < 0.2
