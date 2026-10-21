@@ -1,6 +1,6 @@
 # ADR-018: Event triggers — chat-message sources, and the chat watcher as a trigger
 
-Status: **Accepted** (2026-08-24)
+Status: **Accepted** (2026-08-24), amended 2026-10-20 (§2 promoted rows, BOB-204)
 Date: 2026-08-24
 Builds on: ADR-006 §4 (trigger contract, device pins, reconcile),
 ADR-009 §8 (chat watch, snapshot backlog, deferred conversations),
@@ -91,6 +91,17 @@ Consequences that follow, and are intended:
   is never input: not for event triggers, not for the chat
   responder. Self-authored messages (the agent's own name — the
   ADR-009 §8 name-scoped rule) never fire.
+  **Promoted rows (amended 2026-10-20, BOB-204)**: `added` means the
+  record ENTERED the watch's visible window (`limit: 64`), not that
+  it was written. The server keeps one row past the limit and, when
+  a visible row is deleted, slides it into view as `added` with its
+  stored doc and no `ops`. A written record always carries `ops` (its
+  stamps at least). An `added` entry without `ops` is such a promoted
+  row — history, never an event, for event triggers and the chat
+  responder alike. The rule reads the frame only: no timestamp is
+  compared (`createdAt` is the author's clock, ADR-019), no cursor is
+  kept. It holds for the unprojected watch; a projected subscription
+  can ship empty `ops` for a real change.
 - **Missed-occurrence rule**: live-only, mirroring cron — a message
   that arrives while the owner is down or disconnected does not fire
   the trigger (no replay, no backlog). The one exception is the chat

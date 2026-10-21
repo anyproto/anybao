@@ -3,7 +3,8 @@
 Status: **Accepted** (2026-07-21), amended 2026-07-21 (§4 kernel
 embedded, §8), 2026-07-23 (§4 compile cache, §8 snapshot backlog +
 deferred messages), 2026-09-16 (§8 readiness = usable, miss-driven
-program waits), 2026-09-24 (§3 on-demand skills)
+program waits), 2026-09-24 (§3 on-demand skills), 2026-10-20 (§8
+promoted rows, BOB-204)
 Date: 2026-07-21
 Builds on: ADR-002 (isolation), ADR-004 (module loading — amends §6,
 delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
@@ -285,6 +286,18 @@ mechanics are:
   (walking newest→oldest). The watcher's seen-set dedups across
   reconnect snapshots; the window is the subscribe limit (64) — an
   unanswered message older than that stays dropped, by construction.
+  **Promoted rows (amended 2026-10-20, BOB-204)**: an `added` entry in
+  a `changes` frame is a NEW message only when it carries `ops`.
+  `added` means the row entered the visible window; a deletion inside
+  the window makes the server slide the row past the limit into view
+  as `added` with its stored doc and no `ops` — an answered message
+  from days ago, absent from the seen-set (which only knows the
+  unanswered backlog), that a live run would take as its next user
+  turn. The watch drops an `added` without `ops` before the watcher
+  sees it. Timestamps play no part: `createdAt` is the author's
+  clock and is never compared (ADR-019). An inject carries the
+  record's `messageId` and `createdAt` as labels so the trace names
+  what entered a run.
   **Name-scoped self-skip (amended 2026-08-16)**: "agent-authored"
   means THIS agent's own `agent.name` (or a nameless agent record —
   the conservative read of legacy rows), for both the watcher skip and

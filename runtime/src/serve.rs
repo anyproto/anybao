@@ -2778,7 +2778,9 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                 .lock()
                 .unwrap()
                 .push_back(json!({"kind": "inject", "text": input.text,
-                                  "context": input.context}));
+                                  "context": input.context,
+                                  "messageId": input.message_id,
+                                  "createdAt": input.created_at}));
             return;
         }
         w.live.insert(
@@ -2953,6 +2955,8 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
                     ChatInput {
                         text: item["text"].as_str().unwrap_or_default().to_string(),
                         context: item["context"].clone(),
+                        message_id: item["messageId"].as_str().unwrap_or_default().to_string(),
+                        created_at: item["createdAt"].clone(),
                         deferrals: 0,
                     },
                 );
@@ -3132,6 +3136,15 @@ fn preview(text: &str) -> String {
 /// a reaction on a message older than the process — absent from the
 /// watcher's seen-set, which is seeded from the unanswered backlog
 /// only — look like a fresh message, and the agent re-answered it.
+///
+/// And only an `added` entry WITH `ops` is a message (ADR-009 §8
+/// promoted rows, BOB-204): `added` means the row entered the watch's
+/// visible window, not that it was written. The server keeps one row
+/// past the window's limit and, when a visible row is deleted, slides
+/// it into view as `added` with its stored doc and NO ops — nothing
+/// was written, so there is no change to ship. A written record always
+/// carries ops (its stamps at least). The watch uses no projection,
+/// the one case where a real change can ship empty ops.
 /// A reply's referent, read from the chat before the watcher sees the
 /// record (ADR-005 §5, BOB-65): deleted rows included so a tombstone
 /// folds as such; a failed read folds as "not found" — a reply never
@@ -3160,6 +3173,14 @@ fn records_in(data: &Value) -> Vec<Value> {
     if let Some(batches) = data.as_array() {
         for batch in batches {
             for entry in batch["added"].as_array().unwrap_or(&Vec::new()) {
+                if entry["ops"].as_array().is_none_or(Vec::is_empty) {
+                    warn!(
+                        "chat message {} entered the window with no ops — a row promoted \
+                         from past the limit, not a new message (ADR-009 §8)",
+                        entry["id"].as_str().unwrap_or("")
+                    );
+                    continue;
+                }
                 let mut rec = entry["doc"].as_object().cloned().unwrap_or_default();
                 rec.insert("id".into(), entry["id"].clone());
                 out.push(Value::Object(rec));
@@ -4698,7 +4719,8 @@ mod tests {
         // answered — the seen-set only knows the unanswered backlog)
         let data = json!([{
             "versionId": "v9",
-            "added": [{"id": "u7", "doc": {"text": "new question"}}],
+            "added": [{"id": "u7", "doc": {"text": "new question"},
+                "ops": [{"type": "$set", "path": ["text"], "payload": "new question"}]}],
             "updated": [{"id": "u1", "doc": {"text": "old question",
                 "reactions": {"👍": {"acct": {"$date": "2026-09-10T10:00:00.000Z"}}}}}]
         }]);
@@ -4706,6 +4728,39 @@ mod tests {
         let ids: Vec<&str> = recs.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["u7"]);
         assert_eq!(recs[0]["text"], "new question");
+    }
+
+    #[test]
+    fn records_in_skips_an_added_without_ops_the_row_promoted_past_the_limit() {
+        // BOB-204: a visible row is deleted and the server slides the row
+        // past the limit into view — the frame the server sent on staging
+        // (limit 2, delete the newest): the promoted `added` ships the
+        // stored doc and no ops, the deletion rides as `removed`. A
+        // 6-day-old answered message entered a live run this way.
+        let data = json!([{
+            "versionId": "",
+            "added": [{"id": "fWsk9MrCjT", "doc": {"id": "fWsk9MrCjT",
+                "text": "another 15 book recommendations in Alpha",
+                "createdAt": {"$date": "2026-10-14T08:56:53.000Z"}}}],
+            "removed": [{"id": "b9570", "reason": "deleted"}]
+        }]);
+        assert!(records_in(&data).is_empty());
+        // empty ops is the same signal; a written record in the same
+        // frame still comes through
+        let data = json!([{
+            "versionId": "!!7}",
+            "added": [
+                {"id": "old", "doc": {"text": "promoted"}, "ops": []},
+                {"id": "new", "doc": {"text": "typed just now"},
+                 "ops": [{"type": "$set", "path": ["createdAt"],
+                          "payload": {"$date": "2026-10-20T10:38:10.000Z"}}]}
+            ]
+        }]);
+        let ids: Vec<String> = records_in(&data)
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids, ["new"]);
     }
 
     #[test]
