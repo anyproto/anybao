@@ -687,12 +687,9 @@ pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger
 pub struct ChatInput {
     pub text: String,
     pub context: Value,
-    /// The chat record's id and `createdAt` — ride the inject so the
-    /// trace names what entered a live run (BOB-204). The stamp is the
-    /// author's clock, a label for the reader, never compared. Empty /
-    /// Null for a message the record did not stamp.
+    /// The chat record's id — rides the inject so the trace names what
+    /// entered a live run (BOB-204). Empty for a record without one.
     pub message_id: String,
-    pub created_at: Value,
     /// How many times this message was deferred on a program miss
     /// (ADR-009 §8): at most one deferral, then the failure is final.
     pub deferrals: u32,
@@ -830,7 +827,6 @@ impl Watcher {
             text: Self::attributed_text(record),
             context: Self::view_context(record),
             message_id: message_id(record).unwrap_or_default().to_string(),
-            created_at: record.get("createdAt").cloned().unwrap_or(Value::Null),
             deferrals: 0,
         }
     }
@@ -1031,7 +1027,7 @@ impl Watcher {
             let input = Self::input(record);
             live.mailbox.lock().unwrap().push_back(json!({
                 "kind": "inject", "text": input.text, "context": input.context,
-                "messageId": input.message_id, "createdAt": input.created_at}));
+                "messageId": input.message_id}));
             return WatchAction::Inject;
         }
         WatchAction::Start
@@ -1558,14 +1554,12 @@ mod tests {
                 ..Default::default()
             },
         );
-        let m3 = json!({"id": "m3", "text": "also",
-                        "createdAt": {"$date": "2026-10-20T10:38:10.000Z"}});
+        let m3 = json!({"id": "m3", "text": "also"});
         assert!(matches!(w.on_message("c1", &m3), WatchAction::Inject));
         assert_eq!(mb.lock().unwrap().len(), 1);
         // the inject names its record for the trace (BOB-204)
         let item = mb.lock().unwrap().front().cloned().unwrap();
         assert_eq!(item["messageId"], "m3");
-        assert_eq!(item["createdAt"]["$date"], "2026-10-20T10:38:10.000Z");
         w.conversation_done("c1");
         let m4 = json!({"id": "m4", "text": "fresh"});
         assert!(matches!(w.on_message("c1", &m4), WatchAction::Start));
