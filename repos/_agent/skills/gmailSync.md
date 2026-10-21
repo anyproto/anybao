@@ -26,6 +26,12 @@ corpus); go live only for mail not yet synced.
 
 ## Syncing
 
+Email is not an app and has no type to install: the first sync in a
+space creates the Mailbox type and one mailbox object per address
+there. "Add email to space X" = the steps below with `space=X`. A
+mailbox shows under Library in the UI and opens as the inbox. Mail is
+per space: `status(space)` and the corpus belong to the synced space.
+
 1. Check the credential first:
    `use("connectors:gmail@v1").list_messages(max_results=1)`. Not
    connected → `use("connectors:googleAuth@v1").connect()` (opens

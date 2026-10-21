@@ -69,8 +69,9 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   search hit's recordId resolves the same way (`filter={"id":
   {"$in": [...]}}`).
 
-**Apps**: the server's apps are a space's catalog installs (wiki,
-chat, contacts, CRM…): c.list_apps(space) before assuming one exists.
+**Apps**: the server's apps are a space's catalog installs (chat,
+contacts, CRM…; mail is not one: `c.get_skill("gmailSync")`):
+c.list_apps(space) before assuming one exists.
 The user asking for one ("add contacts") is the yes: c.setup_app;
 when it is your idea, offer first. An app's objects take the shape
 setup_app returns (a contact is type `profile` filed under `contact`):
