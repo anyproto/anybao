@@ -203,7 +203,9 @@ chat is unchanged (ADR-027 §1): the derived root, found through setup.
   store types (`agent_config`, `agent_secrets`, `agent_trigger`,
   `agent_brain`, `agent_log`, `mini_app`, `sync_state`, `enrichments`,
   `enrich_proposal`) stay hidden and bodiless. `mailbox` stays listed
-  (ADR-027 §2).
+  (ADR-027 §2). **Amended 2026-10-21:** `agent_brain` is listed too
+  (bodiless, object named `Agent Brain`) — a client renders its memory
+  records, the `mailbox` rule (ADR-027 §2 amendment).
 - `bao/v1` is ensured with `rootType: "page"`; every child
   (`bao/config/v1`, `secrets`, `triggers`, `runs`, the chat's
   `bao/log/v1`) carries its store type as `type` — one each, as today.

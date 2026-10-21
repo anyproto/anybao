@@ -85,6 +85,10 @@ _MEM_MUTABLE = ("salience", "accessCount", "confidence", "importance",
                 "context", "body", "tags", "edges")
 _MEM_CREATE_ONLY = ("fromAgent", "category", "entities", "keywords",
                     "validFrom", "chatId", "source", "provenance")
+# The brain is a LISTED store (ADR-027 §2, the `mailbox` rule): a client
+# renders its memory records, so the type shows in the library and its
+# one object carries a name instead of opening as "Untitled".
+_BRAIN_NAME = "Agent Brain"
 _MEM_DATASET = {
     "key": "agent_memory_items", "displayName": "Agent Memory",
     "idRule": "auto", "deleteBy": "author",
@@ -483,6 +487,7 @@ class _Client:
         self._spaces_cache = None   # space rows for name resolution (§8)
         self._bundle_children = {}  # (space, bundleId, seed) -> objectId
         self._ensured_stores = {}   # (space, xKey) -> {key: collection}
+        self._minted_stores = set()  # (space, xKey) minted or healed listed this run
         self._stub_cache = {}   # space -> {objectId: {id, name, type, collections}}
         self._type_datasets = {}   # (space, typeId) -> [dataset rows]
         self._object_owners = {}   # (space, objectId) -> {"type", "collections"}
@@ -3610,17 +3615,32 @@ class _Client:
         return out
 
     # --- agent memory (write path; reads go through /query on the brain) --------
-    def _ensure_store(self, space, xkey, name, datasets):
+    def _ensure_store(self, space, xkey, name, datasets, listed=False):
         """Lazily provision a guest-owned agent store (ADR-017 §1,
-        ADR-027 §2): ensure the hidden, bodiless user type by xKey +
-        one part per dataset draft. Idempotent; the dataset ensure
-        reconciles mutable search.* leaves. Cached per run → {key:
-        collection}."""
+        ADR-027 §2): ensure the bodiless user type by xKey + one part
+        per dataset draft. Hidden unless `listed` (the brain): a listed
+        store is minted without `hidden`, and `hidden: false` is healed
+        onto a row an older writer minted hidden — the `program` /
+        `agent_skill` precedent (ADR-029 §7). Idempotent; the dataset
+        ensure reconciles mutable search.* leaves. Cached per run →
+        {key: collection}; a mint or heal lands in `_minted_stores`."""
         key = (space, xkey)
         if key in self._ensured_stores:
             return self._ensured_stores[key]
-        self.create_type(space, {"name": name, "xKey": xkey, "hidden": True,
-                                 "body": False})
+        decl = {"name": name, "xKey": xkey, "body": False}
+        if not listed:
+            decl["hidden"] = True
+        made = self.create_type(space, decl)
+        if made["created"]:
+            self._minted_stores.add(key)
+        elif listed:
+            row = self._catalog(space)["by_id"].get(made["typeId"]) or {}
+            if row.get("hidden") is True:
+                self._call("patch", f"/v1/spaces/{space}/types/{made['typeId']}",
+                           {"hidden": False})
+                self._cat_invalidate(space)
+                self._ensure_collections_app(space)
+                self._minted_stores.add(key)
         colls = {}
         for d in datasets:
             colls[d["key"]] = self.create_dataset(space, xkey, d)["collection"]
@@ -3754,12 +3774,19 @@ class _Client:
         the `agent_brain` type + datasets ensured lazily (guest-owned
         store). `{objectId}` — deterministic, no create race. Memory has ONE
         home: the bao space (`bao_space()`); there is no per-space brain, facts
-        about a space go in `context`/`tags`."""
+        about a space go in `context`/`tags`. The type is LISTED and the
+        object named (ADR-027 §2): a client shows the memory records."""
         space = self.bao_space()
+        key = (space, "agent_brain")
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
-                            _ROI_DATASET])
-        return self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
+                            _ROI_DATASET], listed=True)
+        child = self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
+        if key in self._minted_stores:
+            # once per account: on the mint, or on the heal of a hidden row
+            self.update_object(space, child["objectId"], {"name": _BRAIN_NAME})
+            self._minted_stores.discard(key)
+        return child
 
     @_public('getter', listed=False)
     def collection(self, space, type_key, dataset_key):
@@ -3786,8 +3813,12 @@ class _Client:
         `{fromSeq}`; both create-only (not evolvable). Stray keys
         raise. Scoring defaults when absent: confidence 5, importance
         5, salience 10, accessCount 0, validFrom now. `validFrom` is an
-        instant — `instant(seconds)` (ADR-019 §2)."""
+        instant — `instant(seconds)` (ADR-019 §2). `chatId` defaults to
+        the chat the loop is answering in (`_answering_in`); a cron
+        writer passes its own, a store-wide sweep leaves it empty."""
         f = dict(fields or {})
+        if "chatId" not in f and _ANSWERING is not None:
+            f["chatId"] = _ANSWERING[1]
         allowed = set(_MEM_MUTABLE) | set(_MEM_CREATE_ONLY)
         unknown = sorted(set(f) - allowed)
         if unknown:

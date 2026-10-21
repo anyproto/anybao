@@ -67,9 +67,9 @@ def extract_candidates(turns, tier):
     return _first_json_array(text)
 
 
-def normalize(candidate, max_seq):
+def normalize(candidate, max_seq, chat_id=None):
     """§1b discipline enforced in code, not prompt trust: shape allow-list,
-    capped confidence, provenance pointer."""
+    capped confidence, provenance pointer, the scanned chat as `chatId`."""
     if candidate.get("category") not in SHAPES:
         return None
     context = (candidate.get("context") or "").strip()
@@ -82,6 +82,8 @@ def normalize(candidate, max_seq):
            "provenance": {"fromSeq": int(candidate.get("fromSeq") or max_seq)}}
     if candidate.get("body"):
         out["body"] = candidate["body"]
+    if chat_id:
+        out["chatId"] = chat_id
     return out
 
 
@@ -103,7 +105,7 @@ def main(args):
     max_seq = max(t["seq"] for t in turns)
     saved = deduped = skipped = errors = 0
     for raw in extract_candidates(turns, args.get("tier", TIER)):
-        candidate = normalize(raw, max_seq)
+        candidate = normalize(raw, max_seq, chat)
         if candidate is None:
             skipped += 1
             continue
