@@ -29,6 +29,16 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} is not on main; refusing to release" >&2
             exit 1
           }
+      # anyrt reports its crate version (election, any-ui), and v0.8.0 and
+      # v0.9.0 shipped while it said 0.7.0. Bump runtime/Cargo.toml on main
+      # first (with the lock, notices and license manifest), then tag.
+      - name: verify tag matches the anyrt crate version
+        run: |
+          crate=$(sed -nE '/^\[package\]/,/^\[/{s/^version *= *"([^"]+)".*/\1/p;}' runtime/Cargo.toml | head -n1)
+          if [ "v${crate}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match runtime/Cargo.toml version ${crate:-<none>}; bump it on main first" >&2
+            exit 1
+          fi
 
   build:
     needs: verify
