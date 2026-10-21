@@ -73,10 +73,11 @@ jobs:
             ~/.cargo/git
             runtime/target
           key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/Cargo.lock') }}
+      - run: uv sync --locked
       # The tag is the version: anyrt reports CARGO_PKG_VERSION (election,
       # any-ui), and the tagged commit may still carry the previous one.
+      # The script also updates the notices and license manifest.
       - run: tools/set_version.sh "$GITHUB_REF_NAME"
-      - run: uv sync --locked
       - run: make licenses-check
       # builds bin/kernel.wasm first; the binary embeds it via include_bytes!
       - run: make runtime
@@ -142,6 +143,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.14"
       - name: commit the released version to main
         run: |
           git config user.name "github-actions[bot]"
@@ -150,13 +154,8 @@ jobs:
           for attempt in 1 2 3; do
             git fetch origin main
             git reset --hard origin/main
-            current=$(sed -nE '/^\[package\]/,/^\[/{s/^version *= *"([^"]+)".*/\1/p;}' runtime/Cargo.toml | head -n1)
-            newest=$(printf '%s\n%s\n' "$current" "${GITHUB_REF_NAME#v}" | sort -V | tail -n1)
-            if [ "$newest" = "$current" ]; then
-              echo "main is at ${current}, not older than ${GITHUB_REF_NAME}; nothing to do"
-              exit 0
-            fi
-            tools/set_version.sh "$GITHUB_REF_NAME"
+            tools/set_version.sh --only-if-newer "$GITHUB_REF_NAME"
+            git diff --quiet && exit 0
             git commit -am "anyrt: version ${GITHUB_REF_NAME#v}"
             git push origin HEAD:main && exit 0
             echo "push rejected (attempt ${attempt}); retrying" >&2
