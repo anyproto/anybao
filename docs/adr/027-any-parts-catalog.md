@@ -147,7 +147,7 @@ value (`query`, `query/subscribe`, `modify`, `upsert`,
 
 **Amended 2026-09-17 (ADR-029 §7):** `program` and `agent_skill` leave the hidden set — they carry a body and are classes a user may open, so their ensures mint them listed and heal `hidden: false` onto a hidden row. The nine store types below stay hidden.
 
-**Amended 2026-10-21 (the `mailbox` rule applied):** `agent_brain` leaves the hidden set too — a client renders its memory records (`agent_memory_items`), the rule stated below for `mailbox`. Its ensure mints it listed, heals `hidden: false` onto a hidden row (one PATCH, plus the collections app), and names the derived brain object `Brain` once (on the mint or the heal) so it never lists as "Untitled". It stays bodiless. Eight store types stay hidden: `agent_config`, `agent_secrets`, `agent_trigger`, `agent_log`, `mini_app`, `sync_state`, `enrichments`, `enrich_proposal`. any-ui PR #2478 drops `agent_brain` from its client-side deny list in step.
+**Amended 2026-10-21 (the `mailbox` rule applied):** `agent_brain` leaves the hidden set too — a client renders its memory records (`agent_memory_items`), the rule stated below for `mailbox`. Its ensure mints it listed, heals `hidden: false` onto a hidden row (one PATCH, plus the collections app), and names the derived brain object `Agent Brain` once (on the mint or the heal) so it never lists as "Untitled". It stays bodiless. Eight store types stay hidden: `agent_config`, `agent_secrets`, `agent_trigger`, `agent_log`, `mini_app`, `sync_state`, `enrichments`, `enrich_proposal`. any-ui PR #2478 drops `agent_brain` from its client-side deny list in step.
 
 **Harness types are hidden.** Every ensure PATCHes its type
 `hidden: true` (`PATCH …/types/:typeId`) so a client's type picker never

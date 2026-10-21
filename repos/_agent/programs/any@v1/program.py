@@ -88,7 +88,7 @@ _MEM_CREATE_ONLY = ("fromAgent", "category", "entities", "keywords",
 # The brain is a LISTED store (ADR-027 §2, the `mailbox` rule): a client
 # renders its memory records, so the type shows in the library and its
 # one object carries a name instead of opening as "Untitled".
-_BRAIN_NAME = "Brain"
+_BRAIN_NAME = "Agent Brain"
 _MEM_DATASET = {
     "key": "agent_memory_items", "displayName": "Agent Memory",
     "idRule": "auto", "deleteBy": "author",

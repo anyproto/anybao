@@ -1382,7 +1382,7 @@ def test_brain_type_hidden_row_is_healed_and_named():
         ("PATCH", "/v1/spaces/s1/types/br", {"hidden": False}),
         ("POST", "/v1/catalog/collections/setup", {"spaceId": "s1"}),
         ("POST", "/v1/spaces/s1/properties/brain1/set/any",
-         {"patch": {"name": "Brain"}})]
+         {"patch": {"name": "Agent Brain"}})]
 
 
 def test_brain_type_is_minted_listed_and_named():
@@ -1406,7 +1406,7 @@ def test_brain_type_is_minted_listed_and_named():
                 if v == "POST" and p == "/v1/spaces/s1/types")
     assert mint == {"name": "Agent Brain", "xKey": "agent_brain"}
     assert ("POST", "/v1/spaces/s1/properties/brain1/set/any",
-            {"patch": {"name": "Brain"}}) in fx.calls
+            {"patch": {"name": "Agent Brain"}}) in fx.calls
     assert not any(p.endswith("/types/t1") for v, p, _ in fx.calls)   # no heal
 
 
