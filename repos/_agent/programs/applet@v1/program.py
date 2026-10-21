@@ -41,11 +41,37 @@ _ensured = set()
 _RUNTIME_SCRIPTS = ["react.js", "react-dom.js", "useAnytypeState.js"]
 
 
-def _tag_rx(name):
-    """The full (empty-body) runtime script element plus its line."""
-    return re.compile(
-        r"[ \t]*<script[^>]*src=[\"']\./" + re.escape(name)
-        + r"[\"'][^>]*>\s*</script>[ \t]*\n?")
+# after the open tag's `>`: an empty body, the close tag, the rest of its line
+_TAG_END_RX = re.compile(r"\s*</script>[ \t]*\n?")
+
+
+def _strip_tag(html, name):
+    """(html, n): drop every empty `<script src="./name">` element with
+    its indentation and line. One forward pass over the `<script` open
+    tags, each read up to its first `>`: the source may be any member's,
+    and a `[ \\t]*<script[^>]*src=` regex went quadratic on a run of
+    blanks or of `<script ` (minutes at the server's body cap)."""
+    src_rx = re.compile(r"src=[\"']\./" + re.escape(name) + r"[\"']")
+    out, n, kept, scan = [], 0, 0, 0
+    while True:
+        start = html.find("<script", scan)
+        if start < 0:
+            break
+        close = html.find(">", start + len("<script"))
+        if close < 0:
+            break
+        scan = close + 1
+        end = _TAG_END_RX.match(html, scan)
+        if end is None or not src_rx.search(html, start, close):
+            continue
+        line = start
+        while line > kept and html[line - 1] in " \t":
+            line -= 1
+        out.append(html[kept:line])
+        kept = scan = end.end()
+        n += 1
+    out.append(html[kept:])
+    return "".join(out), n
 
 
 def _client():
@@ -106,7 +132,7 @@ def _guard(html):
     touched."""
     stripped, found = html, []
     for name in _RUNTIME_SCRIPTS:
-        stripped, n = _tag_rx(name).subn("", stripped)
+        stripped, n = _strip_tag(stripped, name)
         if n:
             found.append(name)
     inject = "".join(f'<script src="./{n}"></script>\n'
