@@ -7,7 +7,8 @@ showed the agent otherwise does; plus a `jobs(space)` getter, the
 read-side answer to "what's running?"), amended 2026-08-19 (§2/§4/§5:
 the anticipated transport swap executed — the any-native facility
 landed as the server process registry, any PR #163 over the #162
-event bus; see the 2026-08-19 amendment section at the bottom)
+event bus; see the 2026-08-19 amendment section at the bottom),
+amended 2026-10-21 (§7: chained jobs — `chain@v1`, BOB-209)
 Date: 2026-08-14
 Builds on: ADR-002 (all writes cross the effect boundary), ADR-006
 (space objects as data contracts), ADR-009 §2 (cross-repo deps,
@@ -134,6 +135,52 @@ trigger identity for distinct UI rendering.) Best-effort: a
 notification hiccup never fails the job. For detached trigger-driven
 jobs only — inline work reports in its own turn. Provisional; revisit
 alongside the any-native facility's terminal events.
+
+### 7. Chained jobs — `chain@v1` (added 2026-10-21, BOB-209)
+
+The generic form of gmailSync's backfill chain (ADR-012), for the
+agent's own "do X to each of these K items" jobs. BOB-209: one cell
+looped 97 recipes through one model call each (~16 s per item) and
+was killed at the run's 20-minute wall limit with every result still
+in memory — nothing written, no reply. A typed deadline warning would
+not have helped: it reaches the model only between cells. The job has
+to be cut into runs.
+
+`repos/_agent/programs/chain@v1.py` (an agent tool, `__any_tool__`):
+
+- **Contract**: `start(agent_space, job, program, items, method="step",
+  args=None, batch=10, space=None, label=None)` arms a chain; the step
+  is `use(program).<method>(item, **args)` — a program the agent wrote
+  (ADR-013) or a shipped one — and WRITES its own result per item.
+  `stop(agent_space, job)` disarms the pending hops. `main(args)` is
+  the trigger entry: one hop.
+- **A hop is a `once` trigger** (ADR-006 §4) on the agent space's
+  anchor, id `chain-<job>-g<gen>-h<hop>`, program `agent:chain@v1`,
+  args = the chain (items, step, batch, spaces) + `hop` + the tally so
+  far + `prev`. The scheduler runs due triggers one after another in
+  one thread, after re-reading the records (serve's trigger ticker),
+  so hop N+1 never starts before hop N returns.
+- **Arm before, stamp after.** Hop N arms N+1 BEFORE its work, with
+  `prev: {hop: N, count, stamped: false}`; AFTER the work it rewrites
+  N+1's record with the tally and `stamped: true`. A hop that dies
+  (fuel, wall limit) leaves the chain alive and N+1 reads `stamped:
+  false`: N's slice counts as unfinished, its hop is named in the
+  errors, and `_MAX_DEAD_HOPS` (3) dead hops in a row stop the chain.
+  A fired hop's own record is never edited — an args edit re-arms a
+  once (ADR-006 §4 refresh) — and no state lives outside the trigger
+  records: fired hops are the audit trail.
+- **Slices are fixed**: hop N owns `items[(N-1)·batch : N·batch]`; a
+  failed item is counted and the hop goes on (the step raised); the
+  per-item errors ride in the tally, capped at 20.
+- **One bar** (`job`, started by `start()` before hop 1 exists, §1),
+  ticked per item at most every 30 s (the 45 s heartbeat, §4
+  amendment) and finished by the last hop; a stopped chain fails the
+  bar. **The end is a `trigger:<job>` chat message** (§6) with the
+  counts and the first errors, which the loop reports to the user.
+- **The skill side** (`_core`): a many-item job is a helper first,
+  tested on one item, then batches per cell that write as they go;
+  past a few batches, the chain. The chain is the unattended path, not
+  the first move.
 
 ## Consequences
 
