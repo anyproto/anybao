@@ -1352,6 +1352,64 @@ def test_memory_verbs_and_paths():
                if p != "/v1/catalog")
 
 
+def _brain_calls(fx):
+    return [(v, p, b) for v, p, b in fx.calls
+            if p.endswith("/types/br") or p.endswith("/types/t1")
+            or p.endswith("/collections/setup") or p.endswith("/set/any")]
+
+
+def test_brain_type_listed_row_is_left_alone():
+    # ADR-027 §2: the brain is a LISTED store. A row already listed
+    # gets no PATCH, no collections-app setup and no name write.
+    fx = wire(replies=_brain_wire())
+    c = client(fx, bao="s1")
+    assert c.get_brain() == {"objectId": "brain1"}
+    assert _brain_calls(fx) == []
+
+
+def test_brain_type_hidden_row_is_healed_and_named():
+    # a row an older writer minted hidden: healed with ONE PATCH, the
+    # collections app set up (a listed type is invisible without it,
+    # ADR-027 §5) and the brain object named — once per run
+    replies = _brain_wire()
+    replies["/types"] = {"types": [{"id": "br", "xKey": "agent_brain",
+                                    "hidden": True}]}
+    fx = wire(replies=replies)
+    c = client(fx, bao="s1")
+    assert c.get_brain() == {"objectId": "brain1"}
+    assert c.get_brain() == {"objectId": "brain1"}
+    assert _brain_calls(fx) == [
+        ("PATCH", "/v1/spaces/s1/types/br", {"hidden": False}),
+        ("POST", "/v1/catalog/collections/setup", {"spaceId": "s1"}),
+        ("POST", "/v1/spaces/s1/properties/brain1/set/any",
+         {"patch": {"name": "Brain"}})]
+
+
+def test_brain_type_is_minted_listed_and_named():
+    # a fresh account: the type is minted WITHOUT `hidden` and the
+    # derived brain object gets its name
+    replies = _brain_wire()
+    replies["/types"] = {"types": [], "typeId": "t1"}
+    replies["/types/t1/datasets"] = replies.pop("/types/br/datasets")
+    inner = wire(replies=replies)
+
+    def fx(name, payload):   # the listing shows the row once minted
+        r = inner(name, payload)
+        if name == "http.post" and payload["url"].endswith("/types"):
+            replies["/types"]["types"].append(
+                {"id": "t1", "xKey": "agent_brain", "name": "Agent Brain"})
+        return r
+    fx.calls, fx.urls = inner.calls, inner.urls
+    c = client(fx, bao="s1")
+    assert c.get_brain() == {"objectId": "brain1"}
+    mint = next(b for v, p, b in fx.calls
+                if v == "POST" and p == "/v1/spaces/s1/types")
+    assert mint == {"name": "Agent Brain", "xKey": "agent_brain"}
+    assert ("POST", "/v1/spaces/s1/properties/brain1/set/any",
+            {"patch": {"name": "Brain"}}) in fx.calls
+    assert not any(p.endswith("/types/t1") for v, p, _ in fx.calls)   # no heal
+
+
 def test_memory_has_one_home():
     # no bao space wired (a run without one): the verbs refuse loudly
     # instead of picking a space; the harness bundle cannot be

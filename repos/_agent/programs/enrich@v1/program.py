@@ -242,6 +242,8 @@ def _type_catalog(c, space):
             continue
         if t.get("hidden") and not t.get("builtIn"):
             continue
+        if t.get("xKey") == "agent_brain":   # listed, yet bao's store (ADR-027 §2)
+            continue
         key = t.get("xKey") or t.get("id")
         lines.append(f"{key} — {t.get('name')}: {t.get('description') or ''}")
     return lines
