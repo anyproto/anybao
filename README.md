@@ -130,8 +130,8 @@ llm.key.anthropic=sk-ant-...
 Use an Anthropic key scoped to a single workspace (Console > Settings >
 API keys > Create key > choose a workspace). Other providers and how to
 pick a model per tier: [`docs/llm-models.md`](docs/llm-models.md).
-To read, change and test those rows from outside the app (Claude
-Code, a script): [`docs/claude-skill-bao-config.md`](docs/claude-skill-bao-config.md).
+To read, change and test those rows from outside the app (a coding
+agent, a script): [`docs/skill-bao-config.md`](docs/skill-bao-config.md).
 Connector keys (`connector.key.github=...`, `connector.key.linear=...`)
 go in the same file. Details: [`docs/config-secrets.md`](docs/config-secrets.md).
 

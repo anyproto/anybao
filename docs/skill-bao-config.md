@@ -1,7 +1,7 @@
 # Skill: change and test bao's config from outside the app
 
-For a coding agent (Claude Code, Codex, a script) that runs on the
-user's computer and has `curl` and `jq`. It covers three things:
+For a coding agent or a script that runs on the user's computer and
+has `curl` and `jq`. It covers three things:
 
 1. Find the address of the local `any` server the app runs.
 2. Read and write bao's config rows, with a preflight before the write.
@@ -201,7 +201,7 @@ automated.
 CHAT=$(curl -s -X POST $A/v1/catalog/general-chat/setup \
        -H 'Content-Type: application/json' -d "{\"spaceId\": \"$SP\"}" \
        | jq -r '.bundles[0].bundle.rootId')
-ME="$(curl -s $A/v1/account | jq -r .metadata.name) (claude)"
+ME="$(curl -s $A/v1/account | jq -r .metadata.name) (agent)"
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 curl -s -X POST "$A/v1/spaces/$SP/objects/$CHAT/chat/messages" \
