@@ -323,6 +323,64 @@ _DEF_MARKERS = ("__type__", "__collection__")
 # the body part every type bao mints declares (ADR-029 §3): a keyless
 # editor dataset is the module's canonical collection (`editor_blocks`)
 _BODY_PART = {"key": "body", "datasets": [{"module": "editor"}]}
+
+# An icon lives in `any.icon` (a type's rides the wire as `iconCid`,
+# ADR-029 §3) in the client's `icon:v2:` string — the any-ui
+# `content-icons` contract — or, on an object, as the `any://f/…` link
+# of its picture. The client shows a TYPE's icon from the Lucide pack
+# only (one of ten colours); an OBJECT's is an emoji or a picture.
+_ICON_PREFIX = "icon:v2:"
+_ICON_LUCIDE = "io.anyproto.lucide"
+_ICON_COLOR = "grey"   # the client's default; the user recolours in the picker
+_ICON_GLYPH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_TYPE_ICON_SHAPE = '{"glyph": "<Lucide icon name, e.g. receipt>"}'
+_OBJECT_ICON_SHAPE = '{"emoji": "🌱"} or {"picture": "<any://f/… link of an image>"}'
+
+
+def _icon_v2(assignment):
+    return _ICON_PREFIX + json.dumps({"assignment": assignment, "color": _ICON_COLOR},
+                                     separators=(",", ":"), ensure_ascii=False)
+
+
+def _format_type_icon(icon):
+    """A type's `icon` draft -> the stored string; ValueError names
+    the shape. Lucide glyphs only: the client's type picker shows no
+    emoji."""
+    if not isinstance(icon, dict) or not icon.get("glyph"):
+        raise ValueError(f'a type\'s "icon" must be {_TYPE_ICON_SHAPE}')
+    if set(icon) - {"glyph"}:
+        raise ValueError(
+            f'a type\'s "icon" takes only "glyph" (got {sorted(set(icon) - {"glyph"})}); '
+            "the colour is the user's, in the client's picker")
+    g = icon["glyph"]
+    if not isinstance(g, str) or len(g) > 256 or not _ICON_GLYPH_RE.match(g):
+        raise ValueError(
+            f'"icon.glyph" must be a Lucide icon name like "receipt" / '
+            f'"book-open", got {g!r}')
+    return _icon_v2({"kind": "pack", "ref": {"packId": _ICON_LUCIDE, "glyphId": g}})
+
+
+def _format_object_icon(icon):
+    """An object's `icon` draft -> the stored `any.icon` value: an emoji
+    (icon:v2) or the picture's file link verbatim; None clears. A
+    string draft is the emoji."""
+    if icon is None:
+        return ""
+    if isinstance(icon, str):
+        icon = {"emoji": icon}
+    if not isinstance(icon, dict) or not (icon.get("emoji") or icon.get("picture")):
+        raise ValueError(f'an object\'s "icon" must be {_OBJECT_ICON_SHAPE}')
+    if icon.get("picture"):
+        link = icon["picture"]
+        if not isinstance(link, str) or not link.startswith("any://f/"):
+            raise ValueError(
+                f'"icon.picture" must be the any://f/<spaceId>/<fileId> link of an '
+                f'image (attach_file returns it), got {link!r}')
+        return link
+    e = icon["emoji"]
+    if not isinstance(e, str) or not 0 < len(e) <= 10 or any(ch.isascii() for ch in e):
+        raise ValueError(f'"icon.emoji" must be ONE emoji, got {e!r}')
+    return _icon_v2({"kind": "emoji", "grapheme": e})
 _ANY_TYPES_ERR = (
     'there is no "any.types": an object has exactly ONE type — filter it '
     'with {"any.type": "<type xKey>"} (or {"$in": [...]}) — and any number '
@@ -1526,11 +1584,15 @@ class _Client:
         """Create an object → {objectId, link, resolved?, createdOptions?, warnings?}.
 
         body: {"type"?, "collections"?, "initialProperties"?, "name"?,
-        "description"?, "markdown"?}. An object IS exactly one `type`
-        (its class — body, parts, fields; default `page`, the plain
-        document) and is FILED UNDER any number of `collections` (tags;
-        columns when they carry properties). Top-level `name` /
-        `description` route into the `any` group; `markdown` (alias
+        "description"?, "icon"?, "markdown"?}. An object IS exactly one
+        `type` (its class — body, parts, fields; default `page`, the
+        plain document) and is FILED UNDER any number of `collections`
+        (tags; columns when they carry properties). Top-level `name` /
+        `description` / `icon` route into the `any` group — `icon` is
+        the object's OWN mark, optional: `{"emoji": "🌱"}` or
+        `{"picture": "<any://f/… link of an image>"}` (attach_file
+        returns the link); without one the object wears its type's
+        glyph. `markdown` (alias
         `body`) becomes the editor body, PUT after the create — the
         object's TYPE must declare a body (`page` does; every type
         `create_type` mints does; a type without one errors here with
@@ -1563,7 +1625,7 @@ class _Client:
                 '"type" (default "page") and is FILED UNDER any number of '
                 '"collections": {"type": "book", "collections": ["reading_list"]}')
         unknown = set(body) - {"type", "collections", "initialProperties",
-                               "name", "description", "markdown", "body"}
+                               "name", "description", "icon", "markdown", "body"}
         if unknown:
             raise ValueError(
                 f"create_object: unknown top-level key(s) {sorted(unknown)} "
@@ -1578,12 +1640,15 @@ class _Client:
             markdown = body_md
         name = body.pop("name", None)
         description = body.pop("description", None)
-        if name is not None or description is not None:
+        icon = _format_object_icon(body.pop("icon")) if body.get("icon") else None
+        if name is not None or description is not None or icon is not None:
             grp = body.setdefault("initialProperties", {}).setdefault("any", {})
             if name is not None:
                 grp.setdefault("name", name)
             if description is not None:
                 grp.setdefault("description", description)
+            if icon is not None:
+                grp.setdefault("icon", icon)
         tkey = body.pop("type", None)
         if tkey is None:
             tkey = _PAGE_TYPE   # the default type: a plain document (ADR-029 §3)
@@ -1745,11 +1810,13 @@ class _Client:
     def update_object(self, space, object_id, body, create_options=True):
         """Update an object's name / editor body / properties by handle.
 
-        `body`: {"name"?, "description"?, "markdown"?/"body"?,
+        `body`: {"name"?, "description"?, "icon"?, "markdown"?/"body"?,
         "<ownerXKey>": {prop: value}, …} — same nested group shape as
         create_object, a group keyed by the object's type or one of its
-        collections (top-level name/description route into the `any`
-        group). A markdown write needs the object's type to declare a
+        collections (top-level name/description/icon route into the
+        `any` group; `icon` = `{"emoji": "🌱"}` or `{"picture":
+        "<any://f/… link>"}`, `None` clears it so the object wears its
+        type's glyph). A markdown write needs the object's type to declare a
         body (see create_object). Property keys resolve to ids;
         groups are resolved and every value encoded against its
         definition BEFORE any write so a bad key or value can't land a
@@ -1764,12 +1831,16 @@ class _Client:
             markdown = body_md
         name = body.pop("name", None)
         description = body.pop("description", None)
+        has_icon = "icon" in body
+        icon = _format_object_icon(body.pop("icon", None)) if has_icon else None
         ctx = self._write_ctx(create_options)
         groups = self._resolve_prop_groups(space, body, ctx)   # raises before write
         if name is not None:
             groups.setdefault("any", {}).setdefault("name", name)
         if description is not None:
             groups.setdefault("any", {}).setdefault("description", description)
+        if has_icon:
+            groups.setdefault("any", {}).setdefault("icon", icon)
         if markdown is not None:
             self.put_markdown(space, object_id, markdown)
         self._apply_option_patches(space, ctx)
@@ -2491,11 +2562,20 @@ class _Client:
     @_public('mutator')
     def create_type(self, space, body):
         # ADR-029 §3
-        """Create a type — what an object IS — with its properties (composite ensure).
+        """Create a type — what an object IS — with its icon and properties (composite ensure).
 
-        body: {"name", "xKey"?, "description"?, "hidden"?, "layout"?,
-        "body"?: false, "properties"?: [{"name", "xKey"?, "kind"?,
-        "xFormat"?}]}. kind ∈ string | number | boolean | array |
+        body: {"name", "icon", "xKey"?, "description"?, "hidden"?,
+        "layout"?, "body"?: false, "properties"?: [{"name", "xKey"?,
+        "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
+        type** — the glyph the user sees on every object of it and in
+        every picker; a mint without one ERRORS. `{"glyph": "<Lucide
+        icon name>"}` — a Lucide glyph, never an emoji (the client's
+        type picker has none), no colour (the user's, in the picker);
+        pick what the type IS: `{"glyph": "receipt"}` for an invoice,
+        `{"glyph": "sprout"}` for a plant. A hidden type needs none.
+        On an existing type the icon
+        is healed only when it has none (the user's pick is never
+        overwritten; `set_type_icon` changes it). kind ∈ string | number | boolean | array |
         object | datetime — NOTHING else ("text" and "date" are
         descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}},
         a pick-list {"xFormat": {"type": "choice", "options": ["To do",
@@ -2532,16 +2612,27 @@ class _Client:
                 '"weight" does not exist: an object has exactly one type, '
                 "nothing ranks them")
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        icon = _format_type_icon(body["icon"]) if body.get("icon") else None
         row = self._definition_guards(space, xkey, "type")
         tid = row["id"] if row else None
         created = False
         if tid is None:
-            req = {k: body[k] for k in ("name", "description", "iconCid",
-                                        "hidden", "layout")
+            if icon is None and not body.get("hidden"):
+                raise ValueError(
+                    f'a type needs an "icon" — the glyph the user sees on every '
+                    f'"{body.get("name")}" object and in every picker. Pass '
+                    f'"icon": {_TYPE_ICON_SHAPE} and call create_type again.')
+            req = {k: body[k] for k in ("name", "description", "hidden", "layout")
                    if k in body}
             req["xKey"] = xkey
+            if icon is not None:
+                req["iconCid"] = icon
             tid = self._call("post", f"/v1/spaces/{space}/types", req)["typeId"]
             created = True
+        elif icon is not None and not row.get("iconCid"):
+            # heal an icon onto a row minted before the rule; a row
+            # that has one keeps it (the user's pick wins)
+            self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"iconCid": icon})
         added = self._add_missing_props(space, tid, props)
         if want_body:
             self._ensure_body_part(space, tid)
@@ -2559,6 +2650,30 @@ class _Client:
         self._call("post", f"/v1/spaces/{space}/types/{type_id}/parts", _BODY_PART)
         self._ds_invalidate(space, type_id=type_id)
         return True
+
+    @_public('mutator')
+    def set_type_icon(self, space, type_key, icon):
+        """Change a user type's icon — the glyph on its objects and in pickers.
+
+        `icon`: {"glyph": "<Lucide icon name>"} — the shape
+        create_type takes (a Lucide glyph, never an emoji; the colour
+        is the user's). `type_key` is the type's xKey (or id); a builtin or a
+        catalog type ERRORS (their icons are the client's). Returns
+        {"typeId", "icon"}."""
+        value = _format_type_icon(icon)
+        cat = self._catalog(space)
+        tid = self._resolve_def(space, type_key)
+        row = cat["by_id"].get(tid) if tid else None
+        if row is None or row.get("kind") != "type":
+            raise ValueError(
+                f'"{type_key}" is not a type. Types: {self._type_handles(space)}')
+        if not self._is_user_def(row) or row.get("xKey") in self._catalog_handles():
+            raise ValueError(
+                f'"{type_key}" is a builtin or catalog type — its icon is the '
+                "client's; only a user type's icon can be set.")
+        self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"iconCid": value})
+        self._cat_invalidate(space)
+        return {"typeId": tid, "icon": value}
 
     @_public('mutator')
     def create_collection(self, space, body):
@@ -3615,7 +3730,7 @@ class _Client:
         return out
 
     # --- agent memory (write path; reads go through /query on the brain) --------
-    def _ensure_store(self, space, xkey, name, datasets, listed=False):
+    def _ensure_store(self, space, xkey, name, datasets, listed=False, icon=None):
         """Lazily provision a guest-owned agent store (ADR-017 §1,
         ADR-027 §2): ensure the bodiless user type by xKey + one part
         per dataset draft. Hidden unless `listed` (the brain): a listed
@@ -3630,6 +3745,8 @@ class _Client:
         decl = {"name": name, "xKey": xkey, "body": False}
         if not listed:
             decl["hidden"] = True
+        if icon is not None:
+            decl["icon"] = icon
         made = self.create_type(space, decl)
         if made["created"]:
             self._minted_stores.add(key)
@@ -3710,6 +3827,7 @@ class _Client:
                    for t in self.list_types(space)):
             # the shape deploy mints in the overlays (deploy.rs skill_schema)
             self.create_type(space, {"name": "Agent Skill", "xKey": "agent_skill",
+                                     "icon": {"glyph": "sparkles"},
                                      "properties": [{"name": "Name", "xKey": "name",
                                                      "kind": "string"}]})
         props = {"name": name}
@@ -3780,7 +3898,8 @@ class _Client:
         key = (space, "agent_brain")
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
-                            _ROI_DATASET], listed=True)
+                            _ROI_DATASET], listed=True,
+                           icon={"glyph": "brain"})
         child = self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
         if key in self._minted_stores:
             # once per account: on the mint, or on the heal of a hidden row

@@ -112,7 +112,8 @@ def fake_any(capture, *, memory=(), turns=(), chunks=(), brain=None):
         if path.endswith("/types"):
             return _reply(200, {"types": [
                 {"id": "t1", "name": "T One", "xKey": "t_one"},
-                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain"},
+                {"id": "br", "name": "Agent Brain", "xKey": "agent_brain",
+                 "iconCid": "icon:v2:{}"},
                 {"id": "lg", "name": "Agent Log", "xKey": "agent_log"}]})
         if path.endswith("/backlinks"):
             return _reply(200, {"object": [
