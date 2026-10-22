@@ -1,6 +1,6 @@
 [package]
 name = "anyrt"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 license = "MIT"
 description = "anyrt — the anybao runtime: wasmtime cage + the syscall surface (ADR-002)"
