@@ -130,8 +130,10 @@ boot re-seeds it if deleted).
   "internal:chat-watch"` is informational; the runtime recognizes the
   reserved id and routes fires through the existing watcher
   (`start_or_inject` — dedup seen-set, inject-into-live-conversation,
-  deferred-while-not-ready backlog, foreign-agent attribution, and
-  the reconnect snapshot backlog of ADR-009 §8 all unchanged). No
+  deferred-while-not-ready backlog, attribution — foreign agents by
+  `agent.name`, members of a shared chat by roster name (ADR-005 §5,
+  BOB-192) — and the reconnect snapshot backlog of ADR-009 §8 all
+  unchanged). No
   per-message run records — conversations are already logged as
   `agent_turns`; the record's rollup counts conversation STARTS.
 - **Election's scope** (ADR-015 §3 restated): claiming unassigned

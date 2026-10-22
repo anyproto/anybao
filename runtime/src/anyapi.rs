@@ -614,6 +614,13 @@ impl Client {
         ))
     }
 
+    /// GET /v1/identities/{identity} — one known identity (`{identity,
+    /// name, iconCid, spaceIds}`), listed or not in any space; 404 for
+    /// an identity the server has never seen.
+    pub fn identity(&self, identity: &str) -> Result<Value, AnyError> {
+        self.call("GET", &format!("/v1/identities/{identity}"), None)
+    }
+
     // --- files (ADR-009 §4) ---
     /// POST /v1/spaces/{s}/objects/{o}/files?name=… — attach raw bytes
     /// to an object; the reply is the server's FileInfo (fileId, size,

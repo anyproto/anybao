@@ -682,6 +682,42 @@ pub fn standing_triggers(space: &str, chat_id: &str, owner: &str) -> Vec<Trigger
 
 // --- the watcher (trigger #1) -------------------------------------------------
 
+/// The chat space's member roster as the sender fold reads it
+/// (BOB-192, ADR-005 §5): identity → display name for every listed
+/// row (a removed member keeps its name — a past writer still
+/// resolves), plus the count of ACTIVE members. A roster with one
+/// active member is the user alone, and their messages get no sender
+/// line. Built from `GET /v1/spaces/{s}/members`; serve caches one per
+/// chat and memoizes identity-directory hits into `names`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Roster {
+    pub names: BTreeMap<String, String>,
+    pub active: usize,
+}
+
+impl Roster {
+    pub fn from_members(rows: &[Value]) -> Self {
+        let mut out = Roster::default();
+        for m in rows {
+            let id = m.get("identity").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() {
+                continue;
+            }
+            if m.get("status").and_then(|v| v.as_str()) == Some("active") {
+                out.active += 1;
+            }
+            if let Some(name) = m
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|n| !n.trim().is_empty())
+            {
+                out.names.insert(id.to_string(), name.trim().to_string());
+            }
+        }
+        out
+    }
+}
+
 /// A chat message as the loop consumes it — see `Watcher::input`.
 #[derive(Clone, Debug)]
 pub struct ChatInput {
@@ -909,6 +945,74 @@ impl Watcher {
         record
     }
 
+    /// The identity a human message must be attributed to: its
+    /// `creator`, for a record with no `agent` group. An agent message
+    /// is attributed by `agent.name` instead; a record without a
+    /// creator has nothing to resolve.
+    pub fn sender_id(record: &Value) -> Option<&str> {
+        if record.get("agent").is_some_and(|a| !a.is_null()) {
+            return None;
+        }
+        record
+            .get("creator")
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+    }
+
+    /// Resolve a human message's `creator` into a `sender` group on the
+    /// record — BEFORE the watcher reads it, like `with_reply`, so the
+    /// inject and the start paths fold the same text (BOB-192, ADR-005
+    /// §5). `roster` is the chat space's member list; `lookup` is the
+    /// host's identity-directory read (`GET /v1/identities/{id}`) for a
+    /// creator the roster does not name (a member who left), and its
+    /// hit is memoized into the roster. The group is `{name}` when a
+    /// name is known, `{identity}` otherwise. A record is left untouched
+    /// when it is an agent's, carries no creator, or the roster has at
+    /// most one active member: alone in the chat, the user needs no
+    /// name on their own words.
+    pub fn with_sender(
+        mut record: Value,
+        roster: &mut Roster,
+        lookup: impl FnOnce(&str) -> Option<String>,
+    ) -> Value {
+        if roster.active <= 1 {
+            return record;
+        }
+        let Some(creator) = Self::sender_id(&record).map(str::to_string) else {
+            return record;
+        };
+        let name = match roster.names.get(&creator) {
+            Some(n) => Some(n.clone()),
+            None => {
+                let found = lookup(&creator).filter(|n| !n.trim().is_empty());
+                if let Some(n) = &found {
+                    roster.names.insert(creator.clone(), n.trim().to_string());
+                }
+                found
+            }
+        };
+        let group = match name {
+            Some(n) => json!({"name": n}),
+            None => json!({"identity": creator}),
+        };
+        if let Some(obj) = record.as_object_mut() {
+            obj.insert("sender".into(), group);
+        }
+        record
+    }
+
+    /// The `[from "<name>"]` line for a resolved `sender` group, or
+    /// None when the record carries none. An unnamed sender shows its
+    /// identity, which `any@v1.resolve_member` can still look up.
+    fn sender_line(record: &Value) -> Option<String> {
+        let g = record.get("sender")?.as_object()?;
+        if let Some(n) = g.get("name").and_then(|n| n.as_str()) {
+            return Some(format!("[from \"{n}\"]"));
+        }
+        let id = g.get("identity").and_then(|i| i.as_str())?;
+        Some(format!("[from identity {id}]"))
+    }
+
     /// The `[in reply to …]` line for a resolved `replyTo` group, or
     /// None when the record carries none. The quote is whitespace-
     /// collapsed and head-capped: the line locates the referent, the
@@ -946,7 +1050,11 @@ impl Watcher {
     /// harness-authored `[from agent …]` line derived from the
     /// record's `agent.name` METADATA — the model's knowledge of the
     /// sender no longer rests on a spoofable convention inside the
-    /// message text. Human messages pass through untouched. A reply
+    /// message text. A human message in a shared chat (`sender` group,
+    /// resolved by `with_sender`) opens with `[from "<name>"]` — the
+    /// member's display name from the space roster, or `[from identity
+    /// …]` when none is known; alone in the chat, a human message
+    /// passes through untouched. A reply
     /// (`replyTo` group, resolved by `with_reply`) gets an
     /// `[in reply to …: "<quote>"]` line ahead of the text — the
     /// referent is the message's context, so it precedes the words.
@@ -968,6 +1076,7 @@ impl Watcher {
             .map(|name| format!("[from agent \"{name}\" — automated message, not the user]"));
         let mut lines: Vec<String> = Vec::new();
         lines.extend(from_line);
+        lines.extend(Self::sender_line(record));
         lines.extend(Self::reply_line(record));
         if !text.is_empty() {
             lines.push(text.to_string());
@@ -1712,6 +1821,103 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("[from agent \"trigger:x\""));
+    }
+
+    #[test]
+    fn a_shared_chat_names_the_sender_from_the_roster() {
+        // BOB-192: creator ids resolve through the members list, never
+        // by scanning mention links
+        let rows = vec![
+            json!({"identity": "A1", "name": "tolya", "status": "active", "permission": "owner"}),
+            json!({"identity": "A2", "name": " cheggaaa ", "status": "active", "permission": "writer"}),
+            json!({"identity": "A3", "name": "gone", "status": "removed", "permission": "writer"}),
+            json!({"identity": "A4", "status": "joining", "permission": "reader"}),
+            json!({"name": "no id"}),
+        ];
+        let mut roster = Roster::from_members(&rows);
+        assert_eq!(roster.active, 2);
+        assert_eq!(roster.names.get("A2").map(String::as_str), Some("cheggaaa"));
+        assert_eq!(roster.names.get("A3").map(String::as_str), Some("gone"));
+        assert!(!roster.names.contains_key("A4"));
+
+        let human = json!({"id": "h1", "text": "hi", "creator": "A1"});
+        let named = Watcher::with_sender(human.clone(), &mut roster, |_| panic!("roster hit"));
+        assert_eq!(named["sender"], json!({"name": "tolya"}));
+        assert_eq!(Watcher::attributed_text(&named), "[from \"tolya\"]\nhi");
+        // a removed member still names its past messages
+        let past = Watcher::with_sender(
+            json!({"id": "h2", "text": "old", "creator": "A3"}),
+            &mut roster,
+            |_| panic!("roster hit"),
+        );
+        assert_eq!(Watcher::attributed_text(&past), "[from \"gone\"]\nold");
+        // an unlisted creator: the directory lookup, memoized into the roster
+        let left = Watcher::with_sender(
+            json!({"id": "h3", "text": "bye", "creator": "A9"}),
+            &mut roster,
+            |id| {
+                assert_eq!(id, "A9");
+                Some("left".into())
+            },
+        );
+        assert_eq!(Watcher::attributed_text(&left), "[from \"left\"]\nbye");
+        assert_eq!(roster.names.get("A9").map(String::as_str), Some("left"));
+        let again = Watcher::with_sender(
+            json!({"id": "h4", "text": "back", "creator": "A9"}),
+            &mut roster,
+            |_| panic!("memoized"),
+        );
+        assert_eq!(Watcher::attributed_text(&again), "[from \"left\"]\nback");
+        // nobody knows the id: the identity itself, resolvable later
+        let unknown = Watcher::with_sender(
+            json!({"id": "h5", "text": "?", "creator": "A0"}),
+            &mut roster,
+            |_| None,
+        );
+        assert_eq!(unknown["sender"], json!({"identity": "A0"}));
+        assert_eq!(Watcher::attributed_text(&unknown), "[from identity A0]\n?");
+        assert!(!roster.names.contains_key("A0"));
+        // an agent's message keeps its metadata attribution; no creator → nothing
+        let nudge = json!({"id": "n1", "text": "done", "creator": "A1",
+                           "agent": {"name": "trigger:x"}});
+        let same = Watcher::with_sender(nudge.clone(), &mut roster, |_| panic!("agent"));
+        assert_eq!(same, nudge);
+        let bare = json!({"id": "b1", "text": "hi"});
+        assert_eq!(
+            Watcher::with_sender(bare.clone(), &mut roster, |_| panic!("no id")),
+            bare
+        );
+        // order: sender, reply, text, attachments
+        let full = Watcher::with_sender(
+            Watcher::with_reply(
+                json!({"id": "f1", "text": "this", "creator": "A2", "replyToMessageId": "t1",
+                       "attachments": {"a0": {"type": "link", "link": "any://o/sp1/o1"}}}),
+                |_| Some(json!({"id": "t1", "text": "go"})),
+            ),
+            &mut roster,
+            |_| panic!("roster hit"),
+        );
+        assert_eq!(
+            Watcher::attributed_text(&full),
+            "[from \"cheggaaa\"]\n[in reply to the user's message: \"go\"]\nthis\n\
+             [attachment link: any://o/sp1/o1]"
+        );
+    }
+
+    #[test]
+    fn alone_in_the_chat_the_user_gets_no_sender_line() {
+        let mut solo = Roster::from_members(&[json!({"identity": "A1", "name": "tolya",
+                                                     "status": "active"})]);
+        let human = json!({"id": "h1", "text": "hi", "creator": "A1"});
+        let same = Watcher::with_sender(human.clone(), &mut solo, |_| panic!("solo"));
+        assert_eq!(same, human);
+        assert_eq!(Watcher::attributed_text(&same), "hi");
+        // an empty roster (the read failed at boot, nothing cached) is "alone" too
+        let mut none = Roster::default();
+        assert_eq!(
+            Watcher::with_sender(human.clone(), &mut none, |_| None),
+            human
+        );
     }
 
     #[test]

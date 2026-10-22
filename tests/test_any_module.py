@@ -2415,3 +2415,59 @@ def test_a_date_property_keeps_the_calendar_day_east_and_west_of_utc():
     assert west("due", "date", {"$date": (1791504000 + 5 * 3600) * 1000}) == day
     # datetimes are untouched
     assert enc("at", "datetime", local_midnight) == local_midnight
+
+
+# --- members (BOB-192) --------------------------------------------------------
+
+def test_list_members_trims_rows_and_puts_active_first():
+    roster = {"members": [
+        {"identity": "A2", "permission": "writer", "status": "removed", "name": "gone",
+         "iconCid": "bafy1"},
+        {"identity": "A1", "permission": "owner", "status": "active", "name": "tolya",
+         "iconCid": "bafy2", "description": "me"}]}
+    fx = wire(replies={"/members": roster})
+    c = client(fx)
+    rows = c.list_members("sp")
+    assert rows == [
+        {"identity": "A1", "name": "tolya", "permission": "owner", "status": "active"},
+        {"identity": "A2", "name": "gone", "permission": "writer", "status": "removed"}]
+    c.list_members("sp")                       # cached per run
+    assert fx.calls == [("GET", "/v1/spaces/sp/members", None)]
+
+
+def test_resolve_member_reads_the_roster_then_the_identity_directory():
+    roster = {"members": [{"identity": "A1", "permission": "owner", "status": "active",
+                           "name": "tolya"}]}
+    fx = wire(replies={"/members": roster,
+                       "/v1/identities/A9": {"identity": "A9", "name": "left",
+                                             "iconCid": "x", "spaceIds": ["sp"]}})
+    c = client(fx)
+    assert c.resolve_member("sp", "A1") == {
+        "identity": "A1", "name": "tolya", "permission": "owner", "status": "active"}
+    assert c.resolve_member("sp", "A9") == {"identity": "A9", "name": "left", "member": False}
+    assert [p for _, p, _ in fx.calls] == ["/v1/spaces/sp/members", "/v1/identities/A9"]
+
+
+def test_resolve_member_unknown_identity_is_none():
+    fx = wire(replies={"/members": {"members": []}}, status=404)
+    # every reply 404s: the roster read raises, so build the client with
+    # a 200 roster and a 404 directory instead
+    calls = []
+
+    def mixed(name, payload):
+        url = payload["url"].removeprefix("http://any")
+        calls.append(url)
+        if url.endswith("/members"):
+            return {"status": 200, "headers": {}, "body": json.dumps({"members": []})}
+        return {"status": 404, "headers": {},
+                "body": json.dumps({"error": {"code": "request.not_found", "message": "no"}})}
+    assert client(mixed).resolve_member("sp", "A0") is None
+    assert calls == ["/v1/spaces/sp/members", "/v1/identities/A0"]
+    del fx
+
+
+def test_me_is_the_account_identity_and_name():
+    fx = wire(replies={"/v1/account": {"id": "A1", "metadata": {"name": "tolya", "iconCid": "x"},
+                                       "techSpaceId": "t"}})
+    assert client(fx).me() == {"identity": "A1", "name": "tolya"}
+    assert fx.calls == [("GET", "/v1/account", None)]

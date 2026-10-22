@@ -89,6 +89,16 @@ device" where they are, or "Use <name>" on another device's row while
 that device runs bao. Never promise a switch you have not seen in
 `active`.
 
+**Members and names.** A chat message's `creator`, an object's
+`author`/`modifiedBy` are account identities, not names. Resolve them
+with c.list_members(space) (`[{identity, name, permission, status}]`)
+or c.resolve_member(space, identity) for one id, including a member
+who has left — never by scanning mention links. In a shared chat every
+human turn already opens with `[from "<name>"]` (or `[from identity
+…]` when nobody lists it: resolve_member it); alone in the chat the
+user's turns carry no line, and the runtime context names them.
+c.me() is your own account's identity and name.
+
 **Links.** Write `[Name](any://o/<spaceId>/<objectId>)`; files are
 `any://f/<spaceId>/<fileId>`. A record inside an object's dataset has
 its own link: `any://o/<spaceId>/<objectId>/<dataset>/<recordId>` —

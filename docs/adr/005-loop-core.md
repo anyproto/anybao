@@ -497,8 +497,9 @@ wording). The **stable** block is identity + system skills + tool docs;
 the **tail** block is what a run's own actions or surroundings change:
 the skills index, the repo inventory, the memory categories, and the
 **runtime context** (agent space id, chat id, agent name, the apps of
-the agent space and of the user's view, the shell device — the ids
-must be stated because the model has no other source for them). Both
+the agent space, the user's display name as its last line, the
+shell device — the ids must be stated because the model has no other
+source for them). Both
 go as a `system` list to every `use("llm@v1").chat`; each block ends in
 its own cache breakpoint, so a new skill, program or memory category,
 or a view on another space, rewrites only the small tail, never the
@@ -589,6 +590,35 @@ inject and the start paths see the same text because the resolution
 happens on the record, ahead of both. The lookup is host-side input,
 not an effect: the folded text is what the trace records. Nothing is
 written to the chat.
+
+**The sender rides the message (amendment 2026-10-22, BOB-192).** A
+chat message names its author only as `creator`, an account identity;
+the names live in the space's member roster (`GET
+/v1/spaces/:id/members`, and `GET /v1/identities/:id` for a writer
+who has since left). The host resolves the creator of every human
+message against the roster before the watcher reads the record —
+like the reply referent, ahead of both the inject and the start paths
+— and `attributed_text` opens the user turn with `[from "<name>"]`,
+or `[from identity <id>]` when nobody names it (the model can still
+`resolve_member` it). The line sits first, before `[in reply to …]`
+and the text; agent messages keep their `[from agent …]` line
+instead. A chat whose space has at most one active member is the
+user alone, and their messages get no line — the single-user prompt
+is unchanged byte for byte. The roster is read once per serve and
+cached (re-read when older than ten minutes, or sooner when a
+creator is not in it); a failed read folds nothing — a name is never
+worth a stalled message. Folded into the TEXT, so the persisted turn
+and every future boot window carry it unchanged. Mention links
+(`[name](any://m/…)`) are no longer how the model learns a name; the
+roster is (`any@v1.list_members` / `resolve_member`).
+
+The user's own name is standing context, not per-message: the
+runtime context's last line is `- user: <name>`, from `any@v1.me()`
+(`GET /v1/account`) — the name only, the identity is a `me()` call
+away. It rides the TAIL block because it
+is per-instance stable — the account does not change between runs —
+so the tail and the boot window behind it stay cached; it is never
+on the message, where it would be repeated on every turn.
 
 **Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
 cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,

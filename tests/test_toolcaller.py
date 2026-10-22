@@ -113,6 +113,10 @@ class World:
             def get_brain(self):
                 return {}
 
+            def me(self):
+                # BOB-192: the account the agent runs as — the user line
+                return {"identity": "A1user", "name": "tolya"}
+
             def list_apps(self, space):
                 # ADR-027 §5: the sidebar as data — one app in the
                 # agent space, a hidden one filtered out
@@ -451,6 +455,15 @@ def test_user_message_carries_timestamp_and_view_context():
     assert "apps in the user's space" not in call["system"]
     assert user.endswith("view: object]\n- apps in the user's space: Wiki (wiki): A tree of pages")
     assert "General" not in call["system"].split("## Runtime context")[1]
+    # the user line (BOB-192) closes the runtime context — in the TAIL
+    # cache block (per-instance stable), never the stable block or the
+    # message
+    tail = call["system_blocks"][-1]
+    assert tail.rstrip().endswith(
+        "- user: tolya (the account this agent runs as; `me()` for the identity)"), tail[-300:]
+    assert "A1user" not in call["system"]      # the name only, never the identity
+    assert "- user: tolya" not in call["system"].split("## Runtime context")[0]
+    assert "- user: tolya" not in user
     # a view on the agent space itself adds no line
     w2 = World([done_reply()])
     run(w2, uiContext={"spaceId": "s1"})

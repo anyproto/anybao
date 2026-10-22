@@ -492,6 +492,7 @@ class _Client:
         self._type_datasets = {}   # (space, typeId) -> [dataset rows]
         self._object_owners = {}   # (space, objectId) -> {"type", "collections"}
         self._chat_cache = {}      # space -> the general chat's root id
+        self._members_cache = {}   # space -> member rows (BOB-192)
         self._wiki_cache = {}      # space -> {collectionId, parentId, pos, folder}
         self._catalog_cache = None  # the server's usecase catalog
         self._collections_ready = set()   # spaces whose collections app is set up
@@ -2039,6 +2040,61 @@ class _Client:
             row["active"] = peer is not None and peer == winner
             row["bao"] = "bao" in (row.get("apps") or {})
         return reg
+
+    # --- members (BOB-192): a chat message's `creator`, an object's
+    # `author`/`modifiedBy` and a members row's `identity` are one
+    # encoding — names resolve through the roster, never by scanning
+    # mention links (any docs/08-clients.md § modifiedBy)
+    @_public('getter')
+    def list_members(self, space):
+        """The space's members → [{identity, name, permission, status}], active first.
+
+        `identity` is the id that a chat message's `creator`, an object's
+        `author`/`modifiedBy` carry — join on it to name who wrote what.
+        `permission`: owner/writer/reader; `status`: active, joining,
+        removed, …. A one-member space is the user alone. Cached per run;
+        a member who left may be missing — `resolve_member` falls back."""
+        rows = self._members_cache.get(space)
+        if rows is None:
+            r = self._call("get", f"/v1/spaces/{space}/members")
+            rows = [{k: m.get(k) for k in ("identity", "name", "permission", "status")}
+                    for m in r.get("members") or []]
+            rows.sort(key=lambda m: m.get("status") != "active")
+            self._members_cache[space] = rows
+        return list(rows)
+
+    @_public('getter')
+    def resolve_member(self, space, identity):
+        """One identity → its members row, or {identity, name, member: False}, or None.
+
+        The roster first (`list_members`); an identity the space no longer
+        lists (a member who left) resolves through the server's identity
+        directory as `{identity, name, member: False}`; an identity the
+        server has never seen → None. Use it on a `creator` / `author` /
+        `modifiedBy` value that `list_members` does not cover."""
+        for m in self.list_members(space):
+            if m.get("identity") == identity:
+                return m
+        try:
+            r = self._call("get", f"/v1/identities/{identity}")
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        if not r.get("identity"):
+            return None
+        return {"identity": r["identity"], "name": r.get("name"), "member": False}
+
+    @_public('getter', scoped=False)
+    def me(self):
+        """This account → {identity, name}: the user this agent runs as.
+
+        `identity` is the account id (`GET /v1/account` → `id`), the same
+        encoding as `creator` / `author` / `modifiedBy` and a members row's
+        `identity`; `name` is the account's display name."""
+        r = self._call("get", "/v1/account")
+        return {"identity": r.get("id"),
+                "name": (r.get("metadata") or {}).get("name")}
 
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress
