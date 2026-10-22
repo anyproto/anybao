@@ -1597,9 +1597,9 @@ class _Client:
         object's TYPE must declare a body (`page` does; every type
         `create_type` mints does; a type without one errors here with
         the fix, nothing is retyped). `parent=` puts the object in the
-        space's page tree (the wiki app, a collection): `""` for the
-        top level or a parent object id — the object is filed under
-        the wiki with `parentId` and a position after the last
+        space's page tree (Folders in the UI; the `wiki` collection):
+        `""` for the top level or a parent object id — the object is
+        filed under it with `parentId` and a position after the last
         sibling; `folder=True` marks it a folder. Without `parent` the
         object is outside every tree, reachable by search, links and
         queries. `type`, `collections` entries and `initialProperties`
@@ -1768,12 +1768,12 @@ class _Client:
 
     @_public('mutator')
     def move_object(self, space, object_id, parent, folder=None):
-        """Place an object in the page tree, or move it within it.
+        """Place an object in the page tree (Folders in the UI), or move it.
 
         `parent` is `""` for the top level or a parent object id; the object is
-        filed under the wiki collection if it is not yet, `parentId` is set and
+        filed under the `wiki` collection if it is not yet, `parentId` is set and
         a position after the last sibling allocated; `folder=True/False` sets
-        the folder flag. Its type is untouched. "Take it out of the wiki" is
+        the folder flag. Its type is untouched. "Take it out of Folders" is
         `remove_from_collection(space, object_id, "wiki")`. Returns {"objectId",
         "parentId", "pos"}."""
         wiki = self._wiki(space)
@@ -1795,8 +1795,8 @@ class _Client:
     def list_children(self, space, parent=""):
         """The page tree under `parent` ("" = top) → rows in sidebar order.
 
-        Rows are query_objects-shaped. A space without the wiki app has no tree:
-        returns []."""
+        Rows are query_objects-shaped. A space whose tree (Folders in the UI)
+        was never set up has none: returns []."""
         if not any(b.get("id") == _WIKI_BUNDLE for b in self.list_bundles(space)):
             return []
         wiki = self._wiki(space)
