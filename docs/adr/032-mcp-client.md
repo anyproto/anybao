@@ -59,7 +59,7 @@ True`, `@span` on every method), listed in `## Tools` like `webSearch`
 and `config`. Surface:
 
 ```
-servers()                                → {servers: [{id, url, transport, has_key}]}
+servers()                                → {servers: [{id, url, transport, api_key_ref}]}
 tools(server)                            → {ok, tools: [{name, description, inputSchema}]}
 call(server, tool, arguments=None)       → {ok, content, structuredContent?, isError, text}
 raw(server, method, params=None)         → {ok, result} | {ok: False, error, code, data?}

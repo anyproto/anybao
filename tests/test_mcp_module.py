@@ -286,8 +286,8 @@ def test_servers_lists_rows_without_key_values():
         "llm.tier.codegen": {"provider": "anthropic"},
         "mcp.key.t": "never-listed-here-anyway"})
     assert m.servers() == {"servers": [
-        {"id": "pub", "url": "https://mcp.example/mcp", "transport": "http", "has_key": False},
-        {"id": "t", "url": URL, "transport": "http", "has_key": True}]}
+        {"id": "pub", "url": "https://mcp.example/mcp", "transport": "http", "api_key_ref": None},
+        {"id": "t", "url": URL, "transport": "http", "api_key_ref": "mcp.key.t"}]}
 
 
 def test_raw_returns_the_result_verbatim_and_errors_with_code():

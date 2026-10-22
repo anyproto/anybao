@@ -236,10 +236,12 @@ def _failure(e):
 
 @span("mcp.servers", kind="getter")  # noqa: F821 - guest global
 def servers():
-    """The configured MCP servers → `{servers: [{id, url, transport, has_key}]}`.
+    """The configured MCP servers → `{servers: [{id, url, transport, api_key_ref}]}`.
 
-    Reads the `mcp.server.*` rows of the home space's agent config;
-    the key values are never read. Add one with
+    Reads the `mcp.server.*` rows of the home space's agent config.
+    `api_key_ref` is the row's ref (`mcp.key.<id>`) or None for a
+    keyless server; it says nothing about whether the key is entered —
+    only a call does. Add one with
     `use("agent:config@v1").set("mcp.server.<id>", {"transport": "http",
     "url": …, "api_key_ref": "mcp.key.<id>" | None})`."""
     cfg = use("agent:config@v1")  # noqa: F821 - guest global
@@ -252,7 +254,7 @@ def servers():
         row = rows[key] if isinstance(rows[key], dict) else {}
         out.append({"id": key[len(_ROW_PREFIX):], "url": row.get("url"),
                     "transport": row.get("transport") or "http",
-                    "has_key": bool(row.get("api_key_ref"))})
+                    "api_key_ref": row.get("api_key_ref") or None})
     return {"servers": out}
 
 
