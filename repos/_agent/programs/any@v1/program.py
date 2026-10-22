@@ -331,16 +331,14 @@ _BODY_PART = {"key": "body", "datasets": [{"module": "editor"}]}
 # only (one of ten colours); an OBJECT's is an emoji or a picture.
 _ICON_PREFIX = "icon:v2:"
 _ICON_LUCIDE = "io.anyproto.lucide"
-_ICON_COLORS = ("yellow", "orange", "red", "pink", "purple", "blue",
-                "ice", "teal", "green", "grey")
+_ICON_COLOR = "grey"   # the client's default; the user recolours in the picker
 _ICON_GLYPH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
-_TYPE_ICON_SHAPE = ('{"glyph": "<Lucide icon name, e.g. receipt>", "color"?: '
-                    + "|".join(_ICON_COLORS) + "}")
+_TYPE_ICON_SHAPE = '{"glyph": "<Lucide icon name, e.g. receipt>"}'
 _OBJECT_ICON_SHAPE = '{"emoji": "🌱"} or {"picture": "<any://f/… link of an image>"}'
 
 
-def _icon_v2(assignment, color):
-    return _ICON_PREFIX + json.dumps({"assignment": assignment, "color": color},
+def _icon_v2(assignment):
+    return _ICON_PREFIX + json.dumps({"assignment": assignment, "color": _ICON_COLOR},
                                      separators=(",", ":"), ensure_ascii=False)
 
 
@@ -350,16 +348,16 @@ def _format_type_icon(icon):
     emoji."""
     if not isinstance(icon, dict) or not icon.get("glyph"):
         raise ValueError(f'a type\'s "icon" must be {_TYPE_ICON_SHAPE}')
-    color = icon.get("color") or "grey"
-    if color not in _ICON_COLORS:
-        raise ValueError(f'"icon.color" {color!r} is not one of {"|".join(_ICON_COLORS)}')
+    if set(icon) - {"glyph"}:
+        raise ValueError(
+            f'a type\'s "icon" takes only "glyph" (got {sorted(set(icon) - {"glyph"})}); '
+            "the colour is the user's, in the client's picker")
     g = icon["glyph"]
     if not isinstance(g, str) or len(g) > 256 or not _ICON_GLYPH_RE.match(g):
         raise ValueError(
             f'"icon.glyph" must be a Lucide icon name like "receipt" / '
             f'"book-open", got {g!r}')
-    return _icon_v2({"kind": "pack", "ref": {"packId": _ICON_LUCIDE, "glyphId": g}},
-                    color)
+    return _icon_v2({"kind": "pack", "ref": {"packId": _ICON_LUCIDE, "glyphId": g}})
 
 
 def _format_object_icon(icon):
@@ -382,7 +380,7 @@ def _format_object_icon(icon):
     e = icon["emoji"]
     if not isinstance(e, str) or not 0 < len(e) <= 10 or any(ch.isascii() for ch in e):
         raise ValueError(f'"icon.emoji" must be ONE emoji, got {e!r}')
-    return _icon_v2({"kind": "emoji", "grapheme": e}, "grey")
+    return _icon_v2({"kind": "emoji", "grapheme": e})
 _ANY_TYPES_ERR = (
     'there is no "any.types": an object has exactly ONE type — filter it '
     'with {"any.type": "<type xKey>"} (or {"$in": [...]}) — and any number '
@@ -2571,12 +2569,11 @@ class _Client:
         "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
         type** — the glyph the user sees on every object of it and in
         every picker; a mint without one ERRORS. `{"glyph": "<Lucide
-        icon name>", "color"?: yellow | orange | red | pink | purple |
-        blue | ice | teal | green | grey}` (default grey) — a Lucide
-        glyph, never an emoji (the client's type picker has none);
-        pick what the type IS: `{"glyph": "receipt", "color": "teal"}`
-        for an invoice, `{"glyph": "sprout", "color": "green"}` for a
-        plant. A hidden type needs none. On an existing type the icon
+        icon name>"}` — a Lucide glyph, never an emoji (the client's
+        type picker has none), no colour (the user's, in the picker);
+        pick what the type IS: `{"glyph": "receipt"}` for an invoice,
+        `{"glyph": "sprout"}` for a plant. A hidden type needs none.
+        On an existing type the icon
         is healed only when it has none (the user's pick is never
         overwritten; `set_type_icon` changes it). kind ∈ string | number | boolean | array |
         object | datetime — NOTHING else ("text" and "date" are
@@ -2658,10 +2655,9 @@ class _Client:
     def set_type_icon(self, space, type_key, icon):
         """Change a user type's icon — the glyph on its objects and in pickers.
 
-        `icon`: {"glyph": "<Lucide icon name>", "color"?: yellow |
-        orange | red | pink | purple | blue | ice | teal | green |
-        grey} — the shape create_type takes (a Lucide glyph, never an
-        emoji). `type_key` is the type's xKey (or id); a builtin or a
+        `icon`: {"glyph": "<Lucide icon name>"} — the shape
+        create_type takes (a Lucide glyph, never an emoji; the colour
+        is the user's). `type_key` is the type's xKey (or id); a builtin or a
         catalog type ERRORS (their icons are the client's). Returns
         {"typeId", "icon"}."""
         value = _format_type_icon(icon)
@@ -3831,7 +3827,7 @@ class _Client:
                    for t in self.list_types(space)):
             # the shape deploy mints in the overlays (deploy.rs skill_schema)
             self.create_type(space, {"name": "Agent Skill", "xKey": "agent_skill",
-                                     "icon": {"glyph": "sparkles", "color": "yellow"},
+                                     "icon": {"glyph": "sparkles"},
                                      "properties": [{"name": "Name", "xKey": "name",
                                                      "kind": "string"}]})
         props = {"name": name}
@@ -3903,7 +3899,7 @@ class _Client:
         self._ensure_store(space, "agent_brain", "Agent Brain",
                            [_MEM_DATASET, _JOB_STATE_DATASET,
                             _ROI_DATASET], listed=True,
-                           icon={"glyph": "brain", "color": "purple"})
+                           icon={"glyph": "brain"})
         child = self.bundle_child(space, _BAO_BUNDLE, "bao/brain/v1", "agent_brain")
         if key in self._minted_stores:
             # once per account: on the mint, or on the heal of a hidden row

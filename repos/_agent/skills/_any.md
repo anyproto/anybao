@@ -32,7 +32,7 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   createdOptions). None clears a property.
 - New definitions: c.create_type / c.create_collection (help() for
   the property drafts). A type takes an `icon` — `{"glyph": "<Lucide
-  name>", "color": …}`, never an emoji — that says what the type IS;
+  name>"}`, never an emoji, no colour — that says what the type IS;
   a mint without one errors. c.set_type_icon changes it. An object's
   own mark is `icon` on create_object / update_object — an emoji or
   the picture's any://f/ link; optional, but set an emoji when one

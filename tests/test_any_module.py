@@ -238,7 +238,7 @@ def test_create_type_composite_fans_out_properties():
         "/bundles": {"bundles": [{"id": "system:collections/v1"}], "synced": True},
         "/types/t9/properties": {"properties": [], "propId": "p1"}})
     r = client(fx).create_type("s1", {
-        "name": "Comic Book", "icon": {"glyph": "book-open", "color": "teal"},
+        "name": "Comic Book", "icon": {"glyph": "book-open"},
         "properties": [{"name": "Author"}, {"name": "year", "kind": "number"}]})
     assert r == {"typeId": "t9", "xKey": "comic_book", "created": True,
                  "addedProps": {"author": "p1", "year": "p1"}}
@@ -248,7 +248,7 @@ def test_create_type_composite_fans_out_properties():
                         {"name": "Comic Book", "xKey": "comic_book",
                          "iconCid": 'icon:v2:{"assignment":{"kind":"pack","ref":'
                                     '{"packId":"io.anyproto.lucide","glyphId":'
-                                    '"book-open"}},"color":"teal"}'})
+                                    '"book-open"}},"color":"grey"}'})
     # each property appended to the display order (xFormat.pos, ADR-027 §4)
     assert posts[1][1] == {"name": "Author", "xKey": "author", "kind": "string",
                            "xFormat": {"pos": "a0"}}
@@ -317,8 +317,9 @@ def test_create_type_needs_an_icon_on_a_listed_type():
     with pytest.raises(ValueError, match='needs an "icon".*"Plant" object.*Lucide'):
         c.create_type("s1", {"name": "Plant"})
     assert not [p for v, p, _ in fx.calls if v == "POST"]
-    with pytest.raises(ValueError, match='"icon.color" .mauve. is not one of'):
-        c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "mauve"}})
+    # no colour: that is the user's, in the client's picker
+    with pytest.raises(ValueError, match='takes only "glyph" .got ..color..'):
+        c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "green"}})
     with pytest.raises(ValueError, match='"icon.glyph" must be a Lucide icon name'):
         c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf icon"}})
     # an emoji is an OBJECT's icon — the client's type picker has none
@@ -329,13 +330,13 @@ def test_create_type_needs_an_icon_on_a_listed_type():
     with pytest.raises(ValueError, match='a type.s "icon" must be'):
         c.create_type("s1", {"name": "Plant", "icon": {"color": "green"}})
     assert not [p for v, p, _ in fx.calls if v == "POST"]
-    c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf", "color": "green"}})
+    c.create_type("s1", {"name": "Plant", "icon": {"glyph": "leaf"}})
     c.create_type("s1", {"name": "Agent Thing", "hidden": True})
     posts = [b for v, p, b in fx.calls if v == "POST" and p.endswith("/types")]
     assert posts == [
         {"name": "Plant", "xKey": "plant",
          "iconCid": 'icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
-                    '"io.anyproto.lucide","glyphId":"leaf"}},"color":"green"}'},
+                    '"io.anyproto.lucide","glyphId":"leaf"}},"color":"grey"}'},
         {"name": "Agent Thing", "xKey": "agent_thing", "hidden": True}]
 
 
@@ -367,11 +368,11 @@ def test_set_type_icon():
         {"id": "t9", "name": "Task", "xKey": "task", "iconCid": "icon:v2:{}"},
         {"id": "page", "name": "Page", "xKey": "page", "builtIn": True}]}})
     c = client(fx)
-    r = c.set_type_icon("s1", "task", {"glyph": "circle-check", "color": "green"})
+    r = c.set_type_icon("s1", "task", {"glyph": "circle-check"})
     assert r == {"typeId": "t9",
                  "icon": 'icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
                          '"io.anyproto.lucide","glyphId":"circle-check"}},'
-                         '"color":"green"}'}
+                         '"color":"grey"}'}
     assert fx.calls[-1] == ("PATCH", "/v1/spaces/s1/types/t9", {"iconCid": r["icon"]})
     with pytest.raises(ValueError, match="builtin or catalog type"):
         c.set_type_icon("s1", "page", {"glyph": "file"})
@@ -1410,7 +1411,7 @@ def test_backlinks_unwraps_and_null_degrades_to_empty():
 # --- agent memory ---------------------------------------------------------------------
 
 _BRAIN_ICON = ('icon:v2:{"assignment":{"kind":"pack","ref":{"packId":'
-               '"io.anyproto.lucide","glyphId":"brain"}},"color":"purple"}')
+               '"io.anyproto.lucide","glyphId":"brain"}},"color":"grey"}')
 
 
 def _brain_wire():

@@ -147,8 +147,9 @@ never a user type, never the any-ui feature. The Collections app
   construction. `body=False` opts out; `_ensure_store` passes it —
   the store types stay bodiless. `weight` is not accepted anywhere.
 - **A listed type has an icon.** `create_type` takes `icon` —
-  `{"glyph": "<Lucide name>", "color"?: <one of the client's ten>}`,
-  a Lucide glyph only (the client's type picker shows no emoji) — and
+  `{"glyph": "<Lucide name>"}`, a Lucide glyph only (the client's
+  type picker shows no emoji), no colour (the user's, in the client's
+  picker; the guest stores the client's default) — and
   refuses to MINT a listed type without one: the glyph is what the
   user sees on every object of the type and in every picker, and an
   iconless mint is indistinguishable from `page`. The guest formats
