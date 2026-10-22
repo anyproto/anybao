@@ -377,13 +377,17 @@ Consequence, stated once: a per-secret "allowed program" field
   managed OAuth ref (`connector.oauth.<provider>`) is bound the same
   way when its connector declares the API hosts (googleAuth does);
   the token endpoint is host-side and never a guest destination.
-- **Open refs — `local.key.*`.** Any program may name one. The
+- **Open refs — `local.key.*`, and `mcp.key.*` (ADR-032 §3).** Any
+  program may name one. The
   descriptor is the payload's `about`, taken **once** when the row is
   created; `hosts` is mandatory (§7). A later miss or rejection stamps
   status only. Anything else the model could write onto the row it
   could write today; nothing it writes changes where the secret goes,
   because hosts are frozen at creation and editable by the human
-  only.
+  only. `mcp.key.<id>` is the bearer of the `mcp.server.<id>` row; its
+  host is that row's `url`, chosen by the human, so no overlay can
+  declare it. Its card is the plain one (§2, "used for <hosts>"), not
+  the §8.2 warning: the requester is the reviewed `mcp@v1`.
 `llm.key.*` for a **self-hosted** backend (`vllm`, `llama.cpp`,
 `ollama`, `generic`) cannot be declared with a host — the host is the
 tier's `base_url`, which the model may set through `config@v1`. Those
@@ -423,10 +427,25 @@ send to its own host.
 
 - **Stamp rule.** The miss/rejection stamp (`ServeSecretStore::stamp`)
   writes descriptor fields (`label`, `hosts`, `help`, `note`) only
-  when it **creates** a `local.key.*` row. It never writes them onto
+  when it **creates** an open-ref row. It never writes them onto
   an existing row, and never for a declared ref (whose descriptor the
   boot stamp owns). Status, `requestedBy`, `rejectedAt/With`,
   `requestedIn/At` stamp as before.
+- **Bind rule (amended 2026-10-22, ADR-032 §3).** A row can exist
+  before any miss: any-ui's `setSecret` and the `.connectors.env`
+  seeds write the value and no descriptor. Such an open-ref row has
+  no `hosts`, and the broker would check the guest's `about.hosts`
+  against itself on every request — a claim, not a binding (§8.0).
+  So the **first successful injection** through an open ref whose row
+  names no `hosts` writes the request's descriptor (`label`, `hosts`,
+  `help`, `note`) onto the row, once (`SecretSource::bind_hosts`).
+  From then on the row binds like a card-created one; a changed
+  destination is a typed `secret_host_mismatch` the human resolves in
+  Credentials. Declared refs never bind this way — the boot stamp owns
+  them. A writer that knows the destination when it creates the row
+  (the desktop shell pairing a browser relay, ADR-032) writes `hosts`
+  itself, so the bind is visible in Credentials before the first
+  call; the bind rule is the invariant behind every writer.
 - **`lastUsedAt`** — stamped once per run per ref, at the first
   successful injection (the audit column of §6; one write per run,
   not per effect).
