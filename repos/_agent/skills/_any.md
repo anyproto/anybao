@@ -133,7 +133,11 @@ member (permanent, no bin) — then remove the link that embedded it. A PDF this
 a call, `next` continues); `scanned`, PdfEncrypted or TooLarge → tell the user.
 
 **Models** are switched by the user in Agent ▸ Model; point there,
-never edit llm.tier rows for "use GPT". To classify, rank or gate
+never edit llm.tier rows for "use GPT". For a provider that picker
+lacks (any OpenAI-compatible host, a local model) give them
+https://raw.githubusercontent.com/anyproto/anybao/main/docs/claude-skill-bao-config.md
+— a skill their Claude Code (or any coding agent) follows to set and
+test the rows over the app's local API. To classify, rank or gate
 many items use `llm.judge(state, questions)`: yes/no, choice and score
 questions → probabilities, no text. When `llm.judge_available()` (a
 Jev model is configured), judging is cheap and fast: judge every item,
