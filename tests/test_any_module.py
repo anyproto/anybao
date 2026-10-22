@@ -2532,3 +2532,60 @@ def test_a_date_property_keeps_the_calendar_day_east_and_west_of_utc():
     assert west("due", "date", {"$date": (1791504000 + 5 * 3600) * 1000}) == day
     # datetimes are untouched
     assert enc("at", "datetime", local_midnight) == local_midnight
+
+
+# --- members (BOB-192) --------------------------------------------------------
+
+def test_list_members_trims_rows_and_puts_active_first():
+    roster = {"members": [
+        {"identity": "A2", "permission": "writer", "status": "removed", "name": "gone",
+         "iconCid": "bafy1"},
+        {"identity": "A1", "permission": "owner", "status": "active", "name": "tolya",
+         "iconCid": "bafy2", "description": "me"}]}
+    fx = wire(replies={"/members": roster})
+    c = client(fx)
+    rows = c.list_members("sp")
+    assert rows == [
+        {"identity": "A1", "name": "tolya", "permission": "owner", "status": "active"},
+        {"identity": "A2", "name": "gone", "permission": "writer", "status": "removed"}]
+    c.list_members("sp")                       # cached per run
+    assert fx.calls == [("GET", "/v1/spaces/sp/members", None)]
+
+
+def test_get_identity_is_the_account_global_directory_row():
+    fx = wire(replies={"/v1/identities/A9": {"identity": "A9", "name": "left", "iconCid": "x",
+                                             "description": "pm", "spaceIds": ["sp", "sp2"]}})
+    c = client(fx)
+    assert c.get_identity("A9") == {"identity": "A9", "name": "left", "description": "pm",
+                                    "spaceIds": ["sp", "sp2"]}
+    assert fx.calls == [("GET", "/v1/identities/A9", None)]   # no space on the wire
+
+
+def test_get_identity_never_met_is_none():
+    fx = wire(replies={"/v1/identities/A0": {"error": {"code": "request.not_found",
+                                                       "message": "no"}}}, status=404)
+    assert client(fx).get_identity("A0") is None
+
+
+def test_find_identities_matches_names_exact_first_without_a_space():
+    directory = {"identities": [
+        {"identity": "A1", "name": "Anton B", "iconCid": "x", "spaceIds": ["sp"]},
+        {"identity": "A2", "name": "anton", "spaceIds": ["sp", "sp2"]},
+        {"identity": "A3", "name": "Gustavo", "spaceIds": ["sp"]},
+        {"identity": "A4", "spaceIds": ["sp3"]}]}
+    fx = wire(replies={"/v1/identities": directory})
+    c = client(fx)
+    assert c.find_identities(" Anton ") == [
+        {"identity": "A2", "name": "anton", "spaceIds": ["sp", "sp2"]},
+        {"identity": "A1", "name": "Anton B", "spaceIds": ["sp"]}]
+    assert c.find_identities("gus") == [{"identity": "A3", "name": "Gustavo", "spaceIds": ["sp"]}]
+    assert c.find_identities("nobody") == []
+    assert c.find_identities("") == []
+    assert fx.calls == [("GET", "/v1/identities", None)]   # one read, cached per run
+
+
+def test_me_is_the_account_identity_and_name():
+    fx = wire(replies={"/v1/account": {"id": "A1", "metadata": {"name": "tolya", "iconCid": "x"},
+                                       "techSpaceId": "t"}})
+    assert client(fx).me() == {"identity": "A1", "name": "tolya"}
+    assert fx.calls == [("GET", "/v1/account", None)]

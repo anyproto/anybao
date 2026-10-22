@@ -550,6 +550,8 @@ class _Client:
         self._type_datasets = {}   # (space, typeId) -> [dataset rows]
         self._object_owners = {}   # (space, objectId) -> {"type", "collections"}
         self._chat_cache = {}      # space -> the general chat's root id
+        self._members_cache = {}   # space -> member rows (BOB-192)
+        self._identities_cache = None  # the account-global identities directory (BOB-192)
         self._wiki_cache = {}      # space -> {collectionId, parentId, pos, folder}
         self._catalog_cache = None  # the server's usecase catalog
         self._collections_ready = set()   # spaces whose collections app is set up
@@ -2110,6 +2112,93 @@ class _Client:
             row["active"] = peer is not None and peer == winner
             row["bao"] = "bao" in (row.get("apps") or {})
         return reg
+
+    # --- members (BOB-192): a chat message's `creator`, an object's
+    # `author`/`modifiedBy` and a members row's `identity` are one
+    # encoding — names resolve through the roster, never by scanning
+    # mention links (any docs/08-clients.md § modifiedBy)
+    @_public('getter')
+    def list_members(self, space):
+        """The space's members → [{identity, name, permission, status}], active first.
+
+        `identity` is the id that a chat message's `creator`, an object's
+        `author`/`modifiedBy` carry — join on it to name who wrote what.
+        `permission`: owner/writer/reader; `status`: active, joining,
+        removed, …. A one-member space is the user alone. Cached per run.
+        A writer who has since left the space is not here: `get_identity`
+        still names them."""
+        rows = self._members_cache.get(space)
+        if rows is None:
+            r = self._call("get", f"/v1/spaces/{space}/members")
+            rows = [{k: m.get(k) for k in ("identity", "name", "permission", "status")}
+                    for m in r.get("members") or []]
+            rows.sort(key=lambda m: m.get("status") != "active")
+            self._members_cache[space] = rows
+        return list(rows)
+
+    # the account-global identities directory: every account this one
+    # has met in a shared space, with the spaces shared (the server's
+    # GET /v1/identities; docs/19-links.md § u — identities)
+    _IDENTITY_KEYS = ("identity", "name", "description", "spaceIds")
+
+    def _identities(self):
+        if self._identities_cache is None:
+            r = self._call("get", "/v1/identities")
+            self._identities_cache = [{k: i.get(k) for k in self._IDENTITY_KEYS if k in i}
+                                      for i in r.get("identities") or []]
+        return self._identities_cache
+
+    @_public('getter', scoped=False)
+    def get_identity(self, identity):
+        """One account id → {identity, name, description?, spaceIds}, or None.
+
+        No space needed: the account-global directory knows every account
+        this one has met in a shared space — a chat `creator`, an object's
+        `author`/`modifiedBy`, a members row's `identity`. `spaceIds` are
+        the spaces shared with them (`get_space` names one). None for an
+        account never met."""
+        try:
+            r = self._call("get", f"/v1/identities/{identity}")
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        if not r.get("identity"):
+            return None
+        return {k: r.get(k) for k in self._IDENTITY_KEYS if k in r}
+
+    @_public('getter', scoped=False)
+    def find_identities(self, name):
+        """A display name → [{identity, name, description?, spaceIds}], exact first.
+
+        No space needed: a case-insensitive match on the account-global
+        directory (every account met in a shared space) — exact names
+        first, then names containing the text. Names are not unique: a
+        list, empty when nobody matches. `spaceIds` are the spaces shared
+        with each. Cached per run. For "who is in THIS space" use
+        `list_members`."""
+        q = (name or "").strip().casefold()
+        if not q:
+            return []
+        exact, partial = [], []
+        for row in self._identities():
+            n = (row.get("name") or "").strip().casefold()
+            if n == q:
+                exact.append(dict(row))
+            elif q in n:
+                partial.append(dict(row))
+        return exact + partial
+
+    @_public('getter', scoped=False)
+    def me(self):
+        """This account → {identity, name}: the user this agent runs as.
+
+        `identity` is the account id (`GET /v1/account` → `id`), the same
+        encoding as `creator` / `author` / `modifiedBy` and a members row's
+        `identity`; `name` is the account's display name."""
+        r = self._call("get", "/v1/account")
+        return {"identity": r.get("id"),
+                "name": (r.get("metadata") or {}).get("name")}
 
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress

@@ -2067,6 +2067,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         pruned: election.pruned,
         live_runs: Mutex::new(BTreeMap::new()),
         status: Default::default(),
+        roster: Mutex::new(None),
     });
 
     let mut threads = vec![
@@ -2218,6 +2219,11 @@ pub struct RunCtx {
     /// serve-shared presence state (ADR-025): the `bao.status` syscall's
     /// write target + the presence thread's read; sole publisher = serve
     pub status: SharedPresence,
+    /// the chat space's member roster for the sender fold (BOB-192,
+    /// ADR-005 §5), with the instant it was read — refreshed by
+    /// `resolve_sender` on age or on an unknown creator; None until
+    /// the first successful read
+    pub roster: Mutex<Option<(Instant, crate::triggers::Roster)>>,
 }
 
 impl RunCtx {
@@ -2990,7 +2996,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                 }
                 let ready = ctx.ensure_ready().is_ok();
                 for record in backlog {
-                    let record = resolve_reply(ctx, record);
+                    let record = resolve_reply(ctx, resolve_sender(ctx, record));
                     let action = shared
                         .watcher
                         .lock()
@@ -3028,7 +3034,7 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             }
             "changes" => {
                 for record in records_in(&frame.data) {
-                    let record = resolve_reply(ctx, record);
+                    let record = resolve_reply(ctx, resolve_sender(ctx, record));
                     let action = shared
                         .watcher
                         .lock()
@@ -3162,6 +3168,53 @@ fn resolve_reply(ctx: &RunCtx, record: Value) -> Value {
                 warn!("reply target {id}: {e}");
                 None
             }
+        }
+    })
+}
+
+/// How long a roster read stays fresh — a rename or a join shows up
+/// within this; an unknown creator forces an earlier re-read, at most
+/// once per `ROSTER_MISS_BACKOFF` so a stream of messages from an
+/// identity nobody lists does not hammer the members route.
+const ROSTER_TTL: Duration = Duration::from_secs(600);
+const ROSTER_MISS_BACKOFF: Duration = Duration::from_secs(30);
+
+/// A human message's sender, resolved against the chat space's member
+/// roster before the watcher sees the record (ADR-005 §5, BOB-192):
+/// the roster is read once and cached on the ctx, re-read when stale
+/// or when the creator is not in it; a creator the roster never
+/// names goes to the identity directory. Like the reply referent,
+/// host-side input and not an effect — the folded text is what the
+/// trace records. A failed read leaves the record as it was: a name
+/// is never worth a stalled message.
+fn resolve_sender(ctx: &RunCtx, record: Value) -> Value {
+    if Watcher::sender_id(&record).is_none() {
+        return record;
+    }
+    let creator = Watcher::sender_id(&record).unwrap_or("").to_string();
+    let mut cached = ctx.roster.lock().unwrap();
+    let now = Instant::now();
+    let reread = match cached.as_ref() {
+        None => true,
+        Some((at, roster)) => {
+            let age = now.duration_since(*at);
+            age > ROSTER_TTL || (!roster.names.contains_key(&creator) && age > ROSTER_MISS_BACKOFF)
+        }
+    };
+    if reread {
+        match ctx.client.members(&ctx.space) {
+            Ok(rows) => *cached = Some((now, crate::triggers::Roster::from_members(&rows))),
+            Err(e) => warn!("members of {}: {e}", ctx.space),
+        }
+    }
+    let Some((_, roster)) = cached.as_mut() else {
+        return record;
+    };
+    Watcher::with_sender(record, roster, |id| match ctx.client.identity(id) {
+        Ok(v) => v.get("name").and_then(|n| n.as_str()).map(str::to_string),
+        Err(e) => {
+            warn!("identity {id}: {e}");
+            None
         }
     })
 }

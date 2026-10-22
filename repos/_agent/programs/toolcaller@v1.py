@@ -225,6 +225,22 @@ def _apps_lines(c, space, ui_ctx, which=("agent space", "user's space")):
     return "".join(line + "\n" for line in out)
 
 
+def _user_line(c):
+    """The account this agent runs as — `me()`'s display name, the LAST
+    line of the runtime context (BOB-192). The name only: the identity
+    is one `me()` call away and would spend tail tokens on every run.
+    Per-instance stable: the account does not change between runs, so
+    the tail block stays cached; an unreadable or unnamed account
+    contributes nothing."""
+    try:
+        me = c.me()
+    except Exception:  # noqa: BLE001 — a missing route is not a run failure
+        return ""
+    if not isinstance(me, dict) or not me.get("name"):
+        return ""
+    return f"\n- user: {me['name']} (the account this agent runs as; `me()` for the identity)"
+
+
 def _view_apps(c, space, ui_ctx):
     """The user's-space apps line for a message's view suffix (ADR-005
     §5) — after the stamp, never in the system tail: the tail sits
@@ -1144,7 +1160,8 @@ def main(args):
         + _apps_lines(c, space, None) +
         "- bound cell globals (spaceConfig args): `currentUserSpace` (the "
         "user's view), `baoSpaceConfig` (this agent space)\n"
-        "- other spaces: `list_spaces()` rows")
+        "- other spaces: `list_spaces()` rows"
+        + _user_line(c))
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
     # user message for models that weight recency over the system block
     # everything below changes with the run's surroundings (the device,
