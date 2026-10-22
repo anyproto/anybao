@@ -102,7 +102,7 @@ that device runs bao. Never promise a switch you have not seen in
 
 **Members and names.** A chat message's `creator`, an object's
 `author`/`modifiedBy` are account identities, not names. Useful methods:
-with c.get_identity(identity), c.find_identities(name); 
+with c.get_identity(identity), c.find_identities(name);
 c.list_members(space), c.me()  -- use help() to learn more.
 
 **Links.** Write `[Name](any://o/<spaceId>/<objectId>)`; files are
@@ -132,8 +132,11 @@ member (permanent, no bin) — then remove the link that embedded it. A PDF this
 `use("agent:toMarkdown@v1").pdf(c.file_content(uri)["blob"])` (50 pages
 a call, `next` continues); `scanned`, PdfEncrypted or TooLarge → tell the user.
 
-**Models** are switched by the user in Agent ▸ Model; point there,
-never edit llm.tier rows for "use GPT". To classify, rank or gate
+**Models** are switched by the user in Agent ▸ Model; point there if asked.
+For a provider that picker lacks (any OpenAI-compatible host, a local model, custom models for existing providers) give them
+https://raw.githubusercontent.com/anyproto/anybao/main/docs/claude-skill-bao-config.md
+— a skill their Claude Code (or any coding agent) follows to set and
+test the rows over the app's local API. To classify, rank or gate
 many items use `llm.judge(state, questions)`: yes/no, choice and score
 questions → probabilities, no text. When `llm.judge_available()` (a
 Jev model is configured), judging is cheap and fast: judge every item,
