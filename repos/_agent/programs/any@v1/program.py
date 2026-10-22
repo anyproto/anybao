@@ -2578,9 +2578,7 @@ class _Client:
         for an invoice, `{"glyph": "sprout", "color": "green"}` for a
         plant. A hidden type needs none. On an existing type the icon
         is healed only when it has none (the user's pick is never
-        overwritten; `set_type_icon` changes it). An OBJECT's own icon
-        (an emoji or a picture) is `icon` on create_object /
-        update_object. kind ∈ string | number | boolean | array |
+        overwritten; `set_type_icon` changes it). kind ∈ string | number | boolean | array |
         object | datetime — NOTHING else ("text" and "date" are
         descriptor SLUGS, not kinds): {"xFormat": {"type": "date"}},
         a pick-list {"xFormat": {"type": "choice", "options": ["To do",
@@ -2665,7 +2663,7 @@ class _Client:
         grey} — the shape create_type takes (a Lucide glyph, never an
         emoji). `type_key` is the type's xKey (or id); a builtin or a
         catalog type ERRORS (their icons are the client's). Returns
-        {"typeId", "icon"}. An object's icon: update_object `icon`."""
+        {"typeId", "icon"}."""
         value = _format_type_icon(icon)
         cat = self._catalog(space)
         tid = self._resolve_def(space, type_key)
