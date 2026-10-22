@@ -61,6 +61,7 @@ pub mod testutil;
 pub mod trace;
 pub mod tracestore;
 pub mod triggers;
+mod ui_theme;
 pub mod view;
 
 pub(crate) mod bindings {

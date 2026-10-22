@@ -1084,6 +1084,11 @@ impl Broker {
             return crate::shell::classify(name);
         }
         match name {
+            "ui.theme"
+                if !crate::ui_theme::is_read(payload.get("action").and_then(Value::as_str)) =>
+            {
+                "mutate"
+            }
             // ADR-011 §5: the token lifecycle mutates device state
             "oauth.connect" | "oauth.disconnect" | "oauth.refresh" => "mutate",
             // ADR-006 §3: a store row + the live map
@@ -1159,6 +1164,17 @@ impl Broker {
             // into serve state — serve (sole publisher) folds it into
             // every beat and republishes immediately on set
             "bao.status" => self.sys_bao_status(payload),
+            "ui.theme" => {
+                let base = self
+                    .runtime
+                    .get("any.base_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| EffectFailure {
+                        type_: "not_configured".into(),
+                        message: "Theme control needs the configured Any server.".into(),
+                    })?;
+                crate::ui_theme::request(base, payload, self.deadline, &self.interrupt)
+            }
             "batch" => self.sys_batch(payload),
             "trace.effects_of" => self.sys_effects_of(payload),
             "trace.effect_get" => self.sys_effect_get(payload),
@@ -2751,6 +2767,50 @@ mod tests {
         assert_eq!(rec["meta"]["mock"]["from"], "run_cccccccccccccccc");
         assert_eq!(rec["meta"]["mock"]["seq"], b.writer.records[1]["seq"]);
         b.span_end(true, None, None).unwrap();
+    }
+
+    // --- theme control effect (ADR-008 §8) ----------------------------------
+
+    #[test]
+    fn theme_effect_records_read_and_mutate_and_replays_without_a_server() {
+        let mut live = make_broker("theme-live");
+        live.runtime
+            .insert("any.base_url".into(), json!("http://127.0.0.1:1"));
+        live.interrupt
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let read = json!({"action": "capabilities"});
+        let write = json!({"action": "select", "windowId": "d235081b-d19a-4d48-a5f8-c2e3bb6bcf33", "params": {"themeId": "any"}});
+        let first = live.call("ui.theme", read.clone()).unwrap();
+        assert_eq!(live.writer.records.last().unwrap()["meta"]["class"], "read");
+        let second = live.call("ui.theme", write.clone()).unwrap();
+        assert_eq!(
+            live.writer.records.last().unwrap()["meta"]["class"],
+            "mutate"
+        );
+        assert_ne!(first["requestId"], second["requestId"]);
+        let mut replay = make_broker("theme-replay");
+        replay.mode = Mode::Replay;
+        replay.cursor = Some(ReplayCursor::new(&live.writer.records));
+        // No Any server is configured: only the recorded outputs can succeed.
+        assert_eq!(replay.call("ui.theme", read).unwrap(), first);
+        assert_eq!(replay.call("ui.theme", write).unwrap(), second);
+        assert_eq!(
+            replay.writer.records.last().unwrap()["meta"]["mocked"],
+            true
+        );
+        assert!(replay.cursor.as_ref().unwrap().exhausted());
+    }
+
+    #[test]
+    fn theme_effect_requires_its_own_capability_before_io() {
+        let mut b = make_broker("theme-denied");
+        b.grants = Some(GrantSet::of(["data.read", "data.write"]));
+        let error = b.call("ui.theme", json!({"action": "select"})).unwrap_err();
+        assert_eq!(error.type_, "capability_denied");
+        assert_eq!(
+            b.writer.records.last().unwrap()["error"]["type"],
+            "capability_denied"
+        );
     }
 
     // --- bao.status syscall + PresenceState (ADR-025 §3) -----------------------
