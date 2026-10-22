@@ -14,23 +14,18 @@ live for the next message. No restart, no file edit.
 
 The desktop app runs an embedded `any` server on loopback. The app shows
 its address under **Settings ▸ Preferences ▸ Local server ▸ Address**,
-with a Copy button. That address is the `$A` used below.
+with a Copy button. That address is the `$A` used below. Ask the user
+for it when you cannot read the screen.
 
-Defaults when nothing overrides them:
-
-| install | default address |
-|---|---|
-| Any | `http://127.0.0.1:2046` |
-| Any Nightly | `http://127.0.0.1:31330` |
-| a second instance started with `ANY_DATA_DIR` | `http://127.0.0.1:31350` |
-
-`ANY_DESKTOP_PORT` overrides the port for one launch. The browser build
-has no sidecar: the API is the page's own origin under `/v1`.
+The default is `http://127.0.0.1:31330`. The port is fixed per install,
+so the address stays valid across launches. `ANY_DESKTOP_PORT` overrides
+it for one launch. The browser build has no sidecar: the API is the
+page's own origin under `/v1`.
 
 Check that the address answers and that it is the right account:
 
 ```sh
-A=http://127.0.0.1:2046
+A=http://127.0.0.1:31330
 curl -s $A/v1/account | jq -r .metadata.name
 ```
 
@@ -82,7 +77,7 @@ Four reads. Cache the ids for the session: they never change for a
 space.
 
 ```sh
-A=http://127.0.0.1:2046
+A=http://127.0.0.1:31330
 
 # the bao space
 SP=$(curl -s $A/v1/spaces | jq -r '(.spaces // .)[] | select(.name == "bao") | .id')
