@@ -5547,7 +5547,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Applies to:
 - webpki-roots 0.26.11
-- webpki-roots 1.0.9
+- webpki-roots 1.0.10
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -6175,7 +6175,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Applies to:
-- rustls-webpki 0.103.15
+- rustls-webpki 0.103.16
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -6203,7 +6203,7 @@ third-party/chromium/LICENSE.
 ## MIT License
 
 Applies to:
-- anyrt 0.9.1
+- anyrt 0.9.2
 
 ```text
 Beautiful Soup is made available under the MIT license:
@@ -6243,7 +6243,7 @@ Isaac Muse
 ## MIT License
 
 Applies to:
-- anyrt 0.9.1
+- anyrt 0.9.2
 
 ```text
 Copyright (c) 2010-2024 Benjamin Peterson
@@ -6476,7 +6476,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## MIT License
 
 Applies to:
-- anyrt 0.9.1
+- anyrt 0.9.2
 
 ```text
 MIT License
@@ -6536,7 +6536,7 @@ SOFTWARE.
 ## MIT License
 
 Applies to:
-- anyrt 0.9.1
+- anyrt 0.9.2
 
 ```text
 MIT License
@@ -6872,7 +6872,7 @@ SOFTWARE.
 ## MIT License
 
 Applies to:
-- anyrt 0.9.1
+- anyrt 0.9.2
 
 ```text
 The MIT License (MIT)
