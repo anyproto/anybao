@@ -493,6 +493,7 @@ class _Client:
         self._object_owners = {}   # (space, objectId) -> {"type", "collections"}
         self._chat_cache = {}      # space -> the general chat's root id
         self._members_cache = {}   # space -> member rows (BOB-192)
+        self._identities_cache = None  # the account-global identities directory (BOB-192)
         self._wiki_cache = {}      # space -> {collectionId, parentId, pos, folder}
         self._catalog_cache = None  # the server's usecase catalog
         self._collections_ready = set()   # spaces whose collections app is set up
@@ -2052,8 +2053,9 @@ class _Client:
         `identity` is the id that a chat message's `creator`, an object's
         `author`/`modifiedBy` carry — join on it to name who wrote what.
         `permission`: owner/writer/reader; `status`: active, joining,
-        removed, …. A one-member space is the user alone. Cached per run;
-        a member who left may be missing — `resolve_member` falls back."""
+        removed, …. A one-member space is the user alone. Cached per run.
+        A writer who has since left the space is not here: `get_identity`
+        still names them."""
         rows = self._members_cache.get(space)
         if rows is None:
             r = self._call("get", f"/v1/spaces/{space}/members")
@@ -2063,18 +2065,27 @@ class _Client:
             self._members_cache[space] = rows
         return list(rows)
 
-    @_public('getter')
-    def resolve_member(self, space, identity):
-        """One identity → its members row, or {identity, name, member: False}, or None.
+    # the account-global identities directory: every account this one
+    # has met in a shared space, with the spaces shared (the server's
+    # GET /v1/identities; docs/19-links.md § u — identities)
+    _IDENTITY_KEYS = ("identity", "name", "description", "spaceIds")
 
-        The roster first (`list_members`); an identity the space no longer
-        lists (a member who left) resolves through the server's identity
-        directory as `{identity, name, member: False}`; an identity the
-        server has never seen → None. Use it on a `creator` / `author` /
-        `modifiedBy` value that `list_members` does not cover."""
-        for m in self.list_members(space):
-            if m.get("identity") == identity:
-                return m
+    def _identities(self):
+        if self._identities_cache is None:
+            r = self._call("get", "/v1/identities")
+            self._identities_cache = [{k: i.get(k) for k in self._IDENTITY_KEYS if k in i}
+                                      for i in r.get("identities") or []]
+        return self._identities_cache
+
+    @_public('getter', scoped=False)
+    def get_identity(self, identity):
+        """One account id → {identity, name, description?, spaceIds}, or None.
+
+        No space needed: the account-global directory knows every account
+        this one has met in a shared space — a chat `creator`, an object's
+        `author`/`modifiedBy`, a members row's `identity`. `spaceIds` are
+        the spaces shared with them (`get_space` names one). None for an
+        account never met."""
         try:
             r = self._call("get", f"/v1/identities/{identity}")
         except AnyError as e:
@@ -2083,7 +2094,29 @@ class _Client:
             raise
         if not r.get("identity"):
             return None
-        return {"identity": r["identity"], "name": r.get("name"), "member": False}
+        return {k: r.get(k) for k in self._IDENTITY_KEYS if k in r}
+
+    @_public('getter', scoped=False)
+    def find_identities(self, name):
+        """A display name → [{identity, name, description?, spaceIds}], exact first.
+
+        No space needed: a case-insensitive match on the account-global
+        directory (every account met in a shared space) — exact names
+        first, then names containing the text. Names are not unique: a
+        list, empty when nobody matches. `spaceIds` are the spaces shared
+        with each. Cached per run. For "who is in THIS space" use
+        `list_members`."""
+        q = (name or "").strip().casefold()
+        if not q:
+            return []
+        exact, partial = [], []
+        for row in self._identities():
+            n = (row.get("name") or "").strip().casefold()
+            if n == q:
+                exact.append(dict(row))
+            elif q in n:
+                partial.append(dict(row))
+        return exact + partial
 
     @_public('getter', scoped=False)
     def me(self):

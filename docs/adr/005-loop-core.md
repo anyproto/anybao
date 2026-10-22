@@ -600,7 +600,7 @@ message against the roster before the watcher reads the record —
 like the reply referent, ahead of both the inject and the start paths
 — and `attributed_text` opens the user turn with `[from "<name>"]`,
 or `[from identity <id>]` when nobody names it (the model can still
-`resolve_member` it). The line sits first, before `[in reply to …]`
+`get_identity` it). The line sits first, before `[in reply to …]`
 and the text; agent messages keep their `[from agent …]` line
 instead. A chat whose space has at most one active member is the
 user alone, and their messages get no line — the single-user prompt
@@ -610,7 +610,10 @@ creator is not in it); a failed read folds nothing — a name is never
 worth a stalled message. Folded into the TEXT, so the persisted turn
 and every future boot window carry it unchanged. Mention links
 (`[name](any://m/…)`) are no longer how the model learns a name; the
-roster is (`any@v1.list_members` / `resolve_member`).
+roster is: `any@v1.list_members(space)` for one space, and the
+account-global identities directory — `get_identity(identity)`,
+`find_identities(name)`, no space, each row with the `spaceIds`
+shared — for anyone the account has met.
 
 The user's own name is standing context, not per-message: the
 runtime context's last line is `- user: <name>`, from `any@v1.me()`

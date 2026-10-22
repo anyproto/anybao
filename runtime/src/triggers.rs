@@ -1003,7 +1003,7 @@ impl Watcher {
 
     /// The `[from "<name>"]` line for a resolved `sender` group, or
     /// None when the record carries none. An unnamed sender shows its
-    /// identity, which `any@v1.resolve_member` can still look up.
+    /// identity, which `any@v1.get_identity` can still look up.
     fn sender_line(record: &Value) -> Option<String> {
         let g = record.get("sender")?.as_object()?;
         if let Some(n) = g.get("name").and_then(|n| n.as_str()) {

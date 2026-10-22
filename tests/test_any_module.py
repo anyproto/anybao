@@ -2435,35 +2435,36 @@ def test_list_members_trims_rows_and_puts_active_first():
     assert fx.calls == [("GET", "/v1/spaces/sp/members", None)]
 
 
-def test_resolve_member_reads_the_roster_then_the_identity_directory():
-    roster = {"members": [{"identity": "A1", "permission": "owner", "status": "active",
-                           "name": "tolya"}]}
-    fx = wire(replies={"/members": roster,
-                       "/v1/identities/A9": {"identity": "A9", "name": "left",
-                                             "iconCid": "x", "spaceIds": ["sp"]}})
+def test_get_identity_is_the_account_global_directory_row():
+    fx = wire(replies={"/v1/identities/A9": {"identity": "A9", "name": "left", "iconCid": "x",
+                                             "description": "pm", "spaceIds": ["sp", "sp2"]}})
     c = client(fx)
-    assert c.resolve_member("sp", "A1") == {
-        "identity": "A1", "name": "tolya", "permission": "owner", "status": "active"}
-    assert c.resolve_member("sp", "A9") == {"identity": "A9", "name": "left", "member": False}
-    assert [p for _, p, _ in fx.calls] == ["/v1/spaces/sp/members", "/v1/identities/A9"]
+    assert c.get_identity("A9") == {"identity": "A9", "name": "left", "description": "pm",
+                                    "spaceIds": ["sp", "sp2"]}
+    assert fx.calls == [("GET", "/v1/identities/A9", None)]   # no space on the wire
 
 
-def test_resolve_member_unknown_identity_is_none():
-    fx = wire(replies={"/members": {"members": []}}, status=404)
-    # every reply 404s: the roster read raises, so build the client with
-    # a 200 roster and a 404 directory instead
-    calls = []
+def test_get_identity_never_met_is_none():
+    fx = wire(replies={"/v1/identities/A0": {"error": {"code": "request.not_found",
+                                                       "message": "no"}}}, status=404)
+    assert client(fx).get_identity("A0") is None
 
-    def mixed(name, payload):
-        url = payload["url"].removeprefix("http://any")
-        calls.append(url)
-        if url.endswith("/members"):
-            return {"status": 200, "headers": {}, "body": json.dumps({"members": []})}
-        return {"status": 404, "headers": {},
-                "body": json.dumps({"error": {"code": "request.not_found", "message": "no"}})}
-    assert client(mixed).resolve_member("sp", "A0") is None
-    assert calls == ["/v1/spaces/sp/members", "/v1/identities/A0"]
-    del fx
+
+def test_find_identities_matches_names_exact_first_without_a_space():
+    directory = {"identities": [
+        {"identity": "A1", "name": "Anton B", "iconCid": "x", "spaceIds": ["sp"]},
+        {"identity": "A2", "name": "anton", "spaceIds": ["sp", "sp2"]},
+        {"identity": "A3", "name": "Gustavo", "spaceIds": ["sp"]},
+        {"identity": "A4", "spaceIds": ["sp3"]}]}
+    fx = wire(replies={"/v1/identities": directory})
+    c = client(fx)
+    assert c.find_identities(" Anton ") == [
+        {"identity": "A2", "name": "anton", "spaceIds": ["sp", "sp2"]},
+        {"identity": "A1", "name": "Anton B", "spaceIds": ["sp"]}]
+    assert c.find_identities("gus") == [{"identity": "A3", "name": "Gustavo", "spaceIds": ["sp"]}]
+    assert c.find_identities("nobody") == []
+    assert c.find_identities("") == []
+    assert fx.calls == [("GET", "/v1/identities", None)]   # one read, cached per run
 
 
 def test_me_is_the_account_identity_and_name():
