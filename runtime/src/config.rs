@@ -39,6 +39,10 @@ pub struct TracesSection {
     /// retention of every other program's run bodies: "30d" (default),
     /// "never"
     pub retain_jobs: Option<String>,
+    /// size bound on the trace store, every run class together: "1g"
+    /// (default), "512m", "never" = unbounded (ADR-023 §6). Over the
+    /// bound, the oldest run bodies go first, whatever their age.
+    pub max_bytes: Option<String>,
 }
 
 /// A retention setting: a duration, or `"never"` = keep forever.
@@ -47,6 +51,31 @@ pub fn parse_retention(s: &str) -> anyhow::Result<Option<u64>> {
         return Ok(None);
     }
     parse_duration_s(s).map(Some)
+}
+
+/// A size bound: "1g" / "512m" / "200k" / "4096" → bytes, or `"never"`
+/// = unbounded (ADR-023 §6).
+pub fn parse_size_bound(s: &str) -> anyhow::Result<Option<u64>> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("never") {
+        return Ok(None);
+    }
+    let (num, unit) = s.split_at(s.trim_end_matches(|c: char| c.is_ascii_alphabetic()).len());
+    let n: u64 = num
+        .parse()
+        .map_err(|_| anyhow::anyhow!("bad size {s:?} (want e.g. 1g, 512m, 200k, never)"))?;
+    let bytes = match unit.to_ascii_lowercase().as_str() {
+        "g" | "gb" | "gib" => n << 30,
+        "m" | "mb" | "mib" => n << 20,
+        "k" | "kb" | "kib" => n << 10,
+        "" | "b" => n,
+        _ => anyhow::bail!("bad size unit in {s:?} (g/m/k)"),
+    };
+    anyhow::ensure!(
+        bytes > 0,
+        "size bound {s:?} must be > 0 (use \"never\" for unbounded)"
+    );
+    Ok(Some(bytes))
 }
 
 /// "90d" / "36h" / "15m" → seconds (ADR-023 §6 retention).
@@ -144,6 +173,10 @@ pub struct Config {
     /// forever (ADR-023 §6)
     pub retain_conversations_s: Option<u64>,
     pub retain_jobs_s: Option<u64>,
+    /// size bound on the trace store in bytes (default 1 GiB); the
+    /// oldest run bodies expire first once the sum of the summaries'
+    /// `bytes` is over it; None = unbounded (ADR-023 §6)
+    pub max_trace_bytes: Option<u64>,
     /// explicit local kernel override (dev, ADR-009 §4);
     /// None = the kernel embedded in the binary
     pub kernel: Option<PathBuf>,
@@ -182,6 +215,7 @@ impl Default for Config {
             traces_dir: "traces".into(),
             retain_conversations_s: Some(60 * 86_400),
             retain_jobs_s: Some(30 * 86_400),
+            max_trace_bytes: Some(1 << 30),
             kernel: None,
             config: BTreeMap::new(),
             secrets: BTreeMap::new(),
@@ -378,6 +412,9 @@ impl Config {
         if let Some(d) = fc.traces.retain_jobs {
             c.retain_jobs_s = parse_retention(&d)?;
         }
+        if let Some(s) = fc.traces.max_bytes {
+            c.max_trace_bytes = parse_size_bound(&s)?;
+        }
         for (key, value) in fc.config {
             let value = toml_to_json(value)?;
             c.config.insert(key.clone(), value.clone());
@@ -539,6 +576,29 @@ traces = "t"
 "agent.persona" = "terse"
 "llm.tier.chat" = { provider = "anthropic", model = "m" }
 "#;
+
+    #[test]
+    fn size_bound_units() {
+        assert_eq!(parse_size_bound("1g").unwrap(), Some(1 << 30));
+        assert_eq!(parse_size_bound("512m").unwrap(), Some(512 << 20));
+        assert_eq!(parse_size_bound("200k").unwrap(), Some(200 << 10));
+        assert_eq!(parse_size_bound("4096").unwrap(), Some(4096));
+        assert_eq!(parse_size_bound("2GiB").unwrap(), Some(2 << 30));
+        assert_eq!(parse_size_bound("never").unwrap(), None);
+        assert!(parse_size_bound("0").is_err());
+        assert!(parse_size_bound("1x").is_err());
+        assert!(parse_size_bound("g").is_err());
+        // defaults: 60d / 30d / 1 GiB; the toml overrides each
+        let c =
+            Config::from_toml("addr = \"http://127.0.0.1:1\"\n[agent]\nspace = \"s\"\n").unwrap();
+        assert_eq!(c.max_trace_bytes, Some(1 << 30));
+        let c = Config::from_toml(
+            "addr = \"http://127.0.0.1:1\"\n[agent]\nspace = \"s\"\n[traces]\nmax_bytes = \"never\"\nretain_jobs = \"7d\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.max_trace_bytes, None);
+        assert_eq!(c.retain_jobs_s, Some(7 * 86_400));
+    }
 
     #[test]
     fn full_example_parses() {

@@ -91,14 +91,17 @@ pub trait TraceStore: Send + Sync {
     }
     /// Retention (ADR-023 §6): drop the bodies of runs older than the
     /// cutoffs — `conversations_before` for runs of `chat_program`,
-    /// `jobs_before` for every other program (None = keep). Summaries
-    /// stay. Returns the number of runs expired. Default: no-op (the
-    /// file store keeps everything).
+    /// `jobs_before` for every other program (None = keep) — and,
+    /// over `max_bytes` (the sum of the surviving summaries' `bytes`,
+    /// None = unbounded), the oldest runs first until the store is
+    /// under it again. Summaries stay. Returns the number of runs
+    /// expired. Default: no-op.
     fn expire(
         &self,
         _chat_program: &str,
         _conversations_before: Option<f64>,
         _jobs_before: Option<f64>,
+        _max_bytes: Option<u64>,
     ) -> anyhow::Result<usize> {
         Ok(0)
     }
@@ -261,7 +264,62 @@ pub fn summary_of(
             r
         })
         .collect();
-    crate::view::run_summary(&resolved, Some(started_at), Some(now_s()), device)
+    let mut s = crate::view::run_summary(&resolved, Some(started_at), Some(now_s()), device);
+    s["records"] = json!(records.len());
+    s["bytes"] = json!(run_bytes(records, blobs));
+    s
+}
+
+/// What a run costs the store (ADR-023 §6): the canonical bytes of its
+/// records + its spilled text blobs + the raw blobs its records
+/// reference (`{__blob, bytes, mime}`). A content-addressed blob two
+/// runs share is counted by both — the bound errs on the safe side.
+pub fn run_bytes(records: &[Value], blobs: &[(String, String)]) -> u64 {
+    fn raw_bytes(v: &Value) -> u64 {
+        match v {
+            Value::Object(m) => {
+                if crate::blob::is_raw_ref(v) {
+                    return m["bytes"].as_u64().unwrap_or(0);
+                }
+                m.values().map(raw_bytes).sum()
+            }
+            Value::Array(a) => a.iter().map(raw_bytes).sum(),
+            _ => 0,
+        }
+    }
+    let text: u64 = blobs.iter().map(|(_, t)| t.len() as u64).sum();
+    records
+        .iter()
+        .map(|r| canonical_json(r).len() as u64 + raw_bytes(r))
+        .sum::<u64>()
+        + text
+}
+
+/// The size pass (ADR-023 §6): rows of `trace_runs` oldest first, each
+/// with `bytes`; the ids to expire so the rest fits `max_bytes`. Rows
+/// without `bytes` (summaries from before the stamp) weigh nothing and
+/// are never picked — age retires them. `skip` = ids the age pass
+/// already took (their bytes are gone either way).
+pub fn size_victims(
+    rows_oldest_first: &[Value],
+    max_bytes: u64,
+    skip: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let weighed: Vec<(&str, u64)> = rows_oldest_first
+        .iter()
+        .filter_map(|r| Some((r["id"].as_str()?, r["bytes"].as_u64()?)))
+        .filter(|(id, b)| *b > 0 && !skip.contains(*id))
+        .collect();
+    let mut total: u64 = weighed.iter().map(|(_, b)| b).sum();
+    let mut out = Vec::new();
+    for (id, b) in weighed {
+        if total <= max_bytes {
+            break;
+        }
+        out.push(id.to_string());
+        total -= b;
+    }
+    out
 }
 
 /// Integral f64 → i64 everywhere in a value (|x| < 2^53, exact).
@@ -430,13 +488,29 @@ impl AnyTraceStore {
     }
 
     fn query_all(&self, coll: &Value, filter: Value, sort: Value) -> anyhow::Result<Vec<Value>> {
+        self.query_proj(coll, filter, sort, Value::Null)
+    }
+
+    /// `query_all` narrowed to `projection` (docs/09-query.md
+    /// § Projection; `id` always comes back). The retention sweep
+    /// reads ids and sizes only — never a blob's `data` or a record's
+    /// body (BOB-190: the unprojected sweep paged the whole blob
+    /// collection through the server, 330 MB a page).
+    fn query_proj(
+        &self,
+        coll: &Value,
+        filter: Value,
+        sort: Value,
+        projection: Value,
+    ) -> anyhow::Result<Vec<Value>> {
         let mut out = Vec::new();
         let mut offset = 0usize;
         loop {
-            let reply = self.client.local_query(
-                coll,
-                &json!({"filter": filter, "sort": sort, "limit": PAGE, "offset": offset}),
-            )?;
+            let mut opts = json!({"filter": filter, "sort": sort, "limit": PAGE, "offset": offset});
+            if !projection.is_null() {
+                opts["projection"] = projection.clone();
+            }
+            let reply = self.client.local_query(coll, &opts)?;
             let page = reply["records"].as_array().cloned().unwrap_or_default();
             let n = page.len();
             out.extend(page);
@@ -578,6 +652,7 @@ impl TraceStore for AnyTraceStore {
         chat_program: &str,
         conversations_before: Option<f64>,
         jobs_before: Option<f64>,
+        max_bytes: Option<u64>,
     ) -> anyhow::Result<usize> {
         let mut victims: Vec<String> = Vec::new();
         for (before, is_chat) in [(conversations_before, true), (jobs_before, false)] {
@@ -587,15 +662,34 @@ impl TraceStore for AnyTraceStore {
             } else {
                 json!({"$ne": chat_program})
             };
-            let rows = self.query_all(
+            let rows = self.query_proj(
                 &self.runs,
                 json!({"startedAt": {"$lt": before}, "program": prog, "expired": {"$ne": true}}),
                 json!(["startedAt"]),
+                json!({"startedAt": 1}),
             )?;
             victims.extend(
                 rows.iter()
                     .filter_map(|r| r["id"].as_str().map(str::to_string)),
             );
+        }
+        // the size pass: one pool, both classes, oldest first
+        if let Some(max) = max_bytes {
+            let rows = self.query_proj(
+                &self.runs,
+                json!({"expired": {"$ne": true}}),
+                json!(["startedAt"]),
+                json!({"startedAt": 1, "bytes": 1}),
+            )?;
+            let taken: std::collections::BTreeSet<String> = victims.iter().cloned().collect();
+            let over = size_victims(&rows, max, &taken);
+            if !over.is_empty() {
+                tracing::info!(
+                    "trace retention: {} runs over the {max} byte bound",
+                    over.len()
+                );
+            }
+            victims.extend(over);
         }
         if victims.is_empty() {
             return Ok(0);
@@ -611,14 +705,16 @@ impl TraceStore for AnyTraceStore {
                 self.client.local_update_flag(&self.runs, id, "expired")?;
             }
         }
-        // blobs no surviving record references
-        let live = self.query_all(
+        // blobs no surviving record references — refs and ids only,
+        // never a body
+        let live = self.query_proj(
             &self.records,
             json!({"$or": [{"input.__blob": {"$exists": true}}, {"output.__blob": {"$exists": true}}]}),
             json!(["seq"]),
+            json!({"input.__blob": 1, "output.__blob": 1}),
         )?;
         let keep: std::collections::BTreeSet<String> = Self::blob_refs(&live).into_iter().collect();
-        let all = self.query_all(&self.blobs, json!({}), json!(["id"]))?;
+        let all = self.query_proj(&self.blobs, json!({}), json!(["id"]), json!({"bytes": 1}))?;
         let dead: Vec<String> = all
             .iter()
             .filter_map(|b| b["id"].as_str())
@@ -630,10 +726,11 @@ impl TraceStore for AnyTraceStore {
         }
         // raw blobs no surviving record lists in `blobs` (ADR-026 §6)
         if let Some(dir) = &self.blob_dir {
-            let listed = self.query_all(
+            let listed = self.query_proj(
                 &self.records,
                 json!({"blobs": {"$exists": true}}),
                 json!(["seq"]),
+                json!({"blobs": 1}),
             )?;
             let keep: std::collections::BTreeSet<String> = listed
                 .iter()
@@ -894,6 +991,43 @@ mod tests {
         assert!(!valid_run_id("../run_x"));
         assert!(!valid_run_id("run_x/../../etc"));
         assert!(!valid_run_id("foo"));
+    }
+
+    #[test]
+    fn run_bytes_counts_records_text_and_raw_blobs() {
+        let records = vec![
+            json!({"kind": "header", "run": {"id": "run_a"}}),
+            json!({"kind": "effect", "seq": 1, "effect": "x.y",
+                   "output": {"__blob": "sha256:t", "bytes": 3}}),
+            json!({"kind": "effect", "seq": 2, "effect": "http.get",
+                   "output": {"body": {"__blob": "sha256:r", "bytes": 5000, "mime": "image/png"}},
+                   "blobs": ["sha256:r"]}),
+        ];
+        let blobs = vec![("sha256:t".to_string(), "abc".to_string())];
+        let canon: u64 = records.iter().map(|r| canonical_json(r).len() as u64).sum();
+        assert_eq!(run_bytes(&records, &blobs), canon + 3 + 5000);
+        let s = summary_of(&records, &blobs, now_s() - 1.0, None);
+        assert_eq!(s["records"], 3);
+        assert_eq!(s["bytes"], canon + 3 + 5000);
+    }
+
+    #[test]
+    fn size_victims_take_the_oldest_until_under_the_bound() {
+        let rows = vec![
+            json!({"id": "r1", "startedAt": 1, "bytes": 400}),
+            json!({"id": "r2", "startedAt": 2}), // pre-stamp summary: weightless
+            json!({"id": "r3", "startedAt": 3, "bytes": 300}),
+            json!({"id": "r4", "startedAt": 4, "bytes": 200}),
+            json!({"id": "r5", "startedAt": 5, "bytes": 100}),
+        ];
+        let none = std::collections::BTreeSet::new();
+        assert!(size_victims(&rows, 1000, &none).is_empty());
+        assert_eq!(size_victims(&rows, 999, &none), vec!["r1"]);
+        assert_eq!(size_victims(&rows, 300, &none), vec!["r1", "r3"]);
+        assert_eq!(size_victims(&rows, 0, &none), vec!["r1", "r3", "r4", "r5"]);
+        // the age pass already took r1: its bytes are gone, r3 goes next
+        let taken: std::collections::BTreeSet<String> = ["r1".to_string()].into();
+        assert_eq!(size_victims(&rows, 300, &taken), vec!["r3"]);
     }
 
     #[test]
@@ -1275,8 +1409,24 @@ mod live {
 
         // retention (ADR-023 §6): jobs older than "now" expire — bodies
         // + orphan blobs go, the summary stays and load says why
-        let n = store.expire("chat@v1", None, Some(now_s() + 1.0)).unwrap();
+        // the summaries carry the stamp the size bound sums
+        let row = &runs["records"][0];
+        assert!(row["bytes"].as_u64().unwrap() > 0, "{row}");
+        assert_eq!(row["records"], 2);
+        // size pass alone: a 1-byte bound retires both finished runs,
+        // the age pass given nothing to do (ADR-023 §6)
+        let n = store.expire("chat@v1", None, None, Some(1)).unwrap();
         assert!(n >= 2, "expired {n}");
+        assert!(store
+            .load("run_live2")
+            .unwrap_err()
+            .to_string()
+            .contains("expired"));
+        // then the age pass over what is left finds nothing new
+        let n = store
+            .expire("chat@v1", None, Some(now_s() + 1.0), None)
+            .unwrap();
+        assert_eq!(n, 0, "expired {n}");
         let err = store.load("run_live1").unwrap_err().to_string();
         assert!(err.contains("expired"), "{err}");
         assert!(store.list().unwrap().iter().any(|m| m.id == "run_live1"));
@@ -1285,7 +1435,9 @@ mod live {
             .unwrap();
         assert_eq!(blobs["records"].as_array().unwrap().len(), 0, "{blobs}");
         assert_eq!(
-            store.expire("chat@v1", None, Some(now_s() + 1.0)).unwrap(),
+            store
+                .expire("chat@v1", None, Some(now_s() + 1.0), Some(1))
+                .unwrap(),
             0
         );
         // leave nothing behind on the account the test borrowed

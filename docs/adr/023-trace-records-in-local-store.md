@@ -197,12 +197,28 @@ the trace store): `[traces] retain_conversations` (chat-loop runs,
 summary carries `program`, so a per-program table is a later
 refinement if a need appears; "keep failed jobs longer" is the more
 likely first one.
+
+**Age alone does not bound the store** (amendment 2026-10-22, BOB-190:
+a cron that grew to 4,800 records a run filled 28 GB in 17 days,
+every byte younger than 30d). `[traces] max_bytes` (**default 1g**;
+`"never"` = unbounded) caps the whole store, both classes in one pool:
+when the sum of the surviving summaries' `bytes` is over it, the oldest
+runs expire first, whatever their age, until the rest fits. The
+summary carries the weight: `bytes` = the canonical bytes of the run's
+records + its spilled text blobs + the raw blobs its records reference,
+and `records` = the record count, both stamped at run end. A summary
+from before the stamp weighs nothing and is never a size victim — age
+retires it. A run still in flight has no summary and is not counted.
 Expiry deletes `trace_records` by `runId` filter (200 runs per
 delete), then blobs no surviving record references (the live refs are
 collected with one `$exists` query — local↔local `$lookup` was not
 needed), then raw blob files the same live-ref set no longer names
 (amendment 2026-09-04, ADR-026 §6: list `<traces_dir>/blobs/`, unlink
-the unreferenced), and marks the `trace_runs` mirror row `expired`. **Summaries
+the unreferenced), and marks the `trace_runs` mirror row `expired`.
+Every read the sweep makes is projected to ids, stamps and refs — it
+never pages a blob's `data` or a record's body through the server
+(the unprojected blob listing peaked the desktop server at 5.6 GB;
+SYN-375 is the server side). **Summaries
 are kept forever**, synced and mirrored — small, and what "did it run"
 questions and `traceRef` links resolve against after the body is gone
 (`effects.of/get/stats` on an expired run answer a typed error naming

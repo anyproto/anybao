@@ -2121,11 +2121,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
 
 /// Trace retention (ADR-023 §6): host housekeeping, not a guest
 /// program — it writes the trace store. First pass a minute after
-/// boot, then hourly; a no-op unless `[traces] retain_*` is set.
+/// boot, then hourly; a no-op unless `[traces] retain_*` / `max_bytes`
+/// is set (every one has a default, so it always runs).
 fn retention_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let configured =
-            ctx.cfg.retain_conversations_s.is_some() || ctx.cfg.retain_jobs_s.is_some();
+        let configured = ctx.cfg.retain_conversations_s.is_some()
+            || ctx.cfg.retain_jobs_s.is_some()
+            || ctx.cfg.max_trace_bytes.is_some();
         if !configured {
             return;
         }
@@ -2296,10 +2298,11 @@ impl RunCtx {
         let now = now_s();
         let conv = self.cfg.retain_conversations_s.map(|s| now - s as f64);
         let jobs = self.cfg.retain_jobs_s.map(|s| now - s as f64);
-        if conv.is_none() && jobs.is_none() {
+        let max = self.cfg.max_trace_bytes;
+        if conv.is_none() && jobs.is_none() && max.is_none() {
             return Ok(0);
         }
-        self.traces.expire(CHAT_PROGRAM, conv, jobs)
+        self.traces.expire(CHAT_PROGRAM, conv, jobs, max)
     }
 
     fn broker(&self, spec: &str, run_id: String) -> Broker {
