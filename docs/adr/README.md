@@ -45,6 +45,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 029 | One type per object, collections — classes and tags, the default type, membership verbs, the fleet cut | Accepted |
 | 030 | The judge tier — typed questions over a state (`llm.judge`, TypeSafe Jev first) | Accepted |
 | 031 | toMarkdown — one conversion program for HTML and PDF, pypdf in the kernel, fuel budget 250 G | Accepted |
+| 033 | Run activity stream — self-describing `bao.run.*` events for the chat UI (plain line + extended mode) | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
