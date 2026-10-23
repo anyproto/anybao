@@ -1536,12 +1536,17 @@ fn price_for(model: &str) -> Option<Price> {
         serde_json::from_str(MODEL_PRICING).expect("model_pricing.json is valid JSON");
     // the full id first (`z-ai/glm-5.3`, an OpenRouter row), then the
     // bare model behind a provider prefix (`anthropic/claude-sonnet-5`
-    // → the claude row); rows match as prefixes (dated variants)
+    // → the claude row); rows match as prefixes (dated variants), and
+    // the LONGEST matching row wins — `claude-opus-5-5` is its own row,
+    // not a dated variant of `claude-opus-5`
     let bare = model.rsplit('/').next().unwrap_or(model);
-    let (_, p) = table
-        .iter()
-        .find(|(k, _)| model.starts_with(k.as_str()))
-        .or_else(|| table.iter().find(|(k, _)| bare.starts_with(k.as_str())))?;
+    let longest = |id: &str| {
+        table
+            .iter()
+            .filter(|(k, _)| id.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
+    };
+    let (_, p) = longest(model).or_else(|| longest(bare))?;
     let get = |k: &str| p.get(k).copied().unwrap_or(0.0);
     Some(Price {
         input: get("in"),
@@ -2037,6 +2042,23 @@ mod tests {
         };
         let map = tool_results(&[req(7), req(20)]);
         assert_eq!(map["t1"], ("42".into(), false, 7));
+    }
+
+    #[test]
+    fn price_for_prefers_the_longest_row() {
+        // `claude-opus-5-5` is its own row, not a dated `claude-opus-5`
+        let p = price_for("claude-opus-5-5").unwrap();
+        assert_eq!((p.input, p.output), (4.0, 20.0));
+        // a dated variant still falls back to its family row
+        let p = price_for("claude-sonnet-5-20260301").unwrap();
+        assert_eq!((p.input, p.cache_read), (2.0, 0.2));
+        // a provider prefix strips to the bare id
+        let p = price_for("anthropic/claude-haiku-5-5").unwrap();
+        assert_eq!((p.input, p.output), (0.1, 0.5));
+        // an OpenRouter snapshot id beats its family row
+        let p = price_for("qwen/qwen3.8-max-0902").unwrap();
+        assert_eq!(p.cache_read, 0.25);
+        assert!(price_for("nonesuch-9").is_none());
     }
 
     #[test]
