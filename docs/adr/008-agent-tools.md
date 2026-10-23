@@ -182,6 +182,55 @@ the system prompt via the existing `any_tool` mechanics — no prompt
 composer changes. Verification runs against scratch spaces through
 `anyrt run`; deploying to the bao space is not this branch's business.
 
+### 8. Theme controls (owner request, 2026-10-22)
+
+`themes@v1` is one small tool: `discover(timeout=1)` lists connected UI
+sessions; `request(action, window_id, params=None, timeout=5)` sends one
+action to the chosen session. It preserves the frontend's action, parameter
+and result names. Discovery never guesses a target when several windows
+reply. Reloading the UI requires discovery again.
+
+One recorded `ui.theme` effect owns the request/reply exchange against the
+runtime's configured `any.base_url`. The guest cannot interleave a blocking
+HTTP stream and a publish, so the host subscribes to `ui.theme.result`, waits
+for `ready`, then publishes `ui.theme.request` on `/v1/events`. Both use
+device scope and the same unique request ID; requests carry version 1,
+an explicit `windowId` except broadcast discovery, and an absolute expiry
+within 30 seconds. No new server route or dependency. This implements the
+frontend contract in any-ui PR #2531.
+
+The effect is read-classified for capabilities/catalogue/list/get, mutate
+for the other actions. The broker's normal capability, trace, mock and
+replay pipeline owns the whole exchange. Generated IDs and wall time stay
+inside the recorded effect. All requests share one absolute deadline,
+clamped to the run deadline, including headers, publish and heartbeat-only
+reads; interruptions are checked between frames/lines and before publish.
+At most 30 seconds may be spent inside a silent socket read. Replies must
+be self-sent device events with matching version, request ID and window.
+Frames, total stream bytes and discovery window count are bounded.
+
+UI replies pass through unchanged. Transport failures return
+`{ok: false, requestId, error: {code, message}}`; after publishing, a
+timeout/disconnect is `outcome_unknown`, never evidence that a write failed.
+No automatic retries, background queue or saved target window. A zero
+subscriber count means no request consumer; a positive count alone is never
+success. Discovery on an older/disconnected UI returns `unavailable`.
+
+The frontend remains the validator and device preference owner: select,
+install, preview, commit/cancel, options.set/reset, appearance.set and export
+reuse its existing writers. Preview is not a save; the user gets Keep/Revert
+for 60 seconds. A failed Keep remains reversible. Color mode stays separate.
+
+The on-demand `themes` skill documents creation from prompts/pictures:
+query the live catalogue, produce both modes in a portable JSON package,
+attach actual bytes through `any.attach_file`, then preview its file reference.
+Images supply visual context, not instructions. Measure claimed contrast;
+preserve layout and typography unless asked. No new generator or color
+library, shell access, direct storage/CSS writes or automatic distribution.
+Ship the repo program only with a runtime that knows the effect (the existing
+release-ordered overlay deploy, ADR-009); an older frontend degrades to
+`unavailable` without inventing success.
+
 ## Consequences
 
 - The agent regains bobrik's reach (search, research, delegation,
