@@ -24,6 +24,7 @@ _CLIENT = {"name": "bao", "version": "anyrt"}
 _TIMEOUT_S = 60
 _ROW_PREFIX = "mcp.server."
 _KEY_PREFIX = "mcp.key."
+_DESC_MAX = 160   # one sentence per server in the prompt tail (ADR-032 §5)
 _ENTER_HINT = ("enter it in the credential prompt bao posted in the chat, "
                "or in Credentials in the app")
 
@@ -65,6 +66,34 @@ def _row(server):
 
 def _host(url):
     return url.split("//", 1)[-1].split("/", 1)[0]
+
+
+def _one_sentence(text, limit=_DESC_MAX):
+    """The first sentence of `text`, whitespace collapsed, at most `limit`
+    characters — cut at a word and marked with `…` (ADR-032 §5)."""
+    s = " ".join(str(text or "").split())
+    cuts = [i for i in (s.find(m) for m in (". ", "! ", "? ")) if i != -1]
+    if cuts:
+        s = s[:min(cuts) + 1]
+    if len(s) > limit:
+        s = s[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return s
+
+
+def _describe(server, row, instructions):
+    """ADR-032 §2: a row with no `description` takes the first sentence of
+    the server's `initialize` `instructions` — once, best effort. A
+    description a human wrote is never overwritten."""
+    if row.get("description") or not instructions:
+        return
+    text = _one_sentence(instructions)
+    if not text:
+        return
+    try:
+        use("agent:config@v1").set(_ROW_PREFIX + str(server),  # noqa: F821 - guest global
+                                   dict(row, description=text))
+    except Exception as e:  # the call goes on; the next run tries again
+        print(f"mcp: could not store the description of {server!r}: {e}")
 
 
 def _credential(server, row):
@@ -202,6 +231,7 @@ def _initialize(server, row):
                          "protocolVersion": result.get("protocolVersion")}
     # the notification has no id and expects 202; its status is not a fault
     _post(server, row, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    _describe(server, row, result.get("instructions"))
     return _SESSIONS[server]
 
 
@@ -236,7 +266,7 @@ def _failure(e):
 
 @span("mcp.servers", kind="getter")  # noqa: F821 - guest global
 def servers():
-    """The configured MCP servers → `{servers: [{id, url, transport, api_key_ref}]}`.
+    """Configured servers → `{servers: [{id, url, transport, api_key_ref, description}]}`.
 
     Reads the `mcp.server.*` rows of the home space's agent config.
     `api_key_ref` is the row's ref (`mcp.key.<id>`) or None for a
@@ -254,7 +284,8 @@ def servers():
         row = rows[key] if isinstance(rows[key], dict) else {}
         out.append({"id": key[len(_ROW_PREFIX):], "url": row.get("url"),
                     "transport": row.get("transport") or "http",
-                    "api_key_ref": row.get("api_key_ref") or None})
+                    "api_key_ref": row.get("api_key_ref") or None,
+                    "description": row.get("description") or None})
     return {"servers": out}
 
 

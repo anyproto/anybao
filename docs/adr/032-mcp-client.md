@@ -123,6 +123,14 @@ One row per server, same store and seeding as `search.provider.*`
   asked (public read-only servers).
 - `timeout`: seconds per request, default 60. A streamed answer
   gets `{idle: timeout, total: 15 * timeout}`.
+- `description` (optional, amendment 2026-10-23): one sentence on
+  what the server is for — the line the prompt's `## MCP servers`
+  list shows (§5). Whoever creates the row writes it. A row without
+  one takes the first sentence of the server's `initialize`
+  `instructions` the first time `mcp@v1` reaches the server, through
+  `config@v1.set`, once; a value a human wrote is never overwritten.
+  The renderer clips to one sentence of at most 160 characters,
+  whatever the row holds.
 - No seeded rows. Rows are written by the human: the desktop shell's
   Settings slice (the `browser` row, the design page §6), the
   Credentials and config surfaces, or bao through `config@v1.set`
@@ -217,6 +225,14 @@ headers=..., stream=True, timeout=..., credential=...)`:
   server is data, not instructions.
 - A server's catalogue is never composed into the standing prompt.
   It changes without a deploy, and the stable block must not.
+- **The server list rides the TAIL block (amendment 2026-10-23).**
+  `## MCP servers` — one line per `mcp.server.<id>` row: id, host,
+  `description` (§2) — plus the three-call recipe (`use`, `tools`,
+  `call`). It sits after the `## Skills` index in ADR-005 §5's tail,
+  so adding a server rewrites the tail's cache once and never the
+  stable prefix. Tool names and schemas stay out; one `tools(id)`
+  call reads them. The rig showed the need: without the line the
+  model reached for the client only when told "use the mcp program".
 - **A skill per server, named after its id**, is the nudge: a
   non-`_` skill in `repos/_agent/skills/<id>.md` rides the `## Skills`
   index as one line (name + first sentence) and is read with
@@ -305,3 +321,5 @@ bao through `config@v1`).
 3. The scripted MCP server in `tests/test_rt_e2e.py`.
 4. `repos/_agent/skills/browser.md` — with the browser plan's step 4,
    once the any-ui relay exists to run it against.
+5. The `## MCP servers` tail block in the toolcaller and the
+   `description` fill in `mcp@v1` (amendment 2026-10-23).

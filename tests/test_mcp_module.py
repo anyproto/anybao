@@ -23,8 +23,9 @@ class ScriptedMcp:
     """An MCP server behind the http.post effect: records every request
     (payload as the guest sent it) and answers by method."""
 
-    def __init__(self, sse=False, session="sess-1", page=False):
+    def __init__(self, sse=False, session="sess-1", page=False, instructions=None):
         self.sse = sse
+        self.instructions = instructions
         self.session = session
         self.page = page
         self.requests = []
@@ -45,6 +46,8 @@ class ScriptedMcp:
             sid = f"{self.session}-{self.sessions_issued}" if self.session else None
             result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
                       "serverInfo": {"name": "scripted", "version": "0"}}
+            if self.instructions is not None:
+                result["instructions"] = self.instructions
             return self._rpc(msg["id"], result, session=sid)
         if self.session and headers.get("Mcp-Session-Id") is None:
             return self._http(400, json.dumps({"error": "missing session"}))
@@ -112,6 +115,9 @@ def kernel(server, rows=None, raise_http=None):
             if payload["key"] not in rows:
                 raise KeyError(f"no config row {payload['key']!r}")
             return {"value": rows[payload["key"]]}
+        if name == "config.set":
+            rows[payload["key"]] = payload["value"]
+            return {}
         if name == "http.post":
             if raise_http is not None:
                 raise raise_http
@@ -286,8 +292,38 @@ def test_servers_lists_rows_without_key_values():
         "llm.tier.codegen": {"provider": "anthropic"},
         "mcp.key.t": "never-listed-here-anyway"})
     assert m.servers() == {"servers": [
-        {"id": "pub", "url": "https://mcp.example/mcp", "transport": "http", "api_key_ref": None},
-        {"id": "t", "url": URL, "transport": "http", "api_key_ref": "mcp.key.t"}]}
+        {"id": "pub", "url": "https://mcp.example/mcp", "transport": "http", "api_key_ref": None,
+         "description": None},
+        {"id": "t", "url": URL, "transport": "http", "api_key_ref": "mcp.key.t",
+         "description": None}]}
+
+
+def test_initialize_instructions_fill_an_empty_description_once():
+    """ADR-032 §2: the first sentence of `instructions`, clipped to 160,
+    lands in the row's `description` when the row has none."""
+    rows = {"mcp.server.t": dict(ROW)}
+    srv = ScriptedMcp(instructions="Echoes what you send, and tells the time.\n\n"
+                                   "Use echo for text. Use now for the clock.")
+    m = kernel(srv, rows)
+    m.tools("t")
+    assert rows["mcp.server.t"]["description"] == "Echoes what you send, and tells the time."
+    assert rows["mcp.server.t"]["url"] == ROW["url"]          # the rest of the row kept
+    assert m.servers()["servers"][0]["description"] == "Echoes what you send, and tells the time."
+    inits = [r for r in srv.requests if r["json"].get("method") == "initialize"]
+    assert len(inits) == 1                                     # the fill is not a re-init
+    rows2 = {"mcp.server.t": dict(ROW)}
+    kernel(ScriptedMcp(instructions=" ".join(["w" * 45] * 6)), rows2).tools("t")
+    d = rows2["mcp.server.t"]["description"]
+    assert len(d) <= 160 and d.endswith("…")
+
+
+def test_a_written_description_wins_and_no_instructions_write_nothing():
+    rows = {"mcp.server.t": dict(ROW, description="Mine.")}
+    kernel(ScriptedMcp(instructions="Theirs."), rows).tools("t")
+    assert rows["mcp.server.t"]["description"] == "Mine."
+    rows = {"mcp.server.t": dict(ROW)}
+    kernel(ScriptedMcp(), rows).tools("t")
+    assert "description" not in rows["mcp.server.t"]
 
 
 def test_raw_returns_the_result_verbatim_and_errors_with_code():
