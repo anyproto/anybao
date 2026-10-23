@@ -1,10 +1,6 @@
 # Skill: browser
 
-Web pages the user shares from Chrome, read through the `browser` MCP
-server; read this when a message begins "Shared from Chrome" or a task
-needs a page the user is looking at. Only a human grants access, in
-the Any Web Clipper chrome extension popup: one tab or a few tabs, read-only, 30
-minutes by default. 
+Pages the user shares from Chrome via the `browser` MCP server; read this for a "Shared from Chrome" message, a task about a page the user is viewing, or a question on browser access or the clipper. Only a human grants access, in the Any Web Clipper chrome extension popup: one tab, read-only, 30 minutes by default. A grant ends when the user clicks Stop in the popup, when its time runs out, or when the tab closes or leaves its site; say the page is no longer shared, never that sharing "lapsed" on its own.
 
 ## Calling
 
