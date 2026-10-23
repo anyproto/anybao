@@ -2361,7 +2361,12 @@ class _Client:
         Write bodies in Any's spelling; anything else is rewritten on
         the first human edit: `**bold**` `*italic*` `~~strike~~`, `-`
         bullets, `#` headings, backtick fences with a language, display
-        math as a ```math fence (inline `$x$` is fine, `$$` never)."""
+        math as a ```math fence (inline `$x$` is fine, `$$` never).
+        Keep every `<!-- any:… -->` comment exactly as read, where it
+        sits: the `<!-- any:table … -->` line after a table is its id
+        (column widths hang off it), so it stays directly below that
+        table. Never write one yourself; delete a table or block
+        together with its comments."""
         self._check_body(space, object_id)
         r = self._call("put", self._md_path(space, object_id),
                        {"content": content})
