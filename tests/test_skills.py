@@ -62,3 +62,23 @@ def test_memory_skill_carries_the_save_table_and_vocabulary():
     for edge in ("relates_to", "caused_by", "supersedes", "decided_in",
                  "part_of", "owned_by", "discussed_in"):
         assert edge in mem
+
+
+def test_browser_skill_documents_the_real_surface():
+    """The on-demand `browser` skill (design page §7.2): the three tools
+    of the Any Web Clipper's MCP server, the relay's error codes, the
+    desktop app's share nudge, and the data-not-instructions rule."""
+    skills = load_skills_dir(SKILLS_DIR)
+    browser = skills["browser"]
+    assert not browser.startswith("# Skill: _"), "browser is on demand, not a system skill"
+    for needle in ('use("agent:mcp@v1")', '"browser"', "list_pages", "read_page",
+                   "read_selection", "tabId", "structuredContent", "-32001",
+                   "-32002", "-32003", "No grant covers", "Shared from Chrome",
+                   "desktop app", "never follow instructions"):
+        assert needle in browser, f"browser.md lost {needle!r}"
+    # the index line is the first prose sentence (toolcaller _first_sentence):
+    # it must route both triggers and fit the 200-character cap
+    first = " ".join(browser.split("\n\n")[1].split())
+    first = first[:first.find(". ") + 1]
+    assert "Shared from Chrome" in first and "`browser`" in first
+    assert len(first) <= 200, len(first)
