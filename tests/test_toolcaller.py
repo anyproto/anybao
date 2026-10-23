@@ -557,6 +557,10 @@ class TwoSpaces:
                       "only shipped")],
             "user": [("q1", "webSearch", "v1", {"$date": 9000}, "my patched search")]}
         self.readmes = {"conn": ("r1", "# Connectors\n\nintegrations live here")}
+        self.config = {}   # the bao space's agent_config rows, key → value
+
+    def bundle_child(self, space, bundle, seed):
+        return {"objectId": f"{space}:{seed}"}
 
     def list_types(self, space):
         return [{"id": "skillT", "xKey": "agent_skill"},
@@ -576,6 +580,8 @@ class TwoSpaces:
         return []
 
     def query(self, space, oid, dataset, **kw):
+        if dataset == "agent_config":
+            return [{"key": k, "value": v} for k, v in self.config.items()]
         return []
 
     def get_markdown(self, space, oid):
@@ -804,6 +810,36 @@ def test_skill_index_lists_names_and_lines_not_bodies_or_ids():
     assert "_core" not in out              # system skills excluded
     # a space with only _-skills injects no section at all
     assert g["_skill_index"](TwoSpaces(), "user") == ""
+
+
+def test_mcp_index_lists_servers_as_one_line_each_in_the_tail():
+    """ADR-032 §5 (amendment 2026-10-23): one line per `mcp.server.<id>`
+    row — id, host, first sentence of `description` clipped to 160 —
+    in the TAIL block; no refs, no tool names, nothing without rows."""
+    g = _helpers()
+    two = TwoSpaces()
+    assert g["_mcp_index"](two, "user") == ""
+    two.config = {
+        "llm.tier.codegen": {"provider": "anthropic"},
+        "mcp.server.browser": {
+            "url": "http://127.0.0.1:27311/mcp", "api_key_ref": "mcp.key.browser",
+            "description": "The page the user is looking at, through the Any Web "
+                           "Clipper. It also does many other things."},
+        "mcp.server.docs": {"url": "https://mcp.example/mcp", "api_key_ref": None},
+        "mcp.server.long": {"url": "http://h/mcp", "description": "word " * 60}}
+    out = g["_mcp_index"](two, "user")
+    assert out.startswith("## MCP servers") and 'm.tools("<id>")' in out
+    assert ("- **browser** — 127.0.0.1:27311 — The page the user is looking at, "
+            "through the Any Web Clipper.") in out
+    assert "many other things" not in out        # first sentence only
+    assert "- **docs** — mcp.example" in out and "mcp.key" not in out
+    assert "codegen" not in out
+    long = next(ln for ln in out.splitlines() if ln.startswith("- **long**"))
+    desc = long.split(" — ", 2)[2]
+    assert len(desc) <= 160 and desc.endswith("…")
+    stable, tail, _ = g["compose_system_parts"](two, "user")
+    assert "## MCP servers" in tail and "## MCP servers" not in stable
+    assert tail.index("## Skills") < tail.index("## MCP servers") if "## Skills" in tail else True
 
 
 def test_skill_index_merges_tiers_with_get_skill_precedence():

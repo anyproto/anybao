@@ -495,7 +495,8 @@ The system prompt is two cache blocks, composed guest-side by the
 toolcaller (content shapes are ADR-006's; the host writes no prompt
 wording). The **stable** block is identity + system skills + tool docs;
 the **tail** block is what a run's own actions or surroundings change:
-the skills index, the repo inventory, the memory categories, and the
+the skills index, the MCP server list (ADR-032 §5), the repo
+inventory, the memory categories, and the
 **runtime context** (agent space id, chat id, agent name, the apps of
 the agent space, the user's display name as its last line, the
 shell device — the ids must be stated because the model has no other

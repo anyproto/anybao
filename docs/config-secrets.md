@@ -70,8 +70,8 @@ shown at entry; enforcement is ADR-021 §7), `help`, `note`,
 sets the value). The value is the row's synced `value` field —
 readable by the account's own devices only, stripped by the UI at its
 read seam.
-`config.get` refuses the `connector.key.*`, `llm.key.*` and
-`connector.oauth.*` namespaces wholesale.
+`config.get` refuses the `connector.key.*`, `llm.key.*`, `mcp.key.*`
+and `connector.oauth.*` namespaces wholesale.
 
 ## Which refs inject, and where (ADR-021 §7/§8)
 
@@ -80,7 +80,7 @@ host, port compared only when the row names one — and refuses
 anything else typed `secret_host_mismatch`. Where a row's hosts come
 from depends on the ref:
 
-- **Declared refs** — every namespace but `local.key.*`
+- **Declared refs** — every namespace but `local.key.*` and `mcp.key.*`
   (`connector.key.*`, `llm.key.*`, `google.key.*`, the managed
   `connector.oauth.*`): the deployed module lists them in
   `__any_credentials__`; serve reads every overlay's declarations at
@@ -89,11 +89,15 @@ from depends on the ref:
   A ref no deployed program declares is refused typed
   `secret_ref_undeclared` — a seeded `connector.key.<x>` with no
   connector behind it is stored but never injected.
-- **Open refs** — `local.key.*` (a program bao wrote), and an
+- **Open refs** — `local.key.*` (a program bao wrote), `mcp.key.<id>`
+  (the bearer of the `mcp.server.<id>` row, ADR-032), and an
   `llm.key.*` no overlay declares (a self-hosted backend): the
   request's `about` becomes the row when the row is created, hosts
   mandatory (`secret_hosts_required` otherwise); later misses never
-  rewrite it. Only the human edits hosts afterwards, in Credentials.
+  rewrite it. A row that exists with a value and no hosts (written by
+  the UI or a seed file before any miss) binds to the first request
+  that injects it, once. Only the human edits hosts afterwards, in
+  Credentials.
 
 `lastUsedAt` is stamped once per run at the first injection. A
 `local.key.*` card says in its text that unreviewed code asked, and

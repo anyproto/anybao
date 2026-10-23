@@ -1086,6 +1086,26 @@ impl crate::broker::SecretSource for ServeSecretStore {
             warn!("secrets: could not stamp lastUsedAt for {key} ({e})");
         }
     }
+
+    /// ADR-032 §3 (ADR-021 §8.4 amended): the descriptor of the first
+    /// request an open, hostless row served — written once, onto the
+    /// existing row, so the key is bound from here on.
+    fn bind_hosts(&self, key: &str, about: &Value) {
+        let patch = descriptor_patch(false, about, json!({}));
+        if patch.as_object().is_some_and(|p| p.is_empty()) {
+            return;
+        }
+        if let Err(e) = upsert_secret_row(
+            &self.client,
+            &self.space,
+            &self.obj,
+            &self.dataset,
+            key,
+            &patch,
+        ) {
+            warn!("secrets: could not bind hosts for {key} ({e})");
+        }
+    }
 }
 
 impl ServeSecretStore {

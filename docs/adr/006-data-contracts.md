@@ -315,7 +315,8 @@ another device is live for the next cell. A store hiccup fails that
 
 **Effects.**
 - `config.get {key}` → `{value}` — the row; refuses the secret
-  namespaces by name (`llm.key.*`, `connector.key.*`, oauth refs).
+  namespaces by name (`llm.key.*`, `connector.key.*`, `mcp.key.*`
+  (ADR-032), oauth refs).
 - `config.set {key, value}` — mutate, traced (ADR-002): upserts the
   row. Refuses the secret namespaces with `ConfigError`.
 - `runtime.get {key}` → `{value}` — runtime wiring (`any.base_url`,

@@ -1035,6 +1035,53 @@ def _skill_index(c, space, code_space=None, overlays=None):
             "of your own: `c.create_skill` (help it first).\n\n" + lines)
 
 
+_MCP_DESC_MAX = 160
+
+
+def _one_sentence(text, limit=_MCP_DESC_MAX):
+    """The first sentence of `text`, whitespace collapsed, at most `limit`
+    characters — cut at a word and marked with `…` (ADR-032 §5)."""
+    s = " ".join(str(text or "").split())
+    cuts = [i for i in (s.find(m) for m in (". ", "! ", "? ")) if i != -1]
+    if cuts:
+        s = s[:min(cuts) + 1]
+    if len(s) > limit:
+        s = s[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return s
+
+
+def _mcp_index(c, space):
+    """`## MCP servers` — the `mcp.server.<id>` rows of the bao space as
+    id + host + one sentence (ADR-032 §5): the model learns a server
+    exists before any `servers()` call. The catalogue stays out — it is
+    read with `tools(id)` on demand. Part of the TAIL block: a new
+    server rewrites the tail's cache, never the stable prefix. The
+    description is clipped here to one sentence of at most 160
+    characters, whatever the row holds."""
+    try:
+        obj = c.bundle_child(space, "bao/v1", "bao/config/v1")["objectId"]
+        rows = c.query(space, obj, "agent_config")
+    except Exception:
+        return ""   # no config store yet (a fresh account's first run)
+    lines = []
+    for r in sorted(rows, key=lambda r: str(r.get("key"))):
+        key, val = str(r.get("key") or ""), r.get("value")
+        if not key.startswith("mcp.server.") or not isinstance(val, dict):
+            continue
+        host = str(val.get("url") or "").split("//", 1)[-1].split("/", 1)[0]
+        desc = _one_sentence(val.get("description"))
+        lines.append(f"- **{key[len('mcp.server.'):]}** — {host}"
+                     + (f" — {desc}" if desc else ""))
+    if not lines:
+        return ""
+    return ("## MCP servers\n\n"
+            "External tool servers configured for you (id — host — what it is "
+            "for). Their tools are read on demand: `m = use(\"agent:mcp@v1\")`, "
+            "`m.tools(\"<id>\")` for the catalogue, `m.call(\"<id>\", \"<tool>\", "
+            "{...})` to run one. A missing key asks the user in the chat.\n\n"
+            + "\n".join(lines))
+
+
 def _memory_categories(c, space):
     """The category-name inventory in the brain — the write path's
     vocabulary anchor."""
@@ -1087,7 +1134,8 @@ def compose_system_parts(c, space, code_space=None, overlays=None, style="full",
     STABLE = identity (the `_soul` body, first, verbatim) + skills + tool
     docs (both two-tier: agent code overlay + working space, working
     wins); TAIL = the parts a run's own actions change — the skills
-    index, the repo inventory, the memory categories (the caller adds
+    index, the MCP server list, the repo inventory, the memory
+    categories (the caller adds
     the runtime context). A new skill, program or memory category then
     rewrites only the tail's cache, never the whole prefix. Guest-side —
     the host injects nothing. `style` is the profile's `prompt_style`;
@@ -1102,6 +1150,7 @@ def compose_system_parts(c, space, code_space=None, overlays=None, style="full",
               _compose_skills(skills, has_shell),
               _tool_docs(c, space, code_space, style)]
     tail = [_skill_index(c, space, code_space, overlays),
+            _mcp_index(c, space),
             _repo_inventory(c, overlays,
                             code_space if code_space != space else None),
             _memory_categories(c, space)]

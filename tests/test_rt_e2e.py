@@ -42,12 +42,14 @@ class FakeBackends(BaseHTTPRequestHandler):
     chat_posts: list = []
     datasets: dict = {}
     local: dict = {}          # local-store collections: name -> {id: doc}
+    mcp_requests: list = []   # /mcp: a scripted MCP server (ADR-032)
 
     @classmethod
     def reset(cls, llm_replies, stalls=0):
         cls.llm_replies = list(llm_replies)
         cls.llm_stalls = stalls
         cls.llm_requests, cls.turns, cls.chat_posts = [], [], []
+        cls.mcp_requests = []
         cls.local = {}
         cls.datasets = {"agent_turns": cls.turns, "agent_chunks": [],
                         "agent_memory_items": [], "agent_roi_injections": []}
@@ -152,12 +154,62 @@ class FakeBackends(BaseHTTPRequestHandler):
         # the fake keeps records by key
         return collection.split("_", 1)[1] if "_" in collection else collection
 
+    def _mcp(self, body):
+        """A scripted MCP server over streamable HTTP (ADR-032 §4): a
+        bearer, a session issued by `initialize` and required after,
+        one tool `echo`, JSON answers except `tools/call`, which answers
+        in SSE so the binary's stream fold is on the path."""
+        cls = type(self)
+        cls.mcp_requests.append({"headers": {k.lower(): v for k, v in self.headers.items()},
+                                 "body": body})
+        if self.headers.get("Authorization") != "Bearer mcp-e2e-token":
+            return self._reply({"error": "unauthorized"}, 401)
+        method = body.get("method")
+        if body.get("id") is None:          # a notification: 202, no body
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        reply = {"jsonrpc": "2.0", "id": body["id"]}
+        if method == "initialize":
+            reply["result"] = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                               "serverInfo": {"name": "fake-mcp", "version": "0"}}
+            out = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Mcp-Session-Id", "e2e-sess")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
+        if self.headers.get("Mcp-Session-Id") != "e2e-sess":
+            return self._reply({"error": "no such session"}, 404)
+        if method == "tools/list":
+            reply["result"] = {"tools": [{"name": "echo", "description": "Echo the arguments.",
+                                          "inputSchema": {"type": "object"}}]}
+            return self._reply(reply)
+        if method == "tools/call":
+            reply["result"] = {"content": [{"type": "text", "text":
+                                            "echo: " + json.dumps(body["params"]["arguments"])}],
+                               "structuredContent": body["params"]["arguments"]}
+            out = _sse_events(("message", reply)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
+        reply["error"] = {"code": -32601, "message": f"unknown method {method}"}
+        return self._reply(reply)
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         cls = type(self)
         if "/v1/local/" in self.path:
             return self._local(body)
+        if self.path.endswith("/mcp"):
+            return self._mcp(body)
         if self.path.endswith("/v1/messages"):
             assert self.headers.get("x-api-key") == "sk-test", "credential missing"
             cls.llm_requests.append(body)
@@ -259,10 +311,12 @@ def backends():
     server.shutdown()
 
 
-def run_rt(base, spec, args, extra=(), cmd="run", tier=None, programs=None):
+def run_rt(base, spec, args, extra=(), cmd="run", tier=None, programs=None,
+           config=None, secrets=""):
     """`anyrt run <spec> --args …` (or `anyrt replay <run_id>` with
     cmd="replay": `spec` is then the run id) against the fake. `tier`
-    adds fields to both tier rows (e.g. a `timeout`)."""
+    adds fields to both tier rows (e.g. a `timeout`); `config` adds
+    keys to the run's config, `secrets` lines to its secrets file."""
     scratch = Path(tempfile.mkdtemp())
     row = {"provider": "anthropic", "model": "t", "base_url": f"{base}/llm",
            "api_key_ref": "llm.key", **(tier or {})}
@@ -271,8 +325,9 @@ def run_rt(base, spec, args, extra=(), cmd="run", tier=None, programs=None):
         "bao.space": "s1",          # the memory home (ADR-017 §0), lifted to runtime
         "llm.tier.codegen": dict(row),
         "llm.tier.classify": dict(row),
+        **(config or {}),
     }))
-    (scratch / "secrets.env").write_text("llm.key=sk-test\n")
+    (scratch / "secrets.env").write_text("llm.key=sk-test\n" + secrets)
     head = [spec, "--args", json.dumps(args)] if cmd == "run" else [spec]
     proc = subprocess.run(
         [rt_binary(), cmd, *head, *extra,
@@ -403,6 +458,53 @@ def test_mock_and_replay_serve_recorded_effects(backends):
     boots = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "kernel.boot"]
     assert boots and all(r["meta"]["mocked"] is False and "mock" not in r["meta"]
                          for r in boots)
+
+
+def test_mcp_call_through_the_binary_and_replays(backends):
+    """ADR-032: `mcp@v1` against a scripted streamable-HTTP server —
+    one `http.post` per JSON-RPC message, the bearer injected by the
+    host and absent from the trace, an SSE answer folded into one
+    record, and a strict replay that touches the server no more."""
+    FakeBackends.reset([])
+    mcp = {"mcp.server.test": {"transport": "http", "url": f"{backends}/mcp",
+                               "api_key_ref": "mcp.key.test", "timeout": 20}}
+    args = {"server": "test", "tool": "echo", "arguments": {"q": "hi"}}
+    proc, out, _ = run_rt(backends, "mcp@v1", args, config=mcp,
+                          secrets="mcp.key.test=mcp-e2e-token\n")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out["status"] == "ok", out
+    value = out["value"]
+    assert value["ok"] is True
+    assert value["text"] == 'echo: {"q": "hi"}'
+    assert value["structuredContent"] == {"q": "hi"}
+    # the wire: initialize, the initialized notification, the call —
+    # every one with the host-injected bearer and the issued session
+    methods = [r["body"].get("method") for r in FakeBackends.mcp_requests]
+    assert methods == ["initialize", "notifications/initialized", "tools/call"]
+    assert all(r["headers"]["authorization"] == "Bearer mcp-e2e-token"
+               for r in FakeBackends.mcp_requests)
+    assert all(r["headers"]["mcp-session-id"] == "e2e-sess"
+               for r in FakeBackends.mcp_requests[1:])
+    assert all(r["headers"]["accept"] == "application/json, text/event-stream"
+               for r in FakeBackends.mcp_requests)
+    live_calls = len(FakeBackends.mcp_requests)
+    # the trace: three posts, the key in none of them, the SSE text in
+    # the call's recorded body, the catalogue-shaped result on the span
+    recs = _run_records(out["traceRef"])
+    posts = [r for r in recs if r.get("kind") == "effect" and r["effect"] == "http.post"]
+    assert [p["input"]["json"].get("method") for p in posts] == methods
+    assert "mcp-e2e-token" not in json.dumps(list(recs))
+    assert posts[0]["input"]["credential"]["ref"] == "mcp.key.test"
+    assert posts[2]["input"]["stream"] is True
+    spans = [r for r in recs if r.get("kind") == "span" and r.get("phase") == "end"
+             and r.get("name") == "mcp.call"]
+    assert spans and spans[0]["output"]["text"] == 'echo: {"q": "hi"}'
+    # strict replay: the same value, no new request reaches the server
+    proc, out2, _ = run_rt(backends, out["traceRef"], None, cmd="replay", config=mcp,
+                           secrets="mcp.key.test=mcp-e2e-token\n")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out2["value"]["text"] == 'echo: {"q": "hi"}'
+    assert len(FakeBackends.mcp_requests) == live_calls
 
 
 def test_mock_spec_errors_before_the_run(backends):

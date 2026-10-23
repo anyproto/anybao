@@ -233,6 +233,13 @@ pub trait SecretSource: Send + Sync {
     /// `lastUsedAt` — the audit stamp (ADR-021 §8.4), once per run per
     /// ref (the broker dedups). Default: nothing.
     fn mark_used(&self, _key: &str) {}
+    /// An OPEN ref's row that reached injection with no `hosts` (a value
+    /// written by the UI or a seed file before any miss) binds to the
+    /// descriptor of that first request — `label`, `hosts`, `help`,
+    /// `note`, once (ADR-021 §8.4 as amended by ADR-032 §3). From then
+    /// on the row's hosts rule, and only the human edits them. Default:
+    /// nothing.
+    fn bind_hosts(&self, _key: &str, _about: &Value) {}
 }
 
 /// ADR-021 §8.1: the declared table — every ref a deployed overlay
@@ -249,14 +256,19 @@ pub trait DeclaredCredentials: Send + Sync {
 /// The open credential namespace (ADR-021 §8.1): any program may name
 /// one; its descriptor is taken once, at row creation, hosts mandatory.
 pub const LOCAL_KEY_PREFIX: &str = crate::deploy::LOCAL_KEY_PREFIX;
+/// The MCP server keys (ADR-032 §3): `mcp.key.<id>` holds the bearer for
+/// the `mcp.server.<id>` row. Open like `local.key.*` — the destination
+/// is the row's `url`, which the human chose, never an overlay's.
+pub const MCP_KEY_PREFIX: &str = "mcp.key.";
 
 /// How a static ref resolves under the trust model (ADR-021 §8.1).
 enum RefKind {
     /// Listed by a deployed overlay: descriptor = the declared one, the
     /// payload's `about` is ignored.
     Declared(Value),
-    /// `local.key.*`, or an `llm.key.*` no overlay declares (a
-    /// self-hosted backend): the payload's `about` describes it.
+    /// `local.key.*`, `mcp.key.*` (ADR-032 §3), or an `llm.key.*` no
+    /// overlay declares (a self-hosted backend): the payload's `about`
+    /// describes it.
     Open,
     /// Outside the open namespaces and not declared: refused.
     Undeclared,
@@ -1331,7 +1343,10 @@ impl Broker {
         if let Some(about) = table.about(r) {
             return RefKind::Declared(about);
         }
-        if r.starts_with(LOCAL_KEY_PREFIX) || r.starts_with("llm.key.") {
+        if r.starts_with(LOCAL_KEY_PREFIX)
+            || r.starts_with(MCP_KEY_PREFIX)
+            || r.starts_with("llm.key.")
+        {
             RefKind::Open
         } else {
             RefKind::Undeclared
@@ -1428,6 +1443,15 @@ impl Broker {
                     url_host(url).unwrap_or_else(|| url.to_string())
                 ),
             });
+        }
+        // ADR-032 §3: an open row with no binding takes this request's —
+        // the first use freezes where the key goes; one write
+        if matches!(kind, RefKind::Open) && !hosts.is_empty() {
+            if let (Some(store), Some(row)) = (&self.secret_store, &row) {
+                if hosts_of(row).is_empty() {
+                    store.bind_hosts(r, &descriptor);
+                }
+            }
         }
         if self.used_refs.insert(r.to_string()) {
             if let Some(store) = &self.secret_store {
@@ -1893,6 +1917,7 @@ impl Broker {
             || key.starts_with(OAUTH_REF_PREFIX)
             || key.starts_with("connector.key.")
             || key.starts_with("llm.key.")
+            || key.starts_with(MCP_KEY_PREFIX)
     }
 
     fn sys_config_get(&self, payload: &Value) -> Result<Value, EffectFailure> {
@@ -3822,6 +3847,15 @@ mod tests {
         fn mark_used(&self, key: &str) {
             self.used.lock().unwrap().push(key.into());
         }
+        fn bind_hosts(&self, key: &str, about: &Value) {
+            // the serve store writes the descriptor onto the row; here
+            // the row's hosts become the about's and the bind is logged
+            *self.hosts.lock().unwrap() = about.get("hosts").cloned();
+            self.missing
+                .lock()
+                .unwrap()
+                .push((format!("{key}#bound"), about.clone()));
+        }
     }
 
     #[test]
@@ -4153,6 +4187,73 @@ mod tests {
     }
 
     #[test]
+    fn mcp_key_is_open_and_a_hostless_row_binds_on_first_use() {
+        // ADR-032 §3: `mcp.key.*` resolves like `local.key.*`; a row the
+        // UI wrote before any miss (value, no hosts) is bound to the
+        // first request's hosts, once — after that the row rules
+        let base = fake_server(1, move |req| {
+            let _ = req.respond(tiny_http::Response::from_string("{}"));
+        });
+        let port = url::Url::parse(&base).unwrap().port().unwrap();
+        let mut b = make_broker("run_adr032_bind");
+        b.declared = Some(declared_github());
+        let store = Arc::new(MemStore {
+            rows: [("mcp.key.browser".to_string(), "relay_tok".to_string())].into(),
+            missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
+        });
+        b.secret_store = Some(store.clone());
+        let about = json!({"label": "browser MCP server key",
+                           "hosts": [format!("127.0.0.1:{port}")]});
+        let ok = b
+            .call(
+                "http.post",
+                json!({"url": format!("{base}/mcp"), "json": {"jsonrpc": "2.0"},
+                       "credential": {"ref": "mcp.key.browser", "header": "Authorization",
+                                      "prefix": "Bearer ", "about": about}}),
+            )
+            .unwrap();
+        assert_eq!(ok["status"], json!(200));
+        let marked = store.missing.lock().unwrap();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0].0, "mcp.key.browser#bound");
+        assert_eq!(marked[0].1, about);
+        drop(marked);
+        assert_eq!(
+            *store.hosts.lock().unwrap(),
+            Some(json!([format!("127.0.0.1:{port}")]))
+        );
+        // bound: a request toward another host — whatever its own
+        // `about` claims — is refused, and no second bind happens
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": "https://evil.example/mcp", "json": {},
+                       "credential": {"ref": "mcp.key.browser", "header": "Authorization",
+                                      "about": {"label": "x", "hosts": ["evil.example"]}}}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "secret_host_mismatch");
+        assert_eq!(store.missing.lock().unwrap().len(), 1);
+        // a declared ref never binds: its hosts are the overlay's
+        let miss = b
+            .call(
+                "http.get",
+                json!({"url": "https://api.github.com/user", "credential":
+                    {"ref": "connector.key.github", "header": "Authorization"}}),
+            )
+            .unwrap_err();
+        assert_eq!(miss.type_, "SecretMissing");
+        assert!(!store
+            .missing
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(k, _)| k == "connector.key.github#bound"));
+    }
+
+    #[test]
     fn open_ref_miss_is_marked_with_the_payload_descriptor_and_posts_a_card() {
         let mut b = make_broker("run_adr021_open_miss");
         b.declared = Some(declared_github());
@@ -4245,6 +4346,10 @@ mod tests {
             .sys_config_get(&json!({"key": "llm.key.anthropic"}))
             .unwrap_err();
         assert_eq!(err.type_, "ConfigError");
+        let err = b
+            .sys_config_get(&json!({"key": "mcp.key.browser"}))
+            .unwrap_err();
+        assert_eq!(err.type_, "ConfigError"); // ADR-032 §3
     }
 
     struct MemConfigStore(Mutex<BTreeMap<String, Value>>);
@@ -4327,7 +4432,11 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.type_, "ConfigError"); // no store (anyrt run)
         b.config_store = Some(Arc::new(MemConfigStore(Mutex::new(BTreeMap::new()))));
-        for key in ["llm.key.anthropic", "connector.key.github"] {
+        for key in [
+            "llm.key.anthropic",
+            "connector.key.github",
+            "mcp.key.browser",
+        ] {
             let err = b
                 .sys_config_set(&json!({"key": key, "value": "x"}))
                 .unwrap_err();
