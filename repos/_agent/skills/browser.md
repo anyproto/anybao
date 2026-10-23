@@ -3,7 +3,7 @@
 Web pages the user shares from Chrome, read through the `browser` MCP
 server; read this when a message begins "Shared from Chrome" or a task
 needs a page the user is looking at. Only a human grants access, in
-the Any Web Clipper popup: one tab or a few tabs, read-only, 30
+the Any Web Clipper chrome extension popup: one tab or a few tabs, read-only, 30
 minutes by default. 
 
 ## Calling
