@@ -118,6 +118,10 @@ class not_set_up(Exception):
     """The brain has no hub yet: it is off or Bao has not set it up."""
 
 
+class write_rejected(Exception):
+    """The server refused a record write; the reply's reason is the message."""
+
+
 # --- small helpers ---------------------------------------------------------
 
 def _iso(seconds):
@@ -162,6 +166,20 @@ def _write_status(request, state, **extra):
     return value
 
 
+def _checked(reply, what):
+    """Raise on a per-record rejection: modify and upsert answer HTTP 200 even
+    when they refuse a record, with the refusal only in `rejections`."""
+    rejected = (reply or {}).get("rejections") or []
+    if rejected:
+        reason = rejected[0].get("reason") or rejected[0].get("code") or "rejected"
+        raise write_rejected(f"{what}: {reason}")
+    return reply
+
+
+def _upsert(bao, oid, dataset, rid, value, what):
+    return _checked(_any.upsert_record(bao, oid, dataset, rid, value), what)
+
+
 def _not_ready(e):
     return getattr(e, "status", 0) == 409 and getattr(e, "code", "") == "bundle.not_ready"
 
@@ -185,10 +203,10 @@ def _trigger_anchor(bao):
 
 def _arm(bao, request):
     """Re-arm brain-setup for `request`; clearing lastRunAt is what re-arms it."""
-    _any.upsert_record(bao, _trigger_anchor(bao), TRIGGERS, SETUP_TRIGGER_ID, {
+    _upsert(bao, _trigger_anchor(bao), TRIGGERS, SETUP_TRIGGER_ID, {
         "name": "brain setup", "kind": "once", "spec": {"at": now()},  # noqa: F821
         "program": PROGRAM, "args": {"requestedAt": request["requestedAt"]},
-        "enabled": True, "lastRunAt": None})
+        "enabled": True, "lastRunAt": None}, "arming brain-setup")
 
 
 def _hub_record(bao, hub, collection, name):
@@ -235,19 +253,20 @@ def _write_job(bao, anchor, base_id, record, taken):
     """Write a missing job under base_id, or a fresh id when that one is used."""
     rid = base_id if base_id not in taken else f"{base_id}-{int(now())}"  # noqa: F821
     try:
-        _any.upsert_record(bao, anchor, TRIGGERS, rid, record)
-    except Exception as e:
+        _upsert(bao, anchor, TRIGGERS, rid, record, f"writing job {rid}")
+    except write_rejected as e:
         # a deleted record's id is burned for good: write a fresh one
         if "deleted" not in str(e):
             raise
         rid = f"{base_id}-{int(now())}"  # noqa: F821
-        _any.upsert_record(bao, anchor, TRIGGERS, rid, record)
+        _upsert(bao, anchor, TRIGGERS, rid, record, f"writing job {rid}")
     return rid
 
 
 def _set_enabled(bao, anchor, rid, enabled):
-    _any.modify(bao, {"objectId": anchor, "dataset": TRIGGERS, "records": [
-        {"id": rid, "ops": [{"type": "$set", "path": "enabled", "value": enabled}]}]})
+    _checked(_any.modify(bao, {"objectId": anchor, "dataset": TRIGGERS, "records": [
+        {"id": rid, "ops": [{"type": "$set", "path": "enabled", "value": enabled}]}]}),
+        f"{'enabling' if enabled else 'disabling'} job {rid}")
 
 
 def _ensure_jobs(bao, hub):
@@ -269,8 +288,8 @@ def _jobs_state(bao, hub):
 
 
 def _write_jobs_state(bao, hub, off_disabled):
-    _any.upsert_record(bao, hub["objectId"], hub["datasets"]["config"], "jobs",
-                       {"value": {"offDisabled": off_disabled}})
+    _upsert(bao, hub["objectId"], hub["datasets"]["config"], "jobs",
+            {"value": {"offDisabled": off_disabled}}, "recording the jobs switched off")
 
 
 def _disable_jobs(bao, hub):
@@ -320,8 +339,8 @@ def _provision(bao):
     hub_id = _retry(lambda: _any.bundle_child(bao, BUNDLE, HUB_SEED, type_key=HUB_TYPE))
     hub = {"objectId": hub_id["objectId"], "datasets": datasets}
     if _hub_record(bao, hub["objectId"], datasets["config"], "exclusions") is None:
-        _any.upsert_record(bao, hub["objectId"], datasets["config"], "exclusions",
-                           {"value": dict(EXCLUSIONS_SEED)})
+        _upsert(bao, hub["objectId"], datasets["config"], "exclusions",
+                {"value": dict(EXCLUSIONS_SEED)}, "seeding the exclusion list")
     for key, source in TIERS:
         if _config_get(key) is None:
             row = _config_get(source)
@@ -468,8 +487,8 @@ def exclude(person=None, email=None, domain=None):
                 items.append(norm)
             value[field] = items
     value["version"] = 1
-    _any.upsert_record(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
-                       {"value": value})
+    _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
+            {"value": value}, "updating the exclusion list")
     return value
 
 

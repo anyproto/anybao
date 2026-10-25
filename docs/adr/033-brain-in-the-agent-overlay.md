@@ -92,7 +92,10 @@ record id can never be written again.
 
 - **Found by program and `args.mode`, not by id.** A job deleted by hand
   is rewritten under a fresh id (`<base>-<epoch>`), since its id is
-  burned.
+  burned. The server reports a burned id the way it reports every
+  per-record refusal: HTTP 200, the id even listed in `recordIds`, the
+  reason only in `rejections` — so every brain write checks
+  `rejections` and raises on one (`write_rejected`).
 - **A pause holds.** The reconcile run only writes missing jobs; it
   never re-enables one. Only an on run re-enables, and only the jobs
   the off run before it disabled.

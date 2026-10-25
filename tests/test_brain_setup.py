@@ -39,6 +39,7 @@ class FakeAny:
         self.datasets = {}
         self.not_ready = {}
         self.fail = {}
+        self.reject = {}
 
     # the store
     def _store(self, space, oid, ds):
@@ -71,7 +72,13 @@ class FakeAny:
 
     def upsert_record(self, space, oid, ds, rid, value):
         if (space, oid, ds, rid) in self.burned:
-            raise Exception("crdt: record is deleted; the id cannot be reused")
+            # the server's shape: HTTP 200, the id even listed, the refusal
+            # only in `rejections`
+            return {"recordIds": [rid], "rejections": [
+                {"recordId": rid, "reason": "crdt: record is deleted; the id cannot be reused"}]}
+        if (space, oid, ds, rid) in self.reject:
+            return {"recordIds": [], "rejections": [
+                {"recordId": rid, "reason": self.reject[(space, oid, ds, rid)]}]}
         self.calls.append(("upsert", ds, rid))
         self._store(space, oid, ds)[rid] = {"id": rid, **value}
         return {}
@@ -292,6 +299,15 @@ def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
     (new_id,) = out["written"]
     assert new_id.startswith("brain-heartbeat-")
     assert jobs(fake)[new_id]["program"] == "agent:brainHeartbeat@v1"
+
+
+def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
+    fake = FakeAny()
+    fake.reject[(BAO, "hub", "type-hub_config", "exclusions")] = "value invalid"
+    mod, _, _, writes, _ = kernel(config=on_request(), fake=fake)
+    with pytest.raises(Exception, match="seeding the exclusion list: value invalid"):
+        mod.main({})
+    assert statuses(writes)[-1]["state"] == "error"
 
 
 def test_reconcile_never_re_enables_a_paused_job():

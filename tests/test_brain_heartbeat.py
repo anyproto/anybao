@@ -94,6 +94,13 @@ def test_an_old_last_tick_writes_one_gap_signal():
     assert signal["reason"] == "no tick for 1300s"
 
 
+def test_a_rejected_tick_write_fails_the_run():
+    mod, fake = run(ARGS, {"exclusions": EXCLUSIONS})
+    fake.upsert_record = lambda *a: {"recordIds": [], "rejections": [{"reason": "nope"}]}
+    with pytest.raises(Exception, match="heartbeat: nope"):
+        mod.main(ARGS)
+
+
 def test_a_recent_last_tick_writes_none():
     mod, fake = run(ARGS, {"exclusions": EXCLUSIONS,
                            "heartbeat": {"lastTickAt": NOW - 500}})

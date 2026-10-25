@@ -23,6 +23,18 @@ class exclusions_unreadable(Exception):
     """The exclusion list is missing or not in its version-1 shape."""
 
 
+class write_rejected(Exception):
+    """The server refused a record write; the reply's reason is the message."""
+
+
+def _upsert(space, hub, collection, rid, value):
+    # modify/upsert answer HTTP 200 even when they refuse a record
+    reply = _any.upsert_record(space, hub, collection, rid, value) or {}
+    rejected = reply.get("rejections") or []
+    if rejected:
+        raise write_rejected(f"{rid}: {rejected[0].get('reason') or 'rejected'}")
+
+
 def _config_record(space, hub, collection, name):
     # a SHARED dataset: an `id` filter compares "<objectId>/<recordId>"
     rows = _any.query(space, hub, collection, filter={"id": f"{hub}/{name}"}, limit=1)
@@ -45,7 +57,7 @@ def _exclusions_problem(rec):
 
 
 def _signal(space, hub, collection, tick, kind, decision, reason):
-    _any.upsert_record(space, hub, collection, f"{int(tick)}-{kind}", {
+    _upsert(space, hub, collection, f"{int(tick)}-{kind}", {
         "tick": tick, "kind": kind, "subject": SUBJECT, "decision": decision,
         "reason": reason})
 
@@ -71,6 +83,5 @@ def main(args):
         gap = tick - last
         _signal(space, hub, datasets["signals"], tick, "heartbeat_gap", "none",
                 f"no tick for {int(gap)}s")
-    _any.upsert_record(space, hub, datasets["config"], "heartbeat",
-                       {"value": {"lastTickAt": tick}})
+    _upsert(space, hub, datasets["config"], "heartbeat", {"value": {"lastTickAt": tick}})
     return {"ok": True, "gap_s": gap}
