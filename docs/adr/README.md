@@ -47,6 +47,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 031 | toMarkdown — one conversion program for HTML and PDF, pypdf in the kernel, fuel budget 250 G | Accepted |
 | 032 | MCP client — `mcp@v1` over streamable HTTP, `mcp.server.*` rows, `mcp.key.*` refs | Accepted |
 | 033 | The AI brain in the agent overlay — setup as a program, jobs as records, no runtime change | Proposed |
+| 034 | The AI brain's people, promises and tasks — from synced mail, deterministic | Proposed |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the

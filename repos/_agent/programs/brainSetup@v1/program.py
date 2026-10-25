@@ -38,17 +38,27 @@ CHAT_SPACES_KEY = "brain.chatScan.spaces"
 SETUP_TRIGGER_ID = "brain-setup"
 PROGRAM = "agent:brainSetup@v1"
 HEARTBEAT = "agent:brainHeartbeat@v1"
+PEOPLE = "agent:brainPeople@v1"
+PROMISES = "agent:brainPromises@v1"
+GMAIL_SYNC = "connectors:gmailSync@v1"
+MAIL_SYNC_ID = "brain-mail-sync"
+# the hub's shape; a reconcile run that finds an older hub re-arms setup,
+# which installs what the newer shape adds (1: Phase 0, 2: + people,
+# promises and tasks)
+HUB_VERSION = 2
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
 TRIGGERS = "agent_triggers"
-CATALOG_APPS = ("people", "meetings")
+CATALOG_APPS = ("people", "meetings", "tasks")
 # the brain's model tiers, seeded from these sources only when absent so
 # an edit in Settings → Model always wins
 TIERS = (("llm.tier.brain.drafter", "llm.tier.codegen"),
          ("llm.tier.brain.extractor", "llm.tier.codegen"),
          ("llm.tier.brain.caretaker", "llm.tier.classify"))
 EXCLUSIONS_SEED = {"version": 1, "personIds": [], "emails": [], "domains": []}
+# senders, domains and labels whose mail the people and promises jobs skip
+BLOCKLIST_SEED = {"domains": [], "senders": [], "labels": []}
 NOT_READY_TRIES = 5
 NOT_READY_SLEEP_S = 2
 
@@ -66,7 +76,7 @@ def _f(key, kind, required=False, mutable=False):
     return field
 
 
-# The hub's four Phase 0 stores. Later phases ADD datasets; each one's
+# The hub's stores. Later phases ADD datasets; each one's
 # full field set lands the first time it is declared, because required
 # fields can only be declared then.
 DATASETS = (
@@ -109,6 +119,51 @@ DATASETS = (
                 _f("tick", "number", required=True),
                 _f("evidence", "object", required=True),
                 _CREATOR, _CREATED]},
+    # what the user committed to in sent mail (later also chat); the id is
+    # sha256(messageId, normalized sentence), so a re-run writes nothing
+    {"key": "promises", "displayName": "Brain promises", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "search": {"text": ["text", "quote"], "scope": "promises"},
+     "fields": [_f("personId", "string", mutable=True),
+                _f("personEmail", "string"),
+                _f("text", "string", required=True),
+                _f("quote", "string", required=True),
+                _f("source", "string", required=True),
+                _f("mailboxId", "string", required=True),
+                _f("channel", "string", required=True),
+                _f("madeAt", "datetime", required=True),
+                _f("dueAt", "datetime"),
+                _f("status", "string", mutable=True),
+                _f("reason", "string", mutable=True),
+                _f("closedAt", "datetime", mutable=True),
+                _f("taskId", "string", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
+)
+
+# The brain's columns on catalog objects: a person (`profile` filed under
+# `person`) also filed under `brain_person`, a catalog `task` also filed
+# under `brain_task`. Collections are idempotent by xKey and never touch
+# the catalog's own definitions.
+COLLECTIONS = (
+    {"name": "Brain person", "xKey": "brain_person", "hidden": True, "properties": [
+        {"name": "Emails", "xKey": "emails", "kind": "array"},
+        {"name": "Preferred name", "xKey": "preferredName", "xFormat": {"type": "text"}},
+        {"name": "Address form", "xKey": "addressForm",
+         "xFormat": {"type": "choice", "options": ["du", "sie", "unknown"]}},
+        {"name": "Language", "xKey": "language", "xFormat": {"type": "text"}},
+        {"name": "Last contact", "xKey": "lastContactAt", "xFormat": {"type": "datetime"}},
+        {"name": "First seen", "xKey": "firstSeenAt", "xFormat": {"type": "datetime"}},
+        {"name": "Mails", "xKey": "mailCount", "xFormat": {"type": "number"}},
+        {"name": "Meetings", "xKey": "meetingCount", "xFormat": {"type": "number"}},
+        {"name": "Names seen", "xKey": "aliases", "kind": "array"}]},
+    {"name": "Brain task", "xKey": "brain_task", "hidden": True, "properties": [
+        {"name": "Source", "xKey": "sourceUri", "xFormat": {"type": "url"}},
+        {"name": "Person", "xKey": "personId",
+         "xFormat": {"type": "relation", "relation": {"targetTypes": ["profile"]}}},
+        {"name": "Origin", "xKey": "origin",
+         "xFormat": {"type": "choice", "options": ["promise", "ask", "checklist"]}},
+        {"name": "Suggested deadline", "xKey": "suggestedDeadline",
+         "xFormat": {"type": "date"}}]},
 )
 
 
@@ -238,7 +293,41 @@ def _wanted_jobs(bao, hub):
             "name": "brain reconcile", "kind": "cron", "spec": {"every_s": 3600},
             "program": PROGRAM, "args": {"mode": "reconcile"},
             "enabled": True}),
+        ((PEOPLE, None), "brain-people", {
+            "name": "brain people", "kind": "cron", "spec": {"every_s": 900},
+            "program": PEOPLE,
+            "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"]},
+            "enabled": True}),
+        ((PROMISES, None), "brain-promises", {
+            "name": "brain promises", "kind": "cron", "spec": {"every_s": 1800},
+            "program": PROMISES,
+            "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"]},
+            "enabled": True}),
     ]
+
+
+def _ensure_mail_sync(bao, anchor):
+    """Adopt or write the cron that syncs mail into Bao's space → the verdict.
+
+    The brain reads only Bao's copy of the mail. A gmailSync cron the user
+    already runs into Bao's space is adopted; crons into other spaces are
+    named and left alone. Mail sync is not a brain job: switching the brain
+    off leaves it running, since the mailbox is useful without the brain."""
+    mine, other = None, []
+    for rec in _any.query(bao, anchor, TRIGGERS, limit=500):
+        if rec.get("program") != GMAIL_SYNC or rec.get("kind") != "cron":
+            continue
+        target = (rec.get("args") or {}).get("space")
+        if target == bao:
+            mine = mine or rec
+        else:
+            other.append({"triggerId": rec.get("id"), "space": target})
+    if mine is not None:
+        return {"mode": "existing", "triggerId": mine.get("id"), "other": other}
+    record = {"name": "mail sync", "kind": "cron", "spec": {"every_s": 900},
+              "program": GMAIL_SYNC, "args": {"space": bao}, "enabled": True}
+    rid = _write_job(bao, anchor, MAIL_SYNC_ID, record, set())
+    return {"mode": "created", "triggerId": rid, "other": other}
 
 
 def _job_key(rec):
@@ -375,11 +464,14 @@ def _provision(bao):
         # `_create_dataset` is any@v1's harness-plumbing export, the one
         # enrich@v1 and applet@v1 declare their stores with
         datasets[draft["key"]] = _any._create_dataset(bao, HUB_TYPE, draft)["collection"]
+    for draft in COLLECTIONS:
+        _any.create_collection(bao, draft)
     hub_id = _retry(lambda: _any.bundle_child(bao, BUNDLE, HUB_SEED, type_key=HUB_TYPE))
-    hub = {"objectId": hub_id["objectId"], "datasets": datasets}
-    if _hub_record(bao, hub["objectId"], datasets["config"], "exclusions") is None:
-        _upsert(bao, hub["objectId"], datasets["config"], "exclusions",
-                {"value": dict(EXCLUSIONS_SEED)}, "seeding the exclusion list")
+    hub = {"objectId": hub_id["objectId"], "datasets": datasets, "version": HUB_VERSION}
+    for name, seed in (("exclusions", EXCLUSIONS_SEED), ("blocklist", BLOCKLIST_SEED)):
+        if _hub_record(bao, hub["objectId"], datasets["config"], name) is None:
+            _upsert(bao, hub["objectId"], datasets["config"], name,
+                    {"value": dict(seed)}, f"seeding the {name}")
     for key, source in TIERS:
         if _config_get(key) is None:
             row = _config_get(source)
@@ -422,6 +514,7 @@ def _setup():
         hub = _provision(bao)
         anchor, written = _ensure_jobs(bao, hub)
         reenabled = _reenable_jobs(bao, anchor)
+        mail_sync = _ensure_mail_sync(bao, anchor)
         # only a new request restarts: a same-request re-arm is not the user
         # asking to try again
         fresh = request["requestedAt"] != answered
@@ -432,9 +525,9 @@ def _setup():
                       error={"type": type(e).__name__, "message": str(e)[:500]})
         raise provision_failed(f"{type(e).__name__}: {e}") from e
     extra = {"stopped": stopped} if stopped else {}
-    _write_status(request, "ready", hub=hub, **extra)
+    _write_status(request, "ready", hub=hub, mailSync=mail_sync, **extra)
     return {"state": "ready", "hub": hub, "written": written, "reenabled": reenabled,
-            "restarted": restarted}
+            "restarted": restarted, "mailSync": mail_sync}
 
 
 def _reconcile():
@@ -449,6 +542,10 @@ def _reconcile():
     answered = (status or {}).get("requestedAt") == request["requestedAt"]
     if hub is None or not answered or (status or {}).get("state") != "ready":
         return {"reconciled": False, "reason": "not set up"}
+    if int(hub.get("version") or 1) < HUB_VERSION:
+        # an older hub: setup installs what this version adds
+        _arm(bao, request)
+        return {"reconciled": True, "upgrading": True}
     anchor, written = _ensure_jobs(bao, hub)
     stopped = _warning(_stopped_jobs(bao, anchor))
     if stopped != (status.get("stopped") or []):
@@ -484,8 +581,8 @@ def status():
     """How the brain stands → {state, request, status, apps, mailboxes, stopped}.
 
     state ∈ waiting | setting_up | ready | error | switching_off | off.
-    `apps` names the catalog apps Bao's space has (people, meetings,
-    tasks — the brain's people, meetings and tasks live in them);
+    `apps` names the catalog apps Bao's space lists (meetings and tasks
+    among them; people installs the person collection, not a listed app);
     `mailboxes` names the synced mailboxes there; `stopped` the jobs the
     runtime stopped after repeated failures, as [{id, name}]."""
     bao = _any.bao_space()

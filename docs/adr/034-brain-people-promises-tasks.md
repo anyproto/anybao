@@ -1,0 +1,98 @@
+# ADR-034: The AI brain's people, promises and tasks — from synced mail, deterministic
+
+Status: **Proposed** (2026-10-25)
+Date: 2026-10-25
+Builds on: ADR-033 (the brain in the agent overlay), ADR-016 (the email
+corpus on `email_messages`), ADR-019 (instants), ADR-027 (the usecase
+catalog), ADR-029 (one type, collections)
+Plan: any-ui `docs/plans/2026-10-25-ai-brain-phase-1-what-it-knows.md`
+(this ADR covers its mail half; calendar and meeting sync wait for their
+live probes)
+
+## Context
+
+Phase 1 of the AI brain gives it what it knows. The mail half needs no
+new connector: `gmailSync@v1` already syncs mail into Bao's space as
+`email_messages` on one `mailbox` object per address. What is missing is
+a person per correspondent, the user's promises, and a way to turn a
+promise into a task — all without a model and without a runtime change.
+
+## Decision
+
+### 1. Setup installs the stores (hub version 2)
+
+The setup run (ADR-033 §3) additionally installs or adopts the catalog
+`tasks` app; creates two hidden collections with `create_collection`,
+idempotent by xKey and leaving the catalog's own definitions untouched —
+`brain_person` (`emails`, `aliases`, `lastContactAt`, `firstSeenAt`,
+`mailCount`, `meetingCount`, `preferredName`, `addressForm`, `language`)
+and `brain_task` (`sourceUri`, `personId` → `profile`, `origin`,
+`suggestedDeadline`); declares the shared `promises` dataset on the hub;
+seeds an empty `config/blocklist`; and writes the `brain-people` (900 s)
+and `brain-promises` (1 800 s) jobs. The hub records `version: 2`; a
+reconcile run that finds an older hub re-arms setup, so an existing
+install upgrades itself within the hour.
+
+### 2. Mail sync is adopted, not duplicated
+
+Setup adopts a `connectors:gmailSync@v1` cron whose `args.space` is
+Bao's space, or writes one (`brain-mail-sync`, every 900 s). A cron into
+another space is named in `brain.status.mailSync.other` and left alone;
+the brain reads only Bao's copy. Mail sync is not a brain job: switching
+the brain off leaves it running.
+
+### 3. `brainPeople@v1`
+
+Reads From / To / Cc — never a body — of mail newer than its cursor
+(`config/people.cursor`, ms per mailbox), and keeps one catalog person
+per address: a person whose `brain_person.emails` holds it, else one
+whose `person.email` equals it (filed under `brain_person`), else a new
+`profile` filed under `person` and `brain_person`. The mailbox's own
+addresses, noise senders, blocklisted senders and domains, and excluded
+people never become people. It caps unknown addresses per run and
+advances the cursor only past messages fully handled, then back-fills
+`personId` on promises whose recipient it now knows.
+
+### 4. `brainPromises@v1`
+
+Reads the user's sent mail (From = the mailbox's address) newer than
+its cursor, splits the cleaned body into sentences, and keeps those that
+match `PHRASES` and none of `EXCLUSIONS` (a question, a condition, a
+hypothetical, a negation anywhere in the sentence). Each is a `promises`
+record: the verbatim `quote`, the key-form `source` link, `personEmail`
+and `personId`, `madeAt`, and a `dueAt` from a fixed table (today,
+tomorrow, end of week, next week, weekday names; EN and DE). The id is
+`sha256(messageId, sentence)`, so a re-run writes nothing. A message to
+an excluded or blocklisted recipient is skipped whole. Any per-record
+rejection fails the run with the cursor unmoved. It also marks done an
+open promise whose catalog task the user completed.
+
+### 5. `brainTasks@v1`
+
+A chat tool: `suggest()` lists open promises without a task, each with a
+deadline from one rule table (its own `dueAt`, an ISO date, today,
+tomorrow, this week, next week, a weekday, else two business days, never
+earlier than today); `create(id, deadline=None)` makes a catalog `task`
+in Bao's Tasks app (`planning: inbox`) filed under `brain_task` and sets
+the promise's `taskId`; a second `create` is a no-op. The `brain-core`
+skill tells the chat agent to offer, show the deadline, and create only
+after a yes.
+
+### 6. `brainKit@v1`
+
+The jobs share one helper module for the server rules ADR-033 found
+live: checked writes (a refusal is HTTP 200 with `rejections`), hub
+records read by `<objectId>/<recordId>`, and the exclusion list read
+fail-closed. The heartbeat uses it too.
+
+## Consequences
+
+- Verified on a scratch `any` server with `anyrt serve`: an existing
+  install upgraded itself through reconcile; seeded mail yielded one
+  person per real correspondent (noise and the user skipped) and exactly
+  the promises in sent mail, each linked to its person with the right
+  deadline; a promise became a task linked to its person.
+- Calendar sync, meeting sync, the people join on calendar attendees and
+  transcript speakers, and the recall wrapper wait for the live probes
+  the plan names (Google Calendar's token path, Meet transcripts,
+  Granola's wire shape).
