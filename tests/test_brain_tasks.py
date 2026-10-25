@@ -67,6 +67,30 @@ def test_one_case_per_deadline_rule():
                                   THU) == THU_DAY
 
 
+def test_each_alternative_of_each_rule():
+    mod, _ = kernel()
+    fri = THU_DAY + DAY
+    for text, want in [("I will send it asap.", THU_DAY), ("Ich schicke es heute.", THU_DAY),
+                       ("Ich schicke es morgen.", THU_DAY + DAY),
+                       ("I'll do it by the end of the week.", fri),
+                       ("Ich schicke es bis Ende der Woche.", fri),
+                       ("Ich schicke es naechste Woche.", THU_DAY + 8 * DAY),
+                       ("Guten Morgen, ich schicke es.", THU_DAY + 4 * DAY)]:
+        assert mod.suggested_deadline(text, THU, None, THU) == want, text
+
+
+def test_rules_count_from_the_day_the_promise_was_made():
+    mod, _ = kernel()
+    mon, wed = THU - 3 * DAY, THU - DAY
+    mon_day, wed_day = THU_DAY - 3 * DAY, THU_DAY - DAY
+    assert mod.suggested_deadline("I'll do it this week.", mon, None, wed) == mon_day + 4 * DAY
+    assert mod.suggested_deadline("I'll send it next week.", mon, None, wed) == mon_day + 11 * DAY
+    assert mod.suggested_deadline("I'll send it on Thursday.", mon, None, wed) == mon_day + 3 * DAY
+    assert mod.suggested_deadline("I'll send it.", mon, None, wed) == wed_day
+    # made the week before: that week's Friday has passed, so today
+    assert mod.suggested_deadline("I'll do it this week.", mon - 7 * DAY, None, wed) == wed_day
+
+
 def test_suggest_lists_open_promises_without_a_task_newest_first():
     mod, s = kernel()
     add_promise(s, "a", "I'll send the deck.", made=THU - DAY)
