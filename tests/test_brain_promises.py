@@ -166,6 +166,21 @@ def test_a_completed_task_closes_its_promise():
     assert s.store("promises")[pid]["closedAt"] == {"$date": 1_800_000_000_000}
 
 
+def test_a_task_outside_brain_task_still_closes_its_promise_and_an_open_one_does_not():
+    s = mail_space("I'll send the deck.\nI'll call you tomorrow.")
+    mod, _ = kernel(s)
+    mod.main(job_args(s))
+    first, second = sorted(s.store("promises"))
+    s.store("promises")[first]["taskId"] = "t1"
+    s.store("promises")[second]["taskId"] = "t2"
+    s.add_object("t1", "task", [], task={"completed": True})
+    s.add_object("t2", "task", ["brain_task"], task={"completed": False})
+    out = mod.main(job_args(s))
+    assert out["closed"] == 1
+    assert s.store("promises")[first]["status"] == "done"
+    assert s.store("promises")[second]["status"] == "open"
+
+
 def test_an_unreadable_exclusion_list_fails_closed():
     s = mail_space("I'll send the deck.")
     s.set_config("exclusions", None)

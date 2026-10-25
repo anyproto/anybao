@@ -65,7 +65,10 @@ tomorrow, end of week, next week, weekday names; EN and DE). The id is
 `sha256(messageId, sentence)`, so a re-run writes nothing. A message to
 an excluded or blocklisted recipient is skipped whole. Any per-record
 rejection fails the run with the cursor unmoved. It also marks done an
-open promise whose catalog task the user completed.
+open promise whose catalog task the user completed, finding the tasks by
+the `taskId`s the promises hold rather than by the `brain_task`
+collection: a task the Promises view makes in any-ui is a plain catalog
+task, not filed there.
 
 ### 5. `brainTasks@v1`
 

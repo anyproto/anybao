@@ -152,13 +152,16 @@ def _records_of(space, box_id, box_addr, row, excl, block, people):
 
 
 def _close_completed(space, hub, datasets):
-    """Mark done the open promises whose task the user completed."""
-    done = _any.query_objects(space, filter={"any.type": "task", "task.completed": True,
-                                             "any.collections": "brain_task"}, limit=500)
-    done_ids = {r["id"] for r in done}
-    if not done_ids:
-        return 0
+    """Mark done the open promises whose task the user completed.
+
+    The tasks are found by the ids the promises hold, wherever they are filed:
+    a task made from the Promises view is not filed under brain_task."""
     rows = _any.query(space, hub, datasets["promises"], filter={"status": "open"}, limit=500)
+    linked = sorted({r["taskId"] for r in rows if r.get("taskId")})
+    if not linked:
+        return 0
+    tasks = _any.query_objects(space, filter={"id": {"$in": linked}}, limit=len(linked))
+    done_ids = {t["id"] for t in tasks if (t.get("task") or {}).get("completed") is True}
     closed = 0
     for r in rows:
         if r.get("taskId") in done_ids:
