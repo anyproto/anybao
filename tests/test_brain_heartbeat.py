@@ -23,8 +23,11 @@ class FakeAny:
 
     def query(self, space, oid, ds, filter=None, limit=None, **_):
         assert (space, oid, ds) == (SPACE, HUB, DATASETS["config"])
-        rec = self.config.get((filter or {}).get("id"))
-        return [rec] if rec else []
+        # a shared dataset: an id filter compares "<objectId>/<recordId>"
+        want = (filter or {}).get("id") or ""
+        prefix = f"{oid}/"
+        rec = self.config.get(want[len(prefix):]) if want.startswith(prefix) else None
+        return [{**rec, "id": f"{oid}/{rec['id']}"}] if rec else []
 
     def upsert_record(self, space, oid, ds, rid, value):
         assert (space, oid) == (SPACE, HUB)

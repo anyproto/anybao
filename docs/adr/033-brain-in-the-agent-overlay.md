@@ -24,9 +24,9 @@ runtime**. Everything it needs already exists for guest code:
 
 - an unowned `agent_triggers` record runs on the election-active device,
   which stamps it (`triggers::reconcile_registry`, ADR-006 §4);
-- a definition-core rewrite of a fired `once` re-arms it, and an
-  `enabled` false→true flip resets the circuit breaker (ADR-006 §4,
-  refresh);
+- a `once` whose record carries no `lastRunAt` fires on the next tick,
+  and an `enabled` false→true flip resets the circuit breaker (ADR-006
+  §4, refresh);
 - `any@v1` exposes `setup_app`, `ensure_bundle`, `create_type`,
   `create_dataset` (which passes its draft to the server unchanged) and
   `bundle_child`;
@@ -50,11 +50,14 @@ separate `_brain` overlay stays a later option.
 | --- | --- | --- |
 | `brain.space` (agent_config) | any-ui's switch, its first-open default, `brainSetup.on()/off()` from chat, or the setup run when it finds no row | `{spaceId: <Bao's space> \| null, requestedAt, by}` — absent = on (the default), `null` = off |
 | `brain.status` (agent_config) | the setup run | `{spaceId?, requestedAt, state: provisioning \| ready \| error \| off, at, error?: {type, message}, hub?: {objectId, datasets}}` — `requestedAt` echoes the request it answers |
-| `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "agent:brainSetup@v1", args: {requestedAt}, enabled: true}`, no `owner` |
+| `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "agent:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
 
-Each request rewrites `brain-setup` whole, which re-arms it. Nothing in
-the contract is ever deleted: a deleted record id can never be written
-again.
+Each request rewrites `brain-setup` with `lastRunAt: null`, which re-arms
+it. The null is load-bearing: a whole-value `$set` MERGES into the stored
+record, so a plain rewrite keeps the fired run's `lastRunAt`, and the
+runtime reads the once as consumed and never fires it again (seen on a
+live run, 2026-10-25). Nothing in the contract is ever deleted: a deleted
+record id can never be written again.
 
 ### 3. The setup run
 
@@ -69,8 +72,9 @@ again.
 4. Otherwise answer `provisioning`, then install or adopt: the `people`
    and `meetings` catalog apps; the `brain/v1` bundle (a created root of
    type `page`); the hidden, bodiless `brain_hub` type; its four
-   datasets `signals`, `config`, `incidents`, `observations`, each with
-   its full field set; the `brain/hub/v1` child; the exclusion list
+   datasets `signals`, `config`, `incidents`, `observations`, each
+   `shared` and with its full field set — declared through `any@v1`'s
+   `_create_dataset`, the plumbing export `enrich@v1` uses; the `brain/hub/v1` child; the exclusion list
    (`config/exclusions`, `{version: 1, personIds, emails, domains}`) and
    the `llm.tier.brain.drafter` / `.extractor` / `.caretaker` rows,
    copied from `codegen` / `codegen` / `classify`, each only when absent.
@@ -102,6 +106,16 @@ when it is missing or not version 1, writes one `signals` row
 (`decision: refused`) and raises `exclusions_unreadable`; writes one
 `heartbeat_gap` signal when its last tick is more than 1 200 s old;
 records `config/heartbeat.lastTickAt`. It imports `any@v1` only.
+
+### 6. The hub's stores are shared datasets
+
+A read of a shared dataset returns `id: "<objectId>/<recordId>"`, and an
+`id` filter compares that whole value; writes take the plain id (any
+`docs/03-api.md` § Shared datasets). Every lookup of a hub record —
+`config/exclusions`, `config/heartbeat`, `config/jobs` — filters on
+`f"{hub}/{name}"`. A lookup by the plain id finds nothing, which would
+re-seed the exclusion list over the user's on every setup run and make
+the heartbeat refuse every tick.
 
 ## Consequences
 

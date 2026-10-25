@@ -24,7 +24,8 @@ class exclusions_unreadable(Exception):
 
 
 def _config_record(space, hub, collection, name):
-    rows = _any.query(space, hub, collection, filter={"id": name}, limit=1)
+    # a SHARED dataset: an `id` filter compares "<objectId>/<recordId>"
+    rows = _any.query(space, hub, collection, filter={"id": f"{hub}/{name}"}, limit=1)
     return rows[0] if rows else None
 
 

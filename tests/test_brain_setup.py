@@ -55,8 +55,15 @@ class FakeAny:
     def bao_space(self):
         return BAO
 
+    @staticmethod
+    def _shared(ds):
+        # the hub's stores are declared shared: reads return, and id
+        # filters compare, "<objectId>/<recordId>" (any 03-api § Shared datasets)
+        return ds.startswith("type-hub_")
+
     def query(self, space, oid, ds, filter=None, limit=None, **_):
-        rows = list(self._store(space, oid, ds).values())
+        rows = [({**r, "id": f"{oid}/{r['id']}"} if self._shared(ds) else r)
+                for r in self._store(space, oid, ds).values()]
         want = (filter or {}).get("id")
         if want is not None:
             rows = [r for r in rows if r["id"] == want]
@@ -100,7 +107,7 @@ class FakeAny:
         self.types[body["xKey"]] = body
         return {"typeId": "type-hub", "xKey": body["xKey"], "created": True}
 
-    def create_dataset(self, space, type_key, draft):
+    def _create_dataset(self, space, type_key, draft):
         self._maybe_fail("create_dataset")
         self.calls.append(("create_dataset", draft["key"]))
         self.datasets[draft["key"]] = draft
@@ -296,6 +303,16 @@ def test_reconcile_never_re_enables_a_paused_job():
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False
 
 
+def test_a_users_exclusions_survive_another_setup_run():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    mod.exclude(email="boss@example.com")
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-again", "by": "any-ui"}
+    mod.main({})
+    stored = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
+    assert stored["emails"] == ["boss@example.com"]
+
+
 def test_reconcile_waits_for_an_answered_ready_brain():
     mod, fake, cfg, _, _ = kernel(config=on_request())
     out = mod.main({"mode": "reconcile"})
@@ -320,6 +337,8 @@ def test_on_and_off_from_chat_write_the_request_and_re_arm_setup():
     armed = triggers(fake)["brain-setup"]
     assert armed["kind"] == "once" and armed["program"] == "agent:brainSetup@v1"
     assert armed["spec"] == {"at": NOW} and armed["enabled"] is True
+    # a fired once keeps its lastRunAt through a merge-$set: the re-arm clears it
+    assert armed["lastRunAt"] is None
     assert armed["args"] == {"requestedAt": cfg["brain.space"]["requestedAt"]}
     mod.on()
     assert cfg["brain.space"]["spaceId"] == BAO

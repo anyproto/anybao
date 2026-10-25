@@ -11,8 +11,10 @@ mail out of it for good. A trigger run of this program does the setup.
 #                 — absent means ON (the default), None means off
 #   brain.status  this program's answer, echoing the request's requestedAt
 #   brain-setup   a run-once agent_triggers record whoever writes a
-#                 request re-arms (a definition rewrite re-arms a fired
-#                 once, ADR-006 §4 refresh); its run is `main` below
+#                 request re-arms; its run is `main` below. A whole-value
+#                 $set MERGES into the record, so the fired once's
+#                 lastRunAt survives a plain rewrite and the runtime reads
+#                 it as consumed: a re-arm writes lastRunAt: None.
 # Nothing here is ever deleted: a deleted record id can never be written
 # again. The brain's jobs are ordinary agent_triggers records found by
 # PROGRAM, not by id, so a deleted job is rewritten under a fresh id. A
@@ -71,7 +73,7 @@ DATASETS = (
                 _f("decision", "string", required=True),
                 _f("reason", "string", required=True),
                 _f("cardId", "string"),
-                _CREATED]},
+                _CREATOR, _CREATED]},
     {"key": "config", "displayName": "Brain config", "shared": True,
      "idRule": "user", "deleteBy": "author",
      "fields": [_f("value", "object", mutable=True),
@@ -182,15 +184,18 @@ def _trigger_anchor(bao):
 
 
 def _arm(bao, request):
-    """Re-arm brain-setup for `request` (a whole-record rewrite re-arms a once)."""
+    """Re-arm brain-setup for `request`; clearing lastRunAt is what re-arms it."""
     _any.upsert_record(bao, _trigger_anchor(bao), TRIGGERS, SETUP_TRIGGER_ID, {
         "name": "brain setup", "kind": "once", "spec": {"at": now()},  # noqa: F821
         "program": PROGRAM, "args": {"requestedAt": request["requestedAt"]},
-        "enabled": True})
+        "enabled": True, "lastRunAt": None})
 
 
 def _hub_record(bao, hub, collection, name):
-    rows = _any.query(bao, hub, collection, filter={"id": name}, limit=1)
+    # the hub's stores are SHARED datasets: a read returns, and an `id`
+    # filter compares, the whole "<objectId>/<recordId>"; writes take the
+    # plain id (any docs/03-api.md § Shared datasets)
+    rows = _any.query(bao, hub, collection, filter={"id": f"{hub}/{name}"}, limit=1)
     return rows[0] if rows else None
 
 
@@ -309,7 +314,9 @@ def _provision(bao):
                            "body": False})
     datasets = {}
     for draft in DATASETS:
-        datasets[draft["key"]] = _any.create_dataset(bao, HUB_TYPE, draft)["collection"]
+        # `_create_dataset` is any@v1's harness-plumbing export, the one
+        # enrich@v1 and applet@v1 declare their stores with
+        datasets[draft["key"]] = _any._create_dataset(bao, HUB_TYPE, draft)["collection"]
     hub_id = _retry(lambda: _any.bundle_child(bao, BUNDLE, HUB_SEED, type_key=HUB_TYPE))
     hub = {"objectId": hub_id["objectId"], "datasets": datasets}
     if _hub_record(bao, hub["objectId"], datasets["config"], "exclusions") is None:
