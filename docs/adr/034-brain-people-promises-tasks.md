@@ -86,7 +86,23 @@ after a yes.
 The jobs share one helper module for the server rules ADR-033 found
 live: checked writes (a refusal is HTTP 200 with `rejections`), hub
 records read by `<objectId>/<recordId>`, and the exclusion list read
-fail-closed. The heartbeat uses it too.
+fail-closed. The heartbeat uses it too, and the tools read the hub off
+`brain.status` through its `ready_hub()`.
+
+### 7. `brainRecall@v1`
+
+A chat tool, deterministic. `person(id)` joins one catalog person's
+`brain_person` columns, what the user promised them and the latest mail
+with them across Bao's mailboxes (`participants` intersects their
+addresses). `search(query)` runs one index search per scope (`basic`,
+`email`, `promises`; one call with a shared limit lets mail crowd out
+the rest), reads each hit's record back for its date, and reranks by
+score × 0.5^(age / half-life): objects 180 days, mail 60, a promise not
+at all. A scope the index refuses is reported as skipped. Both honour
+the exclusion list and the blocklist: mail with an excluded or
+blocklisted participant, a promise made to one, and an excluded person
+never appear, and `person` on an excluded person raises. Calendar and
+meetings join as scopes when their syncs land.
 
 ## Consequences
 
@@ -95,7 +111,11 @@ fail-closed. The heartbeat uses it too.
   person per real correspondent (noise and the user skipped) and exactly
   the promises in sent mail, each linked to its person with the right
   deadline; a promise became a task linked to its person.
-- Calendar sync, meeting sync, the people join on calendar attendees and
-  transcript speakers, and the recall wrapper wait for the live probes
+- Also verified there: `brainRecall` found the deck across objects,
+  mail and promises, newest mail first, and its person view joined a
+  person's mail and promises; a task the Promises view made in any-ui,
+  once completed, closed its promise on the next `brainPromises` run.
+- Calendar sync, meeting sync, and the people join on calendar
+  attendees and transcript speakers wait for the live probes
   the plan names (Google Calendar's token path, Meet transcripts,
   Granola's wire shape).

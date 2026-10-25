@@ -168,6 +168,7 @@ def _close_completed(space, hub, datasets):
             kit.checked(_any.modify(space, {"objectId": hub, "dataset": datasets["promises"],
                         "records": [{"id": kit.plain_id(r["id"]), "ops": [
                             {"type": "$set", "path": "status", "value": "done"},
+                            {"type": "$set", "path": "reason", "value": "task completed"},
                             {"type": "$set", "path": "closedAt",
                              "value": instant(now())}]}]}),  # noqa: F821
                         "closing a promise whose task is done")

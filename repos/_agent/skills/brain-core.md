@@ -48,6 +48,11 @@ switches it in Settings → Brain, or by asking you.
   after a yes. Never invent a promise or a deadline.
 - Never write `promises`, `signals`, the hub's `config` or the brain's job
   records yourself; the brain's own programs own them.
+- Before answering about a person or a thread, read what the brain has:
+  `agent:brainRecall@v1.person(<person id>)` for one person (their columns,
+  what the user promised them, the latest mail), `.search("<words>")` across
+  objects, mail and promises. Quote each hit's `link` so the user can open
+  it; never answer about someone the user keeps out of the brain.
 
 ## Exclusions
 

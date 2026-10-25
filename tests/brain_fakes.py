@@ -33,7 +33,8 @@ def _matches(value, cond):
         for op, arg in cond.items():
             if op == "$gt" and not (value is not None and value > arg):
                 return False
-            if op == "$in" and value not in arg:
+            if op == "$in" and not (any(v in arg for v in value) if isinstance(value, list)
+                                    else value in arg):
                 return False
         return True
     if cond is None:
@@ -43,11 +44,19 @@ def _matches(value, cond):
     return value == cond
 
 
+class FakeAnyError(Exception):
+    """any@v1's AnyError: the server answered 4xx/5xx."""
+
+
 class FakeSpace:
+    AnyError = FakeAnyError
+
     def __init__(self, space="bao-space"):
         self.space = space
         self.objects = {}          # id -> row
         self.records = {}          # (oid, dataset) -> {rid: record}
+        self.search_hits = {}      # scope -> [hit]
+        self.search_fails = set()  # scopes the index refuses
         self.calls = []
         self._n = 0
 
@@ -107,6 +116,15 @@ class FakeSpace:
             rows.sort(key=lambda r, n=name: str(r.get(n)) if isinstance(r.get(n), dict)
                       else (r.get(n) or 0), reverse=desc)
         return rows[:limit] if limit else rows
+
+    def search(self, space, query, scopes=None, limit=None, **_):
+        self.calls.append(("search", query, tuple(scopes or ()), limit))
+        hits = []
+        for scope in scopes or sorted(self.search_hits):
+            if scope in self.search_fails:
+                raise FakeAnyError(f"400 search.unknown_scope {scope}")
+            hits += [{"scope": scope, **h} for h in self.search_hits.get(scope, [])]
+        return {"hits": copy.deepcopy(hits[:limit] if limit else hits)}
 
     def upsert_record(self, space, oid, ds, rid, value):
         self.calls.append(("upsert_record", _key_of(ds), rid))

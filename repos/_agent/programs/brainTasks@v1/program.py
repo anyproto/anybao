@@ -104,6 +104,12 @@ def suggested_deadline(text, made_at, due_at=None, today=None):
     return max(out, floor)
 
 
+def _notes(r):
+    # the task's notes are its Markdown body: the sentence, then a link to the mail
+    link = f"[Open the mail]({r['source']})" if r.get("source") else ""
+    return f"{r.get('quote') or ''}\n\n{link}".strip()
+
+
 def _hub():
     try:
         status = effect("config.get", {"key": "brain.status"})["value"]  # noqa: F821
@@ -170,7 +176,7 @@ def create(promise_id, deadline=None):
         "type": "task", "collections": ["brain_task"], "name": (r.get("text") or "")[:200],
         "initialProperties": {
             "task": {"deadline": chosen, "planning": "inbox",
-                     "notes": f"{r.get('quote') or ''}\n\n{r.get('source') or ''}".strip()},
+                     "notes": _notes(r)},
             "brain_task": brain_task}})
     task_id = made["objectId"]
     kit.checked(_any.modify(bao, {"objectId": hub, "dataset": promises, "records": [

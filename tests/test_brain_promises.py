@@ -163,6 +163,7 @@ def test_a_completed_task_closes_its_promise():
     out = mod.main(job_args(s))
     assert out["closed"] == 1
     assert s.store("promises")[pid]["status"] == "done"
+    assert s.store("promises")[pid]["reason"] == "task completed"
     assert s.store("promises")[pid]["closedAt"] == {"$date": 1_800_000_000_000}
 
 

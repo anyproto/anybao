@@ -33,6 +33,26 @@ class exclusions_unreadable(Exception):
     """The exclusion list is missing or not in its version-1 shape."""
 
 
+class not_set_up(Exception):
+    """The brain has no hub yet: it is off or Bao has not set it up."""
+
+
+def ready_hub():
+    """(hub object id, datasets) of a brain Bao has set up; else not_set_up.
+
+    For the brain's tools, which run outside a job and so read the hub off
+    `brain.status` rather than their trigger's args."""
+    try:
+        status = effect("config.get", {"key": "brain.status"})["value"]  # noqa: F821
+    except EffectError:  # noqa: F821 - guest global
+        status = None
+    status = status if isinstance(status, dict) else {}
+    hub = status.get("hub")
+    if status.get("state") != "ready" or not isinstance(hub, dict) or not hub.get("objectId"):
+        raise not_set_up("The brain is not set up yet; switch it on first.")
+    return hub["objectId"], dict(hub.get("datasets") or {})
+
+
 def checked(reply, what):
     """`reply`, or raise write_rejected on a per-record rejection."""
     rejected = (reply or {}).get("rejections") or []

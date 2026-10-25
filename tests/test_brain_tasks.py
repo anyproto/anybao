@@ -87,7 +87,7 @@ def test_create_makes_a_task_in_the_tasks_app_and_links_the_promise():
     assert task["any"]["type"] == "task" and task["any"]["collections"] == ["brain_task"]
     assert task["any"]["name"] == "I'll send the memo tomorrow."
     assert task["task"]["deadline"] == "2026-10-23" and task["task"]["planning"] == "inbox"
-    assert task["task"]["notes"].endswith("/email_messages/b")
+    assert task["task"]["notes"].endswith("[Open the mail](any://o/bao-space/mb1/email_messages/b)")
     assert task["brain_task"] == {"sourceUri": "any://o/bao-space/mb1/email_messages/b",
                                   "origin": "promise", "suggestedDeadline": "2026-10-23",
                                   "personId": ["p1"]}
