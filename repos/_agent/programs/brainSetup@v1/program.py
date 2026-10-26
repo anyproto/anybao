@@ -184,6 +184,10 @@ class write_rejected(Exception):
     """The server refused a record write; the reply's reason is the message."""
 
 
+class unknown_person(Exception):
+    """No object with that id in Bao's space."""
+
+
 # --- small helpers ---------------------------------------------------------
 
 def _iso(seconds):
@@ -626,21 +630,31 @@ def off():
 def exclude(person=None, email=None, domain=None):
     """Keep a person, an address or a domain out of the brain → the exclusion list.
 
-    Appends only: removing an exclusion is Settings-only. Raises
-    not_set_up while the brain has no hub."""
+    Appends only: removing an exclusion is Settings-only. A person's
+    addresses are added with them, so they stay out once the person is
+    gone. Raises not_set_up while the brain has no hub, unknown_person
+    for an id that names nothing."""
     bao = _any.bao_space()
     hub = _current_hub(_status())
     if hub is None:
         raise not_set_up("The brain is not set up yet; switch it on first.")
+    person = (person or "").strip()
+    emails = [email] if email else []
+    if person:
+        rows = _any.query_objects(bao, filter={"id": person}, limit=1)
+        if not rows:
+            raise unknown_person(f"no person {person!r} in Bao's space")
+        emails += kit.person_emails(rows[0])
     rec = _hub_record(bao, hub["objectId"], hub["datasets"]["config"], "exclusions")
     value = dict((rec or {}).get("value") or EXCLUSIONS_SEED)
-    for field, item in (("personIds", person), ("emails", email), ("domains", domain)):
-        if item:
-            items = list(value.get(field) or [])
-            norm = item.strip().lower() if field != "personIds" else item.strip()
+    for field, wanted in (("personIds", [person]), ("emails", emails), ("domains", [domain])):
+        items = list(value.get(field) or [])
+        for item in wanted:
+            norm = (item or "").strip()
+            norm = norm if field == "personIds" else norm.lower()
             if norm and norm not in items:
                 items.append(norm)
-            value[field] = items
+        value[field] = items
     value["version"] = 1
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")

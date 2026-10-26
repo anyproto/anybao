@@ -91,7 +91,11 @@ addresses on their person objects (`brain_person.emails`,
 `person.email`), so `kept_out` treats a message carrying one of them
 like one carrying a listed address — found live: an id-only exclusion
 had let a CC'd person's mail reach another person's facts, promises and
-recall. The heartbeat uses it too, and the tools read the hub off
+recall. Resolving at read time cannot help once the person object is
+gone — the people job would mint a fresh person for the same address,
+and their mail would reach the model — so `brainSetup.exclude(person=…)`
+also copies the person's addresses into `emails`, and refuses an id
+that names no object. The heartbeat uses it too, and the tools read the hub off
 `brain.status` through its `ready_hub()`.
 
 ### 7. `brainRecall@v1`

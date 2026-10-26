@@ -43,6 +43,7 @@ class FakeAny:
         self.reject = {}
         self.mailboxes = [{"id": "mb1", "any": {"name": "me@example.com"},
                            "mailbox": {"address": "me@example.com"}}]
+        self.objects = {}
 
     # the store
     def _store(self, space, oid, ds):
@@ -144,6 +145,9 @@ class FakeAny:
         return [{"id": f"type-{t}", "xKey": t} for t in names]
 
     def query_objects(self, space, normalize=True, filter=None, limit=None, **_):
+        if set(filter or {}) == {"id"}:
+            row = self.objects.get(filter["id"])
+            return [row] if row else []
         assert filter == {"any.type": "mailbox"}, filter
         if "mailbox" not in {t["xKey"] for t in self.list_types(space)}:
             raise ValueError('type "mailbox" doesn\'t exist')
@@ -558,6 +562,29 @@ def test_exclude_appends_normalized_and_never_removes():
     out = mod.exclude(domain="example.org", email="boss@example.com")
     assert out["emails"] == ["boss@example.com"] and out["domains"] == ["example.org"]
     assert out["version"] == 1
+
+
+def test_excluding_a_person_also_keeps_their_addresses_out():
+    # the copy is what keeps them out once their person object is gone
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.objects["ada"] = {"id": "ada", "person": {"email": "Ada@Lab.org"},
+                           "brain_person": {"emails": ["ada@lab.org", "ada@home.net"]}}
+    out = mod.exclude(person="ada")
+    assert out["personIds"] == ["ada"]
+    assert out["emails"] == ["ada@home.net", "ada@lab.org"]
+    stored = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
+    assert stored == out
+
+
+def test_excluding_an_unknown_person_writes_nothing():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    before = dict(fake.records[(BAO, "hub", "type-hub_config")]["exclusions"])
+    with pytest.raises(Exception) as err:
+        mod.exclude(person="nobody")
+    assert type(err.value).__name__ == "unknown_person"
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] == before
 
 
 def test_exclude_refuses_before_setup():
