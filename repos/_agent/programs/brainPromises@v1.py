@@ -8,8 +8,9 @@
 # `promises` record whose `quote` is the verbatim sentence and whose
 # `source` opens the message. Deterministic; no model. A message to an
 # excluded or blocklisted recipient, or under a blocklisted label, is
-# skipped whole. The record id is
-# sha256(messageId, normalized sentence), so a re-run writes nothing.
+# skipped whole. The record id is sha256(messageId, normalized sentence),
+# and only ids the store lacks are written: `status` is mutable, so
+# re-sending a promise a re-read message yields would reopen it.
 #
 # It also closes the loop with tasks: an open promise whose `taskId` names
 # a catalog task the user completed is marked done.
@@ -152,6 +153,14 @@ def _records_of(space, box_id, box_addr, row, excl, block, people):
     return out
 
 
+def _unwritten(space, hub, dataset, records):
+    """The records whose id the store does not hold yet."""
+    ids = [f"{hub}/{r['id']}" for r in records]
+    rows = _any.query(space, hub, dataset, filter={"id": {"$in": ids}}, limit=len(ids))
+    have = {kit.plain_id(r["id"]) for r in rows}
+    return [r for r in records if r["id"] not in have]
+
+
 def _close_completed(space, hub, datasets):
     """Mark done the open promises whose task the user completed.
 
@@ -196,6 +205,7 @@ def main(args):
             records.extend(_records_of(space, box_id, box_addr, row, excl, block, people))
             last = max(last, row.get("internalDate") or 0)
             read += 1
+        records = _unwritten(space, hub, datasets["promises"], records) if records else []
         if records:
             reply = _any.upsert_records(space, hub, datasets["promises"], records) or {}
             rejected = reply.get("rejections") or []

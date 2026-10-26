@@ -123,7 +123,18 @@ def test_a_re_run_writes_nothing_new():
     mod.main(job_args(s))
     s.set_config("promises.cursor", {})       # re-read the same mail
     out = mod.main(job_args(s))
-    assert len(s.store("promises")) == 1 and out["promises"] == 1
+    assert len(s.store("promises")) == 1 and out["promises"] == 0
+
+
+def test_re_reading_a_message_never_reopens_a_closed_promise():
+    s = mail_space("I'll send the deck tomorrow.")
+    mod, _ = kernel(s)
+    mod.main(job_args(s))
+    (rid,) = s.store("promises")
+    s.store("promises")[rid].update(status="done", reason="task completed")
+    s.set_config("promises.cursor", {})       # a run that raised before its cursor write
+    mod.main(job_args(s))
+    assert s.store("promises")[rid]["status"] == "done"
 
 
 def test_mail_to_an_excluded_or_blocklisted_recipient_is_skipped():
@@ -152,15 +163,11 @@ def test_mail_to_a_person_excluded_by_id_is_skipped():
 def test_a_rejected_write_fails_the_run_and_keeps_the_cursor():
     s = mail_space("I'll send the deck tomorrow.")
     mod, _ = kernel(s)
-    mod.main(job_args(s))
-    # the same message re-read with a changed write-once field
-    s.set_config("promises.cursor", {})
-    rec = next(iter(s.store("promises").values()))
-    rec["quote"] = "something else"
-    with pytest.raises(Exception, match="1 of 1 rejected") as err:
+    s.refuse[mod.promise_id("m1", "I'll send the deck tomorrow.")] = "field madeAt: invalid"
+    with pytest.raises(Exception, match="1 of 1 rejected: field madeAt: invalid") as err:
         mod.main(job_args(s))
     assert type(err.value).__name__ == "promises_rejected"
-    assert s.config("promises.cursor") == {}
+    assert s.config("promises.cursor") is None
 
 
 def test_a_completed_task_closes_its_promise():

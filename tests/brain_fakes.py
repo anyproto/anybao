@@ -63,6 +63,7 @@ class FakeSpace:
         self.records = {}          # (oid, dataset) -> {rid: record}
         self.search_hits = {}      # scope -> [hit]
         self.search_fails = set()  # scopes the index refuses
+        self.refuse = {}           # record id -> the reason the server refuses it
         self.calls = []
         self.types = set(BASE_TYPES)
         self._n = 0
@@ -151,6 +152,10 @@ class FakeSpace:
         once = WRITE_ONCE.get(_key_of(ds), set())
         out = {"created": 0, "updated": 0, "skipped": 0, "rejections": []}
         for i, rec in enumerate(records):
+            if rec["id"] in self.refuse:
+                out["rejections"].append({"index": i, "id": rec["id"],
+                                          "reason": self.refuse[rec["id"]]})
+                continue
             have = store.get(rec["id"])
             if have is None:
                 store[rec["id"]] = {"id": rec["id"], **copy.deepcopy(rec["fields"])}
@@ -161,6 +166,8 @@ class FakeSpace:
                 out["rejections"].append({"index": i, "id": rec["id"],
                                           "reason": f"write-once {sorted(changed & once)}"})
             elif changed:
+                # the server writes a changed mutable field over the stored one
+                have.update({k: copy.deepcopy(rec["fields"][k]) for k in changed})
                 out["updated"] += 1
             else:
                 out["skipped"] += 1

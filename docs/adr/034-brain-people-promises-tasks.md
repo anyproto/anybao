@@ -65,7 +65,10 @@ hypothetical, a negation anywhere in the sentence). Each is a `promises`
 record: the verbatim `quote`, the key-form `source` link, `personEmail`
 and `personId`, `madeAt`, and a `dueAt` from a fixed table (today,
 tomorrow, end of week, next week, weekday names; EN and DE). The id is
-`sha256(messageId, sentence)`, so a re-run writes nothing. A message to
+`sha256(messageId, sentence)`, and the job writes only ids the store
+lacks: `status` is mutable, so re-sending a promise that a re-read
+message yields again would reopen one the user or a completed task
+closed. A message to
 an excluded or blocklisted recipient, or under a blocklisted label, is
 skipped whole. Any per-record
 rejection fails the run with the cursor unmoved. It also marks done an
