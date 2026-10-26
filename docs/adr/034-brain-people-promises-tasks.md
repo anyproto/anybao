@@ -81,7 +81,10 @@ deadline from one rule table (its own `dueAt`, an ISO date, today,
 tomorrow, this week, next week, a weekday, else two business days, never
 earlier than today); `create(id, deadline=None)` makes a catalog `task`
 in Bao's Tasks app (`planning: inbox`) filed under `brain_task` and sets
-the promise's `taskId`; a second `create` is a no-op. The `brain-core`
+the promise's `taskId`; a second `create` is a no-op. Neither offers nor
+makes a task of a promise to someone the exclusion list or the blocklist
+keeps out (`create` raises `person_excluded`); both lists are read
+fail-closed. The `brain-core`
 skill tells the chat agent to offer, show the deadline, and create only
 after a yes.
 
@@ -114,7 +117,8 @@ score × 0.5^(age / half-life): objects 180 days, mail 60, a promise not
 at all. A scope the index refuses is reported as skipped. Both honour
 the exclusion list and the blocklist: mail with an excluded or
 blocklisted participant, a promise made to one, and an excluded person
-never appear, and `person` on an excluded person raises. Calendar and
+never appear — an object hit that is a person kept out by address or
+domain included — and `person` on an excluded person raises. Calendar and
 meetings join as scopes when their syncs land.
 
 ## Consequences

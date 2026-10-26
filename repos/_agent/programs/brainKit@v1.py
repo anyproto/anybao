@@ -186,6 +186,14 @@ def kept_out(addr, excl, block):
             or addr in block["senders"] or dom in block["domains"] or is_noise(addr))
 
 
+def promise_kept_out(row, excl, block):
+    """True when a promise was made to an excluded or blocklisted person."""
+    if row.get("personId") in excl["personIds"]:
+        return True
+    email = row.get("personEmail")
+    return bool(email) and kept_out(str(email).lower(), excl, block)
+
+
 def labelled_out(row, block):
     """True when a synced message carries a blocklisted label."""
     return any(str(label).lower() in block["labels"] for label in (row.get("labelIds") or []))

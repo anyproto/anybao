@@ -16,8 +16,13 @@ READY = {"state": "ready", "hub": {"objectId": HUB, "datasets": {
     "config": "hubtype_config", "promises": "hubtype_promises"}}}
 
 
+EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
+
+
 def kernel(space=None, now=THU, status=READY):
-    space = space or FakeSpace()
+    if space is None:
+        space = FakeSpace()
+        space.set_config("exclusions", dict(EXCLUSIONS))
 
     def eff(name, payload):
         if name == "time.now":
@@ -161,3 +166,29 @@ def test_a_brain_that_is_not_set_up_refuses():
     mod2, _ = kernel(status={"state": "provisioning"})
     with pytest.raises(Exception, match="not set up yet"):
         mod2.create("x")
+
+
+def test_a_promise_to_someone_kept_out_is_never_offered_or_made_a_task():
+    mod, s = kernel()
+    add_promise(s, "p-ada", "I'll send the deck.", person="ada")
+    add_promise(s, "p-eve", "I'll call you.", made=THU - DAY, person="eve")
+    s.records[(HUB, "hubtype_promises")]["p-eve"]["personEmail"] = "eve@spy.org"
+    add_promise(s, "p-bob", "I'll ping Bob.", made=THU - 2 * DAY, person="bob")
+    s.records[(HUB, "hubtype_promises")]["p-bob"]["personEmail"] = "bob@rival.com"
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["ada"], "emails": ["eve@spy.org"]})
+    s.set_config("blocklist", {"senders": [], "domains": ["rival.com"], "labels": []})
+    assert mod.suggest() == []
+    for rid in ("p-ada", "p-eve", "p-bob"):
+        with pytest.raises(Exception) as err:
+            mod.create(rid)
+        assert type(err.value).__name__ == "person_excluded"
+    assert not [c for c in s.calls if c[0] == "create_object"]
+
+
+def test_an_unreadable_exclusion_list_fails_closed():
+    mod, s = kernel()
+    add_promise(s, "p1", "I'll send the deck.")
+    s.set_config("exclusions", {"version": 1, "personIds": []})
+    with pytest.raises(Exception) as err:
+        mod.suggest()
+    assert type(err.value).__name__ == "exclusions_unreadable"

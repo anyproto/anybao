@@ -20,6 +20,8 @@ Create only after the user said yes; show the deadline and let them change it.
 # (planning: inbox) also filed under the brain's `brain_task` collection,
 # which keeps the source link, the person, the origin and the suggestion
 # even after the user moves the deadline; the promise gets the task's id.
+# A promise made to someone the exclusion list or the blocklist keeps out
+# is never offered and refuses create; both lists are read fail-closed.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -36,12 +38,12 @@ _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday":
 _MAX_LIST = 300
 
 
-class not_set_up(Exception):
-    """The brain has no hub yet: it is off or Bao has not set it up."""
-
-
 class unknown_promise(Exception):
     """No promise with that id."""
+
+
+class person_excluded(Exception):
+    """The promise was made to someone the user keeps out of the brain."""
 
 
 def _day(seconds):
@@ -110,22 +112,19 @@ def _notes(r):
     return f"{r.get('quote') or ''}\n\n{link}".strip()
 
 
-def _hub():
-    try:
-        status = effect("config.get", {"key": "brain.status"})["value"]  # noqa: F821
-    except EffectError:  # noqa: F821 - guest global
-        status = None
-    hub = (status or {}).get("hub") if isinstance(status, dict) else None
-    if (not isinstance(hub, dict) or (status or {}).get("state") != "ready"
-            or not (hub.get("datasets") or {}).get("promises")):
-        raise not_set_up("The brain is not set up yet; switch it on first.")
-    return hub["objectId"], hub["datasets"]["promises"]
+def _hub(bao):
+    """(hub, promises dataset, the rules of who is kept out) of a set-up brain."""
+    hub, datasets = kit.ready_hub()
+    if not datasets.get("promises"):
+        raise kit.not_set_up("The brain is not set up yet; switch it on first.")
+    rules = (kit.exclusions(bao, hub, datasets), kit.blocklist(bao, hub, datasets))
+    return hub, datasets["promises"], rules
 
 
-def _open_promises(bao, hub, promises):
+def _open_promises(bao, hub, promises, rules):
     rows = _any.query(bao, hub, promises, filter={"status": "open"},
                       sort=["-madeAt"], limit=_MAX_LIST)
-    return [r for r in rows if not r.get("taskId")]
+    return [r for r in rows if not r.get("taskId") and not kit.promise_kept_out(r, *rules)]
 
 
 def _row(r, today):
@@ -145,9 +144,10 @@ def suggest(limit=20):
     `suggestedDeadline` is an ISO date from the rule table in this
     program's notes. Offer them to the user; create only after a yes."""
     bao = _any.bao_space()
-    hub, promises = _hub()
+    hub, promises, rules = _hub(bao)
     today = now()  # noqa: F821 - guest global
-    return [_row(r, today) for r in _open_promises(bao, hub, promises)[:max(0, int(limit))]]
+    rows = _open_promises(bao, hub, promises, rules)
+    return [_row(r, today) for r in rows[:max(0, int(limit))]]
 
 
 @span("brainTasks.create", kind="mutator")  # noqa: F821 - guest global
@@ -157,12 +157,14 @@ def create(promise_id, deadline=None):
     `deadline`: an ISO date the user chose; omitted = the suggestion.
     A promise already made into a task returns its task, unchanged."""
     bao = _any.bao_space()
-    hub, promises = _hub()
+    hub, promises, rules = _hub(bao)
     rid = kit.plain_id(promise_id)
     rows = _any.query(bao, hub, promises, filter={"id": f"{hub}/{rid}"}, limit=1)
     if not rows:
         raise unknown_promise(f"no promise {rid!r}")
     r = rows[0]
+    if kit.promise_kept_out(r, *rules):
+        raise person_excluded("This promise was made to someone kept out of the brain.")
     if r.get("taskId"):
         return {"taskId": r["taskId"], "created": False, "deadline": None}
     today = now()  # noqa: F821 - guest global

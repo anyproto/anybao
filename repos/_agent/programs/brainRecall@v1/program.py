@@ -56,13 +56,6 @@ def _mail_kept_out(row, excl, block):
     return any(kit.kept_out(str(a).lower(), excl, block) for a in people)
 
 
-def _promise_kept_out(row, excl, block):
-    if row.get("personId") in excl["personIds"]:
-        return True
-    email = row.get("personEmail")
-    return bool(email) and kit.kept_out(str(email).lower(), excl, block)
-
-
 def _by_record(bao, oid, dataset, rids, shared):
     """{plain record id: record} for one object's dataset, in one query."""
     wanted = [f"{oid}/{r}" if shared else r for r in rids]
@@ -101,7 +94,7 @@ def _promise_hits(bao, hits, ctx):
     for h in hits:
         rid = kit.plain_id(h.get("recordId"))
         row = rows.get(rid)
-        if row is None or _promise_kept_out(row, ctx["excl"], ctx["block"]):
+        if row is None or kit.promise_kept_out(row, ctx["excl"], ctx["block"]):
             continue
         out.append({"title": row.get("text"), "text": row.get("quote"), "objectId": hub,
                     "recordId": rid, "link": row.get("source"), "status": row.get("status"),
@@ -112,10 +105,17 @@ def _promise_hits(bao, hits, ctx):
 
 
 def _object_hits(bao, hits, ctx):
+    # a hit may be a person kept out by address or domain, not only by id
+    oids = sorted({h["objectId"] for h in hits if h.get("objectId")})
+    rows = {r["id"]: r for r in (_any.query_objects(bao, filter={"id": {"$in": oids}},
+                                                    limit=len(oids)) if oids else [])}
     out = []
     for h in hits:
         oid = h.get("objectId")
         if not oid or oid in ctx["excl"]["personIds"]:
+            continue
+        if any(kit.kept_out(e, ctx["excl"], ctx["block"])
+               for e in kit.person_emails(rows.get(oid) or {})):
             continue
         out.append({"title": h.get("title"), "text": h.get("data"), "objectId": oid,
                     "recordId": h.get("recordId"), "link": f"any://o/{bao}/{oid}",

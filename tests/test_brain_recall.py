@@ -189,3 +189,18 @@ def test_mail_under_a_blocklisted_label_is_never_recalled():
     out = kernel(s).search("deck", scopes=["email"])
     assert [h["recordId"] for h in out["groups"][0]["hits"]] == ["secret", "old"]
     assert [m["link"].rsplit("/", 1)[-1] for m in kernel(s).person("ada")["mail"]] == ["old"]
+
+
+def test_a_person_kept_out_by_address_is_never_found_as_an_object():
+    s = mail_space()
+    s.add_object("eve", "profile", ["person", "brain_person"], name="Eve",
+                 person={"email": "eve@spy.org"}, brain_person={"emails": ["eve@spy.org"]})
+    s.add_object("page1", "page", name="Deck notes")
+    for excl, block in (({**EXCLUSIONS, "emails": ["eve@spy.org"]}, None),
+                        ({**EXCLUSIONS, "domains": ["spy.org"]}, None),
+                        (dict(EXCLUSIONS), {"senders": [], "domains": ["spy.org"],
+                                            "labels": []})):
+        s.set_config("exclusions", excl)
+        s.set_config("blocklist", block or {"senders": [], "domains": [], "labels": []})
+        basic = kernel(s).search("deck", scopes=["basic"])["groups"][0]["hits"]
+        assert [h["objectId"] for h in basic] == ["page1"], (excl, block)
