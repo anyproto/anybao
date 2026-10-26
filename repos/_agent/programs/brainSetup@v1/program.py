@@ -19,8 +19,11 @@ mail out of it for good. A trigger run of this program does the setup.
 # again. The brain's jobs are ordinary agent_triggers records found by
 # PROGRAM, not by id, so a deleted job is rewritten under a fresh id. A
 # pause holds: the reconcile run only writes MISSING jobs and never
-# re-enables one; an off run records which jobs it disabled and the next
-# on run re-enables exactly those.
+# re-enables one; an off run records which jobs it disabled (brain.jobs)
+# and the next on run re-enables exactly those. A job the runtime stopped
+# after repeated failures (lastStatus auto_disabled) is not a pause: the
+# reconcile run answers it as an error, and the next request — any-ui's
+# Try again — restarts it.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -28,6 +31,8 @@ _any = use("any@v1")  # noqa: F821 - guest global
 
 SPACE_KEY = "brain.space"
 STATUS_KEY = "brain.status"
+JOBS_KEY = "brain.jobs"
+STOPPED = "auto_disabled"
 CHAT_SPACES_KEY = "brain.chatScan.spaces"
 SETUP_TRIGGER_ID = "brain-setup"
 PROGRAM = "agent:brainSetup@v1"
@@ -281,18 +286,14 @@ def _ensure_jobs(bao, hub):
     return anchor, written
 
 
-def _jobs_state(bao, hub):
-    rec = _hub_record(bao, hub["objectId"], hub["datasets"]["config"], "jobs")
-    value = (rec or {}).get("value") or {}
-    return list(value.get("offDisabled") or [])
+def _off_disabled():
+    # an agent_config row, not a hub record: an off run after a failed
+    # setup has no hub to write to
+    value = _config_get(JOBS_KEY)
+    return list((value or {}).get("offDisabled") or []) if isinstance(value, dict) else []
 
 
-def _write_jobs_state(bao, hub, off_disabled):
-    _upsert(bao, hub["objectId"], hub["datasets"]["config"], "jobs",
-            {"value": {"offDisabled": off_disabled}}, "recording the jobs switched off")
-
-
-def _disable_jobs(bao, hub):
+def _disable_jobs(bao):
     """Disable every enabled brain job; remember which, for the next on run."""
     anchor = _trigger_anchor(bao)
     turned_off = []
@@ -301,15 +302,14 @@ def _disable_jobs(bao, hub):
             if rec.get("enabled", True):
                 _set_enabled(bao, anchor, rec["id"], False)
                 turned_off.append(rec["id"])
-    if hub is not None and turned_off:
-        remembered = _jobs_state(bao, hub)
-        _write_jobs_state(bao, hub, sorted(set(remembered) | set(turned_off)))
+    if turned_off:
+        _config_set(JOBS_KEY, {"offDisabled": sorted(set(_off_disabled()) | set(turned_off))})
     return turned_off
 
 
-def _reenable_jobs(bao, hub, anchor):
+def _reenable_jobs(bao, anchor):
     """Re-enable exactly the jobs the last off run disabled."""
-    remembered = _jobs_state(bao, hub)
+    remembered = _off_disabled()
     if not remembered:
         return []
     live = {r["id"]: r for recs in _brain_jobs(bao, anchor).values() for r in recs}
@@ -318,7 +318,23 @@ def _reenable_jobs(bao, hub, anchor):
         if rid in live and not live[rid].get("enabled", True):
             _set_enabled(bao, anchor, rid, True)
             back.append(rid)
-    _write_jobs_state(bao, hub, [])
+    _config_set(JOBS_KEY, {"offDisabled": []})
+    return back
+
+
+def _stopped_jobs(bao, anchor):
+    """The brain jobs the runtime stopped after repeated failures."""
+    return sorted((r for recs in _brain_jobs(bao, anchor).values() for r in recs
+                   if not r.get("enabled", True) and r.get("lastStatus") == STOPPED),
+                  key=lambda r: r["id"])
+
+
+def _restart_stopped(bao, anchor):
+    """Re-enable the stopped jobs; re-enabling resets the runtime's breaker."""
+    back = []
+    for rec in _stopped_jobs(bao, anchor):
+        _set_enabled(bao, anchor, rec["id"], True)
+        back.append(rec["id"])
     return back
 
 
@@ -364,9 +380,8 @@ def _setup():
     if request is None:
         request = {"spaceId": bao, "requestedAt": _iso(now()), "by": "default"}  # noqa: F821
         _config_set(SPACE_KEY, request)
-    hub = _current_hub(_status())
     if request.get("spaceId") is None:
-        turned_off = _disable_jobs(bao, hub)
+        turned_off = _disable_jobs(bao)
         _write_status(request, "off")
         return {"state": "off", "disabled": turned_off}
     if request["spaceId"] != bao:
@@ -377,13 +392,15 @@ def _setup():
     try:
         hub = _provision(bao)
         anchor, written = _ensure_jobs(bao, hub)
-        reenabled = _reenable_jobs(bao, hub, anchor)
+        reenabled = _reenable_jobs(bao, anchor)
+        restarted = _restart_stopped(bao, anchor)
     except Exception as e:
         _write_status(request, "error",
                       error={"type": type(e).__name__, "message": str(e)[:500]})
         raise provision_failed(f"{type(e).__name__}: {e}") from e
     _write_status(request, "ready", hub=hub)
-    return {"state": "ready", "hub": hub, "written": written, "reenabled": reenabled}
+    return {"state": "ready", "hub": hub, "written": written, "reenabled": reenabled,
+            "restarted": restarted}
 
 
 def _reconcile():
@@ -394,11 +411,19 @@ def _reconcile():
         return {"reconciled": False, "reason": "no request yet"}
     hub = _current_hub(status)
     if request.get("spaceId") is None:
-        return {"reconciled": True, "disabled": _disable_jobs(bao, hub)}
+        return {"reconciled": True, "disabled": _disable_jobs(bao)}
     answered = (status or {}).get("requestedAt") == request["requestedAt"]
     if hub is None or not answered or (status or {}).get("state") != "ready":
         return {"reconciled": False, "reason": "not set up"}
-    _, written = _ensure_jobs(bao, hub)
+    anchor, written = _ensure_jobs(bao, hub)
+    stopped = _stopped_jobs(bao, anchor)
+    if stopped:
+        names = ", ".join(r.get("name") or r["id"] for r in stopped)
+        _write_status(request, "error", error={
+            "type": "job_stopped",
+            "message": f"{names} stopped after repeated failures; Scheduled shows why. "
+                       "Try again restarts it."})
+        return {"reconciled": True, "written": written, "stopped": [r["id"] for r in stopped]}
     return {"reconciled": True, "written": written}
 
 

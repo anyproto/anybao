@@ -66,8 +66,10 @@ record id can never be written again.
 1. Read `brain.space`. Absent: write the default (`by: "default"`, Bao's
    space) and answer it. The status always echoes the row's current
    `requestedAt`, not the trigger's, so a second click wins.
-2. `spaceId: null`: disable every brain job, remember which in the hub's
-   `config/jobs.offDisabled`, answer `off`.
+2. `spaceId: null`: disable every brain job, remember which in the
+   agent_config row `brain.jobs` (`{offDisabled}`), answer `off`. Not a
+   hub record: an off run after a failed setup has no hub in its status
+   to write to, and the next on run would re-enable nothing.
 3. A space other than Bao's: answer `error` (`wrong_space`) and raise.
 4. Otherwise answer `provisioning`, then install or adopt: the `people`
    and `meetings` catalog apps; the `brain/v1` bundle (a created root of
@@ -79,8 +81,10 @@ record id can never be written again.
    the `llm.tier.brain.drafter` / `.extractor` / `.caretaker` rows,
    copied from `codegen` / `codegen` / `classify`, each only when absent.
    A `409 bundle.not_ready` is retried five times, two seconds apart.
-5. Write the missing jobs, re-enable the ones the last off run disabled,
-   answer `ready` with the hub. Any exception in 4–5 is answered as
+5. Write the missing jobs, re-enable the ones the last off run disabled
+   and the ones the runtime stopped after repeated failures (`lastStatus:
+   auto_disabled`; the flip resets the breaker), answer `ready` with the
+   hub. Any exception in 4–5 is answered as
    `error` and raised as `provision_failed`, so the run reads FAILED.
 
 ### 4. The brain's jobs are records
@@ -97,8 +101,13 @@ record id can never be written again.
   reason only in `rejections` — so every brain write checks
   `rejections` and raises on one (`write_rejected`).
 - **A pause holds.** The reconcile run only writes missing jobs; it
-  never re-enables one. Only an on run re-enables, and only the jobs
-  the off run before it disabled.
+  never re-enables one. Only an on run re-enables: the jobs the off run
+  before it disabled, and those the runtime stopped.
+- **A stopped job is not a pause.** When the runtime has stopped a
+  brain job (`lastStatus: auto_disabled`), the reconcile run answers
+  `error` (`job_stopped`, naming the jobs), so Settings shows it with
+  Try again instead of reading `ready` over a brain that does nothing;
+  Try again's request restarts them (§3 step 5).
 - Unowned when written, so the active device claims them; Pause and
   Repin in Scheduled work as for any job.
 
@@ -115,7 +124,7 @@ records `config/heartbeat.lastTickAt`. It imports `any@v1` only.
 A read of a shared dataset returns `id: "<objectId>/<recordId>"`, and an
 `id` filter compares that whole value; writes take the plain id (any
 `docs/03-api.md` § Shared datasets). Every lookup of a hub record —
-`config/exclusions`, `config/heartbeat`, `config/jobs` — filters on
+`config/exclusions`, `config/heartbeat` — filters on
 `f"{hub}/{name}"`. A lookup by the plain id finds nothing, which would
 re-seed the exclusion list over the user's on every setup run and make
 the heartbeat refuse every tick.

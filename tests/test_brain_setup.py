@@ -291,6 +291,50 @@ def test_off_disables_and_on_re_enables_exactly_those():
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False  # the pause held
 
 
+def test_off_after_a_failed_setup_still_brings_the_jobs_back():
+    # an error status carries no hub, so the jobs an off run disables must
+    # be remembered somewhere that does not need one
+    mod, fake, cfg, writes, _ = kernel(config=on_request())
+    mod.main({})
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-retry", "by": "any-ui"}
+    fake.fail["setup_app"] = RuntimeError("catalog unavailable")
+    with pytest.raises(Exception, match="catalog unavailable"):
+        mod.main({})
+    assert statuses(writes)[-1]["state"] == "error"
+    del fake.fail["setup_app"]
+    cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
+    mod.main({})
+    assert all(not j["enabled"] for j in jobs(fake).values())
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
+    assert mod.main({})["state"] == "ready"
+    assert all(j["enabled"] for j in jobs(fake).values())
+
+
+def test_reconcile_reports_a_job_the_runtime_stopped():
+    mod, fake, cfg, writes, _ = kernel(config=on_request())
+    mod.main({})
+    triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled",
+                                              consecutiveFailures=3)
+    mod.main({"mode": "reconcile"})
+    status = statuses(writes)[-1]
+    assert status["state"] == "error" and status["requestedAt"] == STAMP
+    assert status["error"]["type"] == "job_stopped"
+    assert "brain heartbeat" in status["error"]["message"]
+    assert mod.status()["state"] == "error"
+
+
+def test_try_again_restarts_a_job_the_runtime_stopped_but_not_a_paused_one():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
+    triggers(fake)["brain-reconcile"]["enabled"] = False      # the user paused it
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-retry", "by": "any-ui"}
+    out = mod.main({})
+    assert out["state"] == "ready" and out["restarted"] == ["brain-heartbeat"]
+    assert jobs(fake)["brain-heartbeat"]["enabled"] is True
+    assert jobs(fake)["brain-reconcile"]["enabled"] is False
+
+
 def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
     mod, fake, cfg, _, _ = kernel(config=on_request())
     mod.main({})
@@ -311,10 +355,11 @@ def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
 
 
 def test_reconcile_never_re_enables_a_paused_job():
-    mod, fake, _, _, _ = kernel(config=on_request())
+    mod, fake, _, writes, _ = kernel(config=on_request())
     mod.main({})
     triggers(fake)["brain-heartbeat"]["enabled"] = False
     out = mod.main({"mode": "reconcile"})
+    assert statuses(writes)[-1]["state"] == "ready"     # a pause is not a failure
     assert out == {"reconciled": True, "written": []}
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False
 
