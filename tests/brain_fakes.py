@@ -13,7 +13,7 @@ import copy
 HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
-            ("signals", "config", "incidents", "observations", "promises")}
+            ("signals", "config", "incidents", "observations", "promises", "facts")}
 # what a set-up brain's space has before any mail sync: the built-in page,
 # the people and tasks catalog apps' types, the hub
 BASE_TYPES = ("page", "profile", "task", "brain_hub")
@@ -128,6 +128,7 @@ class FakeSpace:
         return out[:limit] if limit else out
 
     def query(self, space, oid, ds, filter=None, sort=None, limit=None, **_):
+        self.calls.append(("query", oid, _key_of(ds)))
         shared = ds.startswith(SHARED_PREFIX)
         rows = [({**r, "id": f"{oid}/{r['id']}"} if shared else dict(r))
                 for r in self.records.get((oid, ds), {}).values()]

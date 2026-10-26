@@ -42,12 +42,13 @@ PROGRAM = "agent:brainSetup@v1"
 HEARTBEAT = "agent:brainHeartbeat@v1"
 PEOPLE = "agent:brainPeople@v1"
 PROMISES = "agent:brainPromises@v1"
+FACTS = "agent:brainFacts@v1"
 GMAIL_SYNC = "connectors:gmailSync@v1"
 MAIL_SYNC_ID = "brain-mail-sync"
 # the hub's shape; a reconcile run that finds an older hub re-arms setup,
 # which installs what the newer shape adds (1: Phase 0, 2: + people,
-# promises and tasks)
-HUB_VERSION = 2
+# promises and tasks, 3: + facts)
+HUB_VERSION = 3
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
@@ -139,6 +140,30 @@ DATASETS = (
                 _f("reason", "string", mutable=True),
                 _f("closedAt", "datetime", mutable=True),
                 _f("taskId", "string", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # what the user's correspondents said about themselves, each with its
+    # verbatim sentence (ADR-035); the id is sha256(personId, kind,
+    # normalized value), so a re-run writes nothing and a second source is
+    # appended to moreSources. History is kept: a supersession is auditable.
+    {"key": "facts", "displayName": "Brain facts", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "search": {"text": ["value", "quote"], "scope": "facts"},
+     "fields": [_f("personId", "string", required=True),
+                _f("kind", "string", required=True),
+                _f("value", "string", required=True),
+                _f("quote", "string", required=True),
+                _f("source", "string", required=True),
+                _f("channel", "string", required=True),
+                _f("observedAt", "datetime", required=True),
+                _f("origin", "string", required=True),
+                _f("confidence", "number", required=True),
+                _f("model", "string"),
+                _f("supersedes", "string", mutable=True),
+                _f("status", "string", mutable=True),
+                _f("supersededBy", "string", mutable=True),
+                _f("moreSources", "array", mutable=True),
+                _f("decidedAt", "datetime", mutable=True),
+                _f("confirmedAt", "datetime", mutable=True),
                 _CREATOR, _CREATED, _MODIFIED]},
 )
 
@@ -308,6 +333,13 @@ def _wanted_jobs(bao, hub):
             "name": "brain promises", "kind": "cron", "spec": {"every_s": 1800},
             "program": PROMISES,
             "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"]},
+            "enabled": True}),
+        # reads mail with a model only while brain.model allows it (ADR-035 §1)
+        ((FACTS, None), "brain-facts", {
+            "name": "brain facts", "kind": "cron", "spec": {"every_s": 21600},
+            "program": FACTS,
+            "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"],
+                     "tier": "brain.extractor"},
             "enabled": True}),
     ]
 
