@@ -1067,6 +1067,21 @@ impl Client {
         )
     }
 
+    /// POST …/properties/:o/type/:t — replace the object's one type;
+    /// values under the old type stay as orphans.
+    pub fn set_object_type(
+        &self,
+        space_id: &str,
+        object_id: &str,
+        type_id: &str,
+    ) -> Result<Value, AnyError> {
+        self.call(
+            "POST",
+            &format!("/v1/spaces/{space_id}/properties/{object_id}/type/{type_id}"),
+            None,
+        )
+    }
+
     pub fn set_properties(
         &self,
         space_id: &str,
