@@ -4,8 +4,10 @@ date and reranked by age (mail decays, a promise does not); mail with an
 excluded or blocklisted participant, a promise to an excluded person and an
 excluded person's object never appear; a scope the index refuses is
 skipped, not fatal; the person view joins brain columns, promises and the
-latest mail across mailboxes; an excluded or unknown person raises; a brain
-that is not set up refuses."""
+latest mail across mailboxes, and renders the card — facts grouped with
+quote and source, proposed apart, superseded gone, addressing from the
+preference facts, open promises, what they asked for, the latest threads;
+an excluded or unknown person raises; a brain that is not set up refuses."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace
@@ -130,7 +132,8 @@ def test_the_person_view_joins_columns_promises_and_mail():
     out = kernel(s).person("ada", limit=5)
     assert out["person"] == {"id": "ada", "name": "Ada Lovelace",
                              "emails": ["ada@lab.org", "ada@work.org"], "aliases": ["Ada L."],
-                             "lastContactAt": NOW - DAY, "mailCount": 3}
+                             "lastContactAt": NOW - DAY, "mailCount": 3,
+                             "addressForm": None, "language": None}
     assert [p["id"] for p in out["promises"]] == ["p1"]
     assert out["promises"][0]["link"].endswith("/email_messages/new")
     assert [m["subject"] for m in out["mail"]] == ["New deck", "Work deck", "Old deck"]
@@ -225,3 +228,84 @@ def test_every_object_hit_is_read_back_not_only_the_first():
     s.set_config("exclusions", {**EXCLUSIONS, "domains": ["spy.org"]})
     basic = kernel(s).search("deck", scopes=["basic"])["groups"][0]["hits"]
     assert [h["objectId"] for h in basic] == ["page1"]
+
+
+# --- the card (the former brainBrief, folded in) -----------------------------
+
+CARD_READY = {"state": "ready", "hub": {"objectId": HUB, "datasets": {
+    "config": "hubtype_config", "promises": "hubtype_promises", "facts": "hubtype_facts"}}}
+
+
+def fact(rid, kind, value, *, status="current", at=NOW - DAY, origin="inferred"):
+    return {"id": rid, "personId": "ada", "kind": kind, "value": value,
+            "quote": f"I said {value}.", "source": f"any://o/bao-space/mb1/email_messages/{rid}",
+            "channel": "email", "origin": origin, "confidence": 0.7, "status": status,
+            "observedAt": {"$date": at * 1000}}
+
+
+def card_space():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada Lovelace",
+                 person={"email": "ada@lab.org"},
+                 brain_person={"emails": ["ada@lab.org"], "mailCount": 4,
+                               "lastContactAt": {"$date": (NOW - DAY) * 1000}})
+    s.add_mail("mb1", "m1", subject="Deck", snippet="the deck", **{"from": "ada@lab.org"},
+               participants=["ada@lab.org", ME], internalDate=(NOW - DAY) * 1000)
+    s.records[(HUB, "hubtype_facts")] = {f["id"]: f for f in (
+        fact("f1", "taste.drink", "espresso"),
+        fact("f2", "work.role", "CTO", at=NOW - 100),
+        fact("f0", "work.role", "Head of Research", status="superseded"),
+        fact("f3", "preference.address_form", "du"),
+        fact("f4", "history.asked_for", "an intro to Grace"),
+        fact("f5", "history.consent", "OK to share her deck", status="proposed"),
+    )}
+    s.records[(HUB, "hubtype_promises")] = {
+        "p1": {"id": "p1", "text": "Send the deck", "quote": "I'll send the deck.",
+               "source": "any://o/bao-space/mb1/email_messages/m2", "status": "open",
+               "personId": "ada", "madeAt": {"$date": (NOW - 2 * DAY) * 1000}},
+        "p2": {"id": "p2", "text": "Call", "quote": "I'll call.", "source": "x",
+               "status": "done", "personId": "ada", "madeAt": {"$date": NOW * 1000}},
+    }
+    return s
+
+
+def test_the_card_groups_current_facts_and_sets_proposed_apart():
+    card = kernel(card_space(), CARD_READY).person("ada")
+    facts = card["facts"]
+    assert [f["value"] for f in facts["tastes"]] == ["espresso"]
+    assert [f["value"] for f in facts["work"]] == ["CTO"]
+    assert facts["work"][0]["quote"] == "I said CTO."
+    assert facts["work"][0]["source"].endswith("/email_messages/f2")
+    assert [f["value"] for f in card["proposed"]] == ["OK to share her deck"]
+    assert card["person"]["addressForm"] == "du" and card["person"]["name"] == "Ada Lovelace"
+    assert card["person"]["language"] is None
+
+
+def test_the_card_has_promises_both_ways_and_the_latest_mail():
+    card = kernel(card_space(), CARD_READY).person("ada")
+    assert [(p["id"], p["status"]) for p in card["promises"]] == [("p2", "done"), ("p1", "open")]
+    assert [f["value"] for f in card["asked"]] == ["an intro to Grace"]
+    assert [t["subject"] for t in card["mail"]] == ["Deck"]
+
+
+def test_the_markdown_quotes_every_fact_and_marks_the_unconfirmed():
+    md = kernel(card_space(), CARD_READY).person("ada")["markdown"]
+    assert md.startswith("## Ada Lovelace")
+    assert "Address: du" in md
+    assert "“I said espresso.”" in md and "“I said CTO.”" in md
+    assert "Head of Research" not in md
+    assert "### Unconfirmed" in md and "OK to share her deck" in md
+    assert "### You promised" in md and "Send the deck" in md and "- Call" not in md
+    assert "### They asked for" in md and "an intro to Grace" in md
+    assert "### Latest mail" in md and "Deck" in md
+
+
+def test_the_card_of_an_excluded_person_raises():
+    s = card_space()
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["ada"]})
+    with pytest.raises(Exception) as err:
+        kernel(s, CARD_READY).person("ada")
+    assert type(err.value).__name__ == "person_excluded"
+

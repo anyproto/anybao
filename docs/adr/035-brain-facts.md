@@ -94,14 +94,19 @@ desktop whose Bao runs on the user's Codex or Claude Code login through
 the shell's local AI proxy (the `anyai` backend), the extractor uses
 that login with no API key.
 
-### 4. `connectors:brainBrief@v1` and recall
+### 4. The card is recall's person view
 
-`brainBrief@v1.person(id)` is a deterministic chat tool: the person's
-columns, their current facts grouped (tastes, views, preferences,
-personal, work, history), proposed facts apart, the user's open
-promises to them, their recent mail, and the card as markdown.
-`brainRecall@v1.person` gains the same facts. Both honour the exclusion
-list.
+`brainRecall@v1.person(id)` (ADR-034 §7) is the card, one deterministic
+tool and one shape: the person's columns plus `addressForm` and
+`language` from their preference facts, their current facts grouped
+(tastes, views, preferences, personal, work, history) each with its
+verbatim quote and source, proposed facts apart, superseded ones gone,
+what the user promised them with status, what they asked the user for
+(`asked`, the `history.asked_for` facts), their latest mail, and
+`markdown` — the card for chat, which quotes every fact and lists the
+open promises and the latest threads. A separate brief tool would be a
+second tool for the same question, so there is none. The view honours
+the exclusion list.
 
 ## Consequences
 

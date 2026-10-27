@@ -66,9 +66,9 @@ def test_one_case_per_deadline_rule():
         ("I'll send the deck.", THU, THU_DAY + 7 * DAY, THU + 7 * DAY),   # its own dueAt
     ]
     for text, made, want, due in cases:
-        assert mod.suggested_deadline(text, made, due, THU) == want, text
+        assert mod._suggested_deadline(text, made, due, THU) == want, text
     # never earlier than today: an old promise with a past suggestion
-    assert mod.suggested_deadline("I'll send it tomorrow.", THU - 30 * DAY, None,
+    assert mod._suggested_deadline("I'll send it tomorrow.", THU - 30 * DAY, None,
                                   THU) == THU_DAY
 
 
@@ -81,19 +81,19 @@ def test_each_alternative_of_each_rule():
                        ("Ich schicke es bis Ende der Woche.", fri),
                        ("Ich schicke es naechste Woche.", THU_DAY + 8 * DAY),
                        ("Guten Morgen, ich schicke es.", THU_DAY + 4 * DAY)]:
-        assert mod.suggested_deadline(text, THU, None, THU) == want, text
+        assert mod._suggested_deadline(text, THU, None, THU) == want, text
 
 
 def test_rules_count_from_the_day_the_promise_was_made():
     mod, _ = kernel()
     mon, wed = THU - 3 * DAY, THU - DAY
     mon_day, wed_day = THU_DAY - 3 * DAY, THU_DAY - DAY
-    assert mod.suggested_deadline("I'll do it this week.", mon, None, wed) == mon_day + 4 * DAY
-    assert mod.suggested_deadline("I'll send it next week.", mon, None, wed) == mon_day + 11 * DAY
-    assert mod.suggested_deadline("I'll send it on Thursday.", mon, None, wed) == mon_day + 3 * DAY
-    assert mod.suggested_deadline("I'll send it.", mon, None, wed) == wed_day
+    assert mod._suggested_deadline("I'll do it this week.", mon, None, wed) == mon_day + 4 * DAY
+    assert mod._suggested_deadline("I'll send it next week.", mon, None, wed) == mon_day + 11 * DAY
+    assert mod._suggested_deadline("I'll send it on Thursday.", mon, None, wed) == mon_day + 3 * DAY
+    assert mod._suggested_deadline("I'll send it.", mon, None, wed) == wed_day
     # made the week before: that week's Friday has passed, so today
-    assert mod.suggested_deadline("I'll do it this week.", mon - 7 * DAY, None, wed) == wed_day
+    assert mod._suggested_deadline("I'll do it this week.", mon - 7 * DAY, None, wed) == wed_day
 
 
 def test_suggest_lists_open_promises_without_a_task_newest_first():
