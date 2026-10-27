@@ -36,10 +36,14 @@ class FakeAny:
         self.calls = []
         self.apps = []
         self.types = {}
+        self.collections = {}
         self.datasets = {}
         self.not_ready = {}
         self.fail = {}
         self.reject = {}
+        self.mailboxes = [{"id": "mb1", "any": {"name": "me@example.com"},
+                           "mailbox": {"address": "me@example.com"}}]
+        self.objects = {}
 
     # the store
     def _store(self, space, oid, ds):
@@ -109,6 +113,11 @@ class FakeAny:
         self.calls.append(("ensure_bundle", bundle_id, name, root_type))
         return {"bundle": {"id": bundle_id, "rootId": "brain-root"}, "installed": True}
 
+    def create_collection(self, space, body):
+        self.calls.append(("create_collection", body["xKey"]))
+        self.collections[body["xKey"]] = body
+        return {"collectionId": f"col-{body['xKey']}", "xKey": body["xKey"], "created": True}
+
     def create_type(self, space, body):
         self.calls.append(("create_type", body["xKey"]))
         self.types[body["xKey"]] = body
@@ -130,8 +139,19 @@ class FakeAny:
     def list_apps(self, space):
         return [{"usecase": u} for u in self.apps]
 
+    def list_types(self, space):
+        # the mailbox type arrives with the first mail sync
+        names = ["page", "profile", "task", *self.types] + (["mailbox"] if self.mailboxes else [])
+        return [{"id": f"type-{t}", "xKey": t} for t in names]
+
     def query_objects(self, space, normalize=True, filter=None, limit=None, **_):
-        return [{"id": "mb1", "any": {"name": "me@example.com"}}]
+        if set(filter or {}) == {"id"}:
+            row = self.objects.get(filter["id"])
+            return [row] if row else []
+        assert filter == {"any.type": "mailbox"}, filter
+        if "mailbox" not in {t["xKey"] for t in self.list_types(space)}:
+            raise ValueError('type "mailbox" doesn\'t exist')
+        return list(self.mailboxes)
 
 
 def kernel(config=None, fake=None):
@@ -192,10 +212,18 @@ def test_a_run_with_no_request_writes_the_default_and_sets_up():
 def test_setup_installs_the_apps_bundle_hub_and_seeds():
     mod, fake, cfg, writes, _ = kernel(config=on_request())
     mod.main({"requestedAt": STAMP})
-    assert ("setup_app", "people") in fake.calls and ("setup_app", "meetings") in fake.calls
+    assert [c[1] for c in fake.calls if c[0] == "setup_app"] == ["people", "meetings", "tasks"]
     assert ("ensure_bundle", "brain/v1", "Brain", "page") in fake.calls
     assert fake.types["brain_hub"]["hidden"] is True and fake.types["brain_hub"]["body"] is False
-    assert sorted(fake.datasets) == ["config", "incidents", "observations", "signals"]
+    assert sorted(fake.datasets) == ["config", "incidents", "observations", "promises",
+                                     "signals"]
+    promises = fake.datasets["promises"]
+    assert promises["shared"] is True and promises["search"]["scope"] == "promises"
+    mutable = {f["key"] for f in promises["fields"] if f.get("mutableBy") == "author"}
+    assert mutable == {"personId", "status", "reason", "closedAt", "taskId"}
+    assert sorted(fake.collections) == ["brain_person", "brain_task"]
+    person_cols = {p["xKey"] for p in fake.collections["brain_person"]["properties"]}
+    assert {"emails", "lastContactAt", "mailCount", "aliases"} <= person_cols
     signals = fake.datasets["signals"]
     assert signals["shared"] is True and signals["search"]["scope"] == "signals"
     required = {f["key"] for f in signals["fields"] if f.get("required")}
@@ -206,16 +234,24 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
     assert cfg["llm.tier.brain.caretaker"] == {"model": "classify-model"}
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 2, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
-        "incidents": "type-hub_incidents", "observations": "type-hub_observations"}}
+        "incidents": "type-hub_incidents", "observations": "type-hub_observations",
+        "promises": "type-hub_promises"}}
+    blocklist = fake.records[(BAO, "hub", "type-hub_config")]["blocklist"]["value"]
+    assert blocklist == {"domains": [], "senders": [], "labels": []}
 
 
 def test_setup_writes_the_jobs_unowned_and_enabled():
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
     js = jobs(fake)
-    assert sorted(js) == ["brain-heartbeat", "brain-reconcile"]
+    assert sorted(js) == ["brain-heartbeat", "brain-mail-sync", "brain-people",
+                          "brain-promises", "brain-reconcile"]
+    assert js["brain-people"]["program"] == "agent:brainPeople@v1"
+    assert js["brain-promises"]["spec"] == {"every_s": 1800}
+    assert js["brain-mail-sync"]["program"] == "connectors:gmailSync@v1"
+    assert js["brain-mail-sync"]["args"] == {"space": BAO}
     beat = js["brain-heartbeat"]
     assert beat["program"] == "agent:brainHeartbeat@v1" and beat["spec"] == {"every_s": 600}
     assert beat["args"]["space"] == BAO and beat["args"]["hub"] == "hub"
@@ -280,13 +316,15 @@ def test_off_disables_and_on_re_enables_exactly_those():
     triggers(fake)["brain-heartbeat"]["enabled"] = False
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     out = mod.main({})
-    assert out["disabled"] == ["brain-reconcile"]
+    assert sorted(out["disabled"]) == ["brain-people", "brain-promises", "brain-reconcile"]
     off = statuses(writes)[-1]
     assert off == {"spaceId": None, "requestedAt": "s-off", "state": "off", "at": off["at"]}
-    assert all(not j["enabled"] for j in jobs(fake).values())
+    # mail sync is not a brain job: switching the brain off leaves it running
+    assert jobs(fake)["brain-mail-sync"]["enabled"] is True
+    assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     out = mod.main({})
-    assert out["reenabled"] == ["brain-reconcile"]
+    assert sorted(out["reenabled"]) == ["brain-people", "brain-promises", "brain-reconcile"]
     assert jobs(fake)["brain-reconcile"]["enabled"] is True
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False  # the pause held
 
@@ -304,7 +342,7 @@ def test_off_after_a_failed_setup_still_brings_the_jobs_back():
     del fake.fail["setup_app"]
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     mod.main({})
-    assert all(not j["enabled"] for j in jobs(fake).values())
+    assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     assert mod.main({})["state"] == "ready"
     assert all(j["enabled"] for j in jobs(fake).values())
@@ -369,7 +407,7 @@ def test_a_stopped_job_is_a_warning_on_a_ready_brain_that_keeps_working():
     mod.main({"mode": "reconcile"})
     status = cfg["brain.status"]
     assert status["state"] == "ready" and status["hub"] == ready["hub"]
-    assert status["at"] == ready["at"]
+    assert status["at"] == ready["at"] and status["mailSync"] == ready["mailSync"]
     assert status["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
     assert mod.status()["state"] == "ready"
     assert mod.status()["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
@@ -382,22 +420,32 @@ def test_a_stopped_job_is_a_warning_on_a_ready_brain_that_keeps_working():
     assert "stopped" not in cfg["brain.status"] and cfg["brain.status"]["state"] == "ready"
 
 
+def test_a_stopped_mail_sync_is_reported_too():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    triggers(fake)["brain-mail-sync"].update(enabled=False, lastStatus="auto_disabled")
+    mod.main({"mode": "reconcile"})
+    assert cfg["brain.status"]["stopped"] == [{"id": "brain-mail-sync", "name": "mail sync"}]
+
+
 def test_try_again_restarts_a_stopped_job_but_not_a_paused_one():
     mod, fake, cfg, _, _ = kernel(config=on_request())
     mod.main({})
     triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
+    triggers(fake)["brain-mail-sync"].update(enabled=False, lastStatus="auto_disabled")
     triggers(fake)["brain-reconcile"]["enabled"] = False      # the user paused it
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-retry", "by": "any-ui"}
     out = mod.main({})
-    assert out["state"] == "ready" and out["restarted"] == ["brain-heartbeat"]
+    assert out["state"] == "ready" and out["restarted"] == ["brain-heartbeat", "brain-mail-sync"]
     assert jobs(fake)["brain-heartbeat"]["enabled"] is True
+    assert jobs(fake)["brain-mail-sync"]["enabled"] is True
     assert jobs(fake)["brain-reconcile"]["enabled"] is False
     assert "stopped" not in cfg["brain.status"]
 
 
 def test_a_setup_run_for_the_same_request_restarts_nothing():
-    # a chat-scan change re-arms setup on the request it already answered;
-    # only a new request (Try again) restarts a stopped job
+    # a hub upgrade or a chat-scan change re-arms setup on the request it
+    # already answered; only a new request (Try again) restarts a stopped job
     mod, fake, cfg, _, _ = kernel(config=on_request())
     mod.main({})
     triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
@@ -420,7 +468,7 @@ def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
     fake = FakeAny()
     fake.reject[(BAO, "hub", "type-hub_config", "exclusions")] = "value invalid"
     mod, _, _, writes, _ = kernel(config=on_request(), fake=fake)
-    with pytest.raises(Exception, match="seeding the exclusion list: value invalid"):
+    with pytest.raises(Exception, match="seeding the exclusions: value invalid"):
         mod.main({})
     assert statuses(writes)[-1]["state"] == "error"
 
@@ -443,6 +491,47 @@ def test_a_users_exclusions_survive_another_setup_run():
     mod.main({})
     stored = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
     assert stored["emails"] == ["boss@example.com"]
+
+
+def test_an_existing_mail_sync_into_baos_space_is_adopted():
+    fake = FakeAny()
+    fake.records[TRIGGERS] = {
+        "mine": {"id": "mine", "kind": "cron", "program": "connectors:gmailSync@v1",
+                 "args": {"space": BAO}, "enabled": True},
+        "theirs": {"id": "theirs", "kind": "cron", "program": "connectors:gmailSync@v1",
+                   "args": {"space": "work-space"}, "enabled": True}}
+    mod, _, _, writes, _ = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    assert statuses(writes)[-1]["mailSync"] == {
+        "mode": "existing", "triggerId": "mine",
+        "other": [{"triggerId": "theirs", "space": "work-space"}]}
+    assert "brain-mail-sync" not in jobs(fake)
+
+
+def test_a_mail_sync_into_another_space_is_named_and_one_for_bao_written():
+    fake = FakeAny()
+    fake.records[TRIGGERS] = {
+        "theirs": {"id": "theirs", "kind": "cron", "program": "connectors:gmailSync@v1",
+                   "args": {"space": "work-space"}, "enabled": True}}
+    mod, _, _, writes, _ = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    verdict = statuses(writes)[-1]["mailSync"]
+    assert verdict["mode"] == "created" and verdict["triggerId"] == "brain-mail-sync"
+    assert verdict["other"] == [{"triggerId": "theirs", "space": "work-space"}]
+    assert triggers(fake)["theirs"]["args"] == {"space": "work-space"}   # left alone
+
+
+def test_reconcile_upgrades_an_older_hub_by_re_arming_setup():
+    mod, fake, cfg, writes, _ = kernel(config=on_request())
+    mod.main({})
+    old = dict(statuses(writes)[-1])
+    old["hub"] = {k: v for k, v in old["hub"].items() if k != "version"}
+    cfg["brain.status"] = old
+    triggers(fake).pop("brain-setup", None)
+    out = mod.main({"mode": "reconcile"})
+    assert out == {"reconciled": True, "upgrading": True}
+    armed = triggers(fake)["brain-setup"]
+    assert armed["lastRunAt"] is None and armed["args"] == {"requestedAt": STAMP}
 
 
 def test_reconcile_waits_for_an_answered_ready_brain():
@@ -485,6 +574,67 @@ def test_exclude_appends_normalized_and_never_removes():
     assert out["version"] == 1
 
 
+def test_excluding_a_person_also_keeps_their_addresses_out():
+    # the copy is what keeps them out once their person object is gone
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.objects["ada"] = {"id": "ada", "any": {"type": "profile",
+                                                "collections": ["person", "brain_person"]},
+                           "person": {"email": "Ada@Lab.org"},
+                           "brain_person": {"emails": ["ada@lab.org", "ada@home.net"]}}
+    out = mod.exclude(person="ada")
+    assert out["personIds"] == ["ada"]
+    assert out["emails"] == ["ada@home.net", "ada@lab.org"]
+    stored = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
+    assert stored == out
+
+
+def test_excluding_an_unknown_person_writes_nothing():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    before = dict(fake.records[(BAO, "hub", "type-hub_config")]["exclusions"])
+    with pytest.raises(Exception) as err:
+        mod.exclude(person="nobody")
+    assert type(err.value).__name__ == "unknown_person"
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] == before
+
+
+def test_exclude_adds_a_person_and_an_address_in_one_call():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.objects["bob"] = {"id": "bob", "any": {"type": "profile", "collections": ["person"]},
+                           "person": {"email": "bob@lab.org"}}
+    out = mod.exclude(person="bob", email="Eve@Spy.org", domain="@Rival.com")
+    assert out["personIds"] == ["bob"]
+    assert out["emails"] == ["eve@spy.org", "bob@lab.org"]
+    assert out["domains"] == ["rival.com"]
+
+
+def test_exclude_refuses_an_object_that_is_not_a_person():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.objects["page1"] = {"id": "page1", "any": {"type": "page", "collections": []}}
+    before = dict(fake.records[(BAO, "hub", "type-hub_config")]["exclusions"])
+    with pytest.raises(Exception) as err:
+        mod.exclude(person="page1")
+    assert type(err.value).__name__ == "unknown_person"
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] == before
+
+
+def test_exclude_never_rewrites_a_malformed_list_into_a_readable_one():
+    # the jobs refuse to read mail while the list is malformed; a rewrite
+    # that turned "spy.org" into ["s", "p", …] would let them read it again
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    broken = {"version": 1, "personIds": [], "emails": [], "domains": "spy.org"}
+    fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] = {"id": "exclusions",
+                                                                   "value": broken}
+    with pytest.raises(Exception) as err:
+        mod.exclude(email="boss@example.com")
+    assert type(err.value).__name__ == "exclusions_unreadable"
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] == broken
+
+
 def test_exclude_refuses_before_setup():
     mod, _, _, _, _ = kernel()
     with pytest.raises(Exception) as err:
@@ -507,6 +657,16 @@ def test_status_names_the_state_apps_and_mailboxes():
     mod.main({})
     out = mod.status()
     assert out["state"] == "ready"
-    assert out["apps"] == ["meetings", "people"] and out["mailboxes"] == ["me@example.com"]
+    assert out["apps"] == ["meetings", "people", "tasks"]
+    assert out["mailboxes"] == ["me@example.com"]
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     assert mod.status()["state"] == "switching_off"
+
+
+def test_status_before_the_first_mail_sync_names_no_mailbox():
+    fake = FakeAny()
+    fake.mailboxes = []                  # no mailbox type: no sync has run
+    mod, _, _, _, _ = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    out = mod.status()
+    assert out["state"] == "ready" and out["mailboxes"] == []

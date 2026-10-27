@@ -12,7 +12,7 @@ from pathlib import Path
 from kernelenv import load_kernel
 
 PROGRAMS = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
-BRAIN = [PROGRAMS / "brainSetup@v1" / "program.py", PROGRAMS / "brainHeartbeat@v1.py"]
+BRAIN = sorted([*PROGRAMS.glob("brain*@v*.py"), *PROGRAMS.glob("brain*@v*/program.py")])
 
 
 def _real_any():
@@ -28,18 +28,36 @@ def _real_any():
     return load_kernel(effect=effect).use("any@v1")
 
 
-def _any_calls(path):
+def _calls_on(path, name):
     tree = ast.parse(path.read_text())
     return {node.attr for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name) and node.value.id == "_any"}
+            and isinstance(node.value, ast.Name) and node.value.id == name}
+
+
+def _defined(path):
+    tree = ast.parse(path.read_text())
+    names = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    # and the module's constants (kit.BACKFILL_DAYS)
+    names |= {t.id for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name)}
+    return names
 
 
 def test_every_any_call_in_the_brain_programs_is_exported():
     mod = _real_any()
+    assert len(BRAIN) >= 6, BRAIN
+    assert any(_calls_on(p, "_any") for p in BRAIN)
     for path in BRAIN:
-        calls = _any_calls(path)
-        assert calls, path
+        calls = _calls_on(path, "_any")
         missing = sorted(name for name in calls if not callable(getattr(mod, name, None)))
         name = path.parent.name if path.name == "program.py" else path.name
         assert missing == [], f"{name}: {missing}"
+
+
+def test_every_kit_call_names_a_function_the_kit_defines():
+    kit = PROGRAMS / "brainKit@v1.py"
+    defined = _defined(kit)
+    for path in BRAIN:
+        missing = sorted(_calls_on(path, "kit") - defined)
+        assert missing == [], f"{path.name}: {missing}"

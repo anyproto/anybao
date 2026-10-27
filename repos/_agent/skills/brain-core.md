@@ -32,6 +32,28 @@ switches it in Settings → Brain, or by asking you.
 - Never call `on` or `off` on your own idea, and never twice in a row
   without reading `status()` in between.
 
+## People, promises and tasks
+
+- Every real correspondent in Bao's mail is a person (a `profile` filed
+  under `person` and `brain_person`, with `brain_person.emails`,
+  `aliases`, `lastContactAt`, `mailCount`). Find one with
+  `query_objects(space, filter={"brain_person.emails": "<address>"})`.
+- `promises` on the hub are what the user committed to in sent mail:
+  `text`, the verbatim `quote`, `source` (a link that opens the mail),
+  `personId`, `dueAt`, `status` (open / done / dropped), `taskId`.
+- When the user asks what they owe, or at most once a day when
+  `agent:brainTasks@v1.suggest()` returns three or more, offer to turn
+  promises into tasks: show each with its suggested deadline, let the user
+  change it, and call `create(id, deadline=…)` or `create_all()` only
+  after a yes. Never invent a promise or a deadline.
+- Never write `promises`, `signals`, the hub's `config` or the brain's job
+  records yourself; the brain's own programs own them.
+- Before answering about a person or a thread, read what the brain has:
+  `agent:brainRecall@v1.person(<person id>)` for one person (their columns,
+  what the user promised them, the latest mail), `.search("<words>")` across
+  objects, mail and promises. Quote each hit's `link` so the user can open
+  it; never answer about someone the user keeps out of the brain.
+
 ## Exclusions
 
 `exclude(person=…, email=…, domain=…)` keeps someone's mail out of the
