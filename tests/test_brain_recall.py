@@ -216,3 +216,12 @@ def test_a_promise_from_mail_that_copied_in_someone_excluded_is_never_recalled()
     assert [h["recordId"] for h in promises] == ["p2"]
     assert kernel(s).person("ada")["promises"] == []
 
+
+def test_every_object_hit_is_read_back_not_only_the_first():
+    s = mail_space()
+    s.add_object("page1", "page", name="Deck notes")         # listed first
+    s.add_object("eve", "profile", ["person", "brain_person"], name="Eve",
+                 person={"email": "eve@spy.org"}, brain_person={"emails": ["eve@spy.org"]})
+    s.set_config("exclusions", {**EXCLUSIONS, "domains": ["spy.org"]})
+    basic = kernel(s).search("deck", scopes=["basic"])["groups"][0]["hits"]
+    assert [h["objectId"] for h in basic] == ["page1"]
