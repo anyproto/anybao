@@ -4,8 +4,9 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 
 # ADR-035. A cron job the brain's setup run writes (every 21600 s), args
 # {space, hub, datasets, tier}. It is the one brain program that reads mail
-# with a model, and it does nothing until the user allowed that in
-# Settings → Brain (`brain.model`). Then, per person with new mail: one
+# with a model, and it does nothing until the user allowed that in chat
+# (`brain.model`, written by brainSetup.allow_model()). Then, per person
+# with new mail: one
 # model call over their newest mail, each message tagged [M1], [M2]…, and
 # plain-code grounding of every proposed fact — its kind in KINDS, its ref a
 # tagged message, its quote a verbatim substring of that message. A model

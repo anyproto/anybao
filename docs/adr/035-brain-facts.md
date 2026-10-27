@@ -22,13 +22,18 @@ mail with a model until the user said so.
 
 ### 1. The model reads mail only after the user's consent
 
-A config row `brain.model` (`{allowed: true|false, requestedAt, by}`)
-is the consent. any-ui's Settings → Brain writes it, off by default and
-separate from the brain's own switch: the brain's deterministic jobs
-(people, promises) run without it; `connectors:brainFacts@v1` returns
-`{skipped: "consent"}` without reading a message or calling a model
-unless `allowed` is `true`. No program writes the row, and the chat
-skill points the user at Settings rather than switching it.
+A config row `brain.model` (`{allowed: true|false, requestedAt, by:
+"chat"}`) is the consent. Only `brainSetup.allow_model()` and
+`deny_model()` write it, after the user's plain-words yes in chat to
+this question: may the brain read your mail with a model to keep facts
+about the people you write with? (The `brain-core` skill carries the
+wording; no client writes the row — owner decision, 2026-10-27, the
+same as the brain's own switch, ADR-033 §2.) It is absent, so off, until
+then, and separate from the switch: the brain's other jobs (people,
+promises) run without it; `connectors:brainFacts@v1` returns `{skipped:
+"consent"}` without reading a message or calling a model unless
+`allowed` is `true`. `brainSetup.status()` reports it as
+`modelAllowed`.
 
 ### 2. The `facts` store (hub version 3)
 

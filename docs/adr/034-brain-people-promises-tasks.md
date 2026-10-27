@@ -122,7 +122,10 @@ had let a CC'd person's mail reach another person's facts, promises and
 recall. Resolving at read time cannot help once the person object is
 gone — the people job would mint a fresh person for the same address,
 and their mail would reach the model — so `brainSetup.exclude(person=…)`
-also copies the person's addresses into `emails`, and refuses an id
+also copies the person's addresses into `emails` (and
+`brainSetup.include(person=…)` takes both out again — the way back in
+is a chat tool too, after the user asks; an id whose object is gone is
+removed as is, and mail already kept out is not re-read), and refuses an id
 that names no person (an object filed under `person` or `brain_person`).
 It writes only the fields it adds to, and refuses a list that is not in
 its version-1 shape rather than rewrite it into a readable one: a list

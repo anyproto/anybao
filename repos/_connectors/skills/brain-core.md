@@ -69,9 +69,12 @@ every hour, people, promises, facts). Only you switch it, through
 
 - `facts` on the hub are what the brain learned about a person from their
   mail, each with the verbatim `quote` and the `source` that opens the
-  mail. Reading mail with a model needs the user's consent, a separate
-  switch in Settings → Brain; when it is off there are no new facts. Never
-  switch it for the user: point them at Settings → Brain.
+  mail. Reading mail with a model needs the user's consent, separate from
+  the brain's switch; without it there are no new facts. Ask once, in
+  plain words — "May the brain read your mail with a model to keep facts
+  about the people you write with? It quotes the sentence each fact came
+  from." — and call `connectors:brainSetup@v1.allow_model()` only after a
+  yes; `deny_model()` when they say stop. Never decide it for the user.
 - Before a meeting or a reply, call `connectors:brainBrief@v1.person(<person id>)`.
   Quote a fact with its evidence when you use it, never state a fact
   without one, and say that a `proposed` fact is unconfirmed.
@@ -80,6 +83,6 @@ every hour, people, promises, facts). Only you switch it, through
 ## Exclusions
 
 `exclude(person=…, email=…, domain=…)` keeps someone's mail out of the
-brain for good. Use it when the user asks you to keep a person out.
-You can add an exclusion but never remove one: removing is the user's,
-in Settings.
+brain for good; `include(…)` lets them back in. Both only when the user
+asks, and say what each does: excluded mail is never read by any brain
+job; including re-reads nothing already skipped.

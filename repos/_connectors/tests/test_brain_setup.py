@@ -690,3 +690,57 @@ def test_status_before_the_first_mail_sync_names_no_mailbox():
     mod.main({})
     out = mod.status()
     assert out["state"] == "ready" and out["mailboxes"] == []
+
+
+def test_allow_and_deny_model_write_the_consent_row_from_chat():
+    # ADR-035 §1: only these two tools write brain.model, after a yes
+    mod, _, cfg, writes, _ = kernel()
+    assert mod.status()["modelAllowed"] is False
+    row = mod.allow_model()
+    assert row["allowed"] is True and row["by"] == "chat" and row["requestedAt"].endswith("Z")
+    assert cfg["brain.model"] == row and mod.status()["modelAllowed"] is True
+    assert mod.deny_model()["allowed"] is False
+    assert cfg["brain.model"]["allowed"] is False and mod.status()["modelAllowed"] is False
+    assert [k for k, _ in writes] == ["brain.model", "brain.model"]
+
+
+def _ada(fake):
+    fake.objects["ada"] = {"id": "ada", "any": {"type": "profile",
+                                                "collections": ["person", "brain_person"]},
+                           "person": {"email": "ada@x.io"},
+                           "brain_person": {"emails": ["ada@x.io", "a.lovelace@x.io"]}}
+    return "ada"
+
+
+def test_include_removes_what_exclude_added_and_nothing_else():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    pid = _ada(fake)
+    mod.exclude(person=pid, email="Bob@Y.io", domain="@spam.io")
+    mod.exclude(email="keep@z.io")
+    out = mod.include(person=pid, email="bob@y.io", domain="spam.io")
+    assert out == {"version": 1, "personIds": [], "emails": ["keep@z.io"], "domains": []}
+    # the list in the hub is what came back
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] == out
+
+
+def test_include_removes_a_person_whose_object_is_gone():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    pid = _ada(fake)
+    mod.exclude(person=pid)
+    fake.objects.pop(pid)                 # the user deleted the person
+    out = mod.include(person=pid, email="ada@x.io")
+    assert out["personIds"] == [] and out["emails"] == ["a.lovelace@x.io"]
+    assert mod.include(email="a.lovelace@x.io")["emails"] == []
+
+
+def test_include_refuses_before_setup_and_a_malformed_list():
+    mod, fake, _, _, _ = kernel()
+    with pytest.raises(Exception, match="brain is off"):
+        mod.include(email="a@b.c")
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] = {"version": 2}
+    with pytest.raises(Exception, match="fix the list"):
+        mod.include(email="a@b.c")
