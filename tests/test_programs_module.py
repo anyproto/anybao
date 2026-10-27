@@ -64,7 +64,7 @@ class FakeAny:
         oid = f"obj{self._n}"
         self._objs(sid)[oid] = {
             "program": {"name": name, "version": version,
-                        "any_tool": False, "summary": ""},
+                        "any_tool": False, "summary": "", "category": ""},
             "code": code}
         return oid
 
@@ -168,11 +168,30 @@ def test_create_tool_is_live_on_use():
     # deploy's exact storage shape: derived props + program_source/main
     row = fake.spaces[SID][out["objectId"]]
     assert row["program"] == {
-        "name": "mailWatch", "version": "v1", "any_tool": True,
+        "name": "mailWatch", "version": "v1", "any_tool": True, "category": "",
         "summary": "Ping the mailbox and post a line when something matters."}
     assert row["code"] == TOOL
     # and the saved tool answers through a real use()
     assert app.use(f"{SID}:mailWatch@v1").check("s") == {"ok": True}
+
+
+def test_create_stamps_the_declared_category():
+    # ADR-010 §4: `__any_category__ = "<word>"` lands as the `category`
+    # property, "" when undeclared; a bad word is refused before any write
+    fake = FakeAny()
+    _, p = kernel(fake)
+    out = p.create_program(SID, {"name": "brainy", "source":
+                                 PLAIN + '\n__any_category__ = "plugin"  # grouping\n'})
+    assert out["ok"]
+    assert fake.spaces[SID][out["objectId"]]["program"]["category"] == "plugin"
+    assert fake.spaces[SID][out["objectId"]]["program"]["any_tool"] is False
+    with pytest.raises(ValueError, match="one lowercase word"):
+        p.create_program(SID, {"name": "bad", "source":
+                               PLAIN + '\n__any_category__ = "Plug In"\n'})
+    with pytest.raises(ValueError, match="quoted word"):
+        p.create_program(SID, {"name": "bad2", "source":
+                               PLAIN + '\n__any_category__ = plugin\n'})
+    assert all(r["program"]["name"] != "bad" for r in fake.spaces[SID].values())
 
 
 def test_create_non_tool_and_explicit_version():

@@ -32,6 +32,10 @@ anyrt deploy --source repos/_connectors --target connectors [--config-file confi
   listing shows exactly that line); whole docstring ~6 lines
   (hard cap 12 / 800 chars). Dev-facing context goes in `#` comments
   below, not in the docstring.
+- **A category** is optional: `__any_category__ = "<word>"` at module
+  top level (one lowercase word, e.g. `plugin` for the AI brain's
+  programs) lands as the `category` property, a grouping label for
+  inventories — never a behavior switch (ADR-010 §4).
 - **A tool** additionally declares `__any_tool__ = True` at module
   top level and carries `@span(kind=...)` on every
   public method — deploy validates both and rejects violations.
