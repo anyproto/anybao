@@ -80,7 +80,7 @@ def _business_days_after(day, n):
     return day
 
 
-def suggested_deadline(text, made_at, due_at=None, today=None):
+def _suggested_deadline(text, made_at, due_at=None, today=None):
     """The rule table's deadline (UTC day start, seconds) for a promise."""
     made = _day(made_at)
     floor = _day(today if today is not None else made_at)
@@ -138,7 +138,7 @@ def _row(r, today):
     return {"id": kit.plain_id(r["id"]), "text": r.get("text"), "quote": r.get("quote"),
             "personEmail": r.get("personEmail"), "personId": r.get("personId"),
             "source": r.get("source"),
-            "suggestedDeadline": _iso_date(suggested_deadline(r.get("text"), made, due, today))}
+            "suggestedDeadline": _iso_date(_suggested_deadline(r.get("text"), made, due, today))}
 
 
 @span("brainTasks.suggest", kind="getter")  # noqa: F821 - guest global

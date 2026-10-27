@@ -1,9 +1,10 @@
 """What the brain knows about one person, or across Bao's mail and promises.
 
-`person(person_id)` joins a person's brain columns, their promises and the
-latest mail with them; `search(query)` searches objects, mail and promises,
-newest first within each. Read before answering about a person or a thread;
-quote the `link` so the user can open the source.
+`person(person_id)` is the card: a person's brain columns, their facts
+with the sentence each came from, what the user promised them and they
+asked for, the latest mail, and the card as `markdown`; `search(query)`
+searches objects, mail and promises, newest first within each. Read
+before a reply or a meeting; quote a fact's evidence and a hit's `link`.
 """
 
 __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
@@ -25,6 +26,9 @@ kit = use("brainKit@v1")  # noqa: F821 - guest global
 _any = use("agent:any@v1")  # noqa: F821 - guest global
 
 DAY = 86400
+GROUP_TITLES = (("tastes", "Tastes"), ("views", "Views"), ("preferences", "Preferences"),
+                ("personal", "Personal"), ("work", "Work"), ("history", "History"))
+THREADS = 3
 BRAIN_SCOPES = ("basic", "email", "promises")
 HALF_LIFE_DAYS = {"basic": 180, "email": 60, "calendar": 30, "meetings": 90}
 MAX_PER_SCOPE = 20
@@ -186,17 +190,64 @@ def _mail_with(bao, emails, excl, block, limit):
     return mail[:limit]
 
 
+def _first(facts, kind):
+    for f in facts:
+        if f.get("kind") == kind:
+            return f.get("value")
+    return None
+
+
+def _day(seconds):
+    return fmt_ts(seconds, "%Y-%m-%d", 0)[:10] if seconds else ""  # noqa: F821
+
+
+def _render(view):
+    """The person view as a markdown card for chat: every fact with its quote."""
+    p = view["person"]
+    lines = [f"## {p.get('name') or ', '.join(p.get('emails') or [])}"]
+    addressing = [x for x in (p.get("addressForm"), p.get("language")) if x]
+    if addressing:
+        lines.append(f"Address: {' · '.join(addressing)}")
+    if p.get("lastContactAt"):
+        lines.append(f"Last contact: {_day(p['lastContactAt'])}")
+    for key, title in GROUP_TITLES:
+        facts = view["facts"].get(key) or []
+        if not facts:
+            continue
+        lines.append(f"\n### {title}")
+        lines += [f"- {f['value']} — “{f['quote']}” ({f['source']})" for f in facts]
+    if view["proposed"]:
+        lines.append("\n### Unconfirmed")
+        lines += [f"- {f['value']} — “{f['quote']}”" for f in view["proposed"]]
+    mine = [x for x in view["promises"] if x.get("status") == "open"]
+    if mine:
+        lines.append("\n### You promised")
+        lines += [f"- {x['text']} ({x['link']})" for x in mine]
+    if view["asked"]:
+        lines.append("\n### They asked for")
+        lines += [f"- {x['value']}" for x in view["asked"]]
+    if view["mail"]:
+        lines.append("\n### Latest mail")
+        lines += [f"- {_day(t['at'])} {t['subject'] or '(no subject)'} ({t['link']})"
+                  for t in view["mail"][:THREADS]]
+    return "\n".join(lines)
+
+
 @span("brainRecall.person", kind="getter")  # noqa: F821 - guest global
 def person(person_id, limit=20):
-    """One person as the brain knows them → {person, facts, proposed, promises, mail}.
+    """One person as the brain knows them → the card: {person, facts, …, markdown}.
 
-    `person` is {id, name, emails, aliases, lastContactAt, mailCount};
+    `person` is {id, name, emails, aliases, lastContactAt, mailCount,
+    addressForm, language} (the last two from their preference facts);
     `facts` are their current facts in six groups (tastes, views,
     preferences, personal, work, history), each with its verbatim `quote`
     and `source` link; `proposed` are facts awaiting the user's accept;
     `promises` are what the user promised them, newest first, with `status`
-    and `link`; `mail` is the latest mail with them across Bao's mailboxes.
-    A person the user keeps out of the brain raises person_excluded."""
+    and `link`; `asked` is what they asked the user for (history.asked_for
+    facts); `mail` is the latest mail with them across Bao's mailboxes;
+    `markdown` is the card for chat, every fact with its quote, open
+    promises and the latest threads. A person the user keeps out of the
+    brain raises person_excluded."""
     bao = _any.bao_space()
     hub, datasets = kit.ready_hub()
     excl = kit.exclusions(bao, hub, datasets)
@@ -220,10 +271,17 @@ def person(person_id, limit=20):
                              "taskId": p.get("taskId"), "link": p.get("source"),
                              "at": ts_s(p.get("madeAt"))})  # noqa: F821 - guest global
     facts, proposed = kit.person_facts(bao, hub, datasets, person_id)
-    return {"person": {"id": person_id, "name": (row.get("any") or {}).get("name"),
+    prefs = facts.get("preferences") or []
+    view = {"person": {"id": person_id, "name": (row.get("any") or {}).get("name"),
                        "emails": emails, "aliases": list(bp.get("aliases") or []),
                        "lastContactAt": ts_s(bp.get("lastContactAt")),  # noqa: F821
-                       "mailCount": bp.get("mailCount")},
+                       "mailCount": bp.get("mailCount"),
+                       "addressForm": _first(prefs, "preference.address_form"),
+                       "language": _first(prefs, "preference.language")},
             "facts": facts, "proposed": proposed,
             "promises": promises,
+            "asked": [f for f in facts.get("history") or []
+                      if f.get("kind") == "history.asked_for"],
             "mail": _mail_with(bao, emails, excl, block, n)}
+    view["markdown"] = _render(view)
+    return view

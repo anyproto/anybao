@@ -75,9 +75,10 @@ every hour, people, promises, facts). Only you switch it, through
   about the people you write with? It quotes the sentence each fact came
   from." — and call `connectors:brainSetup@v1.allow_model()` only after a
   yes; `deny_model()` when they say stop. Never decide it for the user.
-- Before a meeting or a reply, call `connectors:brainBrief@v1.person(<person id>)`.
-  Quote a fact with its evidence when you use it, never state a fact
-  without one, and say that a `proposed` fact is unconfirmed.
+- Before a meeting or a reply, call `connectors:brainRecall@v1.person(<person id>)`;
+  its `markdown` is the card. Quote a fact with its evidence when you use
+  it, never state a fact without one, and say that a `proposed` fact is
+  unconfirmed.
 - Never write `facts` yourself; the brain's own programs own them.
 
 ## Exclusions
