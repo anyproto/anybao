@@ -14,6 +14,8 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 #     or unreadable list stops every job that reads mail (exclusions,
 #     blocklist)
 
+import contextlib
+import json
 import re
 from email.utils import getaddresses
 
@@ -259,6 +261,64 @@ def mailboxes(space):
         if r.get("id"):
             out.append((r["id"], addr))
     return out
+
+
+def model_allowed():
+    """The user's consent to reading mail with a model (`brain.model`,
+    ADR-035 §1): True only when the row says allowed."""
+    try:
+        value = effect("config.get", {"key": "brain.model"})["value"]  # noqa: F821
+    except EffectError:  # noqa: F821 - guest global
+        return False
+    return isinstance(value, dict) and value.get("allowed") is True
+
+
+def normalize_ws(text):
+    """Whitespace collapsed to single spaces, trimmed — how a quote is matched."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def clean_body(body, limit):
+    """A mail body as a model reads it: quoted (`>`) lines dropped, each line's
+    whitespace collapsed, capped at `limit` chars."""
+    lines = [" ".join(ln.split()) for ln in str(body or "").splitlines()
+             if not ln.lstrip().startswith(">")]
+    return "\n".join(ln for ln in lines if ln)[:limit]
+
+
+def parse_json(text):
+    """Tolerant JSON (enrich@v1's reader): strip a ``` fence, skip prose to the
+    first [ or {, tolerate trailing prose, repair invalid \\ escapes, and close
+    a length-truncated array. None when nothing parses."""
+    if not text:
+        return None
+    s = str(text).strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", s, re.S)
+    if fence:
+        s = fence.group(1).strip()
+    start = re.search(r"[\[{]", s)
+    if not start:
+        return None
+    s = s[start.start():]
+    for candidate in (s, re.sub(r'\\(?!["\\/bfnrtu])', "", s)):
+        try:
+            return json.JSONDecoder().raw_decode(candidate)[0]
+        except ValueError:
+            continue
+    if s[0] == "[" and "}" in s:
+        with contextlib.suppress(ValueError):
+            return json.loads(s[:s.rindex("}") + 1] + "]")
+    return None
+
+
+def civil_day(y, m, d):
+    """A proleptic Gregorian date as the UTC day's epoch seconds (no datetime)."""
+    y -= m <= 2
+    era = (y if y >= 0 else y - 399) // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return (era * 146097 + doe - 719468) * 86400
 
 
 def backfill_floor_ms():

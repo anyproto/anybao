@@ -1,4 +1,4 @@
-# ADR-034: The AI brain's people, promises and tasks — from synced mail, deterministic
+# ADR-034: The AI brain's people, promises and tasks — from synced mail; promises by a model, quoted and grounded
 
 Status: **Proposed** (2026-10-25)
 Date: 2026-10-25
@@ -15,7 +15,8 @@ Phase 1 of the AI brain gives it what it knows. The mail half needs no
 new connector: `gmailSync@v1` already syncs mail into Bao's space as
 `email_messages` on one `mailbox` object per address. What is missing is
 a person per correspondent, the user's promises, and a way to turn a
-promise into a task — all without a model and without a runtime change.
+promise into a task — without a runtime change; people and tasks need
+no model, promises are extracted by one and grounded in plain code.
 
 ## Decision
 
@@ -68,30 +69,60 @@ good (`massSkipped` counts them). It then back-fills
 `personId` on promises whose recipient it now knows — found the same way
 when they are past the preload.
 
-### 4. `brainPromises@v1`
+### 4. `brainPromises@v1` — a model extracts, plain code grounds
 
 Reads the user's sent mail (From = the mailbox's address) newer than
 its cursor — 30 days back for a mailbox it has none for, so a promise
-from years ago is never listed as open — splits the cleaned body into sentences, and keeps those that
-match `PHRASES` and none of `EXCLUSIONS` (a question, a condition, a
-hypothetical, a negation anywhere in the sentence). Each is a `promises`
-record: the verbatim `quote`, the key-form `source` link, `personEmail`
-and `personId`, `madeAt`, and a `dueAt` from a fixed table (today,
-tomorrow, end of week, next week, weekday names; EN and DE). The id is
-`sha256(messageId, sentence)`, and the job writes only ids the store
-lacks: `status` is mutable, so re-sending a promise that a re-read
-message yields again would reopen one the user or a completed task
-closed. A message to
-an excluded or blocklisted recipient, or under a blocklisted label, is
-skipped whole. Any per-record
-rejection fails the run with the cursor unmoved, but one: a deleted
-promise's id is burned, so re-sending it answers `upsert.record_deleted`,
-which the job takes as the user's answer rather than stop at that
-message for good. It also marks done an
-open promise whose catalog task the user completed, finding the tasks by
-the `taskId`s the promises hold rather than by the `brain_task`
-collection: a task the Promises view makes in any-ui is a plain catalog
-task, not filed there.
+from years ago is never listed as open — and asks a model for the
+commitments in each message. It is the second brain job that reads
+mail with a model, so the user's consent (`brain.model`, ADR-035 §1)
+covers it: without it the job answers `{skipped: "consent"}` and reads
+nothing. Per sent message, in this order:
+
+1. **Kept out?** A message to an excluded or blocklisted recipient, or
+   under a blocklisted label, never reaches the model.
+2. **Already extracted?** A message that has a promise record (by
+   `source`) is not asked again, so a re-run — the cursor reset — cannot
+   mint a second, differently cut quote for it.
+3. **The gate.** When a judge model is configured (`llm.judge_available()`,
+   ADR-030), one `noul` question per message — does the writer commit
+   to doing something themselves later? — and a message under 0.3 is
+   not extracted. Without a judge every sent message is.
+4. **Extraction.** One `llm@v1.chat` call on the `classify` tier (or the
+   job's `tier` arg) over the cleaned body (quoted `>` lines dropped,
+   2 400 chars), answered as a JSON array of `{quote, due}`; one retry
+   on an unparsable reply, then the message counts as read with no
+   promises.
+5. **Grounding, in plain code.** A quote is kept only when, whitespace
+   normalized, it is a verbatim substring of the cleaned body and 8–240
+   characters long. A paraphrase is dropped, never repaired. Every drop
+   is counted by reason in `config/promises.stats`, counts only.
+6. **The record.** The verbatim `quote` (also `text`), the key-form
+   `source` link, `personEmail` and `personId`, `madeAt`, and `dueAt`:
+   the fixed rule table first (today, tomorrow, end of week, next week,
+   weekday names; EN and DE), the model's `due` ("YYYY-MM-DD") only when
+   the table finds nothing. The id is `sha256(messageId, quote)`, and
+   the job writes only ids the store lacks: `status` is mutable, so
+   re-sending a promise would reopen one the user or a completed task
+   closed. Any per-record rejection fails the run with the cursor
+   unmoved, but one: a deleted promise's id is burned, so re-sending it
+   answers `upsert.record_deleted`, which the job takes as the user's
+   answer rather than stop at that message for good.
+7. **The cursor** passes only messages fully handled. A provider failure
+   stops the mailbox before its message; two in one run stop the job
+   (`provider_failed`). At most 60 model calls per run; the rest waits
+   for the next one, thirty minutes later.
+
+The regex sentence splitter and phrase table an earlier draft used are
+gone: a fixed phrase list misses most commitments and cuts sentences
+wrong, and the verbatim-quote rule gives the same precision with far
+better recall. Cost, at thirty sent mails a day on Haiku-class
+pricing, is cents a month; with a judge in front, less.
+
+It also marks done an open promise whose catalog task the user
+completed, finding the tasks by the `taskId`s the promises hold rather
+than by the `brain_task` collection: a task the Promises view makes in
+any-ui is a plain catalog task, not filed there.
 
 ### 5. `brainTasks@v1`
 

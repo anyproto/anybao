@@ -1,11 +1,16 @@
-"""programs/brainPromises@v1 — promises from sent mail, under the REAL guest
-kernel. Pinned: every phrase in PHRASES yields a promise in a plain sentence
-and every exclusion refuses one; only the mailbox's own sent mail is read;
-the quote is the verbatim sentence and the source opens the message; the
-dueAt table; ids are stable so a re-run writes nothing new; mail to an
-excluded or blocklisted recipient is skipped whole; a rejected write fails
-the run; a completed task closes its promise; the exclusion list fails
-closed."""
+"""programs/brainPromises@v1 — promises from sent mail by a model, grounded,
+under the REAL guest kernel. Pinned: nothing is read without consent; only
+the mailbox's own sent mail goes to the model, cleaned of quoted lines; a
+quote is kept only when it is a verbatim substring of that body, within
+length, else dropped and counted; the dueAt rule table first, the model's
+date as the fallback; a judge gates the extraction call when configured;
+a message that already has a promise is not re-extracted; ids are stable so
+a re-run writes nothing new and never reopens a closed promise; excluded,
+blocklisted and labelled mail never reaches the model; a provider failure
+leaves the cursor before its message and two stop the run; the call cap;
+a rejected write fails the run; a completed task closes its promise."""
+
+import json
 
 import pytest
 from brain_fakes import HUB, FakeSpace, job_args
@@ -16,21 +21,53 @@ EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
 # Thursday 2026-10-22 12:00 UTC, in ms
 MADE_MS = 1_792_670_400_000
 DAY = 86400
-
-
 # two days after the fixtures' mail, inside the first run's 30-day window
 NOW = MADE_MS / 1000 + 2 * 86400
+CONSENT = {"allowed": True, "requestedAt": "t", "by": "chat"}
 
 
-def kernel(space=None):
+class Model:
+    """The classify-tier extractor: one scripted JSON reply per call, the
+    prompts kept. A reply that is an Exception is raised (provider down)."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.prompts = []
+
+    def __call__(self, messages, system="", tier=None, tools=None, max_tokens=None):
+        self.prompts.append((tier, messages[0]["parts"][0]["text"]))
+        reply = self.replies.pop(0) if self.replies else []
+        if isinstance(reply, Exception):
+            raise reply
+        text = reply if isinstance(reply, str) else json.dumps(reply)
+        return {"parts": [{"type": "text", "text": text}]}
+
+
+def kernel(space=None, model=None, *, consent=True, judge=None):
+    """`judge`: None = no judge model; else a function body -> P(commits)."""
     space = space or FakeSpace()
+    model = model or Model()
+    judged = []
 
     def eff(name, payload):
         if name == "time.now":
             return {"epoch": NOW}
+        if name == "config.get":
+            if payload["key"] == "brain.model" and consent is not None:
+                return {"value": {**CONSENT, "allowed": consent}}
+            raise KeyError(f"no config value for {payload['key']!r}")
+        if name == "test.judge_available":
+            return {"value": judge is not None}
+        if name == "test.judge":
+            assert judge is not None and "commits" in payload["questions"]
+            judged.append(payload["state"])
+            return {"answers": {"commits": {"type": "noul", "noul": judge(payload["state"])}},
+                    "model": "jev-test", "usage": {"in": 1, "out": 0}}
         raise AssertionError(f"unexpected effect {name}")
 
-    return connector_kernel(effect=eff, any_client=space).use("brainPromises@v1"), space
+    mod = connector_kernel(effect=eff, any_client=space, llm_chat=model).use("brainPromises@v1")
+    mod._judged = judged
+    return mod, space
 
 
 def mail_space(body, to="Ada <ada@lab.org>", sender=ME, mid="m1"):
@@ -42,36 +79,65 @@ def mail_space(body, to="Ada <ada@lab.org>", sender=ME, mid="m1"):
     return s
 
 
-def test_every_phrase_makes_a_promise_and_every_exclusion_refuses_one():
-    mod, _ = kernel()
-    plain = {
-        r"\bi will\b": "I will send the deck.", r"\bi'll\b": "I'll send the deck.",
-        r"\bi’ll\b": "I’ll send the deck.",
-        r"\blet me (send|share|check|get back)\b": "Let me send you the notes.",
-        r"\bwill do\b": "Will do, thanks for the reminder.",
-        r"\bi'm going to\b": "I'm going to draft the memo.",
-        r"\bi am going to\b": "I am going to draft the memo.",
-        r"\bich schicke\b": "Ich schicke dir das Deck.", r"\bich werde\b": "Ich werde das prüfen.",
-        r"\bich melde mich\b": "Ich melde mich nächste Woche.",
-        r"\bich sende\b": "Ich sende dir die Folien.", r"\bschicke ich\b": "Das schicke ich dir.",
-        r"\bmelde ich mich\b": "Dann melde ich mich bei dir.",
-        r"\bich leite\b.*\bweiter\b": "Ich leite die Mail weiter.",
-        r"\bich stelle\b.*\bvor\b": "Ich stelle euch gerne vor.",
-        r"\bich kümmere mich\b": "Ich kümmere mich darum.",
-    }
-    assert set(plain) == {p for ps in mod.PHRASES.values() for p in ps}
-    for pattern, sentence in plain.items():
-        assert mod.is_promise(sentence), (pattern, sentence)
-    refused = ["Will you send the deck?", "I'll send it if they agree.",
-               "I'll come unless it rains.", "I'll bring it in case we need it.",
-               "I would send it.", "I could send it.", "Ich schicke es, falls nötig.",
-               "Ich melde mich, wenn ich zurück bin.", "Ich schicke es, sobald es da ist.",
-               "Ich könnte es schicken.", "Ich würde es schicken.", "I won't send it.",
-               "I won’t send it.", "I will not send it.", "I'll not send it.",
-               "Ich schicke es nicht."]
-    assert len(refused) == len(mod.EXCLUSIONS)
-    for sentence in refused:
-        assert not mod.is_promise(sentence), sentence
+def quotes(space):
+    return sorted(p["quote"] for p in space.store("promises").values())
+
+
+def test_nothing_is_read_or_asked_without_consent():
+    s = mail_space("I'll send the deck tomorrow.")
+    for consent in (False, None):
+        model = Model([{"quote": "I'll send the deck tomorrow.", "due": None}])
+        mod, _ = kernel(s, model, consent=consent)
+        assert mod.main(job_args(s)) == {"skipped": "consent"}
+        assert model.prompts == [] and s.store("promises") == {}
+        assert not [c for c in s.calls if c[0] == "query" and c[2] == "email_messages"]
+
+
+def test_a_grounded_quote_becomes_a_record_and_a_paraphrase_is_dropped():
+    body = "Thanks for the call.\nI'll send the deck tomorrow.\n> I will be there.\nBest, me"
+    model = Model([{"quote": "I'll send the deck tomorrow.", "due": None},
+                   {"quote": "I will send you the deck", "due": None},      # paraphrased
+                   {"quote": "I will be there.", "due": None},             # a quoted line
+                   {"quote": "Best", "due": None},                         # too short
+                   "not an object"])
+    s = mail_space(body)
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    (rec,) = s.store("promises").values()
+    assert rec["quote"] == "I'll send the deck tomorrow." == rec["text"]
+    assert rec["source"] == "any://o/bao-space/mb1/email_messages/m1"
+    assert rec["mailboxId"] == "mb1" and rec["channel"] == "email" and rec["status"] == "open"
+    assert rec["personEmail"] == "ada@lab.org" and "personId" not in rec
+    assert rec["madeAt"] == {"$date": MADE_MS}
+    assert rec["dueAt"] == {"$date": (int(MADE_MS / 1000 // DAY) * DAY + DAY) * 1000}
+    assert rec["id"] == mod.promise_id("m1", "I'll send the deck tomorrow.")
+    assert out["promises"] == 1 and out["messages"] == 1 and out["closed"] == 0
+    assert out["dropped"] == {"notVerbatim": 2, "badLength": 1, "badShape": 1}
+    assert s.config("promises.cursor") == {"mb1": MADE_MS}
+    # the model saw the cleaned body: no quoted line, on the classify tier
+    ((tier, prompt),) = model.prompts
+    assert tier == "classify" and "> I will be there." not in prompt
+    assert "I'll send the deck tomorrow." in prompt
+    stats = s.config("promises.stats")
+    assert stats["asked"] == 1 and stats["grounded"] == 1 and stats["written"] == 1
+
+
+def test_the_rule_table_first_then_the_models_date():
+    made = MADE_MS / 1000                     # a Thursday
+    day = int(made // DAY) * DAY
+    body = ("I'll send it next week.\nI'll send the deck.\nI'll call you.\n"
+            "I'll write the memo.")
+    model = Model([{"quote": "I'll send it next week.", "due": "2026-10-23"},   # table wins
+                   {"quote": "I'll send the deck.", "due": "2026-11-03"},      # the hint
+                   {"quote": "I'll call you.", "due": "soon"},                 # no date
+                   {"quote": "I'll write the memo.", "due": "2026-13-40"}])    # invalid
+    s = mail_space(body)
+    mod, _ = kernel(s, model)
+    mod.main(job_args(s))
+    by_quote = {p["quote"]: p.get("dueAt") for p in s.store("promises").values()}
+    assert by_quote["I'll send it next week."] == {"$date": (day + 8 * DAY) * 1000}
+    assert by_quote["I'll send the deck."] == {"$date": mod.kit.civil_day(2026, 11, 3) * 1000}
+    assert by_quote["I'll call you."] is None and by_quote["I'll write the memo."] is None
 
 
 def test_due_at_table():
@@ -89,69 +155,86 @@ def test_due_at_table():
         assert mod.due_at(sentence, made) == want, sentence
 
 
-def test_a_sent_promise_becomes_a_record_with_its_quote_and_source():
-    s = mail_space("Thanks for the call.\nI'll send the deck tomorrow.\n> I will be there.")
-    mod, _ = kernel(s)
+def test_received_mail_is_never_sent_to_the_model():
+    s = mail_space("I'll send you the contract.", to=ME, sender="ada@lab.org")
+    model = Model([{"quote": "I'll send you the contract.", "due": None}])
+    mod, _ = kernel(s, model)
     out = mod.main(job_args(s))
-    (rec,) = s.store("promises").values()
-    assert rec["quote"] == "I'll send the deck tomorrow." == rec["text"]
-    assert rec["source"] == "any://o/bao-space/mb1/email_messages/m1"
-    assert rec["mailboxId"] == "mb1" and rec["channel"] == "email" and rec["status"] == "open"
-    assert rec["personEmail"] == "ada@lab.org" and "personId" not in rec
-    assert rec["madeAt"] == {"$date": MADE_MS}
-    assert rec["dueAt"] == {"$date": (int(MADE_MS / 1000 // DAY) * DAY + DAY) * 1000}
-    assert rec["id"] == mod.promise_id("m1", "I'll send the deck tomorrow.")
-    assert out == {"messages": 1, "promises": 1, "closed": 0}
+    assert model.prompts == [] and s.store("promises") == {}
+    assert out["messages"] == 1 and out["sent"] == 0
     assert s.config("promises.cursor") == {"mb1": MADE_MS}
 
 
-def test_received_mail_is_never_read_for_promises():
-    s = mail_space("I'll send you the contract.", to=ME, sender="ada@lab.org")
-    mod, _ = kernel(s)
-    mod.main(job_args(s))
-    assert s.store("promises") == {}
+def test_a_judge_gates_the_extraction_call():
+    s = mail_space("Thanks, see you Monday.")
+    s.add_mail("mb1", "m2", **{"from": ME, "to": "Ada <ada@lab.org>",
+                               "body": "I'll send the deck tomorrow.",
+                               "internalDate": MADE_MS + 1000})
+    model = Model([{"quote": "I'll send the deck tomorrow.", "due": None}])
+    mod, _ = kernel(s, model, judge=lambda body: 0.9 if "send" in body else 0.05)
+    out = mod.main(job_args(s))
+    assert mod._judged == ["Thanks, see you Monday.", "I'll send the deck tomorrow."]
+    assert [p for _, p in model.prompts] == ["I'll send the deck tomorrow."]
+    assert quotes(s) == ["I'll send the deck tomorrow."]
+    assert out["judged"] == 2 and out["skippedByJudge"] == 1 and out["asked"] == 1
+
+
+def test_without_a_judge_every_sent_message_is_extracted():
+    s = mail_space("Thanks, see you Monday.")
+    model = Model([])
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    assert mod._judged == [] and len(model.prompts) == 1
+    assert out["judged"] == 0 and out["asked"] == 1 and s.store("promises") == {}
 
 
 def test_the_person_is_linked_when_known():
     s = mail_space("I'll send the deck.")
     s.add_object("p1", "profile", ["person", "brain_person"],
                  brain_person={"emails": ["ada@lab.org"]})
-    mod, _ = kernel(s)
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck.", "due": None}]))
     mod.main(job_args(s))
     assert next(iter(s.store("promises").values()))["personId"] == "p1"
 
 
-def test_a_re_run_writes_nothing_new():
+def test_a_message_with_a_promise_is_never_re_extracted():
+    # a re-run (the cursor reset) asks the model nothing for a message that
+    # already has a record, so a differently cut quote cannot land twice
     s = mail_space("I'll send the deck.")
-    mod, _ = kernel(s)
+    model = Model([{"quote": "I'll send the deck.", "due": None}],
+                  [{"quote": "send the deck.", "due": None}])
+    mod, _ = kernel(s, model)
     mod.main(job_args(s))
-    s.set_config("promises.cursor", {})       # re-read the same mail
+    s.set_config("promises.cursor", {})
     out = mod.main(job_args(s))
-    assert len(s.store("promises")) == 1 and out["promises"] == 0
+    assert len(model.prompts) == 1 and len(s.store("promises")) == 1
+    assert out["promises"] == 0 and out["alreadyExtracted"] == 1
 
 
 def test_re_reading_a_message_never_reopens_a_closed_promise():
     s = mail_space("I'll send the deck tomorrow.")
-    mod, _ = kernel(s)
+    reply = [{"quote": "I'll send the deck tomorrow.", "due": None}]
+    mod, _ = kernel(s, Model(reply, reply))
     mod.main(job_args(s))
     (rid,) = s.store("promises")
     s.store("promises")[rid].update(status="done", reason="task completed")
-    s.set_config("promises.cursor", {})       # a run that raised before its cursor write
+    s.store("promises")[rid]["source"] = "elsewhere"        # forces a re-ask
+    s.set_config("promises.cursor", {})
     mod.main(job_args(s))
     assert s.store("promises")[rid]["status"] == "done"
 
 
-def test_mail_to_an_excluded_or_blocklisted_recipient_is_skipped():
-    s = mail_space("I'll send the deck.")
-    s.set_config("exclusions", {**EXCLUSIONS, "emails": ["ada@lab.org"]})
-    mod, _ = kernel(s)
-    mod.main(job_args(s))
-    assert s.store("promises") == {}
-    s2 = mail_space("I'll send the deck.")
-    s2.set_config("blocklist", {"domains": ["lab.org"], "senders": [], "labels": []})
-    mod2, _ = kernel(s2)
-    mod2.main(job_args(s2))
-    assert s2.store("promises") == {}
+def test_mail_to_an_excluded_or_blocklisted_recipient_never_reaches_the_model():
+    for lists in ({"exclusions": {**EXCLUSIONS, "emails": ["ada@lab.org"]}},
+                  {"blocklist": {"domains": ["lab.org"], "senders": [], "labels": []}}):
+        s = mail_space("I'll send the deck.")
+        for name, value in lists.items():
+            s.set_config(name, value)
+        model = Model([{"quote": "I'll send the deck.", "due": None}])
+        mod, _ = kernel(s, model)
+        out = mod.main(job_args(s))
+        assert model.prompts == [] and s.store("promises") == {}
+        assert out["excludedSkipped"] == 1
 
 
 def test_mail_to_a_person_excluded_by_id_is_skipped():
@@ -159,14 +242,82 @@ def test_mail_to_a_person_excluded_by_id_is_skipped():
     s.add_object("ada", "profile", ["person", "brain_person"],
                  brain_person={"emails": ["ada@lab.org"]})
     s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["ada"]})
-    mod, _ = kernel(s)
+    model = Model([{"quote": "I'll send the deck.", "due": None}])
+    mod, _ = kernel(s, model)
     mod.main(job_args(s))
+    assert model.prompts == [] and s.store("promises") == {}
+
+
+def test_sent_mail_under_a_blocklisted_label_is_never_read():
+    s = mail_space("I'll send the lab results tomorrow.")
+    s.records[("mb1", "email_messages")]["m1"]["labelIds"] = ["SENT", "Label_Medical"]
+    s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["label_medical"]})
+    model = Model([{"quote": "I'll send the lab results tomorrow.", "due": None}])
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    assert model.prompts == [] and s.store("promises") == {} and out["messages"] == 1
+
+
+def test_a_provider_failure_leaves_the_cursor_before_its_message():
+    s = mail_space("I'll send the deck.")
+    s.add_mail("mb1", "m2", **{"from": ME, "to": "Ada <ada@lab.org>",
+                               "body": "I'll call you.", "internalDate": MADE_MS + 1000})
+    model = Model(RuntimeError("provider says no"),
+                  [{"quote": "I'll call you.", "due": None}])
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    assert out["providerFailed"] == 1 and out["messages"] == 0
     assert s.store("promises") == {}
+    assert s.config("promises.cursor")["mb1"] < MADE_MS      # the floor, not m1
+    # the next run picks both up
+    model.replies = [[{"quote": "I'll send the deck.", "due": None}],
+                     [{"quote": "I'll call you.", "due": None}]]
+    out = mod.main(job_args(s))
+    assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": MADE_MS + 1000}
+
+
+def test_two_provider_failures_stop_the_run():
+    s = mail_space("I'll send the deck.")
+    s.add_mailbox("mb2", "two@example.com")
+    s.add_mail("mb2", "m9", **{"from": "two@example.com", "to": "Bob <bob@x.io>",
+                               "body": "I'll call you.", "internalDate": MADE_MS})
+    model = Model(RuntimeError("down"), RuntimeError("still down"))
+    mod, _ = kernel(s, model)
+    with pytest.raises(Exception) as err:
+        mod.main(job_args(s))
+    assert type(err.value).__name__ == "provider_failed"
+    assert s.config("promises.cursor") is None and s.store("promises") == {}
+
+
+def test_an_unparsable_reply_is_retried_once_then_counted():
+    s = mail_space("I'll send the deck.")
+    model = Model("no json here", "still prose")
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    assert len(model.prompts) == 2 and out["parseFailed"] == 1
+    assert s.store("promises") == {} and s.config("promises.cursor") == {"mb1": MADE_MS}
+
+
+def test_the_call_cap_leaves_the_rest_for_the_next_run():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    for i in range(3):
+        s.add_mail("mb1", f"m{i}", **{"from": ME, "to": "Ada <ada@lab.org>",
+                                      "body": f"I'll send part {i}.",
+                                      "internalDate": MADE_MS + i * 1000})
+    model = Model(*([{"quote": f"I'll send part {i}.", "due": None}] for i in range(3)))
+    mod, _ = kernel(s, model)
+    mod.MAX_CALLS = 2
+    out = mod.main(job_args(s))
+    assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": MADE_MS + 1000}
+    out = mod.main(job_args(s))
+    assert out["promises"] == 1 and s.config("promises.cursor") == {"mb1": MADE_MS + 2000}
 
 
 def test_a_rejected_write_fails_the_run_and_keeps_the_cursor():
     s = mail_space("I'll send the deck tomorrow.")
-    mod, _ = kernel(s)
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck tomorrow.", "due": None}]))
     s.refuse[mod.promise_id("m1", "I'll send the deck tomorrow.")] = "field madeAt: invalid"
     with pytest.raises(Exception, match="1 of 1 rejected: field madeAt: invalid") as err:
         mod.main(job_args(s))
@@ -174,9 +325,19 @@ def test_a_rejected_write_fails_the_run_and_keeps_the_cursor():
     assert s.config("promises.cursor") is None
 
 
+def test_a_promise_whose_record_was_deleted_is_not_a_failure():
+    s = mail_space("I'll send the deck tomorrow.")
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck tomorrow.", "due": None}]))
+    s.refuse[mod.promise_id("m1", "I'll send the deck tomorrow.")] = {
+        "code": "upsert.record_deleted", "reason": "crdt: record is deleted"}
+    out = mod.main(job_args(s))
+    assert out["promises"] == 0
+    assert s.config("promises.cursor") == {"mb1": MADE_MS}
+
+
 def test_a_completed_task_closes_its_promise():
     s = mail_space("I'll send the deck.")
-    mod, _ = kernel(s)
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck.", "due": None}]))
     mod.main(job_args(s))
     pid = next(iter(s.store("promises")))
     s.store("promises")[pid]["taskId"] = "t1"
@@ -190,7 +351,8 @@ def test_a_completed_task_closes_its_promise():
 
 def test_a_task_outside_brain_task_still_closes_its_promise_and_an_open_one_does_not():
     s = mail_space("I'll send the deck.\nI'll call you tomorrow.")
-    mod, _ = kernel(s)
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck.", "due": None},
+                              {"quote": "I'll call you tomorrow.", "due": None}]))
     mod.main(job_args(s))
     first, second = sorted(s.store("promises"))
     s.store("promises")[first]["taskId"] = "t1"
@@ -206,11 +368,12 @@ def test_a_task_outside_brain_task_still_closes_its_promise_and_an_open_one_does
 def test_an_unreadable_exclusion_list_fails_closed():
     s = mail_space("I'll send the deck.")
     s.set_config("exclusions", None)
-    mod, _ = kernel(s)
+    model = Model([{"quote": "I'll send the deck.", "due": None}])
+    mod, _ = kernel(s, model)
     with pytest.raises(Exception) as err:
         mod.main(job_args(s))
     assert type(err.value).__name__ == "exclusions_unreadable"
-    assert s.store("promises") == {}
+    assert model.prompts == [] and s.store("promises") == {}
 
 
 def test_unconfigured_without_a_promises_store():
@@ -228,38 +391,17 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s = FakeSpace()                      # no mailbox type: no sync has run
     s.seed_lists()
     mod, _ = kernel(s)
-    assert mod.main(job_args(s)) == {"messages": 0, "promises": 0, "closed": 0}
-
-
-def test_sent_mail_under_a_blocklisted_label_is_never_read():
-    s = mail_space("I'll send the lab results tomorrow.")
-    s.records[("mb1", "email_messages")]["m1"]["labelIds"] = ["SENT", "Label_Medical"]
-    s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["label_medical"]})
-    mod, _ = kernel(s)
     out = mod.main(job_args(s))
-    assert s.store("promises") == {} and out["messages"] == 1
-
-
-def test_a_promise_whose_record_was_deleted_is_not_a_failure():
-    # a deleted id is burned: re-sending it is refused for good, which must
-    # not stop the job at that message forever
-    s = mail_space("I'll send the deck tomorrow.")
-    mod, _ = kernel(s)
-    s.refuse[mod.promise_id("m1", "I'll send the deck tomorrow.")] = {
-        "code": "upsert.record_deleted", "reason": "crdt: record is deleted"}
-    out = mod.main(job_args(s))
-    assert out["promises"] == 0
-    assert s.config("promises.cursor") == {"mb1": MADE_MS}
+    assert out["messages"] == 0 and out["promises"] == 0 and out["closed"] == 0
 
 
 def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
-    # a promise from years ago is not an open promise; the job reads the
-    # last month of sent mail first
     s = mail_space("I'll send the deck tomorrow.")
     s.add_mail("mb1", "old", **{"from": ME, "to": "Ada <ada@lab.org>",
                                 "body": "I'll send the old report on Monday."},
                internalDate=NOW * 1000 - 40 * 86_400_000)
-    mod, _ = kernel(s)
+    model = Model([{"quote": "I'll send the deck tomorrow.", "due": None}])
+    mod, _ = kernel(s, model)
     out = mod.main(job_args(s))
-    assert [p["quote"] for p in s.store("promises").values()] == ["I'll send the deck tomorrow."]
-    assert out["messages"] == 1
+    assert quotes(s) == ["I'll send the deck tomorrow."]
+    assert out["messages"] == 1 and len(model.prompts) == 1

@@ -62,16 +62,6 @@ def _iso_date(day):
     return fmt_ts(day, "%Y-%m-%d", 0)[:10]  # noqa: F821 - guest global
 
 
-def _days_from_civil(y, m, d):
-    # days since 1970-01-01 for a proleptic Gregorian date (no datetime import)
-    y -= m <= 2
-    era = (y if y >= 0 else y - 399) // 400
-    yoe = y - era * 400
-    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
-    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
-    return era * 146097 + doe - 719468
-
-
 def _business_days_after(day, n):
     while n > 0:
         day += DAY
@@ -90,7 +80,7 @@ def _suggested_deadline(text, made_at, due_at=None, today=None):
         out = _day(due_at)
     elif _ISO.search(low):
         y, m, d = (int(g) for g in _ISO.search(low).groups())
-        out = _days_from_civil(y, m, d) * DAY
+        out = kit.civil_day(y, m, d)
     elif re.search(r"\b(today|asap|heute|sofort)\b", low):
         out = floor
     elif re.search(r"\btomorrow\b|(?<!guten )\bmorgen\b", low):
