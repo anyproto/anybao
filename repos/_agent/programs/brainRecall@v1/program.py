@@ -186,9 +186,12 @@ def _mail_with(bao, emails, excl, block, limit):
 
 @span("brainRecall.person", kind="getter")  # noqa: F821 - guest global
 def person(person_id, limit=20):
-    """One person as the brain knows them → {person, promises, mail}.
+    """One person as the brain knows them → {person, facts, proposed, promises, mail}.
 
     `person` is {id, name, emails, aliases, lastContactAt, mailCount};
+    `facts` are their current facts in six groups (tastes, views,
+    preferences, personal, work, history), each with its verbatim `quote`
+    and `source` link; `proposed` are facts awaiting the user's accept;
     `promises` are what the user promised them, newest first, with `status`
     and `link`; `mail` is the latest mail with them across Bao's mailboxes.
     A person the user keeps out of the brain raises person_excluded."""
@@ -214,9 +217,11 @@ def person(person_id, limit=20):
                              "quote": p.get("quote"), "status": p.get("status"),
                              "taskId": p.get("taskId"), "link": p.get("source"),
                              "at": ts_s(p.get("madeAt"))})  # noqa: F821 - guest global
+    facts, proposed = kit.person_facts(bao, hub, datasets, person_id)
     return {"person": {"id": person_id, "name": (row.get("any") or {}).get("name"),
                        "emails": emails, "aliases": list(bp.get("aliases") or []),
                        "lastContactAt": ts_s(bp.get("lastContactAt")),  # noqa: F821
                        "mailCount": bp.get("mailCount")},
+            "facts": facts, "proposed": proposed,
             "promises": promises,
             "mail": _mail_with(bao, emails, excl, block, n)}

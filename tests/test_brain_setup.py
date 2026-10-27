@@ -215,8 +215,14 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert [c[1] for c in fake.calls if c[0] == "setup_app"] == ["people", "meetings", "tasks"]
     assert ("ensure_bundle", "brain/v1", "Brain", "page") in fake.calls
     assert fake.types["brain_hub"]["hidden"] is True and fake.types["brain_hub"]["body"] is False
-    assert sorted(fake.datasets) == ["config", "incidents", "observations", "promises",
-                                     "signals"]
+    assert sorted(fake.datasets) == ["config", "facts", "incidents", "observations",
+                                     "promises", "signals"]
+    facts = fake.datasets["facts"]
+    assert facts["shared"] is True and facts["search"]["scope"] == "facts"
+    assert "skipHistory" not in facts  # a supersession stays auditable
+    facts_mutable = {f["key"] for f in facts["fields"] if f.get("mutableBy") == "author"}
+    assert facts_mutable == {"supersedes", "status", "supersededBy", "moreSources",
+                             "decidedAt", "confirmedAt"}
     promises = fake.datasets["promises"]
     assert promises["shared"] is True and promises["search"]["scope"] == "promises"
     mutable = {f["key"] for f in promises["fields"] if f.get("mutableBy") == "author"}
@@ -234,10 +240,10 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
     assert cfg["llm.tier.brain.caretaker"] == {"model": "classify-model"}
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 2, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 3, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
-        "promises": "type-hub_promises"}}
+        "promises": "type-hub_promises", "facts": "type-hub_facts"}}
     blocklist = fake.records[(BAO, "hub", "type-hub_config")]["blocklist"]["value"]
     assert blocklist == {"domains": [], "senders": [], "labels": []}
 
@@ -246,8 +252,12 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
     js = jobs(fake)
-    assert sorted(js) == ["brain-heartbeat", "brain-mail-sync", "brain-people",
-                          "brain-promises", "brain-reconcile"]
+    assert sorted(js) == ["brain-facts", "brain-heartbeat", "brain-mail-sync",
+                          "brain-people", "brain-promises", "brain-reconcile"]
+    facts = js["brain-facts"]
+    assert facts["program"] == "agent:brainFacts@v1" and facts["spec"] == {"every_s": 21600}
+    assert facts["args"]["tier"] == "brain.extractor"
+    assert facts["args"]["datasets"]["facts"] == "type-hub_facts"
     assert js["brain-people"]["program"] == "agent:brainPeople@v1"
     assert js["brain-promises"]["spec"] == {"every_s": 1800}
     assert js["brain-mail-sync"]["program"] == "connectors:gmailSync@v1"
@@ -316,7 +326,8 @@ def test_off_disables_and_on_re_enables_exactly_those():
     triggers(fake)["brain-heartbeat"]["enabled"] = False
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     out = mod.main({})
-    assert sorted(out["disabled"]) == ["brain-people", "brain-promises", "brain-reconcile"]
+    assert sorted(out["disabled"]) == ["brain-facts", "brain-people", "brain-promises",
+                                    "brain-reconcile"]
     off = statuses(writes)[-1]
     assert off == {"spaceId": None, "requestedAt": "s-off", "state": "off", "at": off["at"]}
     # mail sync is not a brain job: switching the brain off leaves it running
@@ -324,7 +335,8 @@ def test_off_disables_and_on_re_enables_exactly_those():
     assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     out = mod.main({})
-    assert sorted(out["reenabled"]) == ["brain-people", "brain-promises", "brain-reconcile"]
+    assert sorted(out["reenabled"]) == ["brain-facts", "brain-people", "brain-promises",
+                                    "brain-reconcile"]
     assert jobs(fake)["brain-reconcile"]["enabled"] is True
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False  # the pause held
 

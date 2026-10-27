@@ -61,3 +61,22 @@ def test_every_kit_call_names_a_function_the_kit_defines():
     for path in BRAIN:
         missing = sorted(_calls_on(path, "kit") - defined)
         assert missing == [], f"{path.name}: {missing}"
+
+
+def _real_module(spec):
+    def effect(name, payload):
+        raise AssertionError(f"unexpected effect {name}")
+
+    return load_kernel(effect=effect).use(spec)
+
+
+def test_every_llm_and_recall_call_names_what_the_module_defines():
+    llm = _real_module("llm@v1")
+    for path in BRAIN:
+        missing = sorted(n for n in _calls_on(path, "llm") if getattr(llm, n, None) is None)
+        assert missing == [], f"{path.parent.name}: llm.{missing}"
+    recall = PROGRAMS / "brainRecall@v1" / "program.py"
+    defined = _defined(recall)
+    for path in BRAIN:
+        missing = sorted(_calls_on(path, "recall") - defined)
+        assert missing == [], f"{path.parent.name}: recall.{missing}"

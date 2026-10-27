@@ -13,7 +13,7 @@ import copy
 HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
-            ("signals", "config", "incidents", "observations", "promises")}
+            ("signals", "config", "incidents", "observations", "promises", "facts")}
 # what a set-up brain's space has before any mail sync: the built-in page,
 # the people and tasks catalog apps' types, the hub
 BASE_TYPES = ("page", "profile", "task", "brain_hub")
@@ -34,8 +34,17 @@ def _get(row, path):
     return cur
 
 
+def _instant(value):
+    # an instant reads and compares as {"$date": ms}
+    return value["$date"] if isinstance(value, dict) and set(value) == {"$date"} else value
+
+
 def _matches(value, cond):
+    value = _instant(value)
+    if isinstance(cond, dict) and set(cond) == {"$date"}:
+        cond = cond["$date"]
     if isinstance(cond, dict):
+        cond = {op: _instant(arg) for op, arg in cond.items()}
         for op, arg in cond.items():
             if op == "$gt" and not (value is not None and value > arg):
                 return False
@@ -108,7 +117,8 @@ class FakeSpace:
     def list_types(self, space):
         return [{"id": f"type-{t}", "xKey": t} for t in sorted(self.types)]
 
-    def query_objects(self, space, normalize=True, filter=None, limit=None, **_):
+    def query_objects(self, space, normalize=True, filter=None, sort=None, limit=None,
+                      offset=0, **_):
         wanted = (filter or {}).get("any.type")
         known = {t["xKey"] for t in self.list_types(space)}
         if isinstance(wanted, str) and wanted not in known:
@@ -125,9 +135,14 @@ class FakeSpace:
                     ok = ok and _matches(_get(row, path), cond)
             if ok:
                 out.append(copy.deepcopy(row))
+        for key in reversed(sort or []):
+            path = key.lstrip("-")
+            out.sort(key=lambda r, p=path: _instant(_get(r, p)) or 0, reverse=key.startswith("-"))
+        out = out[offset:]
         return out[:limit] if limit else out
 
     def query(self, space, oid, ds, filter=None, sort=None, limit=None, **_):
+        self.calls.append(("query", oid, _key_of(ds)))
         shared = ds.startswith(SHARED_PREFIX)
         rows = [({**r, "id": f"{oid}/{r['id']}"} if shared else dict(r))
                 for r in self.records.get((oid, ds), {}).values()]
