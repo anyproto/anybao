@@ -49,7 +49,7 @@ separate `_brain` overlay stays a later option.
 | Row / record | Writer | Value |
 | --- | --- | --- |
 | `brain.space` (agent_config) | any-ui's switch, its first-open default, `brainSetup.on()/off()` from chat, or the setup run when it finds no row | `{spaceId: <Bao's space> \| null, requestedAt, by}` — absent = on (the default), `null` = off |
-| `brain.status` (agent_config) | the setup run | `{spaceId?, requestedAt, state: provisioning \| ready \| error \| off, at, error?: {type, message}, hub?: {objectId, datasets}, stopped?: [{id, name}]}` — `requestedAt` echoes the request it answers; `stopped` is a warning on a `ready` brain (§4) |
+| `brain.status` (agent_config) | the setup run | `{spaceId?, requestedAt, state: provisioning \| ready \| error \| off, at, error?: {type, message}, hub?: {objectId, datasets}, mailSync?, stopped?: [{id, name}]}` — `requestedAt` echoes the request it answers; `stopped` is a warning on a `ready` brain (§4) |
 | `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "agent:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
 
 Each request rewrites `brain-setup` with `lastRunAt: null`, which re-arms
@@ -87,10 +87,10 @@ record id can never be written again.
    copied from `codegen` / `codegen` / `classify`, each only when absent.
    A `409 bundle.not_ready` is retried five times, two seconds apart.
 5. Write the missing jobs, re-enable the ones the last off run disabled,
-   and — for a NEW request only — re-enable the jobs the runtime stopped
-   after repeated failures (`lastStatus: auto_disabled`; the flip resets
-   the breaker). Answer `ready` with the hub, listing any job still
-   stopped under `stopped`. Any exception in 4–5 is answered as
+   adopt or write the mail sync, and — for a NEW request only — re-enable
+   the jobs the runtime stopped after repeated failures (`lastStatus:
+   auto_disabled`; the flip resets the breaker). Answer `ready` with the
+   hub, listing any job still stopped under `stopped`. Any exception in 4–5 is answered as
    `error` and raised as `provision_failed`, so the run reads FAILED.
 
 ### 4. The brain's jobs are records
@@ -110,15 +110,15 @@ record id can never be written again.
   never re-enables one. Only an on run re-enables: the jobs the off run
   before it disabled, and those the runtime stopped.
 - **A stopped job is not a pause, and not an outage.** When the runtime
-  has stopped a brain job (`lastStatus: auto_disabled`), the reconcile
-  run keeps the answer — state `ready`, its `at` and hub — and lists the
-  job under `stopped` (`[{id, name}]`); it clears the list once the job
-  is enabled again.
+  has stopped a brain job or the mail sync the brain set up (`lastStatus:
+  auto_disabled`), the reconcile run keeps the answer — state `ready`,
+  its `at`, hub and mail sync — and lists the job under `stopped`
+  (`[{id, name}]`); it clears the list once the job is enabled again.
   Settings shows it as a warning with Try again, and every brain tool and
   `exclude` keep working, since the rest of the brain still does.
   Try again writes a new request, which restarts them (§3 step 5); a
-  setup run re-armed for the request it already answered — the
-  chat-scan list — restarts nothing. Two limits: the
+  setup run re-armed for the request it already answered — a hub
+  upgrade, the chat-scan list — restarts nothing. Two limits: the
   runtime keeps `lastStatus` until a job's next run, so a stopped job the
   user resumed and paused again before it ran is still read as stopped;
   and a stopped `brain-reconcile` cannot report itself — `status()`

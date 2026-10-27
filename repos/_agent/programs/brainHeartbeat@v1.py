@@ -9,7 +9,7 @@
 # verdict is whether it RAISED: every refusal is a guest-defined
 # exception, so `errorType` names it and the breaker counts it.
 
-_any = use("any@v1")  # noqa: F821 - guest global
+kit = use("brainKit@v1")  # noqa: F821 - guest global
 
 GAP_S = 1200
 SUBJECT = "agent:brainHeartbeat@v1"
@@ -19,69 +19,30 @@ class unconfigured(Exception):
     """The job's args do not name the brain hub: the brain is not set up."""
 
 
-class exclusions_unreadable(Exception):
-    """The exclusion list is missing or not in its version-1 shape."""
-
-
-class write_rejected(Exception):
-    """The server refused a record write; the reply's reason is the message."""
-
-
-def _upsert(space, hub, collection, rid, value):
-    # modify/upsert answer HTTP 200 even when they refuse a record
-    reply = _any.upsert_record(space, hub, collection, rid, value) or {}
-    rejected = reply.get("rejections") or []
-    if rejected:
-        raise write_rejected(f"{rid}: {rejected[0].get('reason') or 'rejected'}")
-
-
-def _config_record(space, hub, collection, name):
-    # a SHARED dataset: an `id` filter compares "<objectId>/<recordId>"
-    rows = _any.query(space, hub, collection, filter={"id": f"{hub}/{name}"}, limit=1)
-    return rows[0] if rows else None
-
-
-def _exclusions_problem(rec):
-    """Why the exclusion record is unusable, or None when it is fine."""
-    if rec is None:
-        return "no exclusion list"
-    value = rec.get("value")
-    if not isinstance(value, dict):
-        return "the exclusion list is not an object"
-    if value.get("version") != 1:
-        return f"exclusion list version {value.get('version')!r}, expected 1"
-    for field in ("personIds", "emails", "domains"):
-        if not isinstance(value.get(field), list):
-            return f"exclusion list field {field!r} is not a list"
-    return None
-
-
 def _signal(space, hub, collection, tick, kind, decision, reason):
-    _upsert(space, hub, collection, f"{int(tick)}-{kind}", {
+    kit.upsert(space, hub, collection, f"{int(tick)}-{kind}", {
         "tick": tick, "kind": kind, "subject": SUBJECT, "decision": decision,
-        "reason": reason})
+        "reason": reason}, f"writing a {kind} signal")
 
 
 def main(args):
-    args = args or {}
-    space, hub = args.get("space"), args.get("hub")
-    datasets = args.get("datasets") if isinstance(args.get("datasets"), dict) else {}
-    if not space or not hub or not datasets.get("config") or not datasets.get("signals"):
+    parsed = kit.job_args(args, "signals")
+    if parsed is None:
         raise unconfigured("the brain heartbeat needs space, hub and datasets — "
                            "set the brain up first")
+    space, hub, datasets = parsed
     tick = now()  # noqa: F821 - guest global
-    problem = _exclusions_problem(
-        _config_record(space, hub, datasets["config"], "exclusions"))
+    problem = kit.exclusions_problem(
+        kit.hub_record(space, hub, datasets["config"], "exclusions"))
     if problem is not None:
         _signal(space, hub, datasets["signals"], tick, "exclusions_unreadable",
                 "refused", problem)
-        raise exclusions_unreadable(problem)
-    beat = _config_record(space, hub, datasets["config"], "heartbeat")
-    last = ((beat or {}).get("value") or {}).get("lastTickAt")
+        raise kit.exclusions_unreadable(problem)
+    last = (kit.config_value(space, hub, datasets, "heartbeat") or {}).get("lastTickAt")
     gap = None
     if isinstance(last, (int, float)) and tick - last > GAP_S:
         gap = tick - last
         _signal(space, hub, datasets["signals"], tick, "heartbeat_gap", "none",
                 f"no tick for {int(gap)}s")
-    _upsert(space, hub, datasets["config"], "heartbeat", {"value": {"lastTickAt": tick}})
+    kit.write_config(space, hub, datasets, "heartbeat", {"lastTickAt": tick})
     return {"ok": True, "gap_s": gap}
