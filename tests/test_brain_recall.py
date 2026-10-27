@@ -35,7 +35,7 @@ def kernel(space, status=READY):
 def mail_space():
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     s.add_mail("mb1", "old", subject="Old deck", **{"from": "ada@lab.org", "to": ME},
                participants=["ada@lab.org", ME], internalDate=(NOW - 300 * DAY) * 1000)
     s.add_mail("mb1", "new", subject="New deck", **{"from": "ada@lab.org", "to": ME},
@@ -173,7 +173,7 @@ def test_an_unreadable_exclusion_list_fails_closed():
 
 def test_a_person_before_the_first_mail_sync_has_no_mail():
     s = FakeSpace()                      # no mailbox type: no sync has run
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     s.add_object("ada", "profile", ["person", "brain_person"], name="Ada",
                  person={"email": "ada@lab.org"}, brain_person={"emails": ["ada@lab.org"]})
     out = kernel(s).person("ada")
@@ -215,3 +215,4 @@ def test_a_promise_from_mail_that_copied_in_someone_excluded_is_never_recalled()
     promises = kernel(s).search("deck", scopes=["promises"])["groups"][0]["hits"]
     assert [h["recordId"] for h in promises] == ["p2"]
     assert kernel(s).person("ada")["promises"] == []
+

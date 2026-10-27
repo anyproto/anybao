@@ -31,7 +31,9 @@ and `brain_task` (`sourceUri`, `personId` → `profile`, `origin`,
 seeds an empty `config/blocklist` (`{senders, domains, labels}`, each a
 list; `labels` are Gmail label ids, matched against a synced message's
 `labelIds`, and a message under one is read past by every brain reader;
-a list in another shape fails the run, like the exclusion list); and writes the `brain-people` (900 s)
+entries are trimmed and lowercased; since setup seeds it, a missing
+list, or one in another shape — a field that is not a list of text —
+fails the run, like the exclusion list); and writes the `brain-people` (900 s)
 and `brain-promises` (1 800 s) jobs. The hub records `version: 2`; a
 reconcile run that finds an older hub re-arms setup, so an existing
 install upgrades itself within the hour.

@@ -8,8 +8,9 @@
 #   - the hub's stores are SHARED datasets: reads return, and `id` filters
 #     compare, "<objectId>/<recordId>"; writes take the plain id
 #     (hub_record, plain_id)
-#   - the exclusion list is read fail-closed: a missing or unreadable list
-#     stops every job that reads mail (exclusions)
+#   - the exclusion list and the blocklist are read fail-closed: a missing
+#     or unreadable list stops every job that reads mail (exclusions,
+#     blocklist)
 
 import re
 from email.utils import getaddresses
@@ -146,20 +147,22 @@ def exclusions(space, hub, datasets):
 
 
 def blocklist(space, hub, datasets):
-    """The blocklist as sets of senders, domains and labels; empty when absent.
+    """The blocklist as sets of senders, domains and labels, trimmed and lowercased.
 
-    `labels` are Gmail label ids, as on a synced message's `labelIds`. A
-    list in another shape raises blocklist_unreadable (fail closed)."""
-    value = config_value(space, hub, datasets, "blocklist")
-    value = {} if value is None else value
+    `labels` are Gmail label ids, as on a synced message's `labelIds`. Setup
+    seeds the list, so a missing one, or one in another shape, raises
+    blocklist_unreadable (fail closed)."""
+    rec = hub_record(space, hub, datasets["config"], "blocklist")
+    value = (rec or {}).get("value")
     if not isinstance(value, dict):
-        raise blocklist_unreadable("the blocklist is not an object")
+        raise blocklist_unreadable("no blocklist" if rec is None else
+                                   "the blocklist is not an object")
     out = {}
     for field in ("senders", "domains", "labels"):
         items = value.get(field, [])
-        if not isinstance(items, list):
-            raise blocklist_unreadable(f"blocklist field {field!r} is not a list")
-        out[field] = {str(v).lower() for v in items}
+        if not isinstance(items, list) or not all(isinstance(v, str) for v in items):
+            raise blocklist_unreadable(f"blocklist field {field!r} is not a list of text")
+        out[field] = {v.strip().lower() for v in items if v.strip()}
     return out
 
 

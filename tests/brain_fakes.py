@@ -84,6 +84,12 @@ class FakeSpace:
     def add_mail(self, mailbox, mid, **fields):
         self.records.setdefault((mailbox, "email_messages"), {})[mid] = {"id": mid, **fields}
 
+    def seed_lists(self):
+        """The exclusion list and blocklist a set-up brain starts with: empty."""
+        self.set_config("exclusions", {"version": 1, "personIds": [], "emails": [],
+                                       "domains": []})
+        self.set_config("blocklist", {"senders": [], "domains": [], "labels": []})
+
     def set_config(self, name, value):
         self.records.setdefault((HUB, DATASETS["config"]), {})[name] = {"id": name,
                                                                         "value": value}

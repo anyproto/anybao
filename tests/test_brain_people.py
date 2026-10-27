@@ -18,7 +18,7 @@ EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
 def space_with_mail():
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     s.add_mail("mb1", "m1", **{"from": "Ada Lovelace <ada@lab.org>", "to": ME,
                                "cc": "Charles <charles@lab.org>", "internalDate": 1_000_000})
     s.add_mail("mb1", "m2", **{"from": ME, "to": "ada@lab.org, noreply@github.com",
@@ -122,7 +122,7 @@ def test_a_corrupt_cursor_raises():
 def test_a_capped_run_resumes_where_it_stopped(monkeypatch):
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     for i in range(5):
         s.add_mail("mb1", f"m{i}", **{"from": f"p{i}@x.org", "to": ME,
                                       "internalDate": (i + 1) * 1000})
@@ -162,7 +162,7 @@ def test_unconfigured_args_raise():
 
 def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s = FakeSpace()                      # no mailbox type: no sync has run
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     _, out = run(s)
     assert out == {"mailboxes": 0, "messages": 0, "minted": 0, "updated": 0,
                    "promisesLinked": 0, "massSkipped": 0}
@@ -171,7 +171,7 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
 def test_mail_under_a_blocklisted_label_makes_no_person_but_is_read_past():
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["Label_Medical"]})
     s.add_mail("mb1", "m1", **{"from": "Dr Who <who@clinic.org>", "to": ME},
                labelIds=["INBOX", "Label_Medical"], internalDate=1_000_000)
@@ -217,7 +217,7 @@ def test_a_mass_mailing_is_read_past_without_minting_anyone():
     # cursor at it forever; it is a mailing list, not correspondents
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     cc = ", ".join(f"p{i}@crowd.org" for i in range(301))
     s.add_mail("mb1", "m1", **{"from": "News <news@lab.org>", "to": ME, "cc": cc},
                internalDate=1_000_000)
@@ -231,7 +231,7 @@ def test_a_mass_mailing_is_read_past_without_minting_anyone():
 def test_a_promise_to_someone_past_the_preload_is_linked():
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     for i in range(1000):
         s.add_object(f"p{i:04}", "profile", ["person", "brain_person"],
                      person={"email": f"x{i}@crowd.org"},
@@ -243,3 +243,27 @@ def test_a_promise_to_someone_past_the_preload_is_linked():
     _, out = run(s)
     assert out["promisesLinked"] == 1
     assert s.store("promises")["p1"]["personId"] == "ada"
+
+
+@pytest.mark.parametrize("blocklist", [
+    None,                                                       # the row is gone
+    {"senders": None, "domains": [], "labels": []},             # a field set to null
+    {"senders": [None], "domains": [], "labels": []},           # an entry that is not text
+])
+def test_a_blocklist_that_cannot_be_read_fails_closed(blocklist):
+    s = space_with_mail()
+    if blocklist is None:
+        del s.records[(HUB, "hubtype_config")]["blocklist"]
+    else:
+        s.set_config("blocklist", blocklist)
+    with pytest.raises(Exception) as err:
+        run(s)
+    assert type(err.value).__name__ == "blocklist_unreadable"
+    assert people(s) == {}
+
+
+def test_blocklist_entries_are_matched_trimmed_and_in_any_case():
+    s = space_with_mail()
+    s.set_config("blocklist", {"senders": [" Ada@Lab.org "], "domains": [], "labels": []})
+    run(s)
+    assert sorted(people(s)) == ["charles@lab.org"]

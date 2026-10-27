@@ -22,7 +22,7 @@ EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
 def kernel(space=None, now=THU, status=READY):
     if space is None:
         space = FakeSpace()
-        space.set_config("exclusions", dict(EXCLUSIONS))
+        space.seed_lists()
 
     def eff(name, payload):
         if name == "time.now":

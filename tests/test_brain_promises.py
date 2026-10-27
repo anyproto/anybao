@@ -32,7 +32,7 @@ def kernel(space=None):
 def mail_space(body, to="Ada <ada@lab.org>", sender=ME, mid="m1"):
     s = FakeSpace()
     s.add_mailbox("mb1", ME)
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     s.add_mail("mb1", mid, **{"from": sender, "to": to, "body": body,
                               "internalDate": MADE_MS})
     return s
@@ -222,7 +222,7 @@ def test_unconfigured_without_a_promises_store():
 
 def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s = FakeSpace()                      # no mailbox type: no sync has run
-    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.seed_lists()
     mod, _ = kernel(s)
     assert mod.main(job_args(s)) == {"messages": 0, "promises": 0, "closed": 0}
 
