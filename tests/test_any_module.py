@@ -696,7 +696,7 @@ def test_create_object_markdown_writes_the_body_after_create():
     assert "markdown" not in body
     assert body["type"] == "bafyTASK" and "collections" not in body
     md = next(b for v, p, b in fx.calls if p.endswith("/editor/editor_blocks/markdown"))
-    assert md["content"] == "# Dune\n\nsand"
+    assert md["content"] == "sand"   # `# Dune` repeats the name: dropped
     # no membership round-trip: the type carries the body
     assert not any("/properties/" in p for _, p, _ in fx.calls)
 
