@@ -86,7 +86,12 @@ after a yes.
 The jobs share one helper module for the server rules ADR-033 found
 live: checked writes (a refusal is HTTP 200 with `rejections`), hub
 records read by `<objectId>/<recordId>`, and the exclusion list read
-fail-closed. The heartbeat uses it too, and the tools read the hub off
+fail-closed. `exclusions()` resolves the persons excluded by id to the
+addresses on their person objects (`brain_person.emails`,
+`person.email`), so `kept_out` treats a message carrying one of them
+like one carrying a listed address — found live: an id-only exclusion
+had let a CC'd person's mail reach another person's facts, promises and
+recall. The heartbeat uses it too, and the tools read the hub off
 `brain.status` through its `ready_hub()`.
 
 ### 7. `brainRecall@v1`

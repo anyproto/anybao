@@ -89,6 +89,15 @@ def test_kept_out_mail_promises_and_people_never_appear():
     assert [h["recordId"] for h in email["hits"]] == ["new", "old"]
 
 
+def test_mail_from_a_person_excluded_only_by_id_never_appears():
+    s = mail_space()
+    s.add_object("eve", "profile", ["person", "brain_person"], name="Eve",
+                 person={"email": "eve@spy.org"})
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["eve"]})
+    email = next(g for g in kernel(s).search("deck")["groups"] if g["scope"] == "email")
+    assert [h["recordId"] for h in email["hits"]] == ["new", "old"]
+
+
 def test_a_promise_does_not_decay_and_per_scope_caps():
     s = mail_space()
     out = kernel(s).search("deck", scopes=["promises", "email"], per_scope=1)

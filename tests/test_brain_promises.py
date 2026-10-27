@@ -139,6 +139,16 @@ def test_mail_to_an_excluded_or_blocklisted_recipient_is_skipped():
     assert s2.store("promises") == {}
 
 
+def test_mail_to_a_person_excluded_by_id_is_skipped():
+    s = mail_space("I'll send the deck.")
+    s.add_object("ada", "profile", ["person", "brain_person"],
+                 brain_person={"emails": ["ada@lab.org"]})
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["ada"]})
+    mod, _ = kernel(s)
+    mod.main(job_args(s))
+    assert s.store("promises") == {}
+
+
 def test_a_rejected_write_fails_the_run_and_keeps_the_cursor():
     s = mail_space("I'll send the deck tomorrow.")
     mod, _ = kernel(s)

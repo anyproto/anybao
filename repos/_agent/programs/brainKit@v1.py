@@ -103,14 +103,38 @@ def exclusions_problem(rec):
     return None
 
 
+def person_emails(row):
+    """A person row's lowercased addresses: brain_person.emails and person.email."""
+    bp = row.get("brain_person") or {}
+    emails = {str(e).lower() for e in (bp.get("emails") or []) if e}
+    own = (row.get("person") or {}).get("email")
+    if own:
+        emails.add(str(own).lower())
+    return sorted(emails)
+
+
 def exclusions(space, hub, datasets):
-    """The exclusion list as sets; raises exclusions_unreadable (fail closed)."""
+    """The exclusion list as sets; raises exclusions_unreadable (fail closed).
+
+    `personEmails` are the addresses of the persons excluded by id, so a
+    message that carries one is kept out for everyone in it, as a listed
+    address is."""
     rec = hub_record(space, hub, datasets["config"], "exclusions")
     problem = exclusions_problem(rec)
     if problem is not None:
         raise exclusions_unreadable(problem)
     value = rec["value"]
-    return {"personIds": set(value["personIds"]),
+    ids = sorted(set(value["personIds"]))
+    by_person = set()
+    if ids:
+        try:
+            rows = _any.query_objects(space, filter={"id": {"$in": ids}}, limit=len(ids))
+        except _any.AnyError as e:
+            raise exclusions_unreadable(f"the excluded persons could not be read: {e}") from e
+        for row in rows:
+            by_person.update(person_emails(row))
+    return {"personIds": set(ids),
+            "personEmails": by_person,
             "emails": {e.lower() for e in value["emails"]},
             "domains": {d.lower() for d in value["domains"]}}
 
@@ -143,7 +167,7 @@ def domain_of(addr):
 def kept_out(addr, excl, block):
     """True when an address is excluded, blocklisted or noise."""
     dom = domain_of(addr)
-    return (addr in excl["emails"] or dom in excl["domains"]
+    return (addr in excl["emails"] or addr in excl["personEmails"] or dom in excl["domains"]
             or addr in block["senders"] or dom in block["domains"] or is_noise(addr))
 
 

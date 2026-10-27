@@ -162,15 +162,6 @@ def _person_row(bao, person_id):
     return rows[0]
 
 
-def _emails_of(row):
-    bp = row.get("brain_person") or {}
-    emails = {str(e).lower() for e in (bp.get("emails") or []) if e}
-    own = (row.get("person") or {}).get("email")
-    if own:
-        emails.add(str(own).lower())
-    return sorted(emails)
-
-
 def _mail_with(bao, emails, excl, block, limit):
     mail = []
     if not emails:
@@ -204,7 +195,7 @@ def person(person_id, limit=20):
     if person_id in excl["personIds"]:
         raise person_excluded("This person is kept out of the brain.")
     row = _person_row(bao, person_id)
-    emails = _emails_of(row)
+    emails = kit.person_emails(row)
     if any(kit.kept_out(e, excl, block) for e in emails):
         raise person_excluded("This person's address is kept out of the brain.")
     n = max(1, min(int(limit), MAX_PERSON_ROWS))
