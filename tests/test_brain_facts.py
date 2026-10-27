@@ -361,3 +361,40 @@ def test_a_full_run_takes_the_oldest_contacts_so_the_watermark_passes_no_one():
     assert out["persons"] == 40
     # the newest contact waits for the next run, above the watermark
     assert s.config("facts.cursor") == {"watermark": sorted(lasts)[39]}
+
+
+def test_people_tied_at_the_cut_are_read_together_so_none_is_passed():
+    # everyone on one message shares a contact time; cutting inside that
+    # group would move the watermark onto it and the next run's $gt past
+    # the rest
+    s = space_with()
+    s.objects.pop("ada")
+    tied = NOW - DAY
+    lasts = [tied - (40 - i) * 60 for i in range(39)] + [tied, tied, tied]
+    for i, last in enumerate(lasts):
+        s.add_object(f"p{i:02}", "profile", ["person", "brain_person"],
+                     person={"email": f"x{i}@crowd.org"},
+                     brain_person={"emails": [f"x{i}@crowd.org"],
+                                   "lastContactAt": {"$date": last * 1000}})
+    _, out = run(s, Model())
+    assert out["persons"] == 42
+    assert s.config("facts.cursor") == {"watermark": tied}
+
+
+def test_a_page_of_excluded_people_does_not_hide_the_next_one():
+    s = space_with()
+    s.objects.pop("ada")
+    s.set_config("exclusions", {**EXCLUSIONS, "domains": ["crowd.org"]})
+    for i in range(250):                 # older than Ada, inside the window
+        s.add_object(f"p{i:03}", "profile", ["person", "brain_person"],
+                     person={"email": f"x{i}@crowd.org"},
+                     brain_person={"emails": [f"x{i}@crowd.org"],
+                                   "lastContactAt": {"$date": (NOW - 2 * DAY) * 1000}})
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada Lovelace",
+                 person={"email": "ada@lab.org"},
+                 brain_person={"emails": ["ada@lab.org"],
+                               "lastContactAt": {"$date": (NOW - DAY) * 1000}})
+    model = Model([LISBON])
+    _, out = run(s, model)
+    assert out["persons"] == 1 and out["excludedSkipped"] == 250
+    assert "Ada Lovelace" in model.prompts[0][-1]["content"]

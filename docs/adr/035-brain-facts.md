@@ -50,9 +50,13 @@ reconcile run upgrades a version-2 hub, as it did version 1.
    raises `exclusions_unreadable`, and so does a failed read of the
    persons it excludes by id.
 2. **Work.** Persons with mail since the cursor, minus excluded ones,
-   at most 40 per run, asked of the server in contact order a page at a
-   time (an unordered capped read drops people the watermark then
-   passes). A message with any excluded or blocklisted
+   at most 40 per run, asked of the server in contact order (then id) a
+   page at a time (an unordered capped read drops people the watermark
+   then passes). The cut never falls inside a group that shares a contact
+   time — everyone on one message does — since the watermark moves to the
+   last one read and the next run starts after it; so a run can exceed 40
+   by one such group. A (time, id) cursor would remove that excess and is
+   left for later. A message with any excluded or blocklisted
    participant, or under a blocklisted label, is out for everyone in it; a person excluded by id is
    excluded by every address on their person object too.
 3. **One model call per person** (`llm@v1.chat`, tier
