@@ -30,6 +30,36 @@ def _sanitize_nuls(obj):
     return obj
 
 
+_HEADING = re.compile(r"^\s{0,3}#{1,2}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+
+
+def _title_key(text):
+    return " ".join(str(text).split()).casefold()
+
+
+def _strip_title_heading(content, title):
+    """Drop a leading `# Title` / `## Title` that repeats the object's
+    name — the editor already shows the name above the body, so the
+    page would open with the title twice (weaker models write it on
+    nearly every create). Only the first non-blank line, only an exact
+    (case/whitespace-insensitive) match; anything else is kept."""
+    if not isinstance(content, str) or not title:
+        return content, False
+    lines = content.split("\n")
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i == len(lines):
+        return content, False
+    m = _HEADING.match(lines[i])
+    if not m or _title_key(m.group(1)) != _title_key(title):
+        return content, False
+    i += 1
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    return "\n".join(lines[i:]), True
+
+
 def _slugify_xkey(name):
     """Stable snake_case programmatic key from a display name:
     "Agent Memory" -> "agent_memory", "ComicBook" -> "comic_book"."""
@@ -859,9 +889,11 @@ class _Client:
             anyg = (rows[0].get("any") if rows and isinstance(rows[0], dict)
                     else None) or {}
             t = anyg.get("type")
+            nm = anyg.get("name")
             owners = {"type": t if isinstance(t, str) else None,
                       "collections": [c for c in (anyg.get("collections") or [])
-                                      if isinstance(c, str)]}
+                                      if isinstance(c, str)],
+                      "name": nm if isinstance(nm, str) else None}
             self._object_owners[key] = owners
         return owners
 
@@ -1699,10 +1731,15 @@ class _Client:
         object_id = res.get("objectId")
         if object_id:
             self._object_owners[(space, object_id)] = {"type": tid,
-                                                       "collections": list(cids)}
+                                                       "collections": list(cids),
+                                                       "name": name}
+        stripped = False
         if markdown is not None and object_id:
-            self.put_markdown(space, object_id, markdown)
+            put = self._put_body(space, object_id, markdown, title=name)
+            stripped = isinstance(put, dict) and put.get("strippedTitle") is True
         out = self._write_result(object_id, ctx)
+        if stripped:
+            out["strippedTitle"] = True
         if object_id and self._is_space_id(space):
             # the link to paste — the space segment is the ID; building it
             # cost a turn or came out with the space NAME (BOB-160 bench)
@@ -1843,8 +1880,10 @@ class _Client:
             groups.setdefault("any", {}).setdefault("description", description)
         if has_icon:
             groups.setdefault("any", {}).setdefault("icon", icon)
+        stripped = False
         if markdown is not None:
-            self.put_markdown(space, object_id, markdown)
+            put = self._put_body(space, object_id, markdown, title=name)
+            stripped = isinstance(put, dict) and put.get("strippedTitle") is True
         self._apply_option_patches(space, ctx)
         self._apply_unsets(space, object_id, ctx)
         for tid, patch in groups.items():
@@ -1852,7 +1891,10 @@ class _Client:
                 self._call("post",
                           f"/v1/spaces/{space}/properties/{object_id}/set/{tid}",
                           {"patch": scoped})
-        return self._write_result(object_id, ctx)
+        out = self._write_result(object_id, ctx)
+        if stripped:
+            out["strippedTitle"] = True
+        return out
 
     def _split_by_scope(self, space, tid, patch):
         """One patch per declared scope — the set route takes a single
@@ -2356,7 +2398,10 @@ class _Client:
         Whole-body write — prefer append_markdown when adding. A typed `any://`
         link in the body whose space segment is not a space id (a NAME, or
         missing) is reported under `warnings` (and printed), never rewritten —
-        fix the text and write again.
+        fix the text and write again. The editor shows the object's name
+        above the body, so do not open the body with it: a leading `#` /
+        `##` heading that repeats the name is dropped before the write
+        (reported as `strippedTitle: true`).
 
         Write bodies in Any's spelling; anything else is rewritten on
         the first human edit: `**bold**` `*italic*` `~~strike~~`, `-`
@@ -2367,9 +2412,23 @@ class _Client:
         (column widths hang off it), so it stays directly below that
         table. Never write one yourself; delete a table or block
         together with its comments."""
+        return self._put_body(space, object_id, content)
+
+    def _put_body(self, space, object_id, content, title=None):
+        """The body write behind put_markdown / create_object /
+        update_object: body gate, then the duplicate-title strip
+        against `title` (else the object's name, free from the owner
+        lookup the gate already made), then the PUT."""
         self._check_body(space, object_id)
+        if title is None:
+            title = self._object_owners.get((space, object_id), {}).get("name")
+        content, stripped = _strip_title_heading(content, title)
         r = self._call("put", self._md_path(space, object_id),
                        {"content": content})
+        if stripped:
+            if not isinstance(r, dict):
+                r = {"result": r}
+            r["strippedTitle"] = True
         return self._warned(r, self._link_warnings(content))
 
     @_public('mutator')
