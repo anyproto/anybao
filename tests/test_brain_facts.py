@@ -320,3 +320,11 @@ def test_before_the_first_mail_sync_nothing_is_read_or_asked():
     s.types.discard("mailbox")
     _, out = run(s, model)
     assert model.prompts == [] and out["written"] == 0
+
+
+def test_mail_under_a_blocklisted_label_never_reaches_the_model():
+    s, model = space_with(), Model()
+    s.records[("mb1", "email_messages")]["m1"]["labelIds"] = ["INBOX", "Label_Medical"]
+    s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["Label_Medical"]})
+    _, out = run(s, model)
+    assert model.prompts == [] and out["excludedSkipped"] == 1

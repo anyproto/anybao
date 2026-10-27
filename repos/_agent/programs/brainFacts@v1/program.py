@@ -207,7 +207,8 @@ def _sources(space, boxes, person, floor_s, excl, block, stats):
             people = list(row.get("participants") or [])
             people += [a for _, a in kit.addresses(row.get("from"), row.get("to"),
                                                    row.get("cc"))]
-            if any(kit.kept_out(str(a).lower(), excl, block) for a in people):
+            if kit.labelled_out(row, block) or any(kit.kept_out(str(a).lower(), excl, block)
+                                                   for a in people):
                 stats["excludedSkipped"] += 1
                 continue
             mail.append((box_id, row))
