@@ -54,7 +54,7 @@ def test_one_person_per_correspondent_and_never_myself_or_noise():
     assert ada["brain_person"]["lastContactAt"] == {"$date": 2_000_000}
     assert ada["brain_person"]["firstSeenAt"] == {"$date": 1_000_000}
     assert out == {"mailboxes": 1, "messages": 2, "minted": 2, "updated": 0,
-                   "promisesLinked": 0}
+                   "promisesLinked": 0, "massSkipped": 0}
     assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
 
 
@@ -165,7 +165,7 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s.set_config("exclusions", dict(EXCLUSIONS))
     _, out = run(s)
     assert out == {"mailboxes": 0, "messages": 0, "minted": 0, "updated": 0,
-                   "promisesLinked": 0}
+                   "promisesLinked": 0, "massSkipped": 0}
 
 
 def test_mail_under_a_blocklisted_label_makes_no_person_but_is_read_past():
@@ -210,6 +210,22 @@ def test_a_person_past_the_first_thousand_is_merged_not_overwritten_or_duplicate
     assert ada["mailCount"] == 43 and ada["aliases"][0] == "Ada"
     assert "ada@home.net" not in people(s)
     assert [c for c in s.calls if c == ("add_to_collection", "ada", "brain_person")] == []
+
+
+def test_a_mass_mailing_is_read_past_without_minting_anyone():
+    # one message with more new addresses than a run may mint would stop the
+    # cursor at it forever; it is a mailing list, not correspondents
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.set_config("exclusions", dict(EXCLUSIONS))
+    cc = ", ".join(f"p{i}@crowd.org" for i in range(301))
+    s.add_mail("mb1", "m1", **{"from": "News <news@lab.org>", "to": ME, "cc": cc},
+               internalDate=1_000_000)
+    s.add_mail("mb1", "m2", **{"from": "Ada <ada@lab.org>", "to": ME}, internalDate=2_000_000)
+    _, out = run(s)
+    assert sorted(people(s)) == ["ada@lab.org"]
+    assert out["messages"] == 2 and out["massSkipped"] == 1
+    assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
 
 
 def test_a_promise_to_someone_past_the_preload_is_linked():

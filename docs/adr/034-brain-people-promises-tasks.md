@@ -56,7 +56,10 @@ people never become people. It preloads the first 1 000 persons; one
 past them is found by any of their addresses (`brain_person.emails`,
 then `person.email`) and merged into, never overwritten or minted
 twice. It caps unknown addresses per run and
-advances the cursor only past messages fully handled, then back-fills
+advances the cursor only past messages fully handled; one message with
+more new addresses than a run may mint (300) is a mailing list, read past
+without minting anyone on it — kept, it would hold the cursor there for
+good (`massSkipped` counts them). It then back-fills
 `personId` on promises whose recipient it now knows — found the same way
 when they are past the preload.
 

@@ -14,7 +14,9 @@
 # it, then one whose person.email equals it, else a new person. A run
 # processes at most MAX_NEW unknown addresses and PER_MAILBOX messages per
 # mailbox; the cursor advances only past messages fully handled, so a
-# capped run resumes where it stopped. It then back-fills `personId` on
+# capped run resumes where it stopped. A single message with more new
+# addresses than MAX_NEW is a mailing list, not correspondents: it is read
+# past and nobody on it is minted. It then back-fills `personId` on
 # promises whose recipient it now knows, past the preload included.
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
@@ -78,8 +80,8 @@ class _People:
 
 
 def _gather(space, boxes, cursor, own, excl, block, people):
-    """Walk new mail → ({addr: seen}, new cursor, messages read)."""
-    seen, read, unknown = {}, 0, set()
+    """Walk new mail → ({addr: seen}, new cursor, messages read, mass mailings)."""
+    seen, read, unknown, mass = {}, 0, set(), 0
     for box_id, _addr in boxes:
         last = cursor.get(box_id, 0)
         rows = _any.query(space, box_id, "email_messages",
@@ -91,7 +93,12 @@ def _gather(space, boxes, cursor, own, excl, block, people):
                 if a not in own and not kit.kept_out(a, excl, block)]
             fresh = {a for _, a in people_here
                      if a not in people.by_email and a not in seen and a not in unknown}
-            if len(unknown) + len(fresh) > MAX_NEW:
+            if len(fresh) > MAX_NEW:
+                # more new addresses than a run may mint: a mailing list, not
+                # correspondents; it would stop the cursor here for good
+                people_here, fresh = [], set()
+                mass += 1
+            elif len(unknown) + len(fresh) > MAX_NEW:
                 break            # capped: this message waits for the next run
             unknown |= fresh
             at = (row.get("internalDate") or 0) / 1000
@@ -106,7 +113,7 @@ def _gather(space, boxes, cursor, own, excl, block, people):
             last = max(last, row.get("internalDate") or 0)
             read += 1
         cursor[box_id] = last
-    return seen, cursor, read
+    return seen, cursor, read, mass
 
 
 def _merged(current, addr, s):
@@ -190,10 +197,10 @@ def main(args):
     boxes = kit.mailboxes(space)
     own = {addr for _, addr in boxes if addr}
     people = _People(space)
-    seen, cursor, read = _gather(space, boxes, _cursor(space, hub, datasets), own, excl,
-                                 block, people)
+    seen, cursor, read, mass = _gather(space, boxes, _cursor(space, hub, datasets), own,
+                                       excl, block, people)
     minted, updated = _apply(space, people, seen, excl)
     kit.write_config(space, hub, datasets, "people.cursor", {"mail": cursor})
     linked = _link_promises(space, hub, datasets, people)
     return {"mailboxes": len(boxes), "messages": read, "minted": minted,
-            "updated": updated, "promisesLinked": linked}
+            "updated": updated, "promisesLinked": linked, "massSkipped": mass}
