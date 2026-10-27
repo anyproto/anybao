@@ -115,8 +115,10 @@ record id can never be written again.
    `shared` and with its full field set — declared through `any@v1`'s
    `_create_dataset`, the plumbing export `enrich@v1` uses; the `brain/hub/v1` child; the exclusion list
    (`config/exclusions`, `{version: 1, personIds, emails, domains}`) and
-   the `llm.tier.brain.drafter` / `.extractor` / `.caretaker` rows,
-   copied from `codegen` / `codegen` / `classify`, each only when absent.
+   the `llm.tier.brain.extractor` row, copied from `llm.tier.codegen`
+   only when absent (ADR-035 §3) — one tier row per brain job that
+   calls a model, written with that job and never ahead of it, so
+   Settings → Model repoints each on its own.
    A `409 bundle.not_ready` is retried five times, two seconds apart.
 5. Write the missing jobs, re-enable the ones the last off run disabled,
    adopt or write the mail sync, and — for a NEW request only — re-enable
