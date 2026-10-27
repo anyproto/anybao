@@ -62,7 +62,10 @@ def ready_hub():
     status = status if isinstance(status, dict) else {}
     hub = status.get("hub")
     if status.get("state") != "ready" or not isinstance(hub, dict) or not hub.get("objectId"):
-        raise not_set_up("The brain is not set up yet; switch it on first.")
+        raise not_set_up(
+            "The brain is off. Offer to switch it on — what it reads (the user's "
+            "Gmail), what it keeps (people, promises, facts in Bao's space) — and "
+            "call brainSetup.on() only after the user's yes.")
     return hub["objectId"], dict(hub.get("datasets") or {})
 
 

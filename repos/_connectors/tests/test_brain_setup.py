@@ -162,9 +162,15 @@ def kernel(config=None, fake=None):
     writes = []
     sleeps = []
 
+    cfg.setdefault("google.connected", True)   # what googleAuth.status() answers
+
     def eff(name, payload):
         if name == "time.now":
             return {"epoch": NOW}
+        if name == "oauth.status":
+            assert payload == {"provider": "google"}
+            return {"connected": cfg["google.connected"], "pending": False,
+                    "scopes": [], "account": "me@example.com", "expiresAt": None}
         if name == "config.get":
             if payload["key"] not in cfg:
                 raise ConfigError(f"no config value for {payload['key']!r}")
@@ -198,15 +204,26 @@ def on_request(stamp=STAMP):
     return {"brain.space": {"spaceId": BAO, "requestedAt": stamp, "by": "any-ui"}}
 
 
-def test_a_run_with_no_request_writes_the_default_and_sets_up():
+def test_a_run_with_no_request_sets_nothing_up_and_writes_nothing():
+    # only on() / off() write brain.space: nothing starts the brain on its own
     mod, fake, cfg, writes, _ = kernel()
-    out = mod.main({"requestedAt": "ignored"})
-    request = cfg["brain.space"]
-    assert request["spaceId"] == BAO and request["by"] == "default"
-    assert request["requestedAt"].endswith("Z")
-    assert [s["state"] for s in statuses(writes)] == ["provisioning", "ready"]
-    assert all(s["requestedAt"] == request["requestedAt"] for s in statuses(writes))
-    assert out["state"] == "ready"
+    assert mod.status()["state"] == "off"
+    out = mod.main({"requestedAt": "stale-arm"})
+    assert out == {"state": "off", "reason": "no request"}
+    assert "brain.space" not in cfg and writes == []
+    assert jobs(fake) == {} and not any(fake.records.values())
+    assert mod.status()["state"] == "off"
+
+
+def test_on_refuses_while_google_is_not_connected():
+    mod, fake, cfg, writes, _ = kernel(config={"google.connected": False})
+    with pytest.raises(Exception, match="googleAuth.connect") as err:
+        mod.on()
+    assert type(err.value).__name__ == "google_not_connected"
+    assert "brain.space" not in cfg and writes == [] and triggers(fake) == {}
+    cfg["google.connected"] = True
+    assert mod.on()["state"] == "waiting"
+    assert cfg["brain.space"]["spaceId"] == BAO
 
 
 def test_setup_installs_the_apps_bundle_hub_and_seeds():
@@ -652,15 +669,6 @@ def test_exclude_refuses_before_setup():
     with pytest.raises(Exception) as err:
         mod.exclude(email="a@b.c")
     assert type(err.value).__name__ == "not_set_up"
-
-
-def test_set_chat_spaces_writes_the_row_and_re_arms():
-    mod, fake, cfg, _, _ = kernel(config=on_request())
-    assert mod.set_chat_spaces(["s2", "s1", "s2"]) == {"spaces": ["s1", "s2"]}
-    assert cfg["brain.chatScan.spaces"] == ["s1", "s2"]
-    assert triggers(fake)["brain-setup"]["args"] == {"requestedAt": STAMP}
-    with pytest.raises(ValueError, match="a list of space ids"):
-        mod.set_chat_spaces("s1")
 
 
 def test_status_names_the_state_apps_and_mailboxes():

@@ -1,16 +1,20 @@
 """Set up, switch off and repair the AI brain in Bao's own space.
 
-The brain is on by default. `status()` says how it stands; `on()` and
-`off()` switch it after the user's yes; `exclude()` keeps a person's
-mail out of it for good. A trigger run of this program does the setup.
+The brain is off until the user asks for it. `status()` says how it
+stands; `on()` (Google must be connected) and `off()` switch it after
+the user's yes; `exclude()` keeps a person's mail out of it for good.
+A trigger run of this program does the setup.
 """
 
 __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
 
-# ADR-033. The contract with any-ui's Settings → Brain is two
-# agent_config rows and one trigger record:
+# ADR-033. The contract between the chat tools here, the setup run and
+# any client that reads the answer is two agent_config rows and one
+# trigger record:
 #   brain.space   the request: {spaceId: <Bao's space> | None, requestedAt, by}
-#                 — absent means ON (the default), None means off
+#                 — written only by on() / off() here, after the user's
+#                 yes in chat; absent means off (nothing starts the brain
+#                 on its own), None means switched off
 #   brain.status  this program's answer, echoing the request's requestedAt
 #   brain-setup   a run-once agent_triggers record whoever writes a
 #                 request re-arms; its run is `main` below. A whole-value
@@ -27,7 +31,7 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # mail sync it set up — is not a pause: the brain stays ready and
 # brain.status lists it under `stopped`, and only a NEW request (any-ui's
 # Try again) restarts it; a setup run re-armed for the same request (a hub
-# upgrade, the chat-scan list) leaves it.
+# upgrade) leaves it.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -38,7 +42,6 @@ SPACE_KEY = "brain.space"
 STATUS_KEY = "brain.status"
 JOBS_KEY = "brain.jobs"
 STOPPED = "auto_disabled"
-CHAT_SPACES_KEY = "brain.chatScan.spaces"
 SETUP_TRIGGER_ID = "brain-setup"
 PROGRAM = "connectors:brainSetup@v1"
 HEARTBEAT = "connectors:brainHeartbeat@v1"
@@ -214,6 +217,15 @@ class write_rejected(Exception):
 
 class unknown_person(Exception):
     """No object with that id in Bao's space."""
+
+
+class google_not_connected(Exception):
+    """The brain reads mail from Gmail: connect Google before switching it on."""
+
+
+OFFER = ("The brain is off. Offer to switch it on — what it reads (the user's "
+         "Gmail), what it keeps (people, promises, facts in Bao's space) — and "
+         "call brainSetup.on() only after the user's yes.")
 
 
 # --- small helpers ---------------------------------------------------------
@@ -480,7 +492,7 @@ def _stopped_jobs(bao, anchor, mail_sync):
 
 
 def _warning(stopped):
-    """brain.status's `stopped`: [{id, name}] — what Settings names."""
+    """brain.status's `stopped`: [{id, name}] — what status() and a client name."""
     return [{"id": r["id"], "name": r.get("name") or r["id"]} for r in stopped]
 
 
@@ -537,8 +549,9 @@ def _setup():
     answered = (_status() or {}).get("requestedAt")
     request = _request()
     if request is None:
-        request = {"spaceId": bao, "requestedAt": _iso(now()), "by": "default"}  # noqa: F821
-        _config_set(SPACE_KEY, request)
+        # only on() / off() write the row: a run with no request (a stale
+        # arm) sets nothing up and writes nothing
+        return {"state": "off", "reason": "no request"}
     if request.get("spaceId") is None:
         try:
             turned_off = _disable_jobs(bao)
@@ -609,7 +622,7 @@ def main(args):
 
 def _state(request, status):
     if request is None:
-        return "waiting"
+        return "off"
     answered = status is not None and status.get("requestedAt") == request["requestedAt"]
     if request.get("spaceId") is None:
         return "off" if answered and status.get("state") == "off" else "switching_off"
@@ -650,8 +663,15 @@ def _switch(space_id):
 def on():
     """Switch the brain on in Bao's space → {state: "waiting", request}.
 
-    Only after the user said yes in this conversation. Setup runs on the
-    next tick; read `status()` next turn."""
+    Only after the user said yes in this conversation. Raises
+    google_not_connected while no Google account is connected: offer
+    googleAuth.connect() first. Setup runs on the next tick; read
+    `status()` next turn."""
+    auth = use("googleAuth@v1")  # noqa: F821 - guest global; the same repo
+    if not (auth.status() or {}).get("connected"):
+        raise google_not_connected(
+            "Google is not connected, and the brain reads the user's Gmail: "
+            "offer googleAuth.connect() first, then on() again.")
     return _switch(_any.bao_space())
 
 
@@ -676,7 +696,7 @@ def exclude(person=None, email=None, domain=None):
     bao = _any.bao_space()
     hub = _current_hub(_status())
     if hub is None:
-        raise not_set_up("The brain is not set up yet; switch it on first.")
+        raise not_set_up(OFFER)
     person = (person or "").strip()
     emails = [email] if email else []
     if person:
@@ -706,21 +726,3 @@ def exclude(person=None, email=None, domain=None):
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")
     return value
-
-
-@span("brainSetup.set_chat_spaces", kind="mutator")  # noqa: F821 - guest global
-def set_chat_spaces(spaces):
-    """Name the spaces whose chats the brain may read → {spaces}.
-
-    Empty means none (the default). Re-arms setup so the chat-scan job
-    follows the list."""
-    if not isinstance(spaces, (list, tuple)) or not all(isinstance(s, str) and s
-                                                        for s in spaces):
-        raise ValueError("spaces: a list of space ids")
-    bao = _any.bao_space()
-    chosen = sorted(set(spaces))
-    _config_set(CHAT_SPACES_KEY, chosen)
-    request = _request()
-    if request is not None:
-        _arm(bao, request)
-    return {"spaces": chosen}

@@ -164,7 +164,7 @@ def test_a_brain_that_is_not_set_up_refuses():
         mod.suggest()
     assert type(err.value).__name__ == "not_set_up"
     mod2, _ = kernel(status={"state": "provisioning"})
-    with pytest.raises(Exception, match="not set up yet"):
+    with pytest.raises(Exception, match="brain is off"):
         mod2.create("x")
 
 
