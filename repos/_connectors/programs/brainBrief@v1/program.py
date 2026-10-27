@@ -6,7 +6,9 @@ you for, and your latest mail with them, plus the card as markdown. Quote a
 fact's evidence when you use it, and say a proposed fact is unconfirmed.
 """
 
-# ADR-035 §4. Deterministic: no model. Built on agent:brainRecall@v1.person,
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
+# ADR-035 §4. Deterministic: no model. Built on connectors:brainRecall@v1.person,
 # which already honours the exclusion list and the blocklist.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)

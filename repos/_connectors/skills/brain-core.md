@@ -1,13 +1,13 @@
 # Skill: brain-core
 
 The AI brain: what it keeps in Bao's own space, what you may and may not
-write there, and how to switch it on or off with agent:brainSetup@v1
+write there, and how to switch it on or off with connectors:brainSetup@v1
 (help() it for status, on, off, exclude, set_chat_spaces).
 
 ## What it is
 
 The brain lives in Bao's own space and is on by default. Its jobs are
-ordinary Scheduled jobs whose program starts `agent:brain` (the
+ordinary Scheduled jobs whose program starts `connectors:brain` (the
 heartbeat every ten minutes, a reconcile run every hour). The user
 switches it in Settings → Brain, or by asking you.
 
@@ -25,7 +25,7 @@ switches it in Settings → Brain, or by asking you.
 
 - On by default. To switch it off, say what stops (the brain's jobs)
   and what stays (everything it learned stays in Bao's space), and call
-  `agent:brainSetup@v1.off()` only after a yes in this conversation.
+  `connectors:brainSetup@v1.off()` only after a yes in this conversation.
   Same for `on()`. Then point at Settings → Brain, or offer `status()`
   on your next turn: setup runs on the device that runs you, within a
   minute.
@@ -42,14 +42,14 @@ switches it in Settings → Brain, or by asking you.
   `text`, the verbatim `quote`, `source` (a link that opens the mail),
   `personId`, `dueAt`, `status` (open / done / dropped), `taskId`.
 - When the user asks what they owe, or at most once a day when
-  `agent:brainTasks@v1.suggest()` returns three or more, offer to turn
+  `connectors:brainTasks@v1.suggest()` returns three or more, offer to turn
   promises into tasks: show each with its suggested deadline, let the user
   change it, and call `create(id, deadline=…)` or `create_all()` only
   after a yes. Never invent a promise or a deadline.
 - Never write `promises`, `signals`, the hub's `config` or the brain's job
   records yourself; the brain's own programs own them.
 - Before answering about a person or a thread, read what the brain has:
-  `agent:brainRecall@v1.person(<person id>)` for one person (their columns,
+  `connectors:brainRecall@v1.person(<person id>)` for one person (their columns,
   what the user promised them, the latest mail), `.search("<words>")` across
   objects, mail and promises. Quote each hit's `link` so the user can open
   it; never answer about someone the user keeps out of the brain.
@@ -61,7 +61,7 @@ switches it in Settings → Brain, or by asking you.
   mail. Reading mail with a model needs the user's consent, a separate
   switch in Settings → Brain; when it is off there are no new facts. Never
   switch it for the user: point them at Settings → Brain.
-- Before a meeting or a reply, call `agent:brainBrief@v1.person(<person id>)`.
+- Before a meeting or a reply, call `connectors:brainBrief@v1.person(<person id>)`.
   Quote a fact with its evidence when you use it, never state a fact
   without one, and say that a `proposed` fact is unconfirmed.
 - Never write `facts` yourself; the brain's own programs own them.

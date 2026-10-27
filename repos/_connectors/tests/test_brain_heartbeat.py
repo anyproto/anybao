@@ -5,7 +5,7 @@ raises; a fresh tick writes no gap; an old last tick writes one
 heartbeat_gap signal; every successful run records its tick."""
 
 import pytest
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 SPACE, HUB = "bao-space", "hub"
 DATASETS = {"signals": "hub_signals", "config": "hub_config",
@@ -48,7 +48,7 @@ def run(args, config=None):
             return {"epoch": NOW}
         raise AssertionError(f"unexpected effect {name}")
 
-    mod = load_kernel(effect=eff, any_client=fake).use("brainHeartbeat@v1")
+    mod = connector_kernel(effect=eff, any_client=fake).use("brainHeartbeat@v1")
     return mod, fake
 
 
@@ -67,7 +67,7 @@ def test_a_missing_exclusion_list_is_refused_and_raises():
     assert type(err.value).__name__ == "exclusions_unreadable"
     (signal,) = fake.signals.values()
     assert signal["kind"] == "exclusions_unreadable" and signal["decision"] == "refused"
-    assert signal["subject"] == "agent:brainHeartbeat@v1"
+    assert signal["subject"] == "connectors:brainHeartbeat@v1"
     assert "heartbeat" not in fake.config
 
 

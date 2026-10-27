@@ -5,7 +5,7 @@ mailboxes, and the brain reads that as none rather than failing."""
 
 import json
 
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 SPACE = "bafyreispace.0000000000000"
 PAGE = {"id": "type-page", "xKey": "page", "name": "Page", "builtIn": True}
@@ -40,7 +40,7 @@ def server(types, records=()):
 
 
 def kit(effect):
-    return load_kernel(effect=effect).use("brainKit@v1")
+    return connector_kernel(effect=effect).use("brainKit@v1")
 
 
 def test_a_space_that_never_synced_mail_has_no_mailboxes():

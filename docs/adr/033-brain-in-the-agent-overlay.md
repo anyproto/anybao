@@ -1,4 +1,4 @@
-# ADR-033: The AI brain in the agent overlay — setup as a program, jobs as records, no runtime change
+# ADR-033: The AI brain as a plugin in the connectors overlay — setup as a program, jobs as records, no runtime change
 
 Status: **Proposed** (2026-10-25)
 Date: 2026-10-25
@@ -35,14 +35,33 @@ runtime**. Everything it needs already exists for guest code:
 
 ## Decision
 
-### 1. The programs ship in the agent overlay
+### 1. The programs ship in the connectors overlay, as a plugin
 
-`repos/_agent/programs/brainSetup@v1/program.py` and
-`repos/_agent/programs/brainHeartbeat@v1.py`, plus the `brain-core`
-skill in `repos/_agent/skills/`. They deploy with the agent overlay —
-no new space, invite or `anybao.toml` entry, and no change to the
-desktop shell, which writes the overlay list per release channel. A
-separate `_brain` overlay stays a later option.
+The brain's programs live in `repos/_connectors/programs/` —
+`brainSetup@v1`, `brainHeartbeat@v1` and the later phases' `brain*@v1`
+— with the `brain-core` skill in `repos/_connectors/skills/`. Every
+one declares `__any_category__ = "plugin"` (ADR-010 §4): the brain is
+a plugin of the connectors repo, grouped apart from the service
+connectors by that stamp. They deploy with the connectors overlay — no
+new space, invite or `anybao.toml` entry, and no change to the desktop
+shell, which writes the overlay list per release channel.
+
+What follows from the repo:
+
+- Imports are alias-qualified across repos (ADR-009): the brain calls
+  `use("agent:any@v1")` and `use("agent:llm@v1")`; `brainKit@v1` is
+  imported unqualified inside its own repo.
+- The programs are `connectors:brain…@v1` — in job records, in the
+  prefix the setup run matches brain jobs by, and in any client that
+  lists them.
+- Tools in the connectors overlay are not in the toolcaller's `## Tools`
+  block, which lists the agent overlay and the working space (ADR-005
+  §5). The agent reaches the brain through the `## Repos` inventory and
+  the `brain-core` skill's index line (`## Skills`, loaded on demand).
+  That costs no standing prompt per turn; the skill's one line carries
+  the words that bring it in (brain, people, promises, mail, facts).
+- `get_skill` and the skills index read the connectors overlay too, so
+  the skill ships beside its programs.
 
 ### 2. The contract is two config rows and one trigger record
 
@@ -50,7 +69,7 @@ separate `_brain` overlay stays a later option.
 | --- | --- | --- |
 | `brain.space` (agent_config) | any-ui's switch, its first-open default, `brainSetup.on()/off()` from chat, or the setup run when it finds no row | `{spaceId: <Bao's space> \| null, requestedAt, by}` — absent = on (the default), `null` = off |
 | `brain.status` (agent_config) | the setup run | `{spaceId?, requestedAt, state: provisioning \| ready \| error \| off, at, error?: {type, message}, hub?: {objectId, datasets}, mailSync?, stopped?: [{id, name}]}` — `requestedAt` echoes the request it answers; `stopped` is a warning on a `ready` brain (§4) |
-| `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "agent:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
+| `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "connectors:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
 
 Each request rewrites `brain-setup` with `lastRunAt: null`, which re-arms
 it. The null is load-bearing: a whole-value `$set` MERGES into the stored
@@ -97,8 +116,8 @@ record id can never be written again.
 
 | Job (id when first written) | Spec | Program | Args |
 | --- | --- | --- | --- |
-| `brain-heartbeat` | `every_s: 600` | `agent:brainHeartbeat@v1` | `{space, hub, datasets}` |
-| `brain-reconcile` | `every_s: 3600` | `agent:brainSetup@v1` | `{mode: "reconcile"}` |
+| `brain-heartbeat` | `every_s: 600` | `connectors:brainHeartbeat@v1` | `{space, hub, datasets}` |
+| `brain-reconcile` | `every_s: 3600` | `connectors:brainSetup@v1` | `{mode: "reconcile"}` |
 
 - **Found by program and `args.mode`, not by id.** A job deleted by hand
   is rewritten under a fresh id (`<base>-<epoch>`), since its id is

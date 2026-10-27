@@ -1,5 +1,7 @@
 """Brain heartbeat v0: exclusions probe and cadence-gap signal."""
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-033. A cron job the brain's setup run writes (every 600 s), with
 # args {space, hub, datasets} naming Bao's space, the brain hub object
 # and its store collections. v0 does two things: it refuses to run
@@ -12,7 +14,7 @@
 kit = use("brainKit@v1")  # noqa: F821 - guest global
 
 GAP_S = 1200
-SUBJECT = "agent:brainHeartbeat@v1"
+SUBJECT = "connectors:brainHeartbeat@v1"
 
 
 class unconfigured(Exception):

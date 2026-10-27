@@ -9,7 +9,7 @@ closed."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace, job_args
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 ME = "me@example.com"
 EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
@@ -30,7 +30,7 @@ def kernel(space=None):
             return {"epoch": NOW}
         raise AssertionError(f"unexpected effect {name}")
 
-    return load_kernel(effect=eff, any_client=space).use("brainPromises@v1"), space
+    return connector_kernel(effect=eff, any_client=space).use("brainPromises@v1"), space
 
 
 def mail_space(body, to="Ada <ada@lab.org>", sender=ME, mid="m1"):

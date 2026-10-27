@@ -25,7 +25,7 @@ mail with a model until the user said so.
 A config row `brain.model` (`{allowed: true|false, requestedAt, by}`)
 is the consent. any-ui's Settings → Brain writes it, off by default and
 separate from the brain's own switch: the brain's deterministic jobs
-(people, promises) run without it; `agent:brainFacts@v1` returns
+(people, promises) run without it; `connectors:brainFacts@v1` returns
 `{skipped: "consent"}` without reading a message or calling a model
 unless `allowed` is `true`. No program writes the row, and the chat
 skill points the user at Settings rather than switching it.
@@ -43,7 +43,7 @@ idempotent and a second source for the same value is appended to
 closed table in the program; adding one is a program change. The
 reconcile run upgrades a version-2 hub, as it did version 1.
 
-### 3. `agent:brainFacts@v1`, every six hours
+### 3. `connectors:brainFacts@v1`, every six hours
 
 1. **Consent, then exclusions.** No consent → skipped. The exclusion
    list is read fail-closed before any mail: missing or unreadable
@@ -89,7 +89,7 @@ desktop whose Bao runs on the user's Codex or Claude Code login through
 the shell's local AI proxy (the `anyai` backend), the extractor uses
 that login with no API key.
 
-### 4. `agent:brainBrief@v1` and recall
+### 4. `connectors:brainBrief@v1` and recall
 
 `brainBrief@v1.person(id)` is a deterministic chat tool: the person's
 columns, their current facts grouped (tastes, views, preferences,
