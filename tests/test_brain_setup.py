@@ -578,7 +578,9 @@ def test_excluding_a_person_also_keeps_their_addresses_out():
     # the copy is what keeps them out once their person object is gone
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
-    fake.objects["ada"] = {"id": "ada", "person": {"email": "Ada@Lab.org"},
+    fake.objects["ada"] = {"id": "ada", "any": {"type": "profile",
+                                                "collections": ["person", "brain_person"]},
+                           "person": {"email": "Ada@Lab.org"},
                            "brain_person": {"emails": ["ada@lab.org", "ada@home.net"]}}
     out = mod.exclude(person="ada")
     assert out["personIds"] == ["ada"]
@@ -595,6 +597,42 @@ def test_excluding_an_unknown_person_writes_nothing():
         mod.exclude(person="nobody")
     assert type(err.value).__name__ == "unknown_person"
     assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] == before
+
+
+def test_exclude_adds_a_person_and_an_address_in_one_call():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.objects["bob"] = {"id": "bob", "any": {"type": "profile", "collections": ["person"]},
+                           "person": {"email": "bob@lab.org"}}
+    out = mod.exclude(person="bob", email="Eve@Spy.org", domain="@Rival.com")
+    assert out["personIds"] == ["bob"]
+    assert out["emails"] == ["eve@spy.org", "bob@lab.org"]
+    assert out["domains"] == ["rival.com"]
+
+
+def test_exclude_refuses_an_object_that_is_not_a_person():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    fake.objects["page1"] = {"id": "page1", "any": {"type": "page", "collections": []}}
+    before = dict(fake.records[(BAO, "hub", "type-hub_config")]["exclusions"])
+    with pytest.raises(Exception) as err:
+        mod.exclude(person="page1")
+    assert type(err.value).__name__ == "unknown_person"
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] == before
+
+
+def test_exclude_never_rewrites_a_malformed_list_into_a_readable_one():
+    # the jobs refuse to read mail while the list is malformed; a rewrite
+    # that turned "spy.org" into ["s", "p", …] would let them read it again
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    broken = {"version": 1, "personIds": [], "emails": [], "domains": "spy.org"}
+    fake.records[(BAO, "hub", "type-hub_config")]["exclusions"] = {"id": "exclusions",
+                                                                   "value": broken}
+    with pytest.raises(Exception) as err:
+        mod.exclude(email="boss@example.com")
+    assert type(err.value).__name__ == "exclusions_unreadable"
+    assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] == broken
 
 
 def test_exclude_refuses_before_setup():

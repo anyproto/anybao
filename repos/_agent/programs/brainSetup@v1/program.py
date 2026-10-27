@@ -637,7 +637,8 @@ def exclude(person=None, email=None, domain=None):
     Appends only: removing an exclusion is Settings-only. A person's
     addresses are added with them, so they stay out once the person is
     gone. Raises not_set_up while the brain has no hub, unknown_person
-    for an id that names nothing."""
+    for an id that names no person, exclusions_unreadable for a list in
+    another shape."""
     bao = _any.bao_space()
     hub = _current_hub(_status())
     if hub is None:
@@ -646,19 +647,27 @@ def exclude(person=None, email=None, domain=None):
     emails = [email] if email else []
     if person:
         rows = _any.query_objects(bao, filter={"id": person}, limit=1)
-        if not rows:
+        collections = set((rows[0].get("any") or {}).get("collections") or []) if rows else set()
+        if not collections & {"person", "brain_person"}:
             raise unknown_person(f"no person {person!r} in Bao's space")
         emails += kit.person_emails(rows[0])
     rec = _hub_record(bao, hub["objectId"], hub["datasets"]["config"], "exclusions")
-    value = dict((rec or {}).get("value") or EXCLUSIONS_SEED)
-    for field, wanted in (("personIds", [person]), ("emails", emails), ("domains", [domain])):
-        items = list(value.get(field) or [])
-        for item in wanted:
-            norm = (item or "").strip()
-            norm = norm if field == "personIds" else norm.lower()
-            if norm and norm not in items:
-                items.append(norm)
-        value[field] = items
+    if rec is None:
+        value = dict(EXCLUSIONS_SEED)       # its lists are replaced, never changed
+    else:
+        # a malformed list stops every job that reads mail; rewriting it
+        # whole would make it readable again with the damage inside
+        problem = kit.exclusions_problem(rec)
+        if problem is not None:
+            raise kit.exclusions_unreadable(f"{problem}: fix the list before adding to it")
+        value = dict(rec["value"])
+    wanted = {"personIds": [person],
+              "emails": [(e or "").strip().lower() for e in emails],
+              "domains": [(domain or "").strip().lower().lstrip("@")]}
+    for field, items in wanted.items():
+        for item in items:
+            if item and item not in value[field]:
+                value[field] = [*value[field], item]
     value["version"] = 1
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")

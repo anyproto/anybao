@@ -108,7 +108,10 @@ recall. Resolving at read time cannot help once the person object is
 gone — the people job would mint a fresh person for the same address,
 and their mail would reach the model — so `brainSetup.exclude(person=…)`
 also copies the person's addresses into `emails`, and refuses an id
-that names no object. The heartbeat uses it too, and the tools read the hub off
+that names no person (an object filed under `person` or `brain_person`).
+It writes only the fields it adds to, and refuses a list that is not in
+its version-1 shape rather than rewrite it into a readable one: a list
+the jobs refuse to read must stay refused until it is fixed. The heartbeat uses it too, and the tools read the hub off
 `brain.status` through its `ready_hub()`.
 
 ### 7. `brainRecall@v1`
