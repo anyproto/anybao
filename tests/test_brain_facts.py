@@ -312,3 +312,11 @@ def test_unconfigured_without_a_facts_store():
     with pytest.raises(Exception) as err:
         run(s, Model(), args=args)
     assert type(err.value).__name__ == "unconfigured"
+
+
+def test_before_the_first_mail_sync_nothing_is_read_or_asked():
+    s, model = space_with(), Model()
+    del s.objects["mb1"]                 # no mailbox type: no sync has run
+    s.types.discard("mailbox")
+    _, out = run(s, model)
+    assert model.prompts == [] and out["written"] == 0

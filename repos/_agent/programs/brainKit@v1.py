@@ -1,8 +1,8 @@
 """Brain helpers: checked writes, hub records, exclusions and mail addresses."""
 
 # ADR-033 / ADR-034. Shared by the brain's programs (setup's status, the
-# heartbeat, people, promises, recall, tasks); not a tool. Three server
-# rules every brain write and read depends on live here, once:
+# heartbeat, people, promises, facts, recall, tasks); not a tool. Three
+# server rules every brain write and read depends on live here, once:
 #   - modify / upsert answer HTTP 200 even when they refuse a record; the
 #     refusal sits only in `rejections` (checked)
 #   - the hub's stores are SHARED datasets: reads return, and `id` filters
