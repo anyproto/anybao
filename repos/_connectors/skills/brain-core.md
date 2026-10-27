@@ -49,9 +49,12 @@ every hour, people, promises, facts). Only you switch it, through
   under `person` and `brain_person`, with `brain_person.emails`,
   `aliases`, `lastContactAt`, `mailCount`). Find one with
   `query_objects(space, filter={"brain_person.emails": "<address>"})`.
-- `promises` on the hub are what the user committed to in sent mail:
-  `text`, the verbatim `quote`, `source` (a link that opens the mail),
-  `personId`, `dueAt`, `status` (open / done / dropped), `taskId`.
+- `promises` on the hub are what the user committed to in sent mail,
+  found by a model and kept only with the verbatim `quote` the sentence
+  came from: `text`, `quote`, `source` (a link that opens the mail),
+  `personId`, `dueAt`, `status` (open / done / dropped), `taskId`. They
+  need the user's consent to reading mail with a model (below); without
+  it there are no promises, only people.
 - When the user asks what they owe, or at most once a day when
   `connectors:brainTasks@v1.suggest()` returns three or more, offer to turn
   promises into tasks: show each with its suggested deadline, let the user
@@ -70,11 +73,12 @@ every hour, people, promises, facts). Only you switch it, through
 - `facts` on the hub are what the brain learned about a person from their
   mail, each with the verbatim `quote` and the `source` that opens the
   mail. Reading mail with a model needs the user's consent, separate from
-  the brain's switch; without it there are no new facts. Ask once, in
-  plain words — "May the brain read your mail with a model to keep facts
-  about the people you write with? It quotes the sentence each fact came
-  from." — and call `connectors:brainSetup@v1.allow_model()` only after a
-  yes; `deny_model()` when they say stop. Never decide it for the user.
+  the brain's switch; without it there are no facts and no promises. Ask
+  once, in plain words — "May the brain read your mail with a model, to
+  keep facts about the people you write with and the promises you make
+  to them? It keeps the exact sentence each one came from." — and call
+  `connectors:brainSetup@v1.allow_model()` only after a yes;
+  `deny_model()` when they say stop. Never decide it for the user.
 - Before a meeting or a reply, call `connectors:brainRecall@v1.person(<person id>)`;
   its `markdown` is the card. Quote a fact with its evidence when you use
   it, never state a fact without one, and say that a `proposed` fact is

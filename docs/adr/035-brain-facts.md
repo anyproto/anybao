@@ -29,11 +29,12 @@ this question: may the brain read your mail with a model to keep facts
 about the people you write with? (The `brain-core` skill carries the
 wording; no client writes the row — owner decision, 2026-10-27, the
 same as the brain's own switch, ADR-033 §2.) It is absent, so off, until
-then, and separate from the switch: the brain's other jobs (people,
-promises) run without it; `connectors:brainFacts@v1` returns `{skipped:
-"consent"}` without reading a message or calling a model unless
-`allowed` is `true`. `brainSetup.status()` reports it as
-`modelAllowed`.
+then, and separate from the switch. It covers every brain job that
+reads mail with a model — the facts job here and the promises job
+(ADR-034 §4) — each of which returns `{skipped: "consent"}` without
+reading a message or calling a model unless `allowed` is `true`; the
+people job needs no model and runs without it. `brainSetup.status()`
+reports it as `modelAllowed`.
 
 ### 2. The `facts` store (hub version 3)
 

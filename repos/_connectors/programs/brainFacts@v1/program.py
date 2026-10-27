@@ -15,9 +15,7 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # everyone in it. Facts are idempotent by id; a single-valued kind
 # supersedes an inferred fact and never a stated one.
 
-import contextlib
 import hashlib
-import json
 import re
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
@@ -137,39 +135,6 @@ def ground(items, sources, stats):
     return kept
 
 
-def _parse(text):
-    """Tolerant JSON (enrich@v1's reader): strip a ``` fence, skip prose to the
-    first [ or {, tolerate trailing prose, repair invalid \\ escapes, and close
-    a length-truncated array."""
-    if not text:
-        return None
-    s = str(text).strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", s, re.S)
-    if fence:
-        s = fence.group(1).strip()
-    start = re.search(r"[\[{]", s)
-    if not start:
-        return None
-    s = s[start.start():]
-    for candidate in (s, re.sub(r'\\(?!["\\/bfnrtu])', "", s)):
-        try:
-            return json.JSONDecoder().raw_decode(candidate)[0]
-        except ValueError:
-            continue
-    if s[0] == "[" and "}" in s:
-        with contextlib.suppress(ValueError):
-            return json.loads(s[:s.rindex("}") + 1] + "]")
-    return None
-
-
-def _consented():
-    try:
-        value = effect("config.get", {"key": CONSENT_KEY})["value"]  # noqa: F821
-    except EffectError:  # noqa: F821 - guest global
-        return False
-    return isinstance(value, dict) and value.get("allowed") is True
-
-
 def _pinned(tier):
     try:
         effect("config.get", {"key": f"llm.tier.{tier}"})  # noqa: F821 - guest global
@@ -261,7 +226,7 @@ def _ask(prompt, tier):
                          system=EXTRACT_SYS, tier=tier, tools=[], max_tokens=MAX_TOKENS)
         text = " ".join(p.get("text", "") for p in reply.get("parts") or []
                         if p.get("type") == "text")
-        items = _parse(text)
+        items = kit.parse_json(text)
         if isinstance(items, list):
             return items
     return None
@@ -381,7 +346,7 @@ def _merge_stats(space, hub, datasets, stats):
 
 
 def main(args):
-    if not _consented():
+    if not kit.model_allowed():
         return {"skipped": "consent"}
     parsed = kit.job_args(args, "facts")
     if parsed is None:

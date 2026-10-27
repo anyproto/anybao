@@ -2,18 +2,28 @@
 
 __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
 
-# ADR-034. A cron job the brain's setup run writes (every 1800 s), args
-# {space, hub, datasets}. It reads the user's SENT mail in Bao's space —
-# messages whose From is the mailbox's own address — newer than its cursor
-# (BACKFILL_DAYS back for a mailbox it has none for),
-# splits each cleaned body into sentences and keeps the ones that commit
-# the user to something (PHRASES, minus EXCLUSIONS). Each becomes one
-# `promises` record whose `quote` is the verbatim sentence and whose
-# `source` opens the message. Deterministic; no model. A message to an
-# excluded or blocklisted recipient, or under a blocklisted label, is
-# skipped whole. The record id is sha256(messageId, normalized sentence),
-# and only ids the store lacks are written: `status` is mutable, so
-# re-sending a promise a re-read message yields would reopen it.
+# ADR-034 §4. A cron job the brain's setup run writes (every 1800 s), args
+# {space, hub, datasets, tier?}. It reads the user's SENT mail in Bao's
+# space — messages whose From is the mailbox's own address — newer than
+# its cursor (BACKFILL_DAYS back for a mailbox it has none for), and asks
+# a model (the `classify` tier) for the commitments in each message:
+# `[{quote, due}]`, the quote copied character for character. Plain code
+# keeps only a quote that is a verbatim substring of the cleaned body
+# (QUOTE_MIN..QUOTE_MAX chars): a paraphrase is dropped, never repaired.
+# When a judge model is configured (ADR-030) one noul question per
+# message gates the extraction call. The user's consent to reading mail
+# with a model (`brain.model`, ADR-035 §1) covers this job: without it,
+# nothing is read.
+#
+# A message to an excluded or blocklisted recipient, or under a
+# blocklisted label, is never sent to the model. A message that already
+# has a promise record (by `source`) is not re-extracted, so a re-run
+# cannot mint a second quote for it. The record id is
+# sha256(messageId, normalized quote), and only ids the store lacks are
+# written: `status` is mutable, so re-sending a promise would reopen one
+# the user or a completed task closed. The cursor passes only messages
+# fully handled: a provider failure stops the mailbox before its
+# message, and two in one run stop the job (provider_failed).
 #
 # It also closes the loop with tasks: an open promise whose `taskId` names
 # a catalog task the user completed is marked done.
@@ -23,34 +33,45 @@ import re
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
 _any = use("agent:any@v1")  # noqa: F821 - guest global
+llm = use("agent:llm@v1")  # noqa: F821 - guest global
 
+TIER = "classify"
 PER_MAILBOX = 200
-MAX_SENTENCE = 300
-MIN_SENTENCE = 8
-MAX_QUOTE = 240
+MAX_CALLS = 60          # model calls per run; the rest waits for the next run
+MESSAGE_CHARS = 2400
+QUOTE_MIN = 8
+QUOTE_MAX = 240
+MAX_TOKENS = 1200
+JUDGE_MIN = 0.3         # P(commits) below this: the message is not extracted
 DAY = 86400
 
-# A promise names the writer as the one acting. Patterns are matched on a
-# lowercased sentence at word boundaries.
-PHRASES = {
-    "en": [r"\bi will\b", r"\bi'll\b", r"\bi’ll\b", r"\blet me (send|share|check|get back)\b",
-           r"\bwill do\b", r"\bi'm going to\b", r"\bi am going to\b"],
-    "de": [r"\bich schicke\b", r"\bich werde\b", r"\bich melde mich\b", r"\bich sende\b",
-           r"\bschicke ich\b", r"\bmelde ich mich\b", r"\bich leite\b.*\bweiter\b",
-           r"\bich stelle\b.*\bvor\b", r"\bich kümmere mich\b"],
-}
-# A sentence with any of these is not a promise: a question, a condition,
-# a hypothetical, or a negation anywhere in it (stricter than a negation
-# next to the verb: a missed promise is cheap, a false one is not).
-EXCLUSIONS = [r"\?\s*$", r"\bif\b", r"\bunless\b", r"\bin case\b", r"\bwould\b", r"\bcould\b",
-              r"\bfalls\b", r"\bwenn\b", r"\bsobald\b", r"\bkönnte\b", r"\bwürde\b",
-              r"\bwon't\b", r"\bwon’t\b", r"\bwill not\b", r"\bi'll not\b", r"\bnicht\b"]
-_PHRASES = [re.compile(p) for ps in PHRASES.values() for p in ps]
-_EXCLUSIONS = [re.compile(p) for p in EXCLUSIONS]
-_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+EXTRACT_SYS = (
+    "You read ONE email the user sent and list the commitments the user makes "
+    "in it: things the user says they themselves will do, send, check, forward, "
+    "introduce, arrange, call. Answer with ONLY a JSON array, no prose. Each "
+    "item: {\"quote\": the exact sentence from the message that makes the "
+    "commitment, copied character for character, never shortened or fixed, "
+    "\"due\": \"YYYY-MM-DD\" when that sentence names a date or a day, else "
+    "null}. Not a commitment: a question, a condition (if, unless, in case), "
+    "a hypothetical (would, could), a negation, something already done, "
+    "something another person will do, scheduling chatter, greetings, a "
+    "signature. Any language. No commitment, no item: an empty array is a "
+    "fine answer."
+)
+JUDGE_QUESTIONS = {
+    "commits": {
+        "type": "noul",
+        "instructions": "Does the writer of this email commit to doing something "
+                        "themselves later (send, check, forward, introduce, arrange, call)?",
+        "criteria": {
+            "true": "the writer promises a future action of their own",
+            "false": "no commitment by the writer: questions, conditions, other "
+                     "people's actions, pleasantries, things already done"}}}
+
 _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4,
              "saturday": 5, "sunday": 6, "montag": 0, "dienstag": 1, "mittwoch": 2,
              "donnerstag": 3, "freitag": 4, "samstag": 5, "sonntag": 6}
+_ISO_DAY = re.compile(r"^\s*(20\d\d)-(\d\d)-(\d\d)")
 
 
 class unconfigured(Exception):
@@ -65,20 +86,8 @@ class promises_rejected(Exception):
     """The server refused promise records; the first reason is the message."""
 
 
-def sentences(body):
-    """The candidate sentences of a cleaned body, quoted lines dropped."""
-    lines = [ln for ln in (body or "").splitlines() if not ln.lstrip().startswith(">")]
-    out = []
-    for part in _SPLIT.split("\n".join(lines)):
-        s = " ".join(part.split())
-        if MIN_SENTENCE <= len(s) <= MAX_SENTENCE:
-            out.append(s)
-    return out
-
-
-def is_promise(sentence):
-    low = sentence.lower()
-    return any(p.search(low) for p in _PHRASES) and not any(p.search(low) for p in _EXCLUSIONS)
+class provider_failed(Exception):
+    """The model provider failed twice in one run."""
 
 
 def _day(seconds):
@@ -104,6 +113,17 @@ def due_at(sentence, made_at):
     return None
 
 
+def due_hint(value):
+    """The model's `due` ("YYYY-MM-DD") as a UTC day, or None for anything else."""
+    m = _ISO_DAY.match(str(value or ""))
+    if not m:
+        return None
+    y, mo, d = (int(g) for g in m.groups())
+    if not (1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    return kit.civil_day(y, mo, d)
+
+
 def promise_id(message_id, text):
     return hashlib.sha256(f"{message_id}\n{text.lower()}".encode()).hexdigest()[:32]
 
@@ -124,35 +144,105 @@ def _person_of(space, addr, cache):
     return cache[addr]
 
 
-def _records_of(space, box_id, box_addr, row, excl, block, people):
-    """The promise records one sent message yields (may be none)."""
+def _new_stats():
+    return {"messages": 0, "sent": 0, "judged": 0, "skippedByJudge": 0, "asked": 0,
+            "grounded": 0, "written": 0, "excludedSkipped": 0, "alreadyExtracted": 0,
+            "parseFailed": 0, "providerFailed": 0, "dropped": {}}
+
+
+def _drop(stats, reason):
+    stats["dropped"][reason] = stats["dropped"].get(reason, 0) + 1
+
+
+def _is_sent(row, box_addr):
     sender = kit.addresses(row.get("from"))
-    if not sender or sender[0][1] != box_addr or kit.labelled_out(row, block):
-        return []
+    return bool(sender) and sender[0][1] == box_addr
+
+
+def _readable(row, box_addr, excl, block):
+    """True when a sent message may go to the model: not under a blocklisted
+    label, and to nobody the exclusion list or the blocklist keeps out."""
+    if kit.labelled_out(row, block):
+        return False
     recipients = [a for _, a in kit.addresses(row.get("to"), row.get("cc")) if a != box_addr]
-    if any(kit.kept_out(a, excl, block) and not kit.is_noise(a) for a in recipients):
-        return []                       # excluded or blocklisted: never read
-    made_at = (row.get("internalDate") or 0) / 1000
+    return not any(kit.kept_out(a, excl, block) and not kit.is_noise(a) for a in recipients)
+
+
+def _extracted(space, hub, dataset, links):
+    """The `source` links that already have a promise record: not re-extracted,
+    so a re-run cannot mint a second quote for the same message."""
+    if not links:
+        return set()
+    rows = _any.query(space, hub, dataset, filter={"source": {"$in": links}}, limit=len(links))
+    return {r.get("source") for r in rows}
+
+
+def _ask(body, gate, tier, stats):
+    """(the model's items — [] when the judge says no, None when unparsable
+    twice), model calls made. Raises llm.LlmError on a provider failure."""
+    used = 0
+    if gate:
+        answers = llm.judge(body, JUDGE_QUESTIONS)
+        used += 1
+        stats["judged"] += 1
+        p = ((answers.get("answers") or {}).get("commits") or {}).get("noul")
+        if isinstance(p, (int, float)) and p < JUDGE_MIN:
+            stats["skippedByJudge"] += 1
+            return [], used
+    for _attempt in range(2):
+        reply = llm.chat([{"role": "user", "parts": [{"type": "text", "text": body}]}],
+                         system=EXTRACT_SYS, tier=tier, tools=[], max_tokens=MAX_TOKENS)
+        used += 1
+        stats["asked"] += 1
+        text = " ".join(p.get("text", "") for p in reply.get("parts") or []
+                        if p.get("type") == "text")
+        items = kit.parse_json(text)
+        if isinstance(items, list):
+            return items, used
+    stats["parseFailed"] += 1
+    return None, used
+
+
+def _records(space, box_id, box_addr, row, body, items, people, stats):
+    """The promise records one message's grounded items yield."""
+    norm = kit.normalize_ws(body)
+    recipients = [a for _, a in kit.addresses(row.get("to"), row.get("cc")) if a != box_addr]
     to = [a for _, a in kit.addresses(row.get("to")) if a != box_addr]
     person_email = to[0] if to else (recipients[0] if recipients else None)
-    out = []
-    for s in sentences(row.get("body")):
-        if not is_promise(s):
+    made_at = (row.get("internalDate") or 0) / 1000
+    out, seen = [], set()
+    for it in items:
+        if not isinstance(it, dict):
+            _drop(stats, "badShape")
             continue
-        fields = {"text": s, "quote": s[:MAX_QUOTE],
-                  "source": kit.mail_link(space, box_id, row["id"]),
-                  "mailboxId": box_id, "channel": "email",
-                  "madeAt": instant(made_at),  # noqa: F821 - guest global
-                  "status": "open"}
-        due = due_at(s, made_at)
-        if due is not None:
-            fields["dueAt"] = instant(due)  # noqa: F821 - guest global
-        if person_email:
-            fields["personEmail"] = person_email
-            pid = _person_of(space, person_email, people)
-            if pid:
-                fields["personId"] = pid
-        out.append({"id": promise_id(row["id"], s), "fields": fields})
+        quote = kit.normalize_ws(it.get("quote"))
+        if not quote:
+            _drop(stats, "noQuote")
+        elif not QUOTE_MIN <= len(quote) <= QUOTE_MAX:
+            _drop(stats, "badLength")
+        elif quote not in norm:
+            _drop(stats, "notVerbatim")
+        elif quote.lower() in seen:
+            _drop(stats, "duplicate")
+        else:
+            seen.add(quote.lower())
+            fields = {"text": quote, "quote": quote,
+                      "source": kit.mail_link(space, box_id, row["id"]),
+                      "mailboxId": box_id, "channel": "email",
+                      "madeAt": instant(made_at),  # noqa: F821 - guest global
+                      "status": "open"}
+            due = due_at(quote, made_at)
+            if due is None:
+                due = due_hint(it.get("due"))
+            if due is not None:
+                fields["dueAt"] = instant(due)  # noqa: F821 - guest global
+            if person_email:
+                fields["personEmail"] = person_email
+                pid = _person_of(space, person_email, people)
+                if pid:
+                    fields["personId"] = pid
+            out.append({"id": promise_id(row["id"], quote), "fields": fields})
+    stats["grounded"] += len(out)
     return out
 
 
@@ -162,6 +252,23 @@ def _unwritten(space, hub, dataset, records):
     rows = _any.query(space, hub, dataset, filter={"id": {"$in": ids}}, limit=len(ids))
     have = {kit.plain_id(r["id"]) for r in rows}
     return [r for r in records if r["id"] not in have]
+
+
+def _write(space, hub, dataset, records):
+    """Write the new records → how many landed; a refusal fails the run,
+    except a deleted id, which is the user's answer."""
+    records = _unwritten(space, hub, dataset, records) if records else []
+    if not records:
+        return 0
+    reply = _any.upsert_records(space, hub, dataset, records) or {}
+    deleted = [r for r in reply.get("rejections") or []
+               if r.get("code") == "upsert.record_deleted"]
+    rejected = [r for r in reply.get("rejections") or [] if r not in deleted]
+    if rejected:
+        raise promises_rejected(
+            f"{len(rejected)} of {len(records)} rejected: "
+            f"{rejected[0].get('reason') or rejected[0].get('code')}")
+    return len(records) - len(deleted)
 
 
 def _close_completed(space, hub, datasets):
@@ -189,40 +296,74 @@ def _close_completed(space, hub, datasets):
     return closed
 
 
+def _merge_stats(space, hub, datasets, stats):
+    """Add this run's counts to config/promises.stats (counts only, never text)."""
+    total = kit.config_value(space, hub, datasets, "promises.stats") or {}
+    for key, value in stats.items():
+        if key == "dropped":
+            dropped = dict(total.get("dropped") or {})
+            for reason, n in value.items():
+                dropped[reason] = dropped.get(reason, 0) + n
+            total["dropped"] = dropped
+        elif isinstance(value, (int, float)):
+            total[key] = (total.get(key) or 0) + value
+    kit.write_config(space, hub, datasets, "promises.stats", total)
+
+
 def main(args):
+    if not kit.model_allowed():
+        return {"skipped": "consent"}
     parsed = kit.job_args(args, "promises")
     if parsed is None:
         raise unconfigured("brain promises needs space, hub and datasets — set the brain up")
     space, hub, datasets = parsed
+    tier = (args or {}).get("tier") or TIER
     excl = kit.exclusions(space, hub, datasets)          # fail closed
     block = kit.blocklist(space, hub, datasets)
+    gate = bool(llm.judge_available())
     cursor = _cursor(space, hub, datasets)
-    people, found, read = {}, 0, 0
+    stats = _new_stats()
+    people, calls, failures = {}, 0, 0
     floor = kit.backfill_floor_ms()
     for box_id, box_addr in kit.mailboxes(space):
         last = cursor.get(box_id, floor)
         rows = _any.query(space, box_id, "email_messages",
                           filter={"internalDate": {"$gt": last}},
                           sort=["internalDate"], limit=PER_MAILBOX)
+        sent = [r for r in rows if _is_sent(r, box_addr)]
+        done = _extracted(space, hub, datasets["promises"],
+                          [kit.mail_link(space, box_id, r["id"]) for r in sent])
         records = []
         for row in rows:
-            records.extend(_records_of(space, box_id, box_addr, row, excl, block, people))
+            if calls >= MAX_CALLS:
+                break                       # the rest waits for the next run
+            if _is_sent(row, box_addr):
+                stats["sent"] += 1
+                if not _readable(row, box_addr, excl, block):
+                    stats["excludedSkipped"] += 1
+                elif kit.mail_link(space, box_id, row["id"]) in done:
+                    stats["alreadyExtracted"] += 1
+                else:
+                    body = kit.clean_body(row.get("body"), MESSAGE_CHARS)
+                    if body:
+                        try:
+                            items, used = _ask(body, gate, tier, stats)
+                        except llm.LlmError as e:
+                            failures += 1
+                            stats["providerFailed"] += 1
+                            if failures >= 2:
+                                raise provider_failed(
+                                    "the model provider failed twice in one run") from e
+                            break               # the cursor stays before this message
+                        calls += used
+                        if items:
+                            records.extend(_records(space, box_id, box_addr, row, body,
+                                                    items, people, stats))
             last = max(last, row.get("internalDate") or 0)
-            read += 1
-        records = _unwritten(space, hub, datasets["promises"], records) if records else []
-        if records:
-            reply = _any.upsert_records(space, hub, datasets["promises"], records) or {}
-            # a deleted promise's id is burned and reads as unwritten; the
-            # user removed it, so its refusal is the answer, not a failure
-            deleted = [r for r in reply.get("rejections") or []
-                       if r.get("code") == "upsert.record_deleted"]
-            rejected = [r for r in reply.get("rejections") or [] if r not in deleted]
-            if rejected:
-                raise promises_rejected(
-                    f"{len(rejected)} of {len(records)} rejected: "
-                    f"{rejected[0].get('reason') or rejected[0].get('code')}")
-            found += len(records) - len(deleted)
+            stats["messages"] += 1
+        stats["written"] += _write(space, hub, datasets["promises"], records)
         cursor[box_id] = last
     kit.write_config(space, hub, datasets, "promises.cursor", cursor)
+    _merge_stats(space, hub, datasets, stats)
     closed = _close_completed(space, hub, datasets)
-    return {"messages": read, "promises": found, "closed": closed}
+    return {**stats, "promises": stats["written"], "closed": closed}
