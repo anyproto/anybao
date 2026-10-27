@@ -11,7 +11,7 @@ from pathlib import Path
 
 from kernelenv import load_kernel
 
-PROGRAMS = Path(__file__).resolve().parents[1] / "repos" / "_agent" / "programs"
+PROGRAMS = Path(__file__).resolve().parents[1] / "repos" / "_connectors" / "programs"
 BRAIN = sorted([*PROGRAMS.glob("brain*@v*.py"), *PROGRAMS.glob("brain*@v*/program.py")])
 
 

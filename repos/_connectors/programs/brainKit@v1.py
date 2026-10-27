@@ -1,5 +1,7 @@
 """Brain helpers: checked writes, hub records, exclusions and mail addresses."""
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-033 / ADR-034. Shared by the brain's programs (setup's status, the
 # heartbeat, people, promises, facts, recall, tasks); not a tool. Three
 # server rules every brain write and read depends on live here, once:
@@ -15,7 +17,7 @@
 import re
 from email.utils import getaddresses
 
-_any = use("any@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
 
 # how far back a job reads a mailbox it has no cursor for: a mailbox can hold
 # years of mail, and promises from years ago are not open promises

@@ -7,7 +7,7 @@ refuses."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 DAY = 86400
 THU = 1_792_670_400          # Thursday 2026-10-22 12:00 UTC
@@ -33,7 +33,7 @@ def kernel(space=None, now=THU, status=READY):
             return {"value": status}
         raise AssertionError(f"unexpected effect {name}")
 
-    return load_kernel(effect=eff, any_client=space).use("brainTasks@v1"), space
+    return connector_kernel(effect=eff, any_client=space).use("brainTasks@v1"), space
 
 
 def add_promise(space, rid, text, made=THU, due=None, task=None, person=None, status="open"):

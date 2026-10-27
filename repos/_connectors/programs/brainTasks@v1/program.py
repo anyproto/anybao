@@ -6,6 +6,8 @@ catalog task in Bao's Tasks app; `create_all()` does every suggestion.
 Create only after the user said yes; show the deadline and let them change it.
 """
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-034. Deadlines come from one deterministic rule table, never a model
 # (design record §4.15), in this order:
 #   1. the promise's own dueAt (brainPromises parsed it from the sentence)
@@ -30,7 +32,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 import re
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
-_any = use("any@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
 
 DAY = 86400
 _ISO = re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)\b")

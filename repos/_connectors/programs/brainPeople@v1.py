@@ -1,5 +1,7 @@
 """Brain people: one catalog person per real correspondent in Bao's mail."""
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-034. A cron job the brain's setup run writes (every 900 s), args
 # {space, hub, datasets}. It reads mail that gmailSync synced into Bao's
 # space, newer than its cursor, and keeps one catalog person — a `profile`
@@ -21,7 +23,7 @@
 # promises whose recipient it now knows, past the preload included.
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
-_any = use("any@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
 
 PRELOAD = 1000
 MAX_NEW = 300

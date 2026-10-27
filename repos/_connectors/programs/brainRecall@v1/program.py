@@ -6,6 +6,8 @@ newest first within each. Read before answering about a person or a thread;
 quote the `link` so the user can open the source.
 """
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-034 §6. Deterministic: no model. `search` runs one index search PER
 # SCOPE — one call with a shared limit lets mail crowd everything else out —
 # reads each hit's record for its date, and reranks a scope's hits by
@@ -20,7 +22,7 @@ quote the `link` so the user can open the source.
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
-_any = use("any@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
 
 DAY = 86400
 BRAIN_SCOPES = ("basic", "email", "promises")

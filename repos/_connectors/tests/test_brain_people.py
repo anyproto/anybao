@@ -9,7 +9,7 @@ closed; promises get their personId back-filled."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace, job_args
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 ME = "me@example.com"
 EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
@@ -37,7 +37,7 @@ def run(space, args=None, now=FIXTURE_NOW):
             return {"epoch": now}
         raise AssertionError(f"unexpected effect {name}")
 
-    mod = load_kernel(effect=eff, any_client=space).use("brainPeople@v1")
+    mod = connector_kernel(effect=eff, any_client=space).use("brainPeople@v1")
     return mod, mod.main(args if args is not None else job_args(space))
 
 
@@ -138,7 +138,7 @@ def test_a_capped_run_resumes_where_it_stopped(monkeypatch):
             return {"epoch": 1.0}
         raise AssertionError(name)
 
-    mod = load_kernel(effect=eff, any_client=s).use("brainPeople@v1")
+    mod = connector_kernel(effect=eff, any_client=s).use("brainPeople@v1")
     mod.MAX_NEW = 2
     out = mod.main(job_args(s))
     assert out["minted"] == 2 and s.config("people.cursor") == {"mail": {"mb1": 2000}}

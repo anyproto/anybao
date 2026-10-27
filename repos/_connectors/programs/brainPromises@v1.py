@@ -1,5 +1,7 @@
 """Brain promises: what you committed to in sent mail, quoted verbatim."""
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-034. A cron job the brain's setup run writes (every 1800 s), args
 # {space, hub, datasets}. It reads the user's SENT mail in Bao's space —
 # messages whose From is the mailbox's own address — newer than its cursor
@@ -20,7 +22,7 @@ import hashlib
 import re
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
-_any = use("any@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
 
 PER_MAILBOX = 200
 MAX_SENTENCE = 300

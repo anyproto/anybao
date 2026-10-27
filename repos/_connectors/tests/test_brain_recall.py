@@ -9,7 +9,7 @@ that is not set up refuses."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 DAY = 86400
 NOW = 1_800_000_000
@@ -29,7 +29,7 @@ def kernel(space, status=READY):
             return {"value": status}
         raise AssertionError(f"unexpected effect {name}")
 
-    return load_kernel(effect=eff, any_client=space).use("brainRecall@v1")
+    return connector_kernel(effect=eff, any_client=space).use("brainRecall@v1")
 
 
 def mail_space():

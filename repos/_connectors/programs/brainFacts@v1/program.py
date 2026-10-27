@@ -1,5 +1,7 @@
 """Brain facts: what correspondents say about themselves, each with its sentence."""
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-035. A cron job the brain's setup run writes (every 21600 s), args
 # {space, hub, datasets, tier}. It is the one brain program that reads mail
 # with a model, and it does nothing until the user allowed that in
@@ -18,8 +20,8 @@ import json
 import re
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
-_any = use("any@v1")  # noqa: F821 - guest global
-llm = use("llm@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
+llm = use("agent:llm@v1")  # noqa: F821 - guest global
 
 CONSENT_KEY = "brain.model"
 PERSON_PAGE = 200

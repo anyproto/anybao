@@ -9,7 +9,7 @@ burned) and never re-enables a paused one; the chat tools write the
 contract rows and re-arm brain-setup; nothing is ever deleted."""
 
 import pytest
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 BAO = "bao-space"
 NOW = 1_800_000_000.0
@@ -178,7 +178,7 @@ def kernel(config=None, fake=None):
             return {}
         raise AssertionError(f"unexpected effect {name}")
 
-    app = load_kernel(effect=eff, any_client=fake)
+    app = connector_kernel(effect=eff, any_client=fake)
     return app.use("brainSetup@v1"), fake, cfg, writes, sleeps
 
 
@@ -255,15 +255,15 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert sorted(js) == ["brain-facts", "brain-heartbeat", "brain-mail-sync",
                           "brain-people", "brain-promises", "brain-reconcile"]
     facts = js["brain-facts"]
-    assert facts["program"] == "agent:brainFacts@v1" and facts["spec"] == {"every_s": 21600}
+    assert facts["program"] == "connectors:brainFacts@v1" and facts["spec"] == {"every_s": 21600}
     assert facts["args"]["tier"] == "brain.extractor"
     assert facts["args"]["datasets"]["facts"] == "type-hub_facts"
-    assert js["brain-people"]["program"] == "agent:brainPeople@v1"
+    assert js["brain-people"]["program"] == "connectors:brainPeople@v1"
     assert js["brain-promises"]["spec"] == {"every_s": 1800}
     assert js["brain-mail-sync"]["program"] == "connectors:gmailSync@v1"
     assert js["brain-mail-sync"]["args"] == {"space": BAO}
     beat = js["brain-heartbeat"]
-    assert beat["program"] == "agent:brainHeartbeat@v1" and beat["spec"] == {"every_s": 600}
+    assert beat["program"] == "connectors:brainHeartbeat@v1" and beat["spec"] == {"every_s": 600}
     assert beat["args"]["space"] == BAO and beat["args"]["hub"] == "hub"
     assert beat["args"]["datasets"]["config"] == "type-hub_config"
     assert js["brain-reconcile"]["args"] == {"mode": "reconcile"}
@@ -473,7 +473,7 @@ def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
     out = mod.main({"mode": "reconcile"})
     (new_id,) = out["written"]
     assert new_id.startswith("brain-heartbeat-")
-    assert jobs(fake)[new_id]["program"] == "agent:brainHeartbeat@v1"
+    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v1"
 
 
 def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
@@ -568,7 +568,7 @@ def test_on_and_off_from_chat_write_the_request_and_re_arm_setup():
     assert out["state"] == "waiting"
     assert cfg["brain.space"]["spaceId"] is None and cfg["brain.space"]["by"] == "chat"
     armed = triggers(fake)["brain-setup"]
-    assert armed["kind"] == "once" and armed["program"] == "agent:brainSetup@v1"
+    assert armed["kind"] == "once" and armed["program"] == "connectors:brainSetup@v1"
     assert armed["spec"] == {"at": NOW} and armed["enabled"] is True
     # a fired once keeps its lastRunAt through a merge-$set: the re-arm clears it
     assert armed["lastRunAt"] is None

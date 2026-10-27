@@ -7,7 +7,7 @@ person raises."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 NOW = 1_800_000_000
 DAY = 86400
@@ -60,7 +60,7 @@ def kernel(s):
             return {"value": READY}
         raise AssertionError(f"unexpected effect {name}")
 
-    return load_kernel(effect=eff, any_client=s).use("brainBrief@v1")
+    return connector_kernel(effect=eff, any_client=s).use("brainBrief@v1")
 
 
 def test_the_card_groups_current_facts_and_sets_proposed_apart():

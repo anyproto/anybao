@@ -5,6 +5,8 @@ The brain is on by default. `status()` says how it stands; `on()` and
 mail out of it for good. A trigger run of this program does the setup.
 """
 
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+
 # ADR-033. The contract with any-ui's Settings → Brain is two
 # agent_config rows and one trigger record:
 #   brain.space   the request: {spaceId: <Bao's space> | None, requestedAt, by}
@@ -29,7 +31,7 @@ mail out of it for good. A trigger run of this program does the setup.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
-_any = use("any@v1")  # noqa: F821 - guest global
+_any = use("agent:any@v1")  # noqa: F821 - guest global
 kit = use("brainKit@v1")  # noqa: F821 - guest global
 
 SPACE_KEY = "brain.space"
@@ -38,11 +40,11 @@ JOBS_KEY = "brain.jobs"
 STOPPED = "auto_disabled"
 CHAT_SPACES_KEY = "brain.chatScan.spaces"
 SETUP_TRIGGER_ID = "brain-setup"
-PROGRAM = "agent:brainSetup@v1"
-HEARTBEAT = "agent:brainHeartbeat@v1"
-PEOPLE = "agent:brainPeople@v1"
-PROMISES = "agent:brainPromises@v1"
-FACTS = "agent:brainFacts@v1"
+PROGRAM = "connectors:brainSetup@v1"
+HEARTBEAT = "connectors:brainHeartbeat@v1"
+PEOPLE = "connectors:brainPeople@v1"
+PROMISES = "connectors:brainPromises@v1"
+FACTS = "connectors:brainFacts@v1"
 GMAIL_SYNC = "connectors:gmailSync@v1"
 MAIL_SYNC_ID = "brain-mail-sync"
 # the hub's shape; a reconcile run that finds an older hub re-arms setup,
@@ -377,7 +379,7 @@ def _brain_jobs(bao, anchor):
     out = {}
     for rec in _any.query(bao, anchor, TRIGGERS, limit=500):
         prog = rec.get("program") or ""
-        if rec.get("kind") == "cron" and prog.startswith("agent:brain"):
+        if rec.get("kind") == "cron" and prog.startswith("connectors:brain"):
             out.setdefault(_job_key(rec), []).append(rec)
     return out
 
@@ -470,7 +472,7 @@ def _stopped_jobs(bao, anchor, mail_sync):
     out = []
     for rec in _any.query(bao, anchor, TRIGGERS, limit=500):
         prog = rec.get("program") or ""
-        ours = (rec.get("kind") == "cron" and prog.startswith("agent:brain")) or (
+        ours = (rec.get("kind") == "cron" and prog.startswith("connectors:brain")) or (
             sync_id is not None and rec.get("id") == sync_id)
         if ours and not rec.get("enabled", True) and rec.get("lastStatus") == STOPPED:
             out.append(rec)

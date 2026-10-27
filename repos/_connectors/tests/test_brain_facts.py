@@ -13,7 +13,7 @@ import json
 
 import pytest
 from brain_fakes import HUB, FakeAnyError, FakeSpace, job_args
-from kernelenv import load_kernel
+from connectorenv import connector_kernel
 
 NOW = 1_800_000_000
 DAY = 86400
@@ -91,7 +91,7 @@ def run(space, model, *, consent=True, tier=TIER, args=None):
             return model.answer(payload)
         raise AssertionError(f"unexpected effect {name}")
 
-    mod = load_kernel(effect=eff, any_client=space).use("brainFacts@v1")
+    mod = connector_kernel(effect=eff, any_client=space).use("brainFacts@v1")
     return mod, mod.main(args if args is not None else facts_args(space))
 
 
