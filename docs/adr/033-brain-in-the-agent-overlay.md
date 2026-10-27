@@ -1,0 +1,163 @@
+# ADR-033: The AI brain in the agent overlay — setup as a program, jobs as records, no runtime change
+
+Status: **Proposed** (2026-10-25)
+Date: 2026-10-25
+Builds on: ADR-006 §3 (`agent_config` rows, `config.get` / `config.set`),
+ADR-006 §4 (trigger records: unowned records, `once`, refresh), ADR-009
+(overlays), ADR-010 (docstrings as the doc surface), ADR-017 §0 (`bao/v1`
+stores), ADR-027 (parts and the usecase catalog)
+Design record: any-ui `docs/plans/2026-10-24-ai-brain-on-any-bao-design.md`;
+plan: any-ui `docs/plans/2026-10-25-ai-brain-phase-0-packaging-scaffold.md`
+
+## Context
+
+The AI brain is a set of jobs and stores that keep what Bao learns from
+the user's mail, calendar and meetings — people, promises, facts, cards —
+in Bao's own space. It must ship pre-installed for every user, be on by
+default, and be switchable from any-ui's Settings → Brain and from chat.
+
+A first plan asked for runtime work: built-in ("standing") triggers for
+the brain's jobs, host-side provisioning, a ticker that watches a config
+row, new model tiers in `config_defaults.json`, a third overlay. The owner
+decided (2026-10-25) that the brain ships with **no change to the bao
+runtime**. Everything it needs already exists for guest code:
+
+- an unowned `agent_triggers` record runs on the election-active device,
+  which stamps it (`triggers::reconcile_registry`, ADR-006 §4);
+- a `once` whose record carries no `lastRunAt` fires on the next tick,
+  and an `enabled` false→true flip resets the circuit breaker (ADR-006
+  §4, refresh);
+- `any@v1` exposes `setup_app`, `ensure_bundle`, `create_type`,
+  `create_dataset` (which passes its draft to the server unchanged) and
+  `bundle_child`;
+- `config.get` reads the live store row and `config.set` refuses only
+  the secret namespaces.
+
+## Decision
+
+### 1. The programs ship in the agent overlay
+
+`repos/_agent/programs/brainSetup@v1/program.py` and
+`repos/_agent/programs/brainHeartbeat@v1.py`, plus the `brain-core`
+skill in `repos/_agent/skills/`. They deploy with the agent overlay —
+no new space, invite or `anybao.toml` entry, and no change to the
+desktop shell, which writes the overlay list per release channel. A
+separate `_brain` overlay stays a later option.
+
+### 2. The contract is two config rows and one trigger record
+
+| Row / record | Writer | Value |
+| --- | --- | --- |
+| `brain.space` (agent_config) | any-ui's switch, its first-open default, `brainSetup.on()/off()` from chat, or the setup run when it finds no row | `{spaceId: <Bao's space> \| null, requestedAt, by}` — absent = on (the default), `null` = off |
+| `brain.status` (agent_config) | the setup run | `{spaceId?, requestedAt, state: provisioning \| ready \| error \| off, at, error?: {type, message}, hub?: {objectId, datasets}, stopped?: [{id, name}]}` — `requestedAt` echoes the request it answers; `stopped` is a warning on a `ready` brain (§4) |
+| `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "agent:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
+
+Each request rewrites `brain-setup` with `lastRunAt: null`, which re-arms
+it. The null is load-bearing: a whole-value `$set` MERGES into the stored
+record, so a plain rewrite keeps the fired run's `lastRunAt`, and the
+runtime reads the once as consumed and never fires it again (seen on a
+live run, 2026-10-25). Nothing in the contract is ever deleted: a deleted
+record id can never be written again.
+
+### 3. The setup run
+
+`main(args)` without `args.mode`:
+
+1. Read `brain.space`. Absent: write the default (`by: "default"`, Bao's
+   space) and answer it. The status always echoes the row's current
+   `requestedAt`, not the trigger's, so a second click wins.
+2. `spaceId: null`: disable every brain job, remember which in the
+   agent_config row `brain.jobs` (`{offDisabled}`), answer `off`. Not a
+   hub record: an off run after a failed setup has no hub in its status
+   to write to, and the next on run would re-enable nothing. The list is
+   written BEFORE the jobs are disabled, so a run cut short leaves none
+   unrecorded; a failed off run is answered `error` and raised. An on run
+   clears only the ids it could see — one whose record has not synced to
+   this device yet stays remembered — and a `brain.jobs` in another shape
+   raises `jobs_unreadable` rather than re-enable nothing silently.
+3. A space other than Bao's: answer `error` (`wrong_space`) and raise.
+4. Otherwise answer `provisioning`, then install or adopt: the `people`
+   and `meetings` catalog apps; the `brain/v1` bundle (a created root of
+   type `page`); the hidden, bodiless `brain_hub` type; its four
+   datasets `signals`, `config`, `incidents`, `observations`, each
+   `shared` and with its full field set — declared through `any@v1`'s
+   `_create_dataset`, the plumbing export `enrich@v1` uses; the `brain/hub/v1` child; the exclusion list
+   (`config/exclusions`, `{version: 1, personIds, emails, domains}`) and
+   the `llm.tier.brain.drafter` / `.extractor` / `.caretaker` rows,
+   copied from `codegen` / `codegen` / `classify`, each only when absent.
+   A `409 bundle.not_ready` is retried five times, two seconds apart.
+5. Write the missing jobs, re-enable the ones the last off run disabled,
+   and — for a NEW request only — re-enable the jobs the runtime stopped
+   after repeated failures (`lastStatus: auto_disabled`; the flip resets
+   the breaker). Answer `ready` with the hub, listing any job still
+   stopped under `stopped`. Any exception in 4–5 is answered as
+   `error` and raised as `provision_failed`, so the run reads FAILED.
+
+### 4. The brain's jobs are records
+
+| Job (id when first written) | Spec | Program | Args |
+| --- | --- | --- | --- |
+| `brain-heartbeat` | `every_s: 600` | `agent:brainHeartbeat@v1` | `{space, hub, datasets}` |
+| `brain-reconcile` | `every_s: 3600` | `agent:brainSetup@v1` | `{mode: "reconcile"}` |
+
+- **Found by program and `args.mode`, not by id.** A job deleted by hand
+  is rewritten under a fresh id (`<base>-<epoch>`), since its id is
+  burned. The server reports a burned id the way it reports every
+  per-record refusal: HTTP 200, the id even listed in `recordIds`, the
+  reason only in `rejections` — so every brain write checks
+  `rejections` and raises on one (`write_rejected`).
+- **A pause holds.** The reconcile run only writes missing jobs; it
+  never re-enables one. Only an on run re-enables: the jobs the off run
+  before it disabled, and those the runtime stopped.
+- **A stopped job is not a pause, and not an outage.** When the runtime
+  has stopped a brain job (`lastStatus: auto_disabled`), the reconcile
+  run keeps the answer — state `ready`, its `at` and hub — and lists the
+  job under `stopped` (`[{id, name}]`); it clears the list once the job
+  is enabled again.
+  Settings shows it as a warning with Try again, and every brain tool and
+  `exclude` keep working, since the rest of the brain still does.
+  Try again writes a new request, which restarts them (§3 step 5); a
+  setup run re-armed for the request it already answered — the
+  chat-scan list — restarts nothing. Two limits: the
+  runtime keeps `lastStatus` until a job's next run, so a stopped job the
+  user resumed and paused again before it ran is still read as stopped;
+  and a stopped `brain-reconcile` cannot report itself — `status()`
+  reads the jobs live, so the chat tool still sees it.
+- Unowned when written, so the active device claims them; Pause and
+  Repin in Scheduled work as for any job.
+
+### 5. The heartbeat v0
+
+Raises `unconfigured` without its args; reads `config/exclusions` and,
+when it is missing or not version 1, writes one `signals` row
+(`decision: refused`) and raises `exclusions_unreadable`; writes one
+`heartbeat_gap` signal when its last tick is more than 1 200 s old;
+records `config/heartbeat.lastTickAt`. It imports `any@v1` only.
+
+### 6. The hub's stores are shared datasets
+
+A read of a shared dataset returns `id: "<objectId>/<recordId>"`, and an
+`id` filter compares that whole value; writes take the plain id (any
+`docs/03-api.md` § Shared datasets). Every lookup of a hub record —
+`config/exclusions`, `config/heartbeat` — filters on
+`f"{hub}/{name}"`. A lookup by the plain id finds nothing, which would
+re-seed the exclusion list over the user's on every setup run and make
+the heartbeat refuse every tick.
+
+## Consequences
+
+- No file under `runtime/src/` changes. The cost, accepted:
+  - the brain's jobs can be edited or deleted like any record — the
+    hourly reconcile repairs deletions, an edit holds until fixed;
+  - a request waits for the next ticker pass;
+  - a runtime nobody opens the app against never starts the brain by
+    itself (asking Bao in chat still works);
+  - brain notices post under the literal agent name `bao`, as
+    `remind@v1` does.
+- What would need runtime code is kept in any-ui's
+  `docs/plans/2026-10-25-ai-brain-later.md`: a send gate, built-in brain
+  jobs, run ids stamped on writes, the configured agent name for guests,
+  non-chat event triggers, enforced capabilities, a second Google
+  account.
+- Phase 0 ships no mail, calendar or meeting sync, no people, facts,
+  cards or drafts — only the scaffold above.
