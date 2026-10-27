@@ -30,7 +30,11 @@ def _sanitize_nuls(obj):
     return obj
 
 
-_HEADING = re.compile(r"^\s{0,3}#{1,2}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+# A leading `# Title` / `## Title` line (blank lines before it, the
+# heading's own line end and the blank lines after it) — the match runs
+# from the start of the body to the first content line below the heading.
+_TITLE_HEADING = re.compile(
+    r"\s*#{1,2}[ \t]+(.+?)[ \t]*#*[ \t]*(?:\n(?:[ \t]*\n)*|\Z)")
 
 
 def _title_key(text):
@@ -45,19 +49,10 @@ def _strip_title_heading(content, title):
     (case/whitespace-insensitive) match; anything else is kept."""
     if not isinstance(content, str) or not title:
         return content, False
-    lines = content.split("\n")
-    i = 0
-    while i < len(lines) and not lines[i].strip():
-        i += 1
-    if i == len(lines):
-        return content, False
-    m = _HEADING.match(lines[i])
+    m = _TITLE_HEADING.match(content)
     if not m or _title_key(m.group(1)) != _title_key(title):
         return content, False
-    i += 1
-    while i < len(lines) and not lines[i].strip():
-        i += 1
-    return "\n".join(lines[i:]), True
+    return content[m.end():], True
 
 
 def _slugify_xkey(name):
