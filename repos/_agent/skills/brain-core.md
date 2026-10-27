@@ -54,6 +54,18 @@ switches it in Settings → Brain, or by asking you.
   objects, mail and promises. Quote each hit's `link` so the user can open
   it; never answer about someone the user keeps out of the brain.
 
+## Facts and the brief
+
+- `facts` on the hub are what the brain learned about a person from their
+  mail, each with the verbatim `quote` and the `source` that opens the
+  mail. Reading mail with a model needs the user's consent, a separate
+  switch in Settings → Brain; when it is off there are no new facts. Never
+  switch it for the user: point them at Settings → Brain.
+- Before a meeting or a reply, call `agent:brainBrief@v1.person(<person id>)`.
+  Quote a fact with its evidence when you use it, never state a fact
+  without one, and say that a `proposed` fact is unconfirmed.
+- Never write `facts` yourself; the brain's own programs own them.
+
 ## Exclusions
 
 `exclude(person=…, email=…, domain=…)` keeps someone's mail out of the

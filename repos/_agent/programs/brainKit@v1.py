@@ -1,8 +1,8 @@
 """Brain helpers: checked writes, hub records, exclusions and mail addresses."""
 
 # ADR-033 / ADR-034. Shared by the brain's programs (setup's status, the
-# heartbeat, people, promises, recall, tasks); not a tool. Three server
-# rules every brain write and read depends on live here, once:
+# heartbeat, people, promises, facts, recall, tasks); not a tool. Three
+# server rules every brain write and read depends on live here, once:
 #   - modify / upsert answer HTTP 200 even when they refuse a record; the
 #     refusal sits only in `rejections` (checked)
 #   - the hub's stores are SHARED datasets: reads return, and `id` filters
@@ -275,3 +275,39 @@ def job_args(args, *needed):
     if any(not datasets.get(k) for k in ("config",) + needed):
         return None
     return args["space"], args["hub"], datasets
+
+
+# the six groups a person's facts are shown in, by kind prefix
+FACT_GROUPS = (("tastes", "taste."), ("views", "view."), ("preferences", "preference."),
+               ("personal", "personal."), ("work", "work."), ("history", "history."))
+
+
+def _fact_view(fact):
+    return {"id": plain_id(fact["id"]), "kind": fact.get("kind"), "value": fact.get("value"),
+            "quote": fact.get("quote"), "source": fact.get("source"),
+            "channel": fact.get("channel"), "origin": fact.get("origin"),
+            "confidence": fact.get("confidence"),
+            "observedAt": ts_s(fact.get("observedAt"))}  # noqa: F821 - guest global
+
+
+def person_facts(space, hub, datasets, person_id, limit=200):
+    """(current facts grouped by FACT_GROUPS, proposed facts) for one person,
+    newest first; ({}, []) when the hub keeps no facts yet."""
+    if not datasets.get("facts"):
+        return {}, []
+    rows = _any.query(space, hub, datasets["facts"], filter={"personId": person_id},
+                      sort=["-observedAt"], limit=limit)
+    grouped = {name: [] for name, _ in FACT_GROUPS}
+    proposed = []
+    for row in rows:
+        if row.get("status") == "proposed":
+            proposed.append(_fact_view(row))
+            continue
+        if row.get("status") != "current":
+            continue
+        kind = str(row.get("kind") or "")
+        for name, prefix in FACT_GROUPS:
+            if kind.startswith(prefix):
+                grouped[name].append(_fact_view(row))
+                break
+    return grouped, proposed
