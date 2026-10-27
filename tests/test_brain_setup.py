@@ -41,6 +41,8 @@ class FakeAny:
         self.not_ready = {}
         self.fail = {}
         self.reject = {}
+        self.mailboxes = [{"id": "mb1", "any": {"name": "me@example.com"},
+                           "mailbox": {"address": "me@example.com"}}]
 
     # the store
     def _store(self, space, oid, ds):
@@ -136,8 +138,16 @@ class FakeAny:
     def list_apps(self, space):
         return [{"usecase": u} for u in self.apps]
 
+    def list_types(self, space):
+        # the mailbox type arrives with the first mail sync
+        names = ["page", "profile", "task", *self.types] + (["mailbox"] if self.mailboxes else [])
+        return [{"id": f"type-{t}", "xKey": t} for t in names]
+
     def query_objects(self, space, normalize=True, filter=None, limit=None, **_):
-        return [{"id": "mb1", "any": {"name": "me@example.com"}}]
+        assert filter == {"any.type": "mailbox"}, filter
+        if "mailbox" not in {t["xKey"] for t in self.list_types(space)}:
+            raise ValueError('type "mailbox" doesn\'t exist')
+        return list(self.mailboxes)
 
 
 def kernel(config=None, fake=None):
@@ -576,3 +586,12 @@ def test_status_names_the_state_apps_and_mailboxes():
     assert out["mailboxes"] == ["me@example.com"]
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     assert mod.status()["state"] == "switching_off"
+
+
+def test_status_before_the_first_mail_sync_names_no_mailbox():
+    fake = FakeAny()
+    fake.mailboxes = []                  # no mailbox type: no sync has run
+    mod, _, _, _, _ = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    out = mod.status()
+    assert out["state"] == "ready" and out["mailboxes"] == []

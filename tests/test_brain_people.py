@@ -158,3 +158,11 @@ def test_unconfigured_args_raise():
     with pytest.raises(Exception) as err:
         run(s, {"space": s.space})
     assert type(err.value).__name__ == "unconfigured"
+
+
+def test_before_the_first_mail_sync_there_is_nothing_to_read():
+    s = FakeSpace()                      # no mailbox type: no sync has run
+    s.set_config("exclusions", dict(EXCLUSIONS))
+    _, out = run(s)
+    assert out == {"mailboxes": 0, "messages": 0, "minted": 0, "updated": 0,
+                   "promisesLinked": 0}

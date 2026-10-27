@@ -29,6 +29,7 @@ mail out of it for good. A trigger run of this program does the setup.
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
 _any = use("any@v1")  # noqa: F821 - guest global
+kit = use("brainKit@v1")  # noqa: F821 - guest global
 
 SPACE_KEY = "brain.space"
 STATUS_KEY = "brain.status"
@@ -583,17 +584,15 @@ def status():
     state ∈ waiting | setting_up | ready | error | switching_off | off.
     `apps` names the catalog apps Bao's space lists (meetings and tasks
     among them; people installs the person collection, not a listed app);
-    `mailboxes` names the synced mailboxes there; `stopped` the jobs the
-    runtime stopped after repeated failures, as [{id, name}]."""
+    `mailboxes` names the synced mailboxes' addresses there; `stopped` the
+    jobs the runtime stopped after repeated failures, as [{id, name}]."""
     bao = _any.bao_space()
     request, current = _request(), _status()
     apps = sorted({a.get("usecase") for a in _any.list_apps(bao) if a.get("usecase")})
-    boxes = _any.query_objects(bao, normalize=False, filter={"any.type": "mailbox"},
-                               limit=20)
     stopped = _warning(_stopped_jobs(bao, _trigger_anchor(bao)))
     return {"state": _state(request, current), "request": request, "status": current,
             "apps": apps,
-            "mailboxes": [((b.get("any") or {}).get("name") or b.get("id")) for b in boxes],
+            "mailboxes": [addr or box for box, addr in kit.mailboxes(bao)],
             "stopped": stopped}
 
 

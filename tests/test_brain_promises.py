@@ -211,3 +211,10 @@ def test_unconfigured_without_a_promises_store():
         mod.main(args)
     assert type(err.value).__name__ == "unconfigured"
     assert HUB
+
+
+def test_before_the_first_mail_sync_there_is_nothing_to_read():
+    s = FakeSpace()                      # no mailbox type: no sync has run
+    s.set_config("exclusions", dict(EXCLUSIONS))
+    mod, _ = kernel(s)
+    assert mod.main(job_args(s)) == {"messages": 0, "promises": 0, "closed": 0}

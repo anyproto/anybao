@@ -169,3 +169,12 @@ def test_an_unreadable_exclusion_list_fails_closed():
     with pytest.raises(Exception) as err:
         kernel(s).search("deck")
     assert type(err.value).__name__ == "exclusions_unreadable"
+
+
+def test_a_person_before_the_first_mail_sync_has_no_mail():
+    s = FakeSpace()                      # no mailbox type: no sync has run
+    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada",
+                 person={"email": "ada@lab.org"}, brain_person={"emails": ["ada@lab.org"]})
+    out = kernel(s).person("ada")
+    assert out["person"]["emails"] == ["ada@lab.org"] and out["mail"] == []

@@ -3,7 +3,10 @@ rules the live runs taught (ADR-033 §2, §4, §6): the hub's stores are
 SHARED (reads and id filters use "<objectId>/<recordId>", writes the plain
 id), a refused record write is HTTP 200 with `rejections`, and a
 write-once field rejects a changed value. Objects carry one type, any
-collections and xKey-nested property groups, like normalized rows."""
+collections and xKey-nested property groups, like normalized rows. A type
+exists only once something installed it, and a query naming a type the
+space lacks raises, as any@v1 does: the mailbox type arrives with the first
+mail sync."""
 
 import copy
 
@@ -11,6 +14,9 @@ HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
             ("signals", "config", "incidents", "observations", "promises")}
+# what a set-up brain's space has before any mail sync: the built-in page,
+# the people and tasks catalog apps' types, the hub
+BASE_TYPES = ("page", "profile", "task", "brain_hub")
 WRITE_ONCE = {"promises": {"text", "quote", "source", "mailboxId", "channel", "madeAt",
                            "dueAt", "personEmail"}}
 
@@ -58,10 +64,12 @@ class FakeSpace:
         self.search_hits = {}      # scope -> [hit]
         self.search_fails = set()  # scopes the index refuses
         self.calls = []
+        self.types = set(BASE_TYPES)
         self._n = 0
 
     # --- seeding -----------------------------------------------------------
     def add_object(self, oid, type_, collections=(), **groups):
+        self.types.add(type_)
         row = {"id": oid, "any": {"type": type_, "collections": list(collections),
                                   "name": groups.pop("name", oid)}}
         row.update(copy.deepcopy(groups))
@@ -89,7 +97,14 @@ class FakeSpace:
     def bao_space(self):
         return self.space
 
+    def list_types(self, space):
+        return [{"id": f"type-{t}", "xKey": t} for t in sorted(self.types)]
+
     def query_objects(self, space, normalize=True, filter=None, limit=None, **_):
+        wanted = (filter or {}).get("any.type")
+        known = {t["xKey"] for t in self.list_types(space)}
+        if isinstance(wanted, str) and wanted not in known:
+            raise ValueError(f'type "{wanted}" doesn\'t exist')
         out = []
         for row in self.objects.values():
             ok = True

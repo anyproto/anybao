@@ -1,8 +1,8 @@
 """Brain helpers: checked writes, hub records, exclusions and mail addresses."""
 
-# ADR-033 / ADR-034. Shared by the brain's job programs (heartbeat, people,
-# promises, tasks); not a tool. Three server rules every brain write and
-# read depends on live here, once:
+# ADR-033 / ADR-034. Shared by the brain's programs (setup's status, the
+# heartbeat, people, promises, recall, tasks); not a tool. Three server
+# rules every brain write and read depends on live here, once:
 #   - modify / upsert answer HTTP 200 even when they refuse a record; the
 #     refusal sits only in `rejections` (checked)
 #   - the hub's stores are SHARED datasets: reads return, and `id` filters
@@ -172,7 +172,11 @@ def kept_out(addr, excl, block):
 
 
 def mailboxes(space):
-    """[(mailbox object id, lowercased address)] in the space."""
+    """[(mailbox object id, lowercased address)] in the space; [] before any mail sync."""
+    # the mailbox type is installed by the first mail sync, and a query
+    # naming a type the space lacks raises
+    if not any(t.get("xKey") == "mailbox" for t in _any.list_types(space)):
+        return []
     rows = _any.query_objects(space, filter={"any.type": "mailbox"}, limit=50)
     out = []
     for r in rows:
