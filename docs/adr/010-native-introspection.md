@@ -245,6 +245,8 @@ through the same prompt that carries everything else:
 
 ### 8. Flat tool surface — spaceConfig (2026-08-04)
 
+**Amended 2026-10-28 (favourites):** `list_favorites()`, `add_favorite(space, object_id, folder=, name=)`, `remove_favorite(space, object_id)` — the account's `favorites/v1` bundle on the tech space (any `docs/25-favorites.md`): the entry id is the target's canonical link, removal is soft, and the install request is any-ui's declaration verbatim (the declaration is pinned at first install, so the two clients must converge). Favourites are never a collection or a property.
+
 **Amended 2026-10-21 (ADR-029 §3):** `create_type` takes `icon` (`{"glyph"}`, a Lucide glyph, no colour, required on a listed mint, healed onto an iconless row); `set_type_icon(space, type_key, icon)`; `create_object` / `update_object` take `icon` (`{"emoji"}` or `{"picture"}`, the object's own mark).
 
 **Amended 2026-09-17 (ADR-029 §3/§4):** `create_object` takes `type` (default `page`) and `collections`; the membership verbs `set_type`, `add_to_collection`, `remove_from_collection`, `trash`, `restore`; `list_collections` and `create_collection` (the tag composite); `list_types` hides the meta rows; the property surface (`list_properties`, `add_property`, `patch_property`, `set_option`, `remove_option`, `reorder_property`, `delete_property`) takes a type OR a collection; `attach_type` / `detach_type` are gone; `ensure_bundle(root_type=, root_collections=)`, `bundle_child(type_key=, collections=)`.
