@@ -63,7 +63,8 @@ class FakeSpace:
         self.records = {}          # (oid, dataset) -> {rid: record}
         self.search_hits = {}      # scope -> [hit]
         self.search_fails = set()  # scopes the index refuses
-        self.refuse = {}           # record id -> the reason the server refuses it
+        self.refuse = {}           # record id -> why the server refuses it: a reason,
+                                   # or {code, reason}
         self.calls = []
         self.types = set(BASE_TYPES)
         self._n = 0
@@ -153,8 +154,9 @@ class FakeSpace:
         out = {"created": 0, "updated": 0, "skipped": 0, "rejections": []}
         for i, rec in enumerate(records):
             if rec["id"] in self.refuse:
-                out["rejections"].append({"index": i, "id": rec["id"],
-                                          "reason": self.refuse[rec["id"]]})
+                why = self.refuse[rec["id"]]
+                why = why if isinstance(why, dict) else {"reason": why}
+                out["rejections"].append({"index": i, "id": rec["id"], **why})
                 continue
             have = store.get(rec["id"])
             if have is None:

@@ -208,12 +208,16 @@ def main(args):
         records = _unwritten(space, hub, datasets["promises"], records) if records else []
         if records:
             reply = _any.upsert_records(space, hub, datasets["promises"], records) or {}
-            rejected = reply.get("rejections") or []
+            # a deleted promise's id is burned and reads as unwritten; the
+            # user removed it, so its refusal is the answer, not a failure
+            deleted = [r for r in reply.get("rejections") or []
+                       if r.get("code") == "upsert.record_deleted"]
+            rejected = [r for r in reply.get("rejections") or [] if r not in deleted]
             if rejected:
                 raise promises_rejected(
                     f"{len(rejected)} of {len(records)} rejected: "
                     f"{rejected[0].get('reason') or rejected[0].get('code')}")
-            found += len(records)
+            found += len(records) - len(deleted)
         cursor[box_id] = last
     kit.write_config(space, hub, datasets, "promises.cursor", cursor)
     closed = _close_completed(space, hub, datasets)

@@ -234,3 +234,15 @@ def test_sent_mail_under_a_blocklisted_label_is_never_read():
     mod, _ = kernel(s)
     out = mod.main(job_args(s))
     assert s.store("promises") == {} and out["messages"] == 1
+
+
+def test_a_promise_whose_record_was_deleted_is_not_a_failure():
+    # a deleted id is burned: re-sending it is refused for good, which must
+    # not stop the job at that message forever
+    s = mail_space("I'll send the deck tomorrow.")
+    mod, _ = kernel(s)
+    s.refuse[mod.promise_id("m1", "I'll send the deck tomorrow.")] = {
+        "code": "upsert.record_deleted", "reason": "crdt: record is deleted"}
+    out = mod.main(job_args(s))
+    assert out["promises"] == 0
+    assert s.config("promises.cursor") == {"mb1": MADE_MS}

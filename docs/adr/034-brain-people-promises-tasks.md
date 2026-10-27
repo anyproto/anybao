@@ -74,7 +74,10 @@ message yields again would reopen one the user or a completed task
 closed. A message to
 an excluded or blocklisted recipient, or under a blocklisted label, is
 skipped whole. Any per-record
-rejection fails the run with the cursor unmoved. It also marks done an
+rejection fails the run with the cursor unmoved, but one: a deleted
+promise's id is burned, so re-sending it answers `upsert.record_deleted`,
+which the job takes as the user's answer rather than stop at that
+message for good. It also marks done an
 open promise whose catalog task the user completed, finding the tasks by
 the `taskId`s the promises hold rather than by the `brain_task`
 collection: a task the Promises view makes in any-ui is a plain catalog
