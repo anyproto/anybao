@@ -190,3 +190,23 @@ def test_a_blocklist_field_that_is_not_a_list_fails_closed():
         run(s)
     assert type(err.value).__name__ == "blocklist_unreadable"
     assert people(s) == {}
+
+
+def test_a_person_past_the_first_thousand_is_merged_not_overwritten_or_duplicated():
+    s = space_with_mail()
+    for i in range(1000):
+        s.add_object(f"p{i:04}", "profile", ["person", "brain_person"],
+                     person={"email": f"x{i}@crowd.org"},
+                     brain_person={"emails": [f"x{i}@crowd.org"]})
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada",
+                 person={"email": "ada@lab.org"},
+                 brain_person={"emails": ["ada@lab.org", "ada@home.net"], "aliases": ["Ada"],
+                               "mailCount": 40})
+    s.add_mail("mb1", "m3", **{"from": "Ada <ada@home.net>", "to": ME,
+                               "internalDate": 3_000_000})
+    run(s)
+    ada = s.objects["ada"]["brain_person"]
+    assert ada["emails"] == ["ada@lab.org", "ada@home.net"]
+    assert ada["mailCount"] == 43 and ada["aliases"][0] == "Ada"
+    assert "ada@home.net" not in people(s)
+    assert [c for c in s.calls if c == ("add_to_collection", "ada", "brain_person")] == []

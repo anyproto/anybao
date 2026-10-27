@@ -20,6 +20,7 @@
 kit = use("brainKit@v1")  # noqa: F821 - guest global
 _any = use("any@v1")  # noqa: F821 - guest global
 
+PRELOAD = 1000
 MAX_NEW = 300
 PER_MAILBOX = 200
 PROMISE_BACKFILL = 200
@@ -44,14 +45,16 @@ def _cursor(space, hub, datasets):
 
 
 class _People:
-    """The space's brain persons, by address, loaded once per run."""
+    """The space's brain persons by address: the first PRELOAD up front, the
+    rest found as their addresses turn up, so a person past the preload is
+    merged into, never overwritten or duplicated."""
 
     def __init__(self, space):
         self.space = space
         self.by_email = {}
         self.rows = {}
         for r in _any.query_objects(space, filter={"any.collections": "brain_person"},
-                                    limit=1000):
+                                    limit=PRELOAD):
             self._index(r)
 
     def _index(self, row):
@@ -63,9 +66,14 @@ class _People:
         """(person id, filed under brain_person) or (None, False)."""
         if addr in self.by_email:
             return self.by_email[addr], True
-        hits = _any.query_objects(self.space, filter={"person.email": addr}, limit=1)
-        if hits:
-            return hits[0]["id"], False
+        for path in ("brain_person.emails", "person.email"):
+            hits = _any.query_objects(self.space, filter={path: addr}, limit=1)
+            if hits:
+                row = hits[0]
+                filed = "brain_person" in ((row.get("any") or {}).get("collections") or [])
+                if filed:
+                    self._index(row)
+                return row["id"], filed
         return None, False
 
 
@@ -144,7 +152,10 @@ def _apply(space, people, seen, excl):
         if not filed:
             _any.add_to_collection(space, pid, "brain_person")
         current = (people.rows.get(pid) or {}).get("brain_person") or {}
-        _any.update_object(space, pid, {"brain_person": _merged(current, addr, s)})
+        merged = _merged(current, addr, s)
+        _any.update_object(space, pid, {"brain_person": merged})
+        # a person seen under two addresses in one run merges twice
+        people.rows.setdefault(pid, {"id": pid})["brain_person"] = {**current, **merged}
         people.by_email[addr] = pid
         updated += 1
     return minted, updated

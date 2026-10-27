@@ -10,7 +10,7 @@ from kernelenv import load_kernel
 SPACE = "bafyreispace.0000000000000"
 PAGE = {"id": "type-page", "xKey": "page", "name": "Page", "builtIn": True}
 MAILBOX = {"id": "type-mailbox", "xKey": "mailbox", "name": "Mailbox"}
-ADDRESS = {"id": "prop-address", "key": "address", "name": "address", "format": "text"}
+ADDRESS = {"id": "prop-address", "xKey": "address", "name": "address"}
 
 
 def server(types, records=()):

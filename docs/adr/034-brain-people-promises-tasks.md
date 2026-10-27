@@ -52,7 +52,10 @@ per address: a person whose `brain_person.emails` holds it, else one
 whose `person.email` equals it (filed under `brain_person`), else a new
 `profile` filed under `person` and `brain_person`. The mailbox's own
 addresses, noise senders, blocklisted senders and domains, and excluded
-people never become people. It caps unknown addresses per run and
+people never become people. It preloads the first 1 000 persons; one
+past them is found by any of their addresses (`brain_person.emails`,
+then `person.email`) and merged into, never overwritten or minted
+twice. It caps unknown addresses per run and
 advances the cursor only past messages fully handled, then back-fills
 `personId` on promises whose recipient it now knows.
 
