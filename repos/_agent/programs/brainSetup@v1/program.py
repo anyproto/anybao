@@ -21,10 +21,11 @@ mail out of it for good. A trigger run of this program does the setup.
 # pause holds: the reconcile run only writes MISSING jobs and never
 # re-enables one; an off run records which jobs it disabled (brain.jobs)
 # and the next on run re-enables exactly those. A job the runtime stopped
-# after repeated failures (lastStatus auto_disabled) is not a pause: the
-# brain stays ready and brain.status lists it under `stopped`, and only a
-# NEW request (any-ui's Try again) restarts it; a setup run re-armed for
-# the same request (the chat-scan list) leaves it.
+# after repeated failures (lastStatus auto_disabled) — a brain job or the
+# mail sync it set up — is not a pause: the brain stays ready and
+# brain.status lists it under `stopped`, and only a NEW request (any-ui's
+# Try again) restarts it; a setup run re-armed for the same request (a hub
+# upgrade, the chat-scan list) leaves it.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -430,12 +431,15 @@ def _reenable_jobs(bao, anchor):
     return back
 
 
-def _stopped_jobs(bao, anchor):
-    """The brain's jobs that the runtime stopped after repeated failures."""
+def _stopped_jobs(bao, anchor, mail_sync):
+    """The brain's jobs, and the mail sync it set up, that the runtime stopped
+    after repeated failures."""
+    sync_id = (mail_sync or {}).get("triggerId")
     out = []
     for rec in _any.query(bao, anchor, TRIGGERS, limit=500):
         prog = rec.get("program") or ""
-        ours = rec.get("kind") == "cron" and prog.startswith("agent:brain")
+        ours = (rec.get("kind") == "cron" and prog.startswith("agent:brain")) or (
+            sync_id is not None and rec.get("id") == sync_id)
         if ours and not rec.get("enabled", True) and rec.get("lastStatus") == STOPPED:
             out.append(rec)
     return sorted(out, key=lambda r: r["id"])
@@ -446,10 +450,10 @@ def _warning(stopped):
     return [{"id": r["id"], "name": r.get("name") or r["id"]} for r in stopped]
 
 
-def _restart_stopped(bao, anchor):
+def _restart_stopped(bao, anchor, mail_sync):
     """Re-enable the stopped jobs; re-enabling resets the runtime's breaker."""
     back = []
-    for rec in _stopped_jobs(bao, anchor):
+    for rec in _stopped_jobs(bao, anchor, mail_sync):
         _set_enabled(bao, anchor, rec["id"], True)
         back.append(rec["id"])
     return back
@@ -523,8 +527,8 @@ def _setup():
         # only a new request restarts: a same-request re-arm is not the user
         # asking to try again
         fresh = request["requestedAt"] != answered
-        restarted = _restart_stopped(bao, anchor) if fresh else []
-        stopped = _warning(_stopped_jobs(bao, anchor))
+        restarted = _restart_stopped(bao, anchor, mail_sync) if fresh else []
+        stopped = _warning(_stopped_jobs(bao, anchor, mail_sync))
     except Exception as e:
         _write_status(request, "error",
                       error={"type": type(e).__name__, "message": str(e)[:500]})
@@ -552,7 +556,7 @@ def _reconcile():
         _arm(bao, request)
         return {"reconciled": True, "upgrading": True}
     anchor, written = _ensure_jobs(bao, hub)
-    stopped = _warning(_stopped_jobs(bao, anchor))
+    stopped = _warning(_stopped_jobs(bao, anchor, status.get("mailSync")))
     if stopped != (status.get("stopped") or []):
         # the warning changes, the answer does not: `at` and the hub stay
         value = {k: v for k, v in status.items() if k != "stopped"}
@@ -593,7 +597,7 @@ def status():
     bao = _any.bao_space()
     request, current = _request(), _status()
     apps = sorted({a.get("usecase") for a in _any.list_apps(bao) if a.get("usecase")})
-    stopped = _warning(_stopped_jobs(bao, _trigger_anchor(bao)))
+    stopped = _warning(_stopped_jobs(bao, _trigger_anchor(bao), (current or {}).get("mailSync")))
     return {"state": _state(request, current), "request": request, "status": current,
             "apps": apps,
             "mailboxes": [addr or box for box, addr in kit.mailboxes(bao)],

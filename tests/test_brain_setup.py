@@ -407,7 +407,7 @@ def test_a_stopped_job_is_a_warning_on_a_ready_brain_that_keeps_working():
     mod.main({"mode": "reconcile"})
     status = cfg["brain.status"]
     assert status["state"] == "ready" and status["hub"] == ready["hub"]
-    assert status["at"] == ready["at"]
+    assert status["at"] == ready["at"] and status["mailSync"] == ready["mailSync"]
     assert status["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
     assert mod.status()["state"] == "ready"
     assert mod.status()["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
@@ -420,22 +420,32 @@ def test_a_stopped_job_is_a_warning_on_a_ready_brain_that_keeps_working():
     assert "stopped" not in cfg["brain.status"] and cfg["brain.status"]["state"] == "ready"
 
 
+def test_a_stopped_mail_sync_is_reported_too():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    triggers(fake)["brain-mail-sync"].update(enabled=False, lastStatus="auto_disabled")
+    mod.main({"mode": "reconcile"})
+    assert cfg["brain.status"]["stopped"] == [{"id": "brain-mail-sync", "name": "mail sync"}]
+
+
 def test_try_again_restarts_a_stopped_job_but_not_a_paused_one():
     mod, fake, cfg, _, _ = kernel(config=on_request())
     mod.main({})
     triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
+    triggers(fake)["brain-mail-sync"].update(enabled=False, lastStatus="auto_disabled")
     triggers(fake)["brain-reconcile"]["enabled"] = False      # the user paused it
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-retry", "by": "any-ui"}
     out = mod.main({})
-    assert out["state"] == "ready" and out["restarted"] == ["brain-heartbeat"]
+    assert out["state"] == "ready" and out["restarted"] == ["brain-heartbeat", "brain-mail-sync"]
     assert jobs(fake)["brain-heartbeat"]["enabled"] is True
+    assert jobs(fake)["brain-mail-sync"]["enabled"] is True
     assert jobs(fake)["brain-reconcile"]["enabled"] is False
     assert "stopped" not in cfg["brain.status"]
 
 
 def test_a_setup_run_for_the_same_request_restarts_nothing():
-    # a chat-scan change re-arms setup on the request it already answered;
-    # only a new request (Try again) restarts a stopped job
+    # a hub upgrade or a chat-scan change re-arms setup on the request it
+    # already answered; only a new request (Try again) restarts a stopped job
     mod, fake, cfg, _, _ = kernel(config=on_request())
     mod.main({})
     triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
