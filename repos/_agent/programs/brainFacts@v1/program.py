@@ -22,6 +22,7 @@ _any = use("any@v1")  # noqa: F821 - guest global
 llm = use("llm@v1")  # noqa: F821 - guest global
 
 CONSENT_KEY = "brain.model"
+PERSON_PAGE = 200
 MAX_PERSONS = 40
 MAILS_PER_MAILBOX = 30
 SOURCE_CHARS = 8000
@@ -177,22 +178,29 @@ def _pinned(tier):
 
 def _persons(space, excl, block, floor_s):
     """The persons with mail since `floor_s`, oldest contact first, minus the excluded."""
-    out, skipped = [], 0
-    for row in _any.query_objects(space, filter={"any.collections": "brain_person"},
-                                  limit=1000):
-        bp = row.get("brain_person") or {}
-        last = ts_s(bp.get("lastContactAt")) or 0  # noqa: F821 - guest global
-        if last <= floor_s:
-            continue
-        emails = sorted({str(e).lower() for e in (bp.get("emails") or []) if e})
-        if row["id"] in excl["personIds"] or any(kit.kept_out(e, excl, block)
-                                                 for e in emails):
-            skipped += 1
-            continue
-        if emails:
-            out.append({"id": row["id"], "name": (row.get("any") or {}).get("name") or "",
-                        "emails": emails, "last": last})
-    out.sort(key=lambda p: p["last"])
+    # asked of the server in contact order, a page at a time: a cap on an
+    # unordered read drops people, and the watermark then passes them
+    out, skipped, offset = [], 0, 0
+    since = {"$gt": instant(floor_s)}  # noqa: F821 - guest global
+    while len(out) < MAX_PERSONS:
+        rows = _any.query_objects(space, filter={"any.collections": "brain_person",
+                                                 "brain_person.lastContactAt": since},
+                                  sort=["brain_person.lastContactAt"], limit=PERSON_PAGE,
+                                  offset=offset)
+        for row in rows:
+            bp = row.get("brain_person") or {}
+            emails = sorted({str(e).lower() for e in (bp.get("emails") or []) if e})
+            if row["id"] in excl["personIds"] or any(kit.kept_out(e, excl, block)
+                                                     for e in emails):
+                skipped += 1
+                continue
+            if emails:
+                out.append({"id": row["id"], "name": (row.get("any") or {}).get("name") or "",
+                            "emails": emails,
+                            "last": ts_s(bp.get("lastContactAt")) or 0})  # noqa: F821
+        if len(rows) < PERSON_PAGE:
+            break
+        offset += PERSON_PAGE
     return out[:MAX_PERSONS], skipped
 
 

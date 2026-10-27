@@ -328,3 +328,36 @@ def test_mail_under_a_blocklisted_label_never_reaches_the_model():
     s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["Label_Medical"]})
     _, out = run(s, model)
     assert model.prompts == [] and out["excludedSkipped"] == 1
+
+
+def test_a_person_past_the_first_thousand_is_still_read():
+    s = space_with()
+    s.objects.pop("ada")
+    for i in range(1000):                # long-quiet correspondents, listed first
+        s.add_object(f"p{i:04}", "profile", ["person", "brain_person"],
+                     person={"email": f"x{i}@crowd.org"},
+                     brain_person={"emails": [f"x{i}@crowd.org"],
+                                   "lastContactAt": {"$date": (NOW - 400 * DAY) * 1000}})
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada Lovelace",
+                 person={"email": "ada@lab.org"},
+                 brain_person={"emails": ["ada@lab.org"],
+                               "lastContactAt": {"$date": (NOW - DAY) * 1000}})
+    model = Model([LISBON])
+    _, out = run(s, model)
+    assert out["persons"] == 1 and len(model.prompts) == 1
+    assert "Ada Lovelace" in model.prompts[0][-1]["content"]
+
+
+def test_a_full_run_takes_the_oldest_contacts_so_the_watermark_passes_no_one():
+    s = space_with()
+    s.objects.pop("ada")
+    lasts = [NOW - DAY - i * 60 for i in range(41)]          # listed newest first
+    for i, last in enumerate(lasts):
+        s.add_object(f"p{i:02}", "profile", ["person", "brain_person"],
+                     person={"email": f"x{i}@crowd.org"},
+                     brain_person={"emails": [f"x{i}@crowd.org"],
+                                   "lastContactAt": {"$date": last * 1000}})
+    _, out = run(s, Model())
+    assert out["persons"] == 40
+    # the newest contact waits for the next run, above the watermark
+    assert s.config("facts.cursor") == {"watermark": sorted(lasts)[39]}
