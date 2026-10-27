@@ -224,6 +224,27 @@ _DATASET_TIME_KEYS = {d["key"]: _datetime_keys(d) for d in
 _CANONICAL_COLLECTIONS = ("chat_messages", "editor_blocks", "objects")
 # the catalog's general chat — the one chat a space has (ADR-027 §1)
 _BAO_BUNDLE = "bao/v1"          # the harness bundle: bao space only (ADR-017 §0)
+# The account's favourites: a client-registered bundle on the TECH space
+# (any docs/25-favorites.md). The declaration is pinned at first install
+# and shipped VERBATIM by every client — this is any-ui's, field for
+# field (`types` is the array it declares; the server doc's `type` is
+# stale), so an install from here converges with the app's.
+_FAVORITES_BUNDLE = "favorites/v1"
+_FAVORITES_PARTS = [{"key": "entries", "datasets": [{
+    "key": "entries", "idRule": "user", "dynamic": True,
+    "idPattern": "^(any://o/.+|f:[A-Za-z0-9_-]{1,64})$", "idMaxLen": 256,
+    "fields": [
+        {"key": "parentId", "kind": "string", "required": True, "mutableBy": "any"},
+        {"key": "pos", "kind": "string", "required": True, "mutableBy": "any"},
+        {"key": "removed", "kind": "boolean", "mutableBy": "any"},
+        {"key": "name", "kind": "string", "mutableBy": "any"},
+        {"key": "iconCid", "kind": "string", "mutableBy": "any"},
+        {"key": "types", "kind": "array", "mutableBy": "any"},
+        {"key": "creator", "stamp": "creator"},
+        {"key": "createdAt", "stamp": "createTime"},
+        {"key": "modifiedAt", "stamp": "modifyTime"},
+    ]}]}]
+_FAVORITE_LINK_RE = re.compile(r"^any://o/([^/]+)/([^/]+)(?:/([^/]+)/([^/]+))?$")
 _GENERAL_CHAT_BUNDLE = "system:general-chat/v1"
 # the catalog's wiki — the tree an object is in while it carries the
 # wiki type with `parentId` / `pos` set (ADR-027 §3)
@@ -580,6 +601,8 @@ class _Client:
         self._wiki_cache = {}      # space -> {collectionId, parentId, pos, folder}
         self._catalog_cache = None  # the server's usecase catalog
         self._collections_ready = set()   # spaces whose collections app is set up
+        self._tech_space_id = None   # the account's tech space (favourites live there)
+        self._favorites = None       # (techSpaceId, rootId, entries collection)
 
     def _call(self, verb, path, body=None):
         payload = {"url": self._base + path}
@@ -3442,6 +3465,205 @@ class _Client:
         unclaimed root. The server never merges — merge first, resolve second."""
         return self._call("post", self._bundle_path(space, bundle_id, "/resolve"),
                           {"loserRootId": loser_root_id})
+
+    # --- favourites: the account's favorites/v1 bundle (any docs/25-favorites.md) ---
+    # Account-level, cross-space, private to the user: one records dataset
+    # on a bundle root in the TECH space, one record per starred object
+    # (its canonical link IS the record id) or folder (`f:<token>`).
+    # Removal is soft (`removed: true`): a hard delete tombstones the
+    # link and the object could never be starred again.
+    def _tech_space(self):
+        if self._tech_space_id is None:
+            tid = self._call("get", "/v1/account").get("techSpaceId")
+            if not isinstance(tid, str) or not tid:
+                raise AnyError(501, "favorites.unavailable",
+                               "this any server reports no techSpaceId — favourites "
+                               "need a newer server")
+            self._tech_space_id = tid
+        return self._tech_space_id
+
+    def _favorites_root(self, install=False):
+        """(techSpaceId, rootId, entries collection), or None when the
+        account has no favourites yet and `install` is False. The
+        install is the UI's canonical request, so the two converge."""
+        if self._favorites is None:
+            tech = self._tech_space()
+            rows = self._call("get", f"/v1/spaces/{tech}/bundles").get("bundles") or []
+            row = next((b for b in rows if isinstance(b, dict)
+                        and b.get("id") == _FAVORITES_BUNDLE and b.get("rootId")), None)
+            if row is None:
+                if not install:
+                    return None
+                r = self._call("post", f"/v1/spaces/{tech}/bundles",
+                               {"id": _FAVORITES_BUNDLE, "name": "Favorites",
+                                "hidden": True, "parts": _FAVORITES_PARTS})
+                row = r.get("bundle") if isinstance(r.get("bundle"), dict) else r
+                if not row.get("rootId"):
+                    raise AnyError(409, "bundle.not_ready",
+                                   "the favourites root is not on this device yet; retry")
+            root = row["rootId"]
+            # the root is its own type; its `entries` dataset is served
+            # namespaced (`<rootId>_entries`) — read, never composed
+            coll = next((d["collection"] for d in self._datasets_of(tech, root)
+                         if d.get("key") == "entries" and d.get("collection")), None)
+            if not coll:
+                raise AnyError(500, "favorites.bad_root",
+                               f"favourites root {root} declares no entries dataset")
+            self._favorites = (tech, root, coll)
+        return self._favorites
+
+    def _favorite_entries(self, fav, **opts):
+        tech, root, coll = fav
+        body = {"objectId": root, "dataset": coll, "sort": ["parentId", "pos"]}
+        body.update({k: v for k, v in opts.items() if v is not None})
+        return [r for r in self._call("post", f"/v1/spaces/{tech}/query", body
+                                      ).get("records") or [] if isinstance(r, dict)]
+
+    @staticmethod
+    def _favorite_row(rec):
+        row = {"id": rec.get("id"), "parentId": rec.get("parentId", ""),
+               "pos": rec.get("pos", ""), "name": rec.get("name")}
+        m = _FAVORITE_LINK_RE.match(row["id"] or "")
+        if m:
+            row.update({"kind": "object", "link": row["id"],
+                        "spaceId": m.group(1), "objectId": m.group(2)})
+            if m.group(3):
+                row.update({"dataset": m.group(3), "recordId": m.group(4)})
+            if rec.get("types"):
+                row["types"] = rec["types"]
+            if rec.get("miniAppId"):
+                row["miniAppId"] = rec["miniAppId"]
+        else:
+            row["kind"] = "folder"
+        return row
+
+    def _favorite_entry_id(self, space, object_id):
+        """The entry id for a target: an any://o/ link verbatim, else
+        the object's canonical link in `space`."""
+        if isinstance(object_id, str) and object_id.startswith("any://"):
+            if not _FAVORITE_LINK_RE.match(object_id):
+                raise ValueError(
+                    f"{object_id!r} is not an object or record link "
+                    "(any://o/<spaceId>/<objectId>[/<dataset>/<recordId>])")
+            return object_id
+        if not isinstance(object_id, str) or not object_id:
+            raise ValueError("object_id must be an object id or an any://o/ link")
+        return f"any://o/{space}/{object_id}"
+
+    def _favorite_mirror(self, entry_id):
+        """The display fields an entry carries so the sidebar renders it
+        without loading its space: the target's name, icon and owners."""
+        m = _FAVORITE_LINK_RE.match(entry_id)
+        if m.group(3):
+            return {}   # a dataset record: no object row to mirror
+        sid, oid = m.group(1), m.group(2)
+        rows = self._call("post", f"/v1/spaces/{sid}/objects/query",
+                          {"filter": {"id": oid}, "limit": 1}).get("records") or []
+        if not rows or not isinstance(rows[0], dict):
+            raise AnyError(404, "object.not_found", f"no object {oid} in space {sid}")
+        anyg = rows[0].get("any") or {}
+        mirror = {}
+        if isinstance(anyg.get("name"), str):
+            mirror["name"] = anyg["name"]
+        icon = anyg.get("icon") or anyg.get("iconCid")
+        if isinstance(icon, str) and icon:
+            mirror["iconCid"] = icon
+        owners = ([anyg["type"]] if isinstance(anyg.get("type"), str) else []) + [
+            c for c in (anyg.get("collections") or []) if isinstance(c, str)]
+        if owners:
+            mirror["types"] = owners
+        return mirror
+
+    def _favorite_folder(self, fav, entries, name):
+        """A live favourites folder by name (case-insensitive), created
+        at the top level when missing → its record id."""
+        want = name.strip().casefold()
+        for e in entries:
+            if (not _FAVORITE_LINK_RE.match(e.get("id") or "") and e.get("removed") is not True
+                    and isinstance(e.get("name"), str) and e["name"].strip().casefold() == want):
+                return e["id"]
+        token = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip()).strip("-")[:64] or "folder"
+        fid = f"f:{token}"
+        self._favorite_upsert(fav, fid, "", entries, {"name": name.strip()})
+        return fid
+
+    def _favorite_upsert(self, fav, entry_id, parent_id, entries, fields):
+        tech, root, coll = fav
+        siblings = sorted(e.get("pos") or "" for e in entries
+                          if e.get("parentId", "") == parent_id
+                          and e.get("removed") is not True and e.get("id") != entry_id)
+        rec = {"id": entry_id, "fields": {"parentId": parent_id,
+                                          "pos": _lexid_after(siblings[-1] if siblings else ""),
+                                          "removed": False, **fields}}
+        r = self._call("post", f"/v1/spaces/{tech}/upsert",
+                       {"objectId": root, "dataset": coll, "records": [rec]})
+        rej = r.get("rejections") or []
+        if rej:
+            first = rej[0] if isinstance(rej[0], dict) else {}
+            raise AnyError(400, first.get("code") or "upsert.rejected",
+                           first.get("reason") or f"favourite {entry_id} rejected")
+        return r
+
+    @_public('getter', scoped=False)
+    def list_favorites(self):
+        """The user's favourites (the UI's starred sidebar) → entries in sidebar order.
+
+        Account-level and cross-space: favourites are not a collection
+        or a property. Rows: {"id", "kind": "object"|"folder", "name",
+        "parentId", "pos", …}; an object row adds "link" (= its id,
+        `any://o/<spaceId>/<objectId>`, or a record link with "dataset"
+        + "recordId"), "spaceId", "objectId" and the mirrored "types".
+        A folder's id is `f:…`; a child's parentId names its folder, ""
+        is the top level. Soft-removed entries are left out. [] when the
+        account has no favourites yet."""
+        fav = self._favorites_root()
+        if fav is None:
+            return []
+        return [self._favorite_row(e) for e in self._favorite_entries(fav)
+                if e.get("removed") is not True]
+
+    @_public('mutator')
+    def add_favorite(self, space, object_id, folder=None, name=None):
+        """Star an object: add it to the user's favourites → {"id", "parentId", "created"}.
+
+        Idempotent — the entry id is the object's canonical link, so a
+        second star re-places the same entry (and revives a removed one).
+        `object_id` may also be a full any://o/ link (a record link stars
+        one dataset row — a chat message, an email); then `space` is
+        only the cell's. `folder` is a favourites folder NAME: an existing
+        one is used, else created at the top level. `name` overrides the
+        mirrored label (a record has none). The first star installs the
+        account's favourites. "Favourite / star / pin X" means this,
+        never a collection or a property."""
+        entry_id = self._favorite_entry_id(space, object_id)
+        fav = self._favorites_root(install=True)
+        entries = self._favorite_entries(fav)
+        parent = self._favorite_folder(fav, entries, folder) if folder else ""
+        mirror = self._favorite_mirror(entry_id)
+        if name:
+            mirror["name"] = name
+        r = self._favorite_upsert(fav, entry_id, parent, entries, mirror)
+        return {"id": entry_id, "parentId": parent, "created": bool(r.get("created"))}
+
+    @_public('mutator')
+    def remove_favorite(self, space, object_id):
+        """Un-star an object: drop it from the user's favourites → {"id", "removed"}.
+
+        Soft: the entry is marked removed (the link stays re-starrable);
+        the object itself is untouched. `object_id` may be an any://o/
+        link. removed False = it was not a favourite."""
+        entry_id = self._favorite_entry_id(space, object_id)
+        fav = self._favorites_root()
+        live = fav and [e for e in self._favorite_entries(fav, filter={"id": entry_id})
+                        if e.get("removed") is not True]
+        if not live:
+            return {"id": entry_id, "removed": False}
+        tech, root, coll = fav
+        self._call("post", f"/v1/spaces/{tech}/modify",
+                   {"objectId": root, "dataset": coll, "records": [
+                       {"id": entry_id, "ops": [{"type": "$set", "path": "removed",
+                                                 "value": True}]}]})
+        return {"id": entry_id, "removed": True}
 
     # --- agent turns / chunks (client-assigned seq, ADR-017 §2) ----------------
     @_public('getter')
