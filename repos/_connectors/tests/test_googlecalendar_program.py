@@ -133,8 +133,10 @@ def test_list_calendars_trim_and_credential_plumbing():
     out = gc.list_calendars()
     assert out == {"ok": True, "calendars": [
         {"id": "me@anyorg.io", "summary": "me@anyorg.io", "primary": True,
+         "selected": True, "hidden": False,
          "accessRole": "owner", "timeZone": "Europe/Berlin"},
         {"id": "team@group.calendar.google.com", "summary": "Team",
+         "selected": False, "hidden": False,
          "primary": False, "accessRole": "reader", "timeZone": "UTC"}],
         "nextPageToken": "cal-page-2"}
     url = fake.requests[0]["url"]
@@ -142,6 +144,27 @@ def test_list_calendars_trim_and_credential_plumbing():
         "https://www.googleapis.com/calendar/v3/users/me/calendarList")
     assert "maxResults=50" in url  # default page clamp
     assert fake.requests[0]["credential"] == CRED
+
+
+def test_list_calendars_preserves_selection_and_hidden_without_filtering():
+    entries = [
+        {"id": "selected", "selected": True, "hidden": False},
+        {"id": "disabled", "selected": False, "hidden": False},
+        {"id": "hidden", "selected": True, "hidden": True},
+        {"id": "omitted"},
+    ]
+    gc, _ = load([("/users/me/calendarList", ok({"items": entries}))])
+
+    out = gc.list_calendars()
+
+    assert out["ok"] is True
+    assert [(c["id"], c.get("selected"), c.get("hidden"))
+            for c in out["calendars"]] == [
+        ("selected", True, False),
+        ("disabled", False, False),
+        ("hidden", True, True),
+        ("omitted", False, False),
+    ]
 
 
 def test_not_connected_surfaces_friendly_connect_message():

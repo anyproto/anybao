@@ -408,6 +408,14 @@ In `repos/_connectors`, matching the existing connector conventions
   read-only REST connectors passing `credential=_CRED`, structurally
   identical to github@v1. Ported from the bobrik branch for endpoint
   shapes and field trimming (C1: trim, don't rename), not for auth.
+- **Calendar selection (2026-10-25, PRO-1919).**
+  `googleCalendar@v1.list_calendars()` retains Google's `selected` and
+  `hidden` booleans, both false when omitted, alongside calendar
+  identity and access metadata. The connector keeps every calendar
+  returned by Google; consumers such as Meetings decide which ones
+  to use. This preserves the user's selection without changing the
+  general calendar-discovery surface. Google defines these flags in
+  its [CalendarList contract](https://developers.google.com/workspace/calendar/api/v3/reference/calendarList).
 - **Not-connected error contract.** The six static connectors keep
   string-matching `"no secret for credential ref"` — that message
   stays byte-identical. The Google family prefix-matches the typed
