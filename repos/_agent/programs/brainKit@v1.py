@@ -23,6 +23,8 @@ _NOISE = re.compile(
     r"|@([a-z0-9-]+\.)*googlegroups\.com$"
     r"|@(.+\.)?(mailchimp|sendgrid|mandrillapp|amazonses)\.(com|net)$",
     re.I)
+# the message a promise's `source` opens: …/<mailboxId>/email_messages/<messageId>
+_MAIL_LINK = re.compile(r"/([^/]+)/email_messages/([^/]+)$")
 
 
 class write_rejected(Exception):
@@ -192,6 +194,39 @@ def promise_kept_out(row, excl, block):
         return True
     email = row.get("personEmail")
     return bool(email) and kept_out(str(email).lower(), excl, block)
+
+
+def participant_kept_out(row, excl, block):
+    """True when a synced message is under a blocklisted label or carries an
+    excluded or blocklisted participant (a noise sender is not one)."""
+    if labelled_out(row, block):
+        return True
+    people = list(row.get("participants") or [])
+    people += [a for _, a in addresses(row.get("from"), row.get("to"), row.get("cc"))]
+    return any(kept_out(a, excl, block) and not is_noise(a)
+               for a in (str(p).lower() for p in people))
+
+
+def promises_kept_out(space, rows, excl, block):
+    """Plain ids of the promises made to someone kept out, or whose message now
+    carries someone kept out: an exclusion added after the promise was read."""
+    out, by_box = set(), {}
+    for r in rows:
+        rid = plain_id(r["id"])
+        if promise_kept_out(r, excl, block):
+            out.add(rid)
+            continue
+        link = _MAIL_LINK.search(str(r.get("source") or ""))
+        if link:
+            box = r.get("mailboxId") or link.group(1)
+            by_box.setdefault(box, {}).setdefault(link.group(2), []).append(rid)
+    for box, by_message in by_box.items():
+        mids = sorted(by_message)
+        for msg in _any.query(space, box, "email_messages", filter={"id": {"$in": mids}},
+                              limit=len(mids)):
+            if participant_kept_out(msg, excl, block):
+                out.update(by_message.get(plain_id(msg["id"]), []))
+    return out
 
 
 def labelled_out(row, block):

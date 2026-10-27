@@ -204,3 +204,14 @@ def test_a_person_kept_out_by_address_is_never_found_as_an_object():
         s.set_config("blocklist", block or {"senders": [], "domains": [], "labels": []})
         basic = kernel(s).search("deck", scopes=["basic"])["groups"][0]["hits"]
         assert [h["objectId"] for h in basic] == ["page1"], (excl, block)
+
+
+def test_a_promise_from_mail_that_copied_in_someone_excluded_is_never_recalled():
+    s = mail_space()
+    s.records[("mb1", "email_messages")]["new"]["cc"] = "Bob <bob@rival.com>"
+    s.set_config("exclusions", {**EXCLUSIONS, "domains": ["rival.com"]})
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada",
+                 person={"email": "ada@lab.org"}, brain_person={"emails": ["ada@lab.org"]})
+    promises = kernel(s).search("deck", scopes=["promises"])["groups"][0]["hits"]
+    assert [h["recordId"] for h in promises] == ["p2"]
+    assert kernel(s).person("ada")["promises"] == []

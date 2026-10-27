@@ -12,8 +12,8 @@ quote the `link` so the user can open the source.
 # score × 0.5^(age / half-life); a promise does not decay. Calendar and
 # meetings scopes join when their syncs land. Every read honours the
 # exclusion list and the blocklist: mail with an excluded or blocklisted
-# participant or under a blocklisted label, a promise made to one, and an
-# excluded person are left out.
+# participant or under a blocklisted label, a promise made to one or read
+# from such a message, and an excluded person are left out.
 # The hub's stores are shared, so their records are read by
 # "<hub>/<recordId>"; mail is per mailbox and read by its plain id.
 
@@ -90,11 +90,12 @@ def _promise_hits(bao, hits, ctx):
         return []
     rows = _by_record(bao, hub, dataset, [kit.plain_id(h.get("recordId")) for h in hits],
                       shared=True)
+    kept_out = kit.promises_kept_out(bao, list(rows.values()), ctx["excl"], ctx["block"])
     out = []
     for h in hits:
         rid = kit.plain_id(h.get("recordId"))
         row = rows.get(rid)
-        if row is None or kit.promise_kept_out(row, ctx["excl"], ctx["block"]):
+        if row is None or rid in kept_out:
             continue
         out.append({"title": row.get("text"), "text": row.get("quote"), "objectId": hub,
                     "recordId": rid, "link": row.get("source"), "status": row.get("status"),
@@ -205,8 +206,10 @@ def person(person_id, limit=20):
     bp = row.get("brain_person") or {}
     promises = []
     if datasets.get("promises"):
-        for p in _any.query(bao, hub, datasets["promises"], filter={"personId": person_id},
-                            sort=["-madeAt"], limit=n):
+        rows = _any.query(bao, hub, datasets["promises"], filter={"personId": person_id},
+                          sort=["-madeAt"], limit=n)
+        kept_out = kit.promises_kept_out(bao, rows, excl, block)
+        for p in (r for r in rows if kit.plain_id(r["id"]) not in kept_out):
             promises.append({"id": kit.plain_id(p["id"]), "text": p.get("text"),
                              "quote": p.get("quote"), "status": p.get("status"),
                              "taskId": p.get("taskId"), "link": p.get("source"),

@@ -20,8 +20,10 @@ Create only after the user said yes; show the deadline and let them change it.
 # (planning: inbox) also filed under the brain's `brain_task` collection,
 # which keeps the source link, the person, the origin and the suggestion
 # even after the user moves the deadline; the promise gets the task's id.
-# A promise made to someone the exclusion list or the blocklist keeps out
-# is never offered and refuses create; both lists are read fail-closed.
+# A promise made to someone the exclusion list or the blocklist keeps out,
+# or read from a message that now carries such a person (an exclusion added
+# later), is never offered and refuses create; both lists are read
+# fail-closed.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -122,9 +124,10 @@ def _hub(bao):
 
 
 def _open_promises(bao, hub, promises, rules):
-    rows = _any.query(bao, hub, promises, filter={"status": "open"},
-                      sort=["-madeAt"], limit=_MAX_LIST)
-    return [r for r in rows if not r.get("taskId") and not kit.promise_kept_out(r, *rules)]
+    rows = [r for r in _any.query(bao, hub, promises, filter={"status": "open"},
+                                  sort=["-madeAt"], limit=_MAX_LIST) if not r.get("taskId")]
+    kept_out = kit.promises_kept_out(bao, rows, *rules)
+    return [r for r in rows if kit.plain_id(r["id"]) not in kept_out]
 
 
 def _row(r, today):
@@ -163,7 +166,7 @@ def create(promise_id, deadline=None):
     if not rows:
         raise unknown_promise(f"no promise {rid!r}")
     r = rows[0]
-    if kit.promise_kept_out(r, *rules):
+    if kit.promises_kept_out(bao, [r], *rules):
         raise person_excluded("This promise was made to someone kept out of the brain.")
     if r.get("taskId"):
         return {"taskId": r["taskId"], "created": False, "deadline": None}

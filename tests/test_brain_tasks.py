@@ -192,3 +192,17 @@ def test_an_unreadable_exclusion_list_fails_closed():
     with pytest.raises(Exception) as err:
         mod.suggest()
     assert type(err.value).__name__ == "exclusions_unreadable"
+
+
+def test_a_promise_from_mail_that_copied_in_someone_excluded_later_stays_out():
+    mod, s = kernel()
+    add_promise(s, "p1", "I'll send the deck.", person="ada")
+    s.add_mail("mb1", "p1", **{"from": "me@example.com", "to": "ada@lab.org",
+                               "cc": "Eve <eve@spy.org>"},
+               participants=["me@example.com", "ada@lab.org", "eve@spy.org"])
+    assert [r["id"] for r in mod.suggest()] == ["p1"]
+    s.set_config("exclusions", {**EXCLUSIONS, "emails": ["eve@spy.org"]})
+    assert mod.suggest() == []
+    with pytest.raises(Exception) as err:
+        mod.create("p1")
+    assert type(err.value).__name__ == "person_excluded"
