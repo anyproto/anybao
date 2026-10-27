@@ -69,7 +69,12 @@ record id can never be written again.
 2. `spaceId: null`: disable every brain job, remember which in the
    agent_config row `brain.jobs` (`{offDisabled}`), answer `off`. Not a
    hub record: an off run after a failed setup has no hub in its status
-   to write to, and the next on run would re-enable nothing.
+   to write to, and the next on run would re-enable nothing. The list is
+   written BEFORE the jobs are disabled, so a run cut short leaves none
+   unrecorded; a failed off run is answered `error` and raised. An on run
+   clears only the ids it could see — one whose record has not synced to
+   this device yet stays remembered — and a `brain.jobs` in another shape
+   raises `jobs_unreadable` rather than re-enable nothing silently.
 3. A space other than Bao's: answer `error` (`wrong_space`) and raise.
 4. Otherwise answer `provisioning`, then install or adopt: the `people`
    and `meetings` catalog apps; the `brain/v1` bundle (a created root of

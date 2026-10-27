@@ -310,6 +310,56 @@ def test_off_after_a_failed_setup_still_brings_the_jobs_back():
     assert all(j["enabled"] for j in jobs(fake).values())
 
 
+def test_an_off_run_cut_short_still_brings_back_what_it_disabled():
+    # the list is written before the jobs are disabled, so a run that fails
+    # halfway leaves no disabled job unrecorded
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    calls = {"n": 0}
+    real_modify = fake.modify
+
+    def modify_then_fail(space, body):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("connection reset")
+        return real_modify(space, body)
+
+    fake.modify = modify_then_fail
+    cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
+    with pytest.raises(Exception, match="connection reset") as err:
+        mod.main({})
+    assert type(err.value).__name__ == "provision_failed"
+    assert cfg["brain.status"]["state"] == "error"      # a failed off run says so
+    fake.modify = real_modify
+    assert sum(not j["enabled"] for j in jobs(fake).values()) == 1
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
+    mod.main({})
+    assert all(j["enabled"] for j in jobs(fake).values())
+
+
+def test_on_keeps_remembering_a_job_it_cannot_see_yet():
+    # a trigger record not yet synced to this device is re-enabled later,
+    # not forgotten
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    cfg["brain.jobs"] = {"offDisabled": ["brain-heartbeat", "brain-elsewhere"]}
+    triggers(fake)["brain-heartbeat"]["enabled"] = False
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
+    out = mod.main({})
+    assert out["reenabled"] == ["brain-heartbeat"]
+    assert cfg["brain.jobs"] == {"offDisabled": ["brain-elsewhere"]}
+
+
+def test_a_malformed_jobs_row_re_enables_nothing_and_says_so():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    cfg["brain.jobs"] = {"offDisabled": "brain-heartbeat"}
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
+    with pytest.raises(Exception, match="brain.jobs"):
+        mod.main({})
+    assert cfg["brain.status"]["state"] == "error"
+
+
 def test_a_stopped_job_is_a_warning_on_a_ready_brain_that_keeps_working():
     mod, fake, cfg, writes, _ = kernel(config=on_request())
     mod.main({})

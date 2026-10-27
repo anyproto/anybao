@@ -287,29 +287,42 @@ def _ensure_jobs(bao, hub):
     return anchor, written
 
 
+class jobs_unreadable(Exception):
+    """brain.jobs is not in its {offDisabled: [job id]} shape."""
+
+
 def _off_disabled():
     # an agent_config row, not a hub record: an off run after a failed
     # setup has no hub to write to
     value = _config_get(JOBS_KEY)
-    return list((value or {}).get("offDisabled") or []) if isinstance(value, dict) else []
+    if value is None:
+        return []
+    ids = value.get("offDisabled") if isinstance(value, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise jobs_unreadable(f"brain.jobs is {value!r}")
+    return list(ids)
 
 
 def _disable_jobs(bao):
-    """Disable every enabled brain job; remember which, for the next on run."""
+    """Disable every enabled brain job; remember which, for the next on run.
+
+    The list is written first, so a run cut short leaves no disabled job
+    the next on run would not bring back."""
     anchor = _trigger_anchor(bao)
-    turned_off = []
-    for recs in _brain_jobs(bao, anchor).values():
-        for rec in recs:
-            if rec.get("enabled", True):
-                _set_enabled(bao, anchor, rec["id"], False)
-                turned_off.append(rec["id"])
-    if turned_off:
-        _config_set(JOBS_KEY, {"offDisabled": sorted(set(_off_disabled()) | set(turned_off))})
-    return turned_off
+    enabled = [rec["id"] for recs in _brain_jobs(bao, anchor).values() for rec in recs
+               if rec.get("enabled", True)]
+    if enabled:
+        _config_set(JOBS_KEY, {"offDisabled": sorted(set(_off_disabled()) | set(enabled))})
+    for rid in enabled:
+        _set_enabled(bao, anchor, rid, False)
+    return enabled
 
 
 def _reenable_jobs(bao, anchor):
-    """Re-enable exactly the jobs the last off run disabled."""
+    """Re-enable exactly the jobs the last off run disabled.
+
+    A remembered job this device cannot see yet (its record has not synced)
+    stays remembered for the next on run."""
     remembered = _off_disabled()
     if not remembered:
         return []
@@ -319,7 +332,7 @@ def _reenable_jobs(bao, anchor):
         if rid in live and not live[rid].get("enabled", True):
             _set_enabled(bao, anchor, rid, True)
             back.append(rid)
-    _config_set(JOBS_KEY, {"offDisabled": []})
+    _config_set(JOBS_KEY, {"offDisabled": [rid for rid in remembered if rid not in live]})
     return back
 
 
@@ -392,7 +405,12 @@ def _setup():
         request = {"spaceId": bao, "requestedAt": _iso(now()), "by": "default"}  # noqa: F821
         _config_set(SPACE_KEY, request)
     if request.get("spaceId") is None:
-        turned_off = _disable_jobs(bao)
+        try:
+            turned_off = _disable_jobs(bao)
+        except Exception as e:
+            _write_status(request, "error",
+                          error={"type": type(e).__name__, "message": str(e)[:500]})
+            raise provision_failed(f"{type(e).__name__}: {e}") from e
         _write_status(request, "off")
         return {"state": "off", "disabled": turned_off}
     if request["spaceId"] != bao:
