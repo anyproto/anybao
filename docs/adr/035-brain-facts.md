@@ -47,10 +47,12 @@ reconcile run upgrades a version-2 hub, as it did version 1.
 
 1. **Consent, then exclusions.** No consent → skipped. The exclusion
    list is read fail-closed before any mail: missing or unreadable
-   raises `exclusions_unreadable`.
+   raises `exclusions_unreadable`, and so does a failed read of the
+   persons it excludes by id.
 2. **Work.** Persons with mail since the cursor, minus excluded ones,
    at most 40 per run. A message with any excluded or blocklisted
-   participant is out for everyone in it.
+   participant is out for everyone in it; a person excluded by id is
+   excluded by every address on their person object too.
 3. **One model call per person** (`llm@v1.chat`, tier
    `brain.extractor`, no tools): the person's name, their current facts,
    and up to 8 000 characters of their newest mail, each message tagged

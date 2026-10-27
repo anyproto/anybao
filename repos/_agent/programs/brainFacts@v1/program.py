@@ -55,14 +55,19 @@ PROPOSED_KINDS = frozenset({"history.consent"})
 EXTRACT_SYS = (
     "You read a person's email and list durable facts about THAT person, for "
     "the user's private address book. Answer with ONLY a JSON array, no prose. "
-    "Each item: {\"kind\": one of " + ", ".join(KINDS) + ", \"value\": the fact "
-    "as a short phrase, \"quote\": the exact sentence from the message that "
-    "states it, copied character for character, \"ref\": the tag of that "
-    "message such as \"M2\", \"confidence\": 0 to 1}. "
+    "Each item: {\"kind\": one of " + ", ".join(KINDS) + ", \"value\": the "
+    "bare value, a few words and never a sentence (Lisbon, CTO, espresso, Ada), "
+    "\"quote\": the exact sentence from the message that states it, copied "
+    "character for character, \"ref\": the tag of that message such as "
+    "\"M2\", \"confidence\": 0 to 1}. "
     "Only facts the person states about themselves, or the user states about "
-    "them. Never paraphrase or fix the quote. Skip greetings, signatures, "
-    "scheduling chatter and anything about other people. No fact, no item: "
-    "an empty array is a fine answer."
+    "them. Never paraphrase or fix the quote. A known fact that still holds "
+    "keeps its value word for word. A new role, company, location, name, "
+    "channel, language or form of address goes under that kind with the new "
+    "value, which replaces the old one; work.role_change is only for the move "
+    "itself, beside it. Skip greetings, signatures, scheduling chatter and "
+    "anything about other people. No fact, no item: an empty array is a fine "
+    "answer."
 )
 
 

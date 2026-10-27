@@ -12,7 +12,7 @@ two provider failures stop the run with the cursor kept."""
 import json
 
 import pytest
-from brain_fakes import HUB, FakeSpace, job_args
+from brain_fakes import HUB, FakeAnyError, FakeSpace, job_args
 from kernelenv import load_kernel
 
 NOW = 1_800_000_000
@@ -175,6 +175,33 @@ def test_a_message_with_an_excluded_participant_is_out_for_everyone():
     model = Model([LISBON])
     _, out = run(s, model)
     assert model.prompts == [] and out["excludedSkipped"] == 1
+
+
+def test_a_message_carrying_a_person_excluded_by_id_is_out_for_everyone():
+    s = space_with(to=f"{ME}, grace@navy.mil", participants=("ada@lab.org", ME))
+    s.add_object("grace", "profile", ["person", "brain_person"], name="Grace Hopper",
+                 brain_person={"emails": ["grace@navy.mil"]})
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["grace"]})
+    model = Model([LISBON])
+    _, out = run(s, model)
+    assert model.prompts == [] and s.store("facts") == {}
+    assert out["excludedSkipped"] == 1
+
+
+def test_excluded_persons_that_cannot_be_read_fail_closed():
+    class Refusing(FakeSpace):
+        def query_objects(self, space, normalize=True, filter=None, limit=None, **kw):
+            if "id" in (filter or {}):
+                raise FakeAnyError("503 unavailable")
+            return super().query_objects(space, normalize, filter, limit, **kw)
+
+    s = space_with()
+    s.__class__ = Refusing
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["grace"]})
+    with pytest.raises(Exception) as err:
+        run(s, Model([LISBON]))
+    assert type(err.value).__name__ == "exclusions_unreadable"
+    assert mail_reads(s) == []
 
 
 def test_a_re_run_writes_nothing_and_a_new_source_is_appended():
