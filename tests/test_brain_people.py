@@ -26,7 +26,12 @@ def space_with_mail():
     return s
 
 
-def run(space, args=None, now=1_800_000_000.0):
+# a day after the fixtures' mail, so all of it is inside the first run's window
+FIXTURE_NOW = 86_400.0
+DAY_MS = 86_400_000
+
+
+def run(space, args=None, now=FIXTURE_NOW):
     def eff(name, payload):
         if name == "time.now":
             return {"epoch": now}
@@ -267,3 +272,19 @@ def test_blocklist_entries_are_matched_trimmed_and_in_any_case():
     s.set_config("blocklist", {"senders": [" Ada@Lab.org "], "domains": [], "labels": []})
     run(s)
     assert sorted(people(s)) == ["charles@lab.org"]
+
+
+def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
+    # a mailbox can hold years of mail; the people job reads the last month
+    # first rather than walking forward from its first message
+    now = 1_800_000_000.0
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "old", **{"from": "Old Friend <old@past.org>", "to": ME},
+               internalDate=now * 1000 - 40 * DAY_MS)
+    s.add_mail("mb1", "new", **{"from": "Ada <ada@lab.org>", "to": ME},
+               internalDate=now * 1000 - 10 * DAY_MS)
+    _, out = run(s, now=now)
+    assert sorted(people(s)) == ["ada@lab.org"] and out["messages"] == 1
+    assert s.config("people.cursor") == {"mail": {"mb1": now * 1000 - 10 * DAY_MS}}

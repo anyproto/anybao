@@ -2,7 +2,8 @@
 
 # ADR-034. A cron job the brain's setup run writes (every 1800 s), args
 # {space, hub, datasets}. It reads the user's SENT mail in Bao's space —
-# messages whose From is the mailbox's own address — newer than its cursor,
+# messages whose From is the mailbox's own address — newer than its cursor
+# (BACKFILL_DAYS back for a mailbox it has none for),
 # splits each cleaned body into sentences and keeps the ones that commit
 # the user to something (PHRASES, minus EXCLUSIONS). Each becomes one
 # `promises` record whose `quote` is the verbatim sentence and whose
@@ -195,8 +196,9 @@ def main(args):
     block = kit.blocklist(space, hub, datasets)
     cursor = _cursor(space, hub, datasets)
     people, found, read = {}, 0, 0
+    floor = kit.backfill_floor_ms()
     for box_id, box_addr in kit.mailboxes(space):
-        last = cursor.get(box_id, 0)
+        last = cursor.get(box_id, floor)
         rows = _any.query(space, box_id, "email_messages",
                           filter={"internalDate": {"$gt": last}},
                           sort=["internalDate"], limit=PER_MAILBOX)

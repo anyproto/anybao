@@ -13,7 +13,8 @@
 # Resolution order for an address: a person whose brain_person.emails holds
 # it, then one whose person.email equals it, else a new person. A run
 # processes at most MAX_NEW unknown addresses and PER_MAILBOX messages per
-# mailbox; the cursor advances only past messages fully handled, so a
+# mailbox, starting a mailbox it has no cursor for BACKFILL_DAYS back; the
+# cursor advances only past messages fully handled, so a
 # capped run resumes where it stopped. A single message with more new
 # addresses than MAX_NEW is a mailing list, not correspondents: it is read
 # past and nobody on it is minted. It then back-fills `personId` on
@@ -82,8 +83,9 @@ class _People:
 def _gather(space, boxes, cursor, own, excl, block, people):
     """Walk new mail → ({addr: seen}, new cursor, messages read, mass mailings)."""
     seen, read, unknown, mass = {}, 0, set(), 0
+    floor = kit.backfill_floor_ms()
     for box_id, _addr in boxes:
-        last = cursor.get(box_id, 0)
+        last = cursor.get(box_id, floor)
         rows = _any.query(space, box_id, "email_messages",
                           filter={"internalDate": {"$gt": last}},
                           sort=["internalDate"], limit=PER_MAILBOX)

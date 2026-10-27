@@ -57,8 +57,11 @@ addresses, noise senders, blocklisted senders and domains, and excluded
 people never become people. It preloads the first 1 000 persons; one
 past them is found by any of their addresses (`brain_person.emails`,
 then `person.email`) and merged into, never overwritten or minted
-twice. It caps unknown addresses per run and
-advances the cursor only past messages fully handled; one message with
+twice. A mailbox it has no cursor for is read from 30 days back, not
+from its first message: a real mailbox holds years of mail, which at 200
+messages a run would take days to walk before reaching this month. It
+caps unknown addresses per run and advances the cursor only past
+messages fully handled; one message with
 more new addresses than a run may mint (300) is a mailing list, read past
 without minting anyone on it — kept, it would hold the cursor there for
 good (`massSkipped` counts them). It then back-fills
@@ -68,7 +71,8 @@ when they are past the preload.
 ### 4. `brainPromises@v1`
 
 Reads the user's sent mail (From = the mailbox's address) newer than
-its cursor, splits the cleaned body into sentences, and keeps those that
+its cursor — 30 days back for a mailbox it has none for, so a promise
+from years ago is never listed as open — splits the cleaned body into sentences, and keeps those that
 match `PHRASES` and none of `EXCLUSIONS` (a question, a condition, a
 hypothetical, a negation anywhere in the sentence). Each is a `promises`
 record: the verbatim `quote`, the key-form `source` link, `personEmail`

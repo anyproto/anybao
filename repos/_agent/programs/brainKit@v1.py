@@ -17,6 +17,10 @@ from email.utils import getaddresses
 
 _any = use("any@v1")  # noqa: F821 - guest global
 
+# how far back a job reads a mailbox it has no cursor for: a mailbox can hold
+# years of mail, and promises from years ago are not open promises
+BACKFILL_DAYS = 30
+
 # local parts and hosts that are never a person
 _NOISE = re.compile(
     r"^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster|bounces?"
@@ -250,6 +254,11 @@ def mailboxes(space):
         if r.get("id"):
             out.append((r["id"], addr))
     return out
+
+
+def backfill_floor_ms():
+    """The internalDate a job reads a mailbox from when it has no cursor for it."""
+    return int((now() - BACKFILL_DAYS * 86400) * 1000)  # noqa: F821 - guest global
 
 
 def mail_link(space, mailbox_id, message_id):

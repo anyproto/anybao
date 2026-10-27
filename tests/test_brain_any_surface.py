@@ -37,7 +37,11 @@ def _calls_on(path, name):
 
 def _defined(path):
     tree = ast.parse(path.read_text())
-    return {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    names = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    # and the module's constants (kit.BACKFILL_DAYS)
+    names |= {t.id for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name)}
+    return names
 
 
 def test_every_any_call_in_the_brain_programs_is_exported():

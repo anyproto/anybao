@@ -18,12 +18,16 @@ MADE_MS = 1_792_670_400_000
 DAY = 86400
 
 
+# two days after the fixtures' mail, inside the first run's 30-day window
+NOW = MADE_MS / 1000 + 2 * 86400
+
+
 def kernel(space=None):
     space = space or FakeSpace()
 
     def eff(name, payload):
         if name == "time.now":
-            return {"epoch": 1_800_000_000.0}
+            return {"epoch": NOW}
         raise AssertionError(f"unexpected effect {name}")
 
     return load_kernel(effect=eff, any_client=space).use("brainPromises@v1"), space
@@ -181,7 +185,7 @@ def test_a_completed_task_closes_its_promise():
     assert out["closed"] == 1
     assert s.store("promises")[pid]["status"] == "done"
     assert s.store("promises")[pid]["reason"] == "task completed"
-    assert s.store("promises")[pid]["closedAt"] == {"$date": 1_800_000_000_000}
+    assert s.store("promises")[pid]["closedAt"] == {"$date": NOW * 1000}
 
 
 def test_a_task_outside_brain_task_still_closes_its_promise_and_an_open_one_does_not():
@@ -246,3 +250,16 @@ def test_a_promise_whose_record_was_deleted_is_not_a_failure():
     out = mod.main(job_args(s))
     assert out["promises"] == 0
     assert s.config("promises.cursor") == {"mb1": MADE_MS}
+
+
+def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
+    # a promise from years ago is not an open promise; the job reads the
+    # last month of sent mail first
+    s = mail_space("I'll send the deck tomorrow.")
+    s.add_mail("mb1", "old", **{"from": ME, "to": "Ada <ada@lab.org>",
+                                "body": "I'll send the old report on Monday."},
+               internalDate=NOW * 1000 - 40 * 86_400_000)
+    mod, _ = kernel(s)
+    out = mod.main(job_args(s))
+    assert [p["quote"] for p in s.store("promises").values()] == ["I'll send the deck tomorrow."]
+    assert out["messages"] == 1
