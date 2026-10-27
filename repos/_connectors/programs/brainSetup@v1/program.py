@@ -2,8 +2,9 @@
 
 The brain is off until the user asks for it. `status()` says how it
 stands; `on()` (Google must be connected) and `off()` switch it after
-the user's yes; `exclude()` keeps a person's mail out of it for good.
-A trigger run of this program does the setup.
+the user's yes; `allow_model()` is the user's consent to read mail with
+a model; `exclude()` / `include()` keep a person out of it, or let them
+back in. A trigger run of this program does the setup.
 """
 
 __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
@@ -40,6 +41,9 @@ kit = use("brainKit@v1")  # noqa: F821 - guest global
 
 SPACE_KEY = "brain.space"
 STATUS_KEY = "brain.status"
+# the user's consent to reading mail with a model (ADR-035 §1): written
+# only by allow_model() / deny_model() here, after a plain-words yes
+MODEL_KEY = "brain.model"
 JOBS_KEY = "brain.jobs"
 STOPPED = "auto_disabled"
 SETUP_TRIGGER_ID = "brain-setup"
@@ -645,10 +649,12 @@ def status():
     request, current = _request(), _status()
     apps = sorted({a.get("usecase") for a in _any.list_apps(bao) if a.get("usecase")})
     stopped = _warning(_stopped_jobs(bao, _trigger_anchor(bao), (current or {}).get("mailSync")))
+    model = _config_get(MODEL_KEY)
     return {"state": _state(request, current), "request": request, "status": current,
             "apps": apps,
             "mailboxes": [addr or box for box, addr in kit.mailboxes(bao)],
-            "stopped": stopped}
+            "stopped": stopped,
+            "modelAllowed": isinstance(model, dict) and model.get("allowed") is True}
 
 
 def _switch(space_id):
@@ -684,44 +690,110 @@ def off():
     return _switch(None)
 
 
-@span("brainSetup.exclude", kind="mutator")  # noqa: F821 - guest global
-def exclude(person=None, email=None, domain=None):
-    """Keep a person, an address or a domain out of the brain → the exclusion list.
+def _consent(allowed):
+    row = {"allowed": allowed, "requestedAt": _iso(now()), "by": "chat"}  # noqa: F821
+    _config_set(MODEL_KEY, row)
+    return row
 
-    Appends only: removing an exclusion is Settings-only. A person's
-    addresses are added with them, so they stay out once the person is
-    gone. Raises not_set_up while the brain has no hub, unknown_person
-    for an id that names no person, exclusions_unreadable for a list in
-    another shape."""
-    bao = _any.bao_space()
-    hub = _current_hub(_status())
-    if hub is None:
-        raise not_set_up(OFFER)
+
+@span("brainSetup.allow_model", kind="mutator")  # noqa: F821 - guest global
+def allow_model():
+    """Record the user's consent to reading their mail with a model → the row.
+
+    Only after a plain-words yes in this conversation to this question:
+    may the brain read your mail with a model to keep facts about the
+    people you write with? Until then the facts job reads nothing.
+    Independent of on()/off()."""
+    return _consent(True)
+
+
+@span("brainSetup.deny_model", kind="mutator")  # noqa: F821 - guest global
+def deny_model():
+    """Withdraw that consent → the row.
+
+    The jobs that read mail with a model stop; what they learned stays."""
+    return _consent(False)
+
+
+def _exclusion_list(bao, hub):
+    """The exclusion list's value to edit, or the seed when there is none.
+
+    A malformed list stops every job that reads mail; rewriting it whole
+    would make it readable again with the damage inside, so it is refused."""
+    rec = _hub_record(bao, hub["objectId"], hub["datasets"]["config"], "exclusions")
+    if rec is None:
+        return dict(EXCLUSIONS_SEED)        # its lists are replaced, never changed
+    problem = kit.exclusions_problem(rec)
+    if problem is not None:
+        raise kit.exclusions_unreadable(f"{problem}: fix the list before editing it")
+    return dict(rec["value"])
+
+
+def _person_and_emails(bao, person, email, strict):
+    """(person id, [lowercased addresses]) for an exclusion edit: a person's
+    own addresses ride with their id. `strict` refuses an id that names no
+    person; include() tolerates one, since the object may be gone."""
     person = (person or "").strip()
     emails = [email] if email else []
     if person:
         rows = _any.query_objects(bao, filter={"id": person}, limit=1)
         collections = set((rows[0].get("any") or {}).get("collections") or []) if rows else set()
-        if not collections & {"person", "brain_person"}:
+        if collections & {"person", "brain_person"}:
+            emails += kit.person_emails(rows[0])
+        elif strict:
             raise unknown_person(f"no person {person!r} in Bao's space")
-        emails += kit.person_emails(rows[0])
-    rec = _hub_record(bao, hub["objectId"], hub["datasets"]["config"], "exclusions")
-    if rec is None:
-        value = dict(EXCLUSIONS_SEED)       # its lists are replaced, never changed
-    else:
-        # a malformed list stops every job that reads mail; rewriting it
-        # whole would make it readable again with the damage inside
-        problem = kit.exclusions_problem(rec)
-        if problem is not None:
-            raise kit.exclusions_unreadable(f"{problem}: fix the list before adding to it")
-        value = dict(rec["value"])
-    wanted = {"personIds": [person],
-              "emails": [(e or "").strip().lower() for e in emails],
-              "domains": [(domain or "").strip().lower().lstrip("@")]}
-    for field, items in wanted.items():
+    return person, [(e or "").strip().lower() for e in emails]
+
+
+def _wanted(person, emails, domain):
+    return {"personIds": [person], "emails": emails,
+            "domains": [(domain or "").strip().lower().lstrip("@")]}
+
+
+@span("brainSetup.exclude", kind="mutator")  # noqa: F821 - guest global
+def exclude(person=None, email=None, domain=None):
+    """Keep a person, an address or a domain out of the brain → the exclusion list.
+
+    Appends; `include()` is the way back in. A person's addresses are
+    added with them, so they stay out once the person is gone. Raises
+    not_set_up while the brain has no hub, unknown_person for an id that
+    names no person, exclusions_unreadable for a list in another shape."""
+    bao = _any.bao_space()
+    hub = _current_hub(_status())
+    if hub is None:
+        raise not_set_up(OFFER)
+    person, emails = _person_and_emails(bao, person, email, strict=True)
+    value = _exclusion_list(bao, hub)
+    for field, items in _wanted(person, emails, domain).items():
         for item in items:
             if item and item not in value[field]:
                 value[field] = [*value[field], item]
+    value["version"] = 1
+    _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
+            {"value": value}, "updating the exclusion list")
+    return value
+
+
+@span("brainSetup.include", kind="mutator")  # noqa: F821 - guest global
+def include(person=None, email=None, domain=None):
+    """Let a person, an address or a domain back into the brain → the exclusion list.
+
+    The inverse of exclude(), after the user asks: removes the id and,
+    for a person that still exists, their addresses; an id that names
+    no object any more is removed as is. Mail already kept out is not
+    re-read; the jobs read on from their cursors. Raises not_set_up
+    while the brain has no hub, exclusions_unreadable for a list in
+    another shape."""
+    bao = _any.bao_space()
+    hub = _current_hub(_status())
+    if hub is None:
+        raise not_set_up(OFFER)
+    person, emails = _person_and_emails(bao, person, email, strict=False)
+    value = _exclusion_list(bao, hub)
+    for field, items in _wanted(person, emails, domain).items():
+        gone = {i for i in items if i}
+        if gone:
+            value[field] = [v for v in value[field] if v not in gone]
     value["version"] = 1
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")
