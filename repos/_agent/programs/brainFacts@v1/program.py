@@ -33,7 +33,6 @@ CONFIDENCE_CAP = 0.8
 CONFIDENCE_MIN = 0.6
 MORE_SOURCES_MAX = 5
 MAX_TOKENS = 4000
-BACKFILL_DAYS = 30
 DAY = 86400
 
 KINDS = (
@@ -392,7 +391,7 @@ def main(args):
     cursor = kit.config_value(space, hub, datasets, "facts.cursor") or {}
     floor_s = cursor.get("watermark")
     if not isinstance(floor_s, (int, float)):
-        floor_s = now() - BACKFILL_DAYS * DAY  # noqa: F821 - guest global
+        floor_s = now() - kit.BACKFILL_DAYS * DAY  # noqa: F821 - guest global
     stats = _new_stats()
     persons, stats["excludedSkipped"] = _persons(space, excl, block, floor_s)
     boxes = kit.mailboxes(space)
