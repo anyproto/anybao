@@ -253,9 +253,10 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert required == {"tick", "kind", "subject", "decision", "reason"}
     exclusions = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
     assert exclusions == {"version": 1, "personIds": [], "emails": [], "domains": []}
-    assert cfg["llm.tier.brain.drafter"] == {"model": "codegen-model"}
+    # one tier row per brain job that calls a model (the facts extractor)
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
-    assert cfg["llm.tier.brain.caretaker"] == {"model": "classify-model"}
+    assert not any(k.startswith("llm.tier.brain.") for k in cfg
+                   if k != "llm.tier.brain.extractor")
     ready = statuses(writes)[-1]
     assert ready["hub"] == {"objectId": "hub", "version": 3, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
@@ -296,14 +297,14 @@ def test_a_second_run_only_reads():
     mod.main({})
     new = fake.calls[len(before):]
     assert not [c for c in new if c[0] in ("upsert", "enabled")]
-    assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
+    assert [k for k, _ in writes].count("llm.tier.brain.extractor") == 1
 
 
 def test_an_edited_tier_is_never_overwritten():
     mine = {"model": "my-own-model"}
-    mod, _, cfg, _, _ = kernel(config={**on_request(), "llm.tier.brain.drafter": mine})
+    mod, _, cfg, _, _ = kernel(config={**on_request(), "llm.tier.brain.extractor": mine})
     mod.main({})
-    assert cfg["llm.tier.brain.drafter"] == mine
+    assert cfg["llm.tier.brain.extractor"] == mine
 
 
 def test_bundle_not_ready_is_retried():

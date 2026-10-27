@@ -65,9 +65,9 @@ TRIGGERS = "agent_triggers"
 CATALOG_APPS = ("people", "meetings", "tasks")
 # the brain's model tiers, seeded from these sources only when absent so
 # an edit in Settings → Model always wins
-TIERS = (("llm.tier.brain.drafter", "llm.tier.codegen"),
-         ("llm.tier.brain.extractor", "llm.tier.codegen"),
-         ("llm.tier.brain.caretaker", "llm.tier.classify"))
+# one row per brain job that calls a model; a job's row arrives with the
+# job (the facts extractor now, ADR-035 §3), never ahead of it
+TIERS = (("llm.tier.brain.extractor", "llm.tier.codegen"),)
 EXCLUSIONS_SEED = {"version": 1, "personIds": [], "emails": [], "domains": []}
 # senders, domains and labels whose mail the people and promises jobs skip
 BLOCKLIST_SEED = {"domains": [], "senders": [], "labels": []}
