@@ -15,7 +15,7 @@
 # processes at most MAX_NEW unknown addresses and PER_MAILBOX messages per
 # mailbox; the cursor advances only past messages fully handled, so a
 # capped run resumes where it stopped. It then back-fills `personId` on
-# promises whose recipient it now knows.
+# promises whose recipient it now knows, past the preload included.
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
 _any = use("any@v1")  # noqa: F821 - guest global
@@ -169,7 +169,8 @@ def _link_promises(space, hub, datasets, people):
                       limit=PROMISE_BACKFILL)
     linked = 0
     for r in rows:
-        pid = people.by_email.get(str(r.get("personEmail") or "").lower())
+        email = str(r.get("personEmail") or "").lower()
+        pid = people.by_email.get(email) or (people.find(email)[0] if email else None)
         if pid:
             kit.checked(_any.modify(space, {"objectId": hub, "dataset": datasets["promises"],
                         "records": [{"id": kit.plain_id(r["id"]), "ops": [

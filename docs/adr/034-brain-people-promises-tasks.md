@@ -57,7 +57,8 @@ past them is found by any of their addresses (`brain_person.emails`,
 then `person.email`) and merged into, never overwritten or minted
 twice. It caps unknown addresses per run and
 advances the cursor only past messages fully handled, then back-fills
-`personId` on promises whose recipient it now knows.
+`personId` on promises whose recipient it now knows — found the same way
+when they are past the preload.
 
 ### 4. `brainPromises@v1`
 

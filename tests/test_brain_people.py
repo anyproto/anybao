@@ -210,3 +210,20 @@ def test_a_person_past_the_first_thousand_is_merged_not_overwritten_or_duplicate
     assert ada["mailCount"] == 43 and ada["aliases"][0] == "Ada"
     assert "ada@home.net" not in people(s)
     assert [c for c in s.calls if c == ("add_to_collection", "ada", "brain_person")] == []
+
+
+def test_a_promise_to_someone_past_the_preload_is_linked():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.set_config("exclusions", dict(EXCLUSIONS))
+    for i in range(1000):
+        s.add_object(f"p{i:04}", "profile", ["person", "brain_person"],
+                     person={"email": f"x{i}@crowd.org"},
+                     brain_person={"emails": [f"x{i}@crowd.org"]})
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada",
+                 person={"email": "ada@lab.org"}, brain_person={"emails": ["ada@lab.org"]})
+    s.records[(HUB, "hubtype_promises")] = {
+        "p1": {"id": "p1", "text": "Send the deck", "personEmail": "ada@lab.org"}}
+    _, out = run(s)
+    assert out["promisesLinked"] == 1
+    assert s.store("promises")["p1"]["personId"] == "ada"
