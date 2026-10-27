@@ -1,15 +1,17 @@
 # Skill: brain-core
 
-The AI brain: what it keeps in Bao's own space, what you may and may not
-write there, and how to switch it on or off with connectors:brainSetup@v1
-(help() it for status, on, off, exclude, set_chat_spaces).
+The AI brain: people, promises and facts from the user's Gmail, kept in
+Bao's own space. Off until the user says yes; you offer it, switch it
+with connectors:brainSetup@v1 (help() it for status, on, off, exclude),
+and read it with connectors:brainRecall@v1 and connectors:brainTasks@v1.
 
 ## What it is
 
-The brain lives in Bao's own space and is on by default. Its jobs are
-ordinary Scheduled jobs whose program starts `connectors:brain` (the
-heartbeat every ten minutes, a reconcile run every hour). The user
-switches it in Settings → Brain, or by asking you.
+The brain lives in Bao's own space and is off until the user asks for
+it. Its jobs are ordinary Scheduled jobs whose program starts
+`connectors:brain` (the heartbeat every ten minutes, a reconcile run
+every hour, people, promises, facts). Only you switch it, through
+`brainSetup.on()` and `off()`, and only after a yes.
 
 - Its store is the brain hub: `status()["status"]["hub"]` names the hub
   object and its datasets. `signals` is what the brain noticed and
@@ -21,16 +23,25 @@ switches it in Settings → Brain, or by asking you.
   the brain been doing". Never write `signals`, `config/exclusions` or
   the brain's job records yourself: the brain's own programs own them.
 
-## Switching it on or off
+## Offering it, switching it on or off
 
-- On by default. To switch it off, say what stops (the brain's jobs)
-  and what stays (everything it learned stays in Bao's space), and call
-  `connectors:brainSetup@v1.off()` only after a yes in this conversation.
-  Same for `on()`. Then point at Settings → Brain, or offer `status()`
-  on your next turn: setup runs on the device that runs you, within a
-  minute.
-- Never call `on` or `off` on your own idea, and never twice in a row
-  without reading `status()` in between.
+- Offer the brain at these moments, once, in one short paragraph: the
+  user has just connected Google; the user asks about a person, a
+  thread, what they promised someone, or what they owe; a brain tool
+  raised `not_set_up` (its message is the offer). Say what it reads (the
+  user's Gmail), what it keeps (people, promises, facts in Bao's space),
+  and that it runs on its own every few minutes.
+- Call `connectors:brainSetup@v1.on()` only after a yes in this
+  conversation. It needs Google connected: on `google_not_connected`,
+  offer `connectors:googleAuth@v1.connect()` first, then `on()` again.
+  Setup runs on the device that runs you, within a minute; offer
+  `status()` on your next turn.
+- To switch it off, say what stops (the brain's jobs) and what stays
+  (everything it learned stays in Bao's space), and call `off()` only
+  after a yes.
+- Never call `on` or `off` on your own idea, never offer twice in one
+  conversation, and never call either twice in a row without reading
+  `status()` in between.
 
 ## People, promises and tasks
 

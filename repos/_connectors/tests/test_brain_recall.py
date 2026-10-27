@@ -155,7 +155,7 @@ def test_an_excluded_or_unknown_person_raises():
 
 def test_a_brain_that_is_not_set_up_refuses():
     s = mail_space()
-    with pytest.raises(Exception, match="not set up") as err:
+    with pytest.raises(Exception, match="brain is off") as err:
         kernel(s, status={"state": "provisioning"}).search("deck")
     assert type(err.value).__name__ == "not_set_up"
     with pytest.raises(Exception) as err:
