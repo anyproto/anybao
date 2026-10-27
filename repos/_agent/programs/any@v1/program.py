@@ -1977,7 +1977,7 @@ class _Client:
     @_public('getter')
     def list_programs(self, space, tools_only=False):
         # ADR-009 §2, ADR-010 §4
-        """Programs deployed in a space: [{name, version, anyTool, summary}].
+        """Programs deployed in a space: [{name, version, anyTool, summary, category}].
 
         An overlay/repo or your own working space, sorted by name —
         `summary` is the program's one-liner;
@@ -1996,6 +1996,7 @@ class _Client:
             out.append({"name": prog.get("name") or "",
                         "version": prog.get("version") or "",
                         "anyTool": bool(prog.get("any_tool")),
+                        "category": prog.get("category") or "",
                         "summary": (prog.get("summary") or "").strip()})
         return sorted(out, key=lambda r: (r["name"], r["version"]))
 

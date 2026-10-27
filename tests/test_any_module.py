@@ -1795,9 +1795,9 @@ def test_list_programs_lists_a_space_sorted():
     rows = client(fx).list_programs("repo1")
     assert rows == [
         {"name": "helper", "version": "v2", "anyTool": False,
-         "summary": ""},
+         "summary": "", "category": ""},
         {"name": "webSearch", "version": "v1", "anyTool": True,
-         "summary": "Web search one-liner."}]
+         "summary": "Web search one-liner.", "category": ""}]
     # the object query targeted the requested space with the program
     # filter minus binned objects; a definition's row never matches its
     # members (no marker clause needed — ADR-029 §2)

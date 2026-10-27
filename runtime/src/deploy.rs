@@ -11,7 +11,9 @@
 //! properties from a static source scan (ADR-010 §4): `summary` = the
 //! module docstring's first line; `any_tool` = the source declares
 //! `__any_tool__ = True`, validated to carry the tool shape (docstring
-//! within budget + ≥1 public `@span`-tagged def). A program is
+//! within budget + ≥1 public `@span`-tagged def); `category` = the word
+//! of `__any_category__ = "<word>"`, a grouping label for inventories
+//! (empty when undeclared). A program is
 //! `<name>@<version>` (filename `name@vN.py` or `name@vN/program.py`).
 //! Optional capability manifest (sidecar `name@vN.manifest.json`) is
 //! stored in `program_manifest`/"main" and mixed into the fingerprint —
@@ -268,6 +270,51 @@ pub fn has_any_tool_marker(code: &str) -> bool {
         .any(|l| l.trim_start().starts_with("__any_tool__ = True"))
 }
 
+/// ADR-010 §4 cap for a declared category word.
+const CATEGORY_MAX_CHARS: usize = 32;
+
+/// The category a module declares (ADR-010 §4): a module-level
+/// `__any_category__ = "<word>"` — one word, `[a-z][a-z0-9_-]*`, at most
+/// 32 chars, double or single quotes. Ok(None) when undeclared; Err
+/// names the fix. The word is a grouping label for inventories
+/// (`plugin`, `connector`, …), never a behavior switch.
+pub fn declared_category(code: &str) -> anyhow::Result<Option<String>> {
+    const MARKER: &str = "__any_category__";
+    let Some(line) = code.lines().find(|l| l.starts_with(MARKER)) else {
+        return Ok(None);
+    };
+    let rest = line[MARKER.len()..].trim_start();
+    let Some(rest) = rest.strip_prefix('=') else {
+        anyhow::bail!("{MARKER} must be assigned a quoted word (ADR-010 §4)");
+    };
+    let (literal, _) = strip_comment(rest.trim_start(), 0);
+    let literal = literal.trim();
+    let word = literal
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            literal
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("{MARKER} must be a quoted word, e.g. \"plugin\" (ADR-010 §4)")
+        })?;
+    let ok = !word.is_empty()
+        && word.len() <= CATEGORY_MAX_CHARS
+        && word.starts_with(|c: char| c.is_ascii_lowercase())
+        && word
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if !ok {
+        anyhow::bail!(
+            "{MARKER}: {word:?} — one lowercase word ([a-z][a-z0-9_-]*, at most \
+             {CATEGORY_MAX_CHARS} chars), e.g. \"plugin\" (ADR-010 §4)"
+        );
+    }
+    Ok(Some(word.to_string()))
+}
+
 /// ≥1 `@span(...)`-decorated def whose name is public — any nesting
 /// (class methods count). Comments/blank lines between decorator and
 /// def are tolerated; any other statement resets the pending state.
@@ -299,13 +346,23 @@ const DOCSTRING_MAX_CHARS: usize = 800;
 /// Fingerprint over code + the derived properties + manifest. The
 /// derived values are hashed too so a derivation-logic change (new
 /// scan rules) re-deploys even when the code bytes are identical.
-pub fn fingerprint(code: &str, summary: &str, any_tool: bool, manifest: &Value) -> String {
+pub fn fingerprint(
+    code: &str,
+    summary: &str,
+    any_tool: bool,
+    category: &str,
+    manifest: &Value,
+) -> String {
     let mut h = Sha256::new();
     h.update(code.as_bytes());
     h.update(b"\x00s\x00");
     h.update(summary.as_bytes());
     h.update(b"\x00t\x00");
     h.update(if any_tool { b"1" } else { b"0" });
+    if !category.is_empty() {
+        h.update(b"\x00c\x00");
+        h.update(category.as_bytes());
+    }
     if truthy(manifest) {
         h.update(b"\x00man\x00");
         let mut canon = String::new();
@@ -354,6 +411,15 @@ impl ProgramSource {
         has_any_tool_marker(&self.code)
     }
 
+    /// The `category` property value: the declared word, "" when none
+    /// (a bad declaration is `validate()`'s to refuse).
+    pub fn category(&self) -> String {
+        declared_category(&self.code)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
     /// The `credentials` property value: the declared list as JSON text
     /// (`"[]"` when none) — what serve reads into the declared table.
     pub fn credentials_json(&self) -> String {
@@ -369,6 +435,7 @@ impl ProgramSource {
         // ADR-021 §8.1: a declared credential is validated for every
         // program, tool or not — a bad declaration never reaches a space
         declared_credentials(&self.code).map_err(|e| anyhow::anyhow!("{spec}: {e}"))?;
+        declared_category(&self.code).map_err(|e| anyhow::anyhow!("{spec}: {e}"))?;
         if !self.any_tool() {
             return Ok(());
         }
@@ -409,7 +476,13 @@ impl ProgramSource {
     }
 
     pub fn fingerprint(&self) -> String {
-        fingerprint(&self.code, &self.summary(), self.any_tool(), &self.manifest)
+        fingerprint(
+            &self.code,
+            &self.summary(),
+            self.any_tool(),
+            &self.category(),
+            &self.manifest,
+        )
     }
 }
 
@@ -577,6 +650,7 @@ impl<'a> Deployer<'a> {
         let code = main["code"].as_str().unwrap_or("");
         let summary = props["summary"].as_str().unwrap_or("");
         let any_tool = props["any_tool"].as_bool().unwrap_or(false);
+        let category = props["category"].as_str().unwrap_or("");
         let man_recs = self
             .client
             .query(&self.space, object_id, &s.manifest, &json!({}))?;
@@ -585,7 +659,9 @@ impl<'a> Deployer<'a> {
             .and_then(|r| r.get("manifest"))
             .cloned()
             .unwrap_or(json!({}));
-        Ok(Some(fingerprint(code, summary, any_tool, &manifest)))
+        Ok(Some(fingerprint(
+            code, summary, any_tool, category, &manifest,
+        )))
     }
 
     /// Create-or-update one program. Returns "created" | "updated" |
@@ -606,7 +682,7 @@ impl<'a> Deployer<'a> {
         }
 
         let (any_tool, summary) = (p.any_tool(), p.summary());
-        let credentials = p.credentials_json();
+        let (credentials, category) = (p.credentials_json(), p.category());
         let s = self.schema()?;
         let (oid, status) = match found {
             None => {
@@ -619,7 +695,8 @@ impl<'a> Deployer<'a> {
                         s.type_id.clone(): s.group(&[
                             ("name", json!(p.name)), ("version", json!(p.version)),
                             ("any_tool", json!(any_tool)), ("summary", json!(summary)),
-                            ("credentials", json!(credentials))]),
+                            ("credentials", json!(credentials)),
+                            ("category", json!(category))]),
                     }}),
                 )?;
                 let oid = res["objectId"]
@@ -637,6 +714,7 @@ impl<'a> Deployer<'a> {
                         ("any_tool", json!(any_tool)),
                         ("summary", json!(summary)),
                         ("credentials", json!(credentials)),
+                        ("category", json!(category)),
                     ]),
                 )?;
                 (existing, "updated")
@@ -1165,6 +1243,14 @@ mod tests {
             .with_manifest(json!({"capabilities": ["net.http", "chat.send"], "publisher": "acme"}));
         assert_ne!(p.fingerprint(), with_man.fingerprint());
         assert_ne!(with_man.fingerprint(), edited.fingerprint());
+        // a declared category is a derived property: it changes the hash
+        // (same code bytes otherwise would not re-deploy the stamp)
+        let tagged =
+            ProgramSource::new("t", "v1", &format!("{TOOL}__any_category__ = \"plugin\"\n"));
+        let retagged =
+            ProgramSource::new("t", "v1", &format!("{TOOL}__any_category__ = \"tool\"\n"));
+        assert_ne!(p.fingerprint(), tagged.fingerprint());
+        assert_ne!(tagged.fingerprint(), retagged.fingerprint());
     }
 
     #[test]
@@ -1401,6 +1487,58 @@ mod tests {
             .query_objects("agent", &json!({"filter": {s.path("name"): "t"}}))
             .unwrap();
         assert_eq!(s.read(&rows[0])["credentials"], json!("[]"));
+    }
+
+    #[test]
+    fn declared_category_parse_validate_and_deploy_as_a_property() {
+        // ADR-010 §4: one lowercase word, double or single quotes, a
+        // trailing comment tolerated; "" when undeclared
+        let cat = |code: &str| declared_category(code).unwrap();
+        assert_eq!(cat(PROG), None);
+        assert_eq!(
+            cat("__any_category__ = \"plugin\"\n"),
+            Some("plugin".into())
+        );
+        assert_eq!(
+            cat("__any_category__ = 'connector-x_1'  # why\n"),
+            Some("connector-x_1".into())
+        );
+        let err = |code: &str| declared_category(code).unwrap_err().to_string();
+        assert!(err("__any_category__ = plugin\n").contains("quoted word"));
+        assert!(err("__any_category__ = \"Plug In\"\n").contains("one lowercase word"));
+        assert!(err("__any_category__ = \"\"\n").contains("one lowercase word"));
+        assert!(err("__any_category__ \"plugin\"\n").contains("assigned"));
+        assert!(err(&format!("__any_category__ = \"{}\"\n", "a".repeat(33))).contains("at most"));
+
+        // deploy refuses a bad declaration before any write, and stamps a
+        // good one as the `category` property — "" once it is removed
+        let c = client();
+        let d = Deployer::new(&c, "agent");
+        let bad = ProgramSource::new("t", "v1", "__any_category__ = \"Plug In\"\n");
+        assert!(d.deploy_one(&bad).unwrap_err().to_string().contains("t@v1"));
+        // validation runs before the schema ensure: a refused declaration
+        // writes nothing, not even the store
+        assert!(ProgramSchema::lookup(&c, "agent").unwrap().is_none());
+        let tagged =
+            ProgramSource::new("t", "v1", &format!("{TOOL}__any_category__ = \"plugin\"\n"));
+        assert_eq!(d.deploy_one(&tagged).unwrap(), "created");
+        assert_eq!(d.deploy_one(&tagged).unwrap(), "unchanged");
+        let s = schema(&c, "agent");
+        assert!(
+            s.category_prop().is_some(),
+            "ensure declares the optional property"
+        );
+        let rows = c
+            .query_objects("agent", &json!({"filter": {s.path("name"): "t"}}))
+            .unwrap();
+        assert_eq!(s.read(&rows[0])["category"], json!("plugin"));
+        assert_eq!(s.read(&rows[0])["any_tool"], json!(true));
+        let plain = ProgramSource::new("t", "v1", TOOL);
+        assert_eq!(d.deploy_one(&plain).unwrap(), "updated");
+        let rows = c
+            .query_objects("agent", &json!({"filter": {s.path("name"): "t"}}))
+            .unwrap();
+        assert_eq!(s.read(&rows[0])["category"], json!(""));
     }
 
     #[test]

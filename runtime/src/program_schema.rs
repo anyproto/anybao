@@ -2,7 +2,8 @@
 //! ADR-017 §1, ADR-027 §2/§3, ADR-029 §7): one LISTED type per space
 //! keyed by xKey `program` — a class with a body that a picker may
 //! offer; a hand-made object is inert — four properties (`name`, `version`, `any_tool`,
-//! `summary` — none indexed), a canonical editor part (`body` — the
+//! `summary` — none indexed) plus two optional ones deploy ensures
+//! (`credentials`, `category`), a canonical editor part (`body` — the
 //! program object's docs body, held through the type) and two records
 //! datasets, `program_source` and `program_manifest` (single record
 //! "main"; declared WITHOUT a `search` mapping, so the server never
@@ -46,6 +47,12 @@ const PROPS: [(&str, &str, &str); 4] = [
 /// OPTIONAL at lookup: a space deployed before this property still
 /// resolves (its programs simply declare nothing until redeployed).
 pub const CREDENTIALS_PROP: (&str, &str, &str) = ("credentials", "Credentials", "string");
+
+/// The category a program declares (ADR-010 §4): the word of its
+/// `__any_category__ = "<word>"`, derived by deploy — a grouping label
+/// for inventories (`plugin`, `connector`, …), empty when undeclared.
+/// Ensured by deploy, OPTIONAL at lookup like `credentials`.
+pub const CATEGORY_PROP: (&str, &str, &str) = ("category", "Category", "string");
 
 /// The parts the type declares: the canonical body first (the docs body
 /// every program object holds through its type — no per-object
@@ -121,7 +128,11 @@ impl ProgramSchema {
             }
         };
         let mut props = prop_map(c, space, &tid)?;
-        for (xkey, name, kind) in PROPS.iter().copied().chain([CREDENTIALS_PROP]) {
+        for (xkey, name, kind) in PROPS
+            .iter()
+            .copied()
+            .chain([CREDENTIALS_PROP, CATEGORY_PROP])
+        {
             if props.contains_key(xkey) {
                 continue;
             }
@@ -178,6 +189,12 @@ impl ProgramSchema {
         self.props.get(CREDENTIALS_PROP.0).map(String::as_str)
     }
 
+    /// The optional `category` property's id (None on a space deployed
+    /// before the property existed — its programs read as uncategorized).
+    pub fn category_prop(&self) -> Option<&str> {
+        self.props.get(CATEGORY_PROP.0).map(String::as_str)
+    }
+
     /// The id-keyed property group `{propId: value}` for a write.
     pub fn group(&self, fields: &[(&str, Value)]) -> Value {
         let mut m = Map::new();
@@ -188,7 +205,8 @@ impl ProgramSchema {
     }
 
     /// The xKey-keyed `program` group read back from an objects row
-    /// (`{name, version, any_tool, summary}`; missing → `{}`).
+    /// (`{name, version, any_tool, summary, credentials?, category?}`;
+    /// missing → `{}`).
     pub fn read(&self, row: &Value) -> Value {
         let mut m = Map::new();
         if let Some(g) = row.get(&self.type_id).and_then(Value::as_object) {
@@ -268,9 +286,11 @@ mod tests {
             .filter(|t| t["builtIn"] != json!(true))
             .collect();
         assert_eq!(user_types.len(), 1);
-        // the four required props + the optional `credentials` (ADR-021 §8.1)
-        assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 5);
+        // the four required props + the optional `credentials` (ADR-021
+        // §8.1) and `category` (ADR-010 §4)
+        assert_eq!(c.list_properties("sp", &s.type_id).unwrap().len(), 6);
         assert!(s.credentials_prop().is_some());
+        assert!(s.category_prop().is_some());
         let ds = c.list_datasets("sp", &s.type_id).unwrap();
         let keys: Vec<&str> = ds.iter().filter_map(|d| d["key"].as_str()).collect();
         // the canonical body (held through the type) + the two stores
