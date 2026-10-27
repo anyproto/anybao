@@ -22,8 +22,9 @@ mail out of it for good. A trigger run of this program does the setup.
 # re-enables one; an off run records which jobs it disabled (brain.jobs)
 # and the next on run re-enables exactly those. A job the runtime stopped
 # after repeated failures (lastStatus auto_disabled) is not a pause: the
-# reconcile run answers it as an error, and the next request — any-ui's
-# Try again — restarts it.
+# brain stays ready and brain.status lists it under `stopped`, and only a
+# NEW request (any-ui's Try again) restarts it; a setup run re-armed for
+# the same request (the chat-scan list) leaves it.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -323,10 +324,19 @@ def _reenable_jobs(bao, anchor):
 
 
 def _stopped_jobs(bao, anchor):
-    """The brain jobs the runtime stopped after repeated failures."""
-    return sorted((r for recs in _brain_jobs(bao, anchor).values() for r in recs
-                   if not r.get("enabled", True) and r.get("lastStatus") == STOPPED),
-                  key=lambda r: r["id"])
+    """The brain's jobs that the runtime stopped after repeated failures."""
+    out = []
+    for rec in _any.query(bao, anchor, TRIGGERS, limit=500):
+        prog = rec.get("program") or ""
+        ours = rec.get("kind") == "cron" and prog.startswith("agent:brain")
+        if ours and not rec.get("enabled", True) and rec.get("lastStatus") == STOPPED:
+            out.append(rec)
+    return sorted(out, key=lambda r: r["id"])
+
+
+def _warning(stopped):
+    """brain.status's `stopped`: [{id, name}] — what Settings names."""
+    return [{"id": r["id"], "name": r.get("name") or r["id"]} for r in stopped]
 
 
 def _restart_stopped(bao, anchor):
@@ -376,6 +386,7 @@ def _current_hub(status):
 
 def _setup():
     bao = _any.bao_space()
+    answered = (_status() or {}).get("requestedAt")
     request = _request()
     if request is None:
         request = {"spaceId": bao, "requestedAt": _iso(now()), "by": "default"}  # noqa: F821
@@ -393,12 +404,17 @@ def _setup():
         hub = _provision(bao)
         anchor, written = _ensure_jobs(bao, hub)
         reenabled = _reenable_jobs(bao, anchor)
-        restarted = _restart_stopped(bao, anchor)
+        # only a new request restarts: a same-request re-arm is not the user
+        # asking to try again
+        fresh = request["requestedAt"] != answered
+        restarted = _restart_stopped(bao, anchor) if fresh else []
+        stopped = _warning(_stopped_jobs(bao, anchor))
     except Exception as e:
         _write_status(request, "error",
                       error={"type": type(e).__name__, "message": str(e)[:500]})
         raise provision_failed(f"{type(e).__name__}: {e}") from e
-    _write_status(request, "ready", hub=hub)
+    extra = {"stopped": stopped} if stopped else {}
+    _write_status(request, "ready", hub=hub, **extra)
     return {"state": "ready", "hub": hub, "written": written, "reenabled": reenabled,
             "restarted": restarted}
 
@@ -416,15 +432,12 @@ def _reconcile():
     if hub is None or not answered or (status or {}).get("state") != "ready":
         return {"reconciled": False, "reason": "not set up"}
     anchor, written = _ensure_jobs(bao, hub)
-    stopped = _stopped_jobs(bao, anchor)
-    if stopped:
-        names = ", ".join(r.get("name") or r["id"] for r in stopped)
-        _write_status(request, "error", error={
-            "type": "job_stopped",
-            "message": f"{names} stopped after repeated failures; Scheduled shows why. "
-                       "Try again restarts it."})
-        return {"reconciled": True, "written": written, "stopped": [r["id"] for r in stopped]}
-    return {"reconciled": True, "written": written}
+    stopped = _warning(_stopped_jobs(bao, anchor))
+    if stopped != (status.get("stopped") or []):
+        # the warning changes, the answer does not: `at` and the hub stay
+        value = {k: v for k, v in status.items() if k != "stopped"}
+        _config_set(STATUS_KEY, {**value, "stopped": stopped} if stopped else value)
+    return {"reconciled": True, "written": written, "stopped": [w["id"] for w in stopped]}
 
 
 def main(args):
@@ -450,20 +463,23 @@ def _state(request, status):
 
 @span("brainSetup.status", kind="getter")  # noqa: F821 - guest global
 def status():
-    """How the brain stands → {state, request, status, apps, mailboxes}.
+    """How the brain stands → {state, request, status, apps, mailboxes, stopped}.
 
     state ∈ waiting | setting_up | ready | error | switching_off | off.
     `apps` names the catalog apps Bao's space has (people, meetings,
     tasks — the brain's people, meetings and tasks live in them);
-    `mailboxes` names the synced mailboxes there."""
+    `mailboxes` names the synced mailboxes there; `stopped` the jobs the
+    runtime stopped after repeated failures, as [{id, name}]."""
     bao = _any.bao_space()
     request, current = _request(), _status()
     apps = sorted({a.get("usecase") for a in _any.list_apps(bao) if a.get("usecase")})
     boxes = _any.query_objects(bao, normalize=False, filter={"any.type": "mailbox"},
                                limit=20)
+    stopped = _warning(_stopped_jobs(bao, _trigger_anchor(bao)))
     return {"state": _state(request, current), "request": request, "status": current,
             "apps": apps,
-            "mailboxes": [((b.get("any") or {}).get("name") or b.get("id")) for b in boxes]}
+            "mailboxes": [((b.get("any") or {}).get("name") or b.get("id")) for b in boxes],
+            "stopped": stopped}
 
 
 def _switch(space_id):

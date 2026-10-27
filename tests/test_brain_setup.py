@@ -310,20 +310,29 @@ def test_off_after_a_failed_setup_still_brings_the_jobs_back():
     assert all(j["enabled"] for j in jobs(fake).values())
 
 
-def test_reconcile_reports_a_job_the_runtime_stopped():
+def test_a_stopped_job_is_a_warning_on_a_ready_brain_that_keeps_working():
     mod, fake, cfg, writes, _ = kernel(config=on_request())
     mod.main({})
+    ready = statuses(writes)[-1]
     triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled",
                                               consecutiveFailures=3)
     mod.main({"mode": "reconcile"})
-    status = statuses(writes)[-1]
-    assert status["state"] == "error" and status["requestedAt"] == STAMP
-    assert status["error"]["type"] == "job_stopped"
-    assert "brain heartbeat" in status["error"]["message"]
-    assert mod.status()["state"] == "error"
+    status = cfg["brain.status"]
+    assert status["state"] == "ready" and status["hub"] == ready["hub"]
+    assert status["at"] == ready["at"]
+    assert status["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
+    assert mod.status()["state"] == "ready"
+    assert mod.status()["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
+    mod.exclude(email="boss@example.com")          # the brain's tools still answer
+    n = len(writes)
+    mod.main({"mode": "reconcile"})                # nothing changed: nothing written
+    assert len(writes) == n
+    triggers(fake)["brain-heartbeat"]["enabled"] = True    # resumed in Scheduled
+    mod.main({"mode": "reconcile"})
+    assert "stopped" not in cfg["brain.status"] and cfg["brain.status"]["state"] == "ready"
 
 
-def test_try_again_restarts_a_job_the_runtime_stopped_but_not_a_paused_one():
+def test_try_again_restarts_a_stopped_job_but_not_a_paused_one():
     mod, fake, cfg, _, _ = kernel(config=on_request())
     mod.main({})
     triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
@@ -333,6 +342,18 @@ def test_try_again_restarts_a_job_the_runtime_stopped_but_not_a_paused_one():
     assert out["state"] == "ready" and out["restarted"] == ["brain-heartbeat"]
     assert jobs(fake)["brain-heartbeat"]["enabled"] is True
     assert jobs(fake)["brain-reconcile"]["enabled"] is False
+    assert "stopped" not in cfg["brain.status"]
+
+
+def test_a_setup_run_for_the_same_request_restarts_nothing():
+    # a chat-scan change re-arms setup on the request it already answered;
+    # only a new request (Try again) restarts a stopped job
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    triggers(fake)["brain-heartbeat"].update(enabled=False, lastStatus="auto_disabled")
+    out = mod.main({})
+    assert out["restarted"] == [] and jobs(fake)["brain-heartbeat"]["enabled"] is False
+    assert cfg["brain.status"]["stopped"] == [{"id": "brain-heartbeat", "name": "brain heartbeat"}]
 
 
 def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
@@ -360,7 +381,7 @@ def test_reconcile_never_re_enables_a_paused_job():
     triggers(fake)["brain-heartbeat"]["enabled"] = False
     out = mod.main({"mode": "reconcile"})
     assert statuses(writes)[-1]["state"] == "ready"     # a pause is not a failure
-    assert out == {"reconciled": True, "written": []}
+    assert out == {"reconciled": True, "written": [], "stopped": []}
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False
 
 
