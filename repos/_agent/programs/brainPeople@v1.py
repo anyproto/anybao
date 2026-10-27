@@ -7,7 +7,8 @@
 # `brain_person` collection with every address used, the names seen, when
 # we last spoke and how often. It never reads a body: From / To / Cc only.
 # Excluded people, blocklisted senders and domains, noise senders and the
-# mailbox's own addresses never become people. Deterministic; no model.
+# mailbox's own addresses never become people; mail under a blocklisted
+# label is read past. Deterministic; no model.
 #
 # Resolution order for an address: a person whose brain_person.emails holds
 # it, then one whose person.email equals it, else a new person. A run
@@ -77,9 +78,9 @@ def _gather(space, boxes, cursor, own, excl, block, people):
                           filter={"internalDate": {"$gt": last}},
                           sort=["internalDate"], limit=PER_MAILBOX)
         for row in rows:
-            people_here = [(n, a) for n, a in kit.addresses(row.get("from"), row.get("to"),
-                                                           row.get("cc"))
-                           if a not in own and not kit.kept_out(a, excl, block)]
+            people_here = [] if kit.labelled_out(row, block) else [
+                (n, a) for n, a in kit.addresses(row.get("from"), row.get("to"), row.get("cc"))
+                if a not in own and not kit.kept_out(a, excl, block)]
             fresh = {a for _, a in people_here
                      if a not in people.by_email and a not in seen and a not in unknown}
             if len(unknown) + len(fresh) > MAX_NEW:

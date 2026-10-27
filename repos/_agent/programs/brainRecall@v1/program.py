@@ -12,7 +12,8 @@ quote the `link` so the user can open the source.
 # score × 0.5^(age / half-life); a promise does not decay. Calendar and
 # meetings scopes join when their syncs land. Every read honours the
 # exclusion list and the blocklist: mail with an excluded or blocklisted
-# participant, a promise made to one, and an excluded person are left out.
+# participant or under a blocklisted label, a promise made to one, and an
+# excluded person are left out.
 # The hub's stores are shared, so their records are read by
 # "<hub>/<recordId>"; mail is per mailbox and read by its plain id.
 
@@ -48,6 +49,8 @@ def _decayed(score, at, half_life, today):
 
 
 def _mail_kept_out(row, excl, block):
+    if kit.labelled_out(row, block):
+        return True
     people = list(row.get("participants") or [])
     people += [a for _, a in kit.addresses(row.get("from"), row.get("to"), row.get("cc"))]
     return any(kit.kept_out(str(a).lower(), excl, block) for a in people)

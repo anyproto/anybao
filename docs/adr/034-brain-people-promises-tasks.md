@@ -28,7 +28,10 @@ idempotent by xKey and leaving the catalog's own definitions untouched —
 `mailCount`, `meetingCount`, `preferredName`, `addressForm`, `language`)
 and `brain_task` (`sourceUri`, `personId` → `profile`, `origin`,
 `suggestedDeadline`); declares the shared `promises` dataset on the hub;
-seeds an empty `config/blocklist`; and writes the `brain-people` (900 s)
+seeds an empty `config/blocklist` (`{senders, domains, labels}`, each a
+list; `labels` are Gmail label ids, matched against a synced message's
+`labelIds`, and a message under one is read past by every brain reader;
+a list in another shape fails the run, like the exclusion list); and writes the `brain-people` (900 s)
 and `brain-promises` (1 800 s) jobs. The hub records `version: 2`; a
 reconcile run that finds an older hub re-arms setup, so an existing
 install upgrades itself within the hour.
@@ -63,7 +66,8 @@ record: the verbatim `quote`, the key-form `source` link, `personEmail`
 and `personId`, `madeAt`, and a `dueAt` from a fixed table (today,
 tomorrow, end of week, next week, weekday names; EN and DE). The id is
 `sha256(messageId, sentence)`, so a re-run writes nothing. A message to
-an excluded or blocklisted recipient is skipped whole. Any per-record
+an excluded or blocklisted recipient, or under a blocklisted label, is
+skipped whole. Any per-record
 rejection fails the run with the cursor unmoved. It also marks done an
 open promise whose catalog task the user completed, finding the tasks by
 the `taskId`s the promises hold rather than by the `brain_task`

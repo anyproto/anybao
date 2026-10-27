@@ -7,7 +7,8 @@
 # the user to something (PHRASES, minus EXCLUSIONS). Each becomes one
 # `promises` record whose `quote` is the verbatim sentence and whose
 # `source` opens the message. Deterministic; no model. A message to an
-# excluded or blocklisted recipient is skipped whole. The record id is
+# excluded or blocklisted recipient, or under a blocklisted label, is
+# skipped whole. The record id is
 # sha256(messageId, normalized sentence), so a re-run writes nothing.
 #
 # It also closes the loop with tasks: an open promise whose `taskId` names
@@ -122,7 +123,7 @@ def _person_of(space, addr, cache):
 def _records_of(space, box_id, box_addr, row, excl, block, people):
     """The promise records one sent message yields (may be none)."""
     sender = kit.addresses(row.get("from"))
-    if not sender or sender[0][1] != box_addr:
+    if not sender or sender[0][1] != box_addr or kit.labelled_out(row, block):
         return []
     recipients = [a for _, a in kit.addresses(row.get("to"), row.get("cc")) if a != box_addr]
     if any(kit.kept_out(a, excl, block) and not kit.is_noise(a) for a in recipients):

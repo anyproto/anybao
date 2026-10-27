@@ -166,3 +166,27 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
     _, out = run(s)
     assert out == {"mailboxes": 0, "messages": 0, "minted": 0, "updated": 0,
                    "promisesLinked": 0}
+
+
+def test_mail_under_a_blocklisted_label_makes_no_person_but_is_read_past():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.set_config("exclusions", dict(EXCLUSIONS))
+    s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["Label_Medical"]})
+    s.add_mail("mb1", "m1", **{"from": "Dr Who <who@clinic.org>", "to": ME},
+               labelIds=["INBOX", "Label_Medical"], internalDate=1_000_000)
+    s.add_mail("mb1", "m2", **{"from": "Ada <ada@lab.org>", "to": ME},
+               labelIds=["INBOX"], internalDate=2_000_000)
+    _, out = run(s)
+    assert sorted(people(s)) == ["ada@lab.org"]
+    assert out["messages"] == 2
+    assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
+
+
+def test_a_blocklist_field_that_is_not_a_list_fails_closed():
+    s = space_with_mail()
+    s.set_config("blocklist", {"senders": "ada@lab.org", "domains": [], "labels": []})
+    with pytest.raises(Exception) as err:
+        run(s)
+    assert type(err.value).__name__ == "blocklist_unreadable"
+    assert people(s) == {}

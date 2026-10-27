@@ -218,3 +218,12 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s.set_config("exclusions", dict(EXCLUSIONS))
     mod, _ = kernel(s)
     assert mod.main(job_args(s)) == {"messages": 0, "promises": 0, "closed": 0}
+
+
+def test_sent_mail_under_a_blocklisted_label_is_never_read():
+    s = mail_space("I'll send the lab results tomorrow.")
+    s.records[("mb1", "email_messages")]["m1"]["labelIds"] = ["SENT", "Label_Medical"]
+    s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["label_medical"]})
+    mod, _ = kernel(s)
+    out = mod.main(job_args(s))
+    assert s.store("promises") == {} and out["messages"] == 1

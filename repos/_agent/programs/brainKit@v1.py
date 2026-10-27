@@ -37,6 +37,10 @@ class not_set_up(Exception):
     """The brain has no hub yet: it is off or Bao has not set it up."""
 
 
+class blocklist_unreadable(Exception):
+    """The blocklist is not an object of senders, domains and labels lists."""
+
+
 def ready_hub():
     """(hub object id, datasets) of a brain Bao has set up; else not_set_up.
 
@@ -140,10 +144,21 @@ def exclusions(space, hub, datasets):
 
 
 def blocklist(space, hub, datasets):
-    """The blocklist as sets of senders, domains and labels; empty when absent."""
-    value = config_value(space, hub, datasets, "blocklist") or {}
-    return {k: {str(v).lower() for v in (value.get(k) or [])}
-            for k in ("senders", "domains", "labels")}
+    """The blocklist as sets of senders, domains and labels; empty when absent.
+
+    `labels` are Gmail label ids, as on a synced message's `labelIds`. A
+    list in another shape raises blocklist_unreadable (fail closed)."""
+    value = config_value(space, hub, datasets, "blocklist")
+    value = {} if value is None else value
+    if not isinstance(value, dict):
+        raise blocklist_unreadable("the blocklist is not an object")
+    out = {}
+    for field in ("senders", "domains", "labels"):
+        items = value.get(field, [])
+        if not isinstance(items, list):
+            raise blocklist_unreadable(f"blocklist field {field!r} is not a list")
+        out[field] = {str(v).lower() for v in items}
+    return out
 
 
 def addresses(*headers):
@@ -169,6 +184,11 @@ def kept_out(addr, excl, block):
     dom = domain_of(addr)
     return (addr in excl["emails"] or addr in excl["personEmails"] or dom in excl["domains"]
             or addr in block["senders"] or dom in block["domains"] or is_noise(addr))
+
+
+def labelled_out(row, block):
+    """True when a synced message carries a blocklisted label."""
+    return any(str(label).lower() in block["labels"] for label in (row.get("labelIds") or []))
 
 
 def mailboxes(space):

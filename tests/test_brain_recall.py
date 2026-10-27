@@ -178,3 +178,14 @@ def test_a_person_before_the_first_mail_sync_has_no_mail():
                  person={"email": "ada@lab.org"}, brain_person={"emails": ["ada@lab.org"]})
     out = kernel(s).person("ada")
     assert out["person"]["emails"] == ["ada@lab.org"] and out["mail"] == []
+
+
+def test_mail_under_a_blocklisted_label_is_never_recalled():
+    s = mail_space()
+    s.records[("mb1", "email_messages")]["new"]["labelIds"] = ["INBOX", "Label_Medical"]
+    s.set_config("blocklist", {"senders": [], "domains": [], "labels": ["Label_Medical"]})
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada",
+                 person={"email": "ada@lab.org"}, brain_person={"emails": ["ada@lab.org"]})
+    out = kernel(s).search("deck", scopes=["email"])
+    assert [h["recordId"] for h in out["groups"][0]["hits"]] == ["secret", "old"]
+    assert [m["link"].rsplit("/", 1)[-1] for m in kernel(s).person("ada")["mail"]] == ["old"]
