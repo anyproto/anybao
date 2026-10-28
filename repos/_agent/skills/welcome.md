@@ -10,8 +10,6 @@ team wrote for that moment. Use it, do not describe it:
   context). Without a name, drop ", {name}" and nothing else changes.
 - Keep its length, order and voice. Do not quote it, label it an example, or
   add a preamble.
-- Drop an offer this setup cannot deliver yet (no Gmail connector available,
-  no shell on this device). Do not add offers of your own.
 
 ## The message
 
