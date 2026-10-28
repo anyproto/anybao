@@ -33,6 +33,7 @@ PROMISES = "connectors:brainPromises@v1"
 FACTS = "connectors:brainFacts@v1"
 DRAFTER = "connectors:brainDrafter@v1"
 SETUP_TRIGGER = "brain-setup"
+SETUP_PROGRAM = "connectors:brainSetup@v1"
 TRIGGERS = "agent_triggers"
 RUNS = "agent_runs"
 UNAVAILABLE = "unavailable"
@@ -301,6 +302,14 @@ def _trigger(snap, tid):
     return next((t for t in snap["triggers"] if t.get("id") == tid), None)
 
 
+def _setup_once(snap):
+    """Setup's once, found by program and kind as setup finds it: a deleted
+    `brain-setup` is rewritten under a fresh id."""
+    found = [t for t in snap["triggers"]
+             if t.get("kind") == "once" and t.get("program") == SETUP_PROGRAM]
+    return min(found, key=lambda t: t.get("id") or "") if found else None
+
+
 def _status_at(snap):
     status = snap["brainStatus"]
     return _iso_secs(status.get("at")) if isinstance(status, dict) else None
@@ -493,7 +502,7 @@ def grade_setup_blocked(snap):
     if not isinstance(request, dict) or not isinstance(request.get("requestedAt"), str) \
             or status == UNAVAILABLE:
         return []
-    setup = _trigger(snap, SETUP_TRIGGER)
+    setup = _setup_once(snap)
     state = _request_state(request, status)
     answered_at = _iso_secs(status.get("at")) if isinstance(status, dict) else None
     age = None
@@ -578,7 +587,8 @@ def summary(fault_class, subject, evidence, snap):
                 f"({e.get('streak')} runs)")
     if fault_class == "setup_blocked":
         if not e.get("setupTriggerPresent"):
-            return "the brain-setup job is gone, so the brain cannot be set up again"
+            return ("the brain-setup job is gone; switching the brain on again "
+                    "in chat makes a new one")
         return f"brain setup has not answered for {_hours(e.get('ageS'))}"
     if fault_class == "draft_backlog":
         return f"{e.get('count')} reply cards are waiting for a draft"

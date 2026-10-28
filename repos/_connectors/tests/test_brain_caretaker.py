@@ -519,6 +519,11 @@ def test_setup_blocked():
     (fault,) = mod.grade_setup_blocked(gone)
     assert fault["evidence"]["setupTriggerPresent"] is False
     assert mod.grade_setup_blocked(snap(Rig())) == []
+    # setup rewrites a deleted brain-setup under a fresh id: found by program and kind
+    moved = snap(Rig())
+    moved["triggers"] = [{**t, "id": "brain-setup-1793000000"} if t["id"] == "brain-setup" else t
+                         for t in moved["triggers"]]
+    assert mod.grade_setup_blocked(moved) == []
 
 
 def test_draft_backlog_once_the_hub_has_cards():
@@ -1041,7 +1046,7 @@ def test_setup_blocked_escalates_without_a_model_turn():
     assert card["kind"] == "incident" and card["subjectKey"] == inc["id"]
     assert card["title"] == "setup_blocked: brain-setup" and card["status"] == "open"
     assert card["id"] == rig.mod.card_id("incident", inc["id"]) == inc["cardId"]
-    assert "brain-setup job is gone" in card["reason"]
+    assert "brain-setup job is gone; switching the brain on again" in card["reason"]
     assert card["sourceUri"] == f"any://o/{BAO}/{HUB}/incidents/{inc['id']}"
     (_, body), = rig.world.chat
     assert "brain-setup job is gone" in body["text"]
