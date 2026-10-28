@@ -221,7 +221,8 @@ on its own within the window.
 
 - **Escalation** is a card and a notice, once per incident. The card
   goes into `cards` only when the hub's datasets name it (Phase 3's
-  contract): id `sha256("incident|<incidentId>")[:32]`, `{kind:
+  contract): id `sha256("incident|<incidentId>")` (the full hex digest, as the
+  heartbeat names cards), `{kind:
   "incident", title: "<faultClass>: <subject>", reason: <hypothesis, or
   "caretaker could not decide — <summary>">, subjectKey: <incidentId>,
   sourceUri: <the incident's record link>, status: "open"}`, written
