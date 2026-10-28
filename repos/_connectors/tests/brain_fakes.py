@@ -13,7 +13,9 @@ import copy
 HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
-            ("signals", "config", "incidents", "observations", "promises", "facts")}
+            ("signals", "config", "incidents", "observations", "promises", "facts",
+             "cards", "drafts", "approvals", "standups")}
+ANCHOR = "trigger-anchor"      # the bao/triggers/v1 bundle child
 # what a set-up brain's space has before any mail sync: the built-in page,
 # the people and tasks catalog apps' types, the hub
 BASE_TYPES = ("page", "profile", "task", "brain_hub")
@@ -39,6 +41,10 @@ def _instant(value):
     return value["$date"] if isinstance(value, dict) and set(value) == {"$date"} else value
 
 
+_ORDER = {"$gt": lambda v, a: v > a, "$gte": lambda v, a: v >= a,
+          "$lt": lambda v, a: v < a, "$lte": lambda v, a: v <= a}
+
+
 def _matches(value, cond):
     value = _instant(value)
     if isinstance(cond, dict) and set(cond) == {"$date"}:
@@ -46,10 +52,13 @@ def _matches(value, cond):
     if isinstance(cond, dict):
         cond = {op: _instant(arg) for op, arg in cond.items()}
         for op, arg in cond.items():
-            if op == "$gt" and not (value is not None and value > arg):
+            if op in _ORDER and not (value is not None and _ORDER[op](value, arg)):
                 return False
             if op == "$in" and not (any(v in arg for v in value) if isinstance(value, list)
                                     else value in arg):
+                return False
+            if op == "$nin" and (any(v in arg for v in value) if isinstance(value, list)
+                                 else value in arg):
                 return False
         return True
     if cond is None:
@@ -76,6 +85,8 @@ class FakeSpace:
                                    # or {code, reason}
         self.calls = []
         self.types = set(BASE_TYPES)
+        self.chat = []             # chat_send bodies, in order
+        self.skills = {}           # name -> markdown (get_skill)
         self._n = 0
 
     # --- seeding -----------------------------------------------------------
@@ -110,9 +121,29 @@ class FakeSpace:
     def store(self, key):
         return self.records.get((HUB, DATASETS[key]), {})
 
+    def triggers(self):
+        return self.records.get((ANCHOR, "agent_triggers"), {})
+
     # --- any@v1 ------------------------------------------------------------
     def bao_space(self):
         return self.space
+
+    def bundle_child(self, space, bundle_id, seed, type_key=None, **_):
+        assert (bundle_id, seed) == ("bao/v1", "bao/triggers/v1"), (bundle_id, seed)
+        return {"objectId": ANCHOR}
+
+    def general_chat(self, space):
+        return "general-chat"
+
+    def chat_send(self, space, chat_id, body):
+        self.calls.append(("chat_send", chat_id))
+        self.chat.append(copy.deepcopy(body))
+        return {"id": f"msg{len(self.chat)}"}
+
+    def get_skill(self, name):
+        if name not in self.skills:
+            raise LookupError(f"no skill named {name!r}")
+        return self.skills[name]
 
     def list_types(self, space):
         return [{"id": f"type-{t}", "xKey": t} for t in sorted(self.types)]
