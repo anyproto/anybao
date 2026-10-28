@@ -54,6 +54,7 @@ MAX_CALLS = 5                 # model calls per run; the rest wait for the next 
 MAX_TOKENS = 600
 CONFIDENCE_MIN = 0.6
 HISTORY = 5
+ESCALATED_OBSERVE_S = 3600    # an escalated incident waits on the user: hourly rows
 REWIND_S = 86400
 HYPOTHESIS_MAX = 500
 NOTICE_COOLDOWN_MIN = 60
@@ -764,12 +765,21 @@ class _Run:
                 self.did.append(f"closed {self._title(iid)}: clean again")
 
     def _observe(self):
-        records = []
+        """One observation per incident this tick; an escalated one that is still
+        dirty only hourly, so a fault the user never fixes does not grow the store
+        by a row every tick."""
+        records, seen = [], dict(self.state.get("observedAt") or {})
         for iid, inc in self.incidents.items():
             fault = self.faults.get((inc.get("faultClass"), inc.get("subject")))
+            if fault and inc.get("status") == "escalated":
+                last = seen.get(iid)
+                if _num(last) and self.tick - last < ESCALATED_OBSERVE_S:
+                    continue
+                seen[iid] = self.tick
             records.append({"id": f"{iid}:{int(self.tick)}", "fields": {
                 "incidentId": iid, "tick": int(self.tick),
                 "evidence": fault["evidence"] if fault else {"clean": True}}})
+        self.state["observedAt"] = {k: v for k, v in seen.items() if k in self.incidents}
         if records:
             kit.checked(_any.upsert_records(self.space, self.hub, self.ds["observations"],
                                             records), "writing observations")
@@ -974,7 +984,11 @@ class _Run:
 
     # notices, the report, the standup
     def flush_notices(self):
-        pending = list(self.state.get("pending") or [])
+        # a line whose incident closed meanwhile is news no longer
+        pending = [p for p in self.state.get("pending") or []
+                   if (self.incidents.get(p.get("incidentId")) or {}).get("status")
+                   not in (None, "closed")]
+        self.state["pending"] = pending
         if not pending:
             return 0
         cooldown = self.state.get("noticeCooldownMin")
