@@ -264,6 +264,8 @@ nothing — it is left as it is (clean cut), the user re-creates it.
 
 ### 5. Links, discovery, and the apps a space has
 
+**Amended 2026-10-29 (the UI's Mini apps):** an app is ON when its bundle is installed and its sidebar root is not `miniapp.hidden` — the rule of any-ui's space settings tiles. the UI manages them in the home space only for now — the root of the user's sidebar, which they call “my tasks” or “tasks”, never a space — so `list_available_apps`, `setup_app` and `remove_app` default to it (`space=None`) and the two writers refuse another space; `list_available_apps` carries `kind`, `installed`, `on`, `rootId`, `hidden`; `setup_app` places a new root (`miniapp.pos` after the last entry) and un-hides the app and its direct requirements, as the UI's Add does; removal has no agent verb — the UI hides the root for every member and the install stays — so `remove_app` only returns the steps for the user (ADR-010 §8).
+
 **Amended 2026-09-17 (ADR-029 §6):** the sidebar is `{"any.collections": "miniapp"}` minus `bin`, sorted on `miniapp.pos`; `list_programs` is `{"any.type": "program"}` minus `bin` (a definition never matches its members, no marker clause); `setup_app` echoes `collectionId` beside `typeId`; the reserved-handle guard reads the catalog's type AND collection xKeys.
 
 - `backlinks(space, object)` returns the server's edges normalized:

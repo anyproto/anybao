@@ -2296,13 +2296,23 @@ def test_list_search_scopes_unions_fixed_and_declared():
 
 # --- apps (ADR-027 §5) ---------------------------------------------------------
 
+# A miniapp bundle (it declares `miniapp`) roots the app's sidebar entry;
+# `people` is a building block — no tile — and its v2 bundles supersede
+# the v1 type a space set up earlier keeps for life.
 _CATALOG = {"usecases": [
     {"id": "wiki", "name": "Wiki", "description": "A tree of pages",
-     "bundles": [{"id": "system:wiki/v1", "name": "Wiki"}]},
+     "bundles": [{"id": "system:wiki/v1", "name": "Wiki", "miniapp": {}}]},
     {"id": "general-chat", "name": "General chat", "description": "The space's chat",
-     "bundles": [{"id": "system:general-chat/v1", "name": "General"}]},
+     "bundles": [{"id": "system:general-chat/v1", "name": "General", "miniapp": {},
+                  "derived": True}]},
+    {"id": "people", "name": "People", "description": "Profiles",
+     "bundles": [{"id": "system:profile/v1", "supersedes": ["system:person/v1"]},
+                 {"id": "system:person/v2", "supersedes": ["system:person/v1"]}]},
+    {"id": "contacts", "name": "Contacts", "description": "A directory",
+     "requires": ["people"],
+     "bundles": [{"id": "system:contacts/v1", "miniapp": {}}]},
     {"id": "crm", "name": "CRM", "description": "Deals", "requires": ["contacts"],
-     "bundles": [{"id": "system:deal/v1"}, {"id": "system:crm/v1"}]}]}
+     "bundles": [{"id": "system:deal/v1"}, {"id": "system:crm/v1", "miniapp": {}}]}]}
 
 
 def test_list_apps_joins_sidebar_registry_and_catalog():
@@ -2320,7 +2330,7 @@ def test_list_apps_joins_sidebar_registry_and_catalog():
              "miniapp": {"pos": "a2"}}]},
         "/bundles": {"bundles": [{"id": "system:wiki/v1"},
                                  {"id": "system:general-chat/v1"}]}})
-    c = client(fx)
+    c = client(fx, bao="s1")
     assert c.list_apps("s1") == [
         {"name": "Wiki", "rootId": "wk", "description": "A tree of pages",
          "hidden": False, "pinned": False, "bundleId": "system:wiki/v1",
@@ -2335,34 +2345,134 @@ def test_list_apps_joins_sidebar_registry_and_catalog():
     assert q == {"filter": {"$and": [{"any.collections": "miniapp"},
                                      {"any.collections": {"$nin": ["bin"]}}]},
                  "sort": ["miniapp.pos"]}
-    assert c.list_available_apps("s1") == [
+    # the UI's tile rule: on = installed AND the sidebar root not hidden;
+    # a hidden app is still installed (the user hid it; Add brings it back)
+    assert c.list_available_apps() == [
         {"usecase": "wiki", "name": "Wiki", "description": "A tree of pages",
-         "requires": [], "installed": True},
+         "requires": [], "kind": "app", "installed": True, "on": True, "rootId": "wk"},
         {"usecase": "general-chat", "name": "General chat",
-         "description": "The space's chat", "requires": [], "installed": True},
+         "description": "The space's chat", "requires": [], "kind": "app",
+         "installed": True, "on": False, "rootId": "ch", "hidden": True},
+        {"usecase": "people", "name": "People", "description": "Profiles",
+         "requires": [], "kind": "building-block", "installed": False, "on": False},
+        {"usecase": "contacts", "name": "Contacts", "description": "A directory",
+         "requires": ["people"], "kind": "app", "installed": False, "on": False},
         {"usecase": "crm", "name": "CRM", "description": "Deals",
-         "requires": ["contacts"], "installed": False}]
+         "requires": ["contacts"], "kind": "app", "installed": False, "on": False}]
     assert [p for _, p, _ in fx.calls].count("/v1/catalog") == 1   # memoized
 
 
-def test_setup_app_installs_and_reports_ids():
-    fx = wire(replies={"/catalog/crm/setup": {"usecase": "crm", "bundles": [
-        {"usecase": "contacts", "id": "system:contacts/v1", "installed": False,
-         "bundle": {"rootId": "r1"}},
-        {"usecase": "crm", "id": "system:deal/v1", "installed": True,
-         "bundle": {"rootId": "r2"}, "typeId": "r2",
-         "properties": {"stage": "pS", "amount": "pA"}}]},
-        "/spaces/s1/types": {"types": [{"id": "r2", "xKey": "deal", "name": "Deal"}]}})
-    assert client(fx).setup_app("s1", "crm") == [
+def test_list_available_apps_counts_an_older_generation_as_installed():
+    # a space set up on `person/v1` keeps that shape for life: `people` IS
+    # installed there, and a sidebar root is found under the old bundle id
+    fx = wire(replies={
+        "/v1/catalog": _CATALOG, "/types/any/properties": _ANY_PROPS,
+        "/objects/query": {"records": []},
+        "/bundles": {"bundles": [{"id": "system:person/v1", "rootId": "p1"}]}})
+    rows = {r["usecase"]: r for r in client(fx, bao="s1").list_available_apps()}
+    assert rows["people"]["installed"] is True and rows["people"]["on"] is True
+    assert rows["contacts"]["installed"] is False
+
+
+_CRM_SETUP = {"usecase": "crm", "bundles": [
+    {"usecase": "contacts", "id": "system:contacts/v1", "installed": False,
+     "bundle": {"rootId": "r1"}},
+    {"usecase": "crm", "id": "system:deal/v1", "installed": True,
+     "bundle": {"rootId": "r2"}, "typeId": "r2",
+     "properties": {"stage": "pS", "amount": "pA"}},
+    {"usecase": "crm", "id": "system:crm/v1", "installed": True,
+     "bundle": {"rootId": "r3"}}]}
+# the sidebar after that setup: the wiki the user placed, a Contacts root
+# the user had hidden (adopted, never reset by setup), the new CRM root
+# unpositioned (it would sort to the head of the list)
+_CRM_SIDEBAR = {"records": [
+    {"id": "wk", "any": {"name": "Wiki", "collections": ["miniapp"]},
+     "miniapp": {"bundle": "system:wiki/v1", "pos": "a0"}},
+    {"id": "r1", "any": {"name": "Contacts", "collections": ["miniapp"]},
+     "miniapp": {"bundle": "system:contacts/v1", "pos": "Zz", "hidden": True}},
+    {"id": "r3", "any": {"name": "CRM", "collections": ["miniapp"]},
+     "miniapp": {"bundle": "system:crm/v1"}}]}
+
+
+def test_setup_app_installs_reports_ids_and_places_the_roots_like_the_ui():
+    fx = wire(replies={"/v1/catalog": _CATALOG, "/catalog/crm/setup": _CRM_SETUP,
+                       "/types/any/properties": _ANY_PROPS,
+                       "/spaces/s1/types": {"types": [{"id": "r2", "xKey": "deal",
+                                                       "name": "Deal"}]},
+                       "/objects/query": _CRM_SIDEBAR})
+    assert client(fx, bao="s1").setup_app("crm") == [
         {"usecase": "contacts", "bundleId": "system:contacts/v1", "rootId": "r1",
-         "installed": False},
+         "installed": False, "shown": True},
         {"usecase": "crm", "bundleId": "system:deal/v1", "rootId": "r2",
          "installed": True, "typeId": "r2", "xKey": "deal",
-         "properties": {"stage": "pS", "amount": "pA"}}]
-    # the install, then one fresh catalog read for the definitions' xKeys
-    assert fx.calls[0] == ("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})
-    assert [p for _, p, _ in fx.calls[1:]] == ["/v1/spaces/s1/types",
-                                               "/v1/spaces/s1/collections"]
+         "properties": {"stage": "pS", "amount": "pA"}},
+        {"usecase": "crm", "bundleId": "system:crm/v1", "rootId": "r3",
+         "installed": True, "pos": "a1"}]
+    # the catalog names the usecase, the install, one fresh catalog read for
+    # the definitions' xKeys, the sidebar — then what the UI's Add does: the
+    # hidden requirement un-hidden, the new root placed after the LAST entry
+    assert fx.calls[0] == ("GET", "/v1/catalog", None)
+    assert fx.calls[1] == ("POST", "/v1/catalog/crm/setup", {"spaceId": "s1"})
+    assert [p for _, p, _ in fx.calls[2:]] == [
+        "/v1/spaces/s1/types", "/v1/spaces/s1/collections", "/v1/spaces/s1/objects/query",
+        "/v1/spaces/s1/properties/r1/set/miniapp", "/v1/spaces/s1/properties/r3/set/miniapp"]
+    assert fx.calls[-2][2] == {"patch": {"hidden": False}}
+    assert fx.calls[-1][2] == {"patch": {"pos": "a1"}}
+
+
+def test_setup_app_show_false_only_positions():
+    fx = wire(replies={"/v1/catalog": _CATALOG, "/catalog/crm/setup": _CRM_SETUP,
+                       "/types/any/properties": _ANY_PROPS,
+                       "/spaces/s1/types": {"types": []}, "/objects/query": _CRM_SIDEBAR})
+    rows = client(fx, bao="s1").setup_app("crm", show=False)
+    sets = [(p, b) for _, p, b in fx.calls if "/set/miniapp" in p]
+    assert sets == [("/v1/spaces/s1/properties/r3/set/miniapp", {"patch": {"pos": "a1"}})]
+    assert "shown" not in rows[0]
+    # an unknown usecase never reaches the server
+    fx = wire(replies={"/v1/catalog": _CATALOG})
+    g = load(fx)
+    with pytest.raises(g["AnyError"], match="known: contacts, crm, general-chat, people, wiki"):
+        g["_Client"]("http://any", "s1").setup_app("mail")
+    assert [p for _, p, _ in fx.calls] == ["/v1/catalog"]
+
+
+def test_apps_live_in_the_home_space_only():
+    # the UI manages Mini apps in the home space alone for now — the root
+    # of the user's sidebar, never "a space" to them: no space = home, an
+    # id-shaped other space is refused on the writers, read on the reader
+    other = "bafyreiother0000000000000000000000000000000000000000000000.ljr8o8cta1f0"
+    fx = wire(replies={"/v1/catalog": _CATALOG, "/types/any/properties": _ANY_PROPS,
+                       "/objects/query": {"records": []}, "/bundles": {"bundles": []}})
+    c = client(fx, bao="s1")
+    with pytest.raises(ValueError, match="home space only"):
+        c.setup_app("tasks", other)
+    with pytest.raises(ValueError, match="home space only"):
+        c.remove_app("wiki", other)
+    assert not [p for _, p, _ in fx.calls if "/setup" in p]
+    assert c.list_available_apps(other)[0]["installed"] is False
+    assert any(p == f"/v1/spaces/{other}/bundles" for _, p, _ in fx.calls)
+    # no home space wired at all: a clear error, not a guess
+    with pytest.raises(ValueError, match="no bao space"):
+        client(fx).list_available_apps()
+
+
+def test_remove_app_writes_nothing_and_says_how():
+    fx = wire(replies={"/v1/catalog": _CATALOG, "/types/any/properties": _ANY_PROPS,
+                       "/objects/query": _CRM_SIDEBAR,
+                       "/bundles": {"bundles": [{"id": "system:wiki/v1", "rootId": "wk"},
+                                                {"id": "system:contacts/v1", "rootId": "r1"},
+                                                {"id": "system:profile/v1"},
+                                                {"id": "system:person/v2"}]}})
+    c = client(fx, bao="s1")
+    out = c.remove_app("wiki")
+    assert out["on"] is True and out["name"] == "Wiki"
+    assert "Space settings" in out["how"] and "Hide" in out["how"]
+    assert c.remove_app("contacts")["on"] is False      # hidden already
+    assert "building block" in c.remove_app("people")["how"]
+    # reads only: the sidebar query is a POST, but nothing is set, filed or deleted
+    assert not [p for _, p, _ in fx.calls if "/set/" in p or "/collections/" in p
+                or p.endswith("/objects")]
+    assert not [v for v, p, _ in fx.calls if v == "DELETE"]
 
 
 # --- get_skill: on-demand skill bodies by name (ADR-009 §3) -----------------

@@ -534,7 +534,7 @@ def _restart_stopped(bao, anchor, mail_sync):
 def _provision(bao):
     """Install or adopt everything the brain needs in Bao's space → the hub."""
     for usecase in CATALOG_APPS:
-        _retry(lambda u=usecase: _any.setup_app(bao, u))
+        _retry(lambda u=usecase: _any.setup_app(u, bao, show=False))   # definitions only
     _retry(lambda: _any.ensure_bundle(bao, BUNDLE, name="Brain", root_type="page"))
     _any.create_type(bao, {"name": "Brain hub", "xKey": HUB_TYPE, "hidden": True,
                            "body": False})
