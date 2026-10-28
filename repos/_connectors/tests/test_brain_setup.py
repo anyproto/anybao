@@ -91,9 +91,13 @@ class FakeAny:
         store = self._store(space, body["objectId"], body["dataset"])
         for r in body["records"]:
             for op in r["ops"]:
-                assert op["type"] == "$set" and op["path"] == "enabled"
-                store[r["id"]]["enabled"] = op["value"]
-            self.calls.append(("enabled", r["id"], r["ops"][0]["value"]))
+                assert op["type"] == "$set" and op["path"] in ("enabled", "program", "args")
+                store[r["id"]][op["path"]] = op["value"]
+            paths = [op["path"] for op in r["ops"]]
+            if paths == ["enabled"]:
+                self.calls.append(("enabled", r["id"], r["ops"][0]["value"]))
+            else:
+                self.calls.append(("rewrite", r["id"], paths))
         return {}
 
     def delete(self, space, oid, ds, rid):
@@ -232,8 +236,9 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert [c[1] for c in fake.calls if c[0] == "setup_app"] == ["people", "meetings", "tasks"]
     assert ("ensure_bundle", "brain/v1", "Brain", "page") in fake.calls
     assert fake.types["brain_hub"]["hidden"] is True and fake.types["brain_hub"]["body"] is False
-    assert sorted(fake.datasets) == ["config", "facts", "incidents", "observations",
-                                     "promises", "signals"]
+    assert sorted(fake.datasets) == ["approvals", "cards", "config", "drafts", "facts",
+                                     "incidents", "observations", "promises", "signals",
+                                     "standups"]
     facts = fake.datasets["facts"]
     assert facts["shared"] is True and facts["search"]["scope"] == "facts"
     assert "skipHistory" not in facts  # a supersession stays auditable
@@ -253,15 +258,19 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert required == {"tick", "kind", "subject", "decision", "reason"}
     exclusions = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
     assert exclusions == {"version": 1, "personIds": [], "emails": [], "domains": []}
-    # one tier row per brain job that calls a model (the facts extractor)
+    # one tier row per brain job that calls a model (the facts extractor,
+    # the reply drafter)
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
-    assert not any(k.startswith("llm.tier.brain.") for k in cfg
-                   if k != "llm.tier.brain.extractor")
+    assert cfg["llm.tier.brain.drafter"] == {"model": "codegen-model"}
+    assert sorted(k for k in cfg if k.startswith("llm.tier.brain.")) == [
+        "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 3, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 4, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
-        "promises": "type-hub_promises", "facts": "type-hub_facts"}}
+        "promises": "type-hub_promises", "facts": "type-hub_facts",
+        "cards": "type-hub_cards", "drafts": "type-hub_drafts",
+        "approvals": "type-hub_approvals", "standups": "type-hub_standups"}}
     blocklist = fake.records[(BAO, "hub", "type-hub_config")]["blocklist"]["value"]
     assert blocklist == {"domains": [], "senders": [], "labels": []}
 
@@ -281,8 +290,10 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert js["brain-mail-sync"]["program"] == "connectors:gmailSync@v1"
     assert js["brain-mail-sync"]["args"] == {"space": BAO}
     beat = js["brain-heartbeat"]
-    assert beat["program"] == "connectors:brainHeartbeat@v1" and beat["spec"] == {"every_s": 600}
+    assert beat["program"] == "connectors:brainHeartbeat@v2" and beat["spec"] == {"every_s": 600}
     assert beat["args"]["space"] == BAO and beat["args"]["hub"] == "hub"
+    assert beat["args"]["tier"] == "brain.drafter"
+    assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
     assert beat["args"]["datasets"]["config"] == "type-hub_config"
     assert js["brain-reconcile"]["args"] == {"mode": "reconcile"}
     assert all(j["enabled"] is True and "owner" not in j for j in js.values())
@@ -296,8 +307,9 @@ def test_a_second_run_only_reads():
                           "by": "any-ui"}
     mod.main({})
     new = fake.calls[len(before):]
-    assert not [c for c in new if c[0] in ("upsert", "enabled")]
+    assert not [c for c in new if c[0] in ("upsert", "enabled", "rewrite")]
     assert [k for k, _ in writes].count("llm.tier.brain.extractor") == 1
+    assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
 
 
 def test_an_edited_tier_is_never_overwritten():
@@ -491,7 +503,7 @@ def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
     out = mod.main({"mode": "reconcile"})
     (new_id,) = out["written"]
     assert new_id.startswith("brain-heartbeat-")
-    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v1"
+    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v2"
 
 
 def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
@@ -793,3 +805,112 @@ def test_include_refuses_before_setup_and_a_malformed_list():
     fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] = {"version": 2}
     with pytest.raises(Exception, match="fix the list"):
         mod.include(email="a@b.c")
+
+
+# --- Phase 3: the decision layer (ADR-036) -----------------------------------
+
+def _fields(draft):
+    return {f["key"]: f for f in draft["fields"]}
+
+
+def _keys(draft, flag):
+    return {f["key"] for f in draft["fields"] if f.get(flag)}
+
+
+def test_setup_declares_the_decision_layer_stores_with_their_exact_fields():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    for key in ("cards", "drafts", "approvals", "standups"):
+        draft = fake.datasets[key]
+        assert draft["shared"] is True and draft["idRule"] == "user"
+        assert draft["deleteBy"] == "author"
+        stamps = {f["key"]: f["stamp"] for f in draft["fields"] if "stamp" in f}
+        assert stamps == {"creator": "creator", "createdAt": "createTime",
+                          "modifiedAt": "modifyTime"}
+    cards = fake.datasets["cards"]
+    assert cards["search"] == {"title": "title", "text": ["reason"], "scope": "cards"}
+    assert set(_fields(cards)) - {"creator", "createdAt", "modifiedAt"} == {
+        "kind", "title", "reason", "subjectKey", "sourceUri", "signalId", "personIds",
+        "briefPersonIds", "status", "snoozedUntil", "answer", "draftId", "approvalId",
+        "draftAttempts", "decidedAt"}
+    assert _keys(cards, "required") == {"kind", "title", "reason", "subjectKey"}
+    assert _keys(cards, "mutableBy") == {"status", "snoozedUntil", "answer", "draftId",
+                                         "approvalId", "draftAttempts", "decidedAt"}
+    assert _fields(cards)["snoozedUntil"]["kind"] == "datetime"
+    assert _fields(cards)["personIds"]["kind"] == "array"
+    drafts = fake.datasets["drafts"]
+    assert "search" not in drafts
+    assert _keys(drafts, "required") == {"cardId", "sender", "senderAddress", "recipients",
+                                         "format", "body", "subject",
+                                         "recipientProvenance", "model", "tier", "origin"}
+    assert set(_fields(drafts)) - {"creator", "createdAt", "modifiedAt"} == (
+        _keys(drafts, "required") | {"inReplyTo", "threadId", "supersedes"})
+    assert _keys(drafts, "mutableBy") == set()          # an edit is a new draft
+    approvals = fake.datasets["approvals"]
+    assert _keys(approvals, "required") == {"draftId", "cardId", "sender", "recipients",
+                                            "format", "bodyHash", "reason"}
+    assert _keys(approvals, "mutableBy") == {"status", "decidedAt", "consumedByRun",
+                                             "rejectedReason", "editedTo"}
+    standups = fake.datasets["standups"]
+    assert _keys(standups, "required") == {"job", "tick", "did", "counts"}
+    assert set(_fields(standups)) - {"creator", "createdAt", "modifiedAt"} == {
+        "job", "tick", "did", "needs", "counts", "runId"}
+
+
+def test_setup_seeds_the_drafting_knobs_once_and_never_overwrites_them():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    store = fake.records[(BAO, "hub", "type-hub_config")]
+    assert store["drafting"]["value"] == {"maxPerRun": 3, "replyWindowDays": 5,
+                                          "meetingSoonHours": 24, "quietSenders": []}
+    store["drafting"]["value"] = {"maxPerRun": 1, "replyWindowDays": 2,
+                                  "meetingSoonHours": 4, "quietSenders": ["^news@"]}
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-again", "by": "chat"}
+    mod.main({})
+    assert store["drafting"]["value"]["quietSenders"] == ["^news@"]
+
+
+def test_an_older_heartbeat_is_rewritten_in_place_and_a_pause_holds():
+    fake = FakeAny()
+    v1 = {"id": "brain-heartbeat", "name": "brain heartbeat", "kind": "cron",
+          "spec": {"every_s": 600}, "program": "connectors:brainHeartbeat@v1",
+          "args": {"space": BAO, "hub": "hub", "datasets": {"signals": "type-hub_signals"}},
+          "enabled": False, "lastRunAt": 123}
+    fake.records[TRIGGERS] = {"brain-heartbeat": dict(v1)}
+    mod, _, _, _, _ = kernel(config=on_request(), fake=fake)
+    out = mod.main({})
+    assert out["upgraded"] == ["brain-heartbeat"]
+    beats = [j for j in jobs(fake).values() if "Heartbeat" in j["program"]]
+    assert len(beats) == 1                              # no second heartbeat
+    (beat,) = beats
+    assert beat["program"] == "connectors:brainHeartbeat@v2"
+    assert beat["args"]["tier"] == "brain.drafter"
+    assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
+    assert beat["enabled"] is False and beat["lastRunAt"] == 123    # paused stays paused
+    assert ("rewrite", "brain-heartbeat", ["program", "args"]) in fake.calls
+    assert not [c for c in fake.calls if c[0] == "enabled" and c[1] == "brain-heartbeat"]
+
+
+def test_an_enabled_older_heartbeat_stays_enabled_and_a_rerun_rewrites_nothing():
+    fake = FakeAny()
+    fake.records[TRIGGERS] = {"hb-7": {
+        "id": "hb-7", "name": "brain heartbeat", "kind": "cron", "spec": {"every_s": 600},
+        "program": "connectors:brainHeartbeat@v1", "args": {}, "enabled": True}}
+    mod, _, cfg, _, _ = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    assert jobs(fake)["hb-7"]["enabled"] is True
+    assert jobs(fake)["hb-7"]["program"] == "connectors:brainHeartbeat@v2"
+    assert "brain-heartbeat" not in jobs(fake)
+    before = len(fake.calls)
+    mod.main({"mode": "reconcile"})
+    assert not [c for c in fake.calls[before:] if c[0] in ("rewrite", "upsert", "enabled")]
+
+
+def test_reconcile_upgrades_a_version_3_hub():
+    # an install from before the decision layer upgrades itself within the hour
+    mod, fake, cfg, writes, _ = kernel(config=on_request())
+    mod.main({})
+    old = dict(statuses(writes)[-1])
+    old["hub"] = {**old["hub"], "version": 3}
+    cfg["brain.status"] = old
+    assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
