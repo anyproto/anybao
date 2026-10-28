@@ -3,8 +3,9 @@
 __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
 
 # ADR-033 / ADR-034. Shared by the brain's programs (setup's status, the
-# heartbeat, people, promises, facts, recall, tasks); not a tool. Three
-# server rules every brain write and read depends on live here, once:
+# heartbeat, people, promises, facts, recall, tasks, the chat scan); not a
+# tool. So is the rule that links a chat identity to a person (ADR-039 §5).
+# Three server rules every brain write and read depends on live here, once:
 #   - modify / upsert answer HTTP 200 even when they refuse a record; the
 #     refusal sits only in `rejections` (checked)
 #   - the hub's stores are SHARED datasets: reads return, and `id` filters
@@ -376,3 +377,78 @@ def person_facts(space, hub, datasets, person_id, limit=200):
                 grouped[name].append(_fact_view(row))
                 break
     return grouped, proposed
+
+
+# --- identities: who wrote a chat message (ADR-039 §5) ----------------------
+
+PERSON_PRELOAD = 1000
+
+
+def identity_uri(identity):
+    """An account identity as the link form asks carry: any://u/<identity>."""
+    return f"any://u/{identity}"
+
+
+def identity_of(uri):
+    """The bare identity of an any://u/<identity> link (a bare id passes)."""
+    value = str(uri or "")
+    return value[len("any://u/"):] if value.startswith("any://u/") else value
+
+
+def person_rows(space):
+    """The catalog persons an identity can be: filed under person or
+    brain_person, the first PERSON_PRELOAD of each."""
+    rows = {}
+    for collection in ("brain_person", "person"):
+        for row in _any.query_objects(space, filter={"any.collections": collection},
+                                      limit=PERSON_PRELOAD):
+            rows.setdefault(row["id"], row)
+    return list(rows.values())
+
+
+def _names(row):
+    names = {(row.get("any") or {}).get("name"), row.get("name"),
+             *((row.get("brain_person") or {}).get("aliases") or [])}
+    return {str(n).strip().casefold() for n in names if n and str(n).strip()}
+
+
+def identity_candidates(persons, identity, name):
+    """The persons an account identity may be → [person id].
+
+    The one whose brain_person.identity names it; else every person with no
+    identity whose name or an alias equals `name` (case folded). A link needs
+    exactly one candidate; an exclusion holds when any is excluded."""
+    uri = identity_uri(identity)
+    linked = [r["id"] for r in persons if (r.get("brain_person") or {}).get("identity") == uri]
+    if linked:
+        return linked
+    want = str(name or "").strip().casefold()
+    if not want:
+        return []
+    return [r["id"] for r in persons
+            if not (r.get("brain_person") or {}).get("identity") and want in _names(r)]
+
+
+def identity_person(persons, identity, name):
+    """The one person an identity resolves to, or None (none, or ambiguous)."""
+    found = identity_candidates(persons, identity, name)
+    return found[0] if len(found) == 1 else None
+
+
+class Identities:
+    """Display names of account identities for one run: a space's member
+    rows first, then the account's identity directory."""
+
+    def __init__(self):
+        self.names = {}
+
+    def add_members(self, members):
+        for m in members or []:
+            if m.get("identity") and m.get("name"):
+                self.names.setdefault(m["identity"], m["name"])
+
+    def name(self, identity):
+        if identity not in self.names:
+            row = _any.get_identity(identity)
+            self.names[identity] = (row or {}).get("name")
+        return self.names[identity]

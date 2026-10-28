@@ -206,3 +206,109 @@ def test_a_promise_from_mail_that_copied_in_someone_excluded_later_stays_out():
     with pytest.raises(Exception) as err:
         mod.create("p1")
     assert type(err.value).__name__ == "person_excluded"
+
+
+# --- asks (ADR-039 §6) ---------------------------------------------------------
+
+WITH_ASKS = {"state": "ready", "hub": {"objectId": HUB, "datasets": {
+    "config": "hubtype_config", "promises": "hubtype_promises", "asks": "hubtype_asks"}}}
+
+
+def add_ask(space, rid, text, asked=THU, kind="request", task=None, person=None,
+            sender="peer-id", status="open"):
+    rec = {"id": rid, "text": text, "quote": text, "kind": kind, "status": status,
+           "senderIdentity": f"any://u/{sender}", "spaceId": "team", "chatId": "chat-team",
+           "source": f"any://o/team/chat-team/chat_messages/{rid}",
+           "askedAt": {"$date": asked * 1000}}
+    if task:
+        rec["taskId"] = task
+    if person:
+        rec["personId"] = person
+    space.records.setdefault((HUB, "hubtype_asks"), {})[rid] = rec
+
+
+def test_deadline_for_counts_by_origin():
+    mod, _ = kernel()
+    assert mod.deadline_for("promise", "I'll send it.", THU) == THU_DAY + 4 * DAY    # Mon
+    assert mod.deadline_for("ask", "Can you review it?", THU) == THU_DAY + 5 * DAY   # Tue
+    assert mod.deadline_for("ask", "Could you review it by Friday?", THU) == THU_DAY + DAY
+    assert mod.deadline_for("ask", "Kannst du das heute machen?", THU) == THU_DAY
+    assert mod.deadline_for("checklist", "Send the deck tomorrow", THU) is None
+    # never earlier than today
+    assert mod.deadline_for("ask", "Can you check?", THU - 30 * DAY, today=THU) == THU_DAY
+
+
+def test_suggest_lists_promises_and_asks_together_newest_first():
+    mod, s = kernel(status=WITH_ASKS)
+    add_promise(s, "p1", "I'll send the deck.", made=THU - DAY)
+    add_ask(s, "a1", "Can you review this by Friday?", asked=THU)
+    add_ask(s, "a2", "Buy milk", asked=THU - 2 * DAY, kind="checklist")
+    add_ask(s, "a3", "Could you call?", task="t1")
+    add_ask(s, "a4", "Would you sign?", status="dismissed")
+    out = mod.suggest()
+    assert [(r["id"], r["origin"]) for r in out] == [("a1", "ask"), ("p1", "promise"),
+                                                     ("a2", "checklist")]
+    assert out[0]["suggestedDeadline"] == "2026-10-23" and out[0]["kind"] == "request"
+    assert out[0]["senderIdentity"] == "any://u/peer-id"
+    assert out[2]["suggestedDeadline"] is None
+
+
+def test_create_from_ask_makes_a_task_and_links_the_ask():
+    mod, s = kernel(status=WITH_ASKS)
+    add_ask(s, "a1", "Can you review this?", person="p1")
+    out = mod.create_from_ask("hub/a1")
+    task = s.objects[out["taskId"]]
+    assert task["any"]["type"] == "task" and task["any"]["collections"] == ["brain_task"]
+    assert task["any"]["name"] == "Can you review this?"
+    assert task["task"]["deadline"] == "2026-10-27" and task["task"]["planning"] == "inbox"
+    assert task["task"]["notes"].endswith(
+        "[Open the chat](any://o/team/chat-team/chat_messages/a1)")
+    assert task["brain_task"] == {"sourceUri": "any://o/team/chat-team/chat_messages/a1",
+                                  "origin": "ask", "suggestedDeadline": "2026-10-27",
+                                  "personId": ["p1"]}
+    assert s.store("asks")["a1"]["taskId"] == out["taskId"]
+    assert mod.create_from_ask("a1") == {"taskId": out["taskId"], "created": False,
+                                         "deadline": None}
+
+
+def test_a_checklist_ask_becomes_a_task_without_a_deadline():
+    mod, s = kernel(status=WITH_ASKS)
+    add_ask(s, "c1", "Book the room", kind="checklist")
+    out = mod.create_from_ask("c1")
+    task = s.objects[out["taskId"]]
+    assert "deadline" not in task["task"] and out["deadline"] is None
+    assert task["brain_task"]["origin"] == "checklist"
+    assert "suggestedDeadline" not in task["brain_task"]
+
+
+def test_create_all_covers_promises_and_asks():
+    mod, s = kernel(status=WITH_ASKS)
+    add_promise(s, "p1", "I'll send the deck.")
+    add_ask(s, "a1", "Can you review this?")
+    out = mod.create_all()
+    assert sorted((r["id"], r["origin"]) for r in out) == [("a1", "ask"), ("p1", "promise")]
+    assert mod.suggest() == []
+
+
+def test_an_ask_from_someone_kept_out_is_never_offered_or_made_a_task():
+    mod, s = kernel(status=WITH_ASKS)
+    s.add_object("ada", "profile", ["person", "brain_person"], name="Ada Lovelace",
+                 brain_person={"emails": ["ada@lab.org"]})
+    add_ask(s, "a1", "Can you call me?", person="ada")
+    # not linked yet, but the directory names the sender as the excluded person
+    add_ask(s, "a2", "Could you send it?", sender="ada-id")
+    s.directory = {"ada-id": "Ada Lovelace"}
+    add_ask(s, "a3", "Would you sign?", sender="bob-id")
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["ada"]})
+    assert [r["id"] for r in mod.suggest()] == ["a3"]
+    for rid in ("a1", "a2"):
+        with pytest.raises(Exception) as err:
+            mod.create_from_ask(rid)
+        assert type(err.value).__name__ == "person_excluded"
+
+
+def test_an_unknown_ask_raises():
+    mod, _ = kernel(status=WITH_ASKS)
+    with pytest.raises(Exception) as err:
+        mod.create_from_ask("nope")
+    assert type(err.value).__name__ == "unknown_ask"
