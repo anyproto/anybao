@@ -117,6 +117,17 @@ open promises and the latest threads. A separate brief tool would be a
 second tool for the same question, so there is none. The view honours
 the exclusion list.
 
+For an investor, the deeper record is a skill rather than a tool:
+`repos/_connectors/skills/brain-investor-record.md`. The agent runs it for
+one person, on request (or after a yes to its one offer), and writes the
+person's record page in the user's investor collection: a helicopter
+callout, folded evidence, and every claim numbered against an exact quote
+with its mail or transcript-line link. It uses this view as its map and
+re-reads the sources it cites. It is a skill because it is judgment over
+many sources and one page write, which the agent does with the tools it
+already has, so it needs no new program. brain-core says when a person
+counts as an investor.
+
 ## Consequences
 
 - No runtime change: the extractor is a guest program on the existing
