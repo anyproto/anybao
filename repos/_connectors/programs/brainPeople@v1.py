@@ -21,6 +21,14 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # addresses than MAX_NEW is a mailing list, not correspondents: it is read
 # past and nobody on it is minted. It then back-fills `personId` on
 # promises whose recipient it now knows, past the preload included.
+#
+# Chats (ADR-039 §5): the account identities behind unlinked asks and the
+# peers of one-to-one chats with unlinked promises are linked to a person
+# only when the rule in brainKit finds exactly one candidate — written as
+# brain_person.identity, never over another — and asks and chat promises
+# then get their personId back-filled. A bare name never mints a person.
+
+import re
 
 kit = use("brainKit@v1")  # noqa: F821 - guest global
 _any = use("agent:any@v1")  # noqa: F821 - guest global
@@ -29,6 +37,8 @@ PRELOAD = 1000
 MAX_NEW = 300
 PER_MAILBOX = 200
 PROMISE_BACKFILL = 200
+CHAT_BACKFILL = 200
+_CHAT_SOURCE = re.compile(r"^any://o/([^/]+)/[^/]+/chat_messages/")
 
 
 class unconfigured(Exception):
@@ -191,6 +201,100 @@ def _link_promises(space, hub, datasets, people):
     return linked
 
 
+def _chat_datasets(datasets):
+    """The job's datasets, with the asks store the hub names when the job was
+    written before the hub had one (its args never change)."""
+    if datasets.get("asks"):
+        return datasets
+    try:
+        _hub, live = kit.ready_hub()
+    except kit.not_set_up:
+        return datasets
+    return {**live, **datasets}
+
+
+def _peers(space_ids, names):
+    """{space id: the other participant's identity} for the one-to-one spaces
+    among `space_ids`."""
+    rows = {r.get("id"): r for r in _any.list_spaces()}
+    out, me = {}, None
+    for sid in sorted(space_ids):
+        if (rows.get(sid) or {}).get("spaceType") != "any.onetoone":
+            continue
+        me = me or _any.me()["identity"]
+        members = _any.list_members(sid)
+        names.add_members(members)
+        others = [m["identity"] for m in members if m.get("identity") not in (None, me)]
+        if others:
+            out[sid] = others[0]
+    return out
+
+
+def _persist_link(space, persons, pid, identity):
+    """Write brain_person.identity on the person (filed under brain_person
+    first when needed), never over another identity → True when written."""
+    row = next((r for r in persons if r["id"] == pid), None) or {}
+    current = (row.get("brain_person") or {}).get("identity")
+    uri = kit.identity_uri(identity)
+    if current:
+        return False
+    if "brain_person" not in ((row.get("any") or {}).get("collections") or []):
+        _any.add_to_collection(space, pid, "brain_person")
+    _any.update_object(space, pid, {"brain_person": {"identity": uri}})
+    row.setdefault("brain_person", {})["identity"] = uri
+    return True
+
+
+def _set_person(space, hub, dataset, record, pid, what):
+    kit.checked(_any.modify(space, {"objectId": hub, "dataset": dataset, "records": [
+        {"id": kit.plain_id(record["id"]), "ops": [
+            {"type": "$set", "path": "personId", "value": pid}]}]}), what)
+
+
+def _link_identities(space, hub, datasets):
+    """Link chat identities to persons and back-fill personId on asks and chat
+    promises → {identitiesLinked, asksLinked, chatPromisesLinked}."""
+    out = {"identitiesLinked": 0, "asksLinked": 0, "chatPromisesLinked": 0}
+    datasets = _chat_datasets(datasets)
+    if not datasets.get("asks"):
+        return out                      # the hub keeps no chat records yet
+    asks = _any.query(space, hub, datasets["asks"], filter={"personId": None},
+                      limit=CHAT_BACKFILL)
+    chat_promises = _any.query(space, hub, datasets["promises"],
+                               filter={"personId": None, "channel": "chat"},
+                               limit=CHAT_BACKFILL) if datasets.get("promises") else []
+    if not asks and not chat_promises:
+        return out
+    promise_spaces = {m.group(1) for m in (_CHAT_SOURCE.match(str(p.get("source") or ""))
+                                           for p in chat_promises) if m}
+    names = kit.Identities()
+    peers = _peers(promise_spaces, names) if promise_spaces else {}
+    wanted = {kit.identity_of(a.get("senderIdentity")) for a in asks} | set(peers.values())
+    wanted.discard("")
+    if not wanted:
+        return out
+    persons = kit.person_rows(space)
+    links = {}
+    for identity in sorted(wanted):
+        pid = kit.identity_person(persons, identity, names.name(identity))
+        if pid:
+            links[identity] = pid
+            out["identitiesLinked"] += _persist_link(space, persons, pid, identity)
+    for a in asks:
+        pid = links.get(kit.identity_of(a.get("senderIdentity")))
+        if pid:
+            _set_person(space, hub, datasets["asks"], a, pid, "linking an ask to its person")
+            out["asksLinked"] += 1
+    for p in chat_promises:
+        m = _CHAT_SOURCE.match(str(p.get("source") or ""))
+        pid = links.get(peers.get(m.group(1))) if m else None
+        if pid:
+            _set_person(space, hub, datasets["promises"], p, pid,
+                        "linking a chat promise to its person")
+            out["chatPromisesLinked"] += 1
+    return out
+
+
 def main(args):
     parsed = kit.job_args(args)
     if parsed is None:
@@ -207,4 +311,5 @@ def main(args):
     kit.write_config(space, hub, datasets, "people.cursor", {"mail": cursor})
     linked = _link_promises(space, hub, datasets, people)
     return {"mailboxes": len(boxes), "messages": read, "minted": minted,
-            "updated": updated, "promisesLinked": linked, "massSkipped": mass}
+            "updated": updated, "promisesLinked": linked, "massSkipped": mass,
+            **_link_identities(space, hub, datasets)}
