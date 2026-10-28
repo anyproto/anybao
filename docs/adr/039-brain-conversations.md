@@ -189,9 +189,10 @@ The name comes from the space's member list, else the identity
 directory. The scan applies the rule read-only; `brainPeople@v1`
 persists it: it writes `brain_person.identity` on the one candidate
 (filing it under `brain_person` when needed, never overwriting one) for
-the senders of unlinked asks and the peers of watched one-to-one spaces,
-then back-fills `asks.personId` and, for a chat promise in a one-to-one
-space, `promises.personId`. A bare name never mints a person.
+the senders of unlinked asks and the peers of one-to-one chats holding
+an unlinked chat promise, then back-fills `asks.personId` and those
+promises' `personId`. A job written before the hub had `asks` finds the
+store on `brain.status`. A bare name never mints a person.
 
 ### 6. Tasks from asks
 
