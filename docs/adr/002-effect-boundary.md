@@ -73,6 +73,11 @@ either honestly.
   credential/config resolution happens here, inside the boundary —
   guest code passes tier names/handles, never key bytes.
 
+`ui.theme` (ADR-008 §8) is a bounded request/reply effect over the configured
+Any server's device event bus. It owns subscription-before-publish and records
+the correlated UI response or an explicit unknown outcome. Theme generation
+and preference validation stay outside the transport.
+
 ### 2. The broker: one pipeline for every call
 
 Every effect call, no exceptions, flows through:
