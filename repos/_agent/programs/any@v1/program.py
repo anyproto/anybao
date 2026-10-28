@@ -4270,9 +4270,9 @@ class _Client:
         u = self._usecase_row(usecase)
         st = self._app_state(u, self._registry(space), self._sidebar_rows(space))
         name = u.get("name") or usecase
-        how = (f"In the sidebar,  "
-               f"right-click on {name} mini app and press Hide. Or you can also do it in Agent space settings. The app's content stays, "
-               "and you can add it back in Agent space settings.")
+        how = (f"In the sidebar, right-click on {name} mini app and press Hide. Or you "
+               "can also do it in Agent space settings. The app's content stays, and "
+               "you can add it back in Agent space settings.")
         if self._sidebar_bundle(u) is None:
             how = (f"{name} is a building block other apps use, not a tile in the UI: "
                    "it has no remove. Hide the app that uses it instead "

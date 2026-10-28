@@ -2466,7 +2466,7 @@ def test_remove_app_writes_nothing_and_says_how():
     c = client(fx, bao="s1")
     out = c.remove_app("wiki")
     assert out["on"] is True and out["name"] == "Wiki"
-    assert "Space settings" in out["how"] and "Hide" in out["how"]
+    assert "space settings" in out["how"].casefold() and "Hide" in out["how"]
     assert c.remove_app("contacts")["on"] is False      # hidden already
     assert "building block" in c.remove_app("people")["how"]
     # reads only: the sidebar query is a POST, but nothing is set, filed or deleted
