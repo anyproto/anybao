@@ -109,9 +109,15 @@ nothing. Per sent message, in this order:
    answers `upsert.record_deleted`, which the job takes as the user's
    answer rather than stop at that message for good.
 7. **The cursor** passes only messages fully handled. A provider failure
-   stops the mailbox before its message; two in one run stop the job
+   — llm@v1's `LlmError` or an `EffectError` (a timeout, a refused
+   connection, a missing secret), from the judge as from the call — stops
+   the mailbox before its message; two in one run stop the job
    (`provider_failed`). At most 60 model calls per run; the rest waits
    for the next one, thirty minutes later.
+
+Steps 3–5 are one public helper, `extract(text)` → `(items, calls)`: the
+chat scan's own messages go through it too (ADR-039 §3), so one gate, one
+prompt and one grounding rule serve both channels.
 
 The regex sentence splitter and phrase table an earlier draft used are
 gone: a fixed phrase list misses most commitments and cuts sentences

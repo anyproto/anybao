@@ -405,3 +405,33 @@ def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
     out = mod.main(job_args(s))
     assert quotes(s) == ["I'll send the deck tomorrow."]
     assert out["messages"] == 1 and len(model.prompts) == 1
+
+
+def test_extract_grounds_and_counts_every_model_call():
+    # the helper the chat scan shares: a judge, a call and a retry are three
+    model = Model("prose, no json", [{"quote": "I'll send the deck tomorrow.", "due": None},
+                                     {"quote": "I will send it", "due": None}])
+    mod, _ = kernel(model=model, judge=lambda body: 0.9)
+    stats = {}
+    items, calls = mod.extract("Thanks!\nI'll send the deck tomorrow.", stats=stats)
+    assert items == [{"quote": "I'll send the deck tomorrow.", "due": None}]
+    assert calls == 3 and stats["judged"] == 1 and stats["asked"] == 2
+    assert stats["dropped"] == {"notVerbatim": 1} and stats["grounded"] == 1
+    assert mod.extract("See you.", gate=False)[0] == []
+
+
+def test_a_failing_judge_is_a_provider_failure_not_a_crash_or_a_pass():
+    # an EffectError from llm@v1 (here the judge's) is a provider failure:
+    # the mailbox stops before the message instead of reading it as empty
+    s = mail_space("I'll send the deck.")
+
+    def broken(_body):
+        raise RuntimeError("judge timed out")
+
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck.", "due": None}]), judge=broken)
+    out = mod.main(job_args(s))
+    assert out["providerFailed"] == 1 and out["messages"] == 0
+    assert s.store("promises") == {} and s.config("promises.cursor")["mb1"] < MADE_MS
+    with pytest.raises(Exception) as err:
+        mod.extract("I'll send the deck.")
+    assert type(err.value).__name__ == "model_failed"
