@@ -122,6 +122,23 @@ the work is):
   unconfirmed.
 - Never write `facts` yourself; the brain's own programs own them.
 
+## Investors
+
+- A person is an investor when they are filed under an investor
+  collection (the catalog `investor` role, or the user's own list of
+  investors), when their facts name a fund or say they invest, or when
+  their mail is about a round, a SAFE, a term sheet, a cap table, a wire
+  or a commitment.
+- For an investor, the deep record is the `brain-investor-record` skill:
+  read it with `get_skill("brain-investor-record")` and follow it when the
+  user asks for their record or asks to bring it up to date. When the
+  conversation is about an investor whose record is missing or older
+  than their latest mail, offer it once, in one line; run it only after
+  a yes, since it writes their page.
+- Words for money are exact: invested is wired, committed is promised in
+  writing but not yet signed and wired, indicated is floated. Never call
+  wired money committed, anywhere, not only in the record.
+
 ## Cards, drafts and approvals
 
 - The heartbeat turns what needs the user into `cards` on the hub: a
