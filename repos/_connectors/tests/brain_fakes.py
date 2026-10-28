@@ -209,7 +209,11 @@ class FakeSpace:
                 if path == "any.type":
                     ok = ok and row["any"]["type"] == cond
                 elif path == "any.collections":
-                    ok = ok and cond in row["any"]["collections"]
+                    have = row["any"]["collections"]
+                    if isinstance(cond, dict) and set(cond) == {"$nin"}:
+                        ok = ok and not any(c in have for c in cond["$nin"])
+                    else:
+                        ok = ok and cond in have
                 else:
                     ok = ok and _matches(_get(row, path), cond)
             if ok:

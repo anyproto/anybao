@@ -513,6 +513,8 @@ def test_the_pages_flag_on_makes_unchecked_items_checklist_asks():
     s = chats()
     _page(s, "pg1", THU - 3600, [("b1", "Book the room", False), ("b2", "Done one", True)])
     _page(s, "pg2", THU - 3 * DAY, [("b3", "Too old", False)])
+    _page(s, "pg3", THU - 60, [("b4", "In the bin", False)])
+    s.objects["pg3"]["any"]["collections"] = ["bin"]
     mod, _ = kernel(s, watched=("team",), pages=True)
     out = mod.main(job_args(s))
     (ask,) = asks(s)
@@ -558,6 +560,16 @@ def test_no_card_without_a_cards_store_or_anything_to_suggest():
     datasets = {**DATASETS, "cards": "hubtype_cards"}
     mod, _ = kernel(s2, watched=("dm",), datasets=datasets)
     assert mod.main({**job_args(s2), "datasets": datasets})["card"] is None
+
+
+def test_no_card_while_the_brain_is_mid_setup():
+    s = chats()
+    msg(s, "dm", "m1", "bob-id", "Can you call me?", "v1")
+    datasets = {**DATASETS, "cards": "hubtype_cards"}
+    mod, _ = kernel(s, watched=("dm",), datasets=datasets)
+    mod._cfg["brain.status"] = {"state": "provisioning"}
+    out = mod.main({**job_args(s), "datasets": datasets})
+    assert out["card"] is None and out["asks"] == 1 and s.store("cards") == {}
 
 
 def test_a_completed_task_closes_its_ask():
