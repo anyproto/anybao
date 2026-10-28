@@ -8,7 +8,7 @@ join read-only and import from (`use("<alias>:<name>@vN")`).
 | folder | space (production) | alias | contents |
 |---|---|---|---|
 | `_agent` | `_agentrepo` | `agent` | the bao agent: toolcaller loop, tool + cron programs, `_`-system skills |
-| `_connectors` | `_connectorsrepo` | `connectors` | external-service connectors (linear, github, granola, attio, figma, intercom) |
+| `_connectors` | `_connectorsrepo` | `connectors` | external-service connectors (linear, github, granola, attio, figma, intercom, google) and the AI brain's `brain*` plugin programs + `brain-core` skill (ADR-033, `__any_category__ = "plugin"`) |
 
 Deploy (hash-gated, upsert-only — stale space objects need manual
 deletion):

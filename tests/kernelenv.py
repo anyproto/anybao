@@ -55,10 +55,31 @@ class LlmError(Exception):
     pass
 
 
+class JudgeUnavailable(Exception):
+    pass
+
+
 def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
-    return effect("test.llm", {"messages": messages, "system": system,
-                               "tier": tier, "tools": tools,
-                               "max_tokens": max_tokens})
+    # a failing fake (llm_chat raised) reads as the provider failing
+    try:
+        return effect("test.llm", {"messages": messages, "system": system,
+                                   "tier": tier, "tools": tools,
+                                   "max_tokens": max_tokens})
+    except EffectError as e:
+        raise LlmError(str(e)) from e
+
+
+def judge_available(tier="judge"):
+    # served by the test's `effect` handler: {"value": bool}; absent = no judge
+    try:
+        return bool(effect("test.judge_available", {"tier": tier}).get("value"))
+    except EffectError:
+        return False
+
+
+def judge(state, questions, tier="judge"):
+    # served by the test's `effect` handler with llm.judge's reply shape
+    return effect("test.judge", {"state": state, "questions": questions, "tier": tier})
 '''
 
 
