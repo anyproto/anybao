@@ -85,7 +85,7 @@ itself as overdue (it is running).
 | `exclusions_unreadable` | `config/exclusions` missing or not in its version-1 shape (`brainKit.exclusions_problem`) | `config/exclusions` | `present`, `version`, `parseError` |
 | `tier_unpinned` | a tier an enabled brain job calls — its `args.tier`, else the program's own (`classify` for promises, `brain.extractor` for facts), and `brain.drafter` once the hub has `drafts` — has no row or no `model` | `llm.tier.<tier>` | `present`, `provider`, `model` |
 | `model_stalled` | a job that reads mail with a model (promises, facts) whose last two runs each added to its `providerFailed` count while its cursor did not move | trigger id | `streak`, `providerFailedDelta`, `providerFailedTotal`, `cursorMoved`, `lastRunAt`, `lastRunStatus` |
-| `setup_blocked` | `brain.space` asks for a state `brain.status` has not answered — waiting, setting up or switching off — for over an hour; or the `brain-setup` record is gone | `brain-setup` | `requestState`, `requestedAt`, `answeredAt`, `ageS`, `setupTriggerPresent`, `setupOwner`, `setupLastRunAt`, `activeDevice` |
+| `setup_blocked` | `brain.space` asks for a state `brain.status` has not answered — waiting, setting up or switching off — for over an hour; or setup's once (found by program and kind, as setup finds it: a deleted `brain-setup` comes back under a fresh id) is gone | `brain-setup` | `requestState`, `requestedAt`, `answeredAt`, `ageS`, `setupTriggerPresent`, `setupOwner`, `setupLastRunAt`, `activeDevice` |
 | `draft_backlog` | once the hub has `cards`: ≥ 3 open `reply` cards older than 1 h without `draftId`, or any with `draftAttempts ≥ 3` | `cards` | `count`, `oldestOpenAt`, `attemptsExhausted`, `drafterLastStatus` |
 | `approval_stuck` | **inactive**: it needs the deferred send gate (any-ui's `2026-10-25-ai-brain-later.md`) | — | — |
 
@@ -97,10 +97,12 @@ itself as overdue (it is running).
   looked at, the count and a hash of the cursor in `config/caretaker`
   (`watch`), and counts the runs since that failed without progress.
   A run with no failure, or one whose cursor moved, resets the streak.
-- **`setup_blocked` escalates only.** The usual cause is a `brain-setup`
-  record pinned to a device that is gone (a whole-value `$set` merges,
-  so a re-arm keeps the `owner`), or one deleted by hand, whose id is
-  burned for good. No allowed repair helps, so there is no model turn.
+- **`setup_blocked` escalates only.** The usual cause is a setup once
+  pinned to a device that is gone (a whole-value `$set` merges, so a
+  re-arm keeps the `owner`), or one deleted by hand; setup rewrites a
+  deleted one under a fresh id on the next `on()`, so the notice says to
+  switch the brain on again. No allowed repair helps, so there is no
+  model turn.
 - **Away is not overdue.** When the caretaker's own previous run is
   older than its own overdue limit the device was asleep or off, and
   every age reads stale for the same reason: that tick grades no age
