@@ -156,7 +156,10 @@ record id can never be written again.
   runtime keeps `lastStatus` until a job's next run, so a stopped job the
   user resumed and paused again before it ran is still read as stopped;
   and a stopped `brain-reconcile` cannot report itself — `status()`
-  reads the jobs live, so the chat tool still sees it.
+  reads the jobs live, so the chat tool still sees it. The one other
+  restart is the caretaker's (ADR-038 §6): `enabled: true` on a stopped
+  brain job, at most once per incident and only after a model turn the
+  code validated; it never touches a paused one.
 - Unowned when written, so the active device claims them; Pause and
   Repin in Scheduled work as for any job.
 
