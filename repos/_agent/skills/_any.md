@@ -86,16 +86,20 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   search hit's recordId resolves the same way (`filter={"id":
   {"$in": [...]}}`).
 
-**Apps**: the server's apps are a space's catalog installs (chat,
-contacts, CRM…; Folders is not one, nor is mail:
-`c.get_skill("gmailSync")`): c.list_apps(space) before assuming one
-exists.
-The user asking for one ("add contacts") is the yes: c.setup_app;
-when it is your idea, offer first. An app's objects take the shape
-setup_app returns (a contact is type `profile` filed under `contact`):
-read it before adding to an app. An **applet** is a small HTML app you
-write (`use("agent:applet@v1")`); "make me an app" with no catalog
-match means an applet.
+**Apps** (the UI's Mini apps: tasks, contacts, CRM, journal…;
+Folders is not one, nor is mail: `c.get_skill("gmailSync")`) live in
+your home space, for now the only place the UI adds and hides them.
+The user sees that space at the ROOT of the sidebar and does not know
+it is a space: "my tasks", "tasks", "add contacts", "remove the
+journal" mean the home space's apps — never ask which space, and pass
+none: c.list_available_apps() is what can be added and what is on
+(`on`); c.list_apps(space) is any space's installs. The user asking
+for one ("add contacts") is the yes: c.setup_app(usecase); when it is
+your idea, offer first. An app's objects take the shape setup_app
+returns (a contact is type `profile` filed under `contact`): read it
+before adding to an app.  An **applet** is a small HTML app you write
+(`use("agent:applet@v1")`); "make me an app" with no catalog match
+means an applet.
 
 **Spaces.** Every space is reachable; cross-space is normal, and
 types are per-space. Your home space (baoSpaceConfig) is a space like

@@ -3984,6 +3984,134 @@ class _Client:
             self._catalog_cache = self._call("get", "/v1/catalog").get("usecases") or []
         return self._catalog_cache
 
+    def _usecase_row(self, usecase):
+        row = next((u for u in self._catalog_usecases() if u.get("id") == usecase), None)
+        if row is None:
+            known = ", ".join(sorted(u.get("id") for u in self._catalog_usecases()
+                                     if u.get("id")))
+            raise AnyError(404, "catalog.not_found",
+                           f"no app '{usecase}' in the server's catalog; known: {known}")
+        return row
+
+    @staticmethod
+    def _bundle_ids(bundle):
+        """Every registry id a space may hold for `bundle`: its own and
+        the ones it supersedes — one step, a superseded bundle supersedes
+        nothing (any docs/28-well-known-bundles.md § Superseding); a space
+        keeps the shape it was set up with for life."""
+        return [bundle.get("id")] + [s for s in bundle.get("supersedes") or []
+                                     if isinstance(s, str)]
+
+    @staticmethod
+    def _sidebar_bundle(usecase_row):
+        """The bundle whose root is the app's sidebar entry — it declares
+        `miniapp`; None for a building block (people, contact, …) the
+        UI never draws as a tile."""
+        return next((b for b in usecase_row.get("bundles") or []
+                     if isinstance(b, dict) and b.get("id") and "miniapp" in b), None)
+
+    def _sidebar_rows(self, space):
+        """The sidebar: `miniapp` carriers minus the bin, in `miniapp.pos`
+        order (ADR-029 §6) — hidden rows included; raw rows."""
+        return self.query_objects(
+            space, normalize=False,
+            filter={"$and": [{"any.collections": _MINIAPP},
+                             {"any.collections": {"$nin": [_BIN]}}]},
+            sort=[f"{_MINIAPP}.pos"])
+
+    def _registry(self, space):
+        return {b["id"]: b for b in self.list_bundles(space)
+                if isinstance(b, dict) and b.get("id")}
+
+    def _app_state(self, usecase_row, registry, sidebar):
+        """{installed, rootId, hidden, on} for one usecase — the UI's tile
+        rule (any-ui `space-apps.ts`): installed = every bundle (or one it
+        supersedes) is in the registry; on = installed AND its sidebar
+        root is not `miniapp.hidden`. A building block is on when
+        installed. On a fork the registry's winner is the root."""
+        bundles = [b for b in usecase_row.get("bundles") or []
+                   if isinstance(b, dict) and b.get("id")]
+        installed = bool(bundles) and all(
+            any(i in registry for i in self._bundle_ids(b)) for b in bundles)
+        st = {"installed": installed, "rootId": None, "hidden": False, "on": installed}
+        sb = self._sidebar_bundle(usecase_row)
+        if sb is None:
+            return st
+        ids = self._bundle_ids(sb)
+        winners = {registry[i].get("rootId") for i in ids if i in registry}
+        rows = [r for r in sidebar if (r.get(_MINIAPP) or {}).get("bundle") in ids]
+        row = next((r for r in rows if r.get("id") in winners), rows[0] if rows else None)
+        if row is None:
+            st["on"] = False
+            st["rootId"] = next((w for w in winners if w), None)
+            return st
+        st["rootId"] = row.get("id")
+        st["hidden"] = bool((row.get(_MINIAPP) or {}).get("hidden"))
+        st["on"] = installed and not st["hidden"]
+        return st
+
+    def _apps_space(self, space, write=False):
+        """Where the apps live: the home space when `space` is None. For
+        now the UI manages Mini apps in the home space only — the one
+        the user sees at the root of the sidebar, never as "a space" —
+        so a write to any other space is refused, not silently done
+        where the user could not undo it."""
+        home = self.bao_space()
+        if space is None:
+            return home
+        sid = self._resolve_space(_sid(space))
+        if write and sid != home:
+            raise ValueError(
+                "apps are added and hidden in your home space only for now (the UI's "
+                "Mini apps live there, at the root of the sidebar): call without `space`")
+        return sid
+
+    def _set_miniapp(self, space, root_id, patch):
+        """A `miniapp` value on a sidebar root — the collection's own
+        set route (any docs/03-api.md § Built-in collections)."""
+        self._call("post", f"/v1/spaces/{space}/properties/{root_id}/set/{_MINIAPP}",
+                   {"patch": patch})
+
+    def _place_apps(self, space, usecase_row, rows, show):
+        """After a setup, what any-ui's `turnSpaceAppOn` does next: every
+        sidebar root the reply names and that has no `miniapp.pos` gets
+        one after the last positioned entry (a root without one sorts to
+        the HEAD of a list the user arranged); with `show`, the app's own
+        root and its direct requirements' are un-hidden (setup installs a
+        missing dependency but never resets `hidden`, so a Contacts the
+        user hid would stay hidden under a fresh CRM). Best-effort: a
+        failed write is a cosmetic gap, never a failed install."""
+        try:
+            sidebar = self._sidebar_rows(space)
+        except AnyError:
+            return
+        by_root = {r.get("id"): r for r in sidebar if r.get("id")}
+        # after the last VISIBLE entry, as the UI places it
+        last = max(((r.get(_MINIAPP) or {}).get("pos") or "" for r in sidebar
+                    if not (r.get(_MINIAPP) or {}).get("hidden")), default="")
+        wanted = {usecase_row.get("id"), *(usecase_row.get("requires") or [])}
+        for row in rows:
+            root = by_root.get(row.get("rootId"))
+            if root is None:
+                continue    # a type-only bundle: no sidebar entry
+            mini = root.get(_MINIAPP) or {}
+            patch = {}
+            if not (isinstance(mini.get("pos"), str) and mini["pos"]):
+                last = _lexid_after(last)
+                patch["pos"] = last
+            if show and mini.get("hidden") and row.get("usecase") in wanted:
+                patch["hidden"] = False
+            if not patch:
+                continue
+            try:
+                self._set_miniapp(space, root["id"], patch)
+            except AnyError:
+                continue
+            if "pos" in patch:
+                row["pos"] = patch["pos"]
+            if "hidden" in patch:
+                row["shown"] = True
+
     def _catalog_handles(self):
         """The handles the catalog's apps bring — types (person, deal, …)
         AND collections (wiki, contact, …) — reserved: a user definition
@@ -4051,34 +4179,60 @@ class _Client:
             out.append(row)
         return out
 
-    @_public('getter')
-    def list_available_apps(self, space):
-        """The server's app catalog, with what this space already has.
+    @_public('getter', scoped=False)
+    def list_available_apps(self, space=None):
+        """The app catalog (the UI's Mini apps), with what the home space has and shows.
 
-        Returns [{usecase, name, description, requires, installed}].
-        `setup_app(space, usecase)` installs one (dependencies too)."""
-        have = {b.get("id") for b in self.list_bundles(space)}
+        Apps live in your home space — what the user sees at the root of
+        the sidebar and calls "my tasks" or just "tasks", never a space:
+        leave `space` out. Returns [{usecase, name, description, requires,
+        kind, installed, on, rootId?, hidden?}]. `kind` is "app" (it has a
+        sidebar entry, a Mini apps tile) or "building-block" (people,
+        contact, …: definitions an app pulls in, never a tile).
+        `installed` = the registry has it (an older generation counts);
+        `on` = it is showing — installed and its sidebar root not hidden;
+        `hidden` True = the user hid it in the UI (the install stays;
+        `setup_app` brings it back). `setup_app(usecase)` adds one,
+        dependencies too; the user removes one (`remove_app` says how)."""
+        space = self._apps_space(space)
+        registry = self._registry(space)
+        sidebar = self._sidebar_rows(space)
         out = []
         for u in self._catalog_usecases():
-            ids = [b.get("id") for b in u.get("bundles") or []]
-            out.append({"usecase": u.get("id"), "name": u.get("name"),
-                        "description": u.get("description") or "",
-                        "requires": list(u.get("requires") or []),
-                        "installed": bool(ids) and all(i in have for i in ids)})
+            st = self._app_state(u, registry, sidebar)
+            row = {"usecase": u.get("id"), "name": u.get("name"),
+                   "description": u.get("description") or "",
+                   "requires": list(u.get("requires") or []),
+                   "kind": "app" if self._sidebar_bundle(u) else "building-block",
+                   "installed": st["installed"], "on": st["on"]}
+            if st["rootId"]:
+                row["rootId"] = st["rootId"]
+            if st["hidden"]:
+                row["hidden"] = True
+            out.append(row)
         return out
 
-    @_public('mutator')
-    def setup_app(self, space, usecase):
-        """Install (or adopt) one of the catalog's apps in a space, dependencies first.
+    @_public('mutator', scoped=False)
+    def setup_app(self, usecase, space=None, show=True):
+        """Add one of the catalog's apps to the home space (install or adopt), dependencies first.
 
-        The user asking for the app is the yes; when it is your own idea,
-        offer first. Returns [{usecase, bundleId, rootId, installed, typeId?,
-        collectionId?, xKey?, properties?}] — a bundle declares a TYPE (what
-        its objects are: profile, deal, journal) or a COLLECTION (what objects
-        are filed under: wiki, person, contact, organization, investor). A
-        contact is a `profile` filed under `contact`; write with the returned
-        xKeys, never guessed ones. `properties` is that definition's
-        xKey → propId map. Idempotent: run it again and everything adopts."""
+        The user asking for the app ("add tasks", "I want contacts") is
+        the yes; when it is your own idea, offer first. Apps live in the
+        home space only for now — the root of the user's sidebar, which
+        they never call a space — so leave `space` out (another space is
+        refused). Returns [{usecase, bundleId, rootId, installed, typeId?,
+        collectionId?, xKey?, properties?, pos?, shown?}] — a bundle declares
+        a TYPE (what its objects are: profile, deal, journal) or a COLLECTION
+        (what objects are filed under: wiki, person, contact, organization,
+        investor). A contact is a `profile` filed under `contact`; write with
+        the returned xKeys, never guessed ones. `properties` is that
+        definition's xKey → propId map. Idempotent: run it again and
+        everything adopts. What the UI's Add does, too: a new sidebar root
+        is placed at the end of the sidebar (`pos`), and the app (plus its
+        direct requirements) is un-hidden when the user had hidden it
+        (`shown`) — `show=False` only installs the definitions."""
+        space = self._apps_space(space, write=True)
+        u = self._usecase_row(usecase)
         r = self._call("post", f"/v1/catalog/{usecase}/setup", {"spaceId": space})
         self._cat_invalidate(space)
         out = []
@@ -4098,7 +4252,32 @@ class _Client:
             d = by_id.get(row.get("typeId") or row.get("collectionId") or "")
             if d and d.get("xKey"):
                 row["xKey"] = d["xKey"]
+        self._place_apps(space, u, out, show)
         return out
+
+    @_public('getter', scoped=False)
+    def remove_app(self, usecase, space=None):
+        """Removing an app is the user's, in the UI — this writes nothing: it tells you what to say.
+
+        Returns {usecase, name, on, how}: `how` is the steps for the user,
+        in the home space (the root of their sidebar — leave `space`
+        out). The UI hides the app; the install, its types and its
+        objects stay, and Add brings it back whole. There is no
+        uninstall. Never hide, unfile or delete an app's root yourself:
+        "remove / hide / turn off <app>" means telling the user `how`.
+        `on` False = it is not showing already."""
+        space = self._apps_space(space, write=True)
+        u = self._usecase_row(usecase)
+        st = self._app_state(u, self._registry(space), self._sidebar_rows(space))
+        name = u.get("name") or usecase
+        how = (f"In the sidebar, right-click on {name} mini app and press Hide. Or you "
+               "can also do it in Agent space settings. The app's content stays, and "
+               "you can add it back in Agent space settings.")
+        if self._sidebar_bundle(u) is None:
+            how = (f"{name} is a building block other apps use, not a tile in the UI: "
+                   "it has no remove. Hide the app that uses it instead "
+                   "(Agent ▸ Space settings ▸ Mini apps ▸ Hide).")
+        return {"usecase": usecase, "name": name, "on": st["on"], "how": how}
 
     # --- agent memory (write path; reads go through /query on the brain) --------
     def _ensure_store(self, space, xkey, name, datasets, listed=False, icon=None):

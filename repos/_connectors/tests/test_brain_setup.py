@@ -102,7 +102,7 @@ class FakeAny:
         self.burned.add((space, oid, ds, rid))
 
     # provisioning
-    def setup_app(self, space, usecase):
+    def setup_app(self, usecase, space=None, show=True):
         self._maybe_fail("setup_app")
         self.calls.append(("setup_app", usecase))
         self.apps.append(usecase)
