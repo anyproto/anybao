@@ -263,6 +263,29 @@ def _view(ctx):
     return None
 
 
+FIRST_CONVERSATION = (
+    "\n\n[runtime: first conversation in this chat — nothing came before this "
+    "message. Greet the user by name (the `- user:` line in the runtime "
+    "context), say what you can do here, and offer two or three next steps "
+    "that fit this account.]")
+
+
+def _first_conversation(c):
+    """ADR-005 §5: the situation line for a chat with no history — no turn
+    and no chunk on its log — plus the shipped `welcome` reference when a
+    space ships one. The reference is an on-demand skill (ADR-009 §3)
+    read HERE, by the loop, for this one run: it never rides the stable
+    prefix, and a user's own `welcome` shadows the shipped one. Rides the
+    llm message only; the persisted turn keeps the raw userText."""
+    try:
+        reference = (c.get_skill("welcome") or "").strip()
+    except LookupError:
+        reference = ""
+    if not reference:
+        return FIRST_CONVERSATION
+    return FIRST_CONVERSATION + "\n\n" + reference
+
+
 def _context_suffix(ctx):
     """ADR-005 §5: a user message closes with a timestamp + view suffix
     ('here'/'this page' resolve against the view line). A message the
@@ -1244,6 +1267,7 @@ def main(args):
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
     anchor = None
+    situation = ""   # the first conversation in a chat (ADR-005 §5)
     if quiet:
         boot, plan = [], {"messages": [], "injected": []}
     else:
@@ -1253,6 +1277,8 @@ def main(args):
             got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
             if got:
                 chunks[lvl] = got
+        if not turns and not chunks:
+            situation = _first_conversation(c)
         # the raw tail is anchored (ADR-006 §2): the previous turn's
         # anchor stays until the tail outgrows the high-water mark, so
         # this window extends the last run's byte for byte — the cache
@@ -1288,7 +1314,7 @@ def main(args):
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + context_line
+                            "text": user_text + situation + context_line
                             + _view_apps(c, space, ui_ctx) + user_suffix}]},
                 *plan["messages"]]
 

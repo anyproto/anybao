@@ -152,7 +152,9 @@ space (`runtime.get("bao.space")`), then the agent overlay, then the
 connectors overlay (`runtime.get("overlays.aliases")`); a blank body
 never shadows; an unknown name raises listing the known ones. The index merges the tiers with the same
 precedence, so names are unique and carry no ids. A playbook that only
-some turns need ships without the underscore (`gmailSync`); renaming a
+some turns need ships without the underscore (`gmailSync`; `welcome`,
+which the loop itself reads on a chat's first conversation, ADR-005
+§5); renaming a
 shipped skill leaves the old object in every overlay — deploy never
 deletes — so the old name is removed by hand where it was deployed.
 

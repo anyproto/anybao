@@ -113,6 +113,14 @@ class World:
             def get_brain(self):
                 return {}
 
+            def get_skill(self, name):
+                # ADR-009 §3: on-demand skills; none shipped unless a
+                # World says so
+                body = getattr(w, "skills", {}).get(name)
+                if body is None:
+                    raise LookupError(f"no skill named {name!r}; known: ")
+                return body
+
             def me(self):
                 # BOB-192: the account the agent runs as — the user line
                 return {"identity": "A1user", "name": "tolya"}
@@ -392,6 +400,54 @@ def test_boot_window_and_injection_bracket_the_user_message():
     assert out["injected"] == 1
 
 
+def test_first_conversation_rides_the_message_with_the_welcome_reference():
+    # ADR-005 §5: a log with no turn and no chunk is a first conversation —
+    # one situation line on the user message, then the shipped `welcome`
+    # body (read on demand, never the stable prefix); llm-only
+    w = World([done_reply("hi")])
+    w.skills = {"welcome": "# Skill: welcome\n\nHi {name}. I'm Bao.\n"}
+    run(w)
+    call = w.llm_calls[0]
+    user = call["messages"][-1]["parts"][0]["text"]
+    assert user.startswith("go\n\n[runtime: first conversation in this chat")
+    assert "Greet the user by name" in user
+    assert "Hi {name}. I'm Bao." in user
+    # after the text, before the timestamp stamp
+    assert user.index("[runtime: first conversation") < user.index("[now: ")
+    assert "welcome" not in call["system"]      # the body never rides the prefix
+    assert w.turns[0]["userText"] == "go"       # the persisted turn is raw
+
+    # no shipped `welcome`: the line alone
+    w = World([done_reply("hi")])
+    run(w)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "[runtime: first conversation in this chat" in user
+    assert "Hi {name}" not in user
+
+    # a chat with history is not a first conversation
+    class WithHistory(World):
+        def use(self, spec):
+            mod = super().use(spec)
+            if spec == "history@v1":
+                mod.recent_turns = staticmethod(
+                    lambda c, s, ch, n: [{"seq": 1, "userText": "old",
+                                          "replies": ["r"]}])
+            return mod
+
+    w = World([done_reply("ok")])
+    w.skills = {"welcome": "Hi {name}."}
+    w.__class__ = type("W3", (WithHistory,), {})
+    run(w)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "first conversation" not in user and "Hi {name}" not in user
+
+    # a quiet run carries no situation (ADR-008 §5)
+    w = World([done_reply("ok")])
+    w.skills = {"welcome": "Hi {name}."}
+    run(w, quiet=True)
+    assert "first conversation" not in w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+
+
 def test_progress_bubbles_for_interim_text():
     reply = tool_reply()
     reply["parts"].insert(0, {"type": "text", "text": "working on it"})
@@ -443,7 +499,10 @@ def test_user_message_carries_timestamp_and_view_context():
     run(w, uiContext={"spaceId": "sp9", "objectId": "ob3", "view": "object"})
     call = w.llm_calls[0]
     user = call["messages"][-1]["parts"][0]["text"]
-    assert user.startswith("go\n\n[now: ")
+    # (a World has no turns, so the first-conversation line sits between
+    # the text and the stamp — ADR-005 §5)
+    assert user.startswith("go\n\n[runtime: first conversation")
+    assert "\n\n[now: " in user
     assert "user's view — space: sp9, object: ob3, view: object]\n" in user
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]

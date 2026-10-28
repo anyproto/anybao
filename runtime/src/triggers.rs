@@ -1100,12 +1100,15 @@ impl Watcher {
                 out.push_str(&format!("[attachment {kind}: {link}]"));
                 // ADR-021 §5: a credential_set is a cue to ACT, not news
                 // to acknowledge — the run that needed the key never
-                // finished (or failed), so the model must redo it.
+                // finished (or failed), so the model must redo it. On a
+                // chat with no history (the welcome card's connect) there
+                // is no such request: the toolcaller's first-conversation
+                // line says what to do instead (ADR-005 §5).
                 if kind == "credential_set" {
                     out.push_str(
                         "\n[runtime: the user just entered this credential. Do NOT merely \
-                         acknowledge it — go back to the last user request before the \
-                         credential prompt and carry it out now, replying with its result.]",
+                         acknowledge it — if a request came before the credential prompt, \
+                         go back to it and carry it out now, replying with its result.]",
                     );
                 }
             }
