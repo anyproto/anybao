@@ -14,7 +14,7 @@ HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
             ("signals", "config", "incidents", "observations", "promises", "facts",
-             "cards", "drafts", "approvals", "standups")}
+             "cards", "drafts", "approvals", "standups", "sends")}
 ANCHOR = "trigger-anchor"      # the bao/triggers/v1 bundle child
 # what a set-up brain's space has before any mail sync: the built-in page,
 # the people and tasks catalog apps' types, the hub
