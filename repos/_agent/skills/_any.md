@@ -60,11 +60,21 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   c.move_object; find folders with c.list_children(s, ""). Placing an
   object sets the tree up when the space has none: never ask first.
   Say where you put it.
+- **Favourites** (the starred list at the top of the UI's sidebar)
+  are account-level and cross-space: not a collection, not a
+  property. c.list_favorites() reads them, c.add_favorite(s, obj_id,
+  folder=None) stars, c.remove_favorite(s, obj_id) un-stars.
+  "Favourite", "star" or "pin X" means these calls; a record link
+  (a chat message, an email) can be starred too.
 - Add to a body with c.append_markdown, never a get+put round-trip.
 - Write bodies in Any's spelling; anything else is rewritten on the
   first human edit: `**bold**` `*italic*` `~~strike~~`, `-` bullets,
   `#` headings, backtick fences with a language, display math as a
-  `` ```math `` fence (inline `$x$` is fine, `$$` never).
+  `` ```math `` fence (inline `$x$` is fine, `$$` never). Keep every
+  `<!-- any:… -->` comment exactly as read, where it sits: the
+  `<!-- any:table … -->` line after a table is its id (column widths
+  hang off it), so it stays directly below that table. Never write
+  one yourself; delete a table or block together with its comments.
 - **Search before create.** c.search(space, query) with no scopes
   searches everything: pages, chat, properties, memory, synced mail
   (reading mail: `c.get_skill("gmailSync")`). Hits are records:

@@ -258,7 +258,15 @@ in its window and retries (or does the thing for the first time; it
 has the original request in the same window). The UI awaits the
 row write before sending, so the value is stored before the run can
 read it. `Help → Import` posts one such message per ref it set, into
-the general chat.
+the general chat. The welcome card's saves post it too (amendment
+2026-10-28, PRO-1687) — a pasted key, or a local CLI connected on
+this computer (its proxy token is the credential) — so connecting a
+model is what starts the first run; on a chat with no history that
+run is the first conversation (ADR-005 §5). The runtime folds the
+attachment as a plain `[attachment credential_set: <link>]` line and
+nothing more; the "go back to the request and carry it out" nudge is
+the toolcaller's, llm-only on the message of that one run (ADR-005
+§5), and a first conversation gets none — nothing came before the key.
 
 Why not have the serve post it: the human did the action, the
 creator field should say so; and a serve-authored `agent` message is

@@ -82,3 +82,16 @@ def test_browser_skill_documents_the_real_surface():
     first = first[:first.find(". ") + 1]
     assert "Shared from Chrome" in first and "`browser`" in first
     assert len(first) <= 200, len(first)
+
+
+def test_welcome_is_the_reference_first_message_not_a_system_skill():
+    """ADR-005 §5 / ADR-009 §3: `welcome` ships without the underscore
+    (on demand — the loop reads it on a chat's first conversation, no
+    cron run pays for it), carries the `{name}` slot the model fills,
+    and its first sentence is the index line."""
+    skills = load_skills_dir(SKILLS_DIR)
+    body = skills["welcome"]
+    assert "{name}" in body
+    assert body.lstrip().startswith("# Skill: welcome")
+    first = next(ln for ln in body.splitlines() if ln.strip() and not ln.startswith("#"))
+    assert first.startswith("The reference first message")

@@ -624,6 +624,35 @@ is per-instance stable — the account does not change between runs —
 so the tail and the boot window behind it stay cached; it is never
 on the message, where it would be repeated on every turn.
 
+**The first conversation rides the message (amendment 2026-10-28,
+PRO-1687).** A chat whose log holds no turn and no chunk is a first
+conversation: the message that started the run is, in practice, the
+welcome card's connect (ADR-021 §5), and the model would otherwise
+look for a request it was never given. The toolcaller appends one
+situation line to THAT user message — `[runtime: first conversation
+in this chat — …greet the user by name… offer two or three next
+steps…]` — followed by the body of the `welcome` skill when a space
+ships one: the reference first message, filled in, not described.
+`welcome` is an on-demand skill (ADR-009 §3) that the loop reads for
+this one run, so it never rides the stable prefix and a cron run never
+pays for it; a user's own `welcome` shadows the shipped one. The line
+sits after the text and before the `[now: …]` stamp; like the stamp it
+is llm-only, the persisted turn keeps the raw `userText`. Nothing is
+stored to say "welcomed": the next run has a turn, so the situation no
+longer holds, and a wiped chat greets again by design. Quiet runs
+carry no situation.
+
+The same slot carries the **credential nudge** (ADR-021 §5) on a chat
+with history: a message whose text holds an `[attachment
+credential_set: …]` line gets `[runtime: the user just entered this
+credential. Do NOT merely acknowledge it — …go back to it and carry it
+out now…]` under it, llm-only, on the start path and on a mid-run
+inject alike. The runtime folds only the attachment line (the durable
+record that a key was set); the imperative is the loop's, for this run.
+A persisted turn that carried it would make every later window read
+the next "ok" as about the key. A first conversation gets the welcome
+situation instead, which says the credential is not news to report.
+
 **Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
 cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,
 `values`, `effects`) must be taught, but split by reach-frequency so

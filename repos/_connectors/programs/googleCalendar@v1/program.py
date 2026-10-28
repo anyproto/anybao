@@ -161,7 +161,9 @@ def _trim_events(items):
 def list_calendars(max_results=None, min_access_role=None, page_token=None):
     """The user's calendar list → {ok, calendars, nextPageToken}.
 
-    calendars are {id, summary, primary, accessRole, timeZone};
+    calendars are {id, summary, primary, selected, hidden, accessRole, timeZone};
+    selected and hidden default to False when omitted by Google.
+    All returned calendars are kept; callers choose whether to filter.
     min_access_role filters (e.g. "writer"). Also the cheapest
     connectivity check. Pages cap at 250."""
     r = _get("/users/me/calendarList" + _qs({"maxResults": _clamp(max_results),
@@ -172,6 +174,8 @@ def list_calendars(max_results=None, min_access_role=None, page_token=None):
     b = r["body"] or {}
     calendars = [{"id": c.get("id"), "summary": c.get("summary") or "",
                   "primary": bool(c.get("primary")),
+                  "selected": bool(c.get("selected")),
+                  "hidden": bool(c.get("hidden")),
                   "accessRole": c.get("accessRole") or "",
                   "timeZone": c.get("timeZone") or ""}
                  for c in b.get("items") or []]

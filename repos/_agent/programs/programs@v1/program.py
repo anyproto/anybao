@@ -18,6 +18,7 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # guest-only layer. All writes go through any@v1 — no new host effects.
 
 import ast
+import re
 
 _SUMMARY_MAX_CHARS = 80      # ADR-010 §1 hard caps
 _DOCSTRING_MAX_LINES = 12
@@ -71,6 +72,32 @@ def _summary_of(doc):
 def _has_tool_marker(code):
     return any(ln.lstrip().startswith("__any_tool__ = True")
                for ln in code.splitlines())
+
+
+_CATEGORY_MAX_CHARS = 32
+_CATEGORY_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+def _category_of(spec, code):
+    """The word of a module-level `__any_category__ = "<word>"`, "" when
+    undeclared — deploy.rs `declared_category`, ported (ADR-010 §4). A
+    grouping label for inventories, never a behavior switch."""
+    marker = "__any_category__"
+    line = next((ln for ln in code.splitlines() if ln.startswith(marker)), None)
+    if line is None:
+        return ""
+    rest = line[len(marker):].lstrip()
+    if not rest.startswith("="):
+        raise ValueError(f"{spec}: {marker} must be assigned a quoted word (ADR-010 §4)")
+    literal = rest[1:].split("#", 1)[0].strip()
+    if len(literal) < 2 or literal[0] not in "\"'" or literal[-1] != literal[0]:
+        raise ValueError(f'{spec}: {marker} must be a quoted word, e.g. "plugin" (ADR-010 §4)')
+    word = literal[1:-1]
+    if not _CATEGORY_RE.match(word) or len(word) > _CATEGORY_MAX_CHARS:
+        raise ValueError(
+            f"{spec}: {marker}: {word!r} — one lowercase word ([a-z][a-z0-9_-]*, at most "
+            f'{_CATEGORY_MAX_CHARS} chars), e.g. "plugin" (ADR-010 §4)')
+    return word
 
 
 def _has_public_span_def(code):
@@ -193,6 +220,7 @@ def _validate_source(spec, code):
             f"{_DOCSTRING_MAX_CHARS} chars (ADR-010 §1; move depth into "
             "method docstrings)")
     _check_imports(spec, tree)
+    _category_of(spec, code)            # a bad declaration is never saved
     if _has_tool_marker(code):
         _check_tool_shape(spec, code, tree)
     return summary
@@ -217,6 +245,8 @@ _PROGRAM_TYPE = {
         {"name": "Any Tool", "xKey": "any_tool", "kind": "boolean",
          "meta": {"index": "none"}},
         {"name": "Summary", "xKey": "summary", "kind": "string",
+         "meta": {"index": "none"}},
+        {"name": "Category", "xKey": "category", "kind": "string",
          "meta": {"index": "none"}}]}
 _PROGRAM_DATASETS = [
     {"module": "editor"},
@@ -302,7 +332,8 @@ def _write_and_probe(sid, oid, spec, code, summary):
     probe_err = _probe(sid, spec)
     any_tool = _has_tool_marker(code) and probe_err is None
     a.update_object(sid, oid, {"program": {"any_tool": any_tool,
-                                           "summary": summary}})
+                                           "summary": summary,
+                                           "category": _category_of(spec, code)}})
     out = {"ok": probe_err is None, "objectId": oid, "spec": spec,
            "anyTool": any_tool, "probe": "ok" if probe_err is None else probe_err}
     if probe_err is not None:
@@ -408,7 +439,7 @@ def create_program(spaceConfig, body):
         "type": "program",
         "name": name,
         "initialProperties": {"program": {"name": name, "version": version,
-                                          "any_tool": False,
+                                          "any_tool": False, "category": "",
                                           "summary": summary}},
     })["objectId"]
     return _write_and_probe(sid, oid, spec, body["source"], summary)

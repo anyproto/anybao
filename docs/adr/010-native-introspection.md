@@ -143,9 +143,20 @@ DECLARED.)
 - `summary` (new string property): the module docstring's first
   line, derived for every program that has one. This is what listing
   surfaces show WITHOUT exec'ing source — `list_programs` returns
-  `{name, version, anyTool, summary}`, so browsing a connectors repo
+  `{name, version, anyTool, summary, category}`, so browsing a connectors repo
   reads as an annotated inventory; the flow stays list → `use()` →
   `help(mod)` for depth.
+- `category` (string property, amended 2026-10-27): the word of a
+  module-level `__any_category__ = "<word>"` — one lowercase word,
+  `[a-z][a-z0-9_-]*`, at most 32 chars — and `""` when undeclared. It
+  is a grouping label for inventories (any-ui's Connectors list, a
+  repo listing): `plugin` for the AI brain's programs, `connector` for
+  a service connector, and so on. It is never a behavior switch —
+  `any_tool` alone decides toolhood, and the two are independent.
+  Deploy refuses a malformed declaration and writes nothing. Like
+  `credentials`, the property is ensured by deploy and OPTIONAL at
+  lookup: a space deployed before it reads every program as
+  uncategorized until redeployed.
 
 Derivation is a static source scan (first statement string literal;
 the marker line; `@span(` above a `def`) — a convention check, not a
@@ -160,7 +171,9 @@ convention anyway.
   the server builtin `internal/program/` is deleted — the server has
   no reason to know what a program is, ADR-017's stance): xKey
   `program`, display name "Program", properties
-  `name`/`version`/`any_tool`/`summary` (all `meta.index: none`),
+  `name`/`version`/`any_tool`/`summary` plus the optional
+  `credentials` (ADR-021 §8.1) and `category` (§4) — all `meta.index:
+  none`,
   runtime datasets `program_source` (`{code}`) and `program_manifest`
   (`{manifest}`) — `idRule: user` (record `"main"`), `deleteBy:
   anyone`, `dynamic`, fields `mutableBy: any`, and **no `search`
@@ -206,9 +219,9 @@ A program is `<name>@vN.py` or `<name>@vN/program.py` — no
 `description.md`, no `schema.md`, no markdown splitting anywhere in
 the pipeline (`toolmd` deleted, with its parity tests). Deploy
 ensures the target space's `program` schema (§5, once per run), writes
-`program_source`, sets `name`/`version`/`any_tool`/`summary` (§4), and
-enforces §1's docstring budget; the fingerprint hashes the source and
-the derived properties.
+`program_source`, sets `name`/`version`/`any_tool`/`summary`/`category`
+(§4), and enforces §1's docstring budget; the fingerprint hashes the
+source and the derived properties.
 
 ### 7. The convention is taught where programs are authored
 
@@ -231,6 +244,8 @@ through the same prompt that carries everything else:
   are indistinguishable to every consumer.
 
 ### 8. Flat tool surface — spaceConfig (2026-08-04)
+
+**Amended 2026-10-28 (favourites):** `list_favorites()`, `add_favorite(space, object_id, folder=, name=)`, `remove_favorite(space, object_id)` — the account's `favorites/v1` bundle on the tech space (any `docs/25-favorites.md`): the entry id is the target's canonical link, removal is soft, and the install request is any-ui's declaration verbatim (the declaration is pinned at first install, so the two clients must converge). Favourites are never a collection or a property.
 
 **Amended 2026-10-21 (ADR-029 §3):** `create_type` takes `icon` (`{"glyph"}`, a Lucide glyph, no colour, required on a listed mint, healed onto an iconless row); `set_type_icon(space, type_key, icon)`; `create_object` / `update_object` take `icon` (`{"emoji"}` or `{"picture"}`, the object's own mark).
 

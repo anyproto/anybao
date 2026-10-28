@@ -696,7 +696,7 @@ def test_create_object_markdown_writes_the_body_after_create():
     assert "markdown" not in body
     assert body["type"] == "bafyTASK" and "collections" not in body
     md = next(b for v, p, b in fx.calls if p.endswith("/editor/editor_blocks/markdown"))
-    assert md["content"] == "# Dune\n\nsand"
+    assert md["content"] == "sand"   # `# Dune` repeats the name: dropped
     # no membership round-trip: the type carries the body
     assert not any("/properties/" in p for _, p, _ in fx.calls)
 
@@ -1795,9 +1795,9 @@ def test_list_programs_lists_a_space_sorted():
     rows = client(fx).list_programs("repo1")
     assert rows == [
         {"name": "helper", "version": "v2", "anyTool": False,
-         "summary": ""},
+         "summary": "", "category": ""},
         {"name": "webSearch", "version": "v1", "anyTool": True,
-         "summary": "Web search one-liner."}]
+         "summary": "Web search one-liner.", "category": ""}]
     # the object query targeted the requested space with the program
     # filter minus binned objects; a definition's row never matches its
     # members (no marker clause needed — ADR-029 §2)
@@ -2589,3 +2589,148 @@ def test_me_is_the_account_identity_and_name():
                                        "techSpaceId": "t"}})
     assert client(fx).me() == {"identity": "A1", "name": "tolya"}
     assert fx.calls == [("GET", "/v1/account", None)]
+
+
+# --- favourites: the account's favorites/v1 bundle on the tech space ---------
+# (any docs/25-favorites.md): one record per starred object, its canonical
+# link the record id; soft removal; the install is any-ui's declaration.
+_FAV = {
+    "/v1/account": {"id": "me", "techSpaceId": "tech1"},
+    "/spaces/tech1/bundles": {"bundles": [{"id": "favorites/v1", "rootId": "fav1"}],
+                              "synced": True},
+    "/types/fav1/datasets": {"datasets": [
+        {"id": "d1", "key": "entries", "collection": "fav1_entries", "module": "records"}]},
+}
+_FAV_ENTRIES = [
+    {"id": "f:Work", "parentId": "", "pos": "a0", "name": "Work"},
+    {"id": "any://o/s1/old", "parentId": "f:Work", "pos": "a0", "name": "Old",
+     "types": ["bafyT"]},
+    {"id": "any://o/s1/gone", "parentId": "", "pos": "a1", "name": "Gone", "removed": True},
+    {"id": "any://o/s2/chat/chat_messages/m1", "parentId": "", "pos": "a2", "name": "hi"},
+]
+
+
+def test_add_favorite_mirrors_the_object_into_the_named_folder():
+    fx = wire(replies={**_FAV,
+                       "/spaces/tech1/query": {"records": _FAV_ENTRIES},
+                       "/spaces/s1/objects/query": {"records": [{"id": "obj1", "any": {
+                           "name": "Dune", "type": "bafyT", "collections": ["bafyC"],
+                           "iconCid": "cid1"}}]},
+                       "/spaces/tech1/upsert": {"created": 1}})
+    c = client(fx)
+    out = c.add_favorite("s1", "obj1", folder="work")   # the folder matches by name
+    assert out == {"id": "any://o/s1/obj1", "parentId": "f:Work", "created": True}
+    assert [(v, p) for v, p, _ in fx.calls] == [
+        ("GET", "/v1/account"),
+        ("GET", "/v1/spaces/tech1/bundles"),
+        ("GET", "/v1/spaces/tech1/types/fav1/datasets"),
+        ("POST", "/v1/spaces/tech1/query"),
+        ("POST", "/v1/spaces/s1/objects/query"),
+        ("POST", "/v1/spaces/tech1/upsert")]
+    # the wire carries the namespaced collection, never the bare key;
+    # pos lands after the folder's last live child; the mirror is
+    # name + icon + owners (type first), the shape any-ui renders from
+    assert fx.calls[-1][2] == {"objectId": "fav1", "dataset": "fav1_entries", "records": [
+        {"id": "any://o/s1/obj1", "fields": {
+            "parentId": "f:Work", "pos": "a1", "removed": False,
+            "name": "Dune", "iconCid": "cid1", "types": ["bafyT", "bafyC"]}}]}
+    # a record link is the entry id verbatim: no object row to mirror
+    out = c.add_favorite("s1", "any://o/s2/chat/chat_messages/m2", name="hello")
+    assert out["id"] == "any://o/s2/chat/chat_messages/m2" and out["parentId"] == ""
+    rec = fx.calls[-1][2]["records"][0]
+    assert rec["fields"] == {"parentId": "", "pos": "a3", "removed": False, "name": "hello"}
+    assert ("POST", "/v1/spaces/s2/objects/query") not in [(v, p) for v, p, _ in fx.calls]
+    with pytest.raises(ValueError):
+        c.add_favorite("s1", "any://f/s1/file1")
+
+
+def test_add_favorite_installs_the_canonical_bundle_and_mints_a_folder():
+    fx = wire(replies={**_FAV,
+                       "/spaces/tech1/bundles": {"bundles": [], "synced": True,
+                                                 "bundle": {"id": "favorites/v1",
+                                                            "rootId": "fav1"}},
+                       "/spaces/tech1/query": {"records": []},
+                       "/spaces/s1/objects/query": {"records": [{"id": "obj1", "any": {
+                           "name": "Dune", "type": "bafyT"}}]},
+                       "/spaces/tech1/upsert": {"created": 1}})
+    g = load(fx)
+    c = g["_Client"]("http://any", None)
+    c.add_favorite("s1", "obj1", folder="To read")
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts[0] == ("/v1/spaces/tech1/bundles", {
+        "id": "favorites/v1", "name": "Favorites", "hidden": True,
+        "parts": g["_FAVORITES_PARTS"]})
+    # any-ui's declaration, verbatim: `types` is an array, stamps are stamps
+    fields = {f["key"]: f for f in g["_FAVORITES_PARTS"][0]["datasets"][0]["fields"]}
+    assert fields["types"]["kind"] == "array" and fields["creator"] == {
+        "key": "creator", "stamp": "creator"}
+    upserts = [b["records"][0] for p, b in posts if p.endswith("/upsert")]
+    assert upserts == [
+        {"id": "f:To-read", "fields": {"parentId": "", "pos": "a0", "removed": False,
+                                       "name": "To read"}},
+        {"id": "any://o/s1/obj1", "fields": {"parentId": "f:To-read", "pos": "a0",
+                                             "removed": False, "name": "Dune",
+                                             "types": ["bafyT"]}}]
+
+
+def test_add_favorite_surfaces_rejections_and_missing_targets():
+    fx = wire(replies={**_FAV, "/spaces/tech1/query": {"records": []},
+                       "/spaces/s1/objects/query": {"records": []}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as e:
+        g["_Client"]("http://any", None).add_favorite("s1", "obj1")
+    assert e.value.code == "object.not_found"
+    fx = wire(replies={**_FAV, "/spaces/tech1/query": {"records": []},
+                       "/spaces/s1/objects/query": {"records": [{"id": "obj1", "any": {}}]},
+                       "/spaces/tech1/upsert": {"created": 0, "rejections": [
+                           {"id": "any://o/s1/obj1", "code": "upsert.bad", "reason": "nope"}]}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as e:
+        g["_Client"]("http://any", None).add_favorite("s1", "obj1")
+    assert (e.value.code, e.value.message) == ("upsert.bad", "nope")
+
+
+def test_list_favorites_drops_removed_and_shapes_rows():
+    fx = wire(replies={**_FAV, "/spaces/tech1/query": {"records": _FAV_ENTRIES}})
+    rows = client(fx).list_favorites()
+    assert [r["id"] for r in rows] == ["f:Work", "any://o/s1/old",
+                                       "any://o/s2/chat/chat_messages/m1"]
+    assert rows[0] == {"id": "f:Work", "kind": "folder", "name": "Work",
+                       "parentId": "", "pos": "a0"}
+    assert rows[1] == {"id": "any://o/s1/old", "kind": "object", "link": "any://o/s1/old",
+                       "spaceId": "s1", "objectId": "old", "name": "Old",
+                       "parentId": "f:Work", "pos": "a0", "types": ["bafyT"]}
+    assert rows[2]["dataset"] == "chat_messages" and rows[2]["recordId"] == "m1"
+    assert fx.calls[-1][2] == {"objectId": "fav1", "dataset": "fav1_entries",
+                               "sort": ["parentId", "pos"]}
+    # no favourites yet: an empty list, and no install
+    fx = wire(replies={**_FAV, "/spaces/tech1/bundles": {"bundles": [], "synced": True}})
+    assert client(fx).list_favorites() == []
+    assert [v for v, _, _ in fx.calls] == ["GET", "GET"]
+
+
+def test_remove_favorite_is_a_soft_set():
+    fx = wire(replies={**_FAV,
+                       "/spaces/tech1/query": {"records": [_FAV_ENTRIES[1]]},
+                       "/spaces/tech1/modify": {"recordIds": ["any://o/s1/old"]}})
+    c = client(fx)
+    assert c.remove_favorite("s1", "old") == {"id": "any://o/s1/old", "removed": True}
+    assert fx.calls[-2][2] == {"objectId": "fav1", "dataset": "fav1_entries",
+                               "sort": ["parentId", "pos"], "filter": {"id": "any://o/s1/old"}}
+    assert fx.calls[-1] == ("POST", "/v1/spaces/tech1/modify", {
+        "objectId": "fav1", "dataset": "fav1_entries", "records": [
+            {"id": "any://o/s1/old", "ops": [{"type": "$set", "path": "removed",
+                                              "value": True}]}]})
+    # not starred (or already removed): nothing written
+    fx = wire(replies={**_FAV, "/spaces/tech1/query": {"records": [_FAV_ENTRIES[2]]}})
+    assert client(fx).remove_favorite("s1", "gone") == {"id": "any://o/s1/gone",
+                                                        "removed": False}
+    assert "/v1/spaces/tech1/modify" not in [p for _, p, _ in fx.calls]
+
+
+def test_favorites_need_a_tech_space():
+    fx = wire(replies={"/v1/account": {"id": "me"}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as e:
+        g["_Client"]("http://any", None).list_favorites()
+    assert e.value.code == "favorites.unavailable"

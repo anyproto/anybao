@@ -8,7 +8,7 @@ join read-only and import from (`use("<alias>:<name>@vN")`).
 | folder | space (production) | alias | contents |
 |---|---|---|---|
 | `_agent` | `_agentrepo` | `agent` | the bao agent: toolcaller loop, tool + cron programs, `_`-system skills |
-| `_connectors` | `_connectorsrepo` | `connectors` | external-service connectors (linear, github, granola, attio, figma, intercom) |
+| `_connectors` | `_connectorsrepo` | `connectors` | external-service connectors (linear, github, granola, attio, figma, intercom, google) and the AI brain's `brain*` plugin programs + `brain-core` skill (ADR-033, `__any_category__ = "plugin"`) |
 
 Deploy (hash-gated, upsert-only — stale space objects need manual
 deletion):
@@ -32,6 +32,10 @@ anyrt deploy --source repos/_connectors --target connectors [--config-file confi
   listing shows exactly that line); whole docstring ~6 lines
   (hard cap 12 / 800 chars). Dev-facing context goes in `#` comments
   below, not in the docstring.
+- **A category** is optional: `__any_category__ = "<word>"` at module
+  top level (one lowercase word, e.g. `plugin` for the AI brain's
+  programs) lands as the `category` property, a grouping label for
+  inventories — never a behavior switch (ADR-010 §4).
 - **A tool** additionally declares `__any_tool__ = True` at module
   top level and carries `@span(kind=...)` on every
   public method — deploy validates both and rejects violations.
