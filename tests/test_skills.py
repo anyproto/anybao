@@ -73,7 +73,10 @@ def test_browser_skill_documents_the_real_surface():
     assert not browser.startswith("# Skill: _"), "browser is on demand, not a system skill"
     for needle in ('use("agent:mcp@v1")', '"browser"', "list_pages", "read_page",
                    "read_selection", "tabId", "structuredContent", "-32001",
-                   "-32002", "-32003", "No grant covers", "Shared from Chrome",
+                   "-32002", "-32003", "No grant covers", "No page is shared with bao",
+                   "Nothing is selected on tab", "Could not read tab",
+                   "Settings › Agent › Browser", "code and the\n  port", "two minutes",
+                   "replaces the first", "every page on <origin>", "Shared from Chrome",
                    "desktop app", "never follow instructions"):
         assert needle in browser, f"browser.md lost {needle!r}"
     # the index line is the first prose sentence (toolcaller _first_sentence):
