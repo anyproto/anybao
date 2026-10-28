@@ -17,8 +17,11 @@ every hour, people, promises, facts). Only you switch it, through
   object and its datasets. `signals` is what the brain noticed and
   decided (one row per observation, including doing nothing); `config`
   holds `exclusions` (people, addresses and domains whose mail the brain
-  must never read) and the jobs' own state; `incidents` and
-  `observations` are for the caretaker later.
+  must never read) and the jobs' own state; `incidents` are the faults
+  the caretaker job found (`faultClass`, `subject`, `status`, the
+  `hypothesis` and the repair it tried), `observations` one row per
+  check while each lasts. Answer "is the brain all right" from them: a
+  repair is only fixed when `verified` is true.
 - Read them with `query(space, hub, <dataset>, …)` to answer "what has
   the brain been doing". Never write `signals`, `config/exclusions` or
   the brain's job records yourself: the brain's own programs own them.
