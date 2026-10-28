@@ -52,6 +52,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 036 | The AI brain's decision layer — signals, cards, reply drafts bound to their bytes | Proposed |
 | 037 | The AI brain's reply hand-off — the user sends from Gmail, the heartbeat notices | Proposed |
 | 038 | The AI brain's caretaker — deterministic faults, one checked model turn, record-only repairs | Proposed |
+| 039 | The AI brain's tasks from conversations — promises and asks from the chats the user opted in | Proposed |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
