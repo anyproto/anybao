@@ -64,7 +64,12 @@ reconcile run upgrades a version-2 hub, as it did version 1.
    by one such group. A (time, id) cursor would remove that excess and is
    left for later. A message with any excluded or blocklisted
    participant, or under a blocklisted label, is out for everyone in it; a person excluded by id is
-   excluded by every address on their person object too.
+   excluded by every address on their person object too. So is a message
+   from before one of its participants was let back in (the exclusion
+   list's `includedAt`, ADR-034 §6): the cursor here is per person, so
+   lifting an exclusion would otherwise re-read the mail it kept out —
+   found live 2026-10-28, when an included person's "I moved to Lisbon"
+   from their excluded days became a fact.
 3. **One model call per person** (`llm@v1.chat`, tier
    `brain.extractor`, no tools): the person's name, their current facts,
    and up to 8 000 characters of their newest mail, each message tagged
@@ -86,8 +91,11 @@ reconcile run upgrades a version-2 hub, as it did version 1.
    and needs the user's accept. Every fact records the model that
    proposed it.
 6. **Cursor.** Per mailbox, advanced only after the person's writes
-   landed; a provider error counts the person and moves on, and two in
-   a row stop the run (`provider_failed`).
+   landed; a provider error counts the person, holds the watermark and
+   moves on; two in a row stop the run, and so does a run in which no
+   call succeeded (`provider_failed`) — one person with new mail and a
+   provider that is down would otherwise pass for done, run after run,
+   with the watermark held for good and the brain `ready`.
 
 `unpinned` is raised when no `llm.tier.brain.extractor` row exists. The
 setup run seeds that row from `llm.tier.codegen` when absent, so on a

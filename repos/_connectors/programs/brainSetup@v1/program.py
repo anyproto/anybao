@@ -17,14 +17,16 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 #                 yes in chat; absent means off (nothing starts the brain
 #                 on its own), None means switched off
 #   brain.status  this program's answer, echoing the request's requestedAt
-#   brain-setup   a run-once agent_triggers record whoever writes a
+#   brain setup   a run-once agent_triggers record whoever writes a
 #                 request re-arms; its run is `main` below. A whole-value
 #                 $set MERGES into the record, so the fired once's
 #                 lastRunAt survives a plain rewrite and the runtime reads
 #                 it as consumed: a re-arm writes lastRunAt: None.
 # Nothing here is ever deleted: a deleted record id can never be written
-# again. The brain's jobs are ordinary agent_triggers records found by
-# PROGRAM, not by id, so a deleted job is rewritten under a fresh id. A
+# again. The brain's jobs and the setup once are ordinary agent_triggers
+# records found by PROGRAM (and kind), not by id, so a deleted one is
+# rewritten under a fresh id — the user can delete the once from the
+# Scheduled list like any schedule, and on()/off() must still work. A
 # pause holds: the reconcile run only writes MISSING jobs and never
 # re-enables one; an off run records which jobs it disabled (brain.jobs)
 # and the next on run re-enables exactly those. A job the runtime stopped
@@ -311,12 +313,29 @@ def _trigger_anchor(bao):
     return _any.bundle_child(bao, "bao/v1", "bao/triggers/v1")["objectId"]
 
 
+def _setup_once(bao, anchor):
+    """The setup once's record — found by program and kind, not by id: a
+    deleted record's id is burned, and the user can delete it from the
+    Scheduled list like any schedule."""
+    found = [rec for rec in _any.query(bao, anchor, TRIGGERS, limit=500)
+             if rec.get("kind") == "once" and rec.get("program") == PROGRAM]
+    return min(found, key=lambda r: r.get("id") or "") if found else None
+
+
 def _arm(bao, request):
-    """Re-arm brain-setup for `request`; clearing lastRunAt is what re-arms it."""
-    _upsert(bao, _trigger_anchor(bao), TRIGGERS, SETUP_TRIGGER_ID, {
-        "name": "brain setup", "kind": "once", "spec": {"at": now()},  # noqa: F821
-        "program": PROGRAM, "args": {"requestedAt": request["requestedAt"]},
-        "enabled": True, "lastRunAt": None}, "arming brain-setup")
+    """Re-arm the setup once for `request`; clearing lastRunAt is what re-arms it.
+
+    The existing record is rewritten in place; a missing one is written
+    under SETUP_TRIGGER_ID, or a fresh id when that one is burned."""
+    anchor = _trigger_anchor(bao)
+    record = {"name": "brain setup", "kind": "once", "spec": {"at": now()},  # noqa: F821
+              "program": PROGRAM, "args": {"requestedAt": request["requestedAt"]},
+              "enabled": True, "lastRunAt": None}
+    existing = _setup_once(bao, anchor)
+    if existing is not None:
+        _upsert(bao, anchor, TRIGGERS, existing["id"], record, "arming brain setup")
+        return existing["id"]
+    return _write_job(bao, anchor, SETUP_TRIGGER_ID, record, set())
 
 
 def _hub_record(bao, hub, collection, name):
@@ -401,7 +420,8 @@ def _brain_jobs(bao, anchor):
 
 
 def _write_job(bao, anchor, base_id, record, taken):
-    """Write a missing job under base_id, or a fresh id when that one is used."""
+    """Write a missing job (or the setup once) under base_id, or a fresh id
+    when that one is used or burned."""
     rid = base_id if base_id not in taken else f"{base_id}-{int(now())}"  # noqa: F821
     try:
         _upsert(bao, anchor, TRIGGERS, rid, record, f"writing job {rid}")
@@ -745,6 +765,13 @@ def _person_and_emails(bao, person, email, strict):
     return person, [(e or "").strip().lower() for e in emails]
 
 
+def _included_at(value):
+    """The list's `includedAt` to edit: {personIds, emails, domains: {item: ms}}
+    — when each item was last let back in (kit.exclusions → readFrom)."""
+    stamps = value.get("includedAt") or {}
+    return {field: dict(stamps.get(field) or {}) for field in ("personIds", "emails", "domains")}
+
+
 def _wanted(person, emails, domain):
     return {"personIds": [person], "emails": emails,
             "domains": [(domain or "").strip().lower().lstrip("@")]}
@@ -764,11 +791,14 @@ def exclude(person=None, email=None, domain=None):
         raise not_set_up(OFFER)
     person, emails = _person_and_emails(bao, person, email, strict=True)
     value = _exclusion_list(bao, hub)
+    included = _included_at(value)
     for field, items in _wanted(person, emails, domain).items():
         for item in items:
             if item and item not in value[field]:
                 value[field] = [*value[field], item]
+            included[field].pop(item, None)      # kept out again
     value["version"] = 1
+    value["includedAt"] = included
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")
     return value
@@ -781,20 +811,26 @@ def include(person=None, email=None, domain=None):
     The inverse of exclude(), after the user asks: removes the id and,
     for a person that still exists, their addresses; an id that names
     no object any more is removed as is. Mail already kept out is not
-    re-read; the jobs read on from their cursors. Raises not_set_up
-    while the brain has no hub, exclusions_unreadable for a list in
-    another shape."""
+    re-read: the list stamps the moment each item was let back in
+    (`includedAt`), and the jobs skip mail from before it, however they
+    cursor. Raises not_set_up while the brain has no hub,
+    exclusions_unreadable for a list in another shape."""
     bao = _any.bao_space()
     hub = _current_hub(_status())
     if hub is None:
         raise not_set_up(OFFER)
     person, emails = _person_and_emails(bao, person, email, strict=False)
     value = _exclusion_list(bao, hub)
+    included = _included_at(value)
+    at = int(now() * 1000)  # noqa: F821 - guest global; ms, like a message's internalDate
     for field, items in _wanted(person, emails, domain).items():
         gone = {i for i in items if i}
         if gone:
             value[field] = [v for v in value[field] if v not in gone]
+            for item in gone:
+                included[field][item] = at
     value["version"] = 1
+    value["includedAt"] = included
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")
     return value

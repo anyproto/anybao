@@ -595,6 +595,38 @@ def test_on_and_off_from_chat_write_the_request_and_re_arm_setup():
     assert cfg["brain.space"]["spaceId"] == BAO
 
 
+def test_on_and_off_rewrite_a_renamed_or_relocated_setup_once_in_place():
+    # the once is found by program and kind, not by its id
+    mod, fake, cfg, _, _ = kernel()
+    mod.on()
+    triggers(fake)["brain-setup-x"] = triggers(fake).pop("brain-setup")
+    triggers(fake)["brain-setup-x"].update(id="brain-setup-x", lastRunAt=NOW - 5)
+    mod.off()
+    assert set(triggers(fake)) == {"brain-setup-x"}
+    armed = triggers(fake)["brain-setup-x"]
+    assert armed["lastRunAt"] is None and armed["args"] == {
+        "requestedAt": cfg["brain.space"]["requestedAt"]}
+
+
+def test_a_setup_once_deleted_from_the_schedule_list_is_rewritten_under_a_fresh_id():
+    # seen live: deleting "brain setup" in Scheduled burned its id, and
+    # on()/off() failed for good with "record is deleted; the id cannot be reused"
+    mod, fake, cfg, _, _ = kernel()
+    mod.on()
+    assert mod.main({})["state"] == "ready"
+    fake.delete(*TRIGGERS, "brain-setup")
+    out = mod.off()
+    assert out["state"] == "waiting"
+    (rid,) = [r for r, rec in triggers(fake).items() if rec.get("kind") == "once"]
+    assert rid.startswith("brain-setup-") and triggers(fake)[rid]["lastRunAt"] is None
+    assert triggers(fake)[rid]["args"] == {"requestedAt": cfg["brain.space"]["requestedAt"]}
+    assert mod.main({})["state"] == "off"
+    # the next request re-arms that fresh record, not the burned id
+    mod.on()
+    assert [r for r, rec in triggers(fake).items() if rec.get("kind") == "once"] == [rid]
+    assert mod.main({})["state"] == "ready"
+
+
 def test_exclude_appends_normalized_and_never_removes():
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
@@ -720,9 +752,25 @@ def test_include_removes_what_exclude_added_and_nothing_else():
     mod.exclude(person=pid, email="Bob@Y.io", domain="@spam.io")
     mod.exclude(email="keep@z.io")
     out = mod.include(person=pid, email="bob@y.io", domain="spam.io")
-    assert out == {"version": 1, "personIds": [], "emails": ["keep@z.io"], "domains": []}
+    at = int(NOW * 1000)
+    assert out == {"version": 1, "personIds": [], "emails": ["keep@z.io"], "domains": [],
+                   # when each item was let back in: the jobs skip older mail
+                   "includedAt": {"personIds": {pid: at},
+                                  "emails": {"ada@x.io": at, "a.lovelace@x.io": at,
+                                             "bob@y.io": at},
+                                  "domains": {"spam.io": at}}}
     # the list in the hub is what came back
     assert fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] == out
+
+
+def test_excluding_again_drops_the_inclusion_stamp():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    mod.exclude(email="bob@y.io", domain="spam.io")
+    mod.include(email="bob@y.io", domain="spam.io")
+    out = mod.exclude(email="bob@y.io")
+    assert out["emails"] == ["bob@y.io"] and out["includedAt"]["emails"] == {}
+    assert out["includedAt"]["domains"] == {"spam.io": int(NOW * 1000)}
 
 
 def test_include_removes_a_person_whose_object_is_gone():

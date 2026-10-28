@@ -118,6 +118,12 @@ def exclusions_problem(rec):
     for field in ("personIds", "emails", "domains"):
         if not isinstance(value.get(field), list):
             return f"exclusion list field {field!r} is not a list"
+    stamps = value.get("includedAt")
+    if stamps is not None and not (isinstance(stamps, dict) and all(
+            isinstance(stamps.get(f) or {}, dict)
+            and all(isinstance(v, (int, float)) for v in (stamps.get(f) or {}).values())
+            for f in ("personIds", "emails", "domains"))):
+        return "exclusion list field 'includedAt' is not {personIds, emails, domains: {item: ms}}"
     return None
 
 
@@ -136,25 +142,41 @@ def exclusions(space, hub, datasets):
 
     `personEmails` are the addresses of the persons excluded by id, so a
     message that carries one is kept out for everyone in it, as a listed
-    address is."""
+    address is. `readFrom` is {address or domain: ms}: the moment each one
+    was last let back in (`brainSetup.include`, the list's `includedAt`),
+    a person id resolved to their addresses like an exclusion is; mail
+    from before it was kept out at the time and stays unread
+    (`included_after`)."""
     rec = hub_record(space, hub, datasets["config"], "exclusions")
     problem = exclusions_problem(rec)
     if problem is not None:
         raise exclusions_unreadable(problem)
     value = rec["value"]
+    stamps = value.get("includedAt") or {}
+    stamped_ids = {k: int(v) for k, v in (stamps.get("personIds") or {}).items()}
     ids = sorted(set(value["personIds"]))
-    by_person = set()
-    if ids:
+    by_person, read_from = set(), {}
+    for field in ("emails", "domains"):
+        for key, at in (stamps.get(field) or {}).items():
+            key = str(key).lower()
+            read_from[key] = max(read_from.get(key, 0), int(at))
+    want = sorted(set(ids) | set(stamped_ids))
+    if want:
         try:
-            rows = _any.query_objects(space, filter={"id": {"$in": ids}}, limit=len(ids))
+            rows = _any.query_objects(space, filter={"id": {"$in": want}}, limit=len(want))
         except _any.AnyError as e:
             raise exclusions_unreadable(f"the excluded persons could not be read: {e}") from e
         for row in rows:
-            by_person.update(person_emails(row))
+            if row["id"] in ids:
+                by_person.update(person_emails(row))
+            if row["id"] in stamped_ids:
+                for addr in person_emails(row):
+                    read_from[addr] = max(read_from.get(addr, 0), stamped_ids[row["id"]])
     return {"personIds": set(ids),
             "personEmails": by_person,
             "emails": {e.lower() for e in value["emails"]},
-            "domains": {d.lower() for d in value["domains"]}}
+            "domains": {d.lower() for d in value["domains"]},
+            "readFrom": read_from}
 
 
 def blocklist(space, hub, datasets):
@@ -200,6 +222,14 @@ def kept_out(addr, excl, block):
     dom = domain_of(addr)
     return (addr in excl["emails"] or addr in excl["personEmails"] or dom in excl["domains"]
             or addr in block["senders"] or dom in block["domains"] or is_noise(addr))
+
+
+def included_after(addr, excl, at_ms):
+    """True when the address, or its domain, was let back into the brain only
+    after `at_ms`: a message from before was kept out when it arrived, and
+    including someone re-reads nothing already skipped."""
+    read_from = excl.get("readFrom") or {}
+    return max(read_from.get(addr, 0), read_from.get(domain_of(addr), 0)) > at_ms
 
 
 def promise_kept_out(row, excl, block):

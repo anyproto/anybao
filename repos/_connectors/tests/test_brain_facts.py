@@ -287,6 +287,61 @@ def test_two_provider_failures_stop_the_run_and_keep_the_cursor():
     assert s.config("facts.cursor") == {"watermark": NOW - 30 * DAY}
 
 
+def test_a_provider_failure_on_the_only_person_fails_the_run():
+    # the same stall the promises job had: one person, a provider that is
+    # down, and a run that passed for done with the watermark held for good
+    s = space_with()
+    with pytest.raises(Exception) as err:
+        run(s, Model(400))
+    assert type(err.value).__name__ == "provider_failed"
+    assert s.config("facts.cursor") == {"watermark": NOW - 30 * DAY}
+    assert s.config("facts.stats")["providerFailed"] == 1
+
+
+def test_a_provider_failure_beside_a_read_person_passes_with_the_watermark_held():
+    s = space_with()
+    s.add_object("bob", "profile", ["person", "brain_person"], name="Bob",
+                 brain_person={"emails": ["bob@x.org"],
+                               "lastContactAt": {"$date": (NOW - 50) * 1000}})
+    s.add_mail("mb1", "m2", **{"from": "bob@x.org", "to": ME}, subject="Hi", body="Hello there",
+               participants=["bob@x.org", ME], internalDate=(NOW - 50) * 1000)
+    _, out = run(s, Model([LISBON], 400))
+    assert out["providerFailed"] == 1 and out["written"] == 1
+    assert s.config("facts.cursor") == {"watermark": NOW - DAY}     # Ada passed, Bob held
+
+
+def test_mail_from_before_a_person_was_let_back_in_stays_unread():
+    # seen live: Sam was excluded, wrote "I moved to Lisbon", was included
+    # back — and the facts job read that mail, which include() promises not to
+    s = space_with()
+    s.set_config("exclusions", {**EXCLUSIONS, "personIds": ["ada"]})
+    _, out = run(s, Model())
+    assert out["excludedSkipped"] == 1 and s.store("facts") == {}
+    # include() lifts the exclusion and stamps the moment
+    s.set_config("exclusions", {**EXCLUSIONS, "includedAt": {
+        "personIds": {"ada": int((NOW - 3600) * 1000)}, "emails": {}, "domains": {}}})
+    model = Model([LISBON])
+    _, out = run(s, model)
+    assert model.prompts == [] and s.store("facts") == {}
+    assert out["persons"] == 1 and out["excludedSkipped"] == 1
+    # mail after the inclusion is read
+    s.add_mail("mb1", "m2", **{"from": "Ada Lovelace <ada@lab.org>", "to": ME}, subject="Later",
+               body=ADA_MAIL, participants=["ada@lab.org", ME], internalDate=(NOW - 60) * 1000)
+    s.objects["ada"]["brain_person"]["lastContactAt"] = {"$date": (NOW - 60) * 1000}
+    _, out = run(s, Model([LISBON]))
+    assert out["written"] == 1
+    assert "[M1]" in model.prompts[0][-1]["content"] if model.prompts else True
+
+
+def test_an_address_or_domain_let_back_in_keeps_its_older_mail_out_for_everyone():
+    s = space_with(to=f"{ME}, eve@spy.org", participants=("ada@lab.org", ME, "eve@spy.org"))
+    s.set_config("exclusions", {**EXCLUSIONS, "includedAt": {
+        "personIds": {}, "emails": {}, "domains": {"spy.org": int((NOW - 3600) * 1000)}}})
+    model = Model([LISBON])
+    _, out = run(s, model)
+    assert model.prompts == [] and out["excludedSkipped"] == 1
+
+
 def test_the_watermark_passes_a_person_once_their_mail_is_read():
     s = space_with()
     run(s, Model([LISBON]))

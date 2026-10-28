@@ -258,22 +258,38 @@ def test_sent_mail_under_a_blocklisted_label_is_never_read():
     assert model.prompts == [] and s.store("promises") == {} and out["messages"] == 1
 
 
-def test_a_provider_failure_leaves_the_cursor_before_its_message():
+def test_a_provider_failure_with_one_mailbox_fails_the_run_and_keeps_the_cursor():
+    # seen live: with one mailbox the old "two failures stop the run" rule
+    # never fired, so a provider that was down passed, run after run, for
+    # a job that read nothing — and the brain stayed "ready"
     s = mail_space("I'll send the deck.")
     s.add_mail("mb1", "m2", **{"from": ME, "to": "Ada <ada@lab.org>",
                                "body": "I'll call you.", "internalDate": MADE_MS + 1000})
-    model = Model(RuntimeError("provider says no"),
-                  [{"quote": "I'll call you.", "due": None}])
+    model = Model(RuntimeError("provider says no"))
     mod, _ = kernel(s, model)
-    out = mod.main(job_args(s))
-    assert out["providerFailed"] == 1 and out["messages"] == 0
-    assert s.store("promises") == {}
-    assert s.config("promises.cursor")["mb1"] < MADE_MS      # the floor, not m1
+    with pytest.raises(Exception) as err:
+        mod.main(job_args(s))
+    assert type(err.value).__name__ == "provider_failed"
+    assert len(model.prompts) == 1                           # the mailbox stopped at m1
+    assert s.store("promises") == {} and s.config("promises.cursor") is None
     # the next run picks both up
     model.replies = [[{"quote": "I'll send the deck.", "due": None}],
                      [{"quote": "I'll call you.", "due": None}]]
     out = mod.main(job_args(s))
     assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": MADE_MS + 1000}
+
+
+def test_a_provider_failure_beside_a_handled_mailbox_only_holds_that_mailbox():
+    s = mail_space("I'll send the deck.")
+    s.add_mailbox("mb2", "two@example.com")
+    s.add_mail("mb2", "m9", **{"from": "two@example.com", "to": "Bob <bob@x.io>",
+                               "body": "I'll call you.", "internalDate": MADE_MS})
+    model = Model(RuntimeError("provider says no"), [{"quote": "I'll call you.", "due": None}])
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    assert out["providerFailed"] == 1 and out["promises"] == 1
+    assert s.config("promises.cursor")["mb1"] < MADE_MS      # the floor, not m1
+    assert s.config("promises.cursor")["mb2"] == MADE_MS
 
 
 def test_two_provider_failures_stop_the_run():

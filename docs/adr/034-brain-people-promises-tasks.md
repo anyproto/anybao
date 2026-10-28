@@ -109,9 +109,13 @@ nothing. Per sent message, in this order:
    answers `upsert.record_deleted`, which the job takes as the user's
    answer rather than stop at that message for good.
 7. **The cursor** passes only messages fully handled. A provider failure
-   stops the mailbox before its message; two in one run stop the job
-   (`provider_failed`). At most 60 model calls per run; the rest waits
-   for the next one, thirty minutes later.
+   stops the mailbox before its message; a run in which no model call
+   succeeded fails (`provider_failed`), so a provider that is down trips
+   the runtime's breaker and `brainSetup.status()` names the stopped
+   job. An earlier "two failures in one run" rule never fired with one
+   mailbox: the job passed, run after run, for reading nothing, and the
+   brain stayed `ready` (found live 2026-10-28). At most 60 model calls
+   per run; the rest waits for the next one, thirty minutes later.
 
 The regex sentence splitter and phrase table an earlier draft used are
 gone: a fixed phrase list misses most commitments and cuts sentences
@@ -156,8 +160,15 @@ and their mail would reach the model — so `brainSetup.exclude(person=…)`
 also copies the person's addresses into `emails` (and
 `brainSetup.include(person=…)` takes both out again — the way back in
 is a chat tool too, after the user asks; an id whose object is gone is
-removed as is, and mail already kept out is not re-read), and refuses an id
-that names no person (an object filed under `person` or `brain_person`).
+removed as is, and mail already kept out is not re-read: the list stamps
+`includedAt: {personIds, emails, domains: {item: ms}}`, the moment each
+item was let back in, `exclusions()` resolves it to `readFrom: {address
+or domain: ms}`, and `included_after(addr, excl, at_ms)` keeps a message
+from before that moment out for everyone in it — the facts job needs it,
+since its cursor is per person, not per message; the promises cursor
+passes kept-out mail on its own), and refuses an id that names no person
+(an object filed under `person` or `brain_person`). Excluding an item
+again drops its stamp.
 It writes only the fields it adds to, and refuses a list that is not in
 its version-1 shape rather than rewrite it into a readable one: a list
 the jobs refuse to read must stay refused until it is fixed. The heartbeat uses it too, and the tools read the hub off

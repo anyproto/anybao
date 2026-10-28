@@ -12,8 +12,14 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # tagged message, its quote a verbatim substring of that message. A model
 # that paraphrases loses the fact. Exclusions are read fail-closed before
 # any mail; a message with an excluded or blocklisted participant is out for
-# everyone in it. Facts are idempotent by id; a single-valued kind
-# supersedes an inferred fact and never a stated one.
+# everyone in it, and so is one from before a participant was let back in
+# (the cursor is per person, so a lifted exclusion would otherwise re-read
+# the mail it kept out). Facts are idempotent by id; a single-valued kind
+# supersedes an inferred fact and never a stated one. A provider failure
+# counts the person and holds the watermark; two in a row stop the run,
+# and so does a run in which no model call succeeded (`provider_failed`),
+# so a provider that is down trips the runtime's breaker instead of
+# passing for a run that read nothing.
 
 import hashlib
 import re
@@ -81,7 +87,7 @@ class unpinned(Exception):
 
 
 class provider_failed(Exception):
-    """The model provider failed twice in a row."""
+    """The model provider failed twice in a row, or on every call of the run."""
 
 
 def normalize(value):
@@ -184,11 +190,13 @@ def _sources(space, boxes, person, floor_s, excl, block, stats):
                               filter={"participants": {"$in": person["emails"]},
                                       "internalDate": {"$gt": floor_s * 1000}},
                               sort=["-internalDate"], limit=MAILS_PER_MAILBOX):
-            people = list(row.get("participants") or [])
+            people = [str(a).lower() for a in (row.get("participants") or [])]
             people += [a for _, a in kit.addresses(row.get("from"), row.get("to"),
                                                    row.get("cc"))]
-            if kit.labelled_out(row, block) or any(kit.kept_out(str(a).lower(), excl, block)
-                                                   for a in people):
+            at_ms = row.get("internalDate") or 0
+            if kit.labelled_out(row, block) or any(
+                    kit.kept_out(a, excl, block) or kit.included_after(a, excl, at_ms)
+                    for a in people):
                 stats["excludedSkipped"] += 1
                 continue
             mail.append((box_id, row))
@@ -364,7 +372,7 @@ def main(args):
     persons, stats["excludedSkipped"] = _persons(space, excl, block, floor_s)
     boxes = kit.mailboxes(space)
     writer = _Writer(space, hub, datasets, llm.profile(tier)["model"], stats)
-    watermark, blocked, failures = floor_s, False, 0
+    watermark, blocked, failures, succeeded = floor_s, False, 0, 0
     try:
         for person in persons:
             sources = _sources(space, boxes, person, floor_s, excl, block, stats)
@@ -374,7 +382,7 @@ def main(args):
                 current = [f for f in existing.values() if f.get("status") == "current"]
                 try:
                     items = _ask(_prompt(person, current, sources), tier)
-                    failures = 0
+                    failures, succeeded = 0, succeeded + 1
                 except llm.LlmError as e:
                     failures += 1
                     stats["providerFailed"] += 1
@@ -391,6 +399,10 @@ def main(args):
                 watermark = max(watermark, person["last"])
             else:
                 blocked = True
+        if stats["providerFailed"] and not succeeded:
+            # one person with new mail and a provider that is down: a run
+            # that passed for done would hold the watermark for good, unseen
+            raise provider_failed("the model provider failed on every call of this run")
     finally:
         kit.write_config(space, hub, datasets, "facts.cursor", {"watermark": watermark})
         _merge_stats(space, hub, datasets, stats)

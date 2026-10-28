@@ -23,7 +23,10 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # written: `status` is mutable, so re-sending a promise would reopen one
 # the user or a completed task closed. The cursor passes only messages
 # fully handled: a provider failure stops the mailbox before its
-# message, and two in one run stop the job (provider_failed).
+# message, and a run in which no model call succeeded fails
+# (provider_failed) — with one mailbox that is the first failure — so a
+# provider that is down trips the runtime's breaker instead of passing,
+# run after run, for a job that read nothing.
 #
 # It also closes the loop with tasks: an open promise whose `taskId` names
 # a catalog task the user completed is marked done.
@@ -87,7 +90,7 @@ class promises_rejected(Exception):
 
 
 class provider_failed(Exception):
-    """The model provider failed twice in one run."""
+    """The model provider failed, and no call of the run succeeded."""
 
 
 def _day(seconds):
@@ -323,7 +326,7 @@ def main(args):
     gate = bool(llm.judge_available())
     cursor = _cursor(space, hub, datasets)
     stats = _new_stats()
-    people, calls, failures = {}, 0, 0
+    people, calls, failures = {}, 0, []
     floor = kit.backfill_floor_ms()
     for box_id, box_addr in kit.mailboxes(space):
         last = cursor.get(box_id, floor)
@@ -349,11 +352,8 @@ def main(args):
                         try:
                             items, used = _ask(body, gate, tier, stats)
                         except llm.LlmError as e:
-                            failures += 1
+                            failures.append(e)
                             stats["providerFailed"] += 1
-                            if failures >= 2:
-                                raise provider_failed(
-                                    "the model provider failed twice in one run") from e
                             break               # the cursor stays before this message
                         calls += used
                         if items:
@@ -363,6 +363,10 @@ def main(args):
             stats["messages"] += 1
         stats["written"] += _write(space, hub, datasets["promises"], records)
         cursor[box_id] = last
+    if failures and not (stats["asked"] or stats["judged"]):
+        # nothing was handled: the cursor stays where the last run left it
+        raise provider_failed(
+            "the model provider failed and no call of this run succeeded") from failures[-1]
     kit.write_config(space, hub, datasets, "promises.cursor", cursor)
     _merge_stats(space, hub, datasets, stats)
     closed = _close_completed(space, hub, datasets)

@@ -74,14 +74,18 @@ What follows from the repo:
 | --- | --- | --- |
 | `brain.space` (agent_config) | `brainSetup.on()` / `off()` only, after the user's yes in chat | `{spaceId: <Bao's space> \| null, requestedAt, by: "chat"}` — absent = off (nothing starts the brain on its own), `null` = switched off |
 | `brain.status` (agent_config) | the setup run | `{spaceId?, requestedAt, state: provisioning \| ready \| error \| off, at, error?: {type, message}, hub?: {objectId, datasets}, mailSync?, stopped?: [{id, name}]}` — `requestedAt` echoes the request it answers; `stopped` is a warning on a `ready` brain (§4) |
-| `brain-setup` (agent_triggers) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "connectors:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
+| the setup once (agent_triggers, `brain-setup` at first) | whoever writes `brain.space` | `{name: "brain setup", kind: "once", spec: {at: <now>}, program: "connectors:brainSetup@v1", args: {requestedAt}, enabled: true, lastRunAt: null}` |
 
-Each request rewrites `brain-setup` with `lastRunAt: null`, which re-arms
-it. The null is load-bearing: a whole-value `$set` MERGES into the stored
-record, so a plain rewrite keeps the fired run's `lastRunAt`, and the
-runtime reads the once as consumed and never fires it again (seen on a
-live run, 2026-10-25). Nothing in the contract is ever deleted: a deleted
-record id can never be written again.
+Each request rewrites the setup once with `lastRunAt: null`, which
+re-arms it. The null is load-bearing: a whole-value `$set` MERGES into
+the stored record, so a plain rewrite keeps the fired run's `lastRunAt`,
+and the runtime reads the once as consumed and never fires it again (seen
+on a live run, 2026-10-25). The once is found by program and kind, not
+by id, like the jobs (§4): the user can delete it from the Scheduled list
+like any schedule, and a deleted id is burned, so the next request writes
+a fresh `brain-setup-<epoch>` — found live 2026-10-28, when a deleted
+once left `on()` and `off()` failing for good with "record is deleted;
+the id cannot be reused". Nothing in the contract is ever deleted.
 
 ### 3. The setup run
 
