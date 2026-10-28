@@ -14,13 +14,16 @@ HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
             ("signals", "config", "incidents", "observations", "promises", "facts",
-             "cards", "drafts", "approvals", "standups", "sends")}
+             "cards", "drafts", "approvals", "standups", "sends", "asks")}
 ANCHOR = "trigger-anchor"      # the bao/triggers/v1 bundle child
 # what a set-up brain's space has before any mail sync: the built-in page,
 # the people and tasks catalog apps' types, the hub
 BASE_TYPES = ("page", "profile", "task", "brain_hub")
 WRITE_ONCE = {"promises": {"text", "quote", "source", "mailboxId", "channel", "madeAt",
-                           "dueAt", "personEmail"}}
+                           "dueAt", "personEmail"},
+              "asks": {"senderIdentity", "spaceId", "chatId", "kind", "text", "quote",
+                       "source", "askedAt", "suggestedDeadline"},
+              "cards": {"kind", "title", "reason", "subjectKey", "items"}}
 
 
 def _key_of(dataset):
@@ -119,7 +122,52 @@ class FakeSpace:
         return rec and rec["value"]
 
     def store(self, key):
-        return self.records.get((HUB, DATASETS[key]), {})
+        return self.records.get((HUB, DATASETS.get(key, f"{SHARED_PREFIX}{key}")), {})
+
+    # --- chats (ADR-039) ---------------------------------------------------
+    # spaces the account has, their members, the one general chat each, and
+    # the account's identity directory; a chat message is a record on the
+    # chat object's chat_messages, ordered by _ver.id
+    me_identity = "me-id"
+    me_name = "Me"
+
+    def add_space(self, sid, name=None, role="writer", one_to_one=False, status="active",
+                  members=()):
+        self.spaces = getattr(self, "spaces", {})
+        self.spaces[sid] = {"id": sid, "name": name or sid, "status": status,
+                            "ownRole": role,
+                            "spaceType": "any.onetoone" if one_to_one else "any.space"}
+        self.members = getattr(self, "members", {})
+        self.members[sid] = [{"identity": self.me_identity, "name": self.me_name,
+                              "permission": role, "status": "active"}] + [
+            {"identity": i, "name": n, "permission": "writer", "status": "active"}
+            for i, n in members]
+        return f"chat-{sid}"
+
+    def add_message(self, sid, mid, creator, text, ver, at_s, **extra):
+        rec = {"id": mid, "creator": creator, "text": text, "_ver": {"id": ver},
+               "createdAt": {"$date": int(at_s * 1000)}, **extra}
+        self.records.setdefault((f"chat-{sid}", "chat_messages"), {})[mid] = rec
+        return rec
+
+    def me(self):
+        self.calls.append(("me",))
+        return {"identity": self.me_identity, "name": self.me_name}
+
+    def list_spaces(self, raw=False):
+        return [dict(r) for r in getattr(self, "spaces", {}).values()]
+
+    def list_members(self, space):
+        self.calls.append(("list_members", space))
+        return [dict(m) for m in getattr(self, "members", {}).get(space, [])]
+
+    def general_chat(self, space):
+        return f"chat-{space}"
+
+    def get_identity(self, identity):
+        self.calls.append(("get_identity", identity))
+        name = getattr(self, "directory", {}).get(identity)
+        return {"identity": identity, "name": name} if name else None
 
     def triggers(self):
         return self.records.get((ANCHOR, "agent_triggers"), {})
@@ -178,12 +226,12 @@ class FakeSpace:
         rows = [({**r, "id": f"{oid}/{r['id']}"} if shared else dict(r))
                 for r in self.records.get((oid, ds), {}).values()]
         for path, cond in (filter or {}).items():
-            rows = [r for r in rows if _matches(r.get(path), cond)]
+            rows = [r for r in rows if _matches(_get(r, path), cond)]
         for key in reversed(sort or []):
             desc = key.startswith("-")
             name = key.lstrip("-")
-            rows.sort(key=lambda r, n=name: str(r.get(n)) if isinstance(r.get(n), dict)
-                      else (r.get(n) or 0), reverse=desc)
+            rows.sort(key=lambda r, n=name: str(_get(r, n)) if isinstance(_get(r, n), dict)
+                      else (_get(r, n) or 0), reverse=desc)
         return rows[:limit] if limit else rows
 
     def search(self, space, query, scopes=None, limit=None, **_):
