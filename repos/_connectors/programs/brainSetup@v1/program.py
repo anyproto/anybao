@@ -48,7 +48,10 @@ JOBS_KEY = "brain.jobs"
 STOPPED = "auto_disabled"
 SETUP_TRIGGER_ID = "brain-setup"
 PROGRAM = "connectors:brainSetup@v1"
-HEARTBEAT = "connectors:brainHeartbeat@v1"
+HEARTBEAT = "connectors:brainHeartbeat@v2"
+# every heartbeat version: the setup run rewrites an older one's program in
+# place, keeping its `enabled` (ADR-036 §10)
+HEARTBEAT_PREFIX = "connectors:brainHeartbeat@"
 PEOPLE = "connectors:brainPeople@v1"
 PROMISES = "connectors:brainPromises@v1"
 FACTS = "connectors:brainFacts@v1"
@@ -56,8 +59,8 @@ GMAIL_SYNC = "connectors:gmailSync@v1"
 MAIL_SYNC_ID = "brain-mail-sync"
 # the hub's shape; a reconcile run that finds an older hub re-arms setup,
 # which installs what the newer shape adds (1: Phase 0, 2: + people,
-# promises and tasks, 3: + facts)
-HUB_VERSION = 3
+# promises and tasks, 3: + facts, 4: + cards, drafts, approvals, standups)
+HUB_VERSION = 4
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
@@ -66,9 +69,15 @@ CATALOG_APPS = ("people", "meetings", "tasks")
 # the brain's model tiers, seeded from these sources only when absent so
 # an edit in Settings → Model always wins
 # one row per brain job that calls a model; a job's row arrives with the
-# job (the facts extractor now, ADR-035 §3), never ahead of it
-TIERS = (("llm.tier.brain.extractor", "llm.tier.codegen"),)
+# job (the facts extractor, ADR-035 §3; the reply drafter, ADR-036 §6),
+# never ahead of it
+TIERS = (("llm.tier.brain.extractor", "llm.tier.codegen"),
+         ("llm.tier.brain.drafter", "llm.tier.codegen"))
 EXCLUSIONS_SEED = {"version": 1, "personIds": [], "emails": [], "domains": []}
+# the heartbeat's drafting knobs (ADR-036 §5), seeded when absent and the
+# user's to edit afterwards; quietSenders are regexes over a sender address
+DRAFTING_SEED = {"maxPerRun": 3, "replyWindowDays": 5, "meetingSoonHours": 24,
+                 "quietSenders": []}
 # senders, domains and labels whose mail the people and promises jobs skip
 BLOCKLIST_SEED = {"domains": [], "senders": [], "labels": []}
 NOT_READY_TRIES = 5
@@ -173,6 +182,76 @@ DATASETS = (
                 _f("moreSources", "array", mutable=True),
                 _f("decidedAt", "datetime", mutable=True),
                 _f("confirmedAt", "datetime", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # --- Phase 3: the decision layer (ADR-036 §1) ---------------------------
+    # what the brain asks the user; id = sha256(kind | identity), so a re-run
+    # never duplicates a card. The heartbeat writes the card, the drafter its
+    # draft pointers, the user its answer.
+    {"key": "cards", "displayName": "Brain cards", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "search": {"title": "title", "text": ["reason"], "scope": "cards"},
+     "fields": [_f("kind", "string", required=True),
+                _f("title", "string", required=True),
+                _f("reason", "string", required=True),
+                _f("subjectKey", "string", required=True),
+                _f("sourceUri", "string"),
+                _f("signalId", "string"),
+                _f("personIds", "array"),
+                _f("briefPersonIds", "array"),
+                _f("status", "string", mutable=True),
+                _f("snoozedUntil", "datetime", mutable=True),
+                _f("answer", "string", mutable=True),
+                _f("draftId", "string", mutable=True),
+                _f("approvalId", "string", mutable=True),
+                _f("draftAttempts", "number", mutable=True),
+                _f("decidedAt", "datetime", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # a reply the drafter (origin drafter) or the user (origin user, an edit)
+    # wrote; write-once — an edit is a new draft that `supersedes` the old one
+    {"key": "drafts", "displayName": "Brain drafts", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("cardId", "string", required=True),
+                _f("sender", "string", required=True),
+                _f("senderAddress", "string", required=True),
+                _f("recipients", "array", required=True),
+                _f("format", "string", required=True),
+                _f("body", "string", required=True),
+                _f("subject", "string", required=True),
+                _f("inReplyTo", "string"),
+                _f("threadId", "string"),
+                _f("recipientProvenance", "string", required=True),
+                _f("model", "string", required=True),
+                _f("tier", "string", required=True),
+                _f("origin", "string", required=True),
+                _f("supersedes", "string"),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # the user's decision on one draft's exact bytes: the id IS
+    # hash(sender, recipients, format, body) (ADR-036 §7)
+    {"key": "approvals", "displayName": "Brain approvals", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("draftId", "string", required=True),
+                _f("cardId", "string", required=True),
+                _f("sender", "string", required=True),
+                _f("recipients", "array", required=True),
+                _f("format", "string", required=True),
+                _f("bodyHash", "string", required=True),
+                _f("reason", "string", required=True),
+                _f("status", "string", mutable=True),
+                _f("decidedAt", "datetime", mutable=True),
+                _f("consumedByRun", "string", mutable=True),
+                _f("rejectedReason", "string", mutable=True),
+                _f("editedTo", "string", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # one row per brain run that did something — the per-agent standup,
+    # kept out of the chat (ADR-036 §8)
+    {"key": "standups", "displayName": "Brain standups", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("job", "string", required=True),
+                _f("tick", "number", required=True),
+                _f("did", "array", required=True),
+                _f("needs", "array"),
+                _f("counts", "object", required=True),
+                _f("runId", "string"),
                 _CREATOR, _CREATED, _MODIFIED]},
 )
 
@@ -329,14 +408,18 @@ def _hub_record(bao, hub, collection, name):
 
 # --- the brain's jobs ------------------------------------------------------
 
+def _heartbeat_args(bao, hub):
+    # `tier` rides through to the reply drafts the heartbeat arms (ADR-036 §5)
+    return {"space": bao, "hub": hub["objectId"], "datasets": dict(hub["datasets"]),
+            "tier": "brain.drafter"}
+
+
 def _wanted_jobs(bao, hub):
     """[(job key, base id, record)] — the jobs a set-up brain runs."""
     return [
         ((HEARTBEAT, None), "brain-heartbeat", {
             "name": "brain heartbeat", "kind": "cron", "spec": {"every_s": 600},
-            "program": HEARTBEAT,
-            "args": {"space": bao, "hub": hub["objectId"],
-                     "datasets": hub["datasets"]},
+            "program": HEARTBEAT, "args": _heartbeat_args(bao, hub),
             "enabled": True}),
         ((PROGRAM, "reconcile"), "brain-reconcile", {
             "name": "brain reconcile", "kind": "cron", "spec": {"every_s": 3600},
@@ -420,16 +503,43 @@ def _set_enabled(bao, anchor, rid, enabled):
         f"{'enabling' if enabled else 'disabling'} job {rid}")
 
 
+def _upgrade_heartbeats(bao, anchor, have, hub):
+    """Point every heartbeat record at HEARTBEAT and the hub's datasets → [ids].
+
+    The record is rewritten in place — `program` and `args` only, never
+    `enabled` — so a heartbeat the user paused stays paused (ADR-036 §10).
+    An older version is re-keyed in `have`, so the missing-job pass does
+    not write a second heartbeat beside it."""
+    wanted = _heartbeat_args(bao, hub)
+    upgraded = []
+    for key in [k for k in have if (k[0] or "").startswith(HEARTBEAT_PREFIX)]:
+        for rec in have[key]:
+            if rec.get("program") == HEARTBEAT and rec.get("args") == wanted:
+                continue
+            _checked(_any.modify(bao, {"objectId": anchor, "dataset": TRIGGERS, "records": [
+                {"id": rec["id"], "ops": [
+                    {"type": "$set", "path": "program", "value": HEARTBEAT},
+                    {"type": "$set", "path": "args", "value": wanted}]}]}),
+                f"upgrading job {rec['id']}")
+            rec.update(program=HEARTBEAT, args=wanted)
+            upgraded.append(rec["id"])
+        if key != (HEARTBEAT, None):
+            have.setdefault((HEARTBEAT, None), []).extend(have.pop(key))
+    return upgraded
+
+
 def _ensure_jobs(bao, hub):
-    """Write the missing jobs; never touch an existing one's `enabled`."""
+    """Write the missing jobs and upgrade the heartbeat in place → (anchor,
+    written, upgraded); never touch an existing job's `enabled`."""
     anchor = _trigger_anchor(bao)
     have = _brain_jobs(bao, anchor)
     taken = {r.get("id") for recs in have.values() for r in recs}
+    upgraded = _upgrade_heartbeats(bao, anchor, have, hub)
     written = []
     for key, base_id, record in _wanted_jobs(bao, hub):
         if key not in have:
             written.append(_write_job(bao, anchor, base_id, record, taken))
-    return anchor, written
+    return anchor, written, upgraded
 
 
 class jobs_unreadable(Exception):
@@ -527,7 +637,8 @@ def _provision(bao):
         _any.create_collection(bao, draft)
     hub_id = _retry(lambda: _any.bundle_child(bao, BUNDLE, HUB_SEED, type_key=HUB_TYPE))
     hub = {"objectId": hub_id["objectId"], "datasets": datasets, "version": HUB_VERSION}
-    for name, seed in (("exclusions", EXCLUSIONS_SEED), ("blocklist", BLOCKLIST_SEED)):
+    for name, seed in (("exclusions", EXCLUSIONS_SEED), ("blocklist", BLOCKLIST_SEED),
+                       ("drafting", DRAFTING_SEED)):
         if _hub_record(bao, hub["objectId"], datasets["config"], name) is None:
             _upsert(bao, hub["objectId"], datasets["config"], name,
                     {"value": dict(seed)}, f"seeding the {name}")
@@ -572,7 +683,7 @@ def _setup():
     _write_status(request, "provisioning")
     try:
         hub = _provision(bao)
-        anchor, written = _ensure_jobs(bao, hub)
+        anchor, written, upgraded = _ensure_jobs(bao, hub)
         reenabled = _reenable_jobs(bao, anchor)
         mail_sync = _ensure_mail_sync(bao, anchor)
         # only a new request restarts: a same-request re-arm is not the user
@@ -586,8 +697,8 @@ def _setup():
         raise provision_failed(f"{type(e).__name__}: {e}") from e
     extra = {"stopped": stopped} if stopped else {}
     _write_status(request, "ready", hub=hub, mailSync=mail_sync, **extra)
-    return {"state": "ready", "hub": hub, "written": written, "reenabled": reenabled,
-            "restarted": restarted, "mailSync": mail_sync}
+    return {"state": "ready", "hub": hub, "written": written, "upgraded": upgraded,
+            "reenabled": reenabled, "restarted": restarted, "mailSync": mail_sync}
 
 
 def _reconcile():
@@ -606,7 +717,7 @@ def _reconcile():
         # an older hub: setup installs what this version adds
         _arm(bao, request)
         return {"reconciled": True, "upgrading": True}
-    anchor, written = _ensure_jobs(bao, hub)
+    anchor, written, _upgraded = _ensure_jobs(bao, hub)
     stopped = _warning(_stopped_jobs(bao, anchor, status.get("mailSync")))
     if stopped != (status.get("stopped") or []):
         # the warning changes, the answer does not: `at` and the hub stay
