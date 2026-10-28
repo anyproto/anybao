@@ -1,16 +1,19 @@
 # Skill: brain-core
 
-The AI brain: people, promises and facts from the user's Gmail, kept in
-Bao's own space. Off until the user says yes; you offer it, switch it
-with connectors:brainSetup@v1 (help() it for status, on, off, exclude),
-and read it with connectors:brainRecall@v1 and connectors:brainTasks@v1.
+The AI brain: people, promises and facts from the user's Gmail, and
+promises and asks from the chats the user lets it read, kept in Bao's
+own space. Off until the user says yes; you offer it, switch it with
+connectors:brainSetup@v1 (help() it for status, on, off, exclude,
+watch_chats), and read it with connectors:brainRecall@v1 and
+connectors:brainTasks@v1 (what the user owes, as tasks).
 
 ## What it is
 
 The brain lives in Bao's own space and is off until the user asks for
 it. Its jobs are ordinary Scheduled jobs whose program starts
 `connectors:brain` (the heartbeat every ten minutes, a reconcile run
-every hour, people, promises, facts). Only you switch it, through
+every hour, people, promises, facts, and the chat scan — off until the
+user names a chat). Only you switch it, through
 `brainSetup.on()` and `off()`, and only after a yes.
 
 - Its store is the brain hub: `status()["status"]["hub"]` names the hub
@@ -59,10 +62,13 @@ every hour, people, promises, facts). Only you switch it, through
   need the user's consent to reading mail with a model (below); without
   it there are no promises, only people.
 - When the user asks what they owe, or at most once a day when
-  `connectors:brainTasks@v1.suggest()` returns three or more, offer to turn
-  promises into tasks: show each with its suggested deadline, let the user
-  change it, and call `create(id, deadline=…)` or `create_all()` only
-  after a yes. Never invent a promise or a deadline.
+  `connectors:brainTasks@v1.suggest()` returns three or more, list what it
+  returns — promises the user made and asks other people made of them
+  (`origin`), each with its quote, who it is with and the suggested
+  deadline — and offer to turn them into tasks. Let the user change a
+  deadline, and only after a yes call `create(id, deadline=…)` for a
+  promise, `create_from_ask(id, deadline=…)` for an ask, or `create_all()`
+  for the whole list. Never invent a promise, an ask or a deadline.
 - Never write `promises`, `signals`, the hub's `config` or the brain's job
   records yourself; the brain's own programs own them.
 - Before answering about a person or a thread, read what the brain has:
@@ -70,6 +76,34 @@ every hour, people, promises, facts). Only you switch it, through
   what the user promised them, the latest mail), `.search("<words>")` across
   objects, mail and promises. Quote each hit's `link` so the user can open
   it; never answer about someone the user keeps out of the brain.
+
+## Chats: promises and asks
+
+The brain reads no chat until the user names it. When the user asks it
+to watch their chats (or asks what they owe and their mail is not where
+the work is):
+
+- List the candidates first — `list_spaces()`: spaces they write in and
+  one-to-one chats (`spaceType` `any.onetoone`, named by the other
+  person) — and ask which. Say what will be read: in those chats, the
+  user's own messages, for things they promised (with a model, only if
+  they allowed reading with a model), and other people's messages
+  addressed to them — a direct chat, a mention, a reply — for things they
+  were asked (no model). Nothing is posted there; Bao's own chat is never
+  scanned.
+- Only after a yes call
+  `connectors:brainSetup@v1.watch_chats([<space id>, …])`; it starts within
+  a minute. `stop_watching_chats([…])` when they say stop: what was found
+  stays. `scan_pages(True)` — unchecked checklist items of pages edited
+  in those spaces become asks too — only when they ask for it, after a yes.
+- `status()["chatScan"]` names what is watched. Never call watch_chats
+  for a chat the user did not name, and never read a chat's messages
+  yourself to find promises or asks: the brain's job does that.
+- `asks` on the hub are what others asked the user for: `quote` (the
+  verbatim sentence), `senderIdentity` and `personId` (who asked),
+  `source` (a link that opens the chat at the message), `askedAt`,
+  `suggestedDeadline`, `status` (open / done / dismissed), `taskId`. Never
+  write `asks` yourself.
 
 ## Facts and the brief
 
