@@ -80,3 +80,20 @@ def test_every_llm_and_recall_call_names_what_the_module_defines():
     for path in BRAIN:
         missing = sorted(_calls_on(path, "recall") - defined)
         assert missing == [], f"{path.parent.name}: recall.{missing}"
+
+
+def test_every_cross_brain_call_names_what_the_module_defines():
+    # the chat scan reuses brainPromises' extraction and brainTasks' rules
+    for name, spec in (("brainPromises@v1", "brainPromises@v1.py"),
+                       ("brainTasks@v1", "brainTasks@v1/program.py")):
+        defined = _defined(PROGRAMS / spec)
+        for path in BRAIN:
+            tree = ast.parse(path.read_text())
+            aliases = {t.id for n in tree.body if isinstance(n, ast.Assign)
+                       and isinstance(n.value, ast.Call)
+                       and getattr(n.value.func, "id", None) == "use"
+                       and n.value.args and getattr(n.value.args[0], "value", None) == name
+                       for t in n.targets if isinstance(t, ast.Name)}
+            for alias in aliases:
+                missing = sorted(_calls_on(path, alias) - defined)
+                assert missing == [], f"{path.parent.name}: {alias}.{missing}"
