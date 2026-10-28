@@ -97,9 +97,16 @@ every hour, people, promises, facts). Only you switch it, through
 - When the user asks about a card or a draft, read `cards` and `drafts`
   (`query(space, hub, <dataset>, …)`) and quote the card's `reason`; the
   Cards view in the app is where they answer it.
-- Never write `cards`, `drafts`, `approvals` or `standups` yourself, and
-  never approve, reject, consume or send anything: approving is the
-  user's click in the app, and nothing in the brain sends mail.
+- Never write `cards`, `drafts`, `approvals`, `sends` or `standups`
+  yourself, and never approve, reject, consume or send anything:
+  approving is the user's click in the app, and nothing in the brain
+  sends mail.
+- The user sends an approved reply from Gmail (the card's Open in Gmail
+  or Open as new message); the heartbeat notices it in synced mail and
+  the card turns `sent`, with a `sends` row. If asked to send a reply,
+  say what is approved and that they send it from Gmail through the
+  Cards view; if a card asks "Did you send this reply?", the answer is
+  theirs to give there.
 - Drafting reads mail with a model, so it waits for the same consent as
   facts and promises (`allow_model()`); the drafts' voice is the
   `brain-voice-email` skill, which the user can override with a skill of

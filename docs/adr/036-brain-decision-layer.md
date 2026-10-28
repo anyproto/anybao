@@ -39,9 +39,10 @@ field is written once.
 Vocabularies. Card `kind`: `reply`, `nudge`, `overdue_promise`,
 `meeting_soon`, `calendar_conflict`, `fact_conflict`, `info`, `question`,
 `incident` (Phase 5), `new_message` and `intro_step` (reserved),
-`task_suggestion` (Phase 6). Card `status`: `open`, `snoozed`, `answered`,
-`dismissed`. Approval `status`: `pending`, `approved`, `rejected`, `void`,
-`consumed`, `held`. A draft is never edited: an edit is a new draft
+`task_suggestion` (Phase 6), `send_check` (ADR-037 §5). Card `status`:
+`open`, `snoozed`, `answered`, `dismissed`, `sent` (ADR-037 §3). Approval
+`status`: `pending`, `approved`, `rejected`, `void`, `consumed` (the user
+sent it, ADR-037), `held`. A draft is never edited: an edit is a new draft
 (`origin: user`, `supersedes`) and a new approval, and the old approval
 turns `void` with `editedTo` (any-ui writes it).
 
