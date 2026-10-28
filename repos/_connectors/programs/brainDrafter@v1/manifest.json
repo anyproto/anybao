@@ -1,0 +1,9 @@
+{
+  "reads": ["cards", "email_messages", "signals", "config", "objects", "promises", "facts",
+            "agent_skill"],
+  "writes": ["drafts", "approvals", "cards", "standups"],
+  "net": [],
+  "connectors": [],
+  "browse": false,
+  "llm": "brain.drafter"
+}

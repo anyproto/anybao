@@ -85,6 +85,26 @@ every hour, people, promises, facts). Only you switch it, through
   unconfirmed.
 - Never write `facts` yourself; the brain's own programs own them.
 
+## Cards, drafts and approvals
+
+- The heartbeat turns what needs the user into `cards` on the hub: a
+  reply owed (`reply`), a thread gone quiet (`nudge`), an overdue
+  promise, a meeting soon, a calendar clash, a fact conflict. Each has a
+  `reason` and, for a reply, a `draftId` once the drafter wrote one.
+  `drafts` hold the reply text; `approvals` hold the user's decision on
+  those exact bytes (`pending`, `approved`, `rejected`, `void`), and
+  `standups` say what each brain job did.
+- When the user asks about a card or a draft, read `cards` and `drafts`
+  (`query(space, hub, <dataset>, …)`) and quote the card's `reason`; the
+  Cards view in the app is where they answer it.
+- Never write `cards`, `drafts`, `approvals` or `standups` yourself, and
+  never approve, reject, consume or send anything: approving is the
+  user's click in the app, and nothing in the brain sends mail.
+- Drafting reads mail with a model, so it waits for the same consent as
+  facts and promises (`allow_model()`); the drafts' voice is the
+  `brain-voice-email` skill, which the user can override with a skill of
+  that name of their own.
+
 ## Exclusions
 
 `exclude(person=…, email=…, domain=…)` keeps someone's mail out of the
