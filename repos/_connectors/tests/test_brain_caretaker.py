@@ -15,7 +15,8 @@ import time
 import connectorenv
 import kernelenv
 import pytest
-from brain_fakes import DATASETS, HUB, FakeSpace
+from brain_fakes import DATASETS as HUB_DATASETS
+from brain_fakes import HUB, FakeSpace
 from connectorenv import connector_kernel
 
 BAO = "bao-space"
@@ -36,6 +37,10 @@ TIER = {"provider": "openai-compat", "backend": "anyai",
 EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
 REQUESTED = "2026-10-28T08:00:00Z"
 CARDS, STANDUPS = "hubtype_cards", "hubtype_standups"
+# the default world is a hub from before the decision layer (Phase 3);
+# with_phase3_stores() adds the stores it brings
+DATASETS = {k: v for k, v in HUB_DATASETS.items()
+            if k not in ("cards", "drafts", "approvals", "standups", "sends")}
 SOURCE = (connectorenv.PROGRAMS_DIR / "brainCaretaker@v1" / "program.py").read_text()
 
 
@@ -198,7 +203,8 @@ def base_cfg():
     return {"brain.space": {"spaceId": BAO, "requestedAt": REQUESTED, "by": "chat"},
             "brain.status": brain_status(),
             "llm.tier.brain.caretaker": TIER, "llm.tier.brain.extractor": TIER,
-            "llm.tier.classify": TIER, "google.connected": True}
+            "llm.tier.brain.drafter": TIER, "llm.tier.classify": TIER,
+            "google.connected": True}
 
 
 def caretaker_args():
