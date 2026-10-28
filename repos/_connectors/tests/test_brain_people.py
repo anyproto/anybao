@@ -31,10 +31,14 @@ FIXTURE_NOW = 86_400.0
 DAY_MS = 86_400_000
 
 
-def run(space, args=None, now=FIXTURE_NOW):
+def run(space, args=None, now=FIXTURE_NOW, config=None):
     def eff(name, payload):
         if name == "time.now":
             return {"epoch": now}
+        if name == "config.get":
+            if payload["key"] not in (config or {}):
+                raise KeyError(f"no config value for {payload['key']!r}")
+            return {"value": config[payload["key"]]}
         raise AssertionError(f"unexpected effect {name}")
 
     mod = connector_kernel(effect=eff, any_client=space).use("brainPeople@v1")
@@ -59,7 +63,8 @@ def test_one_person_per_correspondent_and_never_myself_or_noise():
     assert ada["brain_person"]["lastContactAt"] == {"$date": 2_000_000}
     assert ada["brain_person"]["firstSeenAt"] == {"$date": 1_000_000}
     assert out == {"mailboxes": 1, "messages": 2, "minted": 2, "updated": 0,
-                   "promisesLinked": 0, "massSkipped": 0}
+                   "promisesLinked": 0, "massSkipped": 0, "identitiesLinked": 0,
+                   "asksLinked": 0, "chatPromisesLinked": 0}
     assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
 
 
@@ -170,7 +175,8 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s.seed_lists()
     _, out = run(s)
     assert out == {"mailboxes": 0, "messages": 0, "minted": 0, "updated": 0,
-                   "promisesLinked": 0, "massSkipped": 0}
+                   "promisesLinked": 0, "massSkipped": 0, "identitiesLinked": 0,
+                   "asksLinked": 0, "chatPromisesLinked": 0}
 
 
 def test_mail_under_a_blocklisted_label_makes_no_person_but_is_read_past():
@@ -288,3 +294,94 @@ def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
     _, out = run(s, now=now)
     assert sorted(people(s)) == ["ada@lab.org"] and out["messages"] == 1
     assert s.config("people.cursor") == {"mail": {"mb1": now * 1000 - 10 * DAY_MS}}
+
+
+# --- chat identities (ADR-039 §5) ---------------------------------------------------
+
+def add_ask(space, rid, sender, person=None):
+    rec = {"id": rid, "senderIdentity": f"any://u/{sender}", "text": "Can you call?",
+           "quote": "Can you call?", "kind": "request", "status": "open",
+           "source": f"any://o/team/chat-team/chat_messages/{rid}"}
+    if person:
+        rec["personId"] = person
+    space.records.setdefault((HUB, "hubtype_asks"), {})[rid] = rec
+
+
+def test_a_unique_name_links_the_identity_and_back_fills_its_asks():
+    s = FakeSpace()
+    s.seed_lists()
+    s.add_object("ada", "profile", ["person"], name="Ada Lovelace", person={"email": "a@x.io"})
+    s.add_object("bob", "profile", ["person", "brain_person"], name="Robert",
+                 brain_person={"aliases": ["Bob Stone"], "emails": ["bob@x.io"]})
+    s.directory = {"ada-id": "Ada Lovelace", "bob-id": "Bob Stone", "eve-id": "Eve"}
+    add_ask(s, "a1", "ada-id")
+    add_ask(s, "a2", "bob-id")
+    add_ask(s, "a3", "eve-id")              # nobody of that name: stays an identity
+    _, out = run(s)
+    assert out["identitiesLinked"] == 2 and out["asksLinked"] == 2
+    ada = s.objects["ada"]
+    assert ada["brain_person"]["identity"] == "any://u/ada-id"
+    assert "brain_person" in ada["any"]["collections"]          # filed to carry the column
+    assert s.objects["bob"]["brain_person"]["identity"] == "any://u/bob-id"
+    asks = s.store("asks")
+    assert asks["a1"]["personId"] == "ada" and asks["a2"]["personId"] == "bob"
+    assert "personId" not in asks["a3"]
+    assert len([o for o in s.objects.values() if o["any"]["type"] == "profile"]) == 2
+    # a second run finds the link by the column, writes it again nowhere
+    add_ask(s, "a4", "ada-id")
+    _, out = run(s)
+    assert out["identitiesLinked"] == 0 and s.store("asks")["a4"]["personId"] == "ada"
+
+
+def test_an_ambiguous_name_links_nobody():
+    s = FakeSpace()
+    s.seed_lists()
+    s.add_object("ada1", "profile", ["person"], name="Ada Lovelace")
+    s.add_object("ada2", "profile", ["brain_person"], name="ada lovelace")
+    s.directory = {"ada-id": "Ada Lovelace"}
+    add_ask(s, "a1", "ada-id")
+    _, out = run(s)
+    assert out["identitiesLinked"] == 0 and "personId" not in s.store("asks")["a1"]
+    assert all("identity" not in (o.get("brain_person") or {}) for o in s.objects.values())
+
+
+def test_a_person_with_another_identity_is_never_relinked():
+    s = FakeSpace()
+    s.seed_lists()
+    s.add_object("ada", "profile", ["brain_person"], name="Ada Lovelace",
+                 brain_person={"identity": "any://u/ada-old"})
+    s.directory = {"ada-new": "Ada Lovelace"}
+    add_ask(s, "a1", "ada-new")
+    _, out = run(s)
+    assert out["identitiesLinked"] == 0
+    assert s.objects["ada"]["brain_person"]["identity"] == "any://u/ada-old"
+
+
+def test_a_one_to_one_peer_is_linked_and_its_chat_promises_back_filled():
+    s = FakeSpace()
+    s.seed_lists()
+    s.add_space("dm", one_to_one=True, members=[("bob-id", "Bob Stone")])
+    s.add_object("bob", "profile", ["person", "brain_person"], name="Bob Stone")
+    s.records.setdefault((HUB, "hubtype_promises"), {})["p1"] = {
+        "id": "p1", "channel": "chat", "quote": "I'll call you.", "status": "open",
+        "source": "any://o/dm/chat-dm/chat_messages/m1", "mailboxId": "chat-dm"}
+    _, out = run(s)
+    assert out["identitiesLinked"] == 1 and out["chatPromisesLinked"] == 1
+    assert s.objects["bob"]["brain_person"]["identity"] == "any://u/bob-id"
+    assert s.store("promises")["p1"]["personId"] == "bob"
+
+
+def test_a_people_job_written_before_the_hub_had_asks_finds_them_on_the_status():
+    s = FakeSpace()
+    s.seed_lists()
+    s.add_object("ada", "profile", ["person"], name="Ada Lovelace")
+    s.directory = {"ada-id": "Ada Lovelace"}
+    add_ask(s, "a1", "ada-id")
+    args = job_args(s)
+    del args["datasets"]["asks"]
+    status = {"brain.status": {"state": "ready", "hub": {"objectId": HUB,
+                                                         "datasets": {"asks": "hubtype_asks"}}}}
+    _, out = run(s, args=args, config=status)
+    assert out["asksLinked"] == 1
+    _, out = run(s, args=args)                       # no status: nothing to link
+    assert out["asksLinked"] == 0
