@@ -456,9 +456,10 @@ class _Run:
         since = cursor.get(sid)
         if not isinstance(since, (int, float)):
             since = now() - PAGE_WINDOW_S  # noqa: F821 - guest global
-        pages = _any.query_objects(sid, filter={"any.type": "page",
-                                                "modifiedAt": {"$gt": instant(since)}},  # noqa: F821
-                                   sort=["modifiedAt"], limit=PAGES_PER_SPACE)
+        pages = _any.query_objects(sid, filter={
+            "any.type": "page", "any.collections": {"$nin": ["bin"]},
+            "modifiedAt": {"$gt": instant(since)}},  # noqa: F821 - guest global
+            sort=["modifiedAt"], limit=PAGES_PER_SPACE)
         records, last = [], since
         for page in pages:
             last = max(last, ts_s(page.get("modifiedAt")) or last)  # noqa: F821 - guest global
@@ -533,7 +534,10 @@ def suggestion_card(space, hub, datasets, today):
     cid = card_id("task_suggestion", subject)
     if kit.hub_record(space, hub, datasets["cards"], cid) is not None:
         return None
-    items = tasks.suggest(limit=CARD_ITEMS)
+    try:
+        items = tasks.suggest(limit=CARD_ITEMS)
+    except kit.not_set_up:
+        return None                         # mid-setup: brain.status is not ready
     if not items:
         return None
     n = sum(1 for i in items if i.get("origin") == "promise")
