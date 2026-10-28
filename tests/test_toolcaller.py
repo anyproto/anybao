@@ -405,13 +405,13 @@ def test_first_conversation_rides_the_message_with_the_welcome_reference():
     # one situation line on the user message, then the shipped `welcome`
     # body (read on demand, never the stable prefix); llm-only
     w = World([done_reply("hi")])
-    w.skills = {"welcome": "# Skill: welcome\n\nHi {name}. I'm Bao.\n"}
+    w.skills = {"welcome": "# Skill: welcome\n\nI'm Bao, {name}.\n"}
     run(w)
     call = w.llm_calls[0]
     user = call["messages"][-1]["parts"][0]["text"]
     assert user.startswith("go\n\n[runtime: first conversation in this chat")
     assert "Greet the user by name" in user
-    assert "Hi {name}. I'm Bao." in user
+    assert "I'm Bao, {name}." in user
     # after the text, before the timestamp stamp
     assert user.index("[runtime: first conversation") < user.index("[now: ")
     assert "welcome" not in call["system"]      # the body never rides the prefix
@@ -422,7 +422,7 @@ def test_first_conversation_rides_the_message_with_the_welcome_reference():
     run(w)
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
     assert "[runtime: first conversation in this chat" in user
-    assert "Hi {name}" not in user
+    assert "{name}" not in user
 
     # a chat with history is not a first conversation
     class WithHistory(World):
@@ -435,15 +435,15 @@ def test_first_conversation_rides_the_message_with_the_welcome_reference():
             return mod
 
     w = World([done_reply("ok")])
-    w.skills = {"welcome": "Hi {name}."}
+    w.skills = {"welcome": "I'm Bao, {name}."}
     w.__class__ = type("W3", (WithHistory,), {})
     run(w)
     user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
-    assert "first conversation" not in user and "Hi {name}" not in user
+    assert "first conversation" not in user and "{name}" not in user
 
     # a quiet run carries no situation (ADR-008 §5)
     w = World([done_reply("ok")])
-    w.skills = {"welcome": "Hi {name}."}
+    w.skills = {"welcome": "I'm Bao, {name}."}
     run(w, quiet=True)
     assert "first conversation" not in w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
 
