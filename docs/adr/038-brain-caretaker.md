@@ -125,7 +125,10 @@ declared in hub version 1).
   at the start of the tick: id `<incidentId>:<tick>`, `{incidentId,
   tick, evidence}` — the class's evidence, or `{clean: true}` on a tick
   the fault was not seen. Written through `upsert_records`, so an
-  observation is never updated.
+  observation is never updated. An `escalated` incident that is still
+  dirty gets one an hour (`config/caretaker.observedAt`): it waits on
+  the user, and a row every tick would grow the store by 96 a day for as
+  long as the user leaves it.
 - A clean tick closes an `open` or `escalated` incident (`status:
   closed`, `closedAt`); `verified` stays absent — it healed by itself,
   which the ladder did not verify. A `repairing` or `soaking` one
@@ -227,7 +230,8 @@ on its own within the window.
 - **Notices** are batched: each escalation or `notice` repair adds one
   line to `config/caretaker.pending`, and a run posts them in one
   `chat_send` to Bao's general chat when `noticeCooldownMin` (default
-  60) has passed since `lastNoticeAt`. A notice is `agent: {name:
+  60) has passed since `lastNoticeAt`; a line whose incident closed in
+  the meantime is dropped. A notice is `agent: {name:
   <runtime.get("agent.name"), else "bao">, done: true}`: the watcher
   skips the serving agent's own messages, so a notice starts no turn,
   and raises one notification. Success is silent.
@@ -241,7 +245,7 @@ on its own within the window.
   escalated or closed something writes a `standups` row; one that did
   nothing writes none.
 - `config/caretaker` is the caretaker's own state: `{noticeCooldownMin,
-  lastNoticeAt, pending, lastReportDay, watch, lastTickAt}`.
+  lastNoticeAt, pending, lastReportDay, watch, observedAt, lastTickAt}`.
 
 ### 9. What the caretaker cannot do
 
