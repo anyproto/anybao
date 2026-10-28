@@ -544,9 +544,11 @@ def test_one_task_suggestion_card_a_day():
     assert item["origin"] == "ask" and item["quote"] == "Can you call me?"
     assert item["suggestedDeadline"] == "2026-10-27"
     assert item["source"] == "any://o/dm/chat-dm/chat_messages/m1"
-    (signal,) = s.store("signals").values()
+    assert card["personIds"] == []
+    (sid, signal), = s.store("signals").items()
     assert signal["kind"] == "task_suggestion" and signal["decision"] == "card"
-    assert signal["cardId"] == cid
+    assert signal["cardId"] == cid and card["signalId"] == sid
+    assert sid == mod.signal_id(THU, "task_suggestion", "tasks:2026-10-22")
     msg(s, "dm", "m2", "bob-id", "Could you sign?", "v2")
     assert mod.main(args)["card"] is None and len(s.store("cards")) == 1
 

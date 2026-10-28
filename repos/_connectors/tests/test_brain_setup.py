@@ -1119,3 +1119,15 @@ def test_a_chat_scan_rewritten_while_chats_are_watched_starts_on():
     fake.delete(*TRIGGERS, "brain-chat-scan")
     (new_id,) = mod.main({"mode": "reconcile"})["written"]
     assert jobs(fake)[new_id]["enabled"] is True
+
+
+def test_the_cards_store_gains_items_for_the_daily_suggestion_card():
+    # the decision layer declares `cards`; Phase 6 adds the pick-list field
+    mod, _, _, _, _ = kernel()
+    cards = {"key": "cards", "fields": [{"key": "kind", "kind": "string", "required": True}]}
+    out = mod._with_card_items(({"key": "asks", "fields": []}, cards))
+    assert [f["key"] for f in out[1]["fields"]] == ["kind", "items"]
+    assert out[1]["fields"][1] == {"key": "items", "kind": "array"}
+    assert mod._with_card_items(out) == out                  # once
+    assert cards["fields"] == [{"key": "kind", "kind": "string", "required": True}]
+    assert [d["key"] for d in mod.DATASETS][-1] == "asks"
