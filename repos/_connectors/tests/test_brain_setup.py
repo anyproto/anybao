@@ -259,13 +259,14 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     exclusions = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
     assert exclusions == {"version": 1, "personIds": [], "emails": [], "domains": []}
     # one tier row per brain job that calls a model (the facts extractor,
-    # the reply drafter)
+    # the reply drafter, the caretaker)
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
     assert cfg["llm.tier.brain.drafter"] == {"model": "codegen-model"}
+    assert cfg["llm.tier.brain.caretaker"] == {"model": "codegen-model"}
     assert sorted(k for k in cfg if k.startswith("llm.tier.brain.")) == [
-        "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
+        "llm.tier.brain.caretaker", "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 5, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 6, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
         "promises": "type-hub_promises", "facts": "type-hub_facts",
@@ -280,7 +281,7 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
     js = jobs(fake)
-    assert sorted(js) == ["brain-facts", "brain-heartbeat", "brain-mail-sync",
+    assert sorted(js) == ["brain-caretaker", "brain-facts", "brain-heartbeat", "brain-mail-sync",
                           "brain-people", "brain-promises", "brain-reconcile"]
     facts = js["brain-facts"]
     assert facts["program"] == "connectors:brainFacts@v1" and facts["spec"] == {"every_s": 21600}
@@ -297,7 +298,28 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
     assert beat["args"]["datasets"]["config"] == "type-hub_config"
     assert js["brain-reconcile"]["args"] == {"mode": "reconcile"}
+    care = js["brain-caretaker"]
+    assert care["program"] == "connectors:brainCaretaker@v1" and care["spec"] == {"every_s": 900}
+    assert care["args"]["tier"] == "brain.caretaker" and care["args"]["hub"] == "hub"
+    assert care["args"]["datasets"]["incidents"] == "type-hub_incidents"
+    assert care["args"]["datasets"]["observations"] == "type-hub_observations"
     assert all(j["enabled"] is True and "owner" not in j for j in js.values())
+
+
+def test_a_hub_before_the_caretaker_upgrades_to_it_through_reconcile():
+    # an install set up at hub version 3 has no caretaker job and no tier row
+    mod, fake, cfg, writes, _ = kernel(config=on_request())
+    mod.main({})
+    triggers(fake).pop("brain-caretaker")
+    del cfg["llm.tier.brain.caretaker"]
+    old = dict(statuses(writes)[-1])
+    old["hub"] = {**old["hub"], "version": 3}
+    cfg["brain.status"] = old
+    assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
+    mod.main({"requestedAt": STAMP})                # the re-armed setup run
+    assert jobs(fake)["brain-caretaker"]["program"] == "connectors:brainCaretaker@v1"
+    assert cfg["llm.tier.brain.caretaker"] == {"model": "codegen-model"}
+    assert statuses(writes)[-1]["hub"]["version"] == 6
 
 
 def test_a_second_run_only_reads():
@@ -311,6 +333,7 @@ def test_a_second_run_only_reads():
     assert not [c for c in new if c[0] in ("upsert", "enabled", "rewrite")]
     assert [k for k, _ in writes].count("llm.tier.brain.extractor") == 1
     assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
+    assert [k for k, _ in writes].count("llm.tier.brain.caretaker") == 1
 
 
 def test_an_edited_tier_is_never_overwritten():
@@ -357,8 +380,8 @@ def test_off_disables_and_on_re_enables_exactly_those():
     triggers(fake)["brain-heartbeat"]["enabled"] = False
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     out = mod.main({})
-    assert sorted(out["disabled"]) == ["brain-facts", "brain-people", "brain-promises",
-                                    "brain-reconcile"]
+    assert sorted(out["disabled"]) == ["brain-caretaker", "brain-facts", "brain-people",
+                                    "brain-promises", "brain-reconcile"]
     off = statuses(writes)[-1]
     assert off == {"spaceId": None, "requestedAt": "s-off", "state": "off", "at": off["at"]}
     # mail sync is not a brain job: switching the brain off leaves it running
@@ -366,8 +389,8 @@ def test_off_disables_and_on_re_enables_exactly_those():
     assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     out = mod.main({})
-    assert sorted(out["reenabled"]) == ["brain-facts", "brain-people", "brain-promises",
-                                    "brain-reconcile"]
+    assert sorted(out["reenabled"]) == ["brain-caretaker", "brain-facts", "brain-people",
+                                    "brain-promises", "brain-reconcile"]
     assert jobs(fake)["brain-reconcile"]["enabled"] is True
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False  # the pause held
 
