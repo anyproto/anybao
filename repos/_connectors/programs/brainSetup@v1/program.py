@@ -62,8 +62,8 @@ MAIL_SYNC_ID = "brain-mail-sync"
 # the hub's shape; a reconcile run that finds an older hub re-arms setup,
 # which installs what the newer shape adds (1: Phase 0, 2: + people,
 # promises and tasks, 3: + facts, 4: + cards, drafts, approvals, standups,
-# 5: + sends)
-HUB_VERSION = 5
+# 5: + sends, 6: + the caretaker job and its tier row)
+HUB_VERSION = 6
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
@@ -72,10 +72,11 @@ CATALOG_APPS = ("people", "meetings", "tasks")
 # the brain's model tiers, seeded from these sources only when absent so
 # an edit in Settings → Model always wins
 # one row per brain job that calls a model; a job's row arrives with the
-# job (the facts extractor, ADR-035 §3; the reply drafter, ADR-036 §6),
-# never ahead of it
+# job (the facts extractor, ADR-035 §3; the reply drafter, ADR-036 §6;
+# the caretaker, ADR-038 §1), never ahead of it
 TIERS = (("llm.tier.brain.extractor", "llm.tier.codegen"),
-         ("llm.tier.brain.drafter", "llm.tier.codegen"))
+         ("llm.tier.brain.drafter", "llm.tier.codegen"),
+         ("llm.tier.brain.caretaker", "llm.tier.codegen"))
 EXCLUSIONS_SEED = {"version": 1, "personIds": [], "emails": [], "domains": []}
 # the heartbeat's drafting knobs (ADR-036 §5), seeded when absent and the
 # user's to edit afterwards; quietSenders are regexes over a sender address
@@ -474,7 +475,25 @@ def _wanted_jobs(bao, hub):
             "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"],
                      "tier": "brain.extractor"},
             "enabled": True}),
+    ] + _caretaker_jobs(bao, hub)
+
+
+# --- the caretaker (ADR-038) -----------------------------------------------
+# Its tier row, llm.tier.brain.caretaker, is the second TIERS entry above.
+CARETAKER = "connectors:brainCaretaker@v1"
+
+
+def _caretaker_jobs(bao, hub):
+    """The caretaker's job: every 15 min, on its own pinned tier."""
+    return [
+        ((CARETAKER, None), "brain-caretaker", {
+            "name": "brain caretaker", "kind": "cron", "spec": {"every_s": 900},
+            "program": CARETAKER,
+            "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"],
+                     "tier": "brain.caretaker"},
+            "enabled": True}),
     ]
+# --- end of the caretaker block ----------------------------------------------
 
 
 def _ensure_mail_sync(bao, anchor):
