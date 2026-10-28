@@ -62,3 +62,16 @@ def test_memory_skill_carries_the_save_table_and_vocabulary():
     for edge in ("relates_to", "caused_by", "supersedes", "decided_in",
                  "part_of", "owned_by", "discussed_in"):
         assert edge in mem
+
+
+def test_welcome_is_the_reference_first_message_not_a_system_skill():
+    """ADR-005 §5 / ADR-009 §3: `welcome` ships without the underscore
+    (on demand — the loop reads it on a chat's first conversation, no
+    cron run pays for it), carries the `{name}` slot the model fills,
+    and its first sentence is the index line."""
+    skills = load_skills_dir(SKILLS_DIR)
+    body = skills["welcome"]
+    assert "{name}" in body
+    assert body.lstrip().startswith("# Skill: welcome")
+    first = next(ln for ln in body.splitlines() if ln.strip() and not ln.startswith("#"))
+    assert first.startswith("The reference first message")

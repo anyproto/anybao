@@ -263,6 +263,55 @@ def _view(ctx):
     return None
 
 
+FIRST_CONVERSATION = (
+    "\n\n[runtime: first conversation in this chat — nothing came before this "
+    "message. Greet the user by name (the `- user:` line in the runtime "
+    "context), say what you can do here, and offer two or three next steps "
+    "that fit this account. A credential set by this message is what "
+    "connected you: not news to report.]")
+
+CREDENTIAL_SET_LINE = "[attachment credential_set: "
+CREDENTIAL_NUDGE = (
+    "\n\n[runtime: the user just entered this credential. Do NOT merely "
+    "acknowledge it — if a request came before the credential prompt, go "
+    "back to it and carry it out now, replying with its result.]")
+
+
+def _credential_nudge(text):
+    """ADR-021 §5: a `credential_set` message is a cue to ACT — the run
+    that asked for the key never finished, so the model must redo that
+    request. The attachment line the runtime folds into the text is the
+    durable record; this nudge is llm-only (ADR-005 §5): it rides the
+    message for THIS run and never the persisted turn, so later windows
+    see "the user set a key", not a standing order to act on it. A first
+    conversation gets the situation line instead (no request came
+    before)."""
+    # TODO: match on structured attachments, not on the folded line.
+    # The runtime folds every chat attachment into the text as
+    # `[attachment <type>: <link>]` (triggers.rs attributed_text) and the
+    # loop only sees that string; it should also get the record's
+    # `attachments` map as an arg (beside userText/uiContext, start and
+    # inject paths) so this reads `type == "credential_set"` and never
+    # parses its own prompt. Tracked as a task in the user's bao inbox.
+    return CREDENTIAL_NUDGE if CREDENTIAL_SET_LINE in text else ""
+
+
+def _first_conversation(c):
+    """ADR-005 §5: the situation line for a chat with no history — no turn
+    and no chunk on its log — plus the shipped `welcome` reference when a
+    space ships one. The reference is an on-demand skill (ADR-009 §3)
+    read HERE, by the loop, for this one run: it never rides the stable
+    prefix, and a user's own `welcome` shadows the shipped one. Rides the
+    llm message only; the persisted turn keeps the raw userText."""
+    try:
+        reference = (c.get_skill("welcome") or "").strip()
+    except LookupError:
+        reference = ""
+    if not reference:
+        return FIRST_CONVERSATION
+    return FIRST_CONVERSATION + "\n\n" + reference
+
+
 def _context_suffix(ctx):
     """ADR-005 §5: a user message closes with a timestamp + view suffix
     ('here'/'this page' resolve against the view line). A message the
@@ -1244,6 +1293,7 @@ def main(args):
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
     anchor = None
+    situation = ""   # llm-only: first conversation / credential nudge (ADR-005 §5)
     if quiet:
         boot, plan = [], {"messages": [], "injected": []}
     else:
@@ -1253,6 +1303,10 @@ def main(args):
             got = list(reversed(hist.chunks_at_level(c, space, chat_id, lvl, 100)))
             if got:
                 chunks[lvl] = got
+        if not turns and not chunks:
+            situation = _first_conversation(c)
+        else:
+            situation = _credential_nudge(user_text)
         # the raw tail is anchored (ADR-006 §2): the previous turn's
         # anchor stays until the tail outgrows the high-water mark, so
         # this window extends the last run's byte for byte — the cache
@@ -1288,7 +1342,7 @@ def main(args):
     messages = [*boot,
                 {"role": "user",
                  "parts": [{"type": "text",
-                            "text": user_text + context_line
+                            "text": user_text + situation + context_line
                             + _view_apps(c, space, ui_ctx) + user_suffix}]},
                 *plan["messages"]]
 
@@ -1323,7 +1377,8 @@ def main(args):
                     subcell(f"currentUserSpace = {ui_ctx!r}", "_ctx")  # noqa: F821
                 messages.append({"role": "user",
                                  "parts": [{"type": "text",
-                                            "text": msg["text"] + _context_suffix(inj_ctx)
+                                            "text": msg["text"] + _credential_nudge(msg["text"])
+                                            + _context_suffix(inj_ctx)
                                             + _view_apps(c, space, inj_ctx)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"

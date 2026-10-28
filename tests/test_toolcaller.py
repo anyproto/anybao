@@ -113,6 +113,14 @@ class World:
             def get_brain(self):
                 return {}
 
+            def get_skill(self, name):
+                # ADR-009 §3: on-demand skills; none shipped unless a
+                # World says so
+                body = getattr(w, "skills", {}).get(name)
+                if body is None:
+                    raise LookupError(f"no skill named {name!r}; known: ")
+                return body
+
             def me(self):
                 # BOB-192: the account the agent runs as — the user line
                 return {"identity": "A1user", "name": "tolya"}
@@ -392,6 +400,97 @@ def test_boot_window_and_injection_bracket_the_user_message():
     assert out["injected"] == 1
 
 
+CREDSET = ("Set credential `llm.key.anyai` (Anthropic).\n"
+           "[attachment credential_set: any://o/s1/sec?key=llm.key.anyai]")
+
+
+class WithHistory(World):
+    """A chat with one turn on its log — not a first conversation."""
+
+    def use(self, spec):
+        mod = super().use(spec)
+        if spec == "history@v1":
+            mod.recent_turns = staticmethod(
+                lambda c, s, ch, n: [{"seq": 1, "userText": "old",
+                                      "replies": ["r"]}])
+        return mod
+
+
+def test_credential_set_nudge_is_llm_only_and_not_on_a_first_conversation():
+    # ADR-021 §5 / ADR-005 §5: the runtime folds only the attachment line;
+    # the "go back to the request" nudge is the loop's, on the llm message
+    # of THIS run — the persisted turn keeps the bare record, so later
+    # windows never replay a standing order to act on the key
+    w = WithHistory([done_reply("done")])
+    run(w, userText=CREDSET)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert user.startswith(CREDSET + "\n\n[runtime: the user just entered this credential")
+    assert user.index("[runtime: the user") < user.index("[now: ")
+    assert w.turns[0]["userText"] == CREDSET
+
+    # a first conversation: the welcome situation, no nudge — nothing
+    # came before the key, and the key itself is not news to report
+    w = World([done_reply("hi")])
+    run(w, userText=CREDSET)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "[runtime: first conversation in this chat" in user
+    assert "not news to report" in user
+    assert "the user just entered this credential" not in user
+    assert w.turns[0]["userText"] == CREDSET
+
+    # an ordinary message with history: no nudge at all
+    w = WithHistory([done_reply("ok")])
+    run(w)
+    assert "[runtime:" not in w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+
+    # a credential entered mid-run (the model asked, the user typed it)
+    # injects with the nudge — the request is in this very run
+    w = WithHistory([done_reply("a")], mailbox=[{"kind": "inject", "text": CREDSET}])
+    run(w)
+    injected = [p["text"] for call in w.llm_calls for m in call["messages"]
+                for p in m["parts"] if p.get("text", "").startswith(CREDSET)]
+    assert injected and "the user just entered this credential" in injected[-1]
+
+
+def test_first_conversation_rides_the_message_with_the_welcome_reference():
+    # ADR-005 §5: a log with no turn and no chunk is a first conversation —
+    # one situation line on the user message, then the shipped `welcome`
+    # body (read on demand, never the stable prefix); llm-only
+    w = World([done_reply("hi")])
+    w.skills = {"welcome": "# Skill: welcome\n\nI'm Bao, {name}.\n"}
+    run(w)
+    call = w.llm_calls[0]
+    user = call["messages"][-1]["parts"][0]["text"]
+    assert user.startswith("go\n\n[runtime: first conversation in this chat")
+    assert "Greet the user by name" in user
+    assert "I'm Bao, {name}." in user
+    # after the text, before the timestamp stamp
+    assert user.index("[runtime: first conversation") < user.index("[now: ")
+    assert "welcome" not in call["system"]      # the body never rides the prefix
+    assert w.turns[0]["userText"] == "go"       # the persisted turn is raw
+
+    # no shipped `welcome`: the line alone
+    w = World([done_reply("hi")])
+    run(w)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "[runtime: first conversation in this chat" in user
+    assert "{name}" not in user
+
+    # a chat with history is not a first conversation
+    w = World([done_reply("ok")])
+    w.skills = {"welcome": "I'm Bao, {name}."}
+    w.__class__ = type("W3", (WithHistory,), {})
+    run(w)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "first conversation" not in user and "{name}" not in user
+
+    # a quiet run carries no situation (ADR-008 §5)
+    w = World([done_reply("ok")])
+    w.skills = {"welcome": "I'm Bao, {name}."}
+    run(w, quiet=True)
+    assert "first conversation" not in w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+
+
 def test_progress_bubbles_for_interim_text():
     reply = tool_reply()
     reply["parts"].insert(0, {"type": "text", "text": "working on it"})
@@ -443,7 +542,10 @@ def test_user_message_carries_timestamp_and_view_context():
     run(w, uiContext={"spaceId": "sp9", "objectId": "ob3", "view": "object"})
     call = w.llm_calls[0]
     user = call["messages"][-1]["parts"][0]["text"]
-    assert user.startswith("go\n\n[now: ")
+    # (a World has no turns, so the first-conversation line sits between
+    # the text and the stamp — ADR-005 §5)
+    assert user.startswith("go\n\n[runtime: first conversation")
+    assert "\n\n[now: " in user
     assert "user's view — space: sp9, object: ob3, view: object]\n" in user
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
