@@ -129,8 +129,9 @@ def incident_id(fault_class, subject, opened_at):
 
 
 def card_id(kind, subject_key):
-    # Phase 3's cards contract: id = sha256(kind | subjectKey)
-    return _sha(f"{kind}|{subject_key}")
+    # Phase 3's cards contract: id = sha256(kind | subjectKey), the full
+    # hex digest, so the heartbeat and the caretaker name a card alike
+    return hashlib.sha256(f"{kind}|{subject_key}".encode()).hexdigest()
 
 
 def _digest(value):
