@@ -97,11 +97,7 @@ none: c.list_available_apps() is what can be added and what is on
 for one ("add contacts") is the yes: c.setup_app(usecase); when it is
 your idea, offer first. An app's objects take the shape setup_app
 returns (a contact is type `profile` filed under `contact`): read it
-before adding to an app. **Removing is the user's**, in the UI:
-c.remove_app(usecase) writes nothing and returns the steps to tell
-them (… next to Agent ▸ Space settings ▸ Mini apps ▸ Hide — a hide,
-the content stays). Never hide, unfile or delete an app's root
-yourself. An **applet** is a small HTML app you write
+before adding to an app.  An **applet** is a small HTML app you write
 (`use("agent:applet@v1")`); "make me an app" with no catalog match
 means an applet.
 

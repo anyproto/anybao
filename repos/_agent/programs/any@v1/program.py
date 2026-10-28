@@ -4270,13 +4270,13 @@ class _Client:
         u = self._usecase_row(usecase)
         st = self._app_state(u, self._registry(space), self._sidebar_rows(space))
         name = u.get("name") or usecase
-        how = (f"In the sidebar, open the … menu next to Agent ▸ Space settings, "
-               f"find {name} under Mini apps and press Hide. The app's content stays, "
-               "and Add brings it back whole.")
+        how = (f"In the sidebar,  "
+               f"right-click on {name} mini app and press Hide. Or you can also do it in Agent space settings. The app's content stays, "
+               "and you can add it back in Agent space settings.")
         if self._sidebar_bundle(u) is None:
             how = (f"{name} is a building block other apps use, not a tile in the UI: "
                    "it has no remove. Hide the app that uses it instead "
-                   "(Space settings ▸ Mini apps ▸ Hide).")
+                   "(Agent ▸ Space settings ▸ Mini apps ▸ Hide).")
         return {"usecase": usecase, "name": name, "on": st["on"], "how": how}
 
     # --- agent memory (write path; reads go through /query on the brain) --------
