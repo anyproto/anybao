@@ -49,6 +49,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 033 | The AI brain as a plugin in the connectors overlay — setup as a program, jobs as records, no runtime change | Proposed |
 | 034 | The AI brain's people, promises and tasks — from synced mail; promises by a model, quoted and grounded | Proposed |
 | 035 | The AI brain's facts about people — from mail, quoted and grounded | Proposed |
+| 036 | The AI brain's decision layer — signals, cards, reply drafts bound to their bytes | Proposed |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
