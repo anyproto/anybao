@@ -642,6 +642,17 @@ stored to say "welcomed": the next run has a turn, so the situation no
 longer holds, and a wiped chat greets again by design. Quiet runs
 carry no situation.
 
+The same slot carries the **credential nudge** (ADR-021 §5) on a chat
+with history: a message whose text holds an `[attachment
+credential_set: …]` line gets `[runtime: the user just entered this
+credential. Do NOT merely acknowledge it — …go back to it and carry it
+out now…]` under it, llm-only, on the start path and on a mid-run
+inject alike. The runtime folds only the attachment line (the durable
+record that a key was set); the imperative is the loop's, for this run.
+A persisted turn that carried it would make every later window read
+the next "ok" as about the key. A first conversation gets the welcome
+situation instead, which says the credential is not news to report.
+
 **Kernel surface teaching (amendment 2026-07-07)** — the non-stdlib
 cell globals (`http`, `print`, `now`/`rand`/`uuid4`, `env`, `use`,
 `values`, `effects`) must be taught, but split by reach-frequency so

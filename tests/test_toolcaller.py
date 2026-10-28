@@ -400,6 +400,58 @@ def test_boot_window_and_injection_bracket_the_user_message():
     assert out["injected"] == 1
 
 
+CREDSET = ("Set credential `llm.key.anyai` (Anthropic).\n"
+           "[attachment credential_set: any://o/s1/sec?key=llm.key.anyai]")
+
+
+class WithHistory(World):
+    """A chat with one turn on its log — not a first conversation."""
+
+    def use(self, spec):
+        mod = super().use(spec)
+        if spec == "history@v1":
+            mod.recent_turns = staticmethod(
+                lambda c, s, ch, n: [{"seq": 1, "userText": "old",
+                                      "replies": ["r"]}])
+        return mod
+
+
+def test_credential_set_nudge_is_llm_only_and_not_on_a_first_conversation():
+    # ADR-021 §5 / ADR-005 §5: the runtime folds only the attachment line;
+    # the "go back to the request" nudge is the loop's, on the llm message
+    # of THIS run — the persisted turn keeps the bare record, so later
+    # windows never replay a standing order to act on the key
+    w = WithHistory([done_reply("done")])
+    run(w, userText=CREDSET)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert user.startswith(CREDSET + "\n\n[runtime: the user just entered this credential")
+    assert user.index("[runtime: the user") < user.index("[now: ")
+    assert w.turns[0]["userText"] == CREDSET
+
+    # a first conversation: the welcome situation, no nudge — nothing
+    # came before the key, and the key itself is not news to report
+    w = World([done_reply("hi")])
+    run(w, userText=CREDSET)
+    user = w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+    assert "[runtime: first conversation in this chat" in user
+    assert "not news to report" in user
+    assert "the user just entered this credential" not in user
+    assert w.turns[0]["userText"] == CREDSET
+
+    # an ordinary message with history: no nudge at all
+    w = WithHistory([done_reply("ok")])
+    run(w)
+    assert "[runtime:" not in w.llm_calls[0]["messages"][-1]["parts"][0]["text"]
+
+    # a credential entered mid-run (the model asked, the user typed it)
+    # injects with the nudge — the request is in this very run
+    w = WithHistory([done_reply("a")], mailbox=[{"kind": "inject", "text": CREDSET}])
+    run(w)
+    injected = [p["text"] for call in w.llm_calls for m in call["messages"]
+                for p in m["parts"] if p.get("text", "").startswith(CREDSET)]
+    assert injected and "the user just entered this credential" in injected[-1]
+
+
 def test_first_conversation_rides_the_message_with_the_welcome_reference():
     # ADR-005 §5: a log with no turn and no chunk is a first conversation —
     # one situation line on the user message, then the shipped `welcome`
@@ -425,15 +477,6 @@ def test_first_conversation_rides_the_message_with_the_welcome_reference():
     assert "{name}" not in user
 
     # a chat with history is not a first conversation
-    class WithHistory(World):
-        def use(self, spec):
-            mod = super().use(spec)
-            if spec == "history@v1":
-                mod.recent_turns = staticmethod(
-                    lambda c, s, ch, n: [{"seq": 1, "userText": "old",
-                                          "replies": ["r"]}])
-            return mod
-
     w = World([done_reply("ok")])
     w.skills = {"welcome": "I'm Bao, {name}."}
     w.__class__ = type("W3", (WithHistory,), {})

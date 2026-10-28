@@ -267,7 +267,26 @@ FIRST_CONVERSATION = (
     "\n\n[runtime: first conversation in this chat — nothing came before this "
     "message. Greet the user by name (the `- user:` line in the runtime "
     "context), say what you can do here, and offer two or three next steps "
-    "that fit this account.]")
+    "that fit this account. A credential set by this message is what "
+    "connected you: not news to report.]")
+
+CREDENTIAL_SET_LINE = "[attachment credential_set: "
+CREDENTIAL_NUDGE = (
+    "\n\n[runtime: the user just entered this credential. Do NOT merely "
+    "acknowledge it — if a request came before the credential prompt, go "
+    "back to it and carry it out now, replying with its result.]")
+
+
+def _credential_nudge(text):
+    """ADR-021 §5: a `credential_set` message is a cue to ACT — the run
+    that asked for the key never finished, so the model must redo that
+    request. The attachment line the runtime folds into the text is the
+    durable record; this nudge is llm-only (ADR-005 §5): it rides the
+    message for THIS run and never the persisted turn, so later windows
+    see "the user set a key", not a standing order to act on it. A first
+    conversation gets the situation line instead (no request came
+    before)."""
+    return CREDENTIAL_NUDGE if CREDENTIAL_SET_LINE in text else ""
 
 
 def _first_conversation(c):
@@ -1267,7 +1286,7 @@ def main(args):
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
     anchor = None
-    situation = ""   # the first conversation in a chat (ADR-005 §5)
+    situation = ""   # llm-only: first conversation / credential nudge (ADR-005 §5)
     if quiet:
         boot, plan = [], {"messages": [], "injected": []}
     else:
@@ -1279,6 +1298,8 @@ def main(args):
                 chunks[lvl] = got
         if not turns and not chunks:
             situation = _first_conversation(c)
+        else:
+            situation = _credential_nudge(user_text)
         # the raw tail is anchored (ADR-006 §2): the previous turn's
         # anchor stays until the tail outgrows the high-water mark, so
         # this window extends the last run's byte for byte — the cache
@@ -1349,7 +1370,8 @@ def main(args):
                     subcell(f"currentUserSpace = {ui_ctx!r}", "_ctx")  # noqa: F821
                 messages.append({"role": "user",
                                  "parts": [{"type": "text",
-                                            "text": msg["text"] + _context_suffix(inj_ctx)
+                                            "text": msg["text"] + _credential_nudge(msg["text"])
+                                            + _context_suffix(inj_ctx)
                                             + _view_apps(c, space, inj_ctx)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"

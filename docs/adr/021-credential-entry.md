@@ -262,9 +262,11 @@ the general chat. The welcome card's saves post it too (amendment
 2026-10-28, PRO-1687) — a pasted key, or a local CLI connected on
 this computer (its proxy token is the credential) — so connecting a
 model is what starts the first run; on a chat with no history that
-run is the first conversation (ADR-005 §5). The runtime's line under
-the attachment therefore asks the model to redo a request only when
-one came before the credential prompt.
+run is the first conversation (ADR-005 §5). The runtime folds the
+attachment as a plain `[attachment credential_set: <link>]` line and
+nothing more; the "go back to the request and carry it out" nudge is
+the toolcaller's, llm-only on the message of that one run (ADR-005
+§5), and a first conversation gets none — nothing came before the key.
 
 Why not have the serve post it: the human did the action, the
 creator field should say so; and a serve-authored `agent` message is

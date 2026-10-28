@@ -1098,19 +1098,12 @@ impl Watcher {
                     out.push('\n');
                 }
                 out.push_str(&format!("[attachment {kind}: {link}]"));
-                // ADR-021 §5: a credential_set is a cue to ACT, not news
-                // to acknowledge — the run that needed the key never
-                // finished (or failed), so the model must redo it. On a
-                // chat with no history (the welcome card's connect) there
-                // is no such request: the toolcaller's first-conversation
-                // line says what to do instead (ADR-005 §5).
-                if kind == "credential_set" {
-                    out.push_str(
-                        "\n[runtime: the user just entered this credential. Do NOT merely \
-                         acknowledge it — if a request came before the credential prompt, \
-                         go back to it and carry it out now, replying with its result.]",
-                    );
-                }
+                // a `credential_set` line is the durable record that the
+                // user entered a key (ADR-021 §5); what the model should
+                // DO about it is prompt wording, and the host injects
+                // none — the toolcaller adds its llm-only nudge under
+                // the line, so no persisted turn carries an imperative
+                // that later windows would replay (ADR-005 §5).
             }
         }
         out
@@ -1743,6 +1736,17 @@ mod tests {
         assert_eq!(
             Watcher::attributed_text(&only_att),
             "[attachment link: any://o/sp1/obj2]"
+        );
+        // a credential_set folds as a plain attachment line: the host
+        // adds no runtime wording under it (ADR-021 §5) — the toolcaller
+        // does, llm-only, so the persisted turn stays a bare record
+        let credset = json!({"id": "h4", "text": "Set credential `llm.key.anyai` (Anthropic).",
+            "attachments": {"credset": {"type": "credential_set",
+                                        "link": "any://o/sp1/sec?key=llm.key.anyai"}}});
+        assert_eq!(
+            Watcher::attributed_text(&credset),
+            "Set credential `llm.key.anyai` (Anthropic).\n\
+             [attachment credential_set: any://o/sp1/sec?key=llm.key.anyai]"
         );
     }
 
