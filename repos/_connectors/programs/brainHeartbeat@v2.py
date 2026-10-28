@@ -215,6 +215,7 @@ class Run:
                        "meetingsSoon": 0, "conflicts": 0, "factConflicts": 0, "woken": 0,
                        "draftsArmed": 0, "badQuietSenders": 0, "noticeFailed": 0}
         self.needs = []
+        self.extra_did = []        # standup lines a later version's passes add
         self._exists = {}
         self._people = {}
         self._threads = {}
@@ -616,7 +617,7 @@ class Run:
                  (c["factConflicts"], "{} fact conflicts"), (c["woken"], "woke {} cards"),
                  (c["draftsArmed"], "asked for {} drafts"), (c["quiet"], "{} quiet"),
                  (c["refused"], "{} kept out")]
-        return [fmt.format(n) for n, fmt in lines if n]
+        return [fmt.format(n) for n, fmt in lines if n] + self.extra_did
 
     def standup(self):
         """One standups row when the run read or wrote something."""
