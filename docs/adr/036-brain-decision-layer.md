@@ -102,7 +102,10 @@ no connector, no web — and reads headers, never a body. Per run:
    the first run does not card a month of old mail. The user's own mail is
    not an inbound observation. Decisions, in order: kept out → `refused`;
    a noise sender (ADR-034's rule) or one matching `quietSenders` →
-   `quiet` "automated sender"; the user in To with a newer message from
+   `quiet` "automated sender"; mail Gmail files under Promotions, Social,
+   Updates or Forums (or Spam, Trash) → `quiet` "a Gmail bulk tab", since
+   a newsletter often comes from a plain address no sender rule catches;
+   the user in To with a newer message from
    the user in the thread → `none` "already replied"; the user in To →
    a reply card (`reason` "addressed to you, no reply yet"); the user only
    in Cc → `cc_thread`, `quiet`; neither → `quiet` "not addressed to you".
