@@ -286,6 +286,13 @@ def _credential_nudge(text):
     see "the user set a key", not a standing order to act on it. A first
     conversation gets the situation line instead (no request came
     before)."""
+    # TODO: match on structured attachments, not on the folded line.
+    # The runtime folds every chat attachment into the text as
+    # `[attachment <type>: <link>]` (triggers.rs attributed_text) and the
+    # loop only sees that string; it should also get the record's
+    # `attachments` map as an arg (beside userText/uiContext, start and
+    # inject paths) so this reads `type == "credential_set"` and never
+    # parses its own prompt. Tracked as a task in the user's bao inbox.
     return CREDENTIAL_NUDGE if CREDENTIAL_SET_LINE in text else ""
 
 
