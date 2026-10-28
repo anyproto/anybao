@@ -237,8 +237,8 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert ("ensure_bundle", "brain/v1", "Brain", "page") in fake.calls
     assert fake.types["brain_hub"]["hidden"] is True and fake.types["brain_hub"]["body"] is False
     assert sorted(fake.datasets) == ["approvals", "cards", "config", "drafts", "facts",
-                                     "incidents", "observations", "promises", "signals",
-                                     "standups"]
+                                     "incidents", "observations", "promises", "sends",
+                                     "signals", "standups"]
     facts = fake.datasets["facts"]
     assert facts["shared"] is True and facts["search"]["scope"] == "facts"
     assert "skipHistory" not in facts  # a supersession stays auditable
@@ -265,12 +265,13 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert sorted(k for k in cfg if k.startswith("llm.tier.brain.")) == [
         "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 4, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 5, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
         "promises": "type-hub_promises", "facts": "type-hub_facts",
         "cards": "type-hub_cards", "drafts": "type-hub_drafts",
-        "approvals": "type-hub_approvals", "standups": "type-hub_standups"}}
+        "approvals": "type-hub_approvals", "standups": "type-hub_standups",
+        "sends": "type-hub_sends"}}
     blocklist = fake.records[(BAO, "hub", "type-hub_config")]["blocklist"]["value"]
     assert blocklist == {"domains": [], "senders": [], "labels": []}
 
@@ -290,7 +291,7 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert js["brain-mail-sync"]["program"] == "connectors:gmailSync@v1"
     assert js["brain-mail-sync"]["args"] == {"space": BAO}
     beat = js["brain-heartbeat"]
-    assert beat["program"] == "connectors:brainHeartbeat@v2" and beat["spec"] == {"every_s": 600}
+    assert beat["program"] == "connectors:brainHeartbeat@v3" and beat["spec"] == {"every_s": 600}
     assert beat["args"]["space"] == BAO and beat["args"]["hub"] == "hub"
     assert beat["args"]["tier"] == "brain.drafter"
     assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
@@ -503,7 +504,7 @@ def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
     out = mod.main({"mode": "reconcile"})
     (new_id,) = out["written"]
     assert new_id.startswith("brain-heartbeat-")
-    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v2"
+    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v3"
 
 
 def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
@@ -835,7 +836,7 @@ def test_an_older_heartbeat_is_rewritten_in_place_and_a_pause_holds():
     beats = [j for j in jobs(fake).values() if "Heartbeat" in j["program"]]
     assert len(beats) == 1                              # no second heartbeat
     (beat,) = beats
-    assert beat["program"] == "connectors:brainHeartbeat@v2"
+    assert beat["program"] == "connectors:brainHeartbeat@v3"
     assert beat["args"]["tier"] == "brain.drafter"
     assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
     assert beat["enabled"] is False and beat["lastRunAt"] == 123    # paused stays paused
@@ -851,7 +852,7 @@ def test_an_enabled_older_heartbeat_stays_enabled_and_a_rerun_rewrites_nothing()
     mod, _, cfg, _, _ = kernel(config=on_request(), fake=fake)
     mod.main({})
     assert jobs(fake)["hb-7"]["enabled"] is True
-    assert jobs(fake)["hb-7"]["program"] == "connectors:brainHeartbeat@v2"
+    assert jobs(fake)["hb-7"]["program"] == "connectors:brainHeartbeat@v3"
     assert "brain-heartbeat" not in jobs(fake)
     before = len(fake.calls)
     mod.main({"mode": "reconcile"})
@@ -864,5 +865,43 @@ def test_reconcile_upgrades_a_version_3_hub():
     mod.main({})
     old = dict(statuses(writes)[-1])
     old["hub"] = {**old["hub"], "version": 3}
+    cfg["brain.status"] = old
+    assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
+
+
+# --- Phase 4: the reply hand-off (ADR-037) -----------------------------------
+
+def test_setup_declares_the_sends_store_write_once():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    sends = fake.datasets["sends"]
+    assert sends["shared"] is True and sends["idRule"] == "user"
+    assert sends["deleteBy"] == "author" and "search" not in sends
+    fields = {f["key"]: f for f in sends["fields"]}
+    assert set(fields) == {"approvalId", "cardId", "threadId", "messageId", "how", "at",
+                           "creator", "createdAt"}
+    assert _keys(sends, "required") == {"approvalId", "cardId", "threadId", "how", "at"}
+    assert _keys(sends, "mutableBy") == set() and fields["at"]["kind"] == "datetime"
+
+
+def test_a_v2_heartbeat_moves_to_v3_in_place_and_a_pause_holds():
+    fake = FakeAny()
+    fake.records[TRIGGERS] = {"brain-heartbeat": {
+        "id": "brain-heartbeat", "name": "brain heartbeat", "kind": "cron",
+        "spec": {"every_s": 600}, "program": "connectors:brainHeartbeat@v2",
+        "args": {"space": BAO, "hub": "hub", "datasets": {}, "tier": "brain.drafter"},
+        "enabled": False}}
+    mod, _, _, _, _ = kernel(config=on_request(), fake=fake)
+    assert mod.main({})["upgraded"] == ["brain-heartbeat"]
+    (beat,) = [j for j in jobs(fake).values() if "Heartbeat" in j["program"]]
+    assert beat["program"] == "connectors:brainHeartbeat@v3" and beat["enabled"] is False
+    assert beat["args"]["datasets"]["sends"] == "type-hub_sends"
+
+
+def test_reconcile_upgrades_a_version_4_hub():
+    mod, fake, cfg, writes, _ = kernel(config=on_request())
+    mod.main({})
+    old = dict(statuses(writes)[-1])
+    old["hub"] = {**old["hub"], "version": 4}
     cfg["brain.status"] = old
     assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}

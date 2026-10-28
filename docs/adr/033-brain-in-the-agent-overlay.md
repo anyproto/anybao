@@ -131,7 +131,7 @@ record id can never be written again.
 
 | Job (id when first written) | Spec | Program | Args |
 | --- | --- | --- | --- |
-| `brain-heartbeat` | `every_s: 600` | `connectors:brainHeartbeat@v2` (v1 before hub version 4; the setup run rewrites the record in place, ADR-036 §10) | `{space, hub, datasets, tier}` |
+| `brain-heartbeat` | `every_s: 600` | `connectors:brainHeartbeat@v3` (v1 before hub version 4, v2 before 5; the setup run rewrites the record in place, ADR-036 §10, ADR-037 §7) | `{space, hub, datasets, tier}` |
 | `brain-reconcile` | `every_s: 3600` | `connectors:brainSetup@v1` | `{mode: "reconcile"}` |
 
 - **Found by program and `args.mode`, not by id.** A job deleted by hand

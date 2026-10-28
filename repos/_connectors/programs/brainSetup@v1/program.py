@@ -48,7 +48,7 @@ JOBS_KEY = "brain.jobs"
 STOPPED = "auto_disabled"
 SETUP_TRIGGER_ID = "brain-setup"
 PROGRAM = "connectors:brainSetup@v1"
-HEARTBEAT = "connectors:brainHeartbeat@v2"
+HEARTBEAT = "connectors:brainHeartbeat@v3"
 # every heartbeat version: the setup run rewrites an older one's program in
 # place, keeping its `enabled` (ADR-036 §10)
 HEARTBEAT_PREFIX = "connectors:brainHeartbeat@"
@@ -59,8 +59,9 @@ GMAIL_SYNC = "connectors:gmailSync@v1"
 MAIL_SYNC_ID = "brain-mail-sync"
 # the hub's shape; a reconcile run that finds an older hub re-arms setup,
 # which installs what the newer shape adds (1: Phase 0, 2: + people,
-# promises and tasks, 3: + facts, 4: + cards, drafts, approvals, standups)
-HUB_VERSION = 4
+# promises and tasks, 3: + facts, 4: + cards, drafts, approvals, standups,
+# 5: + sends)
+HUB_VERSION = 5
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
@@ -253,6 +254,18 @@ DATASETS = (
                 _f("counts", "object", required=True),
                 _f("runId", "string"),
                 _CREATOR, _CREATED, _MODIFIED]},
+    # --- Phase 4: the reply hand-off (ADR-037 §4) ---------------------------
+    # one row per approval the user sent from Gmail, detected by the
+    # heartbeat or marked by hand; id = the approval id, write-once
+    {"key": "sends", "displayName": "Brain sends", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("approvalId", "string", required=True),
+                _f("cardId", "string", required=True),
+                _f("threadId", "string", required=True),
+                _f("messageId", "string"),
+                _f("how", "string", required=True),
+                _f("at", "datetime", required=True),
+                _CREATOR, _CREATED]},
 )
 
 # The brain's columns on catalog objects: a person (`profile` filed under
