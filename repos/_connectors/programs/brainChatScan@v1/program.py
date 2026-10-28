@@ -161,6 +161,11 @@ def card_id(kind, subject_key):
     return hashlib.sha256(f"{kind}|{subject_key}".encode()).hexdigest()
 
 
+def signal_id(tick, kind, subject):
+    """A signal's id, one per (tick, kind, subject) — the heartbeat's form."""
+    return f"{int(tick)}-{kind}-{hashlib.sha256(subject.encode()).hexdigest()[:12]}"
+
+
 def record_link(space, object_id, dataset, record_id):
     return f"any://o/{space}/{object_id}/{dataset}/{record_id}"
 
@@ -542,15 +547,19 @@ def suggestion_card(space, hub, datasets, today):
         return None
     n = sum(1 for i in items if i.get("origin") == "promise")
     title = f"{_plural(n, 'promise')} and {_plural(len(items) - n, 'ask')} without a task"
+    sid = signal_id(today, "task_suggestion", subject)
     card = {"kind": "task_suggestion", "title": title,
             "reason": "Things you owe that have no task yet; pick the ones to make tasks.",
             "subjectKey": subject, "status": "open",
+            "personIds": sorted({i["personId"] for i in items if i.get("personId")}),
             "items": [{k: v for k, v in i.items() if v is not None} for i in items]}
+    if datasets.get("signals"):
+        card["signalId"] = sid
     if not _write_new(space, hub, datasets["cards"], [{"id": cid, "fields": card}],
                       cards_rejected):
         return None                         # the user deleted today's card
     if datasets.get("signals"):
-        kit.upsert(space, hub, datasets["signals"], f"{int(today)}-task_suggestion", {
+        kit.upsert(space, hub, datasets["signals"], sid, {
             "tick": today, "kind": "task_suggestion", "subject": subject,
             "decision": "card", "reason": title, "cardId": cid},
             "writing a task_suggestion signal")

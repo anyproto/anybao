@@ -216,12 +216,19 @@ anything writes one card, id `sha256("task_suggestion|tasks:<YYYY-MM-DD>")`
 (64 hex), only when absent:
 
 `{kind: "task_suggestion", title: "<n> promises and <m> asks without a
-task", reason, subjectKey: "tasks:<YYYY-MM-DD>", status: "open", items}`
+task", reason, subjectKey: "tasks:<YYYY-MM-DD>", status: "open",
+personIds, signalId, items}`
 
 `items` (array, write-once) is the suggestion list as `suggest()` returns
-it: `[{origin, id, text, quote, personId?, source, suggestedDeadline}]`,
-at most 20. A `signals` row `{kind: "task_suggestion", decision: "card",
-cardId}` records it. A deleted card's id is the user's answer for the day.
+it — `[{id, origin, text, quote, personId?, source, suggestedDeadline?}]`,
+plus `personEmail` on a promise and `kind` / `senderIdentity` on an ask —
+at most 20; `personIds` the items' persons. A `signals` row
+`{kind: "task_suggestion", decision: "card", cardId}` records it, its id
+the heartbeat's `<tick>-<kind>-<sha256(subject)[:12]>`. A deleted card's
+id is the user's answer for the day. The setup run adds `items` to the
+`cards` declaration whenever one is declared (`_with_card_items`): an
+existing store gains the field, since `_create_dataset` adds a field the
+draft has and the stored definition lacks.
 
 ### 8. What Phase 6 never does
 
@@ -235,8 +242,8 @@ only reads; nothing is posted into the scanned chats.
   finds an older hub re-arms setup (ADR-034 §1), which installs `asks`,
   the `identity` column and the `brain-chat-scan` job (off until a space
   is watched).
-- The `cards` declaration (the decision layer's) must carry `items`
-  (`array`) for §7's card; without the store no card is written.
+- Without the decision layer's `cards` store no card is written; with
+  it, §7's `items` field arrives through this ADR's setup block.
 - Deferred: a `standups` row per scan run (the decision layer's contract);
   late-synced offline messages below a cursor; identity links the user
   states ("this is Ada") rather than names.

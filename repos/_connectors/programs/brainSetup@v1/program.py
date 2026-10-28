@@ -1018,7 +1018,23 @@ ASKS = {"key": "asks", "displayName": "Brain asks", "shared": True,
                    _f("taskId", "string", mutable=True),
                    _f("closedAt", "datetime", mutable=True),
                    _CREATOR, _CREATED, _MODIFIED]}
-DATASETS = (*DATASETS, ASKS)
+
+
+def _with_card_items(datasets):
+    """`datasets` with `items` (array) on the decision layer's `cards` store,
+    when it is declared: the daily task_suggestion card carries its
+    pick-list there (ADR-039 §7). An existing store gains the field —
+    _create_dataset adds a field the draft has and the stored def lacks."""
+    out = []
+    for draft in datasets:
+        if draft["key"] == "cards" and not any(f.get("key") == "items"
+                                               for f in draft["fields"]):
+            draft = {**draft, "fields": [*draft["fields"], _f("items", "array")]}
+        out.append(draft)
+    return tuple(out)
+
+
+DATASETS = _with_card_items((*DATASETS, ASKS))
 # the account identity a person writes chat messages as: any://u/<identity>
 next(c for c in COLLECTIONS if c["xKey"] == "brain_person")["properties"].append(
     {"name": "Identity", "xKey": "identity", "xFormat": {"type": "text"}})
