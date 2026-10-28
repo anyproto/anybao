@@ -433,6 +433,10 @@ def test_job_failing():
     # paused after two failures: the user's choice, not the runtime's
     paused = with_job(snap(Rig()), "brain-facts", consecutiveFailures=2, enabled=False)
     assert mod.grade_job_failing(paused) == []
+    # the caretaker does not grade itself: a run reading its own two failures is
+    # the run that ends them
+    itself = with_job(snap(Rig()), "brain-caretaker", consecutiveFailures=2, lastStatus="error")
+    assert mod.grade_job_failing(itself) == []
     # the unread run is passed on as "unavailable", never omitted
     s = with_job(snap(Rig()), "brain-people", consecutiveFailures=2)
     s["runs"]["brain-people"] = "unavailable"
@@ -616,6 +620,15 @@ def test_a_fault_that_clears_by_itself_closes_with_verified_absent():
     assert rig.world.observations(inc["id"])[-1]["evidence"] == {"clean": True}
     rig.run(at=T0 + 1800)                              # closed: no more observations
     assert len(rig.world.observations(inc["id"])) == 2
+
+
+def test_an_escalated_fault_waiting_on_the_user_is_observed_hourly():
+    rig = Rig()
+    del rig.world.triggers()["brain-setup"]
+    for tick in range(T0, T0 + 4501, 900):
+        rig.run(at=tick)
+    inc = rig.world.incident("setup_blocked")
+    assert [o["tick"] for o in rig.world.observations(inc["id"])] == [T0, T0 + 900, T0 + 4500]
 
 
 # --- the model turn -------------------------------------------------------------
@@ -905,6 +918,21 @@ def test_a_notice_is_one_batched_message_under_the_agents_name_per_cooldown():
     rig.run(at=T0 + 3600)
     assert len(rig.world.chat) == 2 and rig.world.chat[1][1]["agent"]["name"] == "Bobrik"
     assert rig.world.config("caretaker")["pending"] == []
+
+
+def test_a_queued_notice_whose_incident_closed_is_dropped():
+    rig = Rig()
+    rig.fail_job("brain-people", 2)
+    rig.run(at=T0)                                     # escalated, noticed at once
+    assert len(rig.world.chat) == 1
+    del rig.world.records[(HUB, DATASETS["config"])]["exclusions"]
+    rig.run(at=T0 + 900)                               # escalated inside the cooldown
+    assert len(rig.world.config("caretaker")["pending"]) == 1
+    rig.world.seed_lists()
+    rig.run(at=T0 + 1800)                              # it clears before the notice goes
+    assert rig.world.incident("exclusions_unreadable")["status"] == "closed"
+    rig.run(at=T0 + 3700)
+    assert len(rig.world.chat) == 1 and rig.world.config("caretaker")["pending"] == []
 
 
 def test_mail_stale_reruns_the_mail_sync_and_a_dead_credential_is_noticed():
