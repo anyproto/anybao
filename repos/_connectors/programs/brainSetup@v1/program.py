@@ -4,7 +4,8 @@ The brain is off until the user asks for it. `status()` says how it
 stands; `on()` (Google must be connected) and `off()` switch it after
 the user's yes; `allow_model()` is the user's consent to read mail with
 a model; `exclude()` / `include()` keep a person out of it, or let them
-back in. A trigger run of this program does the setup.
+back in; `watch_chats()` / `stop_watching_chats()` / `scan_pages()` name
+the chats it reads for promises and asks. A trigger run does the setup.
 """
 
 __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
@@ -60,8 +61,9 @@ MAIL_SYNC_ID = "brain-mail-sync"
 # the hub's shape; a reconcile run that finds an older hub re-arms setup,
 # which installs what the newer shape adds (1: Phase 0, 2: + people,
 # promises and tasks, 3: + facts, 4: + cards, drafts, approvals, standups,
-# 5: + sends, 6: + the caretaker job and its tier row)
-HUB_VERSION = 6
+# 5: + sends, 6: + the caretaker job and its tier row, 7: + asks and the
+# chat scan — ADR-039)
+HUB_VERSION = 7
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
@@ -568,7 +570,7 @@ def _ensure_jobs(bao, hub):
     taken = {r.get("id") for recs in have.values() for r in recs}
     upgraded = _upgrade_heartbeats(bao, anchor, have, hub)
     written = []
-    for key, base_id, record in _wanted_jobs(bao, hub):
+    for key, base_id, record in _wanted_jobs(bao, hub) + _chat_scan_jobs(bao, hub):
         if key not in have:
             written.append(_write_job(bao, anchor, base_id, record, taken))
     return anchor, written, upgraded
@@ -722,6 +724,7 @@ def _setup():
         # asking to try again
         fresh = request["requestedAt"] != answered
         restarted = _restart_stopped(bao, anchor, mail_sync) if fresh else []
+        _sync_chat_scan(bao, anchor)
         stopped = _warning(_stopped_jobs(bao, anchor, mail_sync))
     except Exception as e:
         _write_status(request, "error",
@@ -750,6 +753,7 @@ def _reconcile():
         _arm(bao, request)
         return {"reconciled": True, "upgrading": True}
     anchor, written, _upgraded = _ensure_jobs(bao, hub)
+    _chat_scan_drift(bao, anchor)
     stopped = _warning(_stopped_jobs(bao, anchor, status.get("mailSync")))
     if stopped != (status.get("stopped") or []):
         # the warning changes, the answer does not: `at` and the hub stay
@@ -781,13 +785,15 @@ def _state(request, status):
 
 @span("brainSetup.status", kind="getter")  # noqa: F821 - guest global
 def status():
-    """How the brain stands → {state, request, status, apps, mailboxes, stopped}.
+    """How the brain stands → {state, request, status, apps, mailboxes, stopped, …}.
 
     state ∈ waiting | setting_up | ready | error | switching_off | off.
     `apps` names the catalog apps Bao's space lists (meetings and tasks
     among them; people installs the person collection, not a listed app);
     `mailboxes` names the synced mailboxes' addresses there; `stopped` the
-    jobs the runtime stopped after repeated failures, as [{id, name}]."""
+    jobs the runtime stopped after repeated failures, as [{id, name}];
+    `modelAllowed` the consent; `chatScan` {spaceIds, pages} what chats
+    it reads."""
     bao = _any.bao_space()
     request, current = _request(), _status()
     apps = sorted({a.get("usecase") for a in _any.list_apps(bao) if a.get("usecase")})
@@ -797,7 +803,8 @@ def status():
             "apps": apps,
             "mailboxes": [addr or box for box, addr in kit.mailboxes(bao)],
             "stopped": stopped,
-            "modelAllowed": isinstance(model, dict) and model.get("allowed") is True}
+            "modelAllowed": isinstance(model, dict) and model.get("allowed") is True,
+            "chatScan": _chat_scan_status()}
 
 
 def _switch(space_id):
@@ -941,3 +948,198 @@ def include(person=None, email=None, domain=None):
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")
     return value
+
+
+# === Phase 6: tasks from conversations (ADR-039) ==============================
+# Everything Phase 6 adds to setup lives in this block: the `asks` store, the
+# `brain_person.identity` column, the chat-scan job and the chat tools that
+# say which chats it reads. The setup run, the reconcile run and status()
+# call in through one line each (_chat_scan_jobs, _sync_chat_scan,
+# _chat_scan_drift, _chat_scan_status).
+
+CHAT_SCAN = "connectors:brainChatScan@v1"
+# written only by the tools below, after the user's yes (ADR-039 §1)
+CHAT_SPACES_KEY = "brain.chatScan.spaces"
+CHAT_PAGES_KEY = "brain.chatScan.pages"
+WRITABLE_ROLES = ("owner", "admin", "writer")
+
+# what other people asked the user for in the watched chats (and, behind the
+# pages flag, unchecked checklist items); the id is sha256(messageId | text)
+ASKS = {"key": "asks", "displayName": "Brain asks", "shared": True,
+        "idRule": "user", "deleteBy": "author",
+        "search": {"text": ["text", "quote"], "scope": "asks"},
+        "fields": [_f("senderIdentity", "string", required=True),
+                   _f("personId", "string", mutable=True),
+                   _f("spaceId", "string", required=True),
+                   _f("chatId", "string", required=True),
+                   _f("kind", "string", required=True),
+                   _f("text", "string", required=True),
+                   _f("quote", "string", required=True),
+                   _f("source", "string", required=True),
+                   _f("askedAt", "datetime", required=True),
+                   _f("suggestedDeadline", "datetime"),
+                   _f("status", "string", mutable=True),
+                   _f("taskId", "string", mutable=True),
+                   _f("closedAt", "datetime", mutable=True),
+                   _CREATOR, _CREATED, _MODIFIED]}
+DATASETS = (*DATASETS, ASKS)
+# the account identity a person writes chat messages as: any://u/<identity>
+next(c for c in COLLECTIONS if c["xKey"] == "brain_person")["properties"].append(
+    {"name": "Identity", "xKey": "identity", "xFormat": {"type": "text"}})
+
+
+class unknown_space(Exception):
+    """No space of the account has that id or that exact name."""
+
+
+class bao_space(Exception):
+    """Bao's own chat is the conversation with Bao, not a chat to scan."""
+
+
+class read_only_space(Exception):
+    """The user can only read in that space: the brain reads no such chat."""
+
+
+def _chat_spaces():
+    """The space ids brain.chatScan.spaces names; [] when it names none."""
+    value = _config_get(CHAT_SPACES_KEY)
+    ids = value.get("spaceIds") if isinstance(value, dict) else None
+    return [i for i in ids if isinstance(i, str) and i] if isinstance(ids, list) else []
+
+
+def _chat_pages():
+    value = _config_get(CHAT_PAGES_KEY)
+    return isinstance(value, dict) and value.get("enabled") is True
+
+
+def _chat_scan_status():
+    return {"spaceIds": _chat_spaces(), "pages": _chat_pages()}
+
+
+def _chat_scan_jobs(bao, hub):
+    """[(job key, base id, record)] — the chat scan, off until a chat is watched."""
+    return [((CHAT_SCAN, None), "brain-chat-scan", {
+        "name": "brain chat scan", "kind": "cron", "spec": {"every_s": 1800},
+        "program": CHAT_SCAN,
+        "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"]},
+        "enabled": bool(_chat_spaces())})]
+
+
+def _chat_scan_records(bao, anchor):
+    return _brain_jobs(bao, anchor).get((CHAT_SCAN, None), [])
+
+
+def _sync_chat_scan(bao, anchor):
+    """The setup run's half: the chat scan's `enabled` follows the row — on
+    while it names a space, off while it names none → the job ids flipped."""
+    want = bool(_chat_spaces())
+    flipped = []
+    for rec in _chat_scan_records(bao, anchor):
+        if bool(rec.get("enabled", True)) != want:
+            _set_enabled(bao, anchor, rec["id"], want)
+            flipped.append(rec["id"])
+    return flipped
+
+
+def _chat_scan_drift(bao, anchor):
+    """The reconcile run's half: disable a chat scan whose row names nothing;
+    never enable one (a pause holds) → the job ids disabled."""
+    if _chat_spaces():
+        return []
+    off = []
+    for rec in _chat_scan_records(bao, anchor):
+        if rec.get("enabled", True):
+            _set_enabled(bao, anchor, rec["id"], False)
+            off.append(rec["id"])
+    return off
+
+
+def _space_rows(wanted, strict):
+    """The account's space rows for ids or exact names; an unknown one raises
+    unknown_space when `strict`, else is dropped."""
+    if isinstance(wanted, str):
+        wanted = [wanted]
+    rows = _any.list_spaces()
+    out = []
+    for want in wanted or []:
+        want = str(want).strip()
+        hits = [r for r in rows if r.get("id") == want] or [
+            r for r in rows if str(r.get("name") or "").strip().casefold() == want.casefold()]
+        if len(hits) == 1:
+            out.append(hits[0])
+        elif strict:
+            raise unknown_space(f"no single space {want!r} on this account"
+                                + (" (several share that name: pass its id)" if hits else ""))
+    return out
+
+
+def _watching(ids):
+    rows = {r.get("id"): r for r in _any.list_spaces()}
+    return [{"id": i, "name": (rows.get(i) or {}).get("name"),
+             "oneToOne": (rows.get(i) or {}).get("spaceType") == "any.onetoone"} for i in ids]
+
+
+def _write_chat_spaces(bao, ids):
+    _config_set(CHAT_SPACES_KEY, {"spaceIds": ids, "requestedAt": _iso(now()),  # noqa: F821
+                                  "by": "chat"})
+    request = _request()
+    if request is not None:
+        _arm(bao, request)     # the same request: the setup run restarts nothing
+    return {"state": "waiting", "spaceIds": ids, "watching": _watching(ids)}
+
+
+def _ready_bao():
+    bao = _any.bao_space()
+    if _current_hub(_status()) is None:
+        raise not_set_up(OFFER)
+    return bao
+
+
+@span("brainSetup.watch_chats", kind="mutator")  # noqa: F821 - guest global
+def watch_chats(space_ids):
+    """Let the brain read these spaces' chats for promises and asks → {spaceIds, watching}.
+
+    Only after the user said yes in this conversation to the brain reading
+    those chats: the user's own messages for promises (with a model, only
+    while allow_model() stands), other people's messages addressed to the
+    user for asks (no model). `space_ids`: ids or exact names, one-to-one
+    spaces too; added to those already watched. The scan starts within a
+    minute. Raises not_set_up, unknown_space, bao_space (Bao's chat is this
+    conversation), read_only_space."""
+    bao = _ready_bao()
+    rows = _space_rows(space_ids, strict=True)
+    for r in rows:
+        if r["id"] == bao:
+            raise bao_space("Bao's own chat is the conversation with Bao; name another space.")
+        if r.get("status") != "active" or r.get("ownRole") not in WRITABLE_ROLES:
+            raise read_only_space(f"the user only reads in {r.get('name') or r['id']!r}; "
+                                  "the brain reads no such chat")
+    ids = _chat_spaces()
+    ids += [r["id"] for r in rows if r["id"] not in ids]
+    return _write_chat_spaces(bao, ids)
+
+
+@span("brainSetup.stop_watching_chats", kind="mutator")  # noqa: F821 - guest global
+def stop_watching_chats(space_ids):
+    """Stop reading these spaces' chats → {spaceIds, watching}.
+
+    `space_ids`: ids or exact names; one not watched is ignored. With none
+    left the scan stops; what it found (asks, promises) stays."""
+    bao = _ready_bao()
+    if isinstance(space_ids, str):
+        space_ids = [space_ids]
+    gone = {str(i).strip() for i in space_ids or []}
+    gone |= {r["id"] for r in _space_rows(space_ids, strict=False)}
+    return _write_chat_spaces(bao, [i for i in _chat_spaces() if i not in gone])
+
+
+@span("brainSetup.scan_pages", kind="mutator")  # noqa: F821 - guest global
+def scan_pages(enabled):
+    """Also read unchecked checklist items of recently edited pages → the row.
+
+    In the watched spaces only, off by default; turn on only after the
+    user's yes. Each unchecked item becomes an ask of kind checklist."""
+    _ready_bao()
+    row = {"enabled": bool(enabled), "requestedAt": _iso(now()), "by": "chat"}  # noqa: F821
+    _config_set(CHAT_PAGES_KEY, row)
+    return row

@@ -143,6 +143,11 @@ class FakeAny:
     def list_apps(self, space):
         return [{"usecase": u} for u in self.apps]
 
+    spaces = ()            # the account's space rows (watch_chats resolves against them)
+
+    def list_spaces(self, raw=False):
+        return [dict(r) for r in self.spaces]
+
     def list_types(self, space):
         # the mailbox type arrives with the first mail sync
         names = ["page", "profile", "task", *self.types] + (["mailbox"] if self.mailboxes else [])
@@ -204,6 +209,12 @@ def jobs(fake):
     return {rid: r for rid, r in triggers(fake).items() if r.get("kind") == "cron"}
 
 
+def switched(fake):
+    """The jobs the brain's switch turns on and off: all but the chat scan,
+    which follows brain.chatScan.spaces (off while no chat is watched)."""
+    return {rid: r for rid, r in jobs(fake).items() if rid != "brain-chat-scan"}
+
+
 def on_request(stamp=STAMP):
     return {"brain.space": {"spaceId": BAO, "requestedAt": stamp, "by": "any-ui"}}
 
@@ -236,9 +247,9 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert [c[1] for c in fake.calls if c[0] == "setup_app"] == ["people", "meetings", "tasks"]
     assert ("ensure_bundle", "brain/v1", "Brain", "page") in fake.calls
     assert fake.types["brain_hub"]["hidden"] is True and fake.types["brain_hub"]["body"] is False
-    assert sorted(fake.datasets) == ["approvals", "cards", "config", "drafts", "facts",
-                                     "incidents", "observations", "promises", "sends",
-                                     "signals", "standups"]
+    assert sorted(fake.datasets) == ["approvals", "asks", "cards", "config", "drafts",
+                                     "facts", "incidents", "observations", "promises",
+                                     "sends", "signals", "standups"]
     facts = fake.datasets["facts"]
     assert facts["shared"] is True and facts["search"]["scope"] == "facts"
     assert "skipHistory" not in facts  # a supersession stays auditable
@@ -266,13 +277,13 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert sorted(k for k in cfg if k.startswith("llm.tier.brain.")) == [
         "llm.tier.brain.caretaker", "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 6, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 7, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
         "promises": "type-hub_promises", "facts": "type-hub_facts",
         "cards": "type-hub_cards", "drafts": "type-hub_drafts",
         "approvals": "type-hub_approvals", "standups": "type-hub_standups",
-        "sends": "type-hub_sends"}}
+        "sends": "type-hub_sends", "asks": "type-hub_asks"}}
     blocklist = fake.records[(BAO, "hub", "type-hub_config")]["blocklist"]["value"]
     assert blocklist == {"domains": [], "senders": [], "labels": []}
 
@@ -281,8 +292,9 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
     js = jobs(fake)
-    assert sorted(js) == ["brain-caretaker", "brain-facts", "brain-heartbeat", "brain-mail-sync",
-                          "brain-people", "brain-promises", "brain-reconcile"]
+    assert sorted(js) == ["brain-caretaker", "brain-chat-scan", "brain-facts",
+                          "brain-heartbeat", "brain-mail-sync", "brain-people",
+                          "brain-promises", "brain-reconcile"]
     facts = js["brain-facts"]
     assert facts["program"] == "connectors:brainFacts@v1" and facts["spec"] == {"every_s": 21600}
     assert facts["args"]["tier"] == "brain.extractor"
@@ -303,7 +315,12 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert care["args"]["tier"] == "brain.caretaker" and care["args"]["hub"] == "hub"
     assert care["args"]["datasets"]["incidents"] == "type-hub_incidents"
     assert care["args"]["datasets"]["observations"] == "type-hub_observations"
-    assert all(j["enabled"] is True and "owner" not in j for j in js.values())
+    assert all(j["enabled"] is True and "owner" not in j for j in switched(fake).values())
+    # off until a chat is watched (ADR-039 §1)
+    scan = js["brain-chat-scan"]
+    assert scan["program"] == "connectors:brainChatScan@v1" and scan["spec"] == {"every_s": 1800}
+    assert scan["enabled"] is False and "owner" not in scan
+    assert scan["args"]["datasets"]["asks"] == "type-hub_asks"
 
 
 def test_a_hub_before_the_caretaker_upgrades_to_it_through_reconcile():
@@ -319,7 +336,7 @@ def test_a_hub_before_the_caretaker_upgrades_to_it_through_reconcile():
     mod.main({"requestedAt": STAMP})                # the re-armed setup run
     assert jobs(fake)["brain-caretaker"]["program"] == "connectors:brainCaretaker@v1"
     assert cfg["llm.tier.brain.caretaker"] == {"model": "codegen-model"}
-    assert statuses(writes)[-1]["hub"]["version"] == 6
+    assert statuses(writes)[-1]["hub"]["version"] == 7
 
 
 def test_a_second_run_only_reads():
@@ -411,7 +428,7 @@ def test_off_after_a_failed_setup_still_brings_the_jobs_back():
     assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     assert mod.main({})["state"] == "ready"
-    assert all(j["enabled"] for j in jobs(fake).values())
+    assert all(j["enabled"] for j in switched(fake).values())
 
 
 def test_an_off_run_cut_short_still_brings_back_what_it_disabled():
@@ -435,10 +452,10 @@ def test_an_off_run_cut_short_still_brings_back_what_it_disabled():
     assert type(err.value).__name__ == "provision_failed"
     assert cfg["brain.status"]["state"] == "error"      # a failed off run says so
     fake.modify = real_modify
-    assert sum(not j["enabled"] for j in jobs(fake).values()) == 1
+    assert sum(not j["enabled"] for j in switched(fake).values()) == 1
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     mod.main({})
-    assert all(j["enabled"] for j in jobs(fake).values())
+    assert all(j["enabled"] for j in switched(fake).values())
 
 
 def test_on_keeps_remembering_a_job_it_cannot_see_yet():
@@ -928,3 +945,129 @@ def test_reconcile_upgrades_a_version_4_hub():
     old["hub"] = {**old["hub"], "version": 4}
     cfg["brain.status"] = old
     assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
+# --- Phase 6: which chats the brain reads (ADR-039 §1) ------------------------------
+
+SPACES = ({"id": "team", "name": "Team", "status": "active", "ownRole": "writer",
+           "spaceType": "any.space"},
+          {"id": "dm-bob", "name": "Bob", "status": "active", "ownRole": "writer",
+           "spaceType": "any.onetoone"},
+          {"id": "news", "name": "News", "status": "active", "ownRole": "reader",
+           "spaceType": "any.space"},
+          {"id": BAO, "name": "Bao", "status": "active", "ownRole": "owner",
+           "spaceType": "any.space"})
+
+
+def ready_with_spaces():
+    fake = FakeAny()
+    fake.spaces = SPACES
+    mod, fake, cfg, writes, sleeps = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    return mod, fake, cfg, writes
+
+
+def test_setup_declares_the_asks_store_and_the_identity_column():
+    mod, fake, cfg, _ = ready_with_spaces()
+    asks = fake.datasets["asks"]
+    assert asks["shared"] is True and asks["search"] == {"text": ["text", "quote"],
+                                                         "scope": "asks"}
+    required = {f["key"] for f in asks["fields"] if f.get("required")}
+    assert required == {"senderIdentity", "spaceId", "chatId", "kind", "text", "quote",
+                        "source", "askedAt"}
+    mutable = {f["key"] for f in asks["fields"] if f.get("mutableBy") == "author"}
+    assert mutable == {"personId", "status", "taskId", "closedAt"}
+    person = {p["xKey"]: p for p in fake.collections["brain_person"]["properties"]}
+    assert person["identity"]["xFormat"] == {"type": "text"}
+    assert mod.status()["chatScan"] == {"spaceIds": [], "pages": False}
+
+
+def test_watch_chats_writes_the_row_and_the_setup_run_turns_the_scan_on():
+    mod, fake, cfg, writes = ready_with_spaces()
+    fake.records[TRIGGERS]["brain-setup"] = {"id": "brain-setup", "kind": "once",
+                                             "lastRunAt": NOW}    # the once has fired
+    out = mod.watch_chats(["team", "Bob"])                    # an id and an exact name
+    assert out["spaceIds"] == ["team", "dm-bob"] and out["state"] == "waiting"
+    assert out["watching"] == [{"id": "team", "name": "Team", "oneToOne": False},
+                               {"id": "dm-bob", "name": "Bob", "oneToOne": True}]
+    row = cfg["brain.chatScan.spaces"]
+    assert row["spaceIds"] == ["team", "dm-bob"] and row["by"] == "chat"
+    armed = triggers(fake)["brain-setup"]
+    assert armed["lastRunAt"] is None and armed["args"] == {"requestedAt": STAMP}
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False
+    out = mod.main({"requestedAt": STAMP})
+    assert out["restarted"] == []                    # the same request: nothing restarts
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is True
+    assert mod.watch_chats("team")["spaceIds"] == ["team", "dm-bob"]    # no duplicate
+    assert mod.status()["chatScan"]["spaceIds"] == ["team", "dm-bob"]
+
+
+def test_stopping_the_last_chat_turns_the_scan_off():
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.watch_chats(["team"])
+    mod.main({})
+    assert mod.stop_watching_chats(["Team", "not-watched"])["spaceIds"] == []
+    mod.main({})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False
+    assert cfg["brain.chatScan.spaces"]["spaceIds"] == []
+
+
+def test_watch_chats_refuses_and_writes_nothing():
+    mod, fake, cfg, _ = ready_with_spaces()
+    for wanted, error in ((["news"], "read_only_space"), ([BAO], "bao_space"),
+                          (["nowhere"], "unknown_space"), (["team", "news"], "read_only_space")):
+        with pytest.raises(Exception) as err:
+            mod.watch_chats(wanted)
+        assert type(err.value).__name__ == error, wanted
+    assert "brain.chatScan.spaces" not in cfg
+    mod, _, cfg, _, _ = kernel()
+    for call in (lambda: mod.watch_chats(["team"]), lambda: mod.stop_watching_chats(["team"]),
+                 lambda: mod.scan_pages(True)):
+        with pytest.raises(Exception) as err:
+            call()
+        assert type(err.value).__name__ == "not_set_up"
+    assert not any(k.startswith("brain.chatScan") for k in cfg)
+
+
+def test_scan_pages_writes_its_row_only():
+    mod, fake, cfg, _ = ready_with_spaces()
+    row = mod.scan_pages(True)
+    assert row["enabled"] is True and row["by"] == "chat"
+    assert cfg["brain.chatScan.pages"] == row and mod.status()["chatScan"]["pages"] is True
+    assert mod.scan_pages(False)["enabled"] is False
+
+
+def test_reconcile_turns_off_a_scan_with_nothing_to_read_but_never_on():
+    mod, fake, cfg, _ = ready_with_spaces()
+    triggers(fake)["brain-chat-scan"]["enabled"] = True      # flipped by hand
+    mod.main({"mode": "reconcile"})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False
+    cfg["brain.chatScan.spaces"] = {"spaceIds": ["team"], "requestedAt": "t", "by": "chat"}
+    mod.main({"mode": "reconcile"})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False   # only a setup run enables
+
+
+def test_switching_the_brain_off_and_on_keeps_the_scan_following_its_row():
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.watch_chats(["team"])
+    mod.main({})
+    cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "chat"}
+    assert "brain-chat-scan" in mod.main({})["disabled"]
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "chat"}
+    mod.main({})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is True
+
+
+def test_a_deleted_chat_scan_is_rewritten_under_a_fresh_id_and_still_follows_the_row():
+    mod, fake, cfg, _ = ready_with_spaces()
+    fake.delete(*TRIGGERS, "brain-chat-scan")
+    out = mod.main({"mode": "reconcile"})
+    (new_id,) = out["written"]
+    assert new_id.startswith("brain-chat-scan-") and jobs(fake)[new_id]["enabled"] is False
+
+
+def test_a_chat_scan_rewritten_while_chats_are_watched_starts_on():
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.watch_chats(["team"])
+    mod.main({})
+    fake.delete(*TRIGGERS, "brain-chat-scan")
+    (new_id,) = mod.main({"mode": "reconcile"})["written"]
+    assert jobs(fake)[new_id]["enabled"] is True
