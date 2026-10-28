@@ -825,7 +825,7 @@ def test_setup_declares_the_decision_layer_stores_with_their_exact_fields():
     assert set(_fields(cards)) - {"creator", "createdAt", "modifiedAt"} == {
         "kind", "title", "reason", "subjectKey", "sourceUri", "signalId", "personIds",
         "briefPersonIds", "status", "snoozedUntil", "answer", "draftId", "approvalId",
-        "draftAttempts", "decidedAt"}
+        "draftAttempts", "decidedAt", "items"}             # items: the chat scan's (ADR-039 §7)
     assert _keys(cards, "required") == {"kind", "title", "reason", "subjectKey"}
     assert _keys(cards, "mutableBy") == {"status", "snoozedUntil", "answer", "draftId",
                                          "approvalId", "draftAttempts", "decidedAt"}

@@ -180,9 +180,6 @@ class FakeSpace:
         assert (bundle_id, seed) == ("bao/v1", "bao/triggers/v1"), (bundle_id, seed)
         return {"objectId": ANCHOR}
 
-    def general_chat(self, space):
-        return "general-chat"
-
     def chat_send(self, space, chat_id, body):
         self.calls.append(("chat_send", chat_id))
         self.chat.append(copy.deepcopy(body))

@@ -556,8 +556,9 @@ def test_one_task_suggestion_card_a_day():
 def test_no_card_without_a_cards_store_or_anything_to_suggest():
     s = chats()
     msg(s, "dm", "m1", "bob-id", "Can you call me?", "v1")
-    mod, _ = kernel(s, watched=("dm",))
-    assert mod.main(job_args(s))["card"] is None
+    no_cards = {k: v for k, v in DATASETS.items() if k != "cards"}
+    mod, _ = kernel(s, watched=("dm",), datasets=no_cards)
+    assert mod.main({**job_args(s), "datasets": no_cards})["card"] is None
     s2 = chats()
     datasets = {**DATASETS, "cards": "hubtype_cards"}
     mod, _ = kernel(s2, watched=("dm",), datasets=datasets)
