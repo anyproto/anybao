@@ -16,7 +16,8 @@ use crate::trace::canonical_json;
 use crate::trace::SCHEMA;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Instant, SystemTime};
 
 /// A run id as it appears in `traceRef` / `lastRunRef` and as the
 /// `runId` of every stored document.
@@ -95,13 +96,16 @@ pub trait TraceStore: Send + Sync {
     /// over `max_bytes` (the sum of the surviving summaries' `bytes`,
     /// None = unbounded), the oldest runs first until the store is
     /// under it again. Summaries stay. Returns the number of runs
-    /// expired. Default: no-op.
+    /// expired. `stop` set = the host is shutting down: the sweep ends
+    /// at the next request boundary with an error (§6 — a sweep that
+    /// outlives the server pins its store). Default: no-op.
     fn expire(
         &self,
         _chat_program: &str,
         _conversations_before: Option<f64>,
         _jobs_before: Option<f64>,
         _max_bytes: Option<u64>,
+        _stop: &AtomicBool,
     ) -> anyhow::Result<usize> {
         Ok(0)
     }
@@ -238,6 +242,14 @@ fn size_chunks(docs: &[Value]) -> Vec<&[Value]> {
 }
 /// query cap
 const PAGE: usize = 1000;
+/// A retention delete transaction: at most this many runs, and at most
+/// this many records by the summaries' `records` stamp (ADR-023 §6 —
+/// one filter delete is one server write transaction; a chunk of 200
+/// unbounded runs reached a million documents). A summary without the
+/// stamp (pre-2026-10-22) is counted as `UNSTAMPED_RECORDS`.
+const DELETE_RUNS: usize = 200;
+const DELETE_RECORDS: u64 = 20_000;
+const UNSTAMPED_RECORDS: u64 = 500;
 /// How far back `in_flight` looks for summary-less headers (7 days —
 /// a conversation never runs that long; a crash's leftover ages out).
 const IN_FLIGHT_WINDOW_S: f64 = 7.0 * 86400.0;
@@ -320,6 +332,36 @@ pub fn size_victims(
         total -= b;
     }
     out
+}
+
+/// The delete transactions of a sweep (ADR-023 §6): `victims` =
+/// `(runId, records)` in eviction order, cut into chunks of at most
+/// `DELETE_RUNS` runs and `DELETE_RECORDS` records. A single run over
+/// the record bound goes alone.
+pub fn delete_chunks(victims: &[(String, u64)]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    let mut cur_records = 0u64;
+    for (id, n) in victims {
+        if !cur.is_empty() && (cur.len() >= DELETE_RUNS || cur_records + n > DELETE_RECORDS) {
+            out.push(std::mem::take(&mut cur));
+            cur_records = 0;
+        }
+        cur.push(id.clone());
+        cur_records += n;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The sweep's shutdown check: between requests, never inside one.
+fn interrupted(stop: &AtomicBool) -> anyhow::Result<()> {
+    if stop.load(Ordering::Relaxed) {
+        anyhow::bail!("sweep stopped for shutdown");
+    }
+    Ok(())
 }
 
 /// Integral f64 → i64 everywhere in a value (|x| < 2^53, exact).
@@ -487,8 +529,11 @@ impl AnyTraceStore {
         json!({"id": hash, "bytes": data.len(), "data": data})
     }
 
-    fn query_all(&self, coll: &Value, filter: Value, sort: Value) -> anyhow::Result<Vec<Value>> {
-        self.query_proj(coll, filter, sort, Value::Null)
+    /// Every document `filter` matches, in `id` order. Readers that
+    /// need another order sort the rows themselves (a run's records
+    /// are `<runId>:<seq:06>`, so id order is seq order).
+    fn query_all(&self, coll: &Value, filter: Value) -> anyhow::Result<Vec<Value>> {
+        self.query_proj(coll, filter, Value::Null, None)
     }
 
     /// `query_all` narrowed to `projection` (docs/09-query.md
@@ -496,28 +541,48 @@ impl AnyTraceStore {
     /// reads ids and sizes only — never a blob's `data` or a record's
     /// body (BOB-190: the unprojected sweep paged the whole blob
     /// collection through the server, 330 MB a page).
+    ///
+    /// Pages are KEY-SET paged on `id` (`id > last`, sort `id`): the
+    /// primary key serves the seek, so a page costs a bounded scan from
+    /// the cursor, not a full scan plus a sort per page the way
+    /// `offset` paging does (SYN-388: on a 716k-record store an offset
+    /// page took 1.7 s and a key page 30 ms; every page holds a server
+    /// read snapshot, and a read older than the WAL checkpoint pins
+    /// the WAL). `stop` set ends the walk between pages.
     fn query_proj(
         &self,
         coll: &Value,
         filter: Value,
-        sort: Value,
         projection: Value,
+        stop: Option<&AtomicBool>,
     ) -> anyhow::Result<Vec<Value>> {
         let mut out = Vec::new();
-        let mut offset = 0usize;
+        let mut after: Option<String> = None;
+        let unfiltered = filter.as_object().is_some_and(|o| o.is_empty());
         loop {
-            let mut opts = json!({"filter": filter, "sort": sort, "limit": PAGE, "offset": offset});
+            if let Some(stop) = stop {
+                interrupted(stop)?;
+            }
+            let page_filter = match &after {
+                None => filter.clone(),
+                Some(last) if unfiltered => json!({"id": {"$gt": last}}),
+                Some(last) => json!({"$and": [filter, {"id": {"$gt": last}}]}),
+            };
+            let mut opts = json!({"filter": page_filter, "sort": ["id"], "limit": PAGE});
             if !projection.is_null() {
                 opts["projection"] = projection.clone();
             }
             let reply = self.client.local_query(coll, &opts)?;
             let page = reply["records"].as_array().cloned().unwrap_or_default();
             let n = page.len();
+            after = page
+                .last()
+                .and_then(|r| r["id"].as_str())
+                .map(str::to_string);
             out.extend(page);
-            if n < PAGE {
+            if n < PAGE || after.is_none() {
                 return Ok(out);
             }
-            offset += n;
         }
     }
 
@@ -653,8 +718,18 @@ impl TraceStore for AnyTraceStore {
         conversations_before: Option<f64>,
         jobs_before: Option<f64>,
         max_bytes: Option<u64>,
+        stop: &AtomicBool,
     ) -> anyhow::Result<usize> {
-        let mut victims: Vec<String> = Vec::new();
+        let sweep = Instant::now();
+        let mut phases: Vec<String> = Vec::new();
+        let mut phase = Instant::now();
+        let mut lap = |label: &str, phase: &mut Instant| {
+            phases.push(format!("{label} {}ms", phase.elapsed().as_millis()));
+            *phase = Instant::now();
+        };
+        let records_of = |r: &Value| r["records"].as_u64().unwrap_or(UNSTAMPED_RECORDS);
+        // (runId, records stamp): the stamp sizes the delete transactions
+        let mut victims: Vec<(String, u64)> = Vec::new();
         for (before, is_chat) in [(conversations_before, true), (jobs_before, false)] {
             let Some(before) = before else { continue };
             let prog = if is_chat {
@@ -665,23 +740,30 @@ impl TraceStore for AnyTraceStore {
             let rows = self.query_proj(
                 &self.runs,
                 json!({"startedAt": {"$lt": before}, "program": prog, "expired": {"$ne": true}}),
-                json!(["startedAt"]),
-                json!({"startedAt": 1}),
+                json!({"records": 1}),
+                Some(stop),
             )?;
             victims.extend(
                 rows.iter()
-                    .filter_map(|r| r["id"].as_str().map(str::to_string)),
+                    .filter_map(|r| Some((r["id"].as_str()?.to_string(), records_of(r)))),
             );
         }
+        lap("age", &mut phase);
         // the size pass: one pool, both classes, oldest first
         if let Some(max) = max_bytes {
-            let rows = self.query_proj(
+            let mut rows = self.query_proj(
                 &self.runs,
                 json!({"expired": {"$ne": true}}),
-                json!(["startedAt"]),
-                json!({"startedAt": 1, "bytes": 1}),
+                json!({"startedAt": 1, "bytes": 1, "records": 1}),
+                Some(stop),
             )?;
-            let taken: std::collections::BTreeSet<String> = victims.iter().cloned().collect();
+            // the pages come in id order; the size pass wants oldest first
+            rows.sort_by(|a, b| {
+                let at = |r: &Value| r["startedAt"].as_f64().unwrap_or(0.0);
+                at(a).total_cmp(&at(b))
+            });
+            let taken: std::collections::BTreeSet<String> =
+                victims.iter().map(|(id, _)| id.clone()).collect();
             let over = size_victims(&rows, max, &taken);
             if !over.is_empty() {
                 tracing::info!(
@@ -689,12 +771,26 @@ impl TraceStore for AnyTraceStore {
                     over.len()
                 );
             }
-            victims.extend(over);
+            let stamps: BTreeMap<&str, u64> = rows
+                .iter()
+                .filter_map(|r| Some((r["id"].as_str()?, records_of(r))))
+                .collect();
+            victims.extend(over.into_iter().map(|id| {
+                let n = stamps
+                    .get(id.as_str())
+                    .copied()
+                    .unwrap_or(UNSTAMPED_RECORDS);
+                (id, n)
+            }));
         }
+        lap("size", &mut phase);
         if victims.is_empty() {
             return Ok(0);
         }
-        for chunk in victims.chunks(200) {
+        let chunks = delete_chunks(&victims);
+        let txs = chunks.len();
+        for chunk in &chunks {
+            interrupted(stop)?;
             self.client.local_delete(
                 &self.records,
                 None,
@@ -705,16 +801,17 @@ impl TraceStore for AnyTraceStore {
                 self.client.local_update_flag(&self.runs, id, "expired")?;
             }
         }
+        lap(&format!("delete/{txs} txs"), &mut phase);
         // blobs no surviving record references — refs and ids only,
         // never a body
         let live = self.query_proj(
             &self.records,
             json!({"$or": [{"input.__blob": {"$exists": true}}, {"output.__blob": {"$exists": true}}]}),
-            json!(["seq"]),
             json!({"input.__blob": 1, "output.__blob": 1}),
+            Some(stop),
         )?;
         let keep: std::collections::BTreeSet<String> = Self::blob_refs(&live).into_iter().collect();
-        let all = self.query_proj(&self.blobs, json!({}), json!(["id"]), json!({"bytes": 1}))?;
+        let all = self.query_proj(&self.blobs, json!({}), json!({"bytes": 1}), Some(stop))?;
         let dead: Vec<String> = all
             .iter()
             .filter_map(|b| b["id"].as_str())
@@ -722,15 +819,17 @@ impl TraceStore for AnyTraceStore {
             .map(str::to_string)
             .collect();
         for chunk in dead.chunks(500) {
+            interrupted(stop)?;
             self.client.local_delete(&self.blobs, Some(chunk), None)?;
         }
+        lap("text blobs", &mut phase);
         // raw blobs no surviving record lists in `blobs` (ADR-026 §6)
         if let Some(dir) = &self.blob_dir {
             let listed = self.query_proj(
                 &self.records,
                 json!({"blobs": {"$exists": true}}),
-                json!(["seq"]),
                 json!({"blobs": 1}),
+                Some(stop),
             )?;
             let keep: std::collections::BTreeSet<String> = listed
                 .iter()
@@ -742,12 +841,21 @@ impl TraceStore for AnyTraceStore {
             if swept > 0 {
                 tracing::info!("trace retention: {swept} raw blobs swept");
             }
+            lap("raw blobs", &mut phase);
         }
+        // one line a sweep: which phase is slow is the first question a
+        // long sweep raises (SYN-388)
+        tracing::info!(
+            "trace retention: {} runs expired in {}ms ({})",
+            victims.len(),
+            sweep.elapsed().as_millis(),
+            phases.join(", ")
+        );
         Ok(victims.len())
     }
 
     fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
-        let rows = self.query_all(&self.runs, json!({}), json!(["-startedAt"]))?;
+        let rows = self.query_all(&self.runs, json!({}))?;
         let mut out: Vec<RunMeta> = rows
             .into_iter()
             .filter_map(|r| {
@@ -772,7 +880,6 @@ impl TraceStore for AnyTraceStore {
         let heads = self.query_all(
             &self.records,
             json!({"kind": "header", "startedAt": {"$gte": since}}),
-            json!(["-startedAt"]),
         )?;
         if heads.is_empty() {
             return Ok(Vec::new());
@@ -782,11 +889,7 @@ impl TraceStore for AnyTraceStore {
             .filter_map(|h| h["runId"].as_str().map(str::to_string))
             .collect();
         let ended: std::collections::BTreeSet<String> = self
-            .query_all(
-                &self.runs,
-                json!({"id": {"$in": ids}}),
-                json!(["-startedAt"]),
-            )?
+            .query_all(&self.runs, json!({"id": {"$in": ids}}))?
             .into_iter()
             .filter_map(|r| r["id"].as_str().map(str::to_string))
             .collect();
@@ -847,7 +950,7 @@ impl TraceStore for AnyTraceStore {
     }
 
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
-        let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
+        let docs = self.query_all(&self.records, json!({"runId": run_id}))?;
         if docs.is_empty() {
             // expired (retention, ADR-023 §6) vs never existed
             let known = self
@@ -892,12 +995,12 @@ impl TraceStore for AnyTraceStore {
     }
 
     fn blobs(&self, run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
-        let docs = self.query_all(&self.records, json!({"runId": run_id}), json!(["seq"]))?;
+        let docs = self.query_all(&self.records, json!({"runId": run_id}))?;
         let hashes = Self::blob_refs(&docs);
         if hashes.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let rows = self.query_all(&self.blobs, json!({"id": {"$in": hashes}}), json!(["id"]))?;
+        let rows = self.query_all(&self.blobs, json!({"id": {"$in": hashes}}))?;
         let mut out: BTreeMap<String, String> = rows
             .into_iter()
             .filter_map(|b| {
@@ -1028,6 +1131,23 @@ mod tests {
         // the age pass already took r1: its bytes are gone, r3 goes next
         let taken: std::collections::BTreeSet<String> = ["r1".to_string()].into();
         assert_eq!(size_victims(&rows, 300, &taken), vec!["r3"]);
+    }
+
+    #[test]
+    fn delete_chunks_bound_runs_and_records() {
+        let v = |id: &str, n: u64| (id.to_string(), n);
+        // the record bound cuts before the run bound does
+        let victims: Vec<(String, u64)> = (0..5).map(|i| v(&format!("r{i}"), 8_000)).collect();
+        let chunks = delete_chunks(&victims);
+        assert_eq!(chunks, vec![vec!["r0", "r1"], vec!["r2", "r3"], vec!["r4"]]);
+        // one run over the bound goes alone, never merged
+        let chunks = delete_chunks(&[v("a", 10), v("big", 50_000), v("b", 10)]);
+        assert_eq!(chunks, vec![vec!["a"], vec!["big"], vec!["b"]]);
+        // the run bound still holds for small runs
+        let small: Vec<(String, u64)> = (0..450).map(|i| v(&format!("s{i}"), 1)).collect();
+        let lens: Vec<usize> = delete_chunks(&small).iter().map(Vec::len).collect();
+        assert_eq!(lens, vec![200, 200, 50]);
+        assert!(delete_chunks(&[]).is_empty());
     }
 
     #[test]
@@ -1415,7 +1535,9 @@ mod live {
         assert_eq!(row["records"], 2);
         // size pass alone: a 1-byte bound retires both finished runs,
         // the age pass given nothing to do (ADR-023 §6)
-        let n = store.expire("chat@v1", None, None, Some(1)).unwrap();
+        let n = store
+            .expire("chat@v1", None, None, Some(1), &AtomicBool::new(false))
+            .unwrap();
         assert!(n >= 2, "expired {n}");
         assert!(store
             .load("run_live2")
@@ -1424,7 +1546,13 @@ mod live {
             .contains("expired"));
         // then the age pass over what is left finds nothing new
         let n = store
-            .expire("chat@v1", None, Some(now_s() + 1.0), None)
+            .expire(
+                "chat@v1",
+                None,
+                Some(now_s() + 1.0),
+                None,
+                &AtomicBool::new(false),
+            )
             .unwrap();
         assert_eq!(n, 0, "expired {n}");
         let err = store.load("run_live1").unwrap_err().to_string();
@@ -1436,7 +1564,13 @@ mod live {
         assert_eq!(blobs["records"].as_array().unwrap().len(), 0, "{blobs}");
         assert_eq!(
             store
-                .expire("chat@v1", None, Some(now_s() + 1.0), Some(1))
+                .expire(
+                    "chat@v1",
+                    None,
+                    Some(now_s() + 1.0),
+                    Some(1),
+                    &AtomicBool::new(false)
+                )
                 .unwrap(),
             0
         );

@@ -209,8 +209,10 @@ records + its spilled text blobs + the raw blobs its records reference,
 and `records` = the record count, both stamped at run end. A summary
 from before the stamp weighs nothing and is never a size victim — age
 retires it. A run still in flight has no summary and is not counted.
-Expiry deletes `trace_records` by `runId` filter (200 runs per
-delete), then blobs no surviving record references (the live refs are
+Expiry deletes `trace_records` by `runId` filter (one delete
+transaction holds at most 200 runs and 20,000 records by the
+summaries' `records` stamp, 500 assumed for a pre-stamp summary — a
+filter delete is one server write transaction), then blobs no surviving record references (the live refs are
 collected with one `$exists` query — local↔local `$lookup` was not
 needed), then raw blob files the same live-ref set no longer names
 (amendment 2026-09-04, ADR-026 §6: list `<traces_dir>/blobs/`, unlink
@@ -223,6 +225,20 @@ are kept forever**, synced and mirrored — small, and what "did it run"
 questions and `traceRef` links resolve against after the body is gone
 (`effects.of/get/stats` on an expired run answer a typed error naming
 retention and pointing at `effects.runs`).
+
+**Every read the sweep makes is key-set paged** (amendment 2026-10-29,
+SYN-388): a page sorts by `id` and the next continues from `id >
+last`, so the primary key serves each page and a page costs a bounded
+scan from the cursor. `offset` paging re-scans and re-sorts the
+collection for every page (1.7 s a page against 30 ms on a 716k-record
+store); each page is a server read snapshot, and a snapshot older than
+the WAL checkpoint pins the WAL, which then never resets and is copied
+in full at the next boot. The sweep reads the serve's shutdown flag
+between requests and ends there: a shutdown never waits on a sweep,
+and no sweep read outlives the server. One log line per sweep carries
+the phase durations (age, size, delete and its transaction count, text
+blobs, raw blobs), so a slow phase is read from `agent.log`, not
+inferred from a goroutine dump.
 
 ### 7. CLI and tooling
 
