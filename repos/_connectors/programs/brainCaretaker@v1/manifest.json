@@ -1,0 +1,10 @@
+{
+  "reads": ["agent_triggers", "agent_runs", "incidents", "observations", "config", "cards",
+            "objects"],
+  "writes": ["incidents", "observations", "signals", "config", "cards", "standups",
+             "agent_triggers", "chat_messages"],
+  "net": [],
+  "connectors": ["googleAuth"],
+  "browse": false,
+  "llm": false
+}

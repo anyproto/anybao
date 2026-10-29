@@ -1,15 +1,16 @@
 """programs/brainCaretaker@v1 — the brain watching itself, under the REAL guest
-kernel and the REAL llm@v1 (the model faked at its http.post). Pinned: the
-pin check comes before any read; each grader's positive and negative case;
-one incident per (class, subject), one never-updated observation per tick;
-one model turn per incident, every reply rule, a model failure that
-escalates and fails the run; the repairs write only their record and read
-their target from the incident; the verify / soak ladder; self-heal leaves
-`verified` absent; escalation cards only where the hub has `cards`;
-batched, cooled-down notices under the agent's own name; the daily report.
-The mutation checks at the end delete each guard and watch its test fail."""
+kernel. No model: the run reads no tier of its own and posts nothing; each
+grader's positive and negative case; ages count from `uptimeSince`, so a
+restart grades nothing overdue before a job's first post-boot run; a paused
+mail sync is the user's choice; one incident per (class, subject), one
+never-updated observation per tick; the rule table picks each incident's one
+repair, the repairs write only their record and read their target from the
+incident; the verify / soak ladder widens to the job's own cadence and waits
+while an enable_job repair has not had its run; self-heal leaves `verified`
+absent; escalation cards only where the hub has `cards`; batched, cooled-down
+notices under the `bao` name; the daily report over the last 24 h only. The
+mutation checks at the end delete each guard and watch its test fail."""
 
-import json
 import time
 
 import connectorenv
@@ -22,6 +23,7 @@ from connectorenv import connector_kernel
 BAO = "bao-space"
 T0 = 1_800_000_000
 DAY = 86400
+GRACE = 120
 ME = "me@example.com"
 CARETAKER = "connectors:brainCaretaker@v1"
 SETUP = "connectors:brainSetup@v1"
@@ -37,11 +39,13 @@ TIER = {"provider": "openai-compat", "backend": "anyai",
 EXCLUSIONS = {"version": 1, "personIds": [], "emails": [], "domains": []}
 REQUESTED = "2026-10-28T08:00:00Z"
 CARDS, STANDUPS = "hubtype_cards", "hubtype_standups"
-# the default world is a hub from before the decision layer (Phase 3);
-# with_phase3_stores() adds the stores it brings
+# the default world is a hub without the decision layer's stores;
+# with_card_stores() adds them
 DATASETS = {k: v for k, v in HUB_DATASETS.items()
             if k not in ("cards", "drafts", "approvals", "standups", "sends")}
 SOURCE = (connectorenv.PROGRAMS_DIR / "brainCaretaker@v1" / "program.py").read_text()
+FACTS_WINDOW = 2 * 21600 + GRACE      # a 6 h job's verify and soak window
+PEOPLE_WINDOW = 2 * 900 + GRACE       # a 15 min job's: wider than the 15 min floor
 
 
 def iso(seconds):
@@ -50,11 +54,6 @@ def iso(seconds):
 
 class ConfigError(Exception):
     """The broker's type for every config.get failure."""
-
-
-class CredentialError(Exception):
-    """A host effect failure that is not a provider status: llm@v1 re-raises
-    it as an EffectError, unretried (a missing secret, a denied capability)."""
 
 
 def brain_job(tid, program, every, **over):
@@ -76,6 +75,7 @@ def base_triggers():
         brain_job("brain-facts", FACTS, 21600, args={"space": BAO, "hub": HUB,
                                                      "datasets": dict(DATASETS),
                                                      "tier": "brain.extractor"}),
+        # a `tier` an older setup wrote on the caretaker's own job is not a tier in use
         brain_job("brain-caretaker", CARETAKER, 900, lastRunAt=T0 - 900,
                   args={"space": BAO, "hub": HUB, "datasets": dict(DATASETS),
                         "tier": "brain.caretaker"}),
@@ -90,25 +90,25 @@ def base_triggers():
 
 def brain_status(datasets=None):
     return {"spaceId": BAO, "requestedAt": REQUESTED, "state": "ready", "at": iso(T0 - DAY),
-            "hub": {"objectId": HUB, "version": 6, "datasets": datasets or dict(DATASETS)},
+            "hub": {"objectId": HUB, "datasets": datasets or dict(DATASETS)},
             "mailSync": {"mode": "created", "triggerId": "brain-mail-sync", "other": []}}
 
 
 class World(FakeSpace):
     """Bao's space with a healthy brain in it: every job ran a minute ago, mail
-    synced ten minutes ago, the lists and tiers in place."""
+    synced ten minutes ago, the lists and tiers in place, and the caretaker
+    has ticked every 15 min since the device came up a day ago."""
 
     def __init__(self):
         super().__init__(BAO)
         self.chat = []
         self.active = "peer-a"
         self.seed_lists()
+        self.set_config("caretaker", {"lastTickAt": T0 - 900, "uptimeSince": T0 - DAY,
+                                      "lastReportDay": time.strftime("%Y-%m-%d", time.gmtime(T0)),
+                                      "noticeCooldownMin": 60})
         for rec in base_triggers():
             self.records.setdefault(TRIGGERS, {})[rec["id"]] = rec
-        self.set_config("promises.cursor", {"mb1": (T0 - 3600) * 1000})
-        self.set_config("promises.stats", {"asked": 4, "providerFailed": 0})
-        self.set_config("facts.cursor", {"watermark": T0 - DAY})
-        self.set_config("people.cursor", {"mail": {"mb1": (T0 - 3600) * 1000}})
         self.add_object("ss1", "sync_state", name="gmail sync state",
                         sync_state={"cursor": "4711", "mailbox_id": "mb1", "skipped_count": 0},
                         modifiedAt={"$date": (T0 - 600) * 1000})
@@ -162,64 +162,25 @@ class World(FakeSpace):
         return self.records.get((HUB, STANDUPS), {})
 
 
-class Model:
-    """The provider behind the caretaker's tier. Each queued reply is a dict
-    (sent as JSON), a raw string, an int (an error status) or an exception
-    (the effect fails); an empty queue escalates on the input's subject."""
-
-    def __init__(self, *replies):
-        self.replies = list(replies)
-        self.inputs = []
-
-    def answer(self, payload):
-        user = [m for m in payload["json"]["messages"] if m["role"] == "user"][-1]["content"]
-        text = user if isinstance(user, str) else " ".join(p.get("text", "") for p in user)
-        seen = json.loads(text)
-        self.inputs.append(seen)
-        reply = self.replies.pop(0) if self.replies else {
-            "hypothesis": "unclear", "confidence": 0.9, "evidence": [],
-            "action": "escalate", "target": seen["subject"]}
-        if isinstance(reply, Exception):
-            raise reply
-        if isinstance(reply, int):
-            return {"status": reply, "headers": {}, "body": "provider says no"}
-        if callable(reply):
-            reply = reply(seen)
-        content = reply if isinstance(reply, str) else json.dumps(reply)
-        return {"status": 200, "headers": {}, "body": json.dumps({
-            "choices": [{"message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5}})}
-
-
-def repair(action, *evidence, confidence=0.9, hypothesis="the job keeps failing"):
-    """A reply that confirms the input's own subject as the target."""
-    return lambda seen: {"hypothesis": hypothesis, "confidence": confidence,
-                         "evidence": list(evidence), "action": action,
-                         "target": seen["subject"]}
-
-
 def base_cfg():
     return {"brain.space": {"spaceId": BAO, "requestedAt": REQUESTED, "by": "chat"},
             "brain.status": brain_status(),
-            "llm.tier.brain.caretaker": TIER, "llm.tier.brain.extractor": TIER,
-            "llm.tier.brain.drafter": TIER, "llm.tier.classify": TIER,
-            "google.connected": True}
+            "llm.tier.brain.extractor": TIER, "llm.tier.brain.drafter": TIER,
+            "llm.tier.classify": TIER, "google.connected": True}
 
 
 def caretaker_args():
-    return {"space": BAO, "hub": HUB, "datasets": dict(DATASETS), "tier": "brain.caretaker"}
+    return {"space": BAO, "hub": HUB, "datasets": dict(DATASETS)}
 
 
 class Rig:
     """One kernel over one world, a clock, and the runtime's bookkeeping: before
-    each run every job not in `frozen` ran a minute ago (the caretaker itself one
-    tick ago) and mail synced ten minutes ago, unless `fresh=False`."""
+    each run every cron job not in `frozen` ran a minute ago and mail synced ten
+    minutes ago, unless `fresh=False`. `tick()` is one caretaker cadence on."""
 
-    def __init__(self, world=None, cfg=None, model=None, source=None):
+    def __init__(self, world=None, cfg=None, source=None):
         self.world = world or World()
         self.cfg = {**base_cfg(), **(cfg or {})}
-        self.model = model or Model()
         self.clock = {"now": T0}
         self.effects = []
         self.frozen = set()
@@ -244,17 +205,9 @@ class Rig:
             if key in self.cfg:
                 return {"value": self.cfg[key]}
             raise ConfigError(f'no config value for "{key}"')
-        if name == "runtime.get":
-            if payload["key"] == "agent.name" and "agent.name" in self.cfg:
-                return {"value": self.cfg["agent.name"]}
-            raise KeyError(f"no runtime value for {payload['key']!r}")
         if name == "oauth.status":
             return {"connected": self.cfg["google.connected"], "pending": False,
                     "scopes": [], "account": ME, "expiresAt": None}
-        if name == "http.post":
-            return self.model.answer(payload)
-        if name == "sleep":
-            return {}
         raise AssertionError(f"unexpected effect {name}")
 
     def run(self, at=None, fresh=True, args=None):
@@ -264,10 +217,13 @@ class Rig:
         if fresh:
             for tid, rec in self.world.triggers().items():
                 if rec.get("kind") == "cron" and tid not in self.frozen:
-                    rec["lastRunAt"] = now - (900 if rec["program"] == CARETAKER else 60)
+                    rec["lastRunAt"] = now - 60
             if "ss1" not in self.frozen:
                 self.world.objects["ss1"]["modifiedAt"] = {"$date": (now - 600) * 1000}
         return self.mod.main(args if args is not None else caretaker_args())
+
+    def tick(self):
+        return self.run(at=self.clock["now"] + 900)
 
     def fail_job(self, tid, failures, stopped=False, error="provider_failed"):
         rec = self.world.trigger(tid)
@@ -276,54 +232,27 @@ class Rig:
             rec["enabled"] = False
         self.world.add_run(tid, self.clock["now"] - 60, status="FAILED", error=error)
 
-
-def http_calls(rig):
-    return [e for e in rig.effects if e[0] == "http.post"]
-
-
-# --- the pin ----------------------------------------------------------------
-
-def scenario_unpinned(rig):
-    """→ (the raised type, the any@v1 calls, the effects) of a run with no tier row."""
-    del rig.cfg["llm.tier.brain.caretaker"]
-    with pytest.raises(Exception) as err:
-        rig.run()
-    return type(err.value).__name__, list(rig.world.calls), list(rig.effects)
+    def job_ran(self, tid, at):
+        """The runtime's bookkeeping of one good run of a job."""
+        self.world.trigger(tid).update(lastRunAt=at, lastStatus="ok", consecutiveFailures=0)
 
 
-def test_unpinned_is_raised_before_any_read():
-    kind, calls, effects = scenario_unpinned(Rig())
-    assert kind == "unpinned"
-    assert calls == []
-    assert effects == [("config.get", "llm.tier.brain.caretaker")]
+def reruns(rig):
+    return [t for t in rig.world.triggers() if t.startswith("brain-rerun-")]
 
 
-def test_a_tier_row_without_a_model_is_unpinned():
-    rig = Rig(cfg={"llm.tier.brain.caretaker": {"provider": "openai-compat"}})
-    with pytest.raises(Exception) as err:
-        rig.run()
-    assert type(err.value).__name__ == "unpinned" and rig.world.calls == []
+def overdue_people(rig, by=80):
+    """The people job (every 900 s) last ran `by` seconds past its overdue limit."""
+    rig.frozen.add("brain-people")
+    rig.world.trigger("brain-people")["lastRunAt"] = T0 - PEOPLE_WINDOW - by
 
 
-def test_another_config_failure_is_not_unpinned():
-    rig = Rig()
-    real = rig._eff
-
-    def unreachable(name, payload):
-        if name == "config.get" and payload["key"] == "llm.tier.brain.caretaker":
-            raise ConfigError('config store unreachable for "llm.tier.brain.caretaker": io')
-        return real(name, payload)
-
-    rig.mod = connector_kernel(effect=unreachable, any_client=rig.world).use("brainCaretaker@v1")
-    with pytest.raises(Exception) as err:
-        rig.run()
-    assert type(err.value).__name__ == "snapshot_failed" and rig.world.calls == []
-
+# --- the args and the snapshot -------------------------------------------------
 
 def test_args_without_the_hub_are_unconfigured():
     rig = Rig()
     with pytest.raises(Exception) as err:
-        rig.run(args={"space": BAO, "tier": "brain.caretaker"})
+        rig.run(args={"space": BAO})
     assert type(err.value).__name__ == "unconfigured"
     assert rig.world.store("incidents") == {}
 
@@ -336,6 +265,35 @@ def test_unreadable_job_records_fail_the_snapshot():
     assert type(err.value).__name__ == "snapshot_failed"
 
 
+def test_unreadable_open_incidents_fail_the_snapshot():
+    rig = Rig()
+    real = rig.world.query
+
+    def query(space, oid, ds, **kw):
+        if ds == DATASETS["incidents"]:
+            raise RuntimeError("down")
+        return real(space, oid, ds, **kw)
+
+    rig.world.query = query
+    with pytest.raises(Exception) as err:
+        rig.run()
+    assert type(err.value).__name__ == "snapshot_failed"
+
+
+def test_the_caretaker_has_no_model():
+    rig = Rig()
+    rig.fail_job("brain-people", 2)
+    rig.fail_job("brain-facts", 3, stopped=True)
+    overdue_people(rig)
+    rig.run()
+    assert [e for e in rig.effects if e[0] not in ("time.now", "config.get", "oauth.status")] == []
+    assert ("config.get", "llm.tier.brain.caretaker") not in rig.effects
+    assert rig.world.incidents()
+    for inc in rig.world.incidents():
+        assert not {"hypothesis", "confidence", "evidence", "model", "modelTurnAt"} & set(inc)
+        assert inc["summary"] and inc["action"] and inc["actionAt"] == {"$date": T0 * 1000}
+
+
 # --- a healthy brain ----------------------------------------------------------
 
 def test_a_healthy_brain_writes_nothing_but_its_own_state():
@@ -343,10 +301,15 @@ def test_a_healthy_brain_writes_nothing_but_its_own_state():
     out = rig.run()
     assert out["faults"] == 0 and out["open"] == []
     assert rig.world.store("incidents") == {} and rig.world.store("observations") == {}
-    assert http_calls(rig) == [] and rig.world.chat == []
+    assert rig.world.chat == []
     state = rig.world.config("caretaker")
-    assert state["lastTickAt"] == T0 and state["noticeCooldownMin"] == 60
-    assert set(state["watch"]) == {"brain-promises", "brain-facts"}
+    assert state["lastTickAt"] == T0 and state["uptimeSince"] == T0 - DAY
+    assert state["noticeCooldownMin"] == 60 and "watch" not in state
+    # a caretaker with no state yet counts every age from its first tick
+    rig = Rig()
+    del rig.world.records[(HUB, DATASETS["config"])]["caretaker"]
+    rig.run()
+    assert rig.world.config("caretaker")["uptimeSince"] == T0
 
 
 # --- the graders, from snapshots ----------------------------------------------
@@ -354,11 +317,12 @@ def test_a_healthy_brain_writes_nothing_but_its_own_state():
 def snap(rig, **over):
     """A healthy snapshot, as `snapshot()` reads the World, with `over` applied."""
     s = {"now": T0, "space": BAO, "hub": HUB, "datasets": dict(DATASETS),
-         "anchor": "triggers", "triggers": [dict(r) for r in base_triggers()],
+         "anchor": "triggers", "uptimeSince": T0 - DAY,
+         "triggers": [dict(r) for r in base_triggers()],
          "runs": {}, "brainSpace": base_cfg()["brain.space"], "brainStatus": brain_status(),
          "exclusions": {"id": f"{HUB}/exclusions", "value": dict(EXCLUSIONS)},
-         "tiers": {"brain.caretaker": TIER, "brain.extractor": TIER, "classify": TIER},
-         "config": {}, "credential": True, "activeDevice": "peer-a", "cards": None,
+         "tiers": {"brain.extractor": TIER, "classify": TIER},
+         "credential": True, "activeDevice": "peer-a", "cards": None,
          "syncState": {"id": "ss1", "modifiedAt": {"$date": (T0 - 600) * 1000},
                        "sync_state": {"mailbox_id": "mb1", "cursor": "4711"}}}
     s.update(over)
@@ -378,8 +342,7 @@ def classes(faults):
 
 def test_the_graders_find_nothing_in_a_healthy_snapshot():
     mod = Rig().mod
-    faults, _ = mod.grade(snap(Rig()), {})
-    assert faults == {}
+    assert mod.grade(snap(Rig())) == {}
 
 
 def test_job_overdue():
@@ -402,15 +365,17 @@ def test_job_overdue():
     assert mod.grade_job_overdue(s) == []
 
 
-def test_a_paused_job_the_caretaker_itself_and_an_away_device_are_never_overdue():
+def test_a_paused_job_the_caretaker_itself_and_a_fresh_uptime_are_never_overdue():
     mod = Rig().mod
     paused = with_job(snap(Rig()), "brain-people", lastRunAt=T0 - DAY, enabled=False)
     assert mod.grade_job_overdue(paused) == []
     itself = with_job(snap(Rig()), "brain-caretaker", lastRunAt=T0 - 2000)
     assert mod.grade_job_overdue(with_job(itself, "brain-people", lastRunAt=T0 - 60)) == []
-    # the caretaker's own previous run is past its limit: the device was away
-    away = with_job(snap(Rig()), "brain-caretaker", lastRunAt=T0 - 2 * 900 - 121)
-    assert mod.grade_job_overdue(with_job(away, "brain-people", lastRunAt=T0 - DAY)) == []
+    # the device came up half an hour ago: a stamp from before that says nothing
+    up = with_job(snap(Rig(), uptimeSince=T0 - 1800), "brain-people", lastRunAt=T0 - DAY)
+    assert mod.grade_job_overdue(up) == []
+    up["uptimeSince"] = T0 - PEOPLE_WINDOW - 1
+    assert classes(mod.grade_job_overdue(up)) == [("job_overdue", "brain-people")]
 
 
 def test_a_job_that_never_ran_counts_from_the_setup_answer():
@@ -449,24 +414,42 @@ def test_job_failing():
     assert mod.grade_job_failing(s)[0]["evidence"]["lastErrorType"] == "unavailable"
 
 
+def stale_sync(rig, **over):
+    return snap(rig, syncState={"id": "ss1", "modifiedAt": {"$date": (T0 - 6 * 3600 - 1) * 1000},
+                                "sync_state": {"mailbox_id": "mb1", "cursor": "4711",
+                                               "skipped_count": 2}}, **over)
+
+
 def test_mail_stale():
     mod = Rig().mod
     (fault,) = mod.grade_mail_stale(snap(Rig(), credential=False))
     assert fault["subject"] == "mb1" and fault["evidence"]["credentialConnected"] is False
     assert fault["evidence"]["mailTriggerId"] == "brain-mail-sync"
-    old = snap(Rig(), syncState={"id": "ss1", "modifiedAt": {"$date": (T0 - 6 * 3600 - 1) * 1000},
-                                 "sync_state": {"mailbox_id": "mb1", "cursor": "4711",
-                                                "skipped_count": 2}})
-    (fault,) = mod.grade_mail_stale(old)
+    (fault,) = mod.grade_mail_stale(stale_sync(Rig()))
     assert fault["evidence"]["syncStateModifiedAt"] == T0 - 6 * 3600 - 1
     assert fault["evidence"]["cursor"] == "4711" and fault["evidence"]["skippedCount"] == 2
     assert mod.grade_mail_stale(snap(Rig())) == []
     assert mod.grade_mail_stale(snap(Rig(), credential="unavailable")) == []
-    # away suppresses the age, not a dead credential
-    away = with_job(old, "brain-caretaker", lastRunAt=T0 - 2 * 900 - 121)
-    assert mod.grade_mail_stale(away) == []
-    away["credential"] = False
-    assert len(mod.grade_mail_stale(away)) == 1
+    # a fresh uptime suppresses the age, not a dead credential
+    up = stale_sync(Rig(), uptimeSince=T0 - 3600)
+    assert mod.grade_mail_stale(up) == []
+    up["credential"] = False
+    assert len(mod.grade_mail_stale(up)) == 1
+
+
+def test_a_paused_mail_sync_is_not_stale():
+    mod = Rig().mod
+    paused = with_job(stale_sync(Rig(), credential=False), "brain-mail-sync", enabled=False)
+    assert mod.grade_mail_stale(paused) == []
+    # stopped by the runtime is not a pause
+    stopped = with_job(stale_sync(Rig()), "brain-mail-sync", enabled=False,
+                       lastStatus="auto_disabled")
+    assert classes(mod.grade_mail_stale(stopped)) == [("mail_stale", "mb1")]
+    # and live: a paused sync is never rerun
+    rig = Rig(cfg={"google.connected": False})
+    rig.world.trigger("brain-mail-sync")["enabled"] = False
+    out = rig.run()
+    assert out["faults"] == 0 and reruns(rig) == [] and rig.world.chat == []
 
 
 def test_exclusions_unreadable():
@@ -492,13 +475,14 @@ def test_tier_unpinned_covers_the_tiers_the_jobs_call():
           for i in rig.world.incidents()}
     assert ev["llm.tier.classify"] == {"present": False, "provider": None, "model": None}
     assert ev["llm.tier.brain.extractor"]["provider"] == "openai-compat"
-    # the drafter's tier is checked once the hub has drafts
+    # the drafter's tier is checked once the hub has drafts; the caretaker's own
+    # job calls no model, whatever its args say
     mod = Rig().mod
     s = snap(Rig(), datasets={**DATASETS, "drafts": "hubtype_drafts"})
     s["tiers"]["brain.drafter"] = None
     assert classes(mod.grade_tier_unpinned(s)) == [("tier_unpinned", "llm.tier.brain.drafter")]
     assert mod._tiers_in_use(s["triggers"], s["datasets"]) == [
-        "brain.caretaker", "brain.drafter", "brain.extractor", "classify"]
+        "brain.drafter", "brain.extractor", "classify"]
 
 
 def test_setup_blocked():
@@ -509,6 +493,8 @@ def test_setup_blocked():
     assert fault["evidence"]["ageS"] == 3601 and fault["evidence"]["setupOwner"] == "peer-a"
     fresh = {**waiting, "requestedAt": iso(T0 - 1800)}
     assert mod.grade_setup_blocked(snap(Rig(), brainSpace=fresh)) == []
+    # the request predates a boot half an hour ago: the age counts from the boot
+    assert mod.grade_setup_blocked(snap(Rig(), brainSpace=waiting, uptimeSince=T0 - 1800)) == []
     provisioning = {**brain_status(), "requestedAt": iso(T0 - 9000), "state": "provisioning",
                     "at": iso(T0 - 3700)}
     s = snap(Rig(), brainSpace={**waiting, "requestedAt": iso(T0 - 9000)},
@@ -546,70 +532,62 @@ def test_draft_backlog_once_the_hub_has_cards():
         "attemptsExhausted"] == 1
 
 
-# --- the silent model stall ----------------------------------------------------
+# --- the age base: uptimeSince -------------------------------------------------
 
-def promises_run(rig, at, failed=1, moved=False):
-    """One brainPromises run the way #124's does it with a failing provider and
-    one mailbox: success, providerFailed + 1, the cursor where it was."""
-    rec = rig.world.trigger("brain-promises")
-    rec.update(lastRunAt=at, lastStatus="ok")
-    rig.world.add_run("brain-promises", at)
-    stats = dict(rig.world.config("promises.stats"))
-    stats["providerFailed"] += failed
-    rig.world.set_config("promises.stats", stats)
-    if moved:
-        cursor = rig.world.config("promises.cursor")
-        rig.world.set_config("promises.cursor", {"mb1": cursor["mb1"] + 1000})
+def test_uptime_since_follows_the_caretakers_own_ticks_and_cadence():
+    mod = Rig().mod
+    triggers = base_triggers()
+    assert mod.uptime_since({}, triggers, T0) == T0                      # never ticked
+    assert mod.uptime_since({"lastTickAt": T0 - 900}, triggers, T0) == T0   # no base yet
+    held = {"lastTickAt": T0 - 900, "uptimeSince": T0 - DAY}
+    assert mod.uptime_since(held, triggers, T0) == T0 - DAY              # a tick on time
+    assert mod.uptime_since({**held, "lastTickAt": T0 - 1020}, triggers, T0) == T0 - DAY
+    assert mod.uptime_since({**held, "lastTickAt": T0 - 1021}, triggers, T0) == T0   # a gap
+    # the gap is measured against the record's own cadence, not the constant
+    hourly = [{**t, "spec": {"every_s": 3600}} if t["id"] == "brain-caretaker" else t
+              for t in triggers]
+    assert mod.uptime_since({**held, "lastTickAt": T0 - 3000}, hourly, T0) == T0 - DAY
+    assert mod.own_every_s(hourly) == 3600 and mod.own_every_s([]) == 900
 
 
-def test_a_job_whose_model_fails_without_progress_is_stalled():
+def test_a_restart_grades_nothing_overdue_before_the_jobs_first_run():
+    """The facts job (6 h) last ran 5 h before the device went down for an hour.
+    The runtime re-arms it at boot + 6 h; the caretaker waits two cadences and
+    the grace from the boot before it calls the job overdue."""
     rig = Rig()
-    rig.frozen.add("brain-promises")
+    rig.frozen.add("brain-facts")
+    rig.world.trigger("brain-facts")["lastRunAt"] = T0 - 5 * 3600
     rig.run(at=T0)
-    promises_run(rig, T0 + 600)
-    out = rig.run(at=T0 + 900)
-    assert out["faults"] == 0 and rig.world.config("caretaker")["watch"][
-        "brain-promises"]["streak"] == 1
-    out = rig.run(at=T0 + 1800)                        # no run since: the streak holds
-    assert out["faults"] == 0
-    promises_run(rig, T0 + 2400)
-    rig.run(at=T0 + 2700)
-    inc = rig.world.incident("model_stalled")
-    assert inc["subject"] == "brain-promises" and inc["status"] in ("escalated", "repairing")
-    (obs,) = rig.world.observations(inc["id"])
-    assert obs["evidence"] == {"streak": 2, "providerFailedDelta": 1, "providerFailedTotal": 2,
-                               "cursorMoved": False, "lastRunAt": T0 + 2400,
-                               "lastRunStatus": "ok"}
-
-
-def test_a_run_that_moves_its_cursor_resets_the_stall():
-    rig = Rig()
-    rig.frozen.add("brain-promises")
-    rig.run(at=T0)
-    promises_run(rig, T0 + 600)
-    rig.run(at=T0 + 900)
-    promises_run(rig, T0 + 1200, moved=True)           # one failure, but progress
-    rig.run(at=T0 + 1500)
-    assert rig.world.config("caretaker")["watch"]["brain-promises"]["streak"] == 0
-    promises_run(rig, T0 + 1800, failed=0)
-    rig.run(at=T0 + 2100)
-    assert rig.world.store("incidents") == {}
+    assert rig.world.config("caretaker")["uptimeSince"] == T0 - DAY
+    boot = T0 + 3600
+    first = None
+    for n in range(0, 60):
+        out = rig.run(at=boot + n * 900)
+        if n == 0:
+            assert rig.world.config("caretaker")["uptimeSince"] == boot
+        if out["faults"] and first is None:
+            first = boot + n * 900
+    assert first == boot + 49 * 900           # the first tick past boot + 12 h 2 min
+    inc = rig.world.incident("job_overdue")
+    assert inc["subject"] == "brain-facts" and inc["openedAt"] == {"$date": first * 1000}
+    assert rig.world.config("caretaker")["uptimeSince"] == boot
 
 
 # --- incidents and observations -------------------------------------------------
 
 def test_one_incident_per_fault_and_one_never_updated_observation_per_tick():
-    rig = Rig(model=Model(repair("notice", "consecutiveFailures"),))
-    rig.fail_job("brain-people", 2)
+    rig = Rig()
+    overdue_people(rig)
     rig.run(at=T0)
-    rig.run(at=T0 + 900)
+    rig.tick()
     (inc,) = rig.world.incidents()
-    assert inc["faultClass"] == "job_failing" and inc["subject"] == "brain-people"
+    assert inc["faultClass"] == "job_overdue" and inc["subject"] == "brain-people"
     assert inc["openedAt"] == {"$date": T0 * 1000}
-    assert inc["id"] == rig.mod.incident_id("job_failing", "brain-people", T0)
+    assert inc["id"] == rig.mod.incident_id("job_overdue", "brain-people", T0)
+    assert inc["summary"] == "brain people is overdue by 1 h"
     obs = rig.world.observations(inc["id"])
     assert [o["id"] for o in obs] == [f"{inc['id']}:{T0}", f"{inc['id']}:{T0 + 900}"]
-    assert obs[0]["evidence"]["consecutiveFailures"] == 2
+    assert obs[0]["evidence"]["overdueS"] == 80
     # observations go through upsert_records only: never a modify
     assert not [c for c in rig.world.calls if c[0] == "modify" and c[1] == "observations"]
     assert [c for c in rig.world.calls if c[0] == "upsert_records" and c[1] == "observations"]
@@ -618,18 +596,15 @@ def test_one_incident_per_fault_and_one_never_updated_observation_per_tick():
 def test_a_fault_that_clears_by_itself_closes_with_verified_absent():
     rig = Rig()
     rig.fail_job("brain-people", 2)
-    rig.cfg["llm.tier.brain.caretaker"] = TIER
-    rig.model.replies = []
-    rig.mod.MAX_CALLS = 0                              # no model turn: the incident stays open
     rig.run(at=T0)
-    assert rig.world.incident("job_failing")["status"] == "open"
-    rig.world.trigger("brain-people").update(consecutiveFailures=0, lastStatus="ok")
-    rig.run(at=T0 + 900)
+    assert rig.world.incident("job_failing")["status"] == "escalated"
+    rig.job_ran("brain-people", T0 + 800)
+    rig.tick()
     inc = rig.world.incident("job_failing")
     assert inc["status"] == "closed" and inc["closedAt"] == {"$date": (T0 + 900) * 1000}
     assert "verified" not in inc
     assert rig.world.observations(inc["id"])[-1]["evidence"] == {"clean": True}
-    rig.run(at=T0 + 1800)                              # closed: no more observations
+    rig.tick()                                         # closed: no more observations
     assert len(rig.world.observations(inc["id"])) == 2
 
 
@@ -642,371 +617,276 @@ def test_an_escalated_fault_waiting_on_the_user_is_observed_hourly():
     assert [o["tick"] for o in rig.world.observations(inc["id"])] == [T0, T0 + 900, T0 + 4500]
 
 
-# --- the model turn -------------------------------------------------------------
+# --- the rule table -------------------------------------------------------------
 
-def test_the_model_turn_gets_the_evidence_history_and_allowed_actions():
-    rig = Rig(model=Model(repair("enable_job", "lastStatus")))
-    rig.fail_job("brain-facts", 3, stopped=True, error="unpinned")
-    rig.run()
-    (seen,) = rig.model.inputs
-    assert seen["faultClass"] == "job_failing" and seen["subject"] == "brain-facts"
-    assert seen["allowed"] == ["run_job", "enable_job", "rewind_cursor", "notice", "escalate"]
-    assert seen["evidence"]["lastErrorType"] == "unpinned"
-    assert seen["history"] == [{"tick": T0, "evidence": seen["evidence"]}]
-    assert "stopped after repeated failures" in seen["summary"]
-    inc = rig.world.incident("job_failing")
-    assert inc["action"] == "enable_job" and inc["confidence"] == 0.9
-    assert inc["evidence"] == ["lastStatus"] and inc["hypothesis"] == "the job keeps failing"
-    assert inc["model"] == "codex/gpt-5.5" and inc["modelTurnAt"] == {"$date": T0 * 1000}
-
-
-def test_one_turn_per_incident_and_at_most_five_calls_a_run():
-    rig = Rig()
-    for tid in ("brain-heartbeat", "brain-people", "brain-promises", "brain-facts",
-                "brain-reconcile"):
-        rig.fail_job(tid, 2)
-    del rig.cfg["llm.tier.classify"]                   # a sixth incident
-    rig.run(at=T0)
-    assert len(http_calls(rig)) == 5
-    assert sum(i["status"] == "open" for i in rig.world.incidents()) == 1
-    rig.run(at=T0 + 900)
-    assert len(http_calls(rig)) == 6                   # the sixth, one tick later
-    rig.run(at=T0 + 1800)
-    assert len(http_calls(rig)) == 6                   # and none again
-
-
-def test_a_recent_turn_is_not_repeated_within_the_hour():
-    rig = Rig()
-    rig.fail_job("brain-people", 2)
-    rig.mod.MAX_CALLS = 0
-    rig.run(at=T0)
-    iid = rig.world.incident("job_failing")["id"]
-    rig.world.store("incidents")[iid]["modelTurnAt"] = {"$date": (T0 + 100) * 1000}
-    rig.mod.MAX_CALLS = 5
-    rig.run(at=T0 + 900)
-    assert http_calls(rig) == []
-    rig.run(at=T0 + 100 + 3600)
-    assert len(http_calls(rig)) == 1
-
-
-def run_reply(reply, fail="brain-people", **cfg):
-    """One tick with one failing job and the model answering `reply`."""
-    rig = Rig(cfg=cfg, model=Model(reply))
-    rig.fail_job(fail, 2)
-    rig.run()
-    return rig
-
-
-def reruns(rig):
-    return [t for t in rig.world.triggers() if t.startswith("brain-rerun-")]
-
-
-def test_a_word_confidence_is_zero_and_escalates():
-    rig = run_reply(repair("run_job", "consecutiveFailures", confidence="high"))
-    inc = rig.world.incident("job_failing")
-    assert inc["confidence"] == 0 and inc["action"] == "escalate"
-    assert inc["status"] == "escalated" and reruns(rig) == [] and rig.world.signals() == []
-
-
-def test_an_unsure_turn_escalates_rather_than_repairs():
-    rig = run_reply(repair("run_job", "consecutiveFailures", confidence=0.4))
-    assert rig.world.incident("job_failing")["action"] == "escalate" and reruns(rig) == []
-
-
-def refused(rig):
-    (sig,) = rig.world.signals()
-    inc = rig.world.incident("job_failing")
-    assert sig["kind"] == "repair_refused" and sig["decision"] == "refused"
-    assert sig["subject"] == inc["id"] and sig["tick"] == T0
-    assert inc["status"] == "escalated" and inc["action"] == "escalate"
-    assert reruns(rig) == [] and "hypothesis" not in inc
-    return sig["reason"]
-
-
-def scenario_unknown_evidence(rig):
-    rig.model.replies = [repair("run_job", "consecutiveFailures", "theUsersPassword")]
-    rig.fail_job("brain-people", 2)
-    rig.run()
-    return reruns(rig), rig.world.signals()
-
-
-def test_an_unknown_evidence_key_is_refused():
-    rig = Rig()
-    assert scenario_unknown_evidence(rig)[0] == []
-    assert "evidence" in refused(rig)
-
-
-def test_an_action_outside_the_allowlist_is_refused():
-    rig = run_reply(repair("delete_job", "consecutiveFailures"))
-    assert "not allowed" in refused(rig)
-    # an allowed repair that does not apply here is refused too: the job is not stopped
-    rig = run_reply(repair("enable_job", "consecutiveFailures"))
-    assert "not allowed" in refused(rig)
-
-
-def scenario_rewind_an_overdue_job(rig):
-    """An overdue job may be rerun or noticed, never rewound → its cursor after."""
-    rig.model.replies = [repair("rewind_cursor", "lastRunAt")]
-    rig.frozen.add("brain-promises")
-    rig.world.trigger("brain-promises")["lastRunAt"] = T0 - 2 * 1800 - 300
-    rig.run()
-    return rig.world.config("promises.cursor")
-
-
-def test_a_repair_another_class_allows_is_refused_here():
-    rig = Rig()
-    assert scenario_rewind_an_overdue_job(rig) == {"mb1": (T0 - 3600) * 1000}
-    (sig,) = rig.world.signals()
-    assert "not allowed" in sig["reason"]
-    assert rig.world.incident("job_overdue")["status"] == "escalated"
-
-
-def scenario_wrong_target(rig):
-    rig.model.replies = [lambda seen: {"hypothesis": "h", "confidence": 0.9,
-                                       "evidence": ["consecutiveFailures"],
-                                       "action": "run_job", "target": "brain-facts"}]
-    rig.fail_job("brain-people", 2)
-    rig.run()
-    return reruns(rig), rig.world.signals()
-
-
-def test_a_target_other_than_the_subject_is_refused():
-    rig = Rig()
-    assert scenario_wrong_target(rig)[0] == []
-    assert "target" in refused(rig)
-
-
-def test_an_unparsable_reply_escalates():
-    rig = run_reply("I think you should rerun it.")
-    assert refused(rig) == "unparsable reply"
-    inc = rig.world.incident("job_failing")
-    assert inc["model"] == "codex/gpt-5.5" and inc["modelTurnAt"] == {"$date": T0 * 1000}
-
-
-def test_validate_reply_rules():
+def test_the_rule_table():
     mod = Rig().mod
-    ev = {"lastStatus": "error", "consecutiveFailures": 2}
-    allowed = ["run_job", "notice"]
-
-    def check(reply):
-        return mod.validate_reply(json.dumps(reply), "brain-people", ev, allowed)
-
-    good = {"hypothesis": " h ", "confidence": 1, "evidence": ["lastStatus", "history"],
-            "action": "run_job", "target": "brain-people"}
-    assert check(good) == {"accepted": True, "action": "run_job", "hypothesis": "h",
-                           "confidence": 1, "evidence": ["lastStatus", "history"]}
-    for confidence in ("0.9", True, 1.5, -0.1, None):
-        assert check({**good, "confidence": confidence})["action"] == "escalate"
-    assert check({**good, "evidence": "lastStatus"})["accepted"] is False
-    assert check({**good, "evidence": []})["accepted"] is False        # a repair cites
-    assert check({**good, "evidence": [], "action": "escalate"})["accepted"] is True
-    assert check({**good, "target": None})["accepted"] is False
-    assert check({**good, "action": "escalate", "target": "x"})["accepted"] is False
-    assert mod.validate_reply("[]", "brain-people", ev, allowed)["accepted"] is False
-    long = check({**good, "hypothesis": "x" * 900})["hypothesis"]
-    assert len(long) == 500
+    s = snap(Rig())
+    assert mod.repair_for("job_overdue", "brain-people", s) == "run_job"
+    assert mod.repair_for("job_overdue", "brain-mail-sync", s) == "escalate"   # not a brain job
+    stopped = with_job(snap(Rig()), "brain-facts", lastStatus="auto_disabled", enabled=False)
+    assert mod.repair_for("job_failing", "brain-facts", stopped) == "enable_job"
+    assert mod.repair_for("job_failing", "brain-people", stopped) == "escalate"  # failing, running
+    assert mod.repair_for("job_failing", "brain-mail-sync", stopped) == "escalate"
+    assert mod.repair_for("mail_stale", "mb1", s) == "run_job"
+    stopped_sync = with_job(snap(Rig()), "brain-mail-sync", enabled=False,
+                            lastStatus="auto_disabled")
+    assert mod.repair_for("mail_stale", "mb1", stopped_sync) == "escalate"
+    unnamed = snap(Rig(), brainStatus={**brain_status(), "mailSync": None})
+    assert mod.repair_for("mail_stale", "mail", unnamed) == "escalate"
+    for cls, subject in (("setup_blocked", "brain-setup"), ("tier_unpinned", "llm.tier.classify"),
+                         ("exclusions_unreadable", "config/exclusions"),
+                         ("draft_backlog", "cards")):
+        assert mod.repair_for(cls, subject, s) == "escalate"
 
 
-# --- a model failure is not success ---------------------------------------------
-
-def test_a_failing_effect_escalates_and_fails_the_run_after_its_writes():
-    rig = Rig(model=Model(CredentialError("missing secret llm.key.anyai")))
-    rig.fail_job("brain-people", 2)
-    with pytest.raises(Exception) as err:
-        rig.run()
-    assert type(err.value).__name__ == "provider_failed"
-    inc = rig.world.incident("job_failing")
-    assert inc["status"] == "escalated" and inc["action"] == "escalate"
-    assert len(rig.world.observations(inc["id"])) == 1
-    assert rig.world.config("caretaker")["lastTickAt"] == T0
-    (_, body), = rig.world.chat
-    assert "people" in body["text"]
-
-
-def test_a_provider_status_escalates_too_and_one_good_call_keeps_the_run_ok():
-    rig = Rig(model=Model(401, repair("notice", "consecutiveFailures")))
-    rig.fail_job("brain-people", 2)
-    rig.fail_job("brain-promises", 2)
-    rig.run()                                          # one of two calls failed: no raise
-    statuses = sorted(i["status"] for i in rig.world.incidents())
-    assert statuses == ["escalated", "repairing"]
+def test_windows_and_cadence():
+    mod = Rig().mod
+    assert mod.windows(None) == (900, 3600)
+    assert mod.windows(600) == (1320, 3600)
+    assert mod.windows(900) == (1920, 3600)
+    assert mod.windows(21600) == (FACTS_WINDOW, FACTS_WINDOW)
+    s = snap(Rig())
+    assert mod.cadence_s("job_failing", "brain-facts", s) == 21600
+    assert mod.cadence_s("mail_stale", "mb1", s) == 900
+    assert mod.cadence_s("tier_unpinned", "llm.tier.classify", s) is None
 
 
 # --- the repairs ----------------------------------------------------------------
 
 def test_run_job_arms_a_once_trigger_with_the_jobs_program_and_args():
-    rig = run_reply(repair("run_job", "consecutiveFailures"))
+    rig = Rig()
+    overdue_people(rig)
+    rig.run()
     (rid,) = reruns(rig)
     assert rid == f"brain-rerun-brain-people-{T0}"
     rerun, job = rig.world.trigger(rid), rig.world.trigger("brain-people")
     assert rerun["kind"] == "once" and rerun["spec"] == {"at": T0} and rerun["enabled"] is True
     assert rerun["program"] == PEOPLE and rerun["args"] == job["args"]
     assert "lastRunAt" not in rerun and "owner" not in rerun
-    inc = rig.world.incident("job_failing")
-    assert inc["status"] == "repairing" and inc["actionAt"] == {"$date": T0 * 1000}
-    assert inc["verifyAt"] == {"$date": (T0 + 900) * 1000}
+    inc = rig.world.incident("job_overdue")
+    assert inc["status"] == "repairing" and inc["action"] == "run_job"
+    assert inc["actionAt"] == {"$date": T0 * 1000}
+    assert inc["verifyAt"] == {"$date": (T0 + PEOPLE_WINDOW) * 1000}   # two cadences, not 15 min
+    assert rig.world.chat == [] and rig.world.signals() == []
 
 
 def test_a_taken_rerun_id_gets_a_fresh_one():
-    rig = Rig(model=Model(repair("run_job", "consecutiveFailures")))
+    rig = Rig()
     rig.world.triggers()[f"brain-rerun-brain-people-{T0}"] = {
         "id": f"brain-rerun-brain-people-{T0}", "kind": "once", "program": PEOPLE}
-    rig.fail_job("brain-people", 2)
+    overdue_people(rig)
     rig.run()
     assert f"brain-rerun-brain-people-{T0}-2" in rig.world.triggers()
 
 
 def test_enable_job_writes_enabled_true_on_the_jobs_record_and_nothing_else():
-    rig = Rig(model=Model(repair("enable_job", "lastStatus")))
+    rig = Rig()
     rig.fail_job("brain-facts", 3, stopped=True)
     before = {k: dict(v) for k, v in rig.world.triggers().items()}
     rig.run()
     modifies = [c for c in rig.world.calls if c[0] == "modify" and c[1] == "agent_triggers"]
     assert modifies == [("modify", "agent_triggers", "brain-facts", ["enabled"])]
     after = rig.world.triggers()
-    assert after["brain-facts"] == {**before["brain-facts"], "enabled": True}
-    assert set(after) == set(before)
+    assert after["brain-facts"] == {**before["brain-facts"], "enabled": True, "lastRunAt": T0 - 60}
+    assert set(after) == set(before) and reruns(rig) == []
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "repairing" and inc["action"] == "enable_job"
+    assert inc["verifyAt"] == {"$date": (T0 + FACTS_WINDOW) * 1000}
 
 
-def test_enable_job_is_offered_only_for_a_brain_job_the_runtime_stopped():
-    mod = Rig().mod
-    s = with_job(snap(Rig()), "brain-facts", lastStatus="auto_disabled", enabled=False)
-    assert "enable_job" in mod.allowed_actions("job_failing", "brain-facts", s)
-    assert "enable_job" not in mod.allowed_actions("job_failing", "brain-people", s)
-    # the mail sync is not a brain job: no repair of its record
-    assert mod.allowed_actions("job_failing", "brain-mail-sync", s) == ["notice"]
-    assert mod.allowed_actions("setup_blocked", "brain-setup", s) == []
-    assert mod.allowed_actions("mail_stale", "mb1", s) == ["run_job", "notice"]
-    assert mod.allowed_actions("exclusions_unreadable", "config/exclusions", s) == ["notice"]
-
-
-def test_rewind_cursor_moves_the_jobs_cursor_a_day_back_once():
-    rig = Rig(model=Model(repair("rewind_cursor", "lastErrorType")))
-    rig.fail_job("brain-promises", 2)
-    rig.run(at=T0)
-    assert rig.world.config("promises.cursor") == {"mb1": (T0 - 3600 - DAY) * 1000}
-    assert rig.world.incident("job_failing")["status"] == "repairing"
-    rig.run(at=T0 + 900)                               # still failing: escalated, no rewind
-    assert rig.world.config("promises.cursor") == {"mb1": (T0 - 3600 - DAY) * 1000}
-    assert rig.world.incident("job_failing")["status"] == "escalated"
-    assert len(http_calls(rig)) == 1
-
-
-def test_an_unreadable_cursor_refuses_the_rewind():
-    rig = Rig(model=Model(repair("rewind_cursor", "lastErrorType")))
-    rig.world.set_config("facts.cursor", "garbled")
-    rig.fail_job("brain-facts", 2)
-    rig.run()
-    (sig,) = rig.world.signals()
-    assert "facts.cursor" in sig["reason"]
-    assert rig.world.config("facts.cursor") == "garbled"
-    assert rig.world.incident("job_failing")["status"] == "escalated"
-
-
-def test_rewind_rules():
-    mod = Rig().mod
-    assert mod._rewind_people({"mail": {"a": DAY * 1000 * 2}, "calendar": "x"}) == {
-        "mail": {"a": DAY * 1000}, "calendar": "x"}
-    assert mod._rewind_facts({"watermark": 2 * DAY}) == {"watermark": DAY}
-    assert mod._back_ms({"a": "x"}) is None and mod._rewind_people({}) is None
-    assert GMAIL_SYNC not in mod.REWIND
-
-
-def test_a_notice_is_one_batched_message_under_the_agents_name_per_cooldown():
-    rig = Rig(model=Model(repair("notice", "consecutiveFailures"),
-                          repair("notice", "consecutiveFailures")))
-    rig.fail_job("brain-people", 2)
-    rig.fail_job("brain-promises", 2)
-    rig.run(at=T0)
-    (chat_id, body), = rig.world.chat
-    assert chat_id == "chat-1" and body["agent"] == {"name": "bao", "done": True}
-    assert body["text"].count("\n• ") == 2 and "brain people failed 2 times" in body["text"]
-    # a third incident inside the cooldown waits; after it, one more message
-    del rig.cfg["llm.tier.classify"]
-    rig.run(at=T0 + 900)
-    assert len(rig.world.chat) == 1 and rig.world.config("caretaker")["pending"]
-    rig.cfg["agent.name"] = "Bobrik"
-    rig.run(at=T0 + 3600)
-    assert len(rig.world.chat) == 2 and rig.world.chat[1][1]["agent"]["name"] == "Bobrik"
-    assert rig.world.config("caretaker")["pending"] == []
-
-
-def test_a_queued_notice_whose_incident_closed_is_dropped():
+def test_a_failing_job_that_still_runs_is_escalated_not_repaired():
     rig = Rig()
     rig.fail_job("brain-people", 2)
-    rig.run(at=T0)                                     # escalated, noticed at once
-    assert len(rig.world.chat) == 1
-    del rig.world.records[(HUB, DATASETS["config"])]["exclusions"]
-    rig.run(at=T0 + 900)                               # escalated inside the cooldown
-    assert len(rig.world.config("caretaker")["pending"]) == 1
-    rig.world.seed_lists()
-    rig.run(at=T0 + 1800)                              # it clears before the notice goes
-    assert rig.world.incident("exclusions_unreadable")["status"] == "closed"
-    rig.run(at=T0 + 3700)
-    assert len(rig.world.chat) == 1 and rig.world.config("caretaker")["pending"] == []
+    rig.run()
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "escalated" and inc["action"] == "escalate"
+    assert inc["actionAt"] == {"$date": T0 * 1000} and "verifyAt" not in inc
+    assert reruns(rig) == [] and rig.world.trigger("brain-people")["enabled"] is True
+    (_, body), = rig.world.chat
+    assert "brain people failed 2 times in a row" in body["text"]
 
 
-def test_mail_stale_reruns_the_mail_sync_and_a_dead_credential_is_noticed():
-    rig = Rig(cfg={"google.connected": False}, model=Model(repair("run_job",
-                                                                  "credentialConnected")))
+def test_mail_stale_reruns_an_enabled_mail_sync():
+    rig = Rig(cfg={"google.connected": False})
     rig.run()
     inc = rig.world.incident("mail_stale")
-    assert inc["subject"] == "mb1"
+    assert inc["subject"] == "mb1" and inc["action"] == "run_job"
+    assert inc["verifyAt"] == {"$date": (T0 + PEOPLE_WINDOW) * 1000}   # the sync's cadence
     (rid,) = reruns(rig)
     assert rid == f"brain-rerun-brain-mail-sync-{T0}"
     assert rig.world.trigger(rid)["program"] == GMAIL_SYNC
     assert rig.world.trigger(rid)["args"] == {"space": BAO}
 
 
+def test_a_mail_sync_the_runtime_stopped_is_escalated_not_rerun():
+    rig = Rig(cfg={"google.connected": False})
+    rig.world.trigger("brain-mail-sync").update(enabled=False, lastStatus="auto_disabled")
+    rig.run()
+    inc = rig.world.incident("mail_stale")
+    assert inc["status"] == "escalated" and reruns(rig) == []
+    assert len(rig.world.chat) == 1
+
+
+def test_a_repair_that_cannot_be_written_is_a_refused_signal_and_an_escalation():
+    rig = Rig()
+    rig.fail_job("brain-facts", 3, stopped=True)
+    real = rig.world.modify
+
+    def modify(space, body):
+        if body["dataset"] == "agent_triggers":
+            raise RuntimeError("read-only replica")
+        return real(space, body)
+
+    rig.world.modify = modify
+    rig.run()
+    (sig,) = rig.world.signals()
+    inc = rig.world.incident("job_failing")
+    assert sig["kind"] == "repair_refused" and sig["decision"] == "refused"
+    assert sig["subject"] == inc["id"] and sig["tick"] == T0
+    assert "enable_job failed" in sig["reason"] and "read-only replica" in sig["reason"]
+    assert inc["status"] == "escalated" and inc["action"] == "enable_job"   # what it tried
+    assert rig.world.trigger("brain-facts")["enabled"] is False
+    (_, body), = rig.world.chat
+    assert "read-only replica" in body["text"]
+    rig.tick()                                         # and it is not tried again
+    assert len(rig.world.signals()) == 1
+
+
+def test_a_job_the_runtime_stops_after_its_notice_still_gets_its_enable_job():
+    rig = Rig()
+    rig.frozen.add("brain-people")
+    rig.fail_job("brain-people", 2)
+    rig.run(at=T0)                                     # failing, still running: a notice
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "escalated" and inc["action"] == "escalate"
+    rig.fail_job("brain-people", 3, stopped=True)      # the third failure stops it
+    rig.tick()
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "repairing" and inc["action"] == "enable_job"
+    assert inc["actionAt"] == {"$date": (T0 + 900) * 1000}
+    assert rig.world.trigger("brain-people")["enabled"] is True
+    assert len(rig.world.incidents()) == 1 and len(rig.world.chat) == 1
+
+
 # --- the ladder -------------------------------------------------------------------
 
 def test_a_repair_is_verified_then_soaked_before_it_is_fixed():
-    rig = Rig(model=Model(repair("run_job", "consecutiveFailures")))
-    rig.fail_job("brain-people", 2)
+    rig = Rig()
+    overdue_people(rig)
     rig.run(at=T0)
-    rig.world.trigger("brain-people").update(consecutiveFailures=0, lastStatus="ok")
-    rig.run(at=T0 + 600)                               # clean, but before verifyAt
-    assert rig.world.incident("job_failing")["status"] == "repairing"
-    rig.run(at=T0 + 900)
-    inc = rig.world.incident("job_failing")
-    assert inc["status"] == "soaking" and inc["verifyAt"] == {"$date": (T0 + 900 + 3600) * 1000}
-    rig.run(at=T0 + 1800)
-    assert rig.world.incident("job_failing")["status"] == "soaking"
-    rig.run(at=T0 + 900 + 3600)
-    inc = rig.world.incident("job_failing")
+    (rid,) = reruns(rig)
+    rig.world.trigger(rid).update(lastRunAt=T0 + 100, lastStatus="ok")   # the rerun ran
+    rig.frozen.discard("brain-people")                 # and the job keeps running on its own
+    rig.tick()                                         # clean, but before verifyAt
+    assert rig.world.incident("job_overdue")["status"] == "repairing"
+    rig.run(at=T0 + PEOPLE_WINDOW)
+    inc = rig.world.incident("job_overdue")
+    assert inc["status"] == "soaking"
+    assert inc["verifyAt"] == {"$date": (T0 + PEOPLE_WINDOW + 3600) * 1000}
+    rig.tick()
+    assert rig.world.incident("job_overdue")["status"] == "soaking"
+    rig.run(at=T0 + PEOPLE_WINDOW + 3600)
+    inc = rig.world.incident("job_overdue")
     assert inc["status"] == "closed" and inc["verified"] is True
-    assert inc["closedAt"] == {"$date": (T0 + 4500) * 1000}
-    assert len(http_calls(rig)) == 1 and rig.world.chat == []   # success is silent
+    assert inc["closedAt"] == {"$date": (T0 + PEOPLE_WINDOW + 3600) * 1000}
+    assert rig.world.chat == [] and len(reruns(rig)) == 1   # success is silent
 
 
 def test_a_repair_that_does_not_hold_escalates_once_with_no_second_repair():
-    rig = Rig(model=Model(repair("run_job", "consecutiveFailures")))
-    rig.fail_job("brain-people", 2)
+    rig = Rig()
+    overdue_people(rig)
     rig.run(at=T0)
-    rig.run(at=T0 + 900)                               # still failing at verifyAt
-    inc = rig.world.incident("job_failing")
+    rig.tick()                                         # still overdue, before verifyAt
+    assert rig.world.incident("job_overdue")["status"] == "repairing" and rig.world.chat == []
+    rig.run(at=T0 + PEOPLE_WINDOW)                     # the rerun never ran: dirty at verifyAt
+    inc = rig.world.incident("job_overdue")
     assert inc["status"] == "escalated" and inc["verified"] is False
     assert inc["action"] == "run_job"                  # what it tried stays on the record
-    assert len(rig.world.chat) == 1
-    for tick in (T0 + 1800, T0 + 5400, T0 + 9000):
-        rig.run(at=tick)
-    assert len(http_calls(rig)) == 1 and len(reruns(rig)) == 1 and len(rig.world.chat) == 1
-    rig.world.trigger("brain-people").update(consecutiveFailures=0, lastStatus="ok")
-    rig.run(at=T0 + 9900)                              # then it clears: closed, still unverified
-    inc = rig.world.incident("job_failing")
+    (_, body), = rig.world.chat
+    assert "(the repair did not hold)" in body["text"]
+    for _ in range(8):
+        rig.tick()
+    assert len(reruns(rig)) == 1 and len(rig.world.chat) == 1
+    rig.frozen.discard("brain-people")
+    rig.tick()                                         # then it clears: closed, still unverified
+    inc = rig.world.incident("job_overdue")
     assert inc["status"] == "closed" and inc["verified"] is False
 
 
 def test_a_dirty_tick_during_the_soak_escalates():
-    rig = Rig(model=Model(repair("run_job", "consecutiveFailures")))
-    rig.fail_job("brain-people", 2)
+    rig = Rig()
+    overdue_people(rig)
     rig.run(at=T0)
-    rig.world.trigger("brain-people").update(consecutiveFailures=0, lastStatus="ok")
-    rig.run(at=T0 + 900)
-    rig.world.trigger("brain-people").update(consecutiveFailures=2, lastStatus="error")
-    rig.run(at=T0 + 1800)
+    rig.frozen.discard("brain-people")
+    for _ in range(3):
+        rig.tick()                                     # T0 + 45 min: past verifyAt, clean
+    assert rig.world.incident("job_overdue")["status"] == "soaking"
+    rig.frozen.add("brain-people")
+    rig.world.trigger("brain-people")["lastRunAt"] = T0 - DAY
+    rig.tick()
+    inc = rig.world.incident("job_overdue")
+    assert inc["status"] == "escalated" and inc["verified"] is False
+
+
+def test_enable_job_verifies_after_the_jobs_own_run_not_at_fifteen_minutes():
+    """A 6 h job the runtime stopped keeps `auto_disabled` on its record until its
+    next own run. The repair is pending until then: no escalation at +15 min."""
+    rig = Rig()
+    rig.frozen.add("brain-facts")
+    rig.fail_job("brain-facts", 3, stopped=True)
+    rig.run(at=T0)
+    iid = rig.world.incident("job_failing")["id"]
+    rig.tick()                                         # +15 min: enabled, still auto_disabled
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "repairing" and rig.world.chat == []
+    obs = rig.world.observations(iid)[-1]["evidence"]
+    assert obs["pending"] is True and obs["lastStatus"] == "auto_disabled" and obs["enabled"]
+    for _ in range(4):
+        rig.tick()
+    assert rig.world.incident("job_failing")["status"] == "repairing"
+    rig.job_ran("brain-facts", T0 + 21600)             # its own next run, six hours on
+    rig.run(at=T0 + 21600 + 300)                       # clean, before verifyAt
+    assert rig.world.incident("job_failing")["status"] == "repairing"
+    assert rig.world.observations(iid)[-1]["evidence"] == {"clean": True}
+    rig.run(at=T0 + FACTS_WINDOW)
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "soaking"
+    assert inc["verifyAt"] == {"$date": (T0 + 2 * FACTS_WINDOW) * 1000}
+    rig.run(at=T0 + 2 * FACTS_WINDOW)
+    inc = rig.world.incident("job_failing")
+    assert inc["status"] == "closed" and inc["verified"] is True
+    assert rig.world.chat == [] and rig.world.signals() == []
+
+
+def test_a_re_enabled_job_that_fails_again_escalates():
+    rig = Rig()
+    rig.frozen.add("brain-facts")
+    rig.fail_job("brain-facts", 3, stopped=True)
+    rig.run(at=T0)
+    rig.tick()
+    # it ran, failed, and the runtime stopped it again: no longer pending, dirty
+    rig.world.trigger("brain-facts").update(lastRunAt=T0 + 21600, enabled=False)
+    rig.run(at=T0 + 21600 + 300)
+    assert rig.world.observations()[-1]["evidence"].get("pending") is None
+    assert rig.world.incident("job_failing")["status"] == "repairing"   # verifyAt not reached
+    rig.run(at=T0 + FACTS_WINDOW)
     inc = rig.world.incident("job_failing")
     assert inc["status"] == "escalated" and inc["verified"] is False
+    assert inc["action"] == "enable_job" and len(rig.world.chat) == 1
+
+
+def test_pending_rule():
+    mod = Rig().mod
+    inc = {"action": "enable_job", "actionAt": {"$date": T0 * 1000}}
+    waiting = {"evidence": {"enabled": True, "lastStatus": "auto_disabled", "lastRunAt": T0 - 60}}
+    assert mod.pending(inc, waiting) is True
+    assert mod.pending(inc, {"evidence": {**waiting["evidence"], "lastRunAt": None}}) is True
+    ran = {"evidence": {**waiting["evidence"], "lastRunAt": T0 + 60}}
+    assert mod.pending(inc, ran) is False                     # a newer run: the record speaks
+    assert mod.pending(inc, {"evidence": {**waiting["evidence"], "enabled": False}}) is False
+    assert mod.pending({**inc, "action": "run_job"}, waiting) is False
+    assert mod.pending(inc, None) is False
 
 
 def test_the_ladder_steps():
@@ -1019,33 +899,90 @@ def test_the_ladder_steps():
     assert mod.step({"status": "repairing", "verifyAt": v}, T0 - 1, False) is None
     assert mod.step({"status": "repairing", "verifyAt": v}, T0, True) == {
         "status": "soaking", "verifyAt": T0 + 3600}
+    assert mod.step({"status": "repairing", "verifyAt": v}, T0, True, 7200) == {
+        "status": "soaking", "verifyAt": T0 + 7200}
     assert mod.step({"status": "repairing", "verifyAt": v}, T0, False) == {
         "status": "escalated", "verified": False}
+    assert mod.step({"status": "repairing", "verifyAt": v}, T0, None) is None   # pending
     assert mod.step({"status": "soaking", "verifyAt": v}, T0 - 1, True) is None
     assert mod.step({"status": "soaking", "verifyAt": v}, T0 - 1, False)["verified"] is False
+    assert mod.step({"status": "soaking", "verifyAt": v}, T0, None) is None
     assert mod.step({"status": "soaking", "verifyAt": v}, T0, True)["verified"] is True
     assert mod.step({"status": "closed"}, T0, True) is None
 
 
+# --- notices ---------------------------------------------------------------------
+
+def test_a_notice_is_one_batched_message_under_the_bao_name_per_cooldown():
+    rig = Rig()
+    rig.fail_job("brain-people", 2)
+    rig.fail_job("brain-promises", 2)
+    rig.run(at=T0)
+    (chat_id, body), = rig.world.chat
+    assert chat_id == "chat-1" and body["agent"] == {"name": "bao", "done": True}
+    assert body["text"].startswith("The brain needs a look:\n")
+    assert body["text"].count("\n• ") == 2 and "brain people failed 2 times" in body["text"]
+    # a third incident inside the cooldown waits; after it, one more message
+    del rig.cfg["llm.tier.classify"]
+    rig.tick()
+    assert len(rig.world.chat) == 1 and rig.world.config("caretaker")["pending"]
+    rig.run(at=T0 + 3600)
+    assert len(rig.world.chat) == 2 and rig.world.chat[1][1]["agent"]["name"] == "bao"
+    assert "no model is set for llm.tier.classify" in rig.world.chat[1][1]["text"]
+    assert rig.world.config("caretaker")["pending"] == []
+
+
+def test_a_notice_that_cannot_be_sent_is_counted_and_kept():
+    rig = Rig()
+    rig.fail_job("brain-people", 2)
+    real = rig.world.chat_send
+    rig.world.chat_send = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("chat down"))
+    out = rig.run(at=T0)
+    assert out["noticeFailed"] == 1 and out["notices"] == 0
+    assert rig.world.incident("job_failing")["status"] == "escalated"
+    state = rig.world.config("caretaker")
+    assert len(state["pending"]) == 1 and "lastNoticeAt" not in state
+    rig.world.chat_send = real
+    out = rig.tick()
+    assert out["notices"] == 1 and len(rig.world.chat) == 1
+    assert rig.world.config("caretaker")["lastNoticeAt"] == T0 + 900
+
+
+def test_a_queued_notice_whose_incident_closed_is_dropped():
+    rig = Rig()
+    rig.fail_job("brain-people", 2)
+    rig.run(at=T0)                                     # escalated, noticed at once
+    assert len(rig.world.chat) == 1
+    del rig.world.records[(HUB, DATASETS["config"])]["exclusions"]
+    rig.tick()                                         # escalated inside the cooldown
+    assert len(rig.world.config("caretaker")["pending"]) == 1
+    rig.world.seed_lists()
+    rig.tick()                                         # it clears before the notice goes
+    assert rig.world.incident("exclusions_unreadable")["status"] == "closed"
+    rig.run(at=T0 + 3700)
+    assert len(rig.world.chat) == 1 and rig.world.config("caretaker")["pending"] == []
+
+
 # --- escalation, cards, the report -------------------------------------------------
 
-def with_phase3_stores(rig):
+def with_card_stores(rig):
     datasets = {**DATASETS, "cards": CARDS, "standups": STANDUPS}
     rig.cfg["brain.status"] = brain_status(datasets)
 
 
-def test_setup_blocked_escalates_without_a_model_turn():
+def test_setup_blocked_escalates_with_a_card_and_a_notice():
     rig = Rig()
-    with_phase3_stores(rig)
+    with_card_stores(rig)
     del rig.world.triggers()["brain-setup"]
     rig.run()
     inc = rig.world.incident("setup_blocked")
     assert inc["status"] == "escalated" and inc["action"] == "escalate"
-    assert http_calls(rig) == [] and "modelTurnAt" not in inc
+    assert inc["actionAt"] == {"$date": T0 * 1000}
     (card,) = [c for c in rig.world.cards().values() if c["kind"] == "incident"]
     assert card["kind"] == "incident" and card["subjectKey"] == inc["id"]
     assert card["title"] == "setup_blocked: brain-setup" and card["status"] == "open"
     assert card["id"] == rig.mod.card_id("incident", inc["id"]) == inc["cardId"]
+    assert card["reason"] == inc["summary"]
     assert "brain-setup job is gone; switching the brain on again" in card["reason"]
     assert card["sourceUri"] == f"any://o/{BAO}/{HUB}/incidents/{inc['id']}"
     (_, body), = rig.world.chat
@@ -1063,7 +1000,7 @@ def test_without_cards_the_notice_is_all():
 
 def test_a_dismissed_card_stays_dismissed():
     rig = Rig()
-    with_phase3_stores(rig)
+    with_card_stores(rig)
     del rig.world.triggers()["brain-setup"]
     iid = rig.mod.incident_id("setup_blocked", "brain-setup", T0)
     cid = rig.mod.card_id("incident", iid)
@@ -1073,38 +1010,62 @@ def test_a_dismissed_card_stays_dismissed():
     assert rig.world.incident("setup_blocked")["cardId"] == cid
 
 
+def info_cards(rig):
+    return [c for c in rig.world.cards().values() if c["kind"] == "info"]
+
+
 def test_a_standup_only_for_a_run_that_did_something_and_the_daily_report_once():
-    rig = Rig(model=Model(repair("run_job", "consecutiveFailures")))
-    with_phase3_stores(rig)
+    rig = Rig()
+    with_card_stores(rig)
     rig.world.set_config("caretaker", {"lastReportDay": "2027-01-15", "noticeCooldownMin": 60})
     rig.run(at=T0)                                     # a healthy tick: nothing
     assert rig.world.standups() == {}
-    rig.fail_job("brain-people", 2)
-    rig.run(at=T0 + 900)
+    rig.frozen.add("brain-facts")                      # it waits for its own 6 h run
+    rig.fail_job("brain-facts", 3, stopped=True)
+    rig.tick()
     (row,) = rig.world.standups().values()
     assert row["id"] == f"caretaker:{T0 + 900}" and row["job"] == "caretaker"
     assert any("opened 1 incident" in d for d in row["did"])
-    assert any("unverified" in d for d in row["did"]) and row["counts"]["repaired"] == 1
+    assert any("tried enable_job" in d and "unverified" in d for d in row["did"])
+    assert row["counts"]["repaired"] == 1 and row["needs"] == []
     rig.run(at=T0 + 1200)                              # repairing, waiting: nothing new
     assert len(rig.world.standups()) == 1
     # the first tick of the next UTC day reports the last 24 h, once
     next_day = (T0 // DAY + 1) * DAY + 60
-    rig.world.trigger("brain-people").update(consecutiveFailures=0, lastStatus="ok")
     rig.run(at=next_day)
-    reports = [c for c in rig.world.cards().values() if c["kind"] == "info"]
-    (report,) = reports
+    (report,) = info_cards(rig)
     day = time.strftime("%Y-%m-%d", time.gmtime(next_day))
     assert report["title"] == f"Caretaker report {day}"
     assert report["subjectKey"] == f"caretaker:{day}"
     assert "1 incidents: 0 fixed (verified), 1 tried, unverified" in report["reason"]
     rig.run(at=next_day + 900)
-    assert len([c for c in rig.world.cards().values() if c["kind"] == "info"]) == 1
+    assert len(info_cards(rig)) == 1
     assert rig.world.config("caretaker")["lastReportDay"] == day
+
+
+def test_the_report_counts_incidents_opened_or_closed_in_the_last_day_only():
+    rig = Rig()
+    with_card_stores(rig)
+    del rig.world.triggers()["brain-setup"]
+    rig.run(at=T0)                                     # escalated; it waits on the user
+    day1 = (T0 // DAY + 1) * DAY + 60
+    rig.run(at=day1)
+    (report,) = info_cards(rig)
+    assert "1 incidents: 0 fixed (verified), 0 tried, unverified, 1 escalated" in report["reason"]
+    for n in (2, 3, 4):
+        rig.run(at=day1 + (n - 1) * DAY)               # still escalated: no card every day
+        assert len(info_cards(rig)) == 1
+    assert rig.world.incident("setup_blocked")["status"] == "escalated"
+    # an incident that closes a week after it opened is reported on the day it closed
+    rig.world.triggers()["brain-setup"] = base_triggers()[-1]
+    rig.run(at=day1 + 7 * DAY)
+    assert len(info_cards(rig)) == 2
+    assert "1 healed by themselves" in info_cards(rig)[-1]["reason"]
 
 
 def test_a_quiet_day_writes_no_report():
     rig = Rig()
-    with_phase3_stores(rig)
+    with_card_stores(rig)
     rig.run()
     assert rig.world.cards() == {} and rig.world.standups() == {}
     assert rig.world.config("caretaker")["lastReportDay"] == time.strftime(
@@ -1113,7 +1074,7 @@ def test_a_quiet_day_writes_no_report():
 
 def test_the_live_hub_datasets_win_over_the_jobs_args():
     rig = Rig()
-    with_phase3_stores(rig)
+    with_card_stores(rig)
     rig.cfg["brain.status"]["hub"]["objectId"] = "another-hub"
     del rig.world.triggers()["brain-setup"]
     rig.run()
@@ -1127,39 +1088,46 @@ def mutant(old, new=""):
     return SOURCE.replace(old, new)
 
 
-def test_deleting_the_pin_check_is_caught():
-    src = mutant("    _pinned(tier)   # the first statement: no read, no write before the pin "
-                 "(ADR-038 §1)\n")
-    kind, calls, effects = scenario_unpinned(Rig(source=src))
-    assert (kind, calls, effects) != ("unpinned", [], [("config.get", "llm.tier.brain.caretaker")])
+def test_deleting_the_paused_sync_guard_is_caught():
+    src = mutant("    if _mail_paused(snap):\n        return []\n")
+    rig = Rig(cfg={"google.connected": False}, source=src)
+    rig.world.trigger("brain-mail-sync")["enabled"] = False
+    assert rig.run()["faults"] == 1
 
 
-def test_deleting_the_target_check_is_caught():
-    src = mutant('    if reply.get("target") != subject:\n'
-                 '        return _refused("the target is not the incident\'s subject")\n')
-    runs, signals = scenario_wrong_target(Rig(source=src))
-    assert runs != [] and signals == []
+def test_deleting_the_uptime_base_is_caught():
+    src = mutant('    return snap["now"] - max(since, snap["uptimeSince"])\n',
+                 '    return snap["now"] - since\n')
+    rig = Rig(source=src)
+    rig.frozen.add("brain-facts")
+    rig.world.trigger("brain-facts")["lastRunAt"] = T0 - 5 * 3600
+    rig.run(at=T0)
+    boot = T0 + 3600
+    first = None
+    for n in range(0, 60):
+        if rig.run(at=boot + n * 900)["faults"] and first is None:
+            first = boot + n * 900
+    assert first is not None and first < boot + 49 * 900
 
 
-def test_deleting_the_evidence_key_check_is_caught():
-    src = mutant("    if not isinstance(cited, list) or not all(isinstance(k, str) and k in known"
-                 " for k in cited):\n",
-                 "    if not isinstance(cited, list):\n")
-    runs, signals = scenario_unknown_evidence(Rig(source=src))
-    assert runs != [] and signals == []
-
-
-def test_deleting_the_allowlist_check_is_caught():
-    src = mutant('    if action != "escalate" and action not in allowed:\n'
-                 '        return _refused(f"action {str(action)[:40]!r} is not allowed here")\n')
-    assert scenario_rewind_an_overdue_job(Rig(source=src)) != {"mb1": (T0 - 3600) * 1000}
-
-
-def test_deleting_the_confidence_floor_is_caught():
-    src = mutant('    if action != "escalate" and confidence < CONFIDENCE_MIN:\n'
-                 '        action = "escalate"                 # an unsure turn never repairs\n')
-    rig = Rig(source=src, model=Model(repair("run_job", "consecutiveFailures",
-                                             confidence="high")))
+def test_deleting_the_stopped_check_in_the_rule_table_is_caught():
+    src = mutant('        if job is not None and job.get("lastStatus") == STOPPED '
+                 'and not _enabled(job):\n',
+                 '        if job is not None:\n')
+    rig = Rig(source=src)
     rig.fail_job("brain-people", 2)
     rig.run()
-    assert reruns(rig) != []
+    assert rig.world.signals() != []                   # the executor refuses what the rule allowed
+
+
+def test_deleting_the_one_repair_guard_is_caught():
+    src = mutant('            if inc.get("status") not in ("open", "escalated") '
+                 'or inc.get("action") in REPAIRS:\n'
+                 '                continue\n',
+                 '            if inc.get("status") == "closed":\n'
+                 '                continue\n')
+    rig = Rig(source=src)
+    overdue_people(rig)
+    rig.run(at=T0)
+    rig.tick()
+    assert len(reruns(rig)) > 1
