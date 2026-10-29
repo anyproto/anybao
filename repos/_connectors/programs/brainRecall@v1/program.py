@@ -7,9 +7,9 @@ searches objects, mail and promises, newest first within each. Read
 before a reply or a meeting; quote a fact's evidence and a hit's `link`.
 """
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-034 §6. Deterministic: no model. `search` runs one index search PER
+# ADR-033 §2 §6. Deterministic: no model. `search` runs one index search PER
 # SCOPE — one call with a shared limit lets mail crowd everything else out —
 # reads each hit's record for its date, and reranks a scope's hits by
 # score × 0.5^(age / half-life); a promise does not decay. Calendar and

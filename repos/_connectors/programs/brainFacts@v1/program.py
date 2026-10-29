@@ -1,8 +1,8 @@
 """Brain facts: what correspondents say about themselves, each with its sentence."""
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-035. A cron job the brain's setup run writes (every 21600 s), args
+# ADR-033 §3. A cron job the brain's setup run writes (every 21600 s), args
 # {space, hub, datasets, tier}. It is the one brain program that reads mail
 # with a model, and it does nothing until the user allowed that in chat
 # (`brain.model`, written by brainSetup.allow_model()). Then, per person
