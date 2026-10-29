@@ -27,11 +27,11 @@ repo offers; per-tool docs live in the space (`program_description` /
 - `README.md` — this file. Its **first line is the repo's one-line
   description** shown to the agent in `## Repos`; keep it meaningful.
 - `skills/` — on-demand skills that ship beside their programs
-  (`brain-core`, ADR-033 §1). They list in the agent's `## Skills`
+  (`brain-core`, ADR-033 §1.1). They list in the agent's `## Skills`
   index by name and one line and load with `get_skill`; `_`-system
   skills still live only in the agent overlay (ADR-009 §3).
 - `programs/brain*@v1` — the AI brain, a plugin of this repo
-  (`__any_category__ = "plugin"`, ADR-033/034/035), not a service
+  (`__any_category__ = "plugin"`, ADR-033 §1.1), not a service
   connector.
 
 ## Deploy

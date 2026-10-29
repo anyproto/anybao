@@ -4,10 +4,11 @@ The brain is off until the user asks for it. `status()` says how it
 stands; `on()` (Google must be connected) and `off()` switch it after
 the user's yes; `allow_model()` is the user's consent to read mail with
 a model; `exclude()` / `include()` keep a person out of it, or let them
-back in. A trigger run of this program does the setup.
+back in; `watch_chats()` / `stop_watching_chats()` / `scan_pages()` name
+the chats it reads for promises and asks. A trigger run does the setup.
 """
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
 # ADR-033. The contract between the chat tools here, the setup run and
 # any client that reads the answer is two agent_config rows and one
@@ -43,23 +44,25 @@ kit = use("brainKit@v1")  # noqa: F821 - guest global
 
 SPACE_KEY = "brain.space"
 STATUS_KEY = "brain.status"
-# the user's consent to reading mail with a model (ADR-035 §1): written
-# only by allow_model() / deny_model() here, after a plain-words yes
+# the user's consent to reading mail, and watched chats, with a model
+# (ADR-033 §3.1): written only by allow_model() / deny_model() here, after a
+# plain-words yes
 MODEL_KEY = "brain.model"
 JOBS_KEY = "brain.jobs"
 STOPPED = "auto_disabled"
 SETUP_TRIGGER_ID = "brain-setup"
 PROGRAM = "connectors:brainSetup@v1"
 HEARTBEAT = "connectors:brainHeartbeat@v1"
+CARETAKER = "connectors:brainCaretaker@v1"
+CHAT_SCAN = "connectors:brainChatScan@v1"
 PEOPLE = "connectors:brainPeople@v1"
 PROMISES = "connectors:brainPromises@v1"
 FACTS = "connectors:brainFacts@v1"
 GMAIL_SYNC = "connectors:gmailSync@v1"
 MAIL_SYNC_ID = "brain-mail-sync"
-# the hub's shape; a reconcile run that finds an older hub re-arms setup,
-# which installs what the newer shape adds (1: Phase 0, 2: + people,
-# promises and tasks, 3: + facts)
-HUB_VERSION = 3
+# the hub's shape, one number: a reconcile run that finds a hub recorded at
+# a lower one re-arms setup, which installs what the shape adds (ADR-033 §1.3)
+HUB_VERSION = 1
 BUNDLE = "brain/v1"
 HUB_SEED = "brain/hub/v1"
 HUB_TYPE = "brain_hub"
@@ -68,9 +71,15 @@ CATALOG_APPS = ("people", "meetings", "tasks")
 # the brain's model tiers, seeded from these sources only when absent so
 # an edit in Settings → Model always wins
 # one row per brain job that calls a model; a job's row arrives with the
-# job (the facts extractor now, ADR-035 §3), never ahead of it
-TIERS = (("llm.tier.brain.extractor", "llm.tier.codegen"),)
+# job (the facts extractor, ADR-033 §3.3; the reply drafter, §4.6), never
+# ahead of it
+TIERS = (("llm.tier.brain.extractor", "llm.tier.codegen"),
+         ("llm.tier.brain.drafter", "llm.tier.codegen"))
 EXCLUSIONS_SEED = {"version": 1, "personIds": [], "emails": [], "domains": []}
+# the heartbeat's drafting knobs (ADR-033 §4.5), seeded when absent and the
+# user's to edit afterwards; quietSenders are regexes over a sender address
+DRAFTING_SEED = {"maxPerRun": 3, "replyWindowDays": 5, "meetingSoonHours": 24,
+                 "quietSenders": []}
 # senders, domains and labels whose mail the people and promises jobs skip
 BLOCKLIST_SEED = {"domains": [], "senders": [], "labels": []}
 NOT_READY_TRIES = 5
@@ -90,9 +99,14 @@ def _f(key, kind, required=False, mutable=False):
     return field
 
 
-# The hub's stores. Later phases ADD datasets; each one's
-# full field set lands the first time it is declared, because required
-# fields can only be declared then.
+# written only by the chat tools below, after the user's yes (ADR-033 §7.1)
+CHAT_SPACES_KEY = "brain.chatScan.spaces"
+CHAT_PAGES_KEY = "brain.chatScan.pages"
+WRITABLE_ROLES = ("owner", "admin", "writer")
+
+# The hub's stores (ADR-033 §1.3, §2.1, §3.2, §4.1, §5.4, §7.4). A store's full
+# field set lands the first time it is declared, because required fields can
+# only be declared then; _create_dataset adds a field a stored definition lacks.
 DATASETS = (
     {"key": "signals", "displayName": "Brain signals", "shared": True,
      "idRule": "user", "deleteBy": "author",
@@ -114,17 +128,13 @@ DATASETS = (
      "fields": [_f("faultClass", "string", required=True),
                 _f("subject", "string", required=True),
                 _f("openedAt", "datetime", required=True),
+                _f("summary", "string"),
                 _f("status", "string", mutable=True),
                 _f("closedAt", "datetime", mutable=True),
-                _f("hypothesis", "string", mutable=True),
-                _f("confidence", "number", mutable=True),
-                _f("evidence", "array", mutable=True),
                 _f("action", "string", mutable=True),
                 _f("actionAt", "datetime", mutable=True),
                 _f("verifyAt", "datetime", mutable=True),
                 _f("verified", "boolean", mutable=True),
-                _f("modelTurnAt", "datetime", mutable=True),
-                _f("model", "string", mutable=True),
                 _f("cardId", "string", mutable=True),
                 _CREATOR, _CREATED, _MODIFIED]},
     {"key": "observations", "displayName": "Brain observations", "shared": True,
@@ -153,7 +163,7 @@ DATASETS = (
                 _f("taskId", "string", mutable=True),
                 _CREATOR, _CREATED, _MODIFIED]},
     # what the user's correspondents said about themselves, each with its
-    # verbatim sentence (ADR-035); the id is sha256(personId, kind,
+    # verbatim sentence (ADR-033); the id is sha256(personId, kind,
     # normalized value), so a re-run writes nothing and a second source is
     # appended to moreSources. History is kept: a supersession is auditable.
     {"key": "facts", "displayName": "Brain facts", "shared": True,
@@ -176,6 +186,110 @@ DATASETS = (
                 _f("decidedAt", "datetime", mutable=True),
                 _f("confirmedAt", "datetime", mutable=True),
                 _CREATOR, _CREATED, _MODIFIED]},
+    # --- the decision layer (ADR-033 §4.1) ------------------------------------
+    # what the brain asks the user; id = sha256(kind | identity), so a re-run
+    # never duplicates a card. The heartbeat writes the card, the drafter its
+    # draft pointers, the user its answer.
+    {"key": "cards", "displayName": "Brain cards", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "search": {"title": "title", "text": ["reason"], "scope": "cards"},
+     "fields": [_f("kind", "string", required=True),
+                _f("title", "string", required=True),
+                _f("reason", "string", required=True),
+                _f("subjectKey", "string", required=True),
+                _f("sourceUri", "string"),
+                _f("signalId", "string"),
+                _f("personIds", "array"),
+                _f("briefPersonIds", "array"),
+                _f("status", "string", mutable=True),
+                _f("snoozedUntil", "datetime", mutable=True),
+                _f("answer", "string", mutable=True),
+                _f("draftId", "string", mutable=True),
+                _f("approvalId", "string", mutable=True),
+                _f("draftAttempts", "number", mutable=True),
+                _f("decidedAt", "datetime", mutable=True),
+                # the daily task_suggestion card's pick-list (ADR-033 §7.7)
+                _f("items", "array"),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # a reply the drafter (origin drafter) or the user (origin user, an edit)
+    # wrote; write-once — an edit is a new draft that `supersedes` the old one
+    {"key": "drafts", "displayName": "Brain drafts", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("cardId", "string", required=True),
+                _f("sender", "string", required=True),
+                _f("senderAddress", "string", required=True),
+                _f("recipients", "array", required=True),
+                _f("format", "string", required=True),
+                _f("body", "string", required=True),
+                _f("subject", "string", required=True),
+                _f("inReplyTo", "string"),
+                _f("threadId", "string"),
+                _f("recipientProvenance", "string", required=True),
+                _f("model", "string", required=True),
+                _f("tier", "string", required=True),
+                _f("origin", "string", required=True),
+                _f("supersedes", "string"),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # the user's decision on one draft's exact bytes: the id IS
+    # hash(sender, recipients, format, body) (ADR-033 §4.7)
+    {"key": "approvals", "displayName": "Brain approvals", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("draftId", "string", required=True),
+                _f("cardId", "string", required=True),
+                _f("sender", "string", required=True),
+                _f("recipients", "array", required=True),
+                _f("format", "string", required=True),
+                _f("bodyHash", "string", required=True),
+                _f("reason", "string", required=True),
+                _f("status", "string", mutable=True),
+                _f("decidedAt", "datetime", mutable=True),
+                _f("consumedByRun", "string", mutable=True),
+                _f("rejectedReason", "string", mutable=True),
+                _f("editedTo", "string", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # one row per brain run that did something — the per-agent standup,
+    # kept out of the chat (ADR-033 §4.8)
+    {"key": "standups", "displayName": "Brain standups", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("job", "string", required=True),
+                _f("tick", "number", required=True),
+                _f("did", "array", required=True),
+                _f("needs", "array"),
+                _f("counts", "object", required=True),
+                _f("runId", "string"),
+                _CREATOR, _CREATED, _MODIFIED]},
+    # --- the reply hand-off (ADR-033 §5.4) ------------------------------------
+    # one row per approval the user sent from Gmail, detected by the
+    # heartbeat or marked by hand; id = the approval id, write-once
+    {"key": "sends", "displayName": "Brain sends", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "fields": [_f("approvalId", "string", required=True),
+                _f("cardId", "string", required=True),
+                _f("threadId", "string", required=True),
+                _f("messageId", "string"),
+                _f("how", "string", required=True),
+                _f("at", "datetime", required=True),
+                _CREATOR, _CREATED]},
+    # --- tasks from conversations (ADR-033 §7.4): what other people asked the
+    # user for in the watched chats (and, behind the pages flag, unchecked
+    # checklist items); the id is sha256(messageId | text)
+    {"key": "asks", "displayName": "Brain asks", "shared": True,
+     "idRule": "user", "deleteBy": "author",
+     "search": {"text": ["text", "quote"], "scope": "asks"},
+     "fields": [_f("senderIdentity", "string", required=True),
+                _f("personId", "string", mutable=True),
+                _f("spaceId", "string", required=True),
+                _f("chatId", "string", required=True),
+                _f("kind", "string", required=True),
+                _f("text", "string", required=True),
+                _f("quote", "string", required=True),
+                _f("source", "string", required=True),
+                _f("askedAt", "datetime", required=True),
+                _f("suggestedDeadline", "datetime"),
+                _f("status", "string", mutable=True),
+                _f("taskId", "string", mutable=True),
+                _f("closedAt", "datetime", mutable=True),
+                _CREATOR, _CREATED, _MODIFIED]},
 )
 
 # The brain's columns on catalog objects: a person (`profile` filed under
@@ -193,7 +307,9 @@ COLLECTIONS = (
         {"name": "First seen", "xKey": "firstSeenAt", "xFormat": {"type": "datetime"}},
         {"name": "Mails", "xKey": "mailCount", "xFormat": {"type": "number"}},
         {"name": "Meetings", "xKey": "meetingCount", "xFormat": {"type": "number"}},
-        {"name": "Names seen", "xKey": "aliases", "kind": "array"}]},
+        {"name": "Names seen", "xKey": "aliases", "kind": "array"},
+        # the account identity a person writes chat messages as (ADR-033 §7.5)
+        {"name": "Identity", "xKey": "identity", "xFormat": {"type": "text"}}]},
     {"name": "Brain task", "xKey": "brain_task", "hidden": True, "properties": [
         {"name": "Source", "xKey": "sourceUri", "xFormat": {"type": "url"}},
         {"name": "Person", "xKey": "personId",
@@ -348,15 +464,29 @@ def _hub_record(bao, hub, collection, name):
 
 # --- the brain's jobs ------------------------------------------------------
 
+def _job_args(bao, hub, **extra):
+    return {"space": bao, "hub": hub["objectId"], "datasets": dict(hub["datasets"]), **extra}
+
+
 def _wanted_jobs(bao, hub):
-    """[(job key, base id, record)] — the jobs a set-up brain runs."""
+    """[(job key, base id, record)] — the jobs a set-up brain runs (ADR-033 §1.4).
+
+    The chat scan is off until a chat is watched (§7.1): its `enabled`
+    follows the brain.chatScan.spaces row."""
     return [
         ((HEARTBEAT, None), "brain-heartbeat", {
             "name": "brain heartbeat", "kind": "cron", "spec": {"every_s": 600},
-            "program": HEARTBEAT,
-            "args": {"space": bao, "hub": hub["objectId"],
-                     "datasets": hub["datasets"]},
+            # `tier` rides through to the reply drafts the heartbeat arms (§4.5)
+            "program": HEARTBEAT, "args": _job_args(bao, hub, tier="brain.drafter"),
             "enabled": True}),
+        ((CARETAKER, None), "brain-caretaker", {
+            "name": "brain caretaker", "kind": "cron", "spec": {"every_s": 900},
+            "program": CARETAKER, "args": _job_args(bao, hub),
+            "enabled": True}),
+        ((CHAT_SCAN, None), "brain-chat-scan", {
+            "name": "brain chat scan", "kind": "cron", "spec": {"every_s": 1800},
+            "program": CHAT_SCAN, "args": _job_args(bao, hub),
+            "enabled": bool(_chat_spaces())}),
         ((PROGRAM, "reconcile"), "brain-reconcile", {
             "name": "brain reconcile", "kind": "cron", "spec": {"every_s": 3600},
             "program": PROGRAM, "args": {"mode": "reconcile"},
@@ -371,7 +501,7 @@ def _wanted_jobs(bao, hub):
             "program": PROMISES,
             "args": {"space": bao, "hub": hub["objectId"], "datasets": hub["datasets"]},
             "enabled": True}),
-        # reads mail with a model only while brain.model allows it (ADR-035 §1)
+        # reads mail with a model only while brain.model allows it (ADR-033 §3.1)
         ((FACTS, None), "brain-facts", {
             "name": "brain facts", "kind": "cron", "spec": {"every_s": 21600},
             "program": FACTS,
@@ -440,8 +570,10 @@ def _set_enabled(bao, anchor, rid, enabled):
         f"{'enabling' if enabled else 'disabling'} job {rid}")
 
 
+
 def _ensure_jobs(bao, hub):
-    """Write the missing jobs; never touch an existing one's `enabled`."""
+    """Write the missing jobs → (anchor, written); never touch an existing
+    job's `enabled`."""
     anchor = _trigger_anchor(bao)
     have = _brain_jobs(bao, anchor)
     taken = {r.get("id") for recs in have.values() for r in recs}
@@ -547,7 +679,8 @@ def _provision(bao):
         _any.create_collection(bao, draft)
     hub_id = _retry(lambda: _any.bundle_child(bao, BUNDLE, HUB_SEED, type_key=HUB_TYPE))
     hub = {"objectId": hub_id["objectId"], "datasets": datasets, "version": HUB_VERSION}
-    for name, seed in (("exclusions", EXCLUSIONS_SEED), ("blocklist", BLOCKLIST_SEED)):
+    for name, seed in (("exclusions", EXCLUSIONS_SEED), ("blocklist", BLOCKLIST_SEED),
+                       ("drafting", DRAFTING_SEED)):
         if _hub_record(bao, hub["objectId"], datasets["config"], name) is None:
             _upsert(bao, hub["objectId"], datasets["config"], name,
                     {"value": dict(seed)}, f"seeding the {name}")
@@ -599,6 +732,7 @@ def _setup():
         # asking to try again
         fresh = request["requestedAt"] != answered
         restarted = _restart_stopped(bao, anchor, mail_sync) if fresh else []
+        _sync_chat_scan(bao, anchor)
         stopped = _warning(_stopped_jobs(bao, anchor, mail_sync))
     except Exception as e:
         _write_status(request, "error",
@@ -622,11 +756,12 @@ def _reconcile():
     answered = (status or {}).get("requestedAt") == request["requestedAt"]
     if hub is None or not answered or (status or {}).get("state") != "ready":
         return {"reconciled": False, "reason": "not set up"}
-    if int(hub.get("version") or 1) < HUB_VERSION:
-        # an older hub: setup installs what this version adds
+    if int(hub.get("version") or 0) < HUB_VERSION:
+        # an older hub: setup installs what this shape adds
         _arm(bao, request)
         return {"reconciled": True, "upgrading": True}
     anchor, written = _ensure_jobs(bao, hub)
+    _chat_scan_drift(bao, anchor)
     stopped = _warning(_stopped_jobs(bao, anchor, status.get("mailSync")))
     if stopped != (status.get("stopped") or []):
         # the warning changes, the answer does not: `at` and the hub stay
@@ -658,13 +793,15 @@ def _state(request, status):
 
 @span("brainSetup.status", kind="getter")  # noqa: F821 - guest global
 def status():
-    """How the brain stands → {state, request, status, apps, mailboxes, stopped}.
+    """How the brain stands → {state, request, status, apps, mailboxes, stopped, …}.
 
     state ∈ waiting | setting_up | ready | error | switching_off | off.
     `apps` names the catalog apps Bao's space lists (meetings and tasks
     among them; people installs the person collection, not a listed app);
     `mailboxes` names the synced mailboxes' addresses there; `stopped` the
-    jobs the runtime stopped after repeated failures, as [{id, name}]."""
+    jobs the runtime stopped after repeated failures, as [{id, name}];
+    `modelAllowed` the consent; `chatScan` {spaceIds, pages} what chats
+    it reads."""
     bao = _any.bao_space()
     request, current = _request(), _status()
     apps = sorted({a.get("usecase") for a in _any.list_apps(bao) if a.get("usecase")})
@@ -674,7 +811,8 @@ def status():
             "apps": apps,
             "mailboxes": [addr or box for box, addr in kit.mailboxes(bao)],
             "stopped": stopped,
-            "modelAllowed": isinstance(model, dict) and model.get("allowed") is True}
+            "modelAllowed": isinstance(model, dict) and model.get("allowed") is True,
+            "chatScan": _chat_scan_status()}
 
 
 def _switch(space_id):
@@ -718,11 +856,14 @@ def _consent(allowed):
 
 @span("brainSetup.allow_model", kind="mutator")  # noqa: F821 - guest global
 def allow_model():
-    """Record the user's consent to reading their mail with a model → the row.
+    """Record the user's consent to reading their words with a model → the row.
 
+    Mail, and their own messages in the chats they let the brain watch.
     Only after a plain-words yes in this conversation to this question:
-    may the brain read your mail with a model to keep facts about the
-    people you write with? Until then the facts job reads nothing.
+    may the brain read your mail — and your own messages in the chats you
+    name — with a model, to keep facts about the people you write with and
+    the things you promised? Until then the facts, promises and drafting
+    jobs read nothing, and the chat scan reads only other people's asks.
     Independent of on()/off()."""
     return _consent(True)
 
@@ -772,31 +913,40 @@ def _included_at(value):
     return {field: dict(stamps.get(field) or {}) for field in ("personIds", "emails", "domains")}
 
 
-def _wanted(person, emails, domain):
+def _wanted(person, emails, domain, identity):
+    """The list fields an exclusion edit touches, by field."""
     return {"personIds": [person], "emails": emails,
-            "domains": [(domain or "").strip().lower().lstrip("@")]}
+            "domains": [(domain or "").strip().lower().lstrip("@")],
+            # a chat account identity, bare (an any://u/<id> link is read as its id)
+            "identities": [kit.identity_of((identity or "").strip())]}
 
 
 @span("brainSetup.exclude", kind="mutator")  # noqa: F821 - guest global
-def exclude(person=None, email=None, domain=None):
-    """Keep a person, an address or a domain out of the brain → the exclusion list.
+def exclude(person=None, email=None, domain=None, identity=None):
+    """Keep a person, an address, a domain or a chat identity out of the brain → the list.
 
     Appends; `include()` is the way back in. A person's addresses are
-    added with them, so they stay out once the person is gone. Raises
-    not_set_up while the brain has no hub, unknown_person for an id that
-    names no person, exclusions_unreadable for a list in another shape."""
+    added with them, so they stay out once the person is gone. `identity`
+    is an account identity from a watched chat (a member's `identity`, or
+    an any://u/<id> link): its messages are never read, whatever name it
+    shows, where a person id keeps a chat identity out only once the brain
+    has linked the two (ADR-033 §7.5). Raises not_set_up while the brain
+    has no hub, unknown_person for an id that names no person,
+    exclusions_unreadable for a list in another shape."""
     bao = _any.bao_space()
     hub = _current_hub(_status())
     if hub is None:
         raise not_set_up(OFFER)
     person, emails = _person_and_emails(bao, person, email, strict=True)
     value = _exclusion_list(bao, hub)
+    value.setdefault("identities", [])
     included = _included_at(value)
-    for field, items in _wanted(person, emails, domain).items():
+    for field, items in _wanted(person, emails, domain, identity).items():
         for item in items:
             if item and item not in value[field]:
                 value[field] = [*value[field], item]
-            included[field].pop(item, None)      # kept out again
+            if field in included:
+                included[field].pop(item, None)      # kept out again
     value["version"] = 1
     value["includedAt"] = included
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
@@ -805,8 +955,8 @@ def exclude(person=None, email=None, domain=None):
 
 
 @span("brainSetup.include", kind="mutator")  # noqa: F821 - guest global
-def include(person=None, email=None, domain=None):
-    """Let a person, an address or a domain back into the brain → the exclusion list.
+def include(person=None, email=None, domain=None, identity=None):
+    """Let a person, an address, a domain or a chat identity back into the brain → the list.
 
     The inverse of exclude(), after the user asks: removes the id and,
     for a person that still exists, their addresses; an id that names
@@ -821,16 +971,177 @@ def include(person=None, email=None, domain=None):
         raise not_set_up(OFFER)
     person, emails = _person_and_emails(bao, person, email, strict=False)
     value = _exclusion_list(bao, hub)
+    value.setdefault("identities", [])
     included = _included_at(value)
     at = int(now() * 1000)  # noqa: F821 - guest global; ms, like a message's internalDate
-    for field, items in _wanted(person, emails, domain).items():
+    for field, items in _wanted(person, emails, domain, identity).items():
         gone = {i for i in items if i}
         if gone:
             value[field] = [v for v in value[field] if v not in gone]
             for item in gone:
-                included[field][item] = at
+                if field in included:
+                    included[field][item] = at
     value["version"] = 1
     value["includedAt"] = included
     _upsert(bao, hub["objectId"], hub["datasets"]["config"], "exclusions",
             {"value": value}, "updating the exclusion list")
     return value
+
+
+# --- the chats the brain reads (ADR-033 §7.1) ---------------------------------
+
+
+
+
+class unknown_space(Exception):
+    """No space of the account has that id or that exact name."""
+
+
+class bao_space(Exception):
+    """Bao's own chat is the conversation with Bao, not a chat to scan."""
+
+
+class read_only_space(Exception):
+    """The user can only read in that space: the brain reads no such chat."""
+
+
+def _chat_spaces():
+    """The space ids brain.chatScan.spaces names; [] when it names none."""
+    value = _config_get(CHAT_SPACES_KEY)
+    ids = value.get("spaceIds") if isinstance(value, dict) else None
+    return [i for i in ids if isinstance(i, str) and i] if isinstance(ids, list) else []
+
+
+def _chat_pages():
+    value = _config_get(CHAT_PAGES_KEY)
+    return isinstance(value, dict) and value.get("enabled") is True
+
+
+def _chat_scan_status():
+    return {"spaceIds": _chat_spaces(), "pages": _chat_pages()}
+
+
+
+def _chat_scan_records(bao, anchor):
+    return _brain_jobs(bao, anchor).get((CHAT_SCAN, None), [])
+
+
+def _sync_chat_scan(bao, anchor):
+    """The setup run's half: the chat scan's `enabled` follows the row — on
+    while it names a space, off while it names none → the job ids flipped."""
+    want = bool(_chat_spaces())
+    flipped = []
+    for rec in _chat_scan_records(bao, anchor):
+        if bool(rec.get("enabled", True)) != want:
+            _set_enabled(bao, anchor, rec["id"], want)
+            flipped.append(rec["id"])
+    return flipped
+
+
+def _chat_scan_drift(bao, anchor):
+    """The reconcile run's half: disable a chat scan whose row names nothing;
+    never enable one (a pause holds) → the job ids disabled."""
+    if _chat_spaces():
+        return []
+    off = []
+    for rec in _chat_scan_records(bao, anchor):
+        if rec.get("enabled", True):
+            _set_enabled(bao, anchor, rec["id"], False)
+            off.append(rec["id"])
+    return off
+
+
+def _space_rows(wanted, strict):
+    """The account's space rows for ids or exact names; an unknown one raises
+    unknown_space when `strict`, else is dropped."""
+    if isinstance(wanted, str):
+        wanted = [wanted]
+    rows = _any.list_spaces()
+    out = []
+    for want in wanted or []:
+        want = str(want).strip()
+        hits = [r for r in rows if r.get("id") == want] or [
+            r for r in rows if str(r.get("name") or "").strip().casefold() == want.casefold()]
+        if len(hits) == 1:
+            out.append(hits[0])
+        elif strict:
+            raise unknown_space(f"no single space {want!r} on this account"
+                                + (" (several share that name: pass its id)" if hits else ""))
+    return out
+
+
+def _watching(ids):
+    rows = {r.get("id"): r for r in _any.list_spaces()}
+    return [{"id": i, "name": (rows.get(i) or {}).get("name"),
+             "oneToOne": (rows.get(i) or {}).get("spaceType") == "any.onetoone"} for i in ids]
+
+
+def _write_chat_spaces(bao, ids):
+    _config_set(CHAT_SPACES_KEY, {"spaceIds": ids, "requestedAt": _iso(now()),  # noqa: F821
+                                  "by": "chat"})
+    request = _request()
+    if request is not None:
+        _arm(bao, request)     # the same request: the setup run restarts nothing
+    return {"state": "waiting", "spaceIds": ids, "watching": _watching(ids)}
+
+
+def _ready_bao():
+    """Bao's space while the brain is on and set up; else not_set_up. A brain
+    that is switching off, or waiting for its setup run, takes no new chats:
+    the row would outlive the off request and the next on() would read
+    those chats without a fresh yes."""
+    bao = _any.bao_space()
+    request, status = _request(), _status()
+    if _current_hub(status) is None or _state(request, status) != "ready":
+        raise not_set_up(OFFER)
+    return bao
+
+
+@span("brainSetup.watch_chats", kind="mutator")  # noqa: F821 - guest global
+def watch_chats(space_ids):
+    """Let the brain read these spaces' chats for promises and asks → {spaceIds, watching}.
+
+    Only after the user said yes in this conversation to the brain reading
+    those chats: the user's own messages for promises (with a model, only
+    while allow_model() stands), other people's messages addressed to the
+    user for asks (no model). `space_ids`: ids or exact names, one-to-one
+    spaces too; added to those already watched. The scan starts within a
+    minute. Raises not_set_up, unknown_space, bao_space (Bao's chat is this
+    conversation), read_only_space."""
+    bao = _ready_bao()
+    rows = _space_rows(space_ids, strict=True)
+    for r in rows:
+        if r["id"] == bao:
+            raise bao_space("Bao's own chat is the conversation with Bao; name another space.")
+        if r.get("status") != "active" or r.get("ownRole") not in WRITABLE_ROLES:
+            raise read_only_space(f"the user only reads in {r.get('name') or r['id']!r}; "
+                                  "the brain reads no such chat")
+    ids = _chat_spaces()
+    ids += [r["id"] for r in rows if r["id"] not in ids]
+    return _write_chat_spaces(bao, ids)
+
+
+@span("brainSetup.stop_watching_chats", kind="mutator")  # noqa: F821 - guest global
+def stop_watching_chats(space_ids):
+    """Stop reading these spaces' chats → {spaceIds, watching}.
+
+    `space_ids`: ids or exact names; one not watched is ignored. With none
+    left the scan stops; what it found (asks, promises) stays."""
+    bao = _ready_bao()
+    if isinstance(space_ids, str):
+        space_ids = [space_ids]
+    gone = {str(i).strip() for i in space_ids or []}
+    gone |= {r["id"] for r in _space_rows(space_ids, strict=False)}
+    return _write_chat_spaces(bao, [i for i in _chat_spaces() if i not in gone])
+
+
+@span("brainSetup.scan_pages", kind="mutator")  # noqa: F821 - guest global
+def scan_pages(enabled):
+    """Also read unchecked checklist items of recently edited pages → the row.
+
+    In the watched spaces only, off by default; turn on only after the
+    user's yes. Each unchecked item becomes an ask of kind checklist."""
+    _ready_bao()
+    row = {"enabled": bool(enabled), "requestedAt": _iso(now()), "by": "chat"}  # noqa: F821
+    _config_set(CHAT_PAGES_KEY, row)
+    return row

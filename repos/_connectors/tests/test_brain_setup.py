@@ -91,9 +91,13 @@ class FakeAny:
         store = self._store(space, body["objectId"], body["dataset"])
         for r in body["records"]:
             for op in r["ops"]:
-                assert op["type"] == "$set" and op["path"] == "enabled"
-                store[r["id"]]["enabled"] = op["value"]
-            self.calls.append(("enabled", r["id"], r["ops"][0]["value"]))
+                assert op["type"] == "$set" and op["path"] in ("enabled", "program", "args")
+                store[r["id"]][op["path"]] = op["value"]
+            paths = [op["path"] for op in r["ops"]]
+            if paths == ["enabled"]:
+                self.calls.append(("enabled", r["id"], r["ops"][0]["value"]))
+            else:
+                self.calls.append(("rewrite", r["id"], paths))
         return {}
 
     def delete(self, space, oid, ds, rid):
@@ -138,6 +142,11 @@ class FakeAny:
 
     def list_apps(self, space):
         return [{"usecase": u} for u in self.apps]
+
+    spaces = ()            # the account's space rows (watch_chats resolves against them)
+
+    def list_spaces(self, raw=False):
+        return [dict(r) for r in self.spaces]
 
     def list_types(self, space):
         # the mailbox type arrives with the first mail sync
@@ -200,6 +209,12 @@ def jobs(fake):
     return {rid: r for rid, r in triggers(fake).items() if r.get("kind") == "cron"}
 
 
+def switched(fake):
+    """The jobs the brain's switch turns on and off: all but the chat scan,
+    which follows brain.chatScan.spaces (off while no chat is watched)."""
+    return {rid: r for rid, r in jobs(fake).items() if rid != "brain-chat-scan"}
+
+
 def on_request(stamp=STAMP):
     return {"brain.space": {"spaceId": BAO, "requestedAt": stamp, "by": "any-ui"}}
 
@@ -232,8 +247,9 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert [c[1] for c in fake.calls if c[0] == "setup_app"] == ["people", "meetings", "tasks"]
     assert ("ensure_bundle", "brain/v1", "Brain", "page") in fake.calls
     assert fake.types["brain_hub"]["hidden"] is True and fake.types["brain_hub"]["body"] is False
-    assert sorted(fake.datasets) == ["config", "facts", "incidents", "observations",
-                                     "promises", "signals"]
+    assert sorted(fake.datasets) == ["approvals", "asks", "cards", "config", "drafts",
+                                     "facts", "incidents", "observations", "promises",
+                                     "sends", "signals", "standups"]
     facts = fake.datasets["facts"]
     assert facts["shared"] is True and facts["search"]["scope"] == "facts"
     assert "skipHistory" not in facts  # a supersession stays auditable
@@ -253,15 +269,20 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     assert required == {"tick", "kind", "subject", "decision", "reason"}
     exclusions = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
     assert exclusions == {"version": 1, "personIds": [], "emails": [], "domains": []}
-    # one tier row per brain job that calls a model (the facts extractor)
+    # one tier row per brain job that calls a model (the facts extractor,
+    # the reply drafter); the caretaker calls none
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
-    assert not any(k.startswith("llm.tier.brain.") for k in cfg
-                   if k != "llm.tier.brain.extractor")
+    assert cfg["llm.tier.brain.drafter"] == {"model": "codegen-model"}
+    assert sorted(k for k in cfg if k.startswith("llm.tier.brain.")) == [
+        "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 3, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 1, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
-        "promises": "type-hub_promises", "facts": "type-hub_facts"}}
+        "promises": "type-hub_promises", "facts": "type-hub_facts",
+        "cards": "type-hub_cards", "drafts": "type-hub_drafts",
+        "approvals": "type-hub_approvals", "standups": "type-hub_standups",
+        "sends": "type-hub_sends", "asks": "type-hub_asks"}}
     blocklist = fake.records[(BAO, "hub", "type-hub_config")]["blocklist"]["value"]
     assert blocklist == {"domains": [], "senders": [], "labels": []}
 
@@ -270,8 +291,9 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     mod, fake, _, _, _ = kernel(config=on_request())
     mod.main({})
     js = jobs(fake)
-    assert sorted(js) == ["brain-facts", "brain-heartbeat", "brain-mail-sync",
-                          "brain-people", "brain-promises", "brain-reconcile"]
+    assert sorted(js) == ["brain-caretaker", "brain-chat-scan", "brain-facts",
+                          "brain-heartbeat", "brain-mail-sync", "brain-people",
+                          "brain-promises", "brain-reconcile"]
     facts = js["brain-facts"]
     assert facts["program"] == "connectors:brainFacts@v1" and facts["spec"] == {"every_s": 21600}
     assert facts["args"]["tier"] == "brain.extractor"
@@ -283,9 +305,23 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     beat = js["brain-heartbeat"]
     assert beat["program"] == "connectors:brainHeartbeat@v1" and beat["spec"] == {"every_s": 600}
     assert beat["args"]["space"] == BAO and beat["args"]["hub"] == "hub"
+    assert beat["args"]["tier"] == "brain.drafter"
+    assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
     assert beat["args"]["datasets"]["config"] == "type-hub_config"
     assert js["brain-reconcile"]["args"] == {"mode": "reconcile"}
-    assert all(j["enabled"] is True and "owner" not in j for j in js.values())
+    care = js["brain-caretaker"]
+    assert care["program"] == "connectors:brainCaretaker@v1" and care["spec"] == {"every_s": 900}
+    assert "tier" not in care["args"] and care["args"]["hub"] == "hub"
+    assert care["args"]["datasets"]["incidents"] == "type-hub_incidents"
+    assert care["args"]["datasets"]["observations"] == "type-hub_observations"
+    assert all(j["enabled"] is True and "owner" not in j for j in switched(fake).values())
+    # off until a chat is watched (ADR-033 §7.1)
+    scan = js["brain-chat-scan"]
+    assert scan["program"] == "connectors:brainChatScan@v1" and scan["spec"] == {"every_s": 1800}
+    assert scan["enabled"] is False and "owner" not in scan
+    assert scan["args"]["datasets"]["asks"] == "type-hub_asks"
+
+
 
 
 def test_a_second_run_only_reads():
@@ -296,8 +332,10 @@ def test_a_second_run_only_reads():
                           "by": "any-ui"}
     mod.main({})
     new = fake.calls[len(before):]
-    assert not [c for c in new if c[0] in ("upsert", "enabled")]
+    assert not [c for c in new if c[0] in ("upsert", "enabled", "rewrite")]
     assert [k for k, _ in writes].count("llm.tier.brain.extractor") == 1
+    assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
+    assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
 
 
 def test_an_edited_tier_is_never_overwritten():
@@ -344,8 +382,8 @@ def test_off_disables_and_on_re_enables_exactly_those():
     triggers(fake)["brain-heartbeat"]["enabled"] = False
     cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "any-ui"}
     out = mod.main({})
-    assert sorted(out["disabled"]) == ["brain-facts", "brain-people", "brain-promises",
-                                    "brain-reconcile"]
+    assert sorted(out["disabled"]) == ["brain-caretaker", "brain-facts", "brain-people",
+                                    "brain-promises", "brain-reconcile"]
     off = statuses(writes)[-1]
     assert off == {"spaceId": None, "requestedAt": "s-off", "state": "off", "at": off["at"]}
     # mail sync is not a brain job: switching the brain off leaves it running
@@ -353,8 +391,8 @@ def test_off_disables_and_on_re_enables_exactly_those():
     assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     out = mod.main({})
-    assert sorted(out["reenabled"]) == ["brain-facts", "brain-people", "brain-promises",
-                                    "brain-reconcile"]
+    assert sorted(out["reenabled"]) == ["brain-caretaker", "brain-facts", "brain-people",
+                                    "brain-promises", "brain-reconcile"]
     assert jobs(fake)["brain-reconcile"]["enabled"] is True
     assert jobs(fake)["brain-heartbeat"]["enabled"] is False  # the pause held
 
@@ -375,7 +413,7 @@ def test_off_after_a_failed_setup_still_brings_the_jobs_back():
     assert all(not j["enabled"] for rid, j in jobs(fake).items() if rid != "brain-mail-sync")
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     assert mod.main({})["state"] == "ready"
-    assert all(j["enabled"] for j in jobs(fake).values())
+    assert all(j["enabled"] for j in switched(fake).values())
 
 
 def test_an_off_run_cut_short_still_brings_back_what_it_disabled():
@@ -399,10 +437,10 @@ def test_an_off_run_cut_short_still_brings_back_what_it_disabled():
     assert type(err.value).__name__ == "provision_failed"
     assert cfg["brain.status"]["state"] == "error"      # a failed off run says so
     fake.modify = real_modify
-    assert sum(not j["enabled"] for j in jobs(fake).values()) == 1
+    assert sum(not j["enabled"] for j in switched(fake).values()) == 1
     cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "any-ui"}
     mod.main({})
-    assert all(j["enabled"] for j in jobs(fake).values())
+    assert all(j["enabled"] for j in switched(fake).values())
 
 
 def test_on_keeps_remembering_a_job_it_cannot_see_yet():
@@ -726,7 +764,7 @@ def test_status_before_the_first_mail_sync_names_no_mailbox():
 
 
 def test_allow_and_deny_model_write_the_consent_row_from_chat():
-    # ADR-035 §1: only these two tools write brain.model, after a yes
+    # ADR-033 §3.1: only these two tools write brain.model, after a yes
     mod, _, cfg, writes, _ = kernel()
     assert mod.status()["modelAllowed"] is False
     row = mod.allow_model()
@@ -754,6 +792,7 @@ def test_include_removes_what_exclude_added_and_nothing_else():
     out = mod.include(person=pid, email="bob@y.io", domain="spam.io")
     at = int(NOW * 1000)
     assert out == {"version": 1, "personIds": [], "emails": ["keep@z.io"], "domains": [],
+                   "identities": [],
                    # when each item was let back in: the jobs skip older mail
                    "includedAt": {"personIds": {pid: at},
                                   "emails": {"ada@x.io": at, "a.lovelace@x.io": at,
@@ -793,3 +832,253 @@ def test_include_refuses_before_setup_and_a_malformed_list():
     fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"] = {"version": 2}
     with pytest.raises(Exception, match="fix the list"):
         mod.include(email="a@b.c")
+
+
+# --- Phase 3: the decision layer (ADR-033) -----------------------------------
+
+def _fields(draft):
+    return {f["key"]: f for f in draft["fields"]}
+
+
+def _keys(draft, flag):
+    return {f["key"] for f in draft["fields"] if f.get(flag)}
+
+
+def test_setup_declares_the_decision_layer_stores_with_their_exact_fields():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    for key in ("cards", "drafts", "approvals", "standups"):
+        draft = fake.datasets[key]
+        assert draft["shared"] is True and draft["idRule"] == "user"
+        assert draft["deleteBy"] == "author"
+        stamps = {f["key"]: f["stamp"] for f in draft["fields"] if "stamp" in f}
+        assert stamps == {"creator": "creator", "createdAt": "createTime",
+                          "modifiedAt": "modifyTime"}
+    cards = fake.datasets["cards"]
+    assert cards["search"] == {"title": "title", "text": ["reason"], "scope": "cards"}
+    assert set(_fields(cards)) - {"creator", "createdAt", "modifiedAt"} == {
+        "kind", "title", "reason", "subjectKey", "sourceUri", "signalId", "personIds",
+        "briefPersonIds", "status", "snoozedUntil", "answer", "draftId", "approvalId",
+        "draftAttempts", "decidedAt", "items"}             # items: the chat scan's (ADR-033 §7.7)
+    assert _keys(cards, "required") == {"kind", "title", "reason", "subjectKey"}
+    assert _keys(cards, "mutableBy") == {"status", "snoozedUntil", "answer", "draftId",
+                                         "approvalId", "draftAttempts", "decidedAt"}
+    assert _fields(cards)["snoozedUntil"]["kind"] == "datetime"
+    assert _fields(cards)["personIds"]["kind"] == "array"
+    drafts = fake.datasets["drafts"]
+    assert "search" not in drafts
+    assert _keys(drafts, "required") == {"cardId", "sender", "senderAddress", "recipients",
+                                         "format", "body", "subject",
+                                         "recipientProvenance", "model", "tier", "origin"}
+    assert set(_fields(drafts)) - {"creator", "createdAt", "modifiedAt"} == (
+        _keys(drafts, "required") | {"inReplyTo", "threadId", "supersedes"})
+    assert _keys(drafts, "mutableBy") == set()          # an edit is a new draft
+    approvals = fake.datasets["approvals"]
+    assert _keys(approvals, "required") == {"draftId", "cardId", "sender", "recipients",
+                                            "format", "bodyHash", "reason"}
+    assert _keys(approvals, "mutableBy") == {"status", "decidedAt", "consumedByRun",
+                                             "rejectedReason", "editedTo"}
+    standups = fake.datasets["standups"]
+    assert _keys(standups, "required") == {"job", "tick", "did", "counts"}
+    assert set(_fields(standups)) - {"creator", "createdAt", "modifiedAt"} == {
+        "job", "tick", "did", "needs", "counts", "runId"}
+
+
+def test_setup_seeds_the_drafting_knobs_once_and_never_overwrites_them():
+    mod, fake, cfg, _, _ = kernel(config=on_request())
+    mod.main({})
+    store = fake.records[(BAO, "hub", "type-hub_config")]
+    assert store["drafting"]["value"] == {"maxPerRun": 3, "replyWindowDays": 5,
+                                          "meetingSoonHours": 24, "quietSenders": []}
+    store["drafting"]["value"] = {"maxPerRun": 1, "replyWindowDays": 2,
+                                  "meetingSoonHours": 4, "quietSenders": ["^news@"]}
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-again", "by": "chat"}
+    mod.main({})
+    assert store["drafting"]["value"]["quietSenders"] == ["^news@"]
+
+
+
+
+
+
+
+
+# --- the reply hand-off (ADR-033 §1.5) -------------------------------------------
+
+def test_setup_declares_the_sends_store_write_once():
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    sends = fake.datasets["sends"]
+    assert sends["shared"] is True and sends["idRule"] == "user"
+    assert sends["deleteBy"] == "author" and "search" not in sends
+    fields = {f["key"]: f for f in sends["fields"]}
+    assert set(fields) == {"approvalId", "cardId", "threadId", "messageId", "how", "at",
+                           "creator", "createdAt"}
+    assert _keys(sends, "required") == {"approvalId", "cardId", "threadId", "how", "at"}
+    assert _keys(sends, "mutableBy") == set() and fields["at"]["kind"] == "datetime"
+
+
+# --- which chats the brain reads (ADR-033 §7.1) ----------------------------------
+
+SPACES = ({"id": "team", "name": "Team", "status": "active", "ownRole": "writer",
+           "spaceType": "any.space"},
+          {"id": "dm-bob", "name": "Bob", "status": "active", "ownRole": "writer",
+           "spaceType": "any.onetoone"},
+          {"id": "news", "name": "News", "status": "active", "ownRole": "reader",
+           "spaceType": "any.space"},
+          {"id": BAO, "name": "Bao", "status": "active", "ownRole": "owner",
+           "spaceType": "any.space"})
+
+
+def ready_with_spaces():
+    fake = FakeAny()
+    fake.spaces = SPACES
+    mod, fake, cfg, writes, sleeps = kernel(config=on_request(), fake=fake)
+    mod.main({})
+    return mod, fake, cfg, writes
+
+
+def test_setup_declares_the_asks_store_and_the_identity_column():
+    mod, fake, cfg, _ = ready_with_spaces()
+    asks = fake.datasets["asks"]
+    assert asks["shared"] is True and asks["search"] == {"text": ["text", "quote"],
+                                                         "scope": "asks"}
+    required = {f["key"] for f in asks["fields"] if f.get("required")}
+    assert required == {"senderIdentity", "spaceId", "chatId", "kind", "text", "quote",
+                        "source", "askedAt"}
+    mutable = {f["key"] for f in asks["fields"] if f.get("mutableBy") == "author"}
+    assert mutable == {"personId", "status", "taskId", "closedAt"}
+    person = {p["xKey"]: p for p in fake.collections["brain_person"]["properties"]}
+    assert person["identity"]["xFormat"] == {"type": "text"}
+    assert mod.status()["chatScan"] == {"spaceIds": [], "pages": False}
+
+
+def test_watch_chats_writes_the_row_and_the_setup_run_turns_the_scan_on():
+    mod, fake, cfg, writes = ready_with_spaces()
+    fake.records[TRIGGERS]["brain-setup"] = {"id": "brain-setup", "kind": "once",
+                                             "lastRunAt": NOW}    # the once has fired
+    out = mod.watch_chats(["team", "Bob"])                    # an id and an exact name
+    assert out["spaceIds"] == ["team", "dm-bob"] and out["state"] == "waiting"
+    assert out["watching"] == [{"id": "team", "name": "Team", "oneToOne": False},
+                               {"id": "dm-bob", "name": "Bob", "oneToOne": True}]
+    row = cfg["brain.chatScan.spaces"]
+    assert row["spaceIds"] == ["team", "dm-bob"] and row["by"] == "chat"
+    armed = triggers(fake)["brain-setup"]
+    assert armed["lastRunAt"] is None and armed["args"] == {"requestedAt": STAMP}
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False
+    out = mod.main({"requestedAt": STAMP})
+    assert out["restarted"] == []                    # the same request: nothing restarts
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is True
+    assert mod.watch_chats("team")["spaceIds"] == ["team", "dm-bob"]    # no duplicate
+    assert mod.status()["chatScan"]["spaceIds"] == ["team", "dm-bob"]
+
+
+def test_stopping_the_last_chat_turns_the_scan_off():
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.watch_chats(["team"])
+    mod.main({})
+    assert mod.stop_watching_chats(["Team", "not-watched"])["spaceIds"] == []
+    mod.main({})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False
+    assert cfg["brain.chatScan.spaces"]["spaceIds"] == []
+
+
+def test_watch_chats_refuses_and_writes_nothing():
+    mod, fake, cfg, _ = ready_with_spaces()
+    for wanted, error in ((["news"], "read_only_space"), ([BAO], "bao_space"),
+                          (["nowhere"], "unknown_space"), (["team", "news"], "read_only_space")):
+        with pytest.raises(Exception) as err:
+            mod.watch_chats(wanted)
+        assert type(err.value).__name__ == error, wanted
+    assert "brain.chatScan.spaces" not in cfg
+    mod, _, cfg, _, _ = kernel()
+    for call in (lambda: mod.watch_chats(["team"]), lambda: mod.stop_watching_chats(["team"]),
+                 lambda: mod.scan_pages(True)):
+        with pytest.raises(Exception) as err:
+            call()
+        assert type(err.value).__name__ == "not_set_up"
+    assert not any(k.startswith("brain.chatScan") for k in cfg)
+
+
+def test_scan_pages_writes_its_row_only():
+    mod, fake, cfg, _ = ready_with_spaces()
+    row = mod.scan_pages(True)
+    assert row["enabled"] is True and row["by"] == "chat"
+    assert cfg["brain.chatScan.pages"] == row and mod.status()["chatScan"]["pages"] is True
+    assert mod.scan_pages(False)["enabled"] is False
+
+
+def test_reconcile_turns_off_a_scan_with_nothing_to_read_but_never_on():
+    mod, fake, cfg, _ = ready_with_spaces()
+    triggers(fake)["brain-chat-scan"]["enabled"] = True      # flipped by hand
+    mod.main({"mode": "reconcile"})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False
+    cfg["brain.chatScan.spaces"] = {"spaceIds": ["team"], "requestedAt": "t", "by": "chat"}
+    mod.main({"mode": "reconcile"})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is False   # only a setup run enables
+
+
+def test_switching_the_brain_off_and_on_keeps_the_scan_following_its_row():
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.watch_chats(["team"])
+    mod.main({})
+    cfg["brain.space"] = {"spaceId": None, "requestedAt": "s-off", "by": "chat"}
+    assert "brain-chat-scan" in mod.main({})["disabled"]
+    cfg["brain.space"] = {"spaceId": BAO, "requestedAt": "s-on", "by": "chat"}
+    mod.main({})
+    assert jobs(fake)["brain-chat-scan"]["enabled"] is True
+
+
+def test_a_deleted_chat_scan_is_rewritten_under_a_fresh_id_and_still_follows_the_row():
+    mod, fake, cfg, _ = ready_with_spaces()
+    fake.delete(*TRIGGERS, "brain-chat-scan")
+    out = mod.main({"mode": "reconcile"})
+    (new_id,) = out["written"]
+    assert new_id.startswith("brain-chat-scan-") and jobs(fake)[new_id]["enabled"] is False
+
+
+def test_a_chat_scan_rewritten_while_chats_are_watched_starts_on():
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.watch_chats(["team"])
+    mod.main({})
+    fake.delete(*TRIGGERS, "brain-chat-scan")
+    (new_id,) = mod.main({"mode": "reconcile"})["written"]
+    assert jobs(fake)[new_id]["enabled"] is True
+
+
+def test_the_cards_store_declares_items_and_asks_is_a_hub_store():
+    mod, fake, _, _ = ready_with_spaces()
+    cards = {f["key"]: f for f in fake.datasets["cards"]["fields"]}
+    assert cards["items"] == {"key": "items", "kind": "array"}      # the daily pick-list
+    assert fake.datasets["asks"]["shared"] is True
+    person_cols = {p["xKey"] for p in fake.collections["brain_person"]["properties"]}
+    assert "identity" in person_cols
+
+
+def test_exclude_and_include_a_chat_identity():
+    # a chat identity is kept out by itself, whatever name it shows (ADR-033 §7.5)
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    out = mod.exclude(identity="any://u/bob-id")
+    assert out["identities"] == ["bob-id"]
+    out = mod.exclude(identity=" carol-id ", email="x@y.io")
+    assert out["identities"] == ["bob-id", "carol-id"] and out["emails"] == ["x@y.io"]
+    assert mod.exclude(identity="bob-id")["identities"] == ["bob-id", "carol-id"]   # once
+    out = mod.include(identity="bob-id")
+    assert out["identities"] == ["carol-id"]
+    assert "identities" not in out["includedAt"]        # no mail to skip for a chat identity
+    assert out["version"] == 1
+
+
+def test_watch_chats_refuses_while_the_brain_is_switching_off_or_waiting():
+    # the row would outlive the off request, and the next on() would read
+    # those chats without a fresh yes
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.off()
+    assert mod.status()["state"] == "switching_off"
+    for call in (lambda: mod.watch_chats(["team"]), lambda: mod.stop_watching_chats(["team"]),
+                 lambda: mod.scan_pages(True)):
+        with pytest.raises(Exception) as err:
+            call()
+        assert type(err.value).__name__ == "not_set_up"
+    assert "brain.chatScan.spaces" not in cfg

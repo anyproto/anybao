@@ -8,7 +8,9 @@ a message that already has a promise is not re-extracted; ids are stable so
 a re-run writes nothing new and never reopens a closed promise; excluded,
 blocklisted and labelled mail never reaches the model; a provider failure
 leaves the cursor before its message and two stop the run; the call cap;
-a rejected write fails the run; a completed task closes its promise."""
+a rejected write fails the run; a completed task closes its promise; the
+cursor is the `_ver.id` of the last message handled, so sent mail the
+backfill lands later, below the dates already read, is still extracted."""
 
 import json
 
@@ -83,6 +85,11 @@ def quotes(space):
     return sorted(p["quote"] for p in space.store("promises").values())
 
 
+def ver(space, mid, mailbox="mb1"):
+    """The `_ver.id` the fake stamped on a message: the cursor's unit."""
+    return space.records[(mailbox, "email_messages")][mid]["_ver"]["id"]
+
+
 def test_nothing_is_read_or_asked_without_consent():
     s = mail_space("I'll send the deck tomorrow.")
     for consent in (False, None):
@@ -113,7 +120,7 @@ def test_a_grounded_quote_becomes_a_record_and_a_paraphrase_is_dropped():
     assert rec["id"] == mod.promise_id("m1", "I'll send the deck tomorrow.")
     assert out["promises"] == 1 and out["messages"] == 1 and out["closed"] == 0
     assert out["dropped"] == {"notVerbatim": 2, "badLength": 1, "badShape": 1}
-    assert s.config("promises.cursor") == {"mb1": MADE_MS}
+    assert s.config("promises.cursor") == {"mb1": ver(s, "m1")}
     # the model saw the cleaned body: no quoted line, on the classify tier
     ((tier, prompt),) = model.prompts
     assert tier == "classify" and "> I will be there." not in prompt
@@ -162,7 +169,7 @@ def test_received_mail_is_never_sent_to_the_model():
     out = mod.main(job_args(s))
     assert model.prompts == [] and s.store("promises") == {}
     assert out["messages"] == 1 and out["sent"] == 0
-    assert s.config("promises.cursor") == {"mb1": MADE_MS}
+    assert s.config("promises.cursor") == {"mb1": ver(s, "m1")}
 
 
 def test_a_judge_gates_the_extraction_call():
@@ -276,7 +283,7 @@ def test_a_provider_failure_with_one_mailbox_fails_the_run_and_keeps_the_cursor(
     model.replies = [[{"quote": "I'll send the deck.", "due": None}],
                      [{"quote": "I'll call you.", "due": None}]]
     out = mod.main(job_args(s))
-    assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": MADE_MS + 1000}
+    assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": ver(s, "m2")}
 
 
 def test_a_provider_failure_beside_a_handled_mailbox_only_holds_that_mailbox():
@@ -288,8 +295,7 @@ def test_a_provider_failure_beside_a_handled_mailbox_only_holds_that_mailbox():
     mod, _ = kernel(s, model)
     out = mod.main(job_args(s))
     assert out["providerFailed"] == 1 and out["promises"] == 1
-    assert s.config("promises.cursor")["mb1"] < MADE_MS      # the floor, not m1
-    assert s.config("promises.cursor")["mb2"] == MADE_MS
+    assert s.config("promises.cursor") == {"mb2": ver(s, "m9", "mb2")}   # mb1: no cursor yet
 
 
 def test_two_provider_failures_stop_the_run():
@@ -311,7 +317,7 @@ def test_an_unparsable_reply_is_retried_once_then_counted():
     mod, _ = kernel(s, model)
     out = mod.main(job_args(s))
     assert len(model.prompts) == 2 and out["parseFailed"] == 1
-    assert s.store("promises") == {} and s.config("promises.cursor") == {"mb1": MADE_MS}
+    assert s.store("promises") == {} and s.config("promises.cursor") == {"mb1": ver(s, "m1")}
 
 
 def test_the_call_cap_leaves_the_rest_for_the_next_run():
@@ -326,9 +332,9 @@ def test_the_call_cap_leaves_the_rest_for_the_next_run():
     mod, _ = kernel(s, model)
     mod.MAX_CALLS = 2
     out = mod.main(job_args(s))
-    assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": MADE_MS + 1000}
+    assert out["promises"] == 2 and s.config("promises.cursor") == {"mb1": ver(s, "m1")}
     out = mod.main(job_args(s))
-    assert out["promises"] == 1 and s.config("promises.cursor") == {"mb1": MADE_MS + 2000}
+    assert out["promises"] == 1 and s.config("promises.cursor") == {"mb1": ver(s, "m2")}
 
 
 def test_a_rejected_write_fails_the_run_and_keeps_the_cursor():
@@ -348,7 +354,7 @@ def test_a_promise_whose_record_was_deleted_is_not_a_failure():
         "code": "upsert.record_deleted", "reason": "crdt: record is deleted"}
     out = mod.main(job_args(s))
     assert out["promises"] == 0
-    assert s.config("promises.cursor") == {"mb1": MADE_MS}
+    assert s.config("promises.cursor") == {"mb1": ver(s, "m1")}
 
 
 def test_a_completed_task_closes_its_promise():
@@ -421,3 +427,92 @@ def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
     out = mod.main(job_args(s))
     assert quotes(s) == ["I'll send the deck tomorrow."]
     assert out["messages"] == 1 and len(model.prompts) == 1
+
+
+def test_extract_grounds_and_counts_every_model_call():
+    # the helper the chat scan shares: a judge, a call and a retry are three
+    model = Model("prose, no json", [{"quote": "I'll send the deck tomorrow.", "due": None},
+                                     {"quote": "I will send it", "due": None}])
+    mod, _ = kernel(model=model, judge=lambda body: 0.9)
+    stats = {}
+    items, calls = mod.extract("Thanks!\nI'll send the deck tomorrow.", stats=stats)
+    assert items == [{"quote": "I'll send the deck tomorrow.", "due": None}]
+    assert calls == 3 and stats["judged"] == 1 and stats["asked"] == 2
+    assert stats["dropped"] == {"notVerbatim": 1} and stats["grounded"] == 1
+    assert mod.extract("See you.", gate=False)[0] == []
+
+
+def test_a_failing_judge_is_a_provider_failure_not_a_crash_or_a_pass():
+    # an EffectError from llm@v1 (here the judge's) is a provider failure:
+    # the mailbox stops before the message instead of reading it as empty,
+    # and a run in which no call succeeded fails
+    s = mail_space("I'll send the deck.")
+
+    def broken(_body):
+        raise RuntimeError("judge timed out")
+
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck.", "due": None}]), judge=broken)
+    with pytest.raises(Exception) as failed:
+        mod.main(job_args(s))
+    assert type(failed.value).__name__ == "provider_failed"
+    assert s.store("promises") == {}
+    assert "mb1" not in (s.config("promises.cursor") or {})
+    with pytest.raises(Exception) as err:
+        mod.extract("I'll send the deck.")
+    assert type(err.value).__name__ == "model_failed"
+
+
+def test_a_failed_extract_says_how_many_calls_it_made():
+    # the chat scan charges its call budget with what a failed extract spent:
+    # the judge that answered plus the call that failed are two, a retry
+    # that failed after an unparsable reply two as well
+    model = Model(RuntimeError("down"))
+    mod, _ = kernel(model=model, judge=lambda body: 0.9)
+    with pytest.raises(Exception) as err:
+        mod.extract("I'll send the deck.")
+    assert type(err.value).__name__ == "model_failed" and err.value.calls == 2
+    mod, _ = kernel(model=Model("prose", RuntimeError("down")))
+    with pytest.raises(Exception) as err:
+        mod.extract("I'll send the deck.")
+    assert err.value.calls == 2
+    mod, _ = kernel(model=Model(RuntimeError("down")))
+    with pytest.raises(Exception) as err:
+        mod.extract("I'll send the deck.")
+    assert err.value.calls == 1
+
+
+def test_a_corrupt_cursor_raises():
+    s = mail_space("I'll send the deck.")
+    s.set_config("promises.cursor", {"mb1": MADE_MS})          # a date, not a _ver.id
+    mod, _ = kernel(s, Model([{"quote": "I'll send the deck.", "due": None}]))
+    with pytest.raises(Exception) as err:
+        mod.main(job_args(s))
+    assert type(err.value).__name__ == "cursor_corrupt"
+    assert s.store("promises") == {}
+
+
+def test_sent_mail_the_backfill_lands_later_is_still_extracted():
+    # the Gmail backfill writes newest first, in slices across its ticks: a
+    # run between two slices sets the cursor on today's mail, and the older
+    # sent mail of the next slice lands with a HIGHER _ver.id but an OLDER
+    # date — a date cursor would pass it for good (review A1)
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "today", ver="v-0001", **{"from": ME, "to": "Ada <ada@lab.org>",
+                                                "body": "I'll send the deck tomorrow.",
+                                                "internalDate": MADE_MS})
+    model = Model([{"quote": "I'll send the deck tomorrow.", "due": None}],
+                  [{"quote": "I'll call you on Monday.", "due": None}])
+    mod, _ = kernel(s, model)
+    out = mod.main(job_args(s))
+    assert out["promises"] == 1 and s.config("promises.cursor") == {"mb1": "v-0001"}
+    s.add_mail("mb1", "older", ver="v-0002", **{"from": ME, "to": "Bob <bob@x.io>",
+                                                "body": "I'll call you on Monday.",
+                                                "internalDate": MADE_MS - 20 * DAY * 1000})
+    out = mod.main(job_args(s))
+    assert out["promises"] == 1 and out["messages"] == 1
+    assert quotes(s) == ["I'll call you on Monday.", "I'll send the deck tomorrow."]
+    assert s.config("promises.cursor") == {"mb1": "v-0002"}
+    older = next(p for p in s.store("promises").values() if p["personEmail"] == "bob@x.io")
+    assert older["madeAt"] == {"$date": MADE_MS - 20 * DAY * 1000}

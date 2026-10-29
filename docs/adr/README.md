@@ -46,9 +46,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 030 | The judge tier — typed questions over a state (`llm.judge`, TypeSafe Jev first) | Accepted |
 | 031 | toMarkdown — one conversion program for HTML and PDF, pypdf in the kernel, fuel budget 250 G | Accepted |
 | 032 | MCP client — `mcp@v1` over streamable HTTP, `mcp.server.*` rows, `mcp.key.*` refs | Accepted |
-| 033 | The AI brain as a plugin in the connectors overlay — setup as a program, jobs as records, no runtime change | Proposed |
-| 034 | The AI brain's people, promises and tasks — from synced mail; promises by a model, quoted and grounded | Proposed |
-| 035 | The AI brain's facts about people — from mail, quoted and grounded | Proposed |
+| 033 | The AI brain — a plugin in the connectors overlay: setup, people, promises, facts, cards and drafts, the reply hand-off, the caretaker, chats (Parts 1–7; code points at `§<part>.<section>`) | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the

@@ -1,5 +1,5 @@
 """A fake of Bao's space for the brain program tests, modelling the server
-rules the live runs taught (ADR-033 §2, §4, §6): the hub's stores are
+rules the live runs taught (ADR-033 §1.2, §4, §6): the hub's stores are
 SHARED (reads and id filters use "<objectId>/<recordId>", writes the plain
 id), a refused record write is HTTP 200 with `rejections`, and a
 write-once field rejects a changed value. Objects carry one type, any
@@ -13,12 +13,17 @@ import copy
 HUB = "hub"
 SHARED_PREFIX = "hubtype_"     # collections of the hub's shared stores
 DATASETS = {k: f"{SHARED_PREFIX}{k}" for k in
-            ("signals", "config", "incidents", "observations", "promises", "facts")}
+            ("signals", "config", "incidents", "observations", "promises", "facts",
+             "cards", "drafts", "approvals", "standups", "sends", "asks")}
+ANCHOR = "trigger-anchor"      # the bao/triggers/v1 bundle child
 # what a set-up brain's space has before any mail sync: the built-in page,
 # the people and tasks catalog apps' types, the hub
 BASE_TYPES = ("page", "profile", "task", "brain_hub")
 WRITE_ONCE = {"promises": {"text", "quote", "source", "mailboxId", "channel", "madeAt",
-                           "dueAt", "personEmail"}}
+                           "dueAt", "personEmail"},
+              "asks": {"senderIdentity", "spaceId", "chatId", "kind", "text", "quote",
+                       "source", "askedAt", "suggestedDeadline"},
+              "cards": {"kind", "title", "reason", "subjectKey", "items"}}
 
 
 def _key_of(dataset):
@@ -39,6 +44,10 @@ def _instant(value):
     return value["$date"] if isinstance(value, dict) and set(value) == {"$date"} else value
 
 
+_ORDER = {"$gt": lambda v, a: v > a, "$gte": lambda v, a: v >= a,
+          "$lt": lambda v, a: v < a, "$lte": lambda v, a: v <= a}
+
+
 def _matches(value, cond):
     value = _instant(value)
     if isinstance(cond, dict) and set(cond) == {"$date"}:
@@ -46,10 +55,13 @@ def _matches(value, cond):
     if isinstance(cond, dict):
         cond = {op: _instant(arg) for op, arg in cond.items()}
         for op, arg in cond.items():
-            if op == "$gt" and not (value is not None and value > arg):
+            if op in _ORDER and not (value is not None and _ORDER[op](value, arg)):
                 return False
             if op == "$in" and not (any(v in arg for v in value) if isinstance(value, list)
                                     else value in arg):
+                return False
+            if op == "$nin" and (any(v in arg for v in value) if isinstance(value, list)
+                                 else value in arg):
                 return False
         return True
     if cond is None:
@@ -76,6 +88,8 @@ class FakeSpace:
                                    # or {code, reason}
         self.calls = []
         self.types = set(BASE_TYPES)
+        self.chat = []             # chat_send bodies, in order
+        self.skills = {}           # name -> markdown (get_skill)
         self._n = 0
 
     # --- seeding -----------------------------------------------------------
@@ -90,8 +104,15 @@ class FakeSpace:
     def add_mailbox(self, oid, address):
         return self.add_object(oid, "mailbox", mailbox={"address": address}, name=address)
 
-    def add_mail(self, mailbox, mid, **fields):
-        self.records.setdefault((mailbox, "email_messages"), {})[mid] = {"id": mid, **fields}
+    def add_mail(self, mailbox, mid, ver=None, **fields):
+        # every record carries its creation version `_ver.id` (the jobs' mail
+        # cursor, brainKit.mail_since); by default it follows internalDate so a
+        # test that seeds mail in date order lands it in that order too
+        self._n += 1
+        ver = ver or f"{int(fields.get('internalDate') or 0):013d}-{self._n:04d}"
+        rec = {"id": mid, "_ver": {"id": ver}, **fields}
+        self.records.setdefault((mailbox, "email_messages"), {})[mid] = rec
+        return rec
 
     def seed_lists(self):
         """The exclusion list and blocklist a set-up brain starts with: empty."""
@@ -108,11 +129,73 @@ class FakeSpace:
         return rec and rec["value"]
 
     def store(self, key):
-        return self.records.get((HUB, DATASETS[key]), {})
+        return self.records.get((HUB, DATASETS.get(key, f"{SHARED_PREFIX}{key}")), {})
+
+    # --- chats (ADR-033 §7) ---------------------------------------------------
+    # spaces the account has, their members, the one general chat each, and
+    # the account's identity directory; a chat message is a record on the
+    # chat object's chat_messages, ordered by _ver.id
+    me_identity = "me-id"
+    me_name = "Me"
+
+    def add_space(self, sid, name=None, role="writer", one_to_one=False, status="active",
+                  members=()):
+        self.spaces = getattr(self, "spaces", {})
+        self.spaces[sid] = {"id": sid, "name": name or sid, "status": status,
+                            "ownRole": role,
+                            "spaceType": "any.onetoone" if one_to_one else "any.space"}
+        self.members = getattr(self, "members", {})
+        self.members[sid] = [{"identity": self.me_identity, "name": self.me_name,
+                              "permission": role, "status": "active"}] + [
+            {"identity": i, "name": n, "permission": "writer", "status": "active"}
+            for i, n in members]
+        return f"chat-{sid}"
+
+    def add_message(self, sid, mid, creator, text, ver, at_s, **extra):
+        rec = {"id": mid, "creator": creator, "text": text, "_ver": {"id": ver},
+               "createdAt": {"$date": int(at_s * 1000)}, **extra}
+        self.records.setdefault((f"chat-{sid}", "chat_messages"), {})[mid] = rec
+        return rec
+
+    def me(self):
+        self.calls.append(("me",))
+        return {"identity": self.me_identity, "name": self.me_name}
+
+    def list_spaces(self, raw=False):
+        return [dict(r) for r in getattr(self, "spaces", {}).values()]
+
+    def list_members(self, space):
+        self.calls.append(("list_members", space))
+        return [dict(m) for m in getattr(self, "members", {}).get(space, [])]
+
+    def general_chat(self, space):
+        return f"chat-{space}"
+
+    def get_identity(self, identity):
+        self.calls.append(("get_identity", identity))
+        name = getattr(self, "directory", {}).get(identity)
+        return {"identity": identity, "name": name} if name else None
+
+    def triggers(self):
+        return self.records.get((ANCHOR, "agent_triggers"), {})
 
     # --- any@v1 ------------------------------------------------------------
     def bao_space(self):
         return self.space
+
+    def bundle_child(self, space, bundle_id, seed, type_key=None, **_):
+        assert (bundle_id, seed) == ("bao/v1", "bao/triggers/v1"), (bundle_id, seed)
+        return {"objectId": ANCHOR}
+
+    def chat_send(self, space, chat_id, body):
+        self.calls.append(("chat_send", chat_id))
+        self.chat.append(copy.deepcopy(body))
+        return {"id": f"msg{len(self.chat)}"}
+
+    def get_skill(self, name):
+        if name not in self.skills:
+            raise LookupError(f"no skill named {name!r}")
+        return self.skills[name]
 
     def list_types(self, space):
         return [{"id": f"type-{t}", "xKey": t} for t in sorted(self.types)]
@@ -130,7 +213,11 @@ class FakeSpace:
                 if path == "any.type":
                     ok = ok and row["any"]["type"] == cond
                 elif path == "any.collections":
-                    ok = ok and cond in row["any"]["collections"]
+                    have = row["any"]["collections"]
+                    if isinstance(cond, dict) and set(cond) == {"$nin"}:
+                        ok = ok and not any(c in have for c in cond["$nin"])
+                    else:
+                        ok = ok and cond in have
                 else:
                     ok = ok and _matches(_get(row, path), cond)
             if ok:
@@ -147,12 +234,12 @@ class FakeSpace:
         rows = [({**r, "id": f"{oid}/{r['id']}"} if shared else dict(r))
                 for r in self.records.get((oid, ds), {}).values()]
         for path, cond in (filter or {}).items():
-            rows = [r for r in rows if _matches(r.get(path), cond)]
+            rows = [r for r in rows if _matches(_get(r, path), cond)]
         for key in reversed(sort or []):
             desc = key.startswith("-")
             name = key.lstrip("-")
-            rows.sort(key=lambda r, n=name: str(r.get(n)) if isinstance(r.get(n), dict)
-                      else (r.get(n) or 0), reverse=desc)
+            rows.sort(key=lambda r, n=name: str(_get(r, n)) if isinstance(_get(r, n), dict)
+                      else (_get(r, n) or 0), reverse=desc)
         return rows[:limit] if limit else rows
 
     def search(self, space, query, scopes=None, limit=None, **_):
