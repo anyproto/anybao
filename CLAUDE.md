@@ -123,7 +123,7 @@ anyrt deploy --config-file deploy/nightly.toml --addr http://127.0.0.1:7011 --so
 ```
 
 Poll `/v1/spaces/<id>/sync-status` until `synced` before stopping the
-owner server. Bring-up, ids, mnemonics: the local `docs/environments.md`.
+owner server. Bring-up, ids, mnemonics: `docs/environments.md`.
 
 ## Prod-network TEST environment (`configs/anybao.prod.test.toml`)
 
@@ -139,7 +139,7 @@ staging rig (`configs/anybao.staging.toml`, server on the staging
 network via `--config configs/any-config-staging.yml`) is unreachable
 from prod clients; this one is not. Ids, commands and the browser
 recipe live in the toml's header
-and in the local `docs/environments.md`. Deploy to it
+and in `docs/environments.md`. Deploy to it
 through :7008 by raw id, exactly like prod:
 
 ```
