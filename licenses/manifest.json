@@ -4,8 +4,8 @@
     "licenses/about-kernel.toml": "7e2c509b1f099b014a57b8f014bfd7cfcd7f605994455a3293f250c15fb29c33",
     "licenses/about.hbs": "5a6477fb92658777d465d9dc678d2b600fc7850f11fc9d05f66c24bf9bf657f2",
     "licenses/about.toml": "9ca46f995d57c1c6a4134e48e34c06d03f8858b81598a19efcbd9080b6df6acc",
-    "runtime/Cargo.lock": "917512a83141e6c7358e17dae2315bc31d976fd77b46826527d6ae6e489dd7d0",
-    "runtime/Cargo.toml": "980bd406f26f5eba0e38090af0b3baecec56fb55871908ff54185dadd1a4816f",
+    "runtime/Cargo.lock": "01bd0ce706a0b15782eba72d01ea601dd6882c8f678a44e3f36a4ceef3116df3",
+    "runtime/Cargo.toml": "8abd31b9331f80300e9089597bca8077e93c81504251430bdae866fc3d66f585",
     "runtime/guest/VENDORED.md": "d878d7db06cc1a7a307fd1772494e2ac7bc7a054ba48d0904d2524d1e1f23333"
   },
   "notices": {
@@ -14,7 +14,7 @@
     "licenses/KERNEL_COMPONENTS.md": "2bc6ee369350ae8e416cdd47b9e49ed93668b1c2466854b1ed7a1e82c70e22b4",
     "licenses/KERNEL_RUST_DEPENDENCIES.md": "abf02f44ebfb52247ad06ec92ed373bec31062746c5162f0eac199441fd86eb3",
     "licenses/README.md": "5818907c48bd12f0b2475c3c1a8a9b959168e0618c0bd3b4ec62a95f2c4c6b01",
-    "licenses/RUST_DEPENDENCIES.md": "8da57f85faf507563becb8c81147050f7993a629675615aba4865cef8c924bce",
+    "licenses/RUST_DEPENDENCIES.md": "513d1d5ccb8a4b8d260c459bb9a5fde4dca9d6b00cef32742742c2aee43e7163",
     "licenses/about-kernel.hbs": "ecd4a921b62d8d702e36018371955e071d19d5d0fa909ffdcb504c93cb052b16",
     "licenses/about-kernel.toml": "7e2c509b1f099b014a57b8f014bfd7cfcd7f605994455a3293f250c15fb29c33",
     "licenses/about.hbs": "5a6477fb92658777d465d9dc678d2b600fc7850f11fc9d05f66c24bf9bf657f2",
