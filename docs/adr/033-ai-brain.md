@@ -1060,7 +1060,7 @@ grade itself as overdue (it is running).
 | Class | Condition | Subject | Evidence |
 | --- | --- | --- | --- |
 | `job_overdue` | an enabled brain job whose last run — the newest of its record's `lastRunAt`, its newest `agent_runs` row and its caretaker reruns — is older than `2 × every_s + 120 s`, counted from no earlier than `uptimeSince` (below); a job that never ran counts from `brain.status.at` | trigger id | `lastRunAt`, `lastStatus`, `everyS`, `overdueS`, `owner`, `activeDevice` |
-| `job_failing` | a brain job with `consecutiveFailures ≥ 2`, or `lastStatus: auto_disabled` | trigger id | `consecutiveFailures`, `lastStatus`, `lastErrorType` (newest run's `errorType`), `lastRunAt`, `enabled` |
+| `job_failing` | a brain job with `consecutiveFailures ≥ 2`, or `lastStatus: auto_disabled`; read from a job re-enabled and not run since (`enabled` with `auto_disabled`, §6.5) it opens no incident and only holds a pending repair (§6.7) | trigger id | `consecutiveFailures`, `lastStatus`, `lastErrorType` (newest run's `errorType`), `lastRunAt`, `enabled` |
 | `mail_stale` | the mail sync trigger is enabled (a paused one is the user's choice, no fault) and `googleAuth.status().connected` is `false` (a dead credential makes the sync return an error dict without raising, so its run status is no signal), or the newest `sync_state`'s `modifiedAt` is older than 6 h counted from no earlier than `uptimeSince` (no `sync_state` yet: from `brain.status.at`) | mailbox id (`sync_state.mailbox_id`, else `mail`) | `syncStateModifiedAt`, `credentialConnected`, `cursor`, `skippedCount`, `mailTriggerId` (`brain.status.mailSync.triggerId`), `lastRunStatus` |
 | `exclusions_unreadable` | `config/exclusions` missing or not in its version-1 shape (`brainKit.exclusions_problem`) | `config/exclusions` | `present`, `version`, `parseError` |
 | `tier_unpinned` | a tier an enabled brain job calls — its `args.tier`, else the program's own (`classify` for promises, `brain.extractor` for facts), and the heartbeat's `brain.drafter` — has no row or no `model` | `llm.tier.<tier>` | `present`, `provider`, `model` |
@@ -1159,7 +1159,10 @@ not retried.
   registry holds resets its `consecutive_failures` and re-arms it
   (`triggers.rs` `reconcile_registry`) — in memory; the RECORD keeps
   `lastStatus: auto_disabled` and its count until the job's next own
-  run, every_s later. A serve restarted between the stop and the flip
+  run, every_s later — so a `job_failing` read from an enabled record
+  opens no incident (setup's on run restarts every stopped job at once,
+  and each would read as failing for up to every_s); it only holds a
+  pending repair (§6.7). A serve restarted between the stop and the flip
   rebuilds the entry from the record, so one more failure stops the job
   again at once; the caretaker then reads `job_failing` again and
   escalates rather than retry.

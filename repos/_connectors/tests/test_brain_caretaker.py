@@ -404,6 +404,12 @@ def test_job_failing():
     # paused after two failures: the user's choice, not the runtime's
     paused = with_job(snap(Rig()), "brain-facts", consecutiveFailures=2, enabled=False)
     assert mod.grade_job_failing(paused) == []
+    # re-enabled and not run since: still graded (a pending repair reads it),
+    # but marked as awaiting the job's own run
+    back = with_job(snap(Rig()), "brain-facts", lastStatus="auto_disabled",
+                    consecutiveFailures=3, enabled=True)
+    (fault,) = mod.grade_job_failing(back)
+    assert mod.awaiting_run(fault) and not mod.awaiting_run(mod.grade_job_failing(stopped)[0])
     # the caretaker does not grade itself: a run reading its own two failures is
     # the run that ends them
     itself = with_job(snap(Rig()), "brain-caretaker", consecutiveFailures=2, lastStatus="error")
@@ -1131,3 +1137,20 @@ def test_deleting_the_one_repair_guard_is_caught():
     rig.run(at=T0)
     rig.tick()
     assert len(reruns(rig)) > 1
+
+
+def test_a_restarted_job_opens_no_incident():
+    # setup's on run flips `enabled` back on a stopped job; the runtime resets
+    # the breaker in memory but the record keeps `auto_disabled` and its count
+    # until the job's next run — six restarted jobs made six false incidents
+    rig = Rig()
+    rig.fail_job("brain-facts", 3, stopped=True)
+    rig.world.trigger("brain-facts")["enabled"] = True
+    rig.run()
+    assert rig.world.incidents() == [] and rig.world.chat == []
+    rig.tick()
+    assert rig.world.incidents() == [] and rig.world.chat == []
+    # stopped again after it ran and failed: a real fault, one incident
+    rig.fail_job("brain-facts", 3, stopped=True)
+    rig.tick()
+    assert [i["faultClass"] for i in rig.world.incidents()] == ["job_failing"]
