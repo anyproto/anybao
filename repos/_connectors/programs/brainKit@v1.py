@@ -434,15 +434,16 @@ def mail_since(space, mailbox_id, cursor, limit, floor_ms=None, **filters):
     would pass mail for good: the Gmail backfill writes newest first, in
     slices across its own ticks, so a job that cursors on the message date
     sets its cursor to today on the first tick and never sees the older
-    mail that lands after it. A mailbox with no cursor (None) is read from
-    `floor_ms` (internalDate, inclusive) on. `filters` narrow the query
-    (e.g. a sender). Rows come in arrival order, not by date: sort them
-    when the date matters. The cursor comes back unchanged when nothing
-    was read."""
+    mail that lands after it. `floor_ms` (internalDate, inclusive) bounds
+    every read, with or without a cursor: the backfill lands mail older
+    than the floor after the cursor too, and a job that read it would
+    walk a year of mail. `filters` narrow the query (e.g. a sender). Rows
+    come in arrival order, not by date: sort them when the date matters.
+    The cursor comes back unchanged when nothing was read."""
     flt = dict(filters)
     if cursor:
         flt["_ver.id"] = {"$gt": cursor}
-    elif floor_ms is not None:
+    if floor_ms is not None:
         flt["internalDate"] = {"$gte": int(floor_ms)}
     rows = _any.query(space, mailbox_id, "email_messages", filter=flt, sort=["_ver.id"],
                       limit=limit)

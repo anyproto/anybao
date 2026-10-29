@@ -516,3 +516,24 @@ def test_sent_mail_the_backfill_lands_later_is_still_extracted():
     assert s.config("promises.cursor") == {"mb1": "v-0002"}
     older = next(p for p in s.store("promises").values() if p["personEmail"] == "bob@x.io")
     assert older["madeAt"] == {"$date": MADE_MS - 20 * DAY * 1000}
+
+
+def test_mail_older_than_the_floor_that_lands_after_the_cursor_is_not_read():
+    # the backfill lands a year of mail, oldest last: the floor holds with a
+    # cursor too, or every old commitment would be listed open and overdue
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "today", ver="v-0001", **{"from": ME, "to": "Ada <ada@lab.org>",
+                                                "body": "I'll send the deck tomorrow.",
+                                                "internalDate": MADE_MS})
+    model = Model([{"quote": "I'll send the deck tomorrow.", "due": None}])
+    mod, _ = kernel(s, model)
+    assert mod.main(job_args(s))["promises"] == 1
+    s.add_mail("mb1", "old", ver="v-0002", **{"from": ME, "to": "Bob <bob@x.io>",
+                                              "body": "I'll send the old report on Monday.",
+                                              "internalDate": MADE_MS - 40 * DAY * 1000})
+    out = mod.main(job_args(s))
+    assert out["messages"] == 0 and out["promises"] == 0 and len(model.prompts) == 1
+    assert quotes(s) == ["I'll send the deck tomorrow."]
+    assert s.config("promises.cursor") == {"mb1": "v-0001"}

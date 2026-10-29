@@ -6,7 +6,8 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # {space, hub, datasets}. It reads mail that gmailSync synced into Bao's
 # space that landed after its cursor — the last `_ver.id` handled per
 # mailbox (kit.mail_since: the backfill lands older mail later, which a
-# date cursor would pass for good) — and keeps one catalog person — a `profile`
+# date cursor would pass for good; only mail dated within BACKFILL_DAYS
+# is read, cursor or not) — and keeps one catalog person — a `profile`
 # filed under `person` — per address, also filed under the brain's
 # `brain_person` collection with every address used, the names seen, when
 # we last spoke and how often. It never reads a body: From / To / Cc only.
@@ -102,9 +103,10 @@ def _gather(space, boxes, cursor, own, excl, block, people):
     seen, read, unknown, mass = {}, 0, set(), 0
     floor = kit.backfill_floor_ms()
     for box_id, _addr in boxes:
+        # the date floor holds on every read: the backfill lands older mail
+        # after the cursor too
         last = cursor.get(box_id)
-        rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX,
-                                       floor_ms=None if last else floor)
+        rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX, floor_ms=floor)
         for row in rows:
             people_here = [] if kit.labelled_out(row, block) else [
                 (n, a) for n, a in kit.addresses(row.get("from"), row.get("to"), row.get("cc"))

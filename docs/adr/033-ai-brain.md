@@ -285,8 +285,10 @@ addresses, noise senders, blocklisted senders and domains, and excluded
 people never become people. It preloads the first 1 000 persons; one
 past them is found by any of their addresses (`brain_person.emails`,
 then `person.email`) and merged into, never overwritten or minted
-twice. A mailbox it has no cursor for is read from 30 days back, not
-from its first message: a real mailbox holds years of mail, which at 200
+twice. It reads only mail dated within the last 30 days, with or
+without a cursor (the backfill lands older mail after the cursor too),
+so a mailbox is never walked from its first message: a real mailbox
+holds years of mail, which at 200
 messages a run would take days to walk before reaching this month. It
 caps unknown addresses per run and advances the cursor only past
 messages fully handled; one message with
@@ -300,9 +302,9 @@ when they are past the preload.
 
 Reads the user's sent mail (From = the mailbox's address) that landed
 after its cursor (`config/promises.cursor`, per mailbox the `_ver.id` of
-the last record handled, `brainKit.mail_since`) — 30 days back by message
-date for a mailbox it has none for, so a promise from years ago is never
-listed as open — and asks a model for the
+the last record handled, `brainKit.mail_since`) and dated within the
+last 30 days, with or without a cursor, so a promise from months ago is
+never listed as open and overdue — and asks a model for the
 commitments in each message. It is the second brain job that reads
 mail with a model, so the user's consent (`brain.model`, §3.1)
 covers it: without it the job answers `{skipped: "consent"}` and reads
@@ -397,9 +399,11 @@ fail-closed. Three more rules live there once:
   writes newest first, in fuel-bound slices across its own ticks, so a
   job that cursors on the date sets its cursor to today on its first
   tick and never sees the older mail that lands after it (found in
-  review, 2026-10-29). A mailbox with no cursor is read from `floor_ms`
-  (message date) on. Rows come in landing order; a pass that needs date
-  order sorts them.
+  review, 2026-10-29). `floor_ms` (message date, inclusive) bounds every
+  read, with or without a cursor: the backfill lands mail older than the
+  floor after the cursor too, and a job that read it would walk a year
+  of mail. Rows come in landing order; a pass that needs date order
+  sorts them.
 - **One notice** (`notice(space, text, attachments)`): a chat message
   under the literal agent name `bao` with `done: true`, which the chat
   watcher skips as its own, so it starts no chat turn and raises one
