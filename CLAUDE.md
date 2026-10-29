@@ -107,10 +107,11 @@ users before the anyrt that runs them. The secret
 waits for the fresh device to hold at least the programs + skills
 shared by the commit being deployed and the commit the channel was
 last deployed from — the run name of the last successful run records
-that commit. When no run has recorded one (or a by-hand deploy moved
-the space), pass it as the optional `deployed_sha` input; without it
-the floor is the deployed commit's own count, which times out when a
-commit adds many programs.
+that commit. Until a run has recorded one, `deploy/<channel>.deployed`
+seeds it (a one-time bootstrap; it may go stale afterwards). A by-hand
+deploy that moved the space is named with the optional `deployed_sha`
+input. With none of the three the floor is the deployed commit's own
+count, which times out when a commit adds many programs.
 
 **By hand (break-glass)** — through the owning server, by overlay name
 (a guest join 403s `space.read_only`):
