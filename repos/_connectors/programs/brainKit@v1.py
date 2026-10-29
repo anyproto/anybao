@@ -1,10 +1,10 @@
 """Brain helpers: checked writes, hub records, exclusions and mail addresses."""
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-033 / ADR-034. Shared by the brain's programs (setup's status, the
+# ADR-033 §1, §2. Shared by the brain's programs (setup's status, the
 # heartbeat, people, promises, facts, recall, tasks, the chat scan); not a
-# tool. So is the rule that links a chat identity to a person (ADR-039 §5).
+# tool. So is the rule that links a chat identity to a person (ADR-033 §7.5).
 # Three server rules every brain write and read depends on live here, once:
 #   - modify / upsert answer HTTP 200 even when they refuse a record; the
 #     refusal sits only in `rejections` (checked)
@@ -119,6 +119,8 @@ def exclusions_problem(rec):
     for field in ("personIds", "emails", "domains"):
         if not isinstance(value.get(field), list):
             return f"exclusion list field {field!r} is not a list"
+    if "identities" in value and not isinstance(value.get("identities"), list):
+        return "exclusion list field 'identities' is not a list"
     stamps = value.get("includedAt")
     if stamps is not None and not (isinstance(stamps, dict) and all(
             isinstance(stamps.get(f) or {}, dict)
@@ -177,6 +179,9 @@ def exclusions(space, hub, datasets):
             "personEmails": by_person,
             "emails": {e.lower() for e in value["emails"]},
             "domains": {d.lower() for d in value["domains"]},
+            # chat account identities kept out by the user (brainSetup.exclude(identity=…)),
+            # bare ids: an any://u/<id> link in the list is read as its id
+            "identities": {identity_of(i) for i in value.get("identities") or [] if i},
             "readFrom": read_from}
 
 
@@ -296,7 +301,7 @@ def mailboxes(space):
 
 def model_allowed():
     """The user's consent to reading mail with a model (`brain.model`,
-    ADR-035 §1): True only when the row says allowed."""
+    ADR-033 §3.1): True only when the row says allowed."""
     try:
         value = effect("config.get", {"key": "brain.model"})["value"]  # noqa: F821
     except EffectError:  # noqa: F821 - guest global
@@ -409,7 +414,74 @@ def person_facts(space, hub, datasets, person_id, limit=200):
     return grouped, proposed
 
 
-# --- identities: who wrote a chat message (ADR-039 §5) ----------------------
+# --- synced mail in arrival order (ADR-033 §4.4) --------------------------
+
+def ver_id(record):
+    """A record's creation version (`_ver.id`): set once, lex-monotonic, exact
+    under a string `$gt` — the cursor unit for mail and chat. None if absent."""
+    ver = record.get("_ver")
+    if isinstance(ver, str):
+        return ver or None
+    if isinstance(ver, dict):
+        return ver.get("id") or ver.get("*") or None
+    return None
+
+
+def mail_since(space, mailbox_id, cursor, limit, floor_ms=None, **filters):
+    """Synced mail after `cursor`, in the order it landed → (rows, cursor).
+
+    The cursor is the last record's `_ver.id`. An `internalDate` cursor
+    would pass mail for good: the Gmail backfill writes newest first, in
+    slices across its own ticks, so a job that cursors on the message date
+    sets its cursor to today on the first tick and never sees the older
+    mail that lands after it. A mailbox with no cursor (None) is read from
+    `floor_ms` (internalDate, inclusive) on. `filters` narrow the query
+    (e.g. a sender). Rows come in arrival order, not by date: sort them
+    when the date matters. The cursor comes back unchanged when nothing
+    was read."""
+    flt = dict(filters)
+    if cursor:
+        flt["_ver.id"] = {"$gt": cursor}
+    elif floor_ms is not None:
+        flt["internalDate"] = {"$gte": int(floor_ms)}
+    rows = _any.query(space, mailbox_id, "email_messages", filter=flt, sort=["_ver.id"],
+                      limit=limit)
+    last = cursor
+    for row in rows:
+        v = ver_id(row)
+        if v and (not last or v > last):
+            last = v
+    return rows, last
+
+
+# --- one chat notice (ADR-033 §4.8) -------------------------------------------
+
+# brain notices post under the literal agent name, as remind@v1 does: the chat
+# watcher skips its own name, so a notice starts no chat turn and raises one
+# notification; the runtime exposes no configured name to guests (ADR-033 §1.6)
+AGENT_NAME = "bao"
+
+
+def notice(space, text, attachments=None, counts=None):
+    """Post one notice to Bao's general chat under the agent's name; best-effort.
+
+    A failure is printed and counted in `counts["noticeFailed"]`, never
+    raised: the records the notice announces are already written."""
+    body = {"text": text, "agent": {"name": AGENT_NAME, "done": True}}
+    if attachments:
+        body["attachments"] = attachments
+    try:
+        chat = _any.general_chat(space)
+        _any.chat_send(space, chat, body)
+        return True
+    except Exception as e:  # noqa: BLE001 - the notice is a nicety
+        print(f"brain notice failed: {type(e).__name__}: {e}")
+        if counts is not None:
+            counts["noticeFailed"] = counts.get("noticeFailed", 0) + 1
+        return False
+
+
+# --- identities: who wrote a chat message (ADR-033 §7.5) ----------------------
 
 PERSON_PRELOAD = 1000
 
@@ -482,3 +554,49 @@ class Identities:
             row = _any.get_identity(identity)
             self.names[identity] = (row or {}).get("name")
         return self.names[identity]
+
+
+class IdentityResolver:
+    """Who a chat identity is, for one run: the one place the brain turns an
+    account identity into a person or a verdict (ADR-033 §7.5).
+
+    Built from the space and the exclusion list; the catalog persons are
+    read on first use (`person_rows`), display names through `names` (an
+    `Identities`: add a space's members to it before asking). `me` is the
+    user's own identity, never kept out.
+
+    - `kept_out(identity)`: True when the user excluded the identity itself
+      (`exclusions.identities`, brainSetup.exclude(identity=…)), else when
+      any person it may be (`identity_candidates`) is excluded.
+    - `person(identity)`: the one person it resolves to, or None.
+    - `candidates(identity)`: every person it may be → [person id]."""
+
+    def __init__(self, space, excl, me=None, names=None):
+        self.space, self.excl, self.me = space, excl, me
+        self.names = names if names is not None else Identities()
+        self._persons = None
+
+    @property
+    def persons(self):
+        if self._persons is None:
+            self._persons = person_rows(self.space)
+        return self._persons
+
+    def candidates(self, identity):
+        if not identity:
+            return []
+        return identity_candidates(self.persons, identity, self.names.name(identity))
+
+    def kept_out(self, identity):
+        if not identity or identity == self.me:
+            return False
+        if identity in (self.excl.get("identities") or ()):
+            return True
+        if not self.excl["personIds"]:
+            return False
+        return any(p in self.excl["personIds"] for p in self.candidates(identity))
+
+    def person(self, identity):
+        if not identity:
+            return None
+        return identity_person(self.persons, identity, self.names.name(identity))

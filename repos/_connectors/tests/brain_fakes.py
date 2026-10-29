@@ -1,5 +1,5 @@
 """A fake of Bao's space for the brain program tests, modelling the server
-rules the live runs taught (ADR-033 §2, §4, §6): the hub's stores are
+rules the live runs taught (ADR-033 §1.2, §4, §6): the hub's stores are
 SHARED (reads and id filters use "<objectId>/<recordId>", writes the plain
 id), a refused record write is HTTP 200 with `rejections`, and a
 write-once field rejects a changed value. Objects carry one type, any
@@ -104,8 +104,15 @@ class FakeSpace:
     def add_mailbox(self, oid, address):
         return self.add_object(oid, "mailbox", mailbox={"address": address}, name=address)
 
-    def add_mail(self, mailbox, mid, **fields):
-        self.records.setdefault((mailbox, "email_messages"), {})[mid] = {"id": mid, **fields}
+    def add_mail(self, mailbox, mid, ver=None, **fields):
+        # every record carries its creation version `_ver.id` (the jobs' mail
+        # cursor, brainKit.mail_since); by default it follows internalDate so a
+        # test that seeds mail in date order lands it in that order too
+        self._n += 1
+        ver = ver or f"{int(fields.get('internalDate') or 0):013d}-{self._n:04d}"
+        rec = {"id": mid, "_ver": {"id": ver}, **fields}
+        self.records.setdefault((mailbox, "email_messages"), {})[mid] = rec
+        return rec
 
     def seed_lists(self):
         """The exclusion list and blocklist a set-up brain starts with: empty."""
@@ -124,7 +131,7 @@ class FakeSpace:
     def store(self, key):
         return self.records.get((HUB, DATASETS.get(key, f"{SHARED_PREFIX}{key}")), {})
 
-    # --- chats (ADR-039) ---------------------------------------------------
+    # --- chats (ADR-033 §7) ---------------------------------------------------
     # spaces the account has, their members, the one general chat each, and
     # the account's identity directory; a chat message is a record on the
     # chat object's chat_messages, ordered by _ver.id
