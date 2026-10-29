@@ -412,3 +412,20 @@ def test_a_people_job_written_before_the_hub_had_asks_finds_them_on_the_status()
     assert out["asksLinked"] == 1
     _, out = run(s, args=args)                       # no status: nothing to link
     assert out["asksLinked"] == 0
+
+
+def test_mail_older_than_the_floor_that_lands_after_the_cursor_is_not_read():
+    # the backfill lands a year of mail, oldest last: the floor holds with a
+    # cursor too, so a correspondent from a year ago is not minted
+    now = 1_800_000_000.0
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "new", ver="v-0001", **{"from": "Ada <ada@lab.org>", "to": ME},
+               internalDate=now * 1000 - DAY_MS)
+    run(s, now=now)
+    s.add_mail("mb1", "old", ver="v-0002", **{"from": "Old Friend <old@past.org>", "to": ME},
+               internalDate=now * 1000 - 40 * DAY_MS)
+    _, out = run(s, now=now)
+    assert sorted(people(s)) == ["ada@lab.org"] and out["messages"] == 0
+    assert s.config("people.cursor") == {"mail": {"mb1": "v-0001"}}

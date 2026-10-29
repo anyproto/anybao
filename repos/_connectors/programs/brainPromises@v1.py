@@ -7,8 +7,9 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # space — messages whose From is the mailbox's own address — that landed
 # after its cursor, the last `_ver.id` handled per mailbox (kit.mail_since:
 # the Gmail backfill writes newest first in slices, so a date cursor would
-# pass the older slices for good; a mailbox with no cursor is read from
-# BACKFILL_DAYS back), and asks a model (the `classify` tier) for the
+# pass the older slices for good; only mail dated within BACKFILL_DAYS is
+# read, cursor or not, since the backfill lands older mail after the
+# cursor too), and asks a model (the `classify` tier) for the
 # commitments in each message:
 # `[{quote, due}]`, the quote copied character for character. Plain code
 # keeps only a quote that is a verbatim substring of the cleaned body
@@ -400,10 +401,11 @@ def main(args):
     floor = kit.backfill_floor_ms()
     for box_id, box_addr in kit.mailboxes(space):
         # arrival order (ADR-033 §4.4): `from` is a raw header, so sent mail
-        # is told apart here, not in the query
+        # is told apart here, not in the query; the date floor holds on
+        # every read, or the backfill's older slices would land a year of
+        # commitments as open and overdue
         last = cursor.get(box_id)
-        rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX,
-                                       floor_ms=None if last else floor)
+        rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX, floor_ms=floor)
         sent = [r for r in rows if _is_sent(r, box_addr)]
         done = extracted(space, hub, datasets["promises"],
                           [kit.mail_link(space, box_id, r["id"]) for r in sent])

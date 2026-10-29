@@ -285,8 +285,10 @@ addresses, noise senders, blocklisted senders and domains, and excluded
 people never become people. It preloads the first 1 000 persons; one
 past them is found by any of their addresses (`brain_person.emails`,
 then `person.email`) and merged into, never overwritten or minted
-twice. A mailbox it has no cursor for is read from 30 days back, not
-from its first message: a real mailbox holds years of mail, which at 200
+twice. It reads only mail dated within the last 30 days, with or
+without a cursor (the backfill lands older mail after the cursor too),
+so a mailbox is never walked from its first message: a real mailbox
+holds years of mail, which at 200
 messages a run would take days to walk before reaching this month. It
 caps unknown addresses per run and advances the cursor only past
 messages fully handled; one message with
@@ -300,9 +302,9 @@ when they are past the preload.
 
 Reads the user's sent mail (From = the mailbox's address) that landed
 after its cursor (`config/promises.cursor`, per mailbox the `_ver.id` of
-the last record handled, `brainKit.mail_since`) — 30 days back by message
-date for a mailbox it has none for, so a promise from years ago is never
-listed as open — and asks a model for the
+the last record handled, `brainKit.mail_since`) and dated within the
+last 30 days, with or without a cursor, so a promise from months ago is
+never listed as open and overdue — and asks a model for the
 commitments in each message. It is the second brain job that reads
 mail with a model, so the user's consent (`brain.model`, §3.1)
 covers it: without it the job answers `{skipped: "consent"}` and reads
@@ -397,9 +399,11 @@ fail-closed. Three more rules live there once:
   writes newest first, in fuel-bound slices across its own ticks, so a
   job that cursors on the date sets its cursor to today on its first
   tick and never sees the older mail that lands after it (found in
-  review, 2026-10-29). A mailbox with no cursor is read from `floor_ms`
-  (message date) on. Rows come in landing order; a pass that needs date
-  order sorts them.
+  review, 2026-10-29). `floor_ms` (message date, inclusive) bounds every
+  read, with or without a cursor: the backfill lands mail older than the
+  floor after the cursor too, and a job that read it would walk a year
+  of mail. Rows come in landing order; a pass that needs date order
+  sorts them.
 - **One notice** (`notice(space, text, attachments)`): a chat message
   under the literal agent name `bao` with `done: true`, which the chat
   watcher skips as its own, so it starts no chat turn and raises one
@@ -1056,7 +1060,7 @@ grade itself as overdue (it is running).
 | Class | Condition | Subject | Evidence |
 | --- | --- | --- | --- |
 | `job_overdue` | an enabled brain job whose last run — the newest of its record's `lastRunAt`, its newest `agent_runs` row and its caretaker reruns — is older than `2 × every_s + 120 s`, counted from no earlier than `uptimeSince` (below); a job that never ran counts from `brain.status.at` | trigger id | `lastRunAt`, `lastStatus`, `everyS`, `overdueS`, `owner`, `activeDevice` |
-| `job_failing` | a brain job with `consecutiveFailures ≥ 2`, or `lastStatus: auto_disabled` | trigger id | `consecutiveFailures`, `lastStatus`, `lastErrorType` (newest run's `errorType`), `lastRunAt`, `enabled` |
+| `job_failing` | a brain job with `consecutiveFailures ≥ 2`, or `lastStatus: auto_disabled`; read from a job re-enabled and not run since (`enabled` with `auto_disabled`, §6.5) it opens no incident and only holds a pending repair (§6.7) | trigger id | `consecutiveFailures`, `lastStatus`, `lastErrorType` (newest run's `errorType`), `lastRunAt`, `enabled` |
 | `mail_stale` | the mail sync trigger is enabled (a paused one is the user's choice, no fault) and `googleAuth.status().connected` is `false` (a dead credential makes the sync return an error dict without raising, so its run status is no signal), or the newest `sync_state`'s `modifiedAt` is older than 6 h counted from no earlier than `uptimeSince` (no `sync_state` yet: from `brain.status.at`) | mailbox id (`sync_state.mailbox_id`, else `mail`) | `syncStateModifiedAt`, `credentialConnected`, `cursor`, `skippedCount`, `mailTriggerId` (`brain.status.mailSync.triggerId`), `lastRunStatus` |
 | `exclusions_unreadable` | `config/exclusions` missing or not in its version-1 shape (`brainKit.exclusions_problem`) | `config/exclusions` | `present`, `version`, `parseError` |
 | `tier_unpinned` | a tier an enabled brain job calls — its `args.tier`, else the program's own (`classify` for promises, `brain.extractor` for facts), and the heartbeat's `brain.drafter` — has no row or no `model` | `llm.tier.<tier>` | `present`, `provider`, `model` |
@@ -1155,7 +1159,10 @@ not retried.
   registry holds resets its `consecutive_failures` and re-arms it
   (`triggers.rs` `reconcile_registry`) — in memory; the RECORD keeps
   `lastStatus: auto_disabled` and its count until the job's next own
-  run, every_s later. A serve restarted between the stop and the flip
+  run, every_s later — so a `job_failing` read from an enabled record
+  opens no incident (setup's on run restarts every stopped job at once,
+  and each would read as failing for up to every_s); it only holds a
+  pending repair (§6.7). A serve restarted between the stop and the flip
   rebuilds the entry from the record, so one more failure stops the job
   again at once; the caretaker then reads `job_failing` again and
   escalates rather than retry.

@@ -552,17 +552,25 @@ def windows(every):
     return max(VERIFY_S, span), max(SOAK_S, span)
 
 
+def awaiting_run(fault):
+    """True for a `job_failing` fault read from a job that was re-enabled and has
+    not run since: the record keeps the runtime's stop (`auto_disabled` and its
+    count) until the job's next own run (ADR-033 §6.5). Such a fault opens no
+    incident — setup's on run restarts every stopped job at once, and each would
+    read as failing for up to every_s — it only holds a pending repair."""
+    e = (fault or {}).get("evidence") or {}
+    return e.get("enabled") is True and e.get("lastStatus") == STOPPED
+
+
 def pending(incident, fault):
     """True while an enable_job repair waits for the job's next own run: the record
     still reads the runtime's stop, and nothing newer has run since the repair.
     Neither clean nor dirty (ADR-033 §6.7)."""
-    if incident.get("action") != "enable_job" or not isinstance(fault, dict):
+    if incident.get("action") != "enable_job" or not awaiting_run(fault):
         return False
-    e = fault.get("evidence") or {}
     acted = _secs(incident.get("actionAt"))
-    last = e.get("lastRunAt")
-    return (e.get("enabled") is True and e.get("lastStatus") == STOPPED and acted is not None
-            and (last is None or (_num(last) and last < acted)))
+    last = (fault.get("evidence") or {}).get("lastRunAt")
+    return acted is not None and (last is None or (_num(last) and last < acted))
 
 
 def step(incident, now_s, clean, soak_s=SOAK_S):
@@ -636,7 +644,7 @@ class _Run:
         have = {(i.get("faultClass"), i.get("subject")) for i in self.incidents.values()}
         new = []
         for key, fault in faults.items():
-            if key in have:
+            if key in have or awaiting_run(fault):
                 continue
             iid = incident_id(fault["faultClass"], fault["subject"], self.tick)
             fields = {"faultClass": fault["faultClass"], "subject": fault["subject"],
