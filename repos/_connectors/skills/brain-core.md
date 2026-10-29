@@ -61,9 +61,8 @@ user names a chat). Only you switch it, through
   `personId`, `dueAt`, `status` (open / done / dropped), `taskId`. They
   need the user's consent to reading mail with a model (below); without
   it there are no promises, only people.
-- When the user asks what they owe, or at most once a day when
-  `connectors:brainTasks@v1.suggest()` returns three or more, list what it
-  returns — promises the user made and asks other people made of them
+- When the user asks what they owe, list what
+  `connectors:brainTasks@v1.suggest()` returns — promises the user made and asks other people made of them
   (`origin`), each with its quote, who it is with and the suggested
   deadline — and offer to turn them into tasks. Let the user change a
   deadline, and only after a yes call `create(id, deadline=…)` for a
@@ -96,6 +95,9 @@ the work is):
   a minute. `stop_watching_chats([…])` when they say stop: what was found
   stays. `scan_pages(True)` — unchecked checklist items of pages edited
   in those spaces become asks too — only when they ask for it, after a yes.
+- Once a day the scan writes one `task_suggestion` card with the open
+  promises and asks that have no task; the Cards view is where the user
+  picks from it. Do not offer the same list unasked in chat.
 - `status()["chatScan"]` names what is watched. Never call watch_chats
   for a chat the user did not name, and never read a chat's messages
   yourself to find promises or asks: the brain's job does that.
@@ -146,7 +148,8 @@ the work is):
   promise, a meeting soon, a calendar clash, a fact conflict. Each has a
   `reason` and, for a reply, a `draftId` once the drafter wrote one.
   `drafts` hold the reply text; `approvals` hold the user's decision on
-  those exact bytes (`pending`, `approved`, `rejected`, `void`), and
+  those exact bytes (`pending`, `approved`, `rejected`, `void`, `consumed`
+  once sent, `held`), and
   `standups` say what each brain job did.
 - When the user asks about a card or a draft, read `cards` and `drafts`
   (`query(space, hub, <dataset>, …)`) and quote the card's `reason`; the
@@ -168,7 +171,11 @@ the work is):
 
 ## Exclusions
 
-`exclude(person=…, email=…, domain=…)` keeps someone's mail out of the
-brain for good; `include(…)` lets them back in. Both only when the user
-asks, and say what each does: excluded mail is never read by any brain
-job; including re-reads nothing already skipped.
+`exclude(person=…, email=…, domain=…, identity=…)` keeps someone out of
+the brain for good; `include(…)` lets them back in. Both only when the
+user asks, and say what each does: excluded mail is never read by any
+brain job; including re-reads nothing already skipped. In a watched chat
+a person is kept out by their account identity: pass `identity=` (a
+member's identity from `list_members`, or an `any://u/…` link) when the
+user names someone from a chat, since a person id keeps their chat
+messages out only once the brain has linked the two by name.

@@ -270,14 +270,13 @@ def test_setup_installs_the_apps_bundle_hub_and_seeds():
     exclusions = fake.records[(BAO, "hub", "type-hub_config")]["exclusions"]["value"]
     assert exclusions == {"version": 1, "personIds": [], "emails": [], "domains": []}
     # one tier row per brain job that calls a model (the facts extractor,
-    # the reply drafter, the caretaker)
+    # the reply drafter); the caretaker calls none
     assert cfg["llm.tier.brain.extractor"] == {"model": "codegen-model"}
     assert cfg["llm.tier.brain.drafter"] == {"model": "codegen-model"}
-    assert cfg["llm.tier.brain.caretaker"] == {"model": "codegen-model"}
     assert sorted(k for k in cfg if k.startswith("llm.tier.brain.")) == [
-        "llm.tier.brain.caretaker", "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
+        "llm.tier.brain.drafter", "llm.tier.brain.extractor"]
     ready = statuses(writes)[-1]
-    assert ready["hub"] == {"objectId": "hub", "version": 7, "datasets": {
+    assert ready["hub"] == {"objectId": "hub", "version": 1, "datasets": {
         "signals": "type-hub_signals", "config": "type-hub_config",
         "incidents": "type-hub_incidents", "observations": "type-hub_observations",
         "promises": "type-hub_promises", "facts": "type-hub_facts",
@@ -304,7 +303,7 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert js["brain-mail-sync"]["program"] == "connectors:gmailSync@v1"
     assert js["brain-mail-sync"]["args"] == {"space": BAO}
     beat = js["brain-heartbeat"]
-    assert beat["program"] == "connectors:brainHeartbeat@v3" and beat["spec"] == {"every_s": 600}
+    assert beat["program"] == "connectors:brainHeartbeat@v1" and beat["spec"] == {"every_s": 600}
     assert beat["args"]["space"] == BAO and beat["args"]["hub"] == "hub"
     assert beat["args"]["tier"] == "brain.drafter"
     assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
@@ -312,31 +311,17 @@ def test_setup_writes_the_jobs_unowned_and_enabled():
     assert js["brain-reconcile"]["args"] == {"mode": "reconcile"}
     care = js["brain-caretaker"]
     assert care["program"] == "connectors:brainCaretaker@v1" and care["spec"] == {"every_s": 900}
-    assert care["args"]["tier"] == "brain.caretaker" and care["args"]["hub"] == "hub"
+    assert "tier" not in care["args"] and care["args"]["hub"] == "hub"
     assert care["args"]["datasets"]["incidents"] == "type-hub_incidents"
     assert care["args"]["datasets"]["observations"] == "type-hub_observations"
     assert all(j["enabled"] is True and "owner" not in j for j in switched(fake).values())
-    # off until a chat is watched (ADR-039 §1)
+    # off until a chat is watched (ADR-033 §7.1)
     scan = js["brain-chat-scan"]
     assert scan["program"] == "connectors:brainChatScan@v1" and scan["spec"] == {"every_s": 1800}
     assert scan["enabled"] is False and "owner" not in scan
     assert scan["args"]["datasets"]["asks"] == "type-hub_asks"
 
 
-def test_a_hub_before_the_caretaker_upgrades_to_it_through_reconcile():
-    # an install set up at hub version 3 has no caretaker job and no tier row
-    mod, fake, cfg, writes, _ = kernel(config=on_request())
-    mod.main({})
-    triggers(fake).pop("brain-caretaker")
-    del cfg["llm.tier.brain.caretaker"]
-    old = dict(statuses(writes)[-1])
-    old["hub"] = {**old["hub"], "version": 3}
-    cfg["brain.status"] = old
-    assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
-    mod.main({"requestedAt": STAMP})                # the re-armed setup run
-    assert jobs(fake)["brain-caretaker"]["program"] == "connectors:brainCaretaker@v1"
-    assert cfg["llm.tier.brain.caretaker"] == {"model": "codegen-model"}
-    assert statuses(writes)[-1]["hub"]["version"] == 7
 
 
 def test_a_second_run_only_reads():
@@ -350,7 +335,7 @@ def test_a_second_run_only_reads():
     assert not [c for c in new if c[0] in ("upsert", "enabled", "rewrite")]
     assert [k for k, _ in writes].count("llm.tier.brain.extractor") == 1
     assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
-    assert [k for k, _ in writes].count("llm.tier.brain.caretaker") == 1
+    assert [k for k, _ in writes].count("llm.tier.brain.drafter") == 1
 
 
 def test_an_edited_tier_is_never_overwritten():
@@ -544,7 +529,7 @@ def test_reconcile_rewrites_a_deleted_job_under_a_fresh_id():
     out = mod.main({"mode": "reconcile"})
     (new_id,) = out["written"]
     assert new_id.startswith("brain-heartbeat-")
-    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v3"
+    assert jobs(fake)[new_id]["program"] == "connectors:brainHeartbeat@v1"
 
 
 def test_a_rejected_write_fails_the_run_instead_of_passing_for_done():
@@ -779,7 +764,7 @@ def test_status_before_the_first_mail_sync_names_no_mailbox():
 
 
 def test_allow_and_deny_model_write_the_consent_row_from_chat():
-    # ADR-035 §1: only these two tools write brain.model, after a yes
+    # ADR-033 §3.1: only these two tools write brain.model, after a yes
     mod, _, cfg, writes, _ = kernel()
     assert mod.status()["modelAllowed"] is False
     row = mod.allow_model()
@@ -807,6 +792,7 @@ def test_include_removes_what_exclude_added_and_nothing_else():
     out = mod.include(person=pid, email="bob@y.io", domain="spam.io")
     at = int(NOW * 1000)
     assert out == {"version": 1, "personIds": [], "emails": ["keep@z.io"], "domains": [],
+                   "identities": [],
                    # when each item was let back in: the jobs skip older mail
                    "includedAt": {"personIds": {pid: at},
                                   "emails": {"ada@x.io": at, "a.lovelace@x.io": at,
@@ -848,7 +834,7 @@ def test_include_refuses_before_setup_and_a_malformed_list():
         mod.include(email="a@b.c")
 
 
-# --- Phase 3: the decision layer (ADR-036) -----------------------------------
+# --- Phase 3: the decision layer (ADR-033) -----------------------------------
 
 def _fields(draft):
     return {f["key"]: f for f in draft["fields"]}
@@ -873,7 +859,7 @@ def test_setup_declares_the_decision_layer_stores_with_their_exact_fields():
     assert set(_fields(cards)) - {"creator", "createdAt", "modifiedAt"} == {
         "kind", "title", "reason", "subjectKey", "sourceUri", "signalId", "personIds",
         "briefPersonIds", "status", "snoozedUntil", "answer", "draftId", "approvalId",
-        "draftAttempts", "decidedAt", "items"}             # items: the chat scan's (ADR-039 §7)
+        "draftAttempts", "decidedAt", "items"}             # items: the chat scan's (ADR-033 §7.7)
     assert _keys(cards, "required") == {"kind", "title", "reason", "subjectKey"}
     assert _keys(cards, "mutableBy") == {"status", "snoozedUntil", "answer", "draftId",
                                          "approvalId", "draftAttempts", "decidedAt"}
@@ -911,53 +897,13 @@ def test_setup_seeds_the_drafting_knobs_once_and_never_overwrites_them():
     assert store["drafting"]["value"]["quietSenders"] == ["^news@"]
 
 
-def test_an_older_heartbeat_is_rewritten_in_place_and_a_pause_holds():
-    fake = FakeAny()
-    v1 = {"id": "brain-heartbeat", "name": "brain heartbeat", "kind": "cron",
-          "spec": {"every_s": 600}, "program": "connectors:brainHeartbeat@v1",
-          "args": {"space": BAO, "hub": "hub", "datasets": {"signals": "type-hub_signals"}},
-          "enabled": False, "lastRunAt": 123}
-    fake.records[TRIGGERS] = {"brain-heartbeat": dict(v1)}
-    mod, _, _, _, _ = kernel(config=on_request(), fake=fake)
-    out = mod.main({})
-    assert out["upgraded"] == ["brain-heartbeat"]
-    beats = [j for j in jobs(fake).values() if "Heartbeat" in j["program"]]
-    assert len(beats) == 1                              # no second heartbeat
-    (beat,) = beats
-    assert beat["program"] == "connectors:brainHeartbeat@v3"
-    assert beat["args"]["tier"] == "brain.drafter"
-    assert beat["args"]["datasets"]["cards"] == "type-hub_cards"
-    assert beat["enabled"] is False and beat["lastRunAt"] == 123    # paused stays paused
-    assert ("rewrite", "brain-heartbeat", ["program", "args"]) in fake.calls
-    assert not [c for c in fake.calls if c[0] == "enabled" and c[1] == "brain-heartbeat"]
 
 
-def test_an_enabled_older_heartbeat_stays_enabled_and_a_rerun_rewrites_nothing():
-    fake = FakeAny()
-    fake.records[TRIGGERS] = {"hb-7": {
-        "id": "hb-7", "name": "brain heartbeat", "kind": "cron", "spec": {"every_s": 600},
-        "program": "connectors:brainHeartbeat@v1", "args": {}, "enabled": True}}
-    mod, _, cfg, _, _ = kernel(config=on_request(), fake=fake)
-    mod.main({})
-    assert jobs(fake)["hb-7"]["enabled"] is True
-    assert jobs(fake)["hb-7"]["program"] == "connectors:brainHeartbeat@v3"
-    assert "brain-heartbeat" not in jobs(fake)
-    before = len(fake.calls)
-    mod.main({"mode": "reconcile"})
-    assert not [c for c in fake.calls[before:] if c[0] in ("rewrite", "upsert", "enabled")]
 
 
-def test_reconcile_upgrades_a_version_3_hub():
-    # an install from before the decision layer upgrades itself within the hour
-    mod, fake, cfg, writes, _ = kernel(config=on_request())
-    mod.main({})
-    old = dict(statuses(writes)[-1])
-    old["hub"] = {**old["hub"], "version": 3}
-    cfg["brain.status"] = old
-    assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
 
 
-# --- Phase 4: the reply hand-off (ADR-037) -----------------------------------
+# --- the reply hand-off (ADR-033 §1.5) -------------------------------------------
 
 def test_setup_declares_the_sends_store_write_once():
     mod, fake, _, _, _ = kernel(config=on_request())
@@ -972,28 +918,7 @@ def test_setup_declares_the_sends_store_write_once():
     assert _keys(sends, "mutableBy") == set() and fields["at"]["kind"] == "datetime"
 
 
-def test_a_v2_heartbeat_moves_to_v3_in_place_and_a_pause_holds():
-    fake = FakeAny()
-    fake.records[TRIGGERS] = {"brain-heartbeat": {
-        "id": "brain-heartbeat", "name": "brain heartbeat", "kind": "cron",
-        "spec": {"every_s": 600}, "program": "connectors:brainHeartbeat@v2",
-        "args": {"space": BAO, "hub": "hub", "datasets": {}, "tier": "brain.drafter"},
-        "enabled": False}}
-    mod, _, _, _, _ = kernel(config=on_request(), fake=fake)
-    assert mod.main({})["upgraded"] == ["brain-heartbeat"]
-    (beat,) = [j for j in jobs(fake).values() if "Heartbeat" in j["program"]]
-    assert beat["program"] == "connectors:brainHeartbeat@v3" and beat["enabled"] is False
-    assert beat["args"]["datasets"]["sends"] == "type-hub_sends"
-
-
-def test_reconcile_upgrades_a_version_4_hub():
-    mod, fake, cfg, writes, _ = kernel(config=on_request())
-    mod.main({})
-    old = dict(statuses(writes)[-1])
-    old["hub"] = {**old["hub"], "version": 4}
-    cfg["brain.status"] = old
-    assert mod.main({"mode": "reconcile"}) == {"reconciled": True, "upgrading": True}
-# --- Phase 6: which chats the brain reads (ADR-039 §1) ------------------------------
+# --- which chats the brain reads (ADR-033 §7.1) ----------------------------------
 
 SPACES = ({"id": "team", "name": "Team", "status": "active", "ownRole": "writer",
            "spaceType": "any.space"},
@@ -1121,13 +1046,39 @@ def test_a_chat_scan_rewritten_while_chats_are_watched_starts_on():
     assert jobs(fake)[new_id]["enabled"] is True
 
 
-def test_the_cards_store_gains_items_for_the_daily_suggestion_card():
-    # the decision layer declares `cards`; Phase 6 adds the pick-list field
-    mod, _, _, _, _ = kernel()
-    cards = {"key": "cards", "fields": [{"key": "kind", "kind": "string", "required": True}]}
-    out = mod._with_card_items(({"key": "asks", "fields": []}, cards))
-    assert [f["key"] for f in out[1]["fields"]] == ["kind", "items"]
-    assert out[1]["fields"][1] == {"key": "items", "kind": "array"}
-    assert mod._with_card_items(out) == out                  # once
-    assert cards["fields"] == [{"key": "kind", "kind": "string", "required": True}]
-    assert [d["key"] for d in mod.DATASETS][-1] == "asks"
+def test_the_cards_store_declares_items_and_asks_is_a_hub_store():
+    mod, fake, _, _ = ready_with_spaces()
+    cards = {f["key"]: f for f in fake.datasets["cards"]["fields"]}
+    assert cards["items"] == {"key": "items", "kind": "array"}      # the daily pick-list
+    assert fake.datasets["asks"]["shared"] is True
+    person_cols = {p["xKey"] for p in fake.collections["brain_person"]["properties"]}
+    assert "identity" in person_cols
+
+
+def test_exclude_and_include_a_chat_identity():
+    # a chat identity is kept out by itself, whatever name it shows (ADR-033 §7.5)
+    mod, fake, _, _, _ = kernel(config=on_request())
+    mod.main({})
+    out = mod.exclude(identity="any://u/bob-id")
+    assert out["identities"] == ["bob-id"]
+    out = mod.exclude(identity=" carol-id ", email="x@y.io")
+    assert out["identities"] == ["bob-id", "carol-id"] and out["emails"] == ["x@y.io"]
+    assert mod.exclude(identity="bob-id")["identities"] == ["bob-id", "carol-id"]   # once
+    out = mod.include(identity="bob-id")
+    assert out["identities"] == ["carol-id"]
+    assert "identities" not in out["includedAt"]        # no mail to skip for a chat identity
+    assert out["version"] == 1
+
+
+def test_watch_chats_refuses_while_the_brain_is_switching_off_or_waiting():
+    # the row would outlive the off request, and the next on() would read
+    # those chats without a fresh yes
+    mod, fake, cfg, _ = ready_with_spaces()
+    mod.off()
+    assert mod.status()["state"] == "switching_off"
+    for call in (lambda: mod.watch_chats(["team"]), lambda: mod.stop_watching_chats(["team"]),
+                 lambda: mod.scan_pages(True)):
+        with pytest.raises(Exception) as err:
+            call()
+        assert type(err.value).__name__ == "not_set_up"
+    assert "brain.chatScan.spaces" not in cfg
