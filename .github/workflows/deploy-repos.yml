@@ -185,12 +185,14 @@ jobs:
       # both in this commit and in the one the space was last deployed
       # from (deploy-floor.sh) — the last successful run's name records
       # that commit (last-deploy.sh); `deployed_sha` names it by hand
-      # when no run has (first run after the record was added, a
-      # by-hand deploy, a new channel). Counting this commit alone
-      # deadlocked every nightly once a commit added more programs
-      # than the README + type-row slack (run 40809575447). With no
-      # record at all the floor is this commit's own count, as before.
-      # Then refuse a space whose shape is already wrong.
+      # (a by-hand deploy, an override); deploy/<target>.deployed seeds
+      # it until a run has recorded one (the first run after the
+      # record was added, a new channel) — read only then, so it may go
+      # stale. Counting this commit alone deadlocked every nightly once
+      # a commit added more programs than the README + type-row slack
+      # (run 40809575447). With no commit from any of the three the
+      # floor is this commit's own count, as before. Then refuse a
+      # space whose shape is already wrong.
       - name: wait for the spaces to sync
         id: spaces
         env:
@@ -206,6 +208,10 @@ jobs:
               [ -n "$id" ] || { echo "no space id for $name in $cfg" >&2; exit 1; }
               src=repos/_$name
               prev=${DEPLOYED_SHA:-$(./.github/scripts/last-deploy.sh "$t" "$name")}
+              if [ -z "$prev" ] && [ -f "deploy/$t.deployed" ]; then
+                prev=$(tr -d '[:space:]' < "deploy/$t.deployed")
+                echo "$name: no run recorded a deploy for $t; seeded from deploy/$t.deployed"
+              fi
               if [ -n "$prev" ]; then
                 git cat-file -e "$prev^{commit}" || { echo "last deploy $prev of $name is not a commit here" >&2; exit 1; }
                 floor=$(./.github/scripts/deploy-floor.sh "$src" "$ANYBAO_SHA" "$prev")
