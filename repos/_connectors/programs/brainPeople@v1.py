@@ -1,10 +1,12 @@
 """Brain people: one catalog person per real correspondent in Bao's mail."""
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-034. A cron job the brain's setup run writes (every 900 s), args
+# ADR-033 §2.3. A cron job the brain's setup run writes (every 900 s), args
 # {space, hub, datasets}. It reads mail that gmailSync synced into Bao's
-# space, newer than its cursor, and keeps one catalog person — a `profile`
+# space that landed after its cursor — the last `_ver.id` handled per
+# mailbox (kit.mail_since: the backfill lands older mail later, which a
+# date cursor would pass for good) — and keeps one catalog person — a `profile`
 # filed under `person` — per address, also filed under the brain's
 # `brain_person` collection with every address used, the names seen, when
 # we last spoke and how often. It never reads a body: From / To / Cc only.
@@ -16,15 +18,15 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # it, then one whose person.email equals it, else a new person. A run
 # processes at most MAX_NEW unknown addresses and PER_MAILBOX messages per
 # mailbox, starting a mailbox it has no cursor for BACKFILL_DAYS back; the
-# cursor advances only past messages fully handled, so a
-# capped run resumes where it stopped. A single message with more new
+# cursor advances only past messages fully handled, in the order they
+# landed, so a capped run resumes where it stopped. A single message with more new
 # addresses than MAX_NEW is a mailing list, not correspondents: it is read
 # past and nobody on it is minted. It then back-fills `personId` on
 # promises whose recipient it now knows, past the preload included.
 #
-# Chats (ADR-039 §5): the account identities behind unlinked asks and the
+# Chats (ADR-033 §7.5): the account identities behind unlinked asks and the
 # peers of one-to-one chats with unlinked promises are linked to a person
-# only when the rule in brainKit finds exactly one candidate — written as
+# only when brainKit's IdentityResolver finds exactly one candidate — written as
 # brain_person.identity, never over another — and asks and chat promises
 # then get their personId back-filled. A bare name never mints a person.
 
@@ -46,7 +48,7 @@ class unconfigured(Exception):
 
 
 class cursor_corrupt(Exception):
-    """config/people.cursor is not in its {mail: {mailboxId: ms}} shape."""
+    """config/people.cursor is not in its {mail: {mailboxId: _ver.id}} shape."""
 
 
 def _cursor(space, hub, datasets):
@@ -54,7 +56,7 @@ def _cursor(space, hub, datasets):
     if value is None:
         return {}
     mail = value.get("mail") if isinstance(value, dict) else None
-    if not isinstance(mail, dict) or not all(isinstance(v, (int, float)) for v in mail.values()):
+    if not isinstance(mail, dict) or not all(isinstance(v, str) and v for v in mail.values()):
         raise cursor_corrupt(f"people.cursor is {value!r}")
     return dict(mail)
 
@@ -93,14 +95,16 @@ class _People:
 
 
 def _gather(space, boxes, cursor, own, excl, block, people):
-    """Walk new mail → ({addr: seen}, new cursor, messages read, mass mailings)."""
+    """Walk the mail that landed since the cursor → ({addr: seen}, new cursor,
+    messages read, mass mailings). Arrival order (ADR-033 §4.4); a
+    person's first / last contact are the min / max dates seen, so the
+    order does not matter here."""
     seen, read, unknown, mass = {}, 0, set(), 0
     floor = kit.backfill_floor_ms()
     for box_id, _addr in boxes:
-        last = cursor.get(box_id, floor)
-        rows = _any.query(space, box_id, "email_messages",
-                          filter={"internalDate": {"$gt": last}},
-                          sort=["internalDate"], limit=PER_MAILBOX)
+        last = cursor.get(box_id)
+        rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX,
+                                       floor_ms=None if last else floor)
         for row in rows:
             people_here = [] if kit.labelled_out(row, block) else [
                 (n, a) for n, a in kit.addresses(row.get("from"), row.get("to"), row.get("cc"))
@@ -124,9 +128,12 @@ def _gather(space, boxes, cursor, own, excl, block, people):
                 s["first"] = min(s["first"], at)
                 s["last"] = max(s["last"], at)
                 s["count"] += 1
-            last = max(last, row.get("internalDate") or 0)
+            ver = kit.ver_id(row)
+            if ver and (not last or ver > last):
+                last = ver
             read += 1
-        cursor[box_id] = last
+        if last:
+            cursor[box_id] = last
     return seen, cursor, read, mass
 
 
@@ -215,7 +222,7 @@ def _chat_datasets(datasets):
 
 def _peers(space_ids, names):
     """{space id: the other participant's identity} for the one-to-one spaces
-    among `space_ids`."""
+    among `space_ids`; their members' names go into `names`."""
     rows = {r.get("id"): r for r in _any.list_spaces()}
     out, me = {}, None
     for sid in sorted(space_ids):
@@ -251,7 +258,7 @@ def _set_person(space, hub, dataset, record, pid, what):
             {"type": "$set", "path": "personId", "value": pid}]}]}), what)
 
 
-def _link_identities(space, hub, datasets):
+def _link_identities(space, hub, datasets, excl):
     """Link chat identities to persons and back-fill personId on asks and chat
     promises → {identitiesLinked, asksLinked, chatPromisesLinked}."""
     out = {"identitiesLinked": 0, "asksLinked": 0, "chatPromisesLinked": 0}
@@ -267,19 +274,18 @@ def _link_identities(space, hub, datasets):
         return out
     promise_spaces = {m.group(1) for m in (_CHAT_SOURCE.match(str(p.get("source") or ""))
                                            for p in chat_promises) if m}
-    names = kit.Identities()
-    peers = _peers(promise_spaces, names) if promise_spaces else {}
+    who = kit.IdentityResolver(space, excl)
+    peers = _peers(promise_spaces, who.names) if promise_spaces else {}
     wanted = {kit.identity_of(a.get("senderIdentity")) for a in asks} | set(peers.values())
     wanted.discard("")
     if not wanted:
         return out
-    persons = kit.person_rows(space)
     links = {}
     for identity in sorted(wanted):
-        pid = kit.identity_person(persons, identity, names.name(identity))
+        pid = who.person(identity)
         if pid:
             links[identity] = pid
-            out["identitiesLinked"] += _persist_link(space, persons, pid, identity)
+            out["identitiesLinked"] += _persist_link(space, who.persons, pid, identity)
     for a in asks:
         pid = links.get(kit.identity_of(a.get("senderIdentity")))
         if pid:
@@ -312,4 +318,4 @@ def main(args):
     linked = _link_promises(space, hub, datasets, people)
     return {"mailboxes": len(boxes), "messages": read, "minted": minted,
             "updated": updated, "promisesLinked": linked, "massSkipped": mass,
-            **_link_identities(space, hub, datasets)}
+            **_link_identities(space, hub, datasets, excl)}

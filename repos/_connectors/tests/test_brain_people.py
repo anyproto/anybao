@@ -3,9 +3,11 @@ REAL guest kernel. Pinned: one person per correspondent, minted as a catalog
 profile filed under person + brain_person; the mailbox's own address, noise,
 blocklisted and excluded addresses never become people; a person found by
 person.email is filed under brain_person instead of duplicated; counts,
-names and last contact accumulate across runs; the cursor resumes; a capped
-run leaves the rest for the next one; an unreadable exclusion list fails
-closed; promises get their personId back-filled."""
+names and last contact accumulate across runs; the cursor — the `_ver.id`
+of the last message handled, so mail the backfill lands later is still
+read — resumes; a capped run leaves the rest for the next one; an
+unreadable exclusion list fails closed; promises get their personId
+back-filled."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace, job_args
@@ -50,6 +52,11 @@ def people(space):
             if r["any"]["type"] == "profile"}
 
 
+def ver(space, mid, mailbox="mb1"):
+    """The `_ver.id` the fake stamped on a message: the cursor's unit."""
+    return space.records[(mailbox, "email_messages")][mid]["_ver"]["id"]
+
+
 def test_one_person_per_correspondent_and_never_myself_or_noise():
     s = space_with_mail()
     _, out = run(s)
@@ -65,7 +72,7 @@ def test_one_person_per_correspondent_and_never_myself_or_noise():
     assert out == {"mailboxes": 1, "messages": 2, "minted": 2, "updated": 0,
                    "promisesLinked": 0, "massSkipped": 0, "identitiesLinked": 0,
                    "asksLinked": 0, "chatPromisesLinked": 0}
-    assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
+    assert s.config("people.cursor") == {"mail": {"mb1": ver(s, "m2")}}
 
 
 def test_a_second_run_reads_only_new_mail_and_accumulates():
@@ -123,7 +130,7 @@ def test_an_unreadable_exclusion_list_fails_closed():
 
 def test_a_corrupt_cursor_raises():
     s = space_with_mail()
-    s.set_config("people.cursor", {"mail": {"mb1": "yesterday"}})
+    s.set_config("people.cursor", {"mail": {"mb1": 2_000_000}})     # a date, not a _ver.id
     with pytest.raises(Exception) as err:
         run(s)
     assert type(err.value).__name__ == "cursor_corrupt"
@@ -146,9 +153,9 @@ def test_a_capped_run_resumes_where_it_stopped(monkeypatch):
     mod = connector_kernel(effect=eff, any_client=s).use("brainPeople@v1")
     mod.MAX_NEW = 2
     out = mod.main(job_args(s))
-    assert out["minted"] == 2 and s.config("people.cursor") == {"mail": {"mb1": 2000}}
+    assert out["minted"] == 2 and s.config("people.cursor") == {"mail": {"mb1": ver(s, "m1")}}
     out = mod.main(job_args(s))
-    assert out["minted"] == 2 and s.config("people.cursor") == {"mail": {"mb1": 4000}}
+    assert out["minted"] == 2 and s.config("people.cursor") == {"mail": {"mb1": ver(s, "m3")}}
 
 
 def test_promises_get_their_person_back_filled():
@@ -191,7 +198,7 @@ def test_mail_under_a_blocklisted_label_makes_no_person_but_is_read_past():
     _, out = run(s)
     assert sorted(people(s)) == ["ada@lab.org"]
     assert out["messages"] == 2
-    assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
+    assert s.config("people.cursor") == {"mail": {"mb1": ver(s, "m2")}}
 
 
 def test_a_blocklist_field_that_is_not_a_list_fails_closed():
@@ -236,7 +243,7 @@ def test_a_mass_mailing_is_read_past_without_minting_anyone():
     _, out = run(s)
     assert sorted(people(s)) == ["ada@lab.org"]
     assert out["messages"] == 2 and out["massSkipped"] == 1
-    assert s.config("people.cursor") == {"mail": {"mb1": 2_000_000}}
+    assert s.config("people.cursor") == {"mail": {"mb1": ver(s, "m2")}}
 
 
 def test_a_promise_to_someone_past_the_preload_is_linked():
@@ -293,10 +300,30 @@ def test_a_first_run_starts_thirty_days_back_not_at_the_oldest_mail():
                internalDate=now * 1000 - 10 * DAY_MS)
     _, out = run(s, now=now)
     assert sorted(people(s)) == ["ada@lab.org"] and out["messages"] == 1
-    assert s.config("people.cursor") == {"mail": {"mb1": now * 1000 - 10 * DAY_MS}}
+    assert s.config("people.cursor") == {"mail": {"mb1": ver(s, "new")}}
 
 
-# --- chat identities (ADR-039 §5) ---------------------------------------------------
+def test_mail_the_backfill_lands_later_still_makes_people():
+    # the backfill writes newest first in slices: a correspondent whose mail
+    # lands after the first run, dated before it, is still minted (review A1)
+    now = 1_800_000_000.0
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "new", ver="v-0001", **{"from": "Ada <ada@lab.org>", "to": ME},
+               internalDate=now * 1000 - DAY_MS)
+    run(s, now=now)
+    assert sorted(people(s)) == ["ada@lab.org"]
+    s.add_mail("mb1", "older", ver="v-0002", **{"from": "Bob <bob@x.io>", "to": ME},
+               internalDate=now * 1000 - 20 * DAY_MS)
+    _, out = run(s, now=now)
+    assert sorted(people(s)) == ["ada@lab.org", "bob@x.io"] and out["messages"] == 1
+    assert people(s)["bob@x.io"]["brain_person"]["lastContactAt"] == {
+        "$date": now * 1000 - 20 * DAY_MS}
+    assert s.config("people.cursor") == {"mail": {"mb1": "v-0002"}}
+
+
+# --- chat identities (ADR-033 §7.5) ---------------------------------------------------
 
 def add_ask(space, rid, sender, person=None):
     rec = {"id": rid, "senderIdentity": f"any://u/{sender}", "text": "Can you call?",

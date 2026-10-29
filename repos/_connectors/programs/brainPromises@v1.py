@@ -1,18 +1,21 @@
 """Brain promises: what you committed to in sent mail, quoted verbatim."""
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-034 §4. A cron job the brain's setup run writes (every 1800 s), args
+# ADR-033 §2.4. A cron job the brain's setup run writes (every 1800 s), args
 # {space, hub, datasets, tier?}. It reads the user's SENT mail in Bao's
-# space — messages whose From is the mailbox's own address — newer than
-# its cursor (BACKFILL_DAYS back for a mailbox it has none for), and asks
-# a model (the `classify` tier) for the commitments in each message:
+# space — messages whose From is the mailbox's own address — that landed
+# after its cursor, the last `_ver.id` handled per mailbox (kit.mail_since:
+# the Gmail backfill writes newest first in slices, so a date cursor would
+# pass the older slices for good; a mailbox with no cursor is read from
+# BACKFILL_DAYS back), and asks a model (the `classify` tier) for the
+# commitments in each message:
 # `[{quote, due}]`, the quote copied character for character. Plain code
 # keeps only a quote that is a verbatim substring of the cleaned body
 # (QUOTE_MIN..QUOTE_MAX chars): a paraphrase is dropped, never repaired.
 # When a judge model is configured (ADR-030) one noul question per
 # message gates the extraction call. The user's consent to reading mail
-# with a model (`brain.model`, ADR-035 §1) covers this job: without it,
+# with a model (`brain.model`, ADR-033 §3.1) covers this job: without it,
 # nothing is read.
 #
 # A message to an excluded or blocklisted recipient, or under a
@@ -31,7 +34,7 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 #
 # `extract(text)` — the judge gate, the call, the retry and the grounding —
 # is the one extraction path: this job's sent mail and brainChatScan@v1's
-# own chat messages both go through it (ADR-039 §3).
+# own chat messages both go through it (ADR-033 §7.3).
 #
 # It also closes the loop with tasks: an open promise whose `taskId` names
 # a catalog task the user completed is marked done.
@@ -87,7 +90,7 @@ class unconfigured(Exception):
 
 
 class cursor_corrupt(Exception):
-    """config/promises.cursor is not in its {mailboxId: ms} shape."""
+    """config/promises.cursor is not in its {mailboxId: _ver.id} shape."""
 
 
 class promises_rejected(Exception):
@@ -100,7 +103,11 @@ class provider_failed(Exception):
 
 class model_failed(Exception):
     """The provider failed one model call: llm@v1's LlmError, or an
-    EffectError — a timeout, a refused connection, a missing secret."""
+    EffectError — a timeout, a refused connection, a missing secret.
+    `calls` counts the model calls the extraction made, the failed one
+    included, so a caller's call budget can charge what was spent."""
+
+    calls = 1
 
 
 def _day(seconds):
@@ -145,7 +152,8 @@ def _cursor(space, hub, datasets):
     value = kit.config_value(space, hub, datasets, "promises.cursor")
     if value is None:
         return {}
-    if not isinstance(value, dict) or not all(isinstance(v, (int, float)) for v in value.values()):
+    if not isinstance(value, dict) or not all(isinstance(v, str) and v
+                                              for v in value.values()):
         raise cursor_corrupt(f"promises.cursor is {value!r}")
     return dict(value)
 
@@ -177,9 +185,10 @@ def _readable(row, box_addr, excl, block):
     return not any(kit.kept_out(a, excl, block) and not kit.is_noise(a) for a in recipients)
 
 
-def _extracted(space, hub, dataset, links):
-    """The `source` links that already have a promise record: not re-extracted,
-    so a re-run cannot mint a second quote for the same message."""
+def extracted(space, hub, dataset, links):
+    """The `source` links among `links` that already have a promise record:
+    not re-extracted, so a re-run cannot mint a second quote for the same
+    message. Public: the chat scan asks it about its own messages too."""
     if not links:
         return set()
     rows = _any.query(space, hub, dataset, filter={"source": {"$in": links}}, limit=len(links))
@@ -202,26 +211,31 @@ def _model(fn, *args, **kwargs):
 
 def _ask(body, gate, tier, stats):
     """(the model's raw items — [] when the judge says no, None when
-    unparsable twice), model calls made. Raises model_failed."""
+    unparsable twice), model calls made. Raises model_failed, its `calls`
+    the calls made up to and including the one that failed."""
     used = 0
-    if gate:
-        answers = _model(llm.judge, body, JUDGE_QUESTIONS)
-        used += 1
-        _count(stats, "judged")
-        p = ((answers.get("answers") or {}).get("commits") or {}).get("noul")
-        if isinstance(p, (int, float)) and p < JUDGE_MIN:
-            _count(stats, "skippedByJudge")
-            return [], used
-    for _attempt in range(2):
-        reply = _model(llm.chat, [{"role": "user", "parts": [{"type": "text", "text": body}]}],
-                       system=EXTRACT_SYS, tier=tier, tools=[], max_tokens=MAX_TOKENS)
-        used += 1
-        _count(stats, "asked")
-        text = " ".join(p.get("text", "") for p in reply.get("parts") or []
-                        if p.get("type") == "text")
-        items = kit.parse_json(text)
-        if isinstance(items, list):
-            return items, used
+    try:
+        if gate:
+            answers = _model(llm.judge, body, JUDGE_QUESTIONS)
+            used += 1
+            _count(stats, "judged")
+            p = ((answers.get("answers") or {}).get("commits") or {}).get("noul")
+            if isinstance(p, (int, float)) and p < JUDGE_MIN:
+                _count(stats, "skippedByJudge")
+                return [], used
+        for _attempt in range(2):
+            reply = _model(llm.chat, [{"role": "user", "parts": [{"type": "text", "text": body}]}],
+                           system=EXTRACT_SYS, tier=tier, tools=[], max_tokens=MAX_TOKENS)
+            used += 1
+            _count(stats, "asked")
+            text = " ".join(p.get("text", "") for p in reply.get("parts") or []
+                            if p.get("type") == "text")
+            items = kit.parse_json(text)
+            if isinstance(items, list):
+                return items, used
+    except model_failed as e:
+        e.calls = used + 1
+        raise
     _count(stats, "parseFailed")
     return None, used
 
@@ -260,8 +274,9 @@ def extract(text, tier=TIER, gate=None, stats=None):
     commits, None when the reply was unparsable twice. `calls` counts
     every model call, the judge's too. `gate` None asks llm@v1 whether a
     judge is configured. The caller checks the consent
-    (kit.model_allowed()) first. Raises model_failed; `stats` gets the
-    promise job's counters."""
+    (kit.model_allowed()) first. Raises model_failed, whose `calls` is
+    what was spent (the failed call included); `stats` gets the promise
+    job's counters."""
     if gate is None:
         gate = bool(llm.judge_available())
     items, used = _ask(text, gate, tier, stats)
@@ -384,12 +399,13 @@ def main(args):
     people, calls, failures = {}, 0, []
     floor = kit.backfill_floor_ms()
     for box_id, box_addr in kit.mailboxes(space):
-        last = cursor.get(box_id, floor)
-        rows = _any.query(space, box_id, "email_messages",
-                          filter={"internalDate": {"$gt": last}},
-                          sort=["internalDate"], limit=PER_MAILBOX)
+        # arrival order (ADR-033 §4.4): `from` is a raw header, so sent mail
+        # is told apart here, not in the query
+        last = cursor.get(box_id)
+        rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX,
+                                       floor_ms=None if last else floor)
         sent = [r for r in rows if _is_sent(r, box_addr)]
-        done = _extracted(space, hub, datasets["promises"],
+        done = extracted(space, hub, datasets["promises"],
                           [kit.mail_link(space, box_id, r["id"]) for r in sent])
         records = []
         for row in rows:
@@ -414,10 +430,13 @@ def main(args):
                         if items:
                             records.extend(_records(space, box_id, box_addr, row,
                                                     items, people))
-            last = max(last, row.get("internalDate") or 0)
+            ver = kit.ver_id(row)
+            if ver and (not last or ver > last):
+                last = ver                  # the cursor: only past messages handled
             stats["messages"] += 1
         stats["written"] += _write(space, hub, datasets["promises"], records)
-        cursor[box_id] = last
+        if last:
+            cursor[box_id] = last
     if failures and not (stats["asked"] or stats["judged"]):
         # nothing was handled: the cursor stays where the last run left it
         raise provider_failed(

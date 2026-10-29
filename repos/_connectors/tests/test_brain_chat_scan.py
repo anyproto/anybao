@@ -1,14 +1,18 @@
 """programs/brainChatScan@v1 — promises and asks from the chats the user
-opted in, under the REAL guest kernel (ADR-039). Pinned: nothing is read
+opted in, under the REAL guest kernel (ADR-033 §7). Pinned: nothing is read
 while no chat is watched; the read is a `_ver.id` range (the probe); the
 user's own messages go to the shared promise extraction only with consent;
 other people's messages become asks only when addressed to the user and
 carrying a request phrase or a trailing "?"; agent posts and control
 records are passed over; an excluded person's messages are skipped and
 counted, an excluded one-to-one peer's chat never queried; the cursor
-advances per chat and a re-run writes nothing; the pages flag gates every
-page read; a provider failure keeps the cursor and an all-failed run
-raises; one task_suggestion card a day; a completed task closes its ask."""
+advances per chat and a re-run writes nothing; a chat's 7-day floor holds
+after a stopped first visit; the pages flag gates every page read and a
+ticked item closes its checklist ask; a provider failure keeps the cursor,
+is charged for the calls it made, and an all-failed run raises; one
+task_suggestion card a day, its title over every suggestion; a completed
+task closes its ask; an identity the user excluded is kept out with no
+person to match."""
 
 import json
 
@@ -133,7 +137,7 @@ SID = "bafytestspace0000000000000000.tsuffix"
 
 
 def test_probe_the_cursor_read_passes_any_v1_unchanged():
-    # ADR-039 §2: chat_messages is a canonical collection and `_ver.id` is no
+    # ADR-033 §7.2: chat_messages is a canonical collection and `_ver.id` is no
     # instant key, so the body the scan builds is the body the server gets
     mod, bodies = _real_any_wire()
     mod.query(SID, "chat1", "chat_messages", filter={"_ver.id": {"$gt": "v0042"}},
@@ -150,7 +154,7 @@ def test_probe_the_cursor_read_passes_any_v1_unchanged():
 
 def test_probe_a_created_at_cursor_needs_an_instant():
     # the alternative the probe ruled out: accepted only as an instant, and
-    # unindexed + second-grained on the server (ADR-039 §2)
+    # unindexed + second-grained on the server (ADR-033 §7.2)
     mod, bodies = _real_any_wire()
     with pytest.raises(Exception, match="instant"):
         mod.query(SID, "chat1", "chat_messages", filter={"createdAt": {"$gt": 1_700_000_000}})
@@ -368,6 +372,26 @@ def test_a_unique_name_links_the_ask_to_the_person():
     assert asks(s)[0]["personId"] == "bob"
 
 
+def test_an_excluded_identity_is_kept_out_with_no_person_to_match():
+    # review C2: Bob is "Bob Stone" in the chat and "Robert Stone" in the
+    # catalog, so no person matches; the user excluded the identity itself
+    # (brainSetup.exclude(identity=…), the list's `identities`)
+    s = chats()
+    s.add_object("bob", "profile", ["person", "brain_person"], name="Robert Stone")
+    s.set_config("exclusions", {**EXCLUSIONS, "identities": ["any://u/bob-id"]})
+    msg(s, "team", "m1", "bob-id", "Can you send me the file?", "v1", mentions=["me-id"])
+    msg(s, "team", "m2", "me-id", "[Bob](any://u/bob-id) I'll send it tonight.", "v2",
+        mentions=["bob-id"])
+    msg(s, "team", "m3", "ada-id", "Could you review mine?", "v3", mentions=["me-id"])
+    msg(s, "dm", "m4", "bob-id", "Can you call me?", "v4")
+    mod, model = kernel(s)
+    out = mod.main(job_args(s))
+    assert [a["quote"] for a in asks(s)] == ["Could you review mine?"]
+    assert out["excludedSkipped"] == 2 and out["excludedChats"] == 1 and model.prompts == []
+    assert [c for c in reads(s) if c[1] == "chat-dm"] == []       # the peer's chat: never read
+    assert [c for c in s.calls if c[0] == "get_identity"] == []   # no name lookup needed
+
+
 def test_an_excluded_one_to_one_peer_s_chat_is_never_queried():
     s = chats()
     s.add_object("bob", "profile", ["person", "brain_person"], name="Bob Stone")
@@ -444,6 +468,28 @@ def test_a_first_visit_reads_only_the_last_seven_days():
     assert s.config("chatScan.cursor") == {"chat-dm": "v2"}
 
 
+def test_a_stopped_first_visit_keeps_its_seven_day_floor():
+    # review C8: a first visit that a provider failure cut short leaves the
+    # cursor mid-page; the next read is `$gt cursor`, and a message another
+    # member wrote offline ten days ago can sync in above it — the floor the
+    # first visit set (config/chatScan.floor) still keeps it out
+    s = chats()
+    msg(s, "dm", "m1", "bob-id", "Can you call me?", "v1")
+    msg(s, "dm", "m2", "me-id", "I'll call you tomorrow.", "v2")
+    model = Model(RuntimeError("provider down"))
+    mod, _ = kernel(s, model, watched=("dm",))
+    with pytest.raises(Exception, match="every model call"):
+        mod.main(job_args(s))
+    assert s.config("chatScan.cursor") == {"chat-dm": "v1"}
+    assert s.config("chatScan.floor") == {"chat-dm": THU - 7 * DAY}
+    msg(s, "dm", "m0", "bob-id", "Could you sign the old form?", "v3", at=THU - 10 * DAY)
+    model.replies = [[{"quote": "I'll call you tomorrow.", "due": None}]]
+    out = mod.main(job_args(s))
+    assert [a["quote"] for a in asks(s)] == ["Can you call me?"]
+    assert out["promises"] == 1 and out["messages"] == 1         # m2 handled, m0 never read
+    assert s.config("chatScan.cursor") == {"chat-dm": "v3"}      # and passed
+
+
 def test_a_corrupt_cursor_raises():
     s = chats()
     s.set_config("chatScan.cursor", {"chat-dm": 42})
@@ -451,6 +497,26 @@ def test_a_corrupt_cursor_raises():
     with pytest.raises(Exception) as err:
         mod.main(job_args(s))
     assert type(err.value).__name__ == "cursor_corrupt"
+    s2 = chats()
+    s2.set_config("chatScan.floor", {"chat-dm": "last week"})
+    mod, _ = kernel(s2)
+    with pytest.raises(Exception) as err:
+        mod.main(job_args(s2))
+    assert type(err.value).__name__ == "cursor_corrupt"
+
+
+def test_the_stored_deadline_is_never_already_past():
+    # review C5: a first visit reads 7 days back; "by Monday" asked last
+    # Friday would land with a deadline two days gone — the write-once field
+    # is computed for the run's day, as the card's row is
+    s = chats()
+    msg(s, "dm", "m1", "bob-id", "Can you review this by Monday?", "v1", at=THU - 6 * DAY)
+    mod, _ = kernel(s, watched=("dm",))
+    out = mod.main(job_args(s))
+    (ask,) = asks(s)
+    assert ask["suggestedDeadline"] == {"$date": THU_DAY * 1000}
+    (item,) = s.store("cards")[out["card"]]["items"]
+    assert item["suggestedDeadline"] == "2026-10-22"
 
 
 # --- model failures and the call cap ----------------------------------------------------------
@@ -472,6 +538,17 @@ def test_a_provider_failure_keeps_the_cursor_and_an_all_failed_run_raises():
     out = mod.main(job_args(s))
     assert out["promises"] == 1 and out["asks"] == 1
     assert s.config("chatScan.cursor") == {"chat-dm": "v3"}
+
+
+def test_a_failed_extract_is_charged_for_the_calls_it_made():
+    # review C6: an unparsable reply, a retry that fails — two calls, not one
+    s = chats()
+    msg(s, "dm", "m1", "me-id", "I'll send the deck.", "v1")
+    mod, _ = kernel(s, Model("prose, no json", RuntimeError("down")), watched=("dm",))
+    with pytest.raises(Exception) as err:
+        mod.main(job_args(s))
+    assert type(err.value).__name__ == "provider_failed"
+    assert s.config("chatScan.stats")["modelCalls"] == 2
 
 
 def test_the_call_cap_counts_calls_and_leaves_the_rest_for_the_next_run():
@@ -521,8 +598,36 @@ def test_the_pages_flag_on_makes_unchecked_items_checklist_asks():
     assert ask["kind"] == "checklist" and ask["quote"] == "Book the room"
     assert ask["source"] == "any://o/team/pg1/editor_blocks/b1" and ask["chatId"] == "pg1"
     assert ask["senderIdentity"] == "any://u/ada-id" and "suggestedDeadline" not in ask
-    assert out["pages"] == 1 and out["checklist"] == 1
+    assert out["pages"] == 1 and out["checklist"] == 1 and out["checked"] == 0
     assert s.config("chatScan.pagesCursor") == {"team": THU - 3600}
+
+
+def test_a_ticked_item_closes_its_checklist_ask():
+    # review C1: the user checks "Book the room" in the page; the ask closes
+    # like one whose task was completed, and a dismissed one stays dismissed
+    s = chats()
+    _page(s, "pg1", THU - 3600, [("b1", "Book the room", False), ("b2", "Call Ada", False),
+                                 ("b3", "Order lunch", False)])
+    mod, _ = kernel(s, watched=("team",), pages=True)
+    mod.main(job_args(s))
+    by_quote = {a["quote"]: a for a in asks(s)}
+    assert set(by_quote) == {"Book the room", "Call Ada", "Order lunch"}
+    by_quote["Order lunch"]["status"] = "dismissed"
+    for bid in ("b1", "b3"):
+        s.records[("pg1", "editor_blocks")][bid]["style"]["checked"] = True
+    s.objects["pg1"]["modifiedAt"] = {"$date": (THU - 60) * 1000}
+    out = mod.main(job_args(s))
+    by_quote = {a["quote"]: a for a in asks(s)}
+    assert by_quote["Book the room"]["status"] == "done"
+    assert by_quote["Book the room"]["closedAt"] == {"$date": THU * 1000}
+    assert by_quote["Call Ada"]["status"] == "open"
+    assert by_quote["Order lunch"]["status"] == "dismissed" and "closedAt" not in by_quote[
+        "Order lunch"]
+    assert out["checked"] == 1 and out["checklist"] == 0 and len(asks(s)) == 3
+    # nothing to close twice, and a page not edited since is not read
+    s.calls.clear()
+    out = mod.main(job_args(s))
+    assert out["checked"] == 0 and reads(s, "editor_blocks") == []
 
 
 # --- tasks: the daily card and closing ----------------------------------------------------------
@@ -551,6 +656,21 @@ def test_one_task_suggestion_card_a_day():
     assert sid == mod.signal_id(THU, "task_suggestion", "tasks:2026-10-22")
     msg(s, "dm", "m2", "bob-id", "Could you sign?", "v2")
     assert mod.main(args)["card"] is None and len(s.store("cards")) == 1
+
+
+def test_the_card_title_counts_every_suggestion_and_carries_twenty():
+    # review C7
+    s = chats()
+    for i in range(23):
+        msg(s, "dm", f"m{i:02d}", "bob-id", f"Can you do item {i}?", f"v{i:02d}",
+            at=THU - 3600 + i)
+    datasets = {**DATASETS, "cards": "hubtype_cards"}
+    mod, _ = kernel(s, watched=("dm",), datasets=datasets)
+    out = mod.main({**job_args(s), "datasets": datasets})
+    card = s.store("cards")[out["card"]]
+    assert card["title"] == "0 promises and 23 asks without a task"
+    assert len(card["items"]) == 20
+    assert card["items"][0]["quote"] == "Can you do item 22?"       # the newest first
 
 
 def test_no_card_without_a_cards_store_or_anything_to_suggest():

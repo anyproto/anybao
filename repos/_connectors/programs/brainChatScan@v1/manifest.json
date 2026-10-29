@@ -1,0 +1,9 @@
+{
+  "reads": ["chat_messages", "editor_blocks", "objects", "config", "promises", "asks",
+            "cards"],
+  "writes": ["asks", "promises", "config", "cards", "signals"],
+  "net": [],
+  "connectors": [],
+  "browse": false,
+  "llm": "classify"
+}

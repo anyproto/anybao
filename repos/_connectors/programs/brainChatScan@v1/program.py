@@ -1,27 +1,32 @@
 """Brain chat scan: promises and asks from the chats the user opted in."""
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-039. A cron job the brain's setup run writes (every 1800 s, off until
-# a chat is watched), args {space, hub, datasets, tier?}. It reads only the
-# general chats of the spaces named in `brain.chatScan.spaces` — written by
-# brainSetup's watch_chats() / stop_watching_chats() after the user's yes —
-# and, behind `brain.chatScan.pages`, the unchecked checklist items of
-# their recently edited pages. Nothing is read while the row names nothing.
+# ADR-033 §7. A cron job the brain's setup run writes (every 1800 s, off
+# until a chat is watched), args {space, hub, datasets, tier?}. It reads
+# only the general chats of the spaces named in `brain.chatScan.spaces` —
+# written by brainSetup's watch_chats() / stop_watching_chats() after the
+# user's yes — and, behind `brain.chatScan.pages`, the unchecked checklist
+# items of their recently edited pages. Nothing is read while the row
+# names nothing.
 #
 # Per chat, after its cursor (the last `_ver.id` handled — indexed and
-# exact, where createdAt is neither, ADR-039 §2): agent posts and control
-# records are passed over; a message whose sender, reply target or any
-# mentioned identity may be an excluded person is counted and its text
-# never looked at (fail closed: the exclusion list is read first). The
-# user's own messages go through brainPromises' extract() — only with the
-# model consent (`brain.model`), capped by model calls — and land in
-# `promises` with channel "chat". Other people's messages addressed to the
-# user (a one-to-one space, a mention, a reply to the user) become `asks`,
-# one per sentence with a request phrase or a trailing "?": deterministic,
-# no model. Only ids the store lacks are written; the cursor passes only
-# messages fully handled. Once a UTC day it writes one task_suggestion card
-# when the hub keeps `cards`.
+# exact, where createdAt is neither, ADR-033 §7.2): agent posts and
+# control records are passed over; a message whose sender, reply target
+# or any mentioned identity is kept out — the identity itself, or any
+# person it may be, on the exclusion list (brainKit.IdentityResolver) —
+# is counted and its text never looked at (fail closed: the exclusion
+# list is read first). The user's own messages go through brainPromises'
+# extract() — only with the model consent (`brain.model`), capped by
+# model calls — and land in `promises` with channel "chat". Other people's
+# messages addressed to the user (a one-to-one space, a mention, a reply
+# to the user) become `asks`, one per sentence with a request phrase or a
+# trailing "?": deterministic, no model. Only ids the store lacks are
+# written; the cursor passes only messages fully handled. A chat's first
+# visit reads its newest page back to a 7-day floor, and the floor holds
+# for every later read of that chat (`config/chatScan.floor`): a message
+# synced in later from before it is passed, never read. Once a UTC day it
+# writes one task_suggestion card when the hub keeps `cards`.
 
 import hashlib
 import re
@@ -43,13 +48,14 @@ QUOTE_MAX = 240
 PAGES_PER_SPACE = 20
 PAGE_WINDOW_S = 86400     # a space with no page cursor: pages edited this recently
 BLOCKS_PER_PAGE = 500
+OPEN_CHECKLIST = 500      # open checklist asks read back per page batch
 CARD_ITEMS = 20
 DAY = 86400
 ONE_TO_ONE = "any.onetoone"
 # the roles that may write — a reader, a guest, or "none" (also: not loaded yet) is skipped
 WRITABLE = {"owner", "admin", "writer"}
 
-# what makes a sentence addressed to the user a request (ADR-039 §3)
+# what makes a sentence addressed to the user a request (ADR-033 §7.3)
 REQUEST_PHRASES = ("can you", "could you", "would you", "please", "let me know",
                    "send me", "need you to", "remind me",
                    "kannst du", "könntest du", "bitte", "schick mir", "brauche", "sag mir")
@@ -59,6 +65,8 @@ _QUESTION = re.compile(r"\?[\s\"')\]»”]*$")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _LINK = re.compile(r"\[([^\]\n]*)\]\((any://[^)\s]*)\)")
 _IDENTITY_LINK = re.compile(r"any://u/([^\s)\]/?#]+)")
+# a checklist ask's `source`: …/<page>/editor_blocks/<blockId>
+_BLOCK_LINK = re.compile(r"/editor_blocks/([^/\s]+)$")
 
 
 class unconfigured(Exception):
@@ -136,12 +144,7 @@ def addressed_to_me(message, me, space_is_one_to_one, my_message_ids=()):
 
 def ver_id(message):
     """A message's creation version (`_ver.id`), the cursor's unit; None if absent."""
-    ver = message.get("_ver")
-    if isinstance(ver, str):
-        return ver or None
-    if isinstance(ver, dict):
-        return ver.get("id") or ver.get("*") or None
-    return None
+    return kit.ver_id(message)
 
 
 def is_passed_over(message):
@@ -170,6 +173,12 @@ def record_link(space, object_id, dataset, record_id):
     return f"any://o/{space}/{object_id}/{dataset}/{record_id}"
 
 
+def block_of(source):
+    """The block id a checklist ask's `source` link names, or None."""
+    m = _BLOCK_LINK.search(str(source or ""))
+    return m.group(1) if m else None
+
+
 # --- config ---------------------------------------------------------------------
 
 def _row(key):
@@ -191,12 +200,11 @@ def pages_enabled():
     return isinstance(value, dict) and value.get("enabled") is True
 
 
-def _cursor(space, hub, datasets, name):
+def _cursor(space, hub, datasets, name, kinds=(str, int, float)):
     value = kit.config_value(space, hub, datasets, name)
     if value is None:
         return {}
-    if not isinstance(value, dict) or not all(isinstance(v, (str, int, float))
-                                              for v in value.values()):
+    if not isinstance(value, dict) or not all(isinstance(v, kinds) for v in value.values()):
         raise cursor_corrupt(f"{name} is {value!r}")
     return dict(value)
 
@@ -206,7 +214,7 @@ def _new_stats():
             "own": 0, "noConsent": 0, "alreadyExtracted": 0, "capped": 0,
             "providerFailed": 0, "modelCalls": 0, "addressed": 0, "ignored": 0,
             "excludedSkipped": 0, "excludedChats": 0, "promises": 0, "asks": 0,
-            "pages": 0, "checklist": 0, "closed": 0, "cards": 0}
+            "pages": 0, "checklist": 0, "checked": 0, "closed": 0, "cards": 0}
 
 
 def _merge_stats(space, hub, datasets, stats):
@@ -247,58 +255,49 @@ def _write_new(space, hub, dataset, records, error):
     return len(fresh) - len(deleted)
 
 
+def _close(space, hub, dataset, record, what):
+    """Mark one ask done, now."""
+    kit.checked(_any.modify(space, {"objectId": hub, "dataset": dataset,
+                "records": [{"id": kit.plain_id(record["id"]), "ops": [
+                    {"type": "$set", "path": "status", "value": "done"},
+                    {"type": "$set", "path": "closedAt",
+                     "value": instant(now())}]}]}),  # noqa: F821 - guest globals
+                what)
+
+
 # --- one run --------------------------------------------------------------------
 
 class _Run:
     def __init__(self, space, hub, datasets, tier):
         self.space, self.hub, self.datasets, self.tier = space, hub, datasets, tier
         self.stats = _new_stats()
+        self.today = now()  # noqa: F821 - guest global
         self.excl = kit.exclusions(space, hub, datasets)          # fail closed
         self.me = _any.me()["identity"]
+        self.who = kit.IdentityResolver(space, self.excl, me=self.me)
         self.consent = kit.model_allowed()
-        self.names = kit.Identities()
-        self._persons = None
         self._gate = None
         self.calls = self.failures = self.answered = 0
-        self.cursor = _cursor(space, hub, datasets, "chatScan.cursor")
-        if not all(isinstance(v, str) for v in self.cursor.values()):
-            raise cursor_corrupt(f"chatScan.cursor is {self.cursor!r}")
-
-    @property
-    def persons(self):
-        if self._persons is None:
-            self._persons = kit.person_rows(self.space)
-        return self._persons
+        self.cursor = _cursor(space, hub, datasets, "chatScan.cursor", (str,))
+        self.floor = _cursor(space, hub, datasets, "chatScan.floor", (int, float))
 
     def gate(self):
         if self._gate is None:
             self._gate = bool(llm.judge_available())
         return self._gate
 
-    def kept_out(self, identity):
-        """True when an identity may be a person the user excluded."""
-        if not identity or identity == self.me or not self.excl["personIds"]:
-            return False
-        found = kit.identity_candidates(self.persons, identity, self.names.name(identity))
-        return any(p in self.excl["personIds"] for p in found)
-
-    def person(self, identity):
-        if not identity:
-            return None
-        return kit.identity_person(self.persons, identity, self.names.name(identity))
-
     # --- one space ------------------------------------------------------------
     def scan_space(self, row, pages):
         sid = row["id"]
         members = _any.list_members(sid)
-        self.names.add_members(members)
+        self.who.names.add_members(members)
         one_to_one = row.get("spaceType") == ONE_TO_ONE
         peer = None
         if one_to_one:
             others = [m["identity"] for m in members
                       if m.get("identity") and m["identity"] != self.me]
             peer = others[0] if others else None
-            if self.kept_out(peer):
+            if self.who.kept_out(peer):
                 self.stats["excludedChats"] += 1          # never queried
                 return
         self.stats["spaces"] += 1
@@ -308,17 +307,27 @@ class _Run:
 
     # --- one chat -------------------------------------------------------------
     def _read(self, sid, chat):
-        """(messages to handle, ascending; the newest _ver.id read)."""
+        """(messages to handle, ascending; the newest _ver.id read).
+
+        A chat with no cursor is read from its newest page back to a floor,
+        FIRST_VISIT_DAYS ago, which `config/chatScan.floor` then keeps for
+        the chat: later reads pass over anything created before it (a
+        message synced in late), so a visit a stop cut short cannot read
+        past the window the first one set."""
         last = self.cursor.get(chat)
         if last:
             rows = _any.query(sid, chat, "chat_messages", filter={"_ver.id": {"$gt": last}},
                               sort=["_ver.id"], limit=PER_CHAT)
-            return rows, None
-        rows = list(reversed(_any.query(sid, chat, "chat_messages", sort=["-_ver.id"],
-                                        limit=PER_CHAT)))
+        else:
+            rows = list(reversed(_any.query(sid, chat, "chat_messages", sort=["-_ver.id"],
+                                            limit=PER_CHAT)))
+            self.floor[chat] = self.today - FIRST_VISIT_DAYS * DAY
+            kit.write_config(self.space, self.hub, self.datasets, "chatScan.floor", self.floor)
         newest = max((v for v in (ver_id(r) for r in rows) if v), default=None)
-        floor = now() - FIRST_VISIT_DAYS * DAY  # noqa: F821 - guest global
-        return [r for r in rows if (ts_s(r.get("createdAt")) or 0) > floor], newest  # noqa: F821
+        floor = self.floor.get(chat)
+        if floor is not None:
+            rows = [r for r in rows if (ts_s(r.get("createdAt")) or 0) > floor]  # noqa: F821
+        return rows, newest
 
     def scan_chat(self, sid, chat, one_to_one, peer):
         rows, newest = self._read(sid, chat)
@@ -326,7 +335,7 @@ class _Run:
         by_id = {r["id"]: r for r in rows if r.get("id")}
         mine = [r["id"] for r in rows if r.get("creator") == self.me]
         own_links = [record_link(sid, chat, "chat_messages", rid) for rid in mine]
-        done = promises._extracted(self.space, self.hub, self.datasets["promises"], own_links) \
+        done = promises.extracted(self.space, self.hub, self.datasets["promises"], own_links) \
             if self.consent and own_links else set()
         ctx = {"sid": sid, "chat": chat, "one_to_one": one_to_one, "peer": peer,
                "by_id": by_id, "mine": mine, "done": done, "asks": [], "promises": []}
@@ -368,7 +377,7 @@ class _Run:
         if is_passed_over(row):
             self.stats["passedOver"] += 1
             return "next"
-        if any(self.kept_out(p) for p in self._involved(row, ctx)):
+        if any(self.who.kept_out(p) for p in self._involved(row, ctx)):
             self.stats["excludedSkipped"] += 1        # its text is never looked at
             return "next"
         text = chat_text(row.get("text"))
@@ -399,15 +408,15 @@ class _Run:
             return "stop"
         try:
             items, used = promises.extract(text, self.tier, self.gate(), self.stats)
-        except promises.model_failed:
+        except promises.model_failed as e:
             self.failures += 1
-            self.calls += 1
+            self.calls += getattr(e, "calls", 1)      # what the failed extract spent
             self.stats["providerFailed"] += 1
             return "stop"
         self.calls += used
         self.answered += 1
-        at = ts_s(row.get("createdAt")) or now()  # noqa: F821 - guest global
-        pid = self.person(ctx["peer"]) if ctx["one_to_one"] else None
+        at = ts_s(row.get("createdAt")) or self.today  # noqa: F821 - guest global
+        pid = self.who.person(ctx["peer"]) if ctx["one_to_one"] else None
         for it in items or []:
             ctx["promises"].append(self._promise(row, it, link, at, pid, ctx))
         return "next"
@@ -427,9 +436,11 @@ class _Run:
         return {"id": promises.promise_id(row["id"], quote), "fields": fields}
 
     def asks_of(self, row, text, ctx):
-        """One ask per sentence with a request phrase or a trailing "?"."""
+        """One ask per sentence with a request phrase or a trailing "?". The
+        stored `suggestedDeadline` is the rule table's for the run's day, so
+        it is never already past when it lands (write-once)."""
         creator = row.get("creator") or ""
-        at = ts_s(row.get("createdAt")) or now()  # noqa: F821 - guest global
+        at = ts_s(row.get("createdAt")) or self.today  # noqa: F821 - guest global
         link = record_link(ctx["sid"], ctx["chat"], "chat_messages", row["id"])
         out = []
         for sentence in sentences(text):
@@ -439,7 +450,7 @@ class _Run:
             quote = sentence[:QUOTE_MAX].strip()
             norm = kit.normalize_ws(quote)
             fields = self._ask_fields(creator, ctx, kind, norm, quote, link, at)
-            deadline = tasks.deadline_for("ask", norm, at)
+            deadline = tasks.deadline_for("ask", norm, at, today=self.today)
             if deadline is not None:
                 fields["suggestedDeadline"] = instant(deadline)  # noqa: F821 - guest global
             out.append({"id": ask_id(row["id"], norm), "fields": fields})
@@ -450,7 +461,7 @@ class _Run:
                   "chatId": ctx["chat"], "kind": kind, "text": text, "quote": quote,
                   "source": link, "askedAt": instant(at),  # noqa: F821 - guest global
                   "status": "open"}
-        pid = self.person(creator)
+        pid = self.who.person(creator)
         if pid:
             fields["personId"] = pid
         return fields
@@ -460,33 +471,39 @@ class _Run:
         cursor = _cursor(self.space, self.hub, self.datasets, "chatScan.pagesCursor")
         since = cursor.get(sid)
         if not isinstance(since, (int, float)):
-            since = now() - PAGE_WINDOW_S  # noqa: F821 - guest global
+            since = self.today - PAGE_WINDOW_S
         pages = _any.query_objects(sid, filter={
             "any.type": "page", "any.collections": {"$nin": ["bin"]},
             "modifiedAt": {"$gt": instant(since)}},  # noqa: F821 - guest global
             sort=["modifiedAt"], limit=PAGES_PER_SPACE)
-        records, last = [], since
+        records, checked, last = [], {}, since
         for page in pages:
             last = max(last, ts_s(page.get("modifiedAt")) or last)  # noqa: F821 - guest global
             self.stats["pages"] += 1
             editor = page.get("modifiedBy") or page.get("author") or self.me
-            if self.kept_out(editor):
+            if self.who.kept_out(editor):
                 self.stats["excludedSkipped"] += 1
                 continue
-            records.extend(self._checklist(sid, page, editor))
+            fresh, ticked = self._checklist(sid, page, editor)
+            records.extend(fresh)
+            checked[page["id"]] = ticked
         self.stats["checklist"] += _write_new(self.space, self.hub, self.datasets["asks"],
                                               records, asks_rejected)
+        self.stats["checked"] += self._close_checked(checked)
         if last != since:
             cursor[sid] = last
             kit.write_config(self.space, self.hub, self.datasets, "chatScan.pagesCursor",
                              cursor)
 
     def _checklist(self, sid, page, editor):
-        at = ts_s(page.get("modifiedAt")) or now()  # noqa: F821 - guest global
-        out = []
+        """(the checklist asks a page's unchecked items make, the ids of its
+        checked blocks)."""
+        at = ts_s(page.get("modifiedAt")) or self.today  # noqa: F821 - guest global
+        out, ticked = [], set()
         for block in _any.query(sid, page["id"], "editor_blocks",
                                 filter={"type": "check_list_item"}, limit=BLOCKS_PER_PAGE):
             if (block.get("style") or {}).get("checked") is True:
+                ticked.add(block["id"])
                 continue
             quote = chat_text(block.get("text"))[:QUOTE_MAX].strip()
             if not quote:
@@ -499,7 +516,24 @@ class _Run:
                       "askedAt": instant(at),  # noqa: F821 - guest global
                       "status": "open"}
             out.append({"id": ask_id(block["id"], norm), "fields": fields})
-        return out
+        return out, ticked
+
+    def _close_checked(self, checked):
+        """Mark done the open checklist asks of the pages read whose block the
+        user has ticked since (ADR-033 §7.8) → how many."""
+        pages = sorted(p for p, blocks in checked.items() if blocks)
+        if not pages:
+            return 0
+        rows = _any.query(self.space, self.hub, self.datasets["asks"],
+                          filter={"kind": "checklist", "status": "open",
+                                  "chatId": {"$in": pages}}, limit=OPEN_CHECKLIST)
+        closed = 0
+        for r in rows:
+            if block_of(r.get("source")) in checked.get(r.get("chatId"), ()):
+                _close(self.space, self.hub, self.datasets["asks"], r,
+                       "closing a checklist ask whose item is checked")
+                closed += 1
+        return closed
 
 
 # --- after the scan ---------------------------------------------------------------
@@ -515,12 +549,7 @@ def _close_completed(space, hub, datasets):
     closed = 0
     for r in rows:
         if r.get("taskId") in done:
-            kit.checked(_any.modify(space, {"objectId": hub, "dataset": datasets["asks"],
-                        "records": [{"id": kit.plain_id(r["id"]), "ops": [
-                            {"type": "$set", "path": "status", "value": "done"},
-                            {"type": "$set", "path": "closedAt",
-                             "value": instant(now())}]}]}),  # noqa: F821
-                        "closing an ask whose task is done")
+            _close(space, hub, datasets["asks"], r, "closing an ask whose task is done")
             closed += 1
     return closed
 
@@ -531,7 +560,8 @@ def _plural(n, word):
 
 def suggestion_card(space, hub, datasets, today):
     """The day's task_suggestion card when the hub keeps cards and the day has
-    none → its id, or None (ADR-039 §7)."""
+    none → its id, or None (ADR-033 §7.7). The title counts every open
+    suggestion; the card carries the newest CARD_ITEMS of them."""
     if not datasets.get("cards"):
         return None
     day = fmt_ts(today, "%Y-%m-%d", 0)[:10]  # noqa: F821 - guest global
@@ -540,13 +570,14 @@ def suggestion_card(space, hub, datasets, today):
     if kit.hub_record(space, hub, datasets["cards"], cid) is not None:
         return None
     try:
-        items = tasks.suggest(limit=CARD_ITEMS)
+        every = tasks.suggest(limit=None)
     except kit.not_set_up:
         return None                         # mid-setup: brain.status is not ready
-    if not items:
+    if not every:
         return None
-    n = sum(1 for i in items if i.get("origin") == "promise")
-    title = f"{_plural(n, 'promise')} and {_plural(len(items) - n, 'ask')} without a task"
+    items = every[:CARD_ITEMS]
+    n = sum(1 for i in every if i.get("origin") == "promise")
+    title = f"{_plural(n, 'promise')} and {_plural(len(every) - n, 'ask')} without a task"
     sid = signal_id(today, "task_suggestion", subject)
     card = {"kind": "task_suggestion", "title": title,
             "reason": "Things you owe that have no task yet; pick the ones to make tasks.",
@@ -587,7 +618,7 @@ def main(args):
         run.scan_space(row, pages)
     run.stats["modelCalls"] = run.calls
     run.stats["closed"] = _close_completed(space, hub, datasets)
-    card = suggestion_card(space, hub, datasets, now())  # noqa: F821 - guest global
+    card = suggestion_card(space, hub, datasets, run.today)
     run.stats["cards"] = 1 if card else 0
     _merge_stats(space, hub, datasets, run.stats)
     if run.failures and not run.answered:

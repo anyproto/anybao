@@ -1,9 +1,10 @@
 """programs/brainTasks@v1 — promises into tasks, under the REAL guest kernel.
 Pinned: one case per deadline rule, never earlier than today; suggest lists
-open promises without a task, newest first; create makes a catalog task in
-the Tasks app filed under brain_task and links the promise; creating twice
-is a no-op; create_all does every suggestion; a brain that is not set up
-refuses."""
+open promises without a task, newest first (all of them for limit None);
+create makes a catalog task in the Tasks app filed under brain_task and
+links the promise; creating twice is a no-op; create_all does every
+suggestion; a brain that is not set up refuses; an ask from an excluded
+person or an excluded identity is never offered."""
 
 import pytest
 from brain_fakes import HUB, FakeSpace
@@ -208,7 +209,7 @@ def test_a_promise_from_mail_that_copied_in_someone_excluded_later_stays_out():
     assert type(err.value).__name__ == "person_excluded"
 
 
-# --- asks (ADR-039 §6) ---------------------------------------------------------
+# --- asks (ADR-033 §7.6) ---------------------------------------------------------
 
 WITH_ASKS = {"state": "ready", "hub": {"objectId": HUB, "datasets": {
     "config": "hubtype_config", "promises": "hubtype_promises", "asks": "hubtype_asks"}}}
@@ -305,6 +306,31 @@ def test_an_ask_from_someone_kept_out_is_never_offered_or_made_a_task():
         with pytest.raises(Exception) as err:
             mod.create_from_ask(rid)
         assert type(err.value).__name__ == "person_excluded"
+
+
+def test_an_ask_from_an_excluded_identity_is_never_offered_or_made_a_task():
+    # the identity itself is on the list (brainSetup.exclude(identity=…)): no
+    # person to match, and a link to a person who is not excluded does not help
+    mod, s = kernel(status=WITH_ASKS)
+    s.add_object("bob", "profile", ["person", "brain_person"], name="Robert Stone")
+    add_ask(s, "a1", "Can you call me?", sender="bob-id")
+    add_ask(s, "a2", "Could you send it?", sender="bob-id", person="bob")
+    add_ask(s, "a3", "Would you sign?", sender="eve-id")
+    s.set_config("exclusions", {**EXCLUSIONS, "identities": ["any://u/bob-id"]})
+    assert [r["id"] for r in mod.suggest()] == ["a3"]
+    for rid in ("a1", "a2"):
+        with pytest.raises(Exception) as err:
+            mod.create_from_ask(rid)
+        assert type(err.value).__name__ == "person_excluded"
+    assert [c for c in s.calls if c[0] == "get_identity"] == []   # no name lookup needed
+
+
+def test_suggest_without_a_limit_lists_everything():
+    mod, s = kernel()
+    for i in range(25):
+        add_promise(s, f"p{i:02d}", f"I'll send part {i}.", made=THU - i)
+    assert len(mod.suggest()) == 20 and len(mod.suggest(limit=None)) == 25
+    assert mod.suggest(limit=None)[0]["id"] == "p00"
 
 
 def test_an_unknown_ask_raises():

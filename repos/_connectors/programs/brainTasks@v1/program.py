@@ -7,9 +7,9 @@ app; `create_all()` does every suggestion. Create only after the user
 said yes; show the deadline and let them change it.
 """
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-034. Deadlines come from one deterministic rule table, never a model
+# ADR-033 §2.5. Deadlines come from one deterministic rule table, never a model
 # (design record §4.15), in this order:
 #   1. the promise's own dueAt (brainPromises parsed it from the sentence)
 #   2. an ISO date in the sentence (2026-11-03)
@@ -19,7 +19,7 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 #   6. next week / nächste Woche → next week's Friday
 #   7. a weekday name → its next occurrence after the day it was made
 #   8. otherwise two business days after it was made — three for an ask,
-#      none for a checklist item (ADR-039 §6)
+#      none for a checklist item (ADR-033 §7.6)
 # and never earlier than today. Days are UTC. A task is a catalog `task`
 # (planning: inbox) also filed under the brain's `brain_task` collection,
 # which keeps the source link, the person, the origin and the suggestion
@@ -29,7 +29,8 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # later), is never offered and refuses create; both lists are read
 # fail-closed. Asks — what other people asked the user for in the chats
 # the user opted in (brainChatScan@v1) — are offered and made the same way;
-# an ask from an excluded person, or from an identity that may be one, is
+# an ask from an excluded person, from an identity the user excluded, or
+# from one that may be an excluded person (brainKit.IdentityResolver), is
 # never offered and refuses create_from_ask.
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
@@ -46,7 +47,7 @@ _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday":
              "donnerstag": 3, "freitag": 4, "samstag": 5, "sonntag": 6}
 _MAX_LIST = 300
 # business days a deadline defaults to without a date in the sentence, by
-# origin; None: no suggestion (ADR-039 §6)
+# origin; None: no suggestion (ADR-033 §7.6)
 DEFAULT_DAYS = {"promise": 2, "ask": 3, "checklist": None}
 
 
@@ -163,17 +164,19 @@ def _ask_origin(r):
     return "checklist" if r.get("kind") == "checklist" else "ask"
 
 
-def _ask_kept_out(r, excl, persons, names):
-    """True when an ask came from someone excluded: its person, or any person
-    its sender identity may be (ADR-039 §5)."""
+def _ask_kept_out(r, who):
+    """True when an ask came from someone kept out (ADR-033 §7.5): its person,
+    its sender identity itself, or — unlinked — any person that identity
+    may be. `who` is the run's brainKit.IdentityResolver."""
+    excl = who.excl
     if r.get("personId") in excl["personIds"]:
         return True
-    if r.get("personId") or not excl["personIds"]:
-        return False
     identity = kit.identity_of(r.get("senderIdentity"))
-    return bool(identity) and any(
-        p in excl["personIds"]
-        for p in kit.identity_candidates(persons, identity, names.name(identity)))
+    if identity in excl["identities"]:
+        return True
+    if r.get("personId"):
+        return False                        # linked to a person who is not kept out
+    return who.kept_out(identity)
 
 
 def _open_asks(bao, hub, datasets, rules):
@@ -183,9 +186,8 @@ def _open_asks(bao, hub, datasets, rules):
                                   sort=["-askedAt"], limit=_MAX_LIST) if not r.get("taskId")]
     if not rows:
         return []
-    persons = kit.person_rows(bao) if rules[0]["personIds"] else []
-    names = kit.Identities()
-    return [r for r in rows if not _ask_kept_out(r, rules[0], persons, names)]
+    who = kit.IdentityResolver(bao, rules[0])
+    return [r for r in rows if not _ask_kept_out(r, who)]
 
 
 def _ask_row(r, today):
@@ -216,13 +218,13 @@ def suggest(limit=20):
     `origin` ∈ promise | ask | checklist — a promise row adds
     `personEmail`, an ask row `kind` and `senderIdentity` (any://u/…).
     `suggestedDeadline` is an ISO date from the rule table in this
-    program's notes (None for a checklist item). Offer them to the user;
-    create only after a yes: `create(id)` for a promise,
-    `create_from_ask(id)` for an ask."""
+    program's notes (None for a checklist item). `limit` None lists them
+    all. Offer them to the user; create only after a yes: `create(id)` for
+    a promise, `create_from_ask(id)` for an ask."""
     bao = _any.bao_space()
     hub, datasets, rules = _hub(bao)
     rows = _suggestions(bao, hub, datasets, rules, now())  # noqa: F821 - guest global
-    return rows[:max(0, int(limit))]
+    return rows if limit is None else rows[:max(0, int(limit))]
 
 
 @span("brainTasks.create", kind="mutator")  # noqa: F821 - guest global
@@ -280,8 +282,7 @@ def create_from_ask(ask_id, deadline=None):
     if not rows:
         raise unknown_ask(f"no ask {rid!r}")
     r = rows[0]
-    persons = kit.person_rows(bao) if rules[0]["personIds"] else []
-    if _ask_kept_out(r, rules[0], persons, kit.Identities()):
+    if _ask_kept_out(r, kit.IdentityResolver(bao, rules[0])):
         raise person_excluded("This ask came from someone kept out of the brain.")
     if r.get("taskId"):
         return {"taskId": r["taskId"], "created": False, "deadline": None}
