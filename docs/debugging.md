@@ -15,7 +15,10 @@ flush at every span end / cell), so a crashed run leaves a partial
 trace (`trace show` reports `status: incomplete`). Bodies expire per
 `[traces] retain_conversations` (default 60d) / `retain_jobs` (30d),
 and oldest-first past `max_bytes` (default 1g; the sum of the
-summaries' `bytes`); summaries stay. `anyrt run` lands its trace the same way — in the
+summaries' `bytes`); summaries stay. Each hourly sweep writes one
+`trace retention: N runs expired in Tms (age …, size …, delete/K txs
+…, text blobs …, raw blobs …)` line to the serve log; a phase that
+takes minutes is the first thing to read when the server looks busy. `anyrt run` lands its trace the same way — in the
 local store of the run's space (`--from-space`, else `bao.space`) on
 `--addr`; there is no file store. `--traces-dir` (default `traces/`)
 is only the raw-blob directory (ADR-026 §1).

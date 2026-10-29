@@ -2153,9 +2153,14 @@ fn retention_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::Joi
         }
         sliced_sleep(Duration::from_secs(60), &stop);
         while !stop.load(Ordering::Relaxed) {
-            match ctx.expire_traces() {
-                Ok(0) => {}
-                Ok(n) => info!("trace retention: {n} run bodies expired"),
+            // the sweep reads `stop` between requests: a shutdown ends
+            // it at the next page, never a server-side read in flight
+            // outliving the server (SYN-388)
+            match ctx.expire_traces(&stop) {
+                Ok(_) => {}
+                Err(_) if stop.load(Ordering::Relaxed) => {
+                    info!("trace retention: sweep stopped for shutdown")
+                }
                 Err(e) => warn!("trace retention failed: {e:#}"),
             }
             sliced_sleep(Duration::from_secs(3600), &stop);
@@ -2314,7 +2319,9 @@ impl RunCtx {
 
     /// Retention pass (ADR-023 §6): drop run bodies past the configured
     /// ages; summaries stay. No-op when nothing is configured.
-    pub fn expire_traces(&self) -> Result<usize> {
+    /// One retention sweep (ADR-023 §6). `stop` = the serve's shutdown
+    /// flag; the sweep ends between requests once it is set.
+    pub fn expire_traces(&self, stop: &AtomicBool) -> Result<usize> {
         let now = now_s();
         let conv = self.cfg.retain_conversations_s.map(|s| now - s as f64);
         let jobs = self.cfg.retain_jobs_s.map(|s| now - s as f64);
@@ -2322,7 +2329,7 @@ impl RunCtx {
         if conv.is_none() && jobs.is_none() && max.is_none() {
             return Ok(0);
         }
-        self.traces.expire(CHAT_PROGRAM, conv, jobs, max)
+        self.traces.expire(CHAT_PROGRAM, conv, jobs, max, stop)
     }
 
     fn broker(&self, spec: &str, run_id: String) -> Broker {
