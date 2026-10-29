@@ -1,9 +1,0 @@
-{
-  "reads": ["email_messages", "cards", "promises", "calendar_events", "signals", "config",
-            "approvals", "agent_triggers", "objects"],
-  "writes": ["signals", "cards", "standups", "config", "agent_triggers", "chat_messages"],
-  "net": [],
-  "connectors": [],
-  "browse": false,
-  "llm": false
-}

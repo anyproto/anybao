@@ -1,12 +1,14 @@
 """programs/brainDrafter@v1 — one reply draft and its pending approval
-(ADR-036 §6), under the REAL guest kernel and the REAL llm@v1 (the model is
-faked at its http.post). Pinned: nothing is read without consent; no tier
-row → unpinned before any model call; the provenance check runs in plain
+(ADR-033 §4.6), under the REAL guest kernel and the REAL llm@v1 (the model is
+faked at its http.post). Pinned: nothing is read without consent; an off
+brain is skipped before the tier is looked at; no tier row → unpinned before
+any model call; the provenance check runs in plain
 code before the model and refuses a recipient outside the source message
 (mutation-checked: without it the outsider gets a draft); a thread message
 kept out now or refused on arrival is never read; the draft, the approval
-whose id is the hash of the draft's bytes, and the card's pointers are
-written; the hash matches the pinned vector; a slow run is draft_timeout
+whose id is the hash of the draft's bytes and its card, and the card's
+pointers are written; the hash matches the pinned vector; two cards with the
+same draft get two approvals; a slow run is draft_timeout
 after the writes; a provider failure on every call — LlmError or
 EffectError — raises provider_failed and writes nothing."""
 
@@ -22,9 +24,9 @@ ME = "me@example.com"
 ADA = "Ada Lovelace <ada@lab.org>"
 TIER = {"provider": "openai-compat", "backend": "anyai",
         "base_url": "http://127.0.0.1:9/v1", "model": "codex/gpt-5.5", "api_key_ref": None}
-# the pinned approval-hash vector (ADR-036 §7) — any-ui's hashApproval pins the same
-VECTOR = ("mbx1", ["B@x.io", "a@x.io"], "text/plain", "Hi\n")
-VECTOR_HASH = "fc45e7a45327b8d60fb22e052cbcc8c211d90c36750d610eb120c91035fc1bf3"
+# the pinned approval-hash vector (ADR-033 §4.7) — any-ui's hashApproval pins the same
+VECTOR = ("mbx1", ["B@x.io", "a@x.io"], "text/plain", "Hi\n", "card1")
+VECTOR_HASH = "4c2c1965ae330a37c2f7489624499b742bd59222d06e86d9a16b4cb5054cf570"
 CARD = "c" * 64
 REPLY = "Hi Ada,\n\nThanks — Thursday works for me.\n\nBest,\nMe"
 
@@ -137,13 +139,18 @@ def nothing_written(s):
 def test_the_approval_hash_matches_the_pinned_vector():
     mod = kernel(brain(), Model())
     assert mod.hash_approval(*VECTOR) == VECTOR_HASH
-    joined = "mbx1\na@x.io,b@x.io\ntext/plain\nHi\n"
+    joined = "mbx1\na@x.io,b@x.io\ntext/plain\ncard1\nHi\n"
     assert hashlib.sha256(joined.encode()).hexdigest() == VECTOR_HASH
-    # any change of byte, order of fields or recipient case is a different id only
-    # where it should be: recipients are lowercased and sorted, nothing else moves
-    assert mod.hash_approval("mbx1", ["a@x.io", "b@x.io"], "text/plain", "Hi\n") == VECTOR_HASH
-    assert mod.hash_approval("mbx1", ["B@x.io", "a@x.io"], "text/plain", "Hi") != VECTOR_HASH
-    assert mod.hash_approval("mbx2", ["B@x.io", "a@x.io"], "text/plain", "Hi\n") != VECTOR_HASH
+    # any change of byte, order of fields, card or recipient case is a different id
+    # only where it should be: recipients are lowercased and sorted, nothing else moves
+    assert mod.hash_approval("mbx1", ["a@x.io", "b@x.io"], "text/plain", "Hi\n",
+                             "card1") == VECTOR_HASH
+    assert mod.hash_approval("mbx1", ["B@x.io", "a@x.io"], "text/plain", "Hi",
+                             "card1") != VECTOR_HASH
+    assert mod.hash_approval("mbx2", ["B@x.io", "a@x.io"], "text/plain", "Hi\n",
+                             "card1") != VECTOR_HASH
+    assert mod.hash_approval("mbx1", ["B@x.io", "a@x.io"], "text/plain", "Hi\n",
+                             "card2") != VECTOR_HASH
 
 
 # --- the gates before the model -----------------------------------------------------
@@ -199,6 +206,8 @@ def test_a_source_kept_out_now_is_skipped_and_never_read():
 def test_a_drafted_closed_or_missing_card_and_an_off_brain_are_skipped():
     s, model = brain(), Model()
     assert kernel(s, model, on=False).main(draft_args(s)) == {"skipped": "off"}
+    # off comes before the tier: an off brain with no tier row is still just off
+    assert kernel(s, model, on=False, tier=None).main(draft_args(s)) == {"skipped": "off"}
     s.store("cards")[CARD]["draftId"] = "d-old"
     assert kernel(s, model).main(draft_args(s)) == {"skipped": "drafted"}
     s.store("cards")[CARD].pop("draftId")
@@ -222,7 +231,7 @@ def test_a_draft_its_pending_approval_and_the_card_pointers_are_written():
     assert draft["threadId"] == "t1" and draft["origin"] == "drafter"
     assert draft["model"] == "codex/gpt-5.5" and draft["tier"] == "brain.drafter"
     (approval,) = s.store("approvals").values()
-    aid = kernel(s, model).hash_approval("mb1", ["ada@lab.org"], "text/plain", body)
+    aid = kernel(s, model).hash_approval("mb1", ["ada@lab.org"], "text/plain", body, CARD)
     assert approval["id"] == aid == out["approvalId"]
     assert approval["status"] == "pending" and approval["draftId"] == draft["id"]
     assert approval["bodyHash"] == hashlib.sha256(body.encode()).hexdigest()
@@ -234,6 +243,30 @@ def test_a_draft_its_pending_approval_and_the_card_pointers_are_written():
     (standup,) = s.store("standups").values()
     assert standup["job"] == "drafter" and standup["counts"]["modelCalls"] == 1
     assert out["calls"] == 1 and len(model.requests) == 1
+
+
+def test_two_cards_with_the_same_draft_get_two_approvals_each_pointing_at_its_card():
+    s, model = brain(), Model(REPLY, REPLY)
+    other = "d" * 64
+    s.add_mail("mb1", "m2", **{"from": ADA, "to": ME}, subject="Re: Meeting", threadId="t1",
+               body="Still Thursday?", participants=["ada@lab.org", ME],
+               internalDate=(NOW - 1800) * 1000)
+    s.store("cards")[other] = {**s.store("cards")[CARD], "id": other,
+                              "sourceUri": "any://o/bao-space/mb1/email_messages/m2"}
+    mod = kernel(s, model)
+    first = mod.main(draft_args(s))
+    second = mod.main(draft_args(s, cardId=other, messageId="m2"))
+    assert first["approvalId"] != second["approvalId"]
+    approvals = s.store("approvals")
+    assert approvals[first["approvalId"]]["cardId"] == CARD
+    assert approvals[second["approvalId"]]["cardId"] == other
+    assert approvals[first["approvalId"]]["bodyHash"] == approvals[second["approvalId"]]["bodyHash"]
+    assert s.store("cards")[other]["approvalId"] == second["approvalId"]
+    # the same card drafted again with the same bytes is the same approval, written once
+    s.store("cards")[CARD].pop("draftId")
+    model.replies.append(REPLY)
+    assert mod.main(draft_args(s))["approvalId"] == first["approvalId"]
+    assert len(approvals) == 2
 
 
 def test_one_call_no_tools_the_voice_and_the_thread_in_order():

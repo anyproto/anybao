@@ -1,16 +1,18 @@
 """Brain drafter: one reply draft for a reply card, and its pending approval."""
 
-__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1)
+__any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (ADR-033 §1.1)
 
-# ADR-036 §6. A once trigger the heartbeat arms (brain-draft-<messageId>,
+# ADR-033 §4.6. A once trigger the heartbeat arms (brain-draft-<messageId>,
 # -a2, -a3), args {space, hub, datasets, tier, cardId, signalId,
 # messageId, mailboxId, threadId, recipients, provenance}. One model call
 # (one retry), no tools, no send capability: its only writes are one
 # `drafts` record, one `approvals` record whose id is the hash of the
-# draft's bytes, the card's draftId / approvalId and one standups row.
+# draft's bytes and its card, the card's draftId / approvalId and one
+# standups row.
 # In order, nothing read before the step that needs it:
 #   1. consent: without the user's yes to reading mail with a model
-#      (`brain.model`, ADR-035 §1) it reads nothing and answers skipped
+#      (`brain.model`, ADR-033 §3.1) it reads nothing and answers skipped;
+#      a switched-off brain is skipped too, before the tier is looked at
 #   2. the tier row: absent → unpinned, before any model call
 #   3. provenance, in plain code: the recipients the heartbeat fixed are
 #      the source message's sender or participants and never the mailbox
@@ -78,12 +80,17 @@ class draft_timeout(Exception):
     """The draft was written, but the run took longer than SLOW_S."""
 
 
-def hash_approval(sender, recipients, fmt, body):
+def hash_approval(sender, recipients, fmt, body, card_id):
     """The approval id: sha256 of sender, recipients (lowercased, sorted,
-    joined by ","), format and body, newline-separated, utf-8, hex
-    (ADR-036 §7; any-ui computes the same with the same pinned vector)."""
+    joined by ","), format, card id and body, newline-separated, utf-8, hex
+    (ADR-033 §4.7; any-ui computes the same with the same pinned vector:
+    "mbx1", ["B@x.io", "a@x.io"], "text/plain", "Hi\n", "card1" →
+    4c2c1965ae330a37c2f7489624499b742bd59222d06e86d9a16b4cb5054cf570). The
+    card is in the hash so two cards with byte-identical drafts never share
+    one approval; the body is last so a newline in a field before it cannot
+    shift the layout."""
     joined = ",".join(sorted(str(r).lower() for r in recipients))
-    return hashlib.sha256(f"{sender}\n{joined}\n{fmt}\n{body}".encode()).hexdigest()
+    return hashlib.sha256(f"{sender}\n{joined}\n{fmt}\n{card_id}\n{body}".encode()).hexdigest()
 
 
 def body_hash(body):
@@ -144,15 +151,14 @@ def _brain_on():
     return isinstance(value, dict) and bool(value.get("spaceId"))
 
 
-def _one(space, oid, dataset, rid, shared):
-    rows = _any.query(space, oid, dataset, filter={"id": f"{oid}/{rid}" if shared else rid},
-                      limit=1)
+def _message(space, box, mid):
+    rows = _any.query(space, box, "email_messages", filter={"id": mid}, limit=1)
     return rows[0] if rows else None
 
 
 def _person_card(person_id):
     """(markdown, addressForm, language) from recall's person view; None when
-    the person is kept out (the draft is not written)."""
+    the person is kept out (the draft is not written); ADR-033 §3.4."""
     if not person_id:
         return ("", None, None)
     recall = use("brainRecall@v1")  # noqa: F821 - guest global; the same repo
@@ -241,8 +247,8 @@ def _write(space, hub, datasets, ctx, body):
         "subject": reply_subject(ctx["subject"]), "inReplyTo": ctx["messageId"],
         "threadId": ctx["threadId"], "recipientProvenance": "thread", "model": ctx["model"],
         "tier": ctx["tier"], "origin": "drafter"}, "writing the draft")
-    aid = hash_approval(ctx["mailboxId"], ctx["recipients"], FORMAT, body)
-    if _one(space, hub, datasets["approvals"], aid, shared=True) is None:
+    aid = hash_approval(ctx["mailboxId"], ctx["recipients"], FORMAT, body, ctx["cardId"])
+    if kit.hub_record(space, hub, datasets["approvals"], aid) is None:
         kit.upsert(space, hub, datasets["approvals"], aid, {
             "draftId": did, "cardId": ctx["cardId"], "sender": ctx["mailboxId"],
             "recipients": ctx["recipients"], "format": FORMAT, "bodyHash": body_hash(body),
@@ -265,14 +271,14 @@ def _standup(space, hub, datasets, tick, ctx, calls, seconds):
 
 def _source(space, args, datasets):
     """(card, message, mailbox address) for the args, or a skip reason."""
-    card = _one(space, args["hub"], datasets["cards"], args["cardId"], shared=True)
+    card = kit.hub_record(space, args["hub"], datasets["cards"], args["cardId"])
     if card is None:
         return "no card"
     if card.get("draftId"):
         return "drafted"
     if card.get("status") not in OPEN:
         return "closed"
-    message = _one(space, args["mailboxId"], "email_messages", args["messageId"], shared=False)
+    message = _message(space, args["mailboxId"], args["messageId"])
     own = dict(kit.mailboxes(space)).get(args["mailboxId"])
     if message is None or own is None:
         raise recipient_provenance("the source message or its mailbox is gone")
@@ -287,10 +293,10 @@ def main(args):
     if parsed is None or any(not args.get(k) for k in ("cardId", "messageId", "mailboxId")):
         raise unconfigured("brain drafter needs the hub, the card and the source message")
     space, hub, datasets = parsed
-    tier = args.get("tier") or "brain.drafter"
-    row = _tier_row(tier)
     if not _brain_on():
         return {"skipped": "off"}
+    tier = args.get("tier") or "brain.drafter"
+    row = _tier_row(tier)
     found = _source(space, args, datasets)
     if isinstance(found, str):
         return {"skipped": found}
