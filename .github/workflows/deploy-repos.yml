@@ -1,5 +1,3 @@
-name: deploy-repos
-
 # Publishes repos/_agent and repos/_connectors to one channel's repo
 # spaces (ADR-009 §2) — the CI form of `anyrt deploy --addr <owner>
 # --source repos/<repo> --target <space>` (docs/environments.md
@@ -22,6 +20,18 @@ name: deploy-repos
 # Every run authorizes the owner account as a FRESH device (any init
 # --mnemonic-stdin derives the same account, new device key), so the
 # repo account gains one device per run.
+#
+# The run name is the deploy record: "deploy-repos <target> <sha>
+# <repos>". The next run reads it back through the runs API
+# (.github/scripts/last-deploy.sh) to learn what the spaces already
+# hold — the API exposes neither dispatch inputs nor the checked-out
+# sha (head_sha is main's tip at dispatch time). Keep the shape.
+name: deploy-repos
+run-name: >-
+  deploy-repos
+  ${{ (github.event.client_payload.channel || github.event.inputs.channel) == 'release' && 'stable' || 'nightly' }}
+  ${{ github.event.client_payload.anybao_sha || github.event.inputs.anybao_sha }}
+  ${{ github.event.client_payload.repos || github.event.inputs.repos || 'both' }}
 on:
   repository_dispatch:
     types: [deploy-repos]
@@ -42,9 +52,13 @@ on:
         description: "both | agent | connectors"
         required: false
         default: both
+      deployed_sha:
+        description: "anybao commit the spaces were LAST deployed from (only when no earlier run recorded one, or to override it)"
+        required: false
 
 permissions:
   contents: read
+  actions: read # last-deploy.sh reads earlier runs' names
 
 # One deploy per channel at a time; a later one waits rather than
 # cancelling a deploy mid-sync.
@@ -63,6 +77,7 @@ jobs:
       ANYBAO_SHA: ${{ github.event.client_payload.anybao_sha || github.event.inputs.anybao_sha }}
       ANY_VERSION: ${{ github.event.client_payload.any_version || github.event.inputs.any_version }}
       REPOS: ${{ github.event.client_payload.repos || github.event.inputs.repos || 'both' }}
+      DEPLOYED_SHA: ${{ github.event.client_payload.deployed_sha || github.event.inputs.deployed_sha }}
       ADDR: http://127.0.0.1:7006
       DATA_DIR: /tmp/any-owner
     steps:
@@ -77,6 +92,7 @@ jobs:
           esac
           case "$REPOS" in both|agent|connectors) ;; *) echo "repos must be both|agent|connectors, got '$REPOS'" >&2; exit 1 ;; esac
           [[ "$ANYBAO_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "anybao_sha must be a full commit sha, got '$ANYBAO_SHA'" >&2; exit 1; }
+          [ -z "$DEPLOYED_SHA" ] || [[ "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "deployed_sha must be a full commit sha, got '$DEPLOYED_SHA'" >&2; exit 1; }
           [ -n "$ANY_VERSION" ] || { echo "any_version is required" >&2; exit 1; }
           echo "target=$target" >> "$GITHUB_OUTPUT"
 
@@ -164,26 +180,39 @@ jobs:
       # against what the space already holds, so deploying before the
       # space synced would re-create every program and skill — and a
       # fresh device says "synced" for the few objects it has so far
-      # (wait-synced.sh), so the wait also needs a floor: the programs
-      # and skills the source tree publishes, which the space already
-      # holds (plus README + type rows as slack for brand-new programs;
-      # a commit adding more new programs than that times out here —
-      # deploy it by hand once). Then refuse a space whose shape is
-      # already wrong.
+      # (wait-synced.sh), so the wait also needs a floor: a count the
+      # space ALREADY holds. That is the programs and skills present
+      # both in this commit and in the one the space was last deployed
+      # from (deploy-floor.sh) — the last successful run's name records
+      # that commit (last-deploy.sh); `deployed_sha` names it by hand
+      # when no run has (first run after the record was added, a
+      # by-hand deploy, a new channel). Counting this commit alone
+      # deadlocked every nightly once a commit added more programs
+      # than the README + type-row slack (run 40809575447). With no
+      # record at all the floor is this commit's own count, as before.
+      # Then refuse a space whose shape is already wrong.
       - name: wait for the spaces to sync
         id: spaces
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cfg=deploy/${{ steps.target.outputs.target }}.toml
+          t=${{ steps.target.outputs.target }}
+          cfg=deploy/$t.toml
           ids=()
           for name in agent connectors; do
             if [ "$REPOS" = both ] || [ "$REPOS" = "$name" ]; then
               id=$(sed -nE "s/^$name *= *\\{ *space *= *\"([^\"]+)\".*/\\1/p" "$cfg")
               [ -n "$id" ] || { echo "no space id for $name in $cfg" >&2; exit 1; }
               src=repos/_$name
-              floor=$(find "$src/programs" -mindepth 1 -maxdepth 1 | wc -l)
-              if [ -d "$src/skills" ]; then
-                floor=$(( floor + $(find "$src/skills" -maxdepth 1 -name '*.md' | wc -l) ))
+              prev=${DEPLOYED_SHA:-$(./.github/scripts/last-deploy.sh "$t" "$name")}
+              if [ -n "$prev" ]; then
+                git cat-file -e "$prev^{commit}" || { echo "last deploy $prev of $name is not a commit here" >&2; exit 1; }
+                floor=$(./.github/scripts/deploy-floor.sh "$src" "$ANYBAO_SHA" "$prev")
+                echo "$name: floor $floor = $src entries shared with the last deploy $prev"
+              else
+                floor=$(./.github/scripts/deploy-floor.sh "$src" "$ANYBAO_SHA" "$ANYBAO_SHA")
+                echo "::warning::$name: no recorded deploy for $t; floor $floor = every $src entry at $ANYBAO_SHA (pass deployed_sha if this times out)"
               fi
               ./.github/scripts/wait-synced.sh "$ADDR" "$id" 600 "$floor"
               ./.github/scripts/check-repo-space.sh "$ADDR" "$id"

@@ -103,7 +103,14 @@ bundled. The workflow deploys that commit to the channel's spaces
 users before the anyrt that runs them. The secret
 `REPO_DEPLOY_ACCOUNTS` = `{"stable": "<mnemonic>", "nightly":
 "<mnemonic>"}` holds the owner mnemonics; a re-run is a manual
-`workflow_dispatch` with the same inputs.
+`workflow_dispatch` with the same inputs. Before deploying, the run
+waits for the fresh device to hold at least the programs + skills
+shared by the commit being deployed and the commit the channel was
+last deployed from — the run name of the last successful run records
+that commit. When no run has recorded one (or a by-hand deploy moved
+the space), pass it as the optional `deployed_sha` input; without it
+the floor is the deployed commit's own count, which times out when a
+commit adds many programs.
 
 **By hand (break-glass)** — through the owning server, by overlay name
 (a guest join 403s `space.read_only`):
