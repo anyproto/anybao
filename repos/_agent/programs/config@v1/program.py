@@ -24,6 +24,30 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 _BUNDLE = "bao/v1"
 _CONFIG_SEED = "bao/config/v1"
 _DATASET = "agent_config"
+_MCP_ROW = "mcp.server."
+_MCP_KEY = "mcp.key."
+
+
+def _check_mcp_row(key, value):
+    """ADR-032 §2/§3: `mcp.server.<id>` = `{transport: "http", url,
+    api_key_ref: "mcp.key.<id>" | None}` — the key ref is always in the
+    `mcp.key.*` namespace. Refused here, at the write, so a misspelt
+    ref never reaches the store (the broker would refuse it later as
+    undeclared, after the row looked fine). `None` (unset) passes."""
+    if value is None:
+        return
+    sid = key[len(_MCP_ROW):]
+    shape = f"{{transport: 'http', url, api_key_ref: '{_MCP_KEY}{sid}' | None}}"
+    if not (sid and sid[0].isalpha() and sid == sid.lower()
+            and all(c.isalnum() or c in "_-" for c in sid)):
+        raise ValueError(f"{key!r}: an MCP server id is [a-z][a-z0-9_-]* (got {sid!r})")
+    if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
+        raise ValueError(f"{key!r}: an MCP server row is {shape} (got {value!r})")
+    ref = value.get("api_key_ref")
+    if ref is not None and not (isinstance(ref, str) and ref.startswith(_MCP_KEY)):
+        raise ValueError(f"{key!r}: api_key_ref must be `{_MCP_KEY}{sid}` — an MCP key ref is "
+                         f"always `mcp.key.<id>`, never `<id>.key.mcp` or `<id>.mcp.key` — "
+                         f"or None for a keyless server (got {ref!r})")
 
 
 @span(kind="getter")  # noqa: F821 - guest global
@@ -55,7 +79,12 @@ def set(key, value):  # noqa: A001
     `provider` is `gemini` or `openai-compat`) — `set_model` changes
     only the model. `api_key_ref: null` = a keyless local server.
     `timeout` is seconds (or `{idle, total}` on an LLM tier).
-    Refused for secret refs."""
+    An `mcp.server.<id>` row is `{transport: "http", url, api_key_ref:
+    "mcp.key.<id>" | None}` — the key ref is always `mcp.key.<id>`;
+    any other spelling is refused (ValueError). Refused for secret
+    refs."""
+    if key.startswith(_MCP_ROW):
+        _check_mcp_row(key, value)
     effect("config.set", {"key": key, "value": value})  # noqa: F821
     return {"key": key, "value": value}
 

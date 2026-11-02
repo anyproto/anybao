@@ -265,7 +265,9 @@ def test_unknown_server_and_bad_rows_fail_before_any_request():
     srv = ScriptedMcp()
     m = kernel(srv, rows={"mcp.server.t": ROW,
                           "mcp.server.pipe": {"transport": "stdio", "url": "x"},
-                          "mcp.server.bare": "not-an-object"})
+                          "mcp.server.bare": "not-an-object",
+                          # the ref bao once wrote for O'Reilly (ADR-032 §3)
+                          "mcp.server.oreilly": {"url": URL, "api_key_ref": "oreilly.key.mcp"}})
     out = m.tools("nope")
     assert out["ok"] is False and "no MCP server 'nope'" in out["error"]
     assert "mcp.server.nope" in out["error"]
@@ -273,6 +275,9 @@ def test_unknown_server_and_bad_rows_fail_before_any_request():
     assert out["ok"] is False and "transport 'stdio' is not supported" in out["error"]
     out = m.tools("bare")
     assert out["ok"] is False and "must be an object with a `url`" in out["error"]
+    out = m.tools("oreilly")
+    assert out["ok"] is False and "is not an MCP key ref" in out["error"]
+    assert "`mcp.key.oreilly`" in out["error"] and "config@v1" in out["error"]
     assert srv.requests == []
 
 
