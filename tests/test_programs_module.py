@@ -295,6 +295,24 @@ def test_update_is_live_on_next_use():
     assert app.use(f"{SID}:job@v1").main(None) == {"n": 2}
 
 
+def test_edit_migrates_a_type_declared_before_category():
+    # ADR-010 §5: a working space whose `program` type predates `category`
+    # gains the property on update/edit, not only on create — the 2026-11-02
+    # :7009 failure ("unknown property category on program")
+    fake = FakeAny()
+    _, p = kernel(fake)
+    fake.seed(SID, "job", "v1", PLAIN)
+    assert not getattr(fake, "ensured", [])
+    assert p.update_program(SID, "job@v1", PLAIN)["ok"]
+    assert (SID, "type") in fake.ensured
+    fake2 = FakeAny()
+    _, p2 = kernel(fake2)
+    fake2.seed(SID, "job", "v1", PLAIN)
+    assert p2.edit_program(SID, "job@v1",
+                           [{"oldText": '{"n": 1}', "newText": '{"n": 3}'}])["ok"]
+    assert (SID, "type") in fake2.ensured
+
+
 def test_update_missing_spec_refused():
     fake = FakeAny()
     _, p = kernel(fake)
