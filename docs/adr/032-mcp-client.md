@@ -118,9 +118,15 @@ One row per server, same store and seeding as `search.provider.*`
   process is a shell effect (ADR-024) and a long-lived one at that,
   which the effect boundary has no shape for.
 - `url`: the MCP endpoint. The key is bound to its host (§3).
-- `api_key_ref`: a `mcp.key.*` ref, or `null` for a server with no
-  authentication — then no credential is sent and no card is ever
-  asked (public read-only servers).
+- `api_key_ref`: a `mcp.key.*` ref — `mcp.key.<id>`, the row's own
+  id — or `null` for a server with no authentication — then no
+  credential is sent and no card is ever asked (public read-only
+  servers). Any other spelling (`<id>.key.mcp`, `connector.key.<id>`)
+  is a ref no overlay declares: `config@v1.set` refuses the row at
+  the write (ValueError naming `mcp.key.<id>`), and `mcp@v1` refuses
+  such a row before its first request (amendment 2026-11-02, after
+  bao wrote `oreilly.key.mcp` for an O'Reilly server). The module
+  docstring states the row shape and the ref form.
 - `timeout`: seconds per request, default 60. A streamed answer
   gets `{idle: timeout, total: 15 * timeout}`.
 - `description` (optional, amendment 2026-10-23): one sentence on
@@ -158,7 +164,10 @@ destination is the row's `url` and the human chose it.
   exists and names no `hosts`, the first successful injection writes
   the request's descriptor onto the row (`SecretSource::bind_hosts`,
   one write). From then on the row binds; a changed `url` is a typed
-  `secret_host_mismatch` the human resolves in Credentials. This
+  `secret_host_mismatch` the human resolves in Credentials — or, for
+  a row the config file's `[config]` table seeds, by the seed itself:
+  serve re-binds the key's row to the seeded host at boot (ADR-021
+  §8.4 hard-seed rule). This
   closes the same gap for `llm.key.anyai` and every self-hosted
   `llm.key.*`. Both halves ship: the runtime rule is the invariant for
   every writer, and a writer that knows the destination — the desktop
