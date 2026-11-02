@@ -328,6 +328,7 @@ def _probe(sid, spec):
 
 def _write_and_probe(sid, oid, spec, code, summary):
     a = _any()
+    _ensure_store(sid)   # a type declared before `category` gains it here (ADR-010 §5)
     a.upsert_record(sid, oid, "program_source", "main", {"code": code})
     probe_err = _probe(sid, spec)
     any_tool = _has_tool_marker(code) and probe_err is None

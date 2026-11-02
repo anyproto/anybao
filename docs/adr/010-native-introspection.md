@@ -182,7 +182,9 @@ convention anyway.
   the same declaration for the working space (ADR-013 §1).
 - **Ensured by its writers** (ADR-017 §1): `anyrt deploy` ensures the
   store in every target space before the first program write;
-  `programs@v1` ensures it in the working space on `create_program`.
+  `programs@v1` ensures it in the working space on every write
+  (`create_program`, `update_program`, `edit_program`), so a type
+  declared before a property existed gains it on the next edit.
   Readers (the module resolver, `list_programs`, toolcaller's compose)
   only look it up — a space without the type simply has no programs.
 - Type id is a per-space CID: every filter path / property group /
