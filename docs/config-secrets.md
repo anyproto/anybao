@@ -96,8 +96,12 @@ from depends on the ref:
   mandatory (`secret_hosts_required` otherwise); later misses never
   rewrite it. A row that exists with a value and no hosts (written by
   the UI or a seed file before any miss) binds to the first request
-  that injects it, once. Only the human edits hosts afterwards, in
-  Credentials.
+  that injects it, once. Afterwards the hosts move only by the
+  human's hand: in Credentials, or through the config file's
+  `[config]` table — a hard-seeded `llm.tier.*` / `mcp.server.*` row
+  re-binds its open ref's row to the seeded `base_url` / `url` host
+  on every serve start (ADR-021 §8.4 hard-seed rule), so a moved
+  `base_url` never strands the key on the old host.
 
 `lastUsedAt` is stamped once per run at the first injection. A
 `local.key.*` card says in its text that unreviewed code asked, and

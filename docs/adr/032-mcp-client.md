@@ -158,7 +158,10 @@ destination is the row's `url` and the human chose it.
   exists and names no `hosts`, the first successful injection writes
   the request's descriptor onto the row (`SecretSource::bind_hosts`,
   one write). From then on the row binds; a changed `url` is a typed
-  `secret_host_mismatch` the human resolves in Credentials. This
+  `secret_host_mismatch` the human resolves in Credentials — or, for
+  a row the config file's `[config]` table seeds, by the seed itself:
+  serve re-binds the key's row to the seeded host at boot (ADR-021
+  §8.4 hard-seed rule). This
   closes the same gap for `llm.key.anyai` and every self-hosted
   `llm.key.*`. Both halves ship: the runtime rule is the invariant for
   every writer, and a writer that knows the destination — the desktop

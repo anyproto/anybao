@@ -24,7 +24,7 @@ use crate::triggers::{
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1018,6 +1018,87 @@ fn stamp_declared(c: &Client, space: &str, obj: &str, dataset: &str, table: &Dec
     info!("credentials: {stamped} declared refs stamped from the overlays");
 }
 
+/// Hard-seed rule (ADR-021 §8.4): a `[config]` row — or one of serve's
+/// `--config` — is the operator's own edit, the same authority as
+/// editing hosts in Credentials. Every open ref such a row names (an
+/// `api_key_ref` beside a `base_url`/`url`: an `llm.tier.*` on a
+/// self-hosted backend, an `mcp.server.*`) has its existing secret row
+/// re-bound to the seeded host(s) at boot, so a `base_url` edit in the
+/// config file never leaves the key bound to the old host
+/// (`secret_host_mismatch`). Declared refs are the boot stamp's; a ref
+/// with no row binds at first use as before; a row already naming
+/// exactly the seeded hosts is left alone. Best-effort, like every seed.
+fn rebind_hard_seeded_hosts(
+    c: &Client,
+    space: &str,
+    obj: &str,
+    dataset: &str,
+    hard: &BTreeMap<String, Value>,
+    declared: &BTreeMap<String, Value>,
+) {
+    let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (key, value) in hard {
+        let Some(r) = value.get("api_key_ref").and_then(Value::as_str) else {
+            continue;
+        };
+        if declared.contains_key(r) {
+            continue;
+        }
+        let url = value
+            .get("base_url")
+            .or_else(|| value.get("url"))
+            .and_then(Value::as_str);
+        let Some(host) = url.and_then(crate::broker::url_host) else {
+            warn!(
+                "secrets: hard seed {key} names {r} without a parseable base_url/url; not re-bound"
+            );
+            continue;
+        };
+        wanted.entry(r.to_string()).or_default().insert(host);
+    }
+    if wanted.is_empty() {
+        return;
+    }
+    let rows = match c.query(space, obj, dataset, &json!({})) {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("secrets: store unavailable, hard-seeded hosts not re-bound ({e})");
+            return;
+        }
+    };
+    for (r, hosts) in wanted {
+        let Some(row) = rows
+            .iter()
+            .find(|row| row.get("key").and_then(Value::as_str) == Some(r.as_str()))
+        else {
+            continue;
+        };
+        let current: BTreeSet<String> = hosts_of(row).into_iter().collect();
+        if current == hosts {
+            continue;
+        }
+        let hosts: Vec<String> = hosts.into_iter().collect();
+        let joined = hosts.join(", ");
+        match upsert_secret_row(c, space, obj, dataset, &r, &json!({"hosts": hosts})) {
+            Ok(()) => info!("secrets: {r} re-bound to {joined} (hard seed)"),
+            Err(e) => warn!("secrets: could not re-bind {r} to {joined} ({e})"),
+        }
+    }
+}
+
+/// The `hosts` of a secret row, as strings (absent/malformed = none).
+fn hosts_of(row: &Value) -> Vec<String> {
+    row.get("hosts")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -1803,8 +1884,10 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     // soft), then read through to it — the host keeps no copy.
     let config_obj = Some(stores.config.clone());
     let secrets_obj = Some(stores.secrets.clone());
+    // the hard seeds outlive the config bootstrap: the secret rows of
+    // the open refs they name re-bind to the seeded hosts further down
+    let hard = std::mem::take(&mut cfg.config_overrides);
     let config_store: Option<Arc<ServeConfigStore>> = config_obj.as_ref().map(|obj| {
-        let hard = std::mem::take(&mut cfg.config_overrides);
         bootstrap_config(&client, &space, obj, &stores.config_ds, &hard);
         info!("config obj={obj} collection={}", stores.config_ds);
         Arc::new(ServeConfigStore {
@@ -1880,6 +1963,14 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     step(&format!("credentials declared ({n_declared} refs)"));
     if let Some(sobj) = &secrets_obj {
         stamp_declared(&client, &space, sobj, &stores.secrets_ds, &declared);
+        rebind_hard_seeded_hosts(
+            &client,
+            &space,
+            sobj,
+            &stores.secrets_ds,
+            &hard,
+            &declared.snapshot(),
+        );
     }
     let persist: Option<Box<dyn crate::oauth::SecretPersist>> = secrets_obj.as_ref().map(|obj| {
         Box::new(ServeSecretStore {
@@ -4982,6 +5073,108 @@ mod tests {
         assert!(!written.contains(&"search.provider.websearch"));
         assert!(written.contains(&"llm.tier.codegen"));
         assert!(calls[1].1.ends_with("/modify"));
+    }
+
+    #[test]
+    fn hard_seeded_open_refs_rebind_their_rows_to_the_seeded_host() {
+        // ADR-021 §8.4 hard-seed rule: the toml moved a self-hosted
+        // tier's base_url from localhost to 127.0.0.1 — the key row
+        // follows at boot instead of failing secret_host_mismatch
+        let rows = json!({"records": [
+            {"id": "llm.key.llamacpp", "key": "llm.key.llamacpp", "secret": true,
+             "hosts": ["localhost:11434"], "status": "set"},
+            {"id": "llm.key.anthropic", "key": "llm.key.anthropic", "secret": true,
+             "hosts": ["api.anthropic.com"], "status": "set"},
+            {"id": "mcp.key.docs", "key": "mcp.key.docs", "secret": true, "status": "set"},
+        ]});
+        let (c, log) = scripted(&[(200, rows), (200, json!({})), (200, json!({}))]);
+        let tier = |ref_: &str| {
+            json!({"provider": "openai-compat", "model": "m",
+                   "base_url": "http://127.0.0.1:11434/v1", "api_key_ref": ref_})
+        };
+        let mut hard = BTreeMap::new();
+        // two tiers on one open ref, one host: one re-bind
+        hard.insert("llm.tier.codegen".to_string(), tier("llm.key.llamacpp"));
+        hard.insert("llm.tier.classify".to_string(), tier("llm.key.llamacpp"));
+        // a declared ref: the boot stamp owns it — a proxy base_url never moves it
+        hard.insert(
+            "llm.tier.vision".to_string(),
+            json!({"provider": "anthropic", "model": "m", "base_url": "https://proxy.example",
+                   "api_key_ref": "llm.key.anthropic"}),
+        );
+        // an open ref whose row has a value and no hosts yet: bound at boot
+        hard.insert(
+            "mcp.server.docs".to_string(),
+            json!({"transport": "http", "url": "https://mcp.example:8443/mcp",
+                   "api_key_ref": "mcp.key.docs"}),
+        );
+        // a ref with no row: nothing to re-bind, the first use binds
+        hard.insert(
+            "llm.tier.judge".to_string(),
+            json!({"provider": "typesafe", "model": "m", "base_url": "http://10.0.0.1:9000",
+                   "api_key_ref": "llm.key.other"}),
+        );
+        // not a provider row
+        hard.insert("myProgram.threshold".to_string(), json!(3));
+        let mut declared = BTreeMap::new();
+        declared.insert(
+            "llm.key.anthropic".to_string(),
+            json!({"hosts": ["api.anthropic.com"]}),
+        );
+        rebind_hard_seeded_hosts(&c, "s1", "secobj", "t1_agent_secrets", &hard, &declared);
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 3, "one query + two re-binds");
+        let patched: Vec<(String, Value)> = calls[1..]
+            .iter()
+            .map(|c| {
+                assert!(c.1.ends_with("/modify"));
+                let rec = &c.2.as_ref().unwrap()["records"][0];
+                let ops = rec["ops"].as_array().unwrap();
+                let hosts = ops.iter().find(|op| op["path"] == "hosts").unwrap()["value"].clone();
+                (rec["id"].as_str().unwrap().to_string(), hosts)
+            })
+            .collect();
+        assert!(patched.contains(&("llm.key.llamacpp".to_string(), json!(["127.0.0.1:11434"]))));
+        assert!(patched.contains(&("mcp.key.docs".to_string(), json!(["mcp.example:8443"]))));
+    }
+
+    #[test]
+    fn hard_seeded_hosts_already_bound_write_nothing() {
+        let rows = json!({"records": [
+            {"id": "llm.key.llamacpp", "key": "llm.key.llamacpp", "secret": true,
+             "hosts": ["127.0.0.1:11434"], "status": "set"}]});
+        let (c, log) = scripted(&[(200, rows)]);
+        let mut hard = BTreeMap::new();
+        hard.insert(
+            "llm.tier.codegen".to_string(),
+            json!({"provider": "openai-compat", "model": "m",
+                   "base_url": "http://127.0.0.1:11434/v1", "api_key_ref": "llm.key.llamacpp"}),
+        );
+        rebind_hard_seeded_hosts(
+            &c,
+            "s1",
+            "secobj",
+            "t1_agent_secrets",
+            &hard,
+            &BTreeMap::new(),
+        );
+        assert_eq!(log.lock().unwrap().len(), 1, "the query only");
+        // no open ref seeded at all: not even the query
+        let (c, log) = scripted(&[]);
+        let mut none = BTreeMap::new();
+        none.insert(
+            "search.provider.websearch".to_string(),
+            json!({"provider": "gemini"}),
+        );
+        rebind_hard_seeded_hosts(
+            &c,
+            "s1",
+            "secobj",
+            "t1_agent_secrets",
+            &none,
+            &BTreeMap::new(),
+        );
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[test]

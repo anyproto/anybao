@@ -454,6 +454,20 @@ send to its own host.
   (the desktop shell pairing a browser relay, ADR-032) writes `hosts`
   itself, so the bind is visible in Credentials before the first
   call; the bind rule is the invariant behind every writer.
+- **Hard-seed rule (amended 2026-11-02).** A config row the operator
+  seeds by hand — the config file's `[config]` table or serve's
+  `--config` (ADR-006 §3 hard seeds) — is the operator's own edit,
+  with the same authority as editing hosts in Credentials. At boot,
+  after the declared stamp, serve re-binds the existing row of every
+  **open** ref such a row names (`api_key_ref` beside a `base_url` or
+  `url`: an `llm.tier.*` on a self-hosted backend, an `mcp.server.*`)
+  to the seeded host(s) — the union over the rows naming that ref —
+  replacing the row's `hosts` when they differ
+  (`rebind_hard_seeded_hosts`). A `base_url` moved in the toml no
+  longer leaves the key bound to the old host. Declared refs stay the
+  boot stamp's (a proxy `base_url` on `llm.key.anthropic` moves
+  nothing); a ref with no row still binds at first use; a guest
+  `config.set` is not a hard seed and never re-binds.
 - **`lastUsedAt`** — stamped once per run per ref, at the first
   successful injection (the audit column of §6; one write per run,
   not per effect).

@@ -2387,7 +2387,7 @@ fn hosts_of(v: &Value) -> Vec<String> {
 
 /// `host[:port]` of a url as the binding compares it (port only when
 /// explicit).
-fn url_host(url: &str) -> Option<String> {
+pub(crate) fn url_host(url: &str) -> Option<String> {
     let u = url::Url::parse(url).ok()?;
     let host = u.host_str()?.to_ascii_lowercase();
     Some(match u.port() {
