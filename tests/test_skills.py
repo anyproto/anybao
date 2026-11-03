@@ -22,14 +22,13 @@ def test_skill_sources_cover_the_system_set():
 
 
 def test_soul_is_the_only_identity_and_carries_no_heading():
-    """ADR-005 §5: the soul opens the prompt verbatim ("You are …" is its
-    first line, no `# Skill:` heading); every other skill states method,
-    never a second identity; conduct policy lives in `_core`, not in the
-    user-editable soul."""
+    """ADR-005 §5: the soul opens the prompt verbatim (its first line
+    names Bao, no `# Skill:` heading, free text in any shape); every
+    other skill states method, never a second identity; conduct policy
+    lives in `_core`, not in the user-editable soul."""
     skills = load_skills_dir(SKILLS_DIR)
     soul = skills["_soul"]
-    assert soul.startswith("You are Bao.") and "# Skill" not in soul
-    assert "## Examples" in soul
+    assert "Bao" in soul.splitlines()[0] and "# Skill" not in soul
     for name, body in skills.items():
         if name == "_soul":
             continue
