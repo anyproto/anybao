@@ -162,9 +162,41 @@ fn pretty_json(v: &Value, pad: &str) -> String {
 /// indented when it's JSON, indented raw otherwise.
 fn pretty_body(raw: &str, pad: &str) -> String {
     match serde_json::from_str::<Value>(raw) {
-        Ok(v) => pretty_json(&v, pad),
-        Err(_) => indent_block(raw, pad, usize::MAX),
+        Ok(v) => pretty_json(&elide_binary(&v), pad),
+        Err(_) => indent_block(&elide_reasoning_sse(raw), pad, usize::MAX),
     }
+}
+
+/// Semantic views hide opaque reasoning; raw --seq output remains lossless.
+/// SSE data can span lines, so redact the decoded frame rather than each line.
+fn elide_reasoning_sse(raw: &str) -> String {
+    if !raw.contains("encrypted_content") || !raw.split('\n').any(|line| line.starts_with("data:"))
+    {
+        return raw.to_string();
+    }
+    let mut out = String::new();
+    let mut data = Vec::new();
+    for line in raw.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if let Some(part) = line.strip_prefix("data:") {
+            data.push(part.trim_start());
+        } else if line.is_empty() {
+            if !data.is_empty() {
+                let safe = serde_json::from_str::<Value>(&data.join("\n"))
+                    .map(|v| elide_binary(&v).to_string())
+                    .unwrap_or_else(|_| "[opaque reasoning]".into());
+                out.push_str(&format!("data: {safe}\n\n"));
+                data.clear();
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !data.is_empty() {
+        out.push_str("data: [opaque reasoning]\n\n");
+    }
+    out
 }
 
 /// Binary payloads elided for the eye (ADR-020 §6): a raw blob ref
@@ -178,7 +210,10 @@ fn elide_binary(v: &Value) -> Value {
             let mut out = serde_json::Map::new();
             let mime = m.get("media_type").and_then(|x| x.as_str());
             for (k, x) in m {
-                if k == "data" && mime.is_some() && x.as_str().is_some_and(|d| d.len() > 256) {
+                if k == "encrypted_content" {
+                    out.insert(k.clone(), json!("[opaque reasoning]"));
+                } else if k == "data" && mime.is_some() && x.as_str().is_some_and(|d| d.len() > 256)
+                {
                     out.insert(
                         k.clone(),
                         Value::String(base64_marker(x.as_str().unwrap(), mime)),
@@ -190,6 +225,7 @@ fn elide_binary(v: &Value) -> Value {
             Value::Object(out)
         }
         Value::Array(a) => Value::Array(a.iter().map(elide_binary).collect()),
+        Value::String(raw) => Value::String(elide_reasoning_sse(raw)),
         _ => v.clone(),
     }
 }
@@ -314,6 +350,9 @@ fn is_openai_wire(input: &Value) -> bool {
 
 /// A provider request (an http effect's `input`) in the view's shape.
 fn view_request_of(input: &Value) -> Value {
+    if input["credential"]["ref"] == crate::local_grant::CHATGPT_REF {
+        return responses_request_to_blocks(&input["json"]);
+    }
     if is_openai_wire(input) {
         openai_request_to_blocks(&input["json"])
     } else {
@@ -328,6 +367,30 @@ fn view_response_of(input: &Value, body: Value) -> Value {
     } else {
         body
     }
+}
+
+fn responses_request_to_blocks(req: &Value) -> Value {
+    let mut out = req.clone();
+    out["system"] = req["instructions"].clone();
+    let empty = Vec::new();
+    out["messages"] = json!(req["input"].as_array().unwrap_or(&empty).iter().filter_map(|item| {
+        let (role, blocks) = match item["type"].as_str()? {
+            "message" => (s(&item["role"]), item["content"].as_array()?.iter().map(|p| {
+                match p["type"].as_str() {
+                    Some("input_text" | "output_text") => json!({"type":"text", "text":p["text"]}),
+                    Some("input_image") => json!({"type":"image"}),
+                    _ => json!({"type":"text", "text":""}),
+                }
+            }).collect::<Vec<_>>()),
+            "function_call" => ("assistant".into(), vec![json!({"type":"tool_use", "id":item["call_id"], "name":item["name"], "input":serde_json::from_str::<Value>(item["arguments"].as_str().unwrap_or("")).unwrap_or(Value::Null)})]),
+            "function_call_output" => ("user".into(), vec![json!({"type":"tool_result", "tool_use_id":item["call_id"], "content":item["output"]})]),
+            "reasoning" => ("assistant".into(), vec![json!({"type":"thinking", "thinking":"[opaque reasoning]"})]),
+            _ => return None,
+        };
+        Some(json!({"role": role, "content": blocks}))
+    }).collect::<Vec<_>>());
+    out["tools"] = json!(req["tools"].as_array().unwrap_or(&empty).iter().map(|t| json!({"name":t["name"], "description":t["description"], "input_schema":t["parameters"]})).collect::<Vec<_>>());
+    out
 }
 
 fn openai_tool_use(tc: &Value) -> Value {
@@ -1553,6 +1616,8 @@ fn price_for(model: &str) -> Option<Price> {
 
 #[derive(Default)]
 struct TurnStats {
+    subscription: bool,
+    api: bool,
     stop: String,
     input: i64,
     cache_read: i64,
@@ -1579,7 +1644,8 @@ impl TurnStats {
             "stop": self.stop, "in": self.input, "cacheRead": self.cache_read,
             "cacheWrite": self.cache_write, "out": self.output,
             "cells": self.cells, "effects": self.effects, "llmMs": self.llm_ms,
-            "costUsd": price.map(|p| self.cost_usd(p)),
+            "costUsd": price.filter(|_| !self.subscription).map(|p| self.cost_usd(p)),
+            "billingSource": if self.subscription { if self.api { "mixed" } else { "chatgpt-subscription" } } else { "api" },
         })
     }
 }
@@ -1653,6 +1719,9 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
         let mut t = TurnStats::default();
         if let Some(e) = end {
             let u = &e["output"]["usage"];
+            t.subscription =
+                u["billingSource"] == "chatgpt-subscription" || u["billingSource"] == "mixed";
+            t.api = (u.is_object() && !t.subscription) || u["billingSource"] == "mixed";
             t.input = u["in"].as_i64().unwrap_or(0);
             t.cache_read = u["cacheRead"].as_i64().unwrap_or(0);
             t.cache_write = u["cacheWrite"].as_i64().unwrap_or(0);
@@ -1671,6 +1740,9 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
             }
             if r["kind"] == "effect" {
                 t.effects += 1;
+                if r["meta"]["billingSource"] == "chatgpt-subscription" {
+                    t.subscription = true;
+                }
             }
             if r["kind"] == "span" && r["phase"] == "begin" && is_cell_span(r) {
                 t.cells += 1;
@@ -1681,6 +1753,8 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
     let price = price_for(&model);
     let mut tot = TurnStats::default();
     for t in &rows {
+        tot.subscription |= t.subscription;
+        tot.api |= t.api;
         tot.input += t.input;
         tot.cache_read += t.cache_read;
         tot.cache_write += t.cache_write;
@@ -1697,7 +1771,7 @@ fn stats_with_model(records: &[Value], model: Option<String>) -> Value {
             "id": s(&records[0]["run"]["id"]),
             "program": s(&records[0]["run"]["program"]),
             "model": model,
-            "priced": price.is_some(),
+            "priced": price.is_some() && !tot.subscription,
             "status": term.map(|t| if t["ok"] == true { "ok" } else { "FAILED" }),
             "durationMs": term.and_then(|t| t["metrics"]["duration_ms"].as_f64()),
             "fuel": term.map(|t| t["metrics"]["fuel_used"].clone()),
@@ -2292,5 +2366,19 @@ mod tests {
         store.write_run("run_s", &recs, &[]).unwrap();
         let out = render(&store, "run_s", &ShowOpts::default()).unwrap();
         assert!(out.contains("assistant: It is 42."), "{out}");
+    }
+    #[test]
+    fn subscription_and_mixed_costs_remain_unknown_even_with_a_priced_model() {
+        let mut records = two_turn_trace();
+        records[3]["output"]["usage"]["billingSource"] = json!("chatgpt-subscription");
+        let stats = stats_of(&records);
+        assert!(stats["turns"][0]["costUsd"].is_null());
+        assert!(stats["turns"][1]["costUsd"].is_number());
+        assert!(stats["total"]["costUsd"].is_null());
+        assert_eq!(stats["total"]["billingSource"], "mixed");
+        assert_eq!(stats["run"]["priced"], false);
+        records[3]["output"] = Value::Null;
+        records[2]["meta"]["billingSource"] = json!("chatgpt-subscription");
+        assert!(stats_of(&records)["turns"][0]["costUsd"].is_null());
     }
 }

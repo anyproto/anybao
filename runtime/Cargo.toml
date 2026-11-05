@@ -21,11 +21,15 @@ path = "src/main.rs"
 wasmtime = { version = "49", features = ["component-model"] }
 wasmtime-wasi = "49"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"          # default Map = BTreeMap → sorted keys = canonical JSON
+# Binary64 decoding must agree with the guest/UI model-configuration identity.
+# The default Map remains BTreeMap (sorted keys).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "1"                # anybao.toml host config (ADR-009 §1)
 sha2 = "0.10"
 hex = "0.4"
 ureq = { version = "2", features = ["tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt", "time", "net", "macros"] }
 url = "2"                # redirect Location resolution (ADR-011 §4; already in-tree via ureq)
 base64 = "0.22"          # http `response: "base64"` bodies (ADR-020 §1; already in-tree)
 clap = { version = "4", features = ["derive"] }
@@ -47,7 +51,11 @@ libc = { version = "0.2", optional = true }  # `shell`: killpg on timeout/break 
 default = []
 shell = ["dep:libc"]
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
+log = "0.4"
 tempfile = "3"
 
 [profile.release]

@@ -47,7 +47,8 @@ class FileTooLarge(Exception):
 
 # provider -> media classes carried natively (ADR-020 §3)
 _MEDIA = {"anthropic": ("image/*", "application/pdf", "text/*"),
-          "openai-compat": ("image/*", "text/*")}
+          "openai-compat": ("image/*", "text/*"),
+          "openai-responses": ("image/png", "image/jpeg", "image/gif", "image/webp", "text/*")}
 
 
 def _wire_data(data, mime, data_uri=False):
@@ -830,9 +831,465 @@ class OpenAICompatAdapter:
         return final
 
 
+# Native ChatGPT Responses wire. This is deliberately independent of the
+# openai-compat/anyai CLI proxy: no keys, redirects or provider URLs are inferred.
+_CHATGPT_BASE = "https://chatgpt.com/backend-api/codex"
+_CHATGPT_REF = "connector.oauth.openai-codex"
+
+
+def _responses_bad(code="malformed_event"):
+    raise IncompleteReply("invalid or incomplete Responses stream (" + code + ")")
+
+
+def _responses_json(text):
+    """No duplicate keys, non-finite numbers, or provider text in diagnostics."""
+    import math
+
+    def pairs(items):
+        obj = {}
+        for key, value in items:
+            if key in obj:
+                raise ValueError()
+            obj[key] = value
+        return obj
+
+    def number(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise ValueError()
+        return value
+
+    def constant(_text):
+        raise ValueError()
+
+    try:
+        return json.loads(text, object_pairs_hook=pairs, parse_float=number,
+                          parse_constant=constant)
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        _responses_bad()
+
+
+def _responses_index(value):
+    if type(value) is not int or not 0 <= value < 16384:
+        _responses_bad()
+    return value
+
+
+def _responses_string(value, nonempty=False):
+    if not isinstance(value, str) or (nonempty and not value):
+        _responses_bad()
+    return value
+
+
+def _responses_item(item, complete=False):
+    if not isinstance(item, dict):
+        _responses_bad()
+    _responses_string(item.get("id"), True)
+    kind = item.get("type")
+    if kind not in ("message", "function_call", "reasoning"):
+        _responses_bad()
+    if (complete and (kind != "reasoning" or "status" in item)
+            and item.get("status") != "completed"):
+        _responses_bad("unfinished_output_item")
+    if kind == "message":
+        if item.get("role") != "assistant" or not isinstance(item.get("content"), list):
+            _responses_bad()
+        if "phase" in item and item["phase"] not in ("commentary", "final_answer"):
+            _responses_bad()
+        for part in item["content"]:
+            if not isinstance(part, dict):
+                _responses_bad()
+            field = {"output_text": "text", "refusal": "refusal"}.get(part.get("type"))
+            if not field:
+                _responses_bad()
+            _responses_string(part.get(field))
+    elif kind == "function_call":
+        for field in ("call_id", "name"):
+            _responses_string(item.get(field), True)
+        _responses_string(item.get("arguments"))
+    else:
+        if not isinstance(item.get("summary"), list):
+            _responses_bad()
+        for part in item["summary"]:
+            if not isinstance(part, dict) or part.get("type") != "summary_text":
+                _responses_bad()
+            _responses_string(part.get("text"))
+        if "encrypted_content" in item:
+            _responses_string(item["encrypted_content"], True)
+
+
+class OpenAIResponsesAdapter:
+    """Stateless ordered input, and a completed-item SSE fold before tool use."""
+
+    def __init__(self, model=""):
+        self.model = model
+
+    def build_request(self, messages, system, tools, model, traits):
+        self.model = model
+        out = []
+        for message in messages:
+            role = message["role"]
+            if role not in ("user", "assistant"):
+                raise ConfigError("Responses history role is unsupported")
+            for part in message["parts"]:
+                kind = part["type"]
+                if kind == "thinking":
+                    state = part.get("provider_state")
+                    if (role == "assistant" and isinstance(state, dict)
+                            and state.get("backend") == "openai-codex"
+                            and state.get("endpoint") == _CHATGPT_BASE + "/responses"
+                            and state.get("model") == model
+                            and isinstance(state.get("encrypted_content"), str)
+                            and state["encrypted_content"]):
+                        out.append({"type": "reasoning", "summary": [],
+                                    "encrypted_content": state["encrypted_content"]})
+                    continue
+                if kind == "tool_call":
+                    if role != "assistant" or not isinstance(part.get("args"), dict):
+                        raise ConfigError("Responses history function call is invalid")
+                    out.append({"type": "function_call", "call_id": part["id"],
+                                "name": part["name"],
+                                "arguments": json.dumps(part["args"], allow_nan=False)})
+                    continue
+                if kind == "tool_result":
+                    if role != "user" or not isinstance(part.get("content"), str):
+                        raise ConfigError("Responses history function result is invalid")
+                    out.append({"type": "function_call_output", "call_id": part["call_id"],
+                                "output": part["content"]})
+                    continue
+                if kind == "text":
+                    content = {"type": "output_text" if role == "assistant" else "input_text",
+                               "text": part["text"]}
+                elif kind == "file":
+                    mt = part["media_type"]
+                    if role != "user":
+                        raise UnsupportedMedia(mt, "openai-responses")
+                    if mt in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+                        content = {"type": "input_image",
+                                   "image_url": _wire_data(part["data"], mt, data_uri=True)}
+                    elif _media_class(mt) == "text":
+                        if _size_of(part["data"]) > _MAX_INLINE_TEXT:
+                            raise FileTooLarge(part.get("name"), _size_of(part["data"]))
+                        content = {"type": "input_text", "text": _document(
+                            part.get("name"), _text_of(part["data"]))}
+                    else:
+                        raise UnsupportedMedia(mt, "openai-responses")
+                else:
+                    raise ConfigError("Responses history part is unsupported")
+                item = {"type": "message", "role": role, "content": [content]}
+                if role == "assistant" and part.get("phase") in ("commentary", "final_answer"):
+                    item["phase"] = part["phase"]
+                out.append(item)
+        return {"model": model, "instructions": system or "", "input": out,
+                "tools": [{"type": "function", "name": t["name"],
+                           "description": t.get("description", ""),
+                           "parameters": t.get("input_schema", {"type": "object"})}
+                          for t in tools],
+                "store": False, "stream": True, "include": ["reasoning.encrypted_content"]}
+
+    def parse_stream(self, text):
+        # Fixed diagnostics: never interpolate provider fields into a traceback.
+        try:
+            return self._parse_stream(text)
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError,
+                RecursionError, OverflowError):
+            _responses_bad()
+
+    def _parse_stream(self, text):
+        if (not isinstance(text, str) or len(text) > 32 * 1024 * 1024
+                or not text.endswith(("\n\n", "\r\n\r\n"))):
+            _responses_bad()
+        response_id, terminal, sequence = None, None, -1
+        items, ids, fields, parts = [], set(), {}, {}
+        events = _sse_events(text)
+        if not events or len(events) > 100000:
+            _responses_bad()
+        decoded = [(name, _responses_json(data)) for name, data in events]
+        last = decoded[-1][1]
+        limited_hint = (isinstance(last, dict) and last.get("type") == "response.incomplete")
+        for name, e in decoded:
+            if not isinstance(e, dict) or not isinstance(e.get("type"), str):
+                _responses_bad()
+            kind = e["type"]
+            if (name is not None and name != kind) or terminal is not None:
+                _responses_bad()
+            if "sequence_number" in e:
+                seq = e["sequence_number"]
+                if type(seq) is not int or seq <= sequence:
+                    _responses_bad()
+                sequence = seq
+            if kind == "response.created":
+                r = e.get("response")
+                if response_id is not None or not isinstance(r, dict):
+                    _responses_bad()
+                response_id = _responses_string(r.get("id"), True)
+                if r.get("status") not in ("queued", "in_progress"):
+                    _responses_bad()
+                continue
+            if response_id is None:
+                _responses_bad()
+            if kind in ("response.in_progress", "response.queued"):
+                r = e["response"]
+                if r.get("id") != response_id or r.get("status") not in ("queued", "in_progress"):
+                    _responses_bad()
+                continue
+            if kind in ("response.completed", "response.incomplete", "response.failed", "error"):
+                if kind == "error" or kind == "response.failed":
+                    raise LlmError(400, "ChatGPT: provider_rejected")
+                r = e["response"]
+                status = kind[len("response."):]
+                if (not isinstance(r, dict) or r.get("id") != response_id
+                        or r.get("status") != status):
+                    _responses_bad()
+                if (status == "incomplete"
+                        and r.get("incomplete_details", {}).get("reason") != "max_output_tokens"):
+                    raise LlmError(400, "ChatGPT: provider_rejected")
+                if any(item["done"] is None and not (status == "incomplete"
+                       and item["added"]["type"] == "function_call") for item in items):
+                    _responses_bad("unfinished_output_item")
+                output = [item["done"] or item["added"] for item in items]
+                reported = r.get("output")
+                if reported is not None and not isinstance(reported, list):
+                    _responses_bad("invalid_terminal_output")
+                # The successful backend may omit this redundant list. Only
+                # completed item.done records supply the fallback, never deltas.
+                if reported and status == "incomplete":
+                    if len(reported) != len(output):
+                        _responses_bad("terminal_output_mismatch")
+                    for expected, actual in zip(output, reported, strict=True):
+                        if expected["type"] == "function_call":
+                            if (not isinstance(actual, dict)
+                                    or any(actual.get(k) != expected.get(k)
+                                           for k in ("id", "type", "call_id", "name"))):
+                                _responses_bad("terminal_output_mismatch")
+                        elif expected != actual:
+                            _responses_bad("terminal_output_mismatch")
+                elif reported:
+                    if reported != output:
+                        _responses_bad("terminal_output_mismatch")
+                elif status != "completed" and output:
+                    _responses_bad("invalid_terminal_output")
+                terminal = {**r, "output": output}
+                if status == "completed":
+                    calls = set()
+                    for item in output:
+                        if item["type"] == "function_call":
+                            args = _responses_json(item["arguments"])
+                            if not isinstance(args, dict) or item["call_id"] in calls:
+                                _responses_bad()
+                            calls.add(item["call_id"])
+                continue
+            if kind == "response.output_item.added":
+                index = _responses_index(e.get("output_index"))
+                item = e.get("item")
+                _responses_item(item)
+                if index != len(items) or item["id"] in ids:
+                    _responses_bad()
+                ids.add(item["id"])
+                items.append({"added": item, "done": None})
+                continue
+            prefix, _, suffix = kind.rpartition(".")
+            part_event = (prefix in ("response.content_part", "response.reasoning_summary_part")
+                          and suffix in ("added", "done"))
+            field_event = (prefix in ("response.output_text", "response.refusal",
+                                     "response.function_call_arguments",
+                                     "response.reasoning_summary_text")
+                           and suffix in ("delta", "done"))
+            if kind != "response.output_item.done" and not part_event and not field_event:
+                # Additive metadata has no consumed item coordinates. Common framing,
+                # sequence, response-start and terminal/EOF checks still apply.
+                continue
+            index = _responses_index(e.get("output_index"))
+            if index >= len(items) or items[index]["done"] is not None:
+                _responses_bad()
+            added = items[index]["added"]
+            if kind == "response.output_item.done":
+                item = e.get("item")
+                _responses_item(item, complete=not (limited_hint
+                                                     and added["type"] == "function_call"))
+                for key in ("id", "type", "role", "call_id", "name", "phase"):
+                    if key in added and item.get(key) != added[key]:
+                        _responses_bad()
+                for (oi, ci, field), state in fields.items():
+                    if oi != index:
+                        continue
+                    if state["done"] is None:
+                        if limited_hint and added["type"] == "function_call":
+                            continue
+                        _responses_bad()
+                    value = (item.get(field) if ci is None else
+                             item["summary" if field == "summary_text" else "content"][ci].get(
+                                 "text" if field == "summary_text" else field))
+                    if value != state["done"]:
+                        _responses_bad()
+                for (oi, group, ci), state in parts.items():
+                    if oi == index and (state["done"] is None or item[group][ci] != state["done"]):
+                        _responses_bad()
+                items[index]["done"] = item
+                continue
+            if e.get("item_id") != added["id"]:
+                _responses_bad()
+            if prefix in ("response.content_part", "response.reasoning_summary_part"):
+                summary = prefix == "response.reasoning_summary_part"
+                group = "summary" if summary else "content"
+                ci = _responses_index(e.get("summary_index" if summary else "content_index"))
+                expected = "reasoning" if summary else "message"
+                if added["type"] != expected or suffix not in ("added", "done"):
+                    _responses_bad()
+                p = e["part"]
+                field = "text" if summary or p.get("type") == "output_text" else "refusal"
+                types = ("summary_text",) if summary else ("output_text", "refusal")
+                if p.get("type") not in types:
+                    _responses_bad()
+                _responses_string(p.get(field))
+                key = (index, group, ci)
+                if suffix == "added":
+                    count = sum(1 for oi, g, _ in parts if oi == index and g == group)
+                    if key in parts or ci != count:
+                        _responses_bad()
+                    parts[key] = {"added": p, "done": None}
+                else:
+                    if (key not in parts or parts[key]["done"] is not None
+                            or p["type"] != parts[key]["added"]["type"]):
+                        _responses_bad()
+                    parts[key]["done"] = p
+                continue
+            spec = {
+                "response.output_text": ("message", "content_index", "text"),
+                "response.refusal": ("message", "content_index", "refusal"),
+                "response.function_call_arguments": ("function_call", None, "arguments"),
+                "response.reasoning_summary_text": ("reasoning", "summary_index", "summary_text"),
+            }.get(prefix)
+            if not spec or suffix not in ("delta", "done") or added["type"] != spec[0]:
+                _responses_bad()
+            ci = _responses_index(e.get(spec[1])) if spec[1] else None
+            if ci is not None:
+                group = "summary" if spec[0] == "reasoning" else "content"
+                if parts.get((index, group, ci), {}).get("done") is not None:
+                    _responses_bad()
+            field = spec[2]
+            state = fields.setdefault((index, ci, field), {"chunks": [], "done": None})
+            if state["done"] is not None:
+                _responses_bad()
+            wire_field = "text" if field == "summary_text" else field
+            value = _responses_string(e.get("delta" if suffix == "delta" else wire_field))
+            if suffix == "delta":
+                state["chunks"].append(value)
+            else:
+                if state["chunks"] and "".join(state["chunks"]) != value:
+                    _responses_bad()
+                state["done"] = value
+        if terminal is None:
+            _responses_bad()
+        return terminal
+
+    def parse_response(self, raw):
+        parts = []
+        limited = raw["status"] == "incomplete"
+        for item in raw["output"]:
+            if item["type"] == "message":
+                for content in item["content"]:
+                    p = {"type": "text", "text": content.get("text", content.get("refusal", ""))}
+                    if item.get("phase"):
+                        p["phase"] = item["phase"]
+                    parts.append(p)
+            elif item["type"] == "function_call" and not limited:
+                parts.append({"type": "tool_call", "id": item["call_id"], "name": item["name"],
+                              "args": _responses_json(item["arguments"])})
+            elif item["type"] == "reasoning":
+                p = {"type": "thinking", "text": "\n".join(s["text"] for s in item["summary"])}
+                if item.get("encrypted_content"):
+                    p["provider_state"] = {"backend": "openai-codex",
+                                           "endpoint": _CHATGPT_BASE + "/responses",
+                                           "model": self.model,
+                                           "encrypted_content": item["encrypted_content"]}
+                parts.append(p)
+        u = raw.get("usage") or {}
+        inp, out = u.get("input_tokens"), u.get("output_tokens")
+        cached = (u.get("input_tokens_details") or {}).get("cached_tokens", 0)
+        valid = (all(type(v) is int and v >= 0 for v in (inp, out, cached)) and cached <= inp)
+        usage = {"in": inp - cached if valid else 0, "out": out if valid else 0,
+                 "cacheRead": cached if valid else 0, "cacheWrite": 0}
+        if not valid:
+            usage["missing"] = True
+        stop = "tool" if any(p["type"] == "tool_call" for p in parts) else "done"
+        return {"parts": parts, "stop": "length" if limited else stop, "usage": usage}
+
+
+def _check_chatgpt(prov, traits):
+    """The only configuration allowed to reach the native token injector."""
+    uses = (prov.get("provider") == "openai-responses" or prov.get("backend") == "openai-codex"
+            or str(prov.get("api_key_ref", "")).startswith(_CHATGPT_REF))
+    if not uses:
+        return
+    if (prov.get("provider") != "openai-responses" or prov.get("backend") != "openai-codex"
+            or prov.get("base_url") != _CHATGPT_BASE or prov.get("api_key_ref") != _CHATGPT_REF
+            or prov.get("stream", True) is not True or traits["tool_mode"] != "native"
+            or traits["web_search"] or traits["pdf_input"] != "none"
+            or (prov.get("traits") or {}).get("sampling")
+            or (prov.get("traits") or {}).get("cache") == "markers"):
+        raise ConfigError("ChatGPT requires the native openai-responses/openai-codex configuration")
+    model = prov.get("model")
+    if (not isinstance(model, str) or not model or len(model) > 256
+            or not all(c.isascii() and (c.isalnum() or c in "_-./:") for c in model)):
+        raise ConfigError("ChatGPT model is invalid")
+    options = prov.get("options", {})
+    allowed = {"reasoning": ("effort", ("none", "minimal", "low", "medium", "high", "xhigh")),
+               "text": ("verbosity", ("low", "medium", "high"))}
+    if not isinstance(options, dict):
+        raise ConfigError("ChatGPT options are invalid")
+    for key, value in options.items():
+        if key not in allowed:
+            raise ConfigError("ChatGPT option is unsupported")
+        field, choices = allowed[key]
+        if not isinstance(value, dict) or set(value) != {field} or value[field] not in choices:
+            raise ConfigError("ChatGPT option is invalid")
+
+
+def _post_chatgpt(payload, adapter):
+    """One total budget across HTTP retries, backoff, and stream validation."""
+    def now():
+        return effect("time.now", {})["epoch"]  # noqa: F821
+
+    deadline = now() + payload["timeout"]["total"]
+    for attempt in range(len(_RETRY_DELAYS_S) + 1):
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise LlmError(408, "ChatGPT: request deadline exceeded")
+        request = {**payload, "timeout": {**payload["timeout"], "total": remaining}}
+        wait = _RETRY_DELAYS_S[attempt] if attempt < len(_RETRY_DELAYS_S) else None
+        try:
+            resp = effect("http.post", request)  # noqa: F821
+        except EffectError as e:  # noqa: F821
+            if not str(e).startswith("URLError") or wait is None:
+                raise
+        else:
+            status = resp["status"]
+            if status >= 400:
+                if not _transient(status) or wait is None:
+                    raise LlmError(status, resp["body"][:_EXCERPT])
+                wait = _retry_after(resp) or wait
+            else:
+                try:
+                    raw = adapter.parse_stream(resp["body"])
+                    if now() >= deadline:
+                        raise LlmError(408, "ChatGPT: request deadline exceeded")
+                    reply = adapter.parse_response(raw)
+                    # This is the fixed native route, never a model-id price lookup.
+                    reply["usage"]["billingSource"] = "chatgpt-subscription"
+                    return reply
+                except LlmError as e:
+                    if not _transient(e.status) or wait is None:
+                        raise
+        if now() + wait >= deadline:
+            raise LlmError(408, "ChatGPT: request deadline exceeded")
+        effect("sleep", {"seconds": wait})  # noqa: F821
+
+
 ADAPTERS = {
     "anthropic": AnthropicAdapter,
     "openai-compat": OpenAICompatAdapter,
+    "openai-responses": OpenAIResponsesAdapter,
 }
 
 
@@ -887,6 +1344,7 @@ def _lift(reply, traits):
     """Lift what the server left in plain text: `<think>` blocks →
     Thinking parts (kept for the trace); ```cell (fenced) or
     `<tool_call>` JSON (xml) → ToolCall parts, stop → tool."""
+    allow_tools = reply["stop"] != "length"
     parts = []
     lifted = []
     for p in reply["parts"]:
@@ -899,13 +1357,13 @@ def _lift(reply, traits):
                 if m.group(1).strip():
                     parts.append({"type": "thinking", "text": m.group(1).strip()})
             text = _THINK_RE.sub("", text)
-        if traits["tool_mode"] == "fenced":
+        if allow_tools and traits["tool_mode"] == "fenced":
             code = _extract_fenced(text)
             if code is not None:
                 lifted.append({"type": "tool_call", "id": f"fenced_{len(lifted)}",
                                "name": "run_cell", "args": {"code": code}})
                 continue
-        elif traits["tool_mode"] == "xml":
+        elif allow_tools and traits["tool_mode"] == "xml":
             calls = _XML_CALL_RE.findall(text)
             if calls:
                 for body in calls:
@@ -926,7 +1384,9 @@ def _lift(reply, traits):
             parts.append({**p, "text": text})
     if lifted:
         return {"parts": parts + lifted, "stop": "tool", "usage": reply["usage"]}
-    if reply["stop"] == "done" and not any(p["type"] in ("text", "tool_call") for p in parts):
+    if (reply["stop"] == "done"
+            and not any(p.get("provider_state", {}).get("backend") == "openai-codex" for p in parts)
+            and not any(p["type"] in ("text", "tool_call") for p in parts)):
         # a finished reply that carries only reasoning IS the answer —
         # the server's template failed to split it (Kimi K3 on OpenRouter
         # returns the final text under `reasoning` with leaked
@@ -1070,6 +1530,7 @@ _ANTHROPIC_KEY_HELP = ("https://platform.claude.com/docs/en/manage-claude/"
                        "authentication#select-a-workspace")
 
 BACKENDS = {
+    "openai-codex": {"path": "/responses", "stream": True},
     "anthropic": {"path": "/v1/messages", "headers": {"anthropic-version": "2023-06-01"},
                   "credential": {"header": "x-api-key", "label": "Anthropic API key",
                                  "help": _ANTHROPIC_KEY_HELP, "note": _ANTHROPIC_KEY_NOTE},
@@ -1189,6 +1650,8 @@ def _credential(prov, backend):
     ref = prov.get("api_key_ref")
     if not ref:
         return None
+    if backend == "openai-codex":
+        return {"ref": _CHATGPT_REF}
     spec = BACKENDS[backend]["credential"]
     host = _host(prov["base_url"])
     label = spec["label"] if spec["label"] != "API key" else f"{host} API key"
@@ -1231,6 +1694,7 @@ def _resolve(tier):
         raise ConfigError(f"llm.tier.{tier}: web_search needs provider 'openai-compat', "
                           f"not {prov['provider']!r}")
     backend = _backend_name(prov)
+    _check_chatgpt(prov, traits)
     return prov, name, backend, _effective(traits, backend, prov.get("traits"))
 
 
@@ -1297,6 +1761,14 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
             system = "\n\n".join(system)
     messages, system, tools = _prepare(messages, system, tools or [], traits)
     req = adapter.build_request(messages, system, tools, prov["model"], traits)
+    if backend == "openai-codex":
+        req.update(prov.get("options") or {})
+        timeout = _timeout_of(prov, BACKENDS[backend])
+        payload = {"url": _CHATGPT_BASE + "/responses",
+                   "headers": {"Content-Type": "application/json", "Accept": "text/event-stream"},
+                   "json": req, "stream": True, "timeout": timeout,
+                   "credential": {"ref": _CHATGPT_REF}}
+        return _post_chatgpt(payload, adapter)
     req.update(traits["sampling"])
     be = BACKENDS[backend]
     req = be.get("finish", lambda r, _t: r)(req, traits)

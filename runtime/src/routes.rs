@@ -7,11 +7,12 @@ pub struct Classifier {
 
 const ANY_READ_POST_SUFFIXES: [&str; 4] = ["/query", "/objects/query", "/search", "/aggregate"];
 // `/v1/systemone`: the judge wire (ADR-030 §4) — replays and mocks as a model call
-const LLM_PATH_SUFFIXES: [&str; 4] = [
+const LLM_PATH_SUFFIXES: [&str; 5] = [
     "/v1/messages",
     "/chat/completions",
     "/v1/complete",
     "/v1/systemone",
+    "/backend-api/codex/responses",
 ];
 
 fn split_url(url: &str) -> (&str, &str) {

@@ -178,7 +178,10 @@ impl OauthState {
         persist: Option<Box<dyn SecretPersist>>,
     ) -> Self {
         OauthState {
-            providers,
+            providers: providers
+                .into_iter()
+                .filter(|(p, _)| p != "openai-codex" && !p.starts_with("openai-codex."))
+                .collect(),
             secrets: Mutex::new(BTreeMap::new()),
             source: None,
             tokens: Mutex::new(BTreeMap::new()),
@@ -209,6 +212,9 @@ impl OauthState {
 
     /// Grant metadata loaded back from the store at boot (serve).
     pub fn seed_meta(&self, key: &str, value: Value) {
+        if crate::local_grant::is_reserved_ref(key) {
+            return;
+        }
         self.meta
             .lock()
             .expect("oauth meta lock poisoned")
@@ -228,7 +234,9 @@ impl OauthState {
             .collect();
         for k in keys {
             if let Some(v) = secrets.remove(&k) {
-                own.insert(k, v);
+                if !crate::local_grant::is_reserved_ref(&k) {
+                    own.insert(k, v);
+                }
             }
         }
     }
@@ -238,6 +246,9 @@ impl OauthState {
     /// shadowed by the boot-loaded live copy. The live map answers only
     /// without a store (no-store mode) or when the store is unreachable.
     pub fn secret(&self, key: &str) -> Option<String> {
+        if crate::local_grant::is_reserved_ref(key) {
+            return None;
+        }
         if let Some(src) = &self.source {
             if let Ok(v) = src.read(key) {
                 return v;

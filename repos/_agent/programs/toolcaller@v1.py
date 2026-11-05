@@ -668,6 +668,14 @@ def _texts(parts):
 
 def _tally(stats, usage):
     # llm@v1 usage keys -> api.LLMStats keys (the agent_turns contract)
+    source = usage.get("billingSource", "api")
+    previous = stats.get("_billingSource")
+    stats["_billingSource"] = source if previous is None or previous == source else "mixed"
+    if stats["_billingSource"] != "api":
+        stats["billingSource"] = stats["_billingSource"]
+        stats["costUsd"] = None
+    if usage.get("missing"):
+        stats["usageMissing"] = True
     for src, dst in (("in", "inTokens"), ("out", "outTokens"),
                      ("cacheRead", "cacheRead"), ("cacheWrite", "cacheWrite")):
         stats[dst] += usage.get(src, 0)
@@ -1455,7 +1463,8 @@ def main(args):
                     effect_counts.items(), key=lambda kv: (-kv[1], kv[0]))]}
                    if effect_counts else {}),
                 "traceRef": args.get("traceRef", ""), "fromAgent": agent_name,
-                "llm": {"stopReason": stop, **stats,
+                "llm": {"stopReason": stop,
+                        **{k: v for k, v in stats.items() if not k.startswith("_")},
                         **({"bootTokensEst": boot_est} if boot else {}),
                         "promptFingerprint": prompt_fp,
                         **({"soulFingerprint": soul_fp} if soul_fp else {})}})

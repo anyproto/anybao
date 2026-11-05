@@ -202,6 +202,8 @@ pub struct Config {
     /// browser — the serve may be a headless daemon. None = system
     /// browser, then the host log.
     pub consent_hook: Option<crate::oauth::ConsentHook>,
+    /// Native session-scoped fresh ChatGPT grant. Never seeded from config/secrets.
+    pub chatgpt_auth: Option<std::sync::Arc<crate::chatgpt::ChatGptAuth>>,
 }
 
 impl Default for Config {
@@ -222,6 +224,7 @@ impl Default for Config {
             secret_overrides: BTreeMap::new(),
             config_overrides: BTreeMap::new(),
             consent_hook: None,
+            chatgpt_auth: None,
         }
     }
 }
@@ -329,6 +332,11 @@ impl ConfigBuilder {
     /// value deletes the stored secret. See [`Config::secret_overrides`].
     pub fn secret_override(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.cfg.secret_overrides.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn chatgpt_auth(mut self, auth: std::sync::Arc<crate::chatgpt::ChatGptAuth>) -> Self {
+        self.cfg.chatgpt_auth = Some(auth);
         self
     }
 

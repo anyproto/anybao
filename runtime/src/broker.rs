@@ -6,6 +6,8 @@
 //! "capability_denied"`) and returned. No `grants` = the permissive
 //! default profile. Grant POLICY lives in `caps` (harness-side data).
 
+pub(crate) mod chatgpt;
+
 use crate::routes::Classifier;
 use crate::trace::{input_key, TraceWriter};
 use crate::tracestore::{valid_run_id, TraceStore};
@@ -170,6 +172,7 @@ pub enum Mode {
 }
 
 struct SpanFrame {
+    chatgpt: Option<chatgpt::CallState>,
     id: String,
     name: String,
     /// Guest-declared narrative kind (getter|mutator|setup|program),
@@ -353,6 +356,9 @@ pub struct Broker {
     /// Managed OAuth state (ADR-011) — process-shared; None = no oauth
     /// wiring (managed refs fail typed `not_configured`).
     pub oauth: Option<Arc<OauthState>>,
+    pub chatgpt_auth: Option<Arc<crate::chatgpt::ChatGptAuth>>,
+    #[cfg(test)]
+    pub(crate) chatgpt_transport: Option<Arc<dyn chatgpt::Transport>>,
     /// The secrets store (ADR-021 §4); None = seeds only (`anyrt run`,
     /// or a server without the secrets object).
     pub secret_store: Option<Arc<dyn SecretSource>>,
@@ -547,6 +553,9 @@ impl Broker {
             secrets_guard: None,
             secrets_collection: None,
             oauth: None,
+            chatgpt_auth: None,
+            #[cfg(test)]
+            chatgpt_transport: None,
             secret_store: None,
             config_store: None,
             missing_secrets: Vec::new(),
@@ -642,6 +651,7 @@ impl Broker {
         self.writer
             .span_begin(&sid, name, cell.as_deref(), input, &key, parent.as_deref());
         self.span_stack.push(SpanFrame {
+            chatgpt: None,
             id: sid.clone(),
             name: name.into(),
             kind,
@@ -824,8 +834,11 @@ impl Broker {
         key: &str,
         span: Option<&str>,
         rec: &Value,
-        meta: Map<String, Value>,
+        mut meta: Map<String, Value>,
     ) -> Result<Value, EffectFailure> {
+        if canonical["credential"]["ref"] == crate::local_grant::CHATGPT_REF {
+            meta.insert("billingSource".into(), json!("chatgpt-subscription"));
+        }
         let cell = self.current_cell.clone();
         let output = rec.get("output").cloned().unwrap_or(Value::Null);
         let error = rec.get("error").cloned().unwrap_or(Value::Null);
@@ -1030,6 +1043,9 @@ impl Broker {
         let result = self.execute(name, &payload);
         let dur_ms = t0.elapsed().as_millis() as i64;
         let mut meta = Map::new();
+        if payload["credential"]["ref"] == crate::local_grant::CHATGPT_REF {
+            meta.insert("billingSource".into(), json!("chatgpt-subscription"));
+        }
         meta.insert("durMs".into(), json!(dur_ms));
         meta.insert("mocked".into(), json!(false));
         meta.insert("class".into(), json!(class));
@@ -1223,6 +1239,15 @@ impl Broker {
     /// `oauth.connect` (ADR-011 §5): consent as an effect that returns
     /// no tokens — blocks while the human clicks (default 120s).
     fn sys_oauth_connect(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        if payload["provider"]
+            .as_str()
+            .is_some_and(|p| p == "openai-codex" || p.starts_with("openai-codex."))
+        {
+            return Err(EffectFailure {
+                type_: "host_only".into(),
+                message: "ChatGPT authentication requires the native host".into(),
+            });
+        }
         let state = self.oauth_state()?;
         let provider = payload
             .get("provider")
@@ -1250,6 +1275,15 @@ impl Broker {
     }
 
     fn sys_oauth_status(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        if payload["provider"]
+            .as_str()
+            .is_some_and(|p| p == "openai-codex" || p.starts_with("openai-codex."))
+        {
+            return Err(EffectFailure {
+                type_: "host_only".into(),
+                message: "ChatGPT authentication requires the native host".into(),
+            });
+        }
         let state = self.oauth_state()?;
         let provider = payload
             .get("provider")
@@ -1259,6 +1293,15 @@ impl Broker {
     }
 
     fn sys_oauth_disconnect(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        if payload["provider"]
+            .as_str()
+            .is_some_and(|p| p == "openai-codex" || p.starts_with("openai-codex."))
+        {
+            return Err(EffectFailure {
+                type_: "host_only".into(),
+                message: "ChatGPT authentication requires the native host".into(),
+            });
+        }
         let state = self.oauth_state()?;
         let provider = payload
             .get("provider")
@@ -1271,6 +1314,15 @@ impl Broker {
     /// §6) — host-emitted only: the one nondeterministic step that
     /// would otherwise hide inside an http call.
     fn sys_oauth_refresh(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
+        if payload["provider"]
+            .as_str()
+            .is_some_and(|p| p == "openai-codex" || p.starts_with("openai-codex."))
+        {
+            return Err(EffectFailure {
+                type_: "host_only".into(),
+                message: "ChatGPT authentication requires the native host".into(),
+            });
+        }
         if self.hosted == 0 {
             return Err(EffectFailure {
                 type_: "host_only".into(),
@@ -1462,6 +1514,12 @@ impl Broker {
     }
 
     fn sys_http(&mut self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
+        if payload["credential"]["ref"]
+            .as_str()
+            .is_some_and(crate::local_grant::is_reserved_ref)
+        {
+            return self.sys_chatgpt(name, payload);
+        }
         let verb = name.strip_prefix("http.").unwrap().to_uppercase();
         let mut url = payload
             .get("url")
