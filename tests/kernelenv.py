@@ -110,7 +110,10 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
     and the names stay out of the namespace — unless `effect` chooses
     to serve the key itself. `on_span(name, payload)`, when given, sees
     every span.begin / span.end (they are absorbed either way)."""
+    span_counter = 0
+
     def host_effect(name, payload_json):
+        nonlocal span_counter
         payload = json.loads(payload_json)
         try:
             if name == "module.resolve":
@@ -142,7 +145,8 @@ def load_kernel(effect=None, any_client=None, llm_chat=None, programs_dir=None,
             elif name in ("span.begin", "span.end"):
                 if on_span is not None:
                     on_span(name, payload)
-                out = {}
+                span_counter += name == "span.begin"
+                out = {"span": f"test_span_{span_counter}"} if name == "span.begin" else {}
             elif name == "test.any":
                 fn = getattr(any_client, payload["method"])
                 try:

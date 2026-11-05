@@ -1,0 +1,1488 @@
+{
+  "encodingVersion": 1,
+  "canonical": [
+    {
+      "name": "integer",
+      "json": "1",
+      "canonical": "bao-model-v1\nd3ff0000000000000",
+      "configId": "v1:141b6cba547922f8ce0bf1ac07f1fcbdd578109e46291cc0f94b0918f2e2ff6b"
+    },
+    {
+      "name": "float",
+      "json": "1.0",
+      "canonical": "bao-model-v1\nd3ff0000000000000",
+      "configId": "v1:141b6cba547922f8ce0bf1ac07f1fcbdd578109e46291cc0f94b0918f2e2ff6b"
+    },
+    {
+      "name": "exponent",
+      "json": "1e0",
+      "canonical": "bao-model-v1\nd3ff0000000000000",
+      "configId": "v1:141b6cba547922f8ce0bf1ac07f1fcbdd578109e46291cc0f94b0918f2e2ff6b"
+    },
+    {
+      "name": "minus-zero",
+      "json": "-0",
+      "canonical": "bao-model-v1\nd0000000000000000",
+      "configId": "v1:0ed77a284651cb897e76c3f78d3277eee19740367f735daa5c40aa86086faf36"
+    },
+    {
+      "name": "zero",
+      "json": "0.0",
+      "canonical": "bao-model-v1\nd0000000000000000",
+      "configId": "v1:0ed77a284651cb897e76c3f78d3277eee19740367f735daa5c40aa86086faf36"
+    },
+    {
+      "name": "negative-zero-exponent",
+      "json": "-0e9",
+      "canonical": "bao-model-v1\nd0000000000000000",
+      "configId": "v1:0ed77a284651cb897e76c3f78d3277eee19740367f735daa5c40aa86086faf36"
+    },
+    {
+      "name": "fraction",
+      "json": "0.1",
+      "canonical": "bao-model-v1\nd3fb999999999999a",
+      "configId": "v1:63a759d17ad18f60ac2f983d41990561272b437d5ea90c9a8a8403ecae39d996"
+    },
+    {
+      "name": "fraction-rounding",
+      "json": "0.10000000000000001",
+      "canonical": "bao-model-v1\nd3fb999999999999a",
+      "configId": "v1:63a759d17ad18f60ac2f983d41990561272b437d5ea90c9a8a8403ecae39d996"
+    },
+    {
+      "name": "small",
+      "json": "1e-7",
+      "canonical": "bao-model-v1\nd3e7ad7f29abcaf48",
+      "configId": "v1:b98eef3409473824415359863b1fe93efd4182902bdaf449681d4a5cbeeef11a"
+    },
+    {
+      "name": "subnormal",
+      "json": "5e-324",
+      "canonical": "bao-model-v1\nd0000000000000001",
+      "configId": "v1:be381ccd7c983e254d11066e286eec49651f7eab80f4dc4f369ec2ce865b191a"
+    },
+    {
+      "name": "underflow",
+      "json": "1e-324",
+      "canonical": "bao-model-v1\nd0000000000000000",
+      "configId": "v1:0ed77a284651cb897e76c3f78d3277eee19740367f735daa5c40aa86086faf36"
+    },
+    {
+      "name": "normal-boundary",
+      "json": "2.2250738585072014e-308",
+      "canonical": "bao-model-v1\nd0010000000000000",
+      "configId": "v1:b777a45dad7a12a1cbd7f0ccfa2bb053d74f420a2ac6d44db5dcdd9047248b9f"
+    },
+    {
+      "name": "safe-max",
+      "json": "9007199254740991",
+      "canonical": "bao-model-v1\nd433fffffffffffff",
+      "configId": "v1:015d9519387d8334402be944f445ffeb710966f009f82e34e8d1f054e343baa9"
+    },
+    {
+      "name": "safe-decimal-rounding",
+      "json": "9007199254740991.1",
+      "canonical": "bao-model-v1\nd433fffffffffffff",
+      "configId": "v1:015d9519387d8334402be944f445ffeb710966f009f82e34e8d1f054e343baa9"
+    },
+    {
+      "name": "unsafe",
+      "json": "9007199254740992",
+      "canonical": null,
+      "configId": null
+    },
+    {
+      "name": "exponent-unsafe",
+      "json": "1e21",
+      "canonical": null,
+      "configId": null
+    },
+    {
+      "name": "nonfinite",
+      "json": "1e400",
+      "canonical": null,
+      "configId": null
+    },
+    {
+      "name": "negative-nonfinite",
+      "json": "-1e400",
+      "canonical": null,
+      "configId": null
+    },
+    {
+      "name": "unordered",
+      "json": "{\"b\":[null,true,false],\"a\":1}",
+      "canonical": "bao-model-v1\no2{s1:61d3ff0000000000000s1:62a3[ntf]}",
+      "configId": "v1:d64a2e70d37d090906dea4cb2a32e357733c38009e55f7897ea97cc118deaa96"
+    },
+    {
+      "name": "reordered",
+      "json": "{\"a\":1.0,\"b\":[null,true,false]}",
+      "canonical": "bao-model-v1\no2{s1:61d3ff0000000000000s1:62a3[ntf]}",
+      "configId": "v1:d64a2e70d37d090906dea4cb2a32e357733c38009e55f7897ea97cc118deaa96"
+    },
+    {
+      "name": "array-order",
+      "json": "[1,2,3]",
+      "canonical": "bao-model-v1\na3[d3ff0000000000000d4000000000000000d4008000000000000]",
+      "configId": "v1:82a9b49c4a419fa94c09479e17f27efc55eff3885dda149b990ce80be635c351"
+    },
+    {
+      "name": "array-reversed",
+      "json": "[3,2,1]",
+      "canonical": "bao-model-v1\na3[d4008000000000000d4000000000000000d3ff0000000000000]",
+      "configId": "v1:a07abe85d0609acc6bb6e6a9d268af9b0933094cd108780d35d7389de812e363"
+    },
+    {
+      "name": "missing",
+      "json": "{}",
+      "canonical": "bao-model-v1\no0{}",
+      "configId": "v1:a7d10dd8e6c7c3be0ec9730378398b7c1d7fba2ada5422566426e351885c5954"
+    },
+    {
+      "name": "null-field",
+      "json": "{\"a\":null}",
+      "canonical": "bao-model-v1\no1{s1:61n}",
+      "configId": "v1:e8c28a6eb8f48838f0f453a47bfc97ed54b7c22ab702c51f3118519541bc5ee3"
+    },
+    {
+      "name": "extra-field",
+      "json": "{\"a\":null,\"b\":1}",
+      "canonical": "bao-model-v1\no2{s1:61ns1:62d3ff0000000000000}",
+      "configId": "v1:e2e0c174fd325367f5e7afbbbe2effb2e2c6ad442cfa326f46f9b8fa1cc2fb75"
+    },
+    {
+      "name": "unicode",
+      "json": "{\"\\ud800\\udc00\":1,\"\\ue000\":2,\"é\":3,\"é\":4,\"a\\u0000\":5}",
+      "canonical": "bao-model-v1\no5{s2:6100d4014000000000000s3:65cc81d4010000000000000s2:c3a9d4008000000000000s3:ee8080d4000000000000000s4:f0908080d3ff0000000000000}",
+      "configId": "v1:186074c4bdd1b5d10a31d3e6bf9633415306dce54d08a17a8d1cd1ed044ceeac"
+    },
+    {
+      "name": "surrogate-string",
+      "json": "\"\\ud800\"",
+      "canonical": null,
+      "configId": null
+    },
+    {
+      "name": "surrogate-key",
+      "json": "{\"\\udfff\":1}",
+      "canonical": null,
+      "configId": null
+    },
+    {
+      "name": "own-prototype-keys",
+      "json": "{\"__proto__\":{\"constructor\":1},\"prototype\":false}",
+      "canonical": "bao-model-v1\no2{s9:5f5f70726f746f5f5fo1{s11:636f6e7374727563746f72d3ff0000000000000}s9:70726f746f74797065f}",
+      "configId": "v1:fbf7bb39fa19ab63566ca21270a9487db9f4a68d48623dd611ffff92b9a08168"
+    }
+  ],
+  "snapshots": [
+    {
+      "name": "matched",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "matched",
+      "uiKind": "matched"
+    },
+    {
+      "name": "missing-tier",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "incomplete",
+      "uiKind": "incomplete"
+    },
+    {
+      "name": "missing-target",
+      "rows": [
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "unset-target",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "null-target",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": null
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "malformed-target",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "canonical-key-disagreement",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "other",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "canonical-missing-key",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "duplicate-tier-alias",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "alias",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "duplicate-target-alias",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "alias",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "extra-field-mismatch",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex",
+            "extra": null
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "incomplete",
+      "uiKind": "incomplete"
+    },
+    {
+      "name": "shadowing-override",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {
+        "llm.tier.codegen": {
+          "provider": "anthropic",
+          "model": "claude-sonnet-5",
+          "base_url": "https://api.anthropic.com",
+          "api_key_ref": "llm.key.anthropic"
+        }
+      },
+      "runtimeKind": "incomplete",
+      "uiKind": "matched"
+    },
+    {
+      "name": "equal-override",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {
+        "llm.tier.codegen": {
+          "provider": "openai-responses",
+          "backend": "openai-codex",
+          "model": "gpt-6-sol",
+          "base_url": "https://chatgpt.com/backend-api/codex",
+          "api_key_ref": "connector.oauth.openai-codex"
+        }
+      },
+      "runtimeKind": "matched",
+      "uiKind": "matched"
+    },
+    {
+      "name": "api-only-target",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\", \"base_url\": \"https://api.anthropic.com\", \"api_key_ref\": \"llm.key.anthropic\"}, \"classify\": {\"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\", \"base_url\": \"https://api.anthropic.com\", \"api_key_ref\": \"llm.key.anthropic\"}, \"vision\": {\"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\", \"base_url\": \"https://api.anthropic.com\", \"api_key_ref\": \"llm.key.anthropic\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "matched",
+      "uiKind": "matched"
+    },
+    {
+      "name": "api-only-ordinary",
+      "rows": [
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "ordinary",
+      "uiKind": "ordinary"
+    },
+    {
+      "name": "api-only-abandoned",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "ordinary",
+      "uiKind": "ordinary"
+    },
+    {
+      "name": "last-chatgpt-removed-partial",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\", \"base_url\": \"https://api.anthropic.com\", \"api_key_ref\": \"llm.key.anthropic\"}, \"classify\": {\"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\", \"base_url\": \"https://api.anthropic.com\", \"api_key_ref\": \"llm.key.anthropic\"}, \"vision\": {\"provider\": \"anthropic\", \"model\": \"claude-sonnet-5\", \"base_url\": \"https://api.anthropic.com\", \"api_key_ref\": \"llm.key.anthropic\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "anthropic",
+            "model": "other",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "base_url": "https://api.anthropic.com",
+            "api_key_ref": "llm.key.anthropic"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "incomplete",
+      "uiKind": "incomplete"
+    },
+    {
+      "name": "unsupported-options",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\", \"options\": {\"temperature\": 0.1}}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\", \"options\": {\"temperature\": 0.1}}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\", \"options\": {\"temperature\": 0.1}}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex",
+            "options": {
+              "temperature": 0.1
+            }
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex",
+            "options": {
+              "temperature": 0.1
+            }
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex",
+            "options": {
+              "temperature": 0.1
+            }
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unsupported",
+      "uiKind": "matched"
+    },
+    {
+      "name": "wrong-backend",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"generic\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"generic\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"generic\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "generic",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "generic",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "generic",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unsupported",
+      "uiKind": "matched"
+    },
+    {
+      "name": "unknown-provider",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"invented\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"invented\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"invented\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "invented",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "invented",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "invented",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unsupported",
+      "uiKind": "matched"
+    },
+    {
+      "name": "current-apply-abandoned",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.configuration.abandoned",
+          "key": "llm.configuration.abandoned",
+          "value": [
+            "14c8afe0f837f6a145e9f60f9b5db08a384ed974bdb2b8cc37ca338e0e4ef5a8"
+          ]
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "older-apply-abandoned",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.configuration.abandoned",
+          "key": "llm.configuration.abandoned",
+          "value": [
+            "d152185dade2e6caf30030d9feae6fd2b6fd7b3b13eecdaeb7bd844cf3f2b314"
+          ]
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "matched",
+      "uiKind": "matched"
+    },
+    {
+      "name": "bad-abandonment-shape",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.configuration.abandoned",
+          "key": "llm.configuration.abandoned",
+          "value": {}
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "bad-abandonment-id",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.configuration.abandoned",
+          "key": "llm.configuration.abandoned",
+          "value": [
+            "bad"
+          ]
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    },
+    {
+      "name": "duplicate-abandonment-id",
+      "rows": [
+        {
+          "id": "llm.configuration.target",
+          "key": "llm.configuration.target",
+          "value": "{\"schemaVersion\": 1, \"applyId\": \"apply-fixture\", \"tiers\": {\"codegen\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"classify\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}, \"vision\": {\"provider\": \"openai-responses\", \"backend\": \"openai-codex\", \"model\": \"gpt-6-sol\", \"base_url\": \"https://chatgpt.com/backend-api/codex\", \"api_key_ref\": \"connector.oauth.openai-codex\"}}}"
+        },
+        {
+          "id": "llm.tier.codegen",
+          "key": "llm.tier.codegen",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.classify",
+          "key": "llm.tier.classify",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.tier.vision",
+          "key": "llm.tier.vision",
+          "value": {
+            "provider": "openai-responses",
+            "backend": "openai-codex",
+            "model": "gpt-6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key_ref": "connector.oauth.openai-codex"
+          }
+        },
+        {
+          "id": "llm.configuration.abandoned",
+          "key": "llm.configuration.abandoned",
+          "value": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ]
+        }
+      ],
+      "overrides": {},
+      "runtimeKind": "unknown",
+      "uiKind": "unknown"
+    }
+  ],
+  "targets": [
+    {
+      "name": "ascii",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"synthetic-apply\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": true
+    },
+    {
+      "name": "paired-surrogate",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"\\ud83d\\ude00\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": true
+    },
+    {
+      "name": "utf8-limit",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": true
+    },
+    {
+      "name": "utf8-over-limit",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": false
+    },
+    {
+      "name": "unpaired-high",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"\\ud800\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": false
+    },
+    {
+      "name": "unpaired-low",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"\\udfff\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": false
+    },
+    {
+      "name": "mixed-unpaired",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"ok\\ud800x\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": false
+    },
+    {
+      "name": "control",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"a\\u0001\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": false
+    },
+    {
+      "name": "empty",
+      "json": "{\"schemaVersion\":1,\"applyId\":\"\",\"tiers\":{\"codegen\":{},\"classify\":{},\"vision\":{}}}",
+      "valid": false
+    }
+  ],
+  "searchCompatibility": [
+    {
+      "name": "websearch-gemini",
+      "key": "websearch",
+      "row": {
+        "provider": "gemini",
+        "model": "synthetic",
+        "base_url": "https://generativelanguage.googleapis.com",
+        "api_key_ref": "google.key.gemini"
+      },
+      "compatible": true
+    },
+    {
+      "name": "websearch-openai-compat",
+      "key": "websearch",
+      "row": {
+        "provider": "openai-compat",
+        "model": "synthetic",
+        "base_url": "http://127.0.0.1:23456/v1",
+        "api_key_ref": "llm.key.anyai",
+        "backend": "anyai"
+      },
+      "compatible": true
+    },
+    {
+      "name": "websearch-openai-responses",
+      "key": "websearch",
+      "row": {
+        "provider": "openai-responses",
+        "model": "synthetic",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key_ref": "connector.oauth.openai-codex",
+        "backend": "openai-codex"
+      },
+      "compatible": false
+    },
+    {
+      "name": "deepresearch-gemini",
+      "key": "deepresearch",
+      "row": {
+        "provider": "gemini",
+        "model": "synthetic",
+        "base_url": "https://generativelanguage.googleapis.com",
+        "api_key_ref": "google.key.gemini"
+      },
+      "compatible": true
+    },
+    {
+      "name": "deepresearch-openai-compat",
+      "key": "deepresearch",
+      "row": {
+        "provider": "openai-compat",
+        "model": "synthetic",
+        "base_url": "http://127.0.0.1:23456/v1",
+        "api_key_ref": "llm.key.anyai",
+        "backend": "anyai"
+      },
+      "compatible": false
+    },
+    {
+      "name": "deepresearch-openai-responses",
+      "key": "deepresearch",
+      "row": {
+        "provider": "openai-responses",
+        "model": "synthetic",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key_ref": "connector.oauth.openai-codex",
+        "backend": "openai-codex"
+      },
+      "compatible": false
+    }
+  ]
+}

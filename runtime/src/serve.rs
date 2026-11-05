@@ -524,6 +524,7 @@ fn upsert_config_row(
 /// `config.set`. One per serve, threaded into every Broker; no cache.
 pub struct ServeConfigStore {
     client: Arc<Client>,
+    projection_client: Arc<Client>,
     space: String,
     obj: String,
     /// the `agent_config` collection (resolved at provisioning)
@@ -531,8 +532,22 @@ pub struct ServeConfigStore {
 }
 
 impl ServeConfigStore {
+    pub fn model_configuration(&self) -> Option<crate::model_configuration::ConfigurationVerdict> {
+        let rows = self
+            .projection_client
+            .query(
+                &self.space,
+                &self.obj,
+                &self.dataset,
+                &crate::model_configuration::snapshot_query(),
+            )
+            .ok()?;
+        Some(crate::model_configuration::verdict(&rows, &BTreeMap::new()))
+    }
+
     pub fn new(client: Arc<Client>, space: &str, obj: &str, dataset: &str) -> Self {
         Self {
+            projection_client: client.clone(),
             client,
             space: space.to_string(),
             obj: obj.to_string(),
@@ -657,6 +672,7 @@ fn bootstrap_secrets(
     secrets: &mut BTreeMap<String, String>,
     overrides: &BTreeMap<String, String>,
 ) -> Vec<String> {
+    secrets.retain(|k, _| !crate::local_grant::is_reserved_ref(k));
     let rows = c.query(space, obj, dataset, &json!({})).unwrap_or_default();
     // refs whose value could NOT be written to the store: they must
     // survive in the map for this run (the only place they exist)
@@ -664,6 +680,9 @@ fn bootstrap_secrets(
 
     // 1. Hard seeds: write-through, open ref set, empty deletes.
     for (secret_ref, value) in overrides {
+        if crate::local_grant::is_reserved_ref(secret_ref) {
+            continue;
+        }
         let stored = stored_local_secret(&rows, secret_ref, field);
         if value.is_empty() {
             secrets.remove(secret_ref);
@@ -703,7 +722,7 @@ fn bootstrap_secrets(
         let Some(secret_ref) = row.get("key").and_then(|v| v.as_str()) else {
             continue;
         };
-        if overrides.contains_key(secret_ref) {
+        if crate::local_grant::is_reserved_ref(secret_ref) || overrides.contains_key(secret_ref) {
             continue;
         }
         let stored = row
@@ -778,6 +797,9 @@ fn stamp_set_if_needed(
 /// The stored secret value for `key` from already-queried rows
 /// (None when unset/empty).
 fn stored_local_secret(rows: &[Value], key: &str, field: &str) -> Option<String> {
+    if crate::local_grant::is_reserved_ref(key) {
+        return None;
+    }
     rows.iter()
         .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
         .and_then(|r| r.get(field).and_then(|v| v.as_str()))
@@ -824,6 +846,7 @@ fn upsert_secret_row(
     key: &str,
     patch: &Value,
 ) -> Result<()> {
+    crate::local_grant::reject_reserved_ref(key)?;
     let mut ops = vec![
         json!({"type": "$set", "path": "key", "value": key}),
         json!({"type": "$set", "path": "secret", "value": true}),
@@ -1116,6 +1139,7 @@ pub struct ServeSecretStore {
 
 impl crate::broker::SecretSource for ServeSecretStore {
     fn read(&self, key: &str) -> Result<Option<String>, String> {
+        crate::local_grant::reject_reserved_ref(key).map_err(|e| e.to_string())?;
         let rows = self
             .client
             .query(&self.space, &self.obj, &self.dataset, &json!({}))
@@ -1145,6 +1169,7 @@ impl crate::broker::SecretSource for ServeSecretStore {
     }
 
     fn read_row(&self, key: &str) -> Result<Option<Value>, String> {
+        crate::local_grant::reject_reserved_ref(key).map_err(|e| e.to_string())?;
         let rows = self
             .client
             .query(&self.space, &self.obj, &self.dataset, &json!({}))
@@ -1444,6 +1469,10 @@ fn status_envelope(
 /// Publish one beat at `now` (threaded for the fake-clock sequence
 /// tests). Best-effort like every bus write: a failed beat is logged
 /// noise, never a serve failure (the next one covers it).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The optional readiness extension accompanies the existing presence envelope fields"
+)]
 fn publish_status_beat(
     client: &Client,
     identity: &str,
@@ -1452,9 +1481,13 @@ fn publish_status_beat(
     state: &str,
     role: &BeatRole,
     now: f64,
+    readiness: Option<Value>,
 ) {
-    if let Err(e) = client.publish_event(&status_envelope(identity, status, run, state, role, now))
-    {
+    let mut envelope = status_envelope(identity, status, run, state, role, now);
+    if let Some(value) = readiness {
+        envelope["data"]["chatgpt"] = value;
+    }
+    if let Err(e) = client.publish_event(&envelope) {
         if is_signed_out(&e) {
             debug!("bao.status beat not published: {e}");
         } else {
@@ -1479,6 +1512,127 @@ struct PresenceLoop {
     last_beat: Option<f64>,
     last_sig: String,
     booted: bool,
+    readiness: Option<Value>,
+    sequence: u64,
+}
+
+const READINESS_MAX_AGE: Duration = Duration::from_secs(2);
+const READINESS_HTTP_BUDGET: Duration = Duration::from_millis(500);
+
+#[derive(Clone)]
+struct ModelReadinessSource {
+    generation: u64,
+    scope: String,
+    config: Option<Arc<ServeConfigStore>>,
+    auth: Option<Arc<crate::chatgpt::ChatGptAuth>>,
+}
+
+impl ModelReadinessSource {
+    fn unavailable(&self) -> Value {
+        crate::readiness::extension(
+            self.generation,
+            &self.scope,
+            crate::model_configuration::ConfigurationVerdict {
+                configuration: "unknown",
+                apply_id: None,
+                config_id: None,
+                chatgpt: false,
+            },
+            json!({"state":"unavailable", "reason":"local_store_unavailable"}),
+        )
+    }
+
+    fn read(&self, cancelled: impl Fn() -> bool) -> Value {
+        if cancelled() {
+            return self.unavailable();
+        }
+        let Some(configuration) = self.config.as_ref().and_then(|s| s.model_configuration()) else {
+            return self.unavailable();
+        };
+        if cancelled() {
+            return self.unavailable();
+        }
+        let provider = self
+            .auth
+            .as_ref()
+            .map(|a| crate::readiness::provider(&a.get_connection()))
+            .unwrap_or_else(|| json!({"state":"unavailable", "reason":"local_store_unavailable"}));
+        crate::readiness::extension(self.generation, &self.scope, configuration, provider)
+    }
+}
+
+/// One worker and one queued projection per runtime. Neither a slow query nor
+/// native custody can hold the sole publisher or its shutdown. Timestamps start
+/// before the read, so a late success cannot renew an expired readiness claim.
+struct ReadinessProbe {
+    receiver: std::sync::mpsc::Receiver<(Instant, Value)>,
+    latest: Option<(Instant, Value)>,
+    unavailable: Value,
+    dropped: Arc<AtomicBool>,
+}
+
+impl ReadinessProbe {
+    fn spawn(source: ModelReadinessSource, stop: Arc<AtomicBool>) -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let unavailable = source.unavailable();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let worker_drop = dropped.clone();
+        std::thread::spawn(move || {
+            let cancelled = || stop.load(Ordering::Acquire) || worker_drop.load(Ordering::Acquire);
+            while !cancelled() {
+                let started = Instant::now();
+                let value = source.read(cancelled);
+                if cancelled() {
+                    break;
+                }
+                if matches!(
+                    sender.try_send((started, value)),
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_))
+                ) {
+                    break;
+                }
+                // A full channel drops this result. Never spin or spawn more
+                // work to catch up; the next ordinary poll reads current state.
+                sliced_sleep(Duration::from_secs_f64(STATUS_POLL_S), &worker_drop);
+            }
+        });
+        Self {
+            receiver,
+            latest: None,
+            unavailable,
+            dropped,
+        }
+    }
+
+    fn snapshot(&mut self) -> Value {
+        while let Ok(value) = self.receiver.try_recv() {
+            self.latest = Some(value);
+        }
+        self.latest
+            .as_ref()
+            .filter(|(started, _)| started.elapsed() <= READINESS_MAX_AGE)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| self.unavailable.clone())
+    }
+}
+
+impl Drop for ReadinessProbe {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+#[path = "serve/readiness_tests.rs"]
+mod readiness_tests;
+
+impl PresenceLoop {
+    fn next_readiness(&mut self) -> Option<Value> {
+        let mut value = self.readiness.clone()?;
+        self.sequence = self.sequence.checked_add(1)?;
+        value["sequence"] = json!(self.sequence.to_string());
+        Some(value)
+    }
 }
 
 /// What makes a beat DUE besides cadence: any change in what the beat
@@ -1511,7 +1665,11 @@ fn presence_pass(
     st: &mut PresenceLoop,
     now: f64,
 ) -> bool {
-    let sig = presence_sig(status, run.as_ref(), role);
+    let sig = format!(
+        "{}|{}",
+        presence_sig(status, run.as_ref(), role),
+        json!(st.readiness)
+    );
     let due = st.last_beat.is_none()
         || now - st.last_beat.unwrap() >= STATUS_BEAT_S
         || sig != st.last_sig;
@@ -1526,7 +1684,8 @@ fn presence_pass(
     } else {
         "idle"
     };
-    publish_status_beat(client, identity, status, run, state, role, now);
+    let readiness = st.next_readiness();
+    publish_status_beat(client, identity, status, run, state, role, now, readiness);
     st.last_beat = Some(now);
     st.last_sig = sig;
     st.booted = true;
@@ -1544,44 +1703,61 @@ fn presence_thread(
     ctx: Arc<RunCtx>,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
+    let readiness = ctx
+        .readiness_source()
+        .map(|s| ReadinessProbe::spawn(s, stop.clone()));
+    spawn_presence_publisher(
+        ctx.client.clone(),
+        presence_identity(&ctx),
+        ctx.status.clone(),
+        stop,
+        readiness,
+        move || {
+            let reg = shared.triggers.lock().unwrap();
+            let role = beat_role(&shared, &reg, &ctx);
+            let reason = (!role.responder).then(|| not_answering_line(&ctx));
+            let run = current_run(&ctx.live_runs.lock().unwrap());
+            (role, run, reason)
+        },
+    )
+}
+
+fn spawn_presence_publisher(
+    client: Arc<Client>,
+    identity: String,
+    status: SharedPresence,
+    stop: Arc<AtomicBool>,
+    mut readiness: Option<ReadinessProbe>,
+    state: impl Fn() -> (BeatRole, Option<Value>, Option<String>) + Send + 'static,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut st = PresenceLoop::default();
         let mut answering = NotAnsweringLog::default();
-        let role_now = || {
-            let reg = shared.triggers.lock().unwrap();
-            beat_role(&shared, &reg, &ctx)
-        };
         loop {
             sliced_sleep(Duration::from_secs_f64(STATUS_POLL_S), &stop);
+            st.readiness = readiness.as_mut().map(ReadinessProbe::snapshot);
             if stop.load(Ordering::Relaxed) {
+                // Preserve this boot's ordering on graceful shutdown.
+                let readiness = st.next_readiness();
                 // the graceful-offline beat (ADR-025 §2)
                 publish_status_beat(
-                    &ctx.client,
-                    &presence_identity(&ctx),
-                    &ctx.status,
+                    &client,
+                    &identity,
+                    &status,
                     None,
                     "shutdown",
-                    &role_now(),
+                    &state().0,
                     now_s(),
+                    readiness,
                 );
                 return;
             }
             let now = now_s();
-            let role = role_now();
-            let reason = (!role.responder).then(|| not_answering_line(&ctx));
+            let (role, run, reason) = state();
             if let Some(line) = answering.note(reason) {
                 info!("{line}");
             }
-            let run = current_run(&ctx.live_runs.lock().unwrap());
-            presence_pass(
-                &ctx.client,
-                &presence_identity(&ctx),
-                &ctx.status,
-                run,
-                &role,
-                &mut st,
-                now,
-            );
+            presence_pass(&client, &identity, &status, run, &role, &mut st, now);
         }
     })
 }
@@ -1627,6 +1803,7 @@ impl AgentHandle {
     /// write to) and for managed OAuth sub-refs, which have their own
     /// custody (ADR-011).
     pub fn set_secret(&self, key: &str, value: &str) -> Result<()> {
+        crate::local_grant::reject_reserved_ref(key)?;
         if key.starts_with(crate::oauth::OAUTH_REF_PREFIX) && key.ends_with(".refresh") {
             anyhow::bail!("{key} is a managed OAuth token — use the provider's connect()");
         }
@@ -1860,6 +2037,10 @@ fn load_cage(cfg: &Config) -> Result<Arc<Cage>> {
 /// Everything serve does up to the watch loop, which is spawned —
 /// returns immediately with the handle (the lib-mode surface).
 pub fn start(mut cfg: Config) -> Result<AgentHandle> {
+    cfg.secrets
+        .retain(|k, _| !crate::local_grant::is_reserved_ref(k));
+    cfg.secret_overrides
+        .retain(|k, _| !crate::local_grant::is_reserved_ref(k));
     // Boot is serial, every step below can wait on the server (a
     // registry convergence, a space still syncing), and nothing shows
     // — no control port, no presence beat — until all of it is done.
@@ -1892,6 +2073,13 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         info!("config obj={obj} collection={}", stores.config_ds);
         Arc::new(ServeConfigStore {
             client: client.clone(),
+            projection_client: Arc::new(Client::with_transport(Box::new(
+                crate::anyapi::HttpTransport::with_timeouts(
+                    &cfg.addr,
+                    READINESS_HTTP_BUDGET,
+                    READINESS_HTTP_BUDGET,
+                ),
+            ))),
             space: space.clone(),
             obj: obj.clone(),
             dataset: stores.config_ds.clone(),
@@ -2152,7 +2340,14 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         chat_watch_id,
     });
 
+    // Reserve once per runtime incarnation under the native slot lock. Failure
+    // cannot publish an ordered readiness claim; ordinary presence still works.
+    let chatgpt_readiness = cfg.chatgpt_auth.as_ref().and_then(|auth| {
+        auth.reserve_readiness_generation(election.self_peer.as_deref()?)
+            .ok()
+    });
     let ctx = Arc::new(RunCtx {
+        chatgpt_readiness,
         cage,
         waiting: Mutex::new(WaitSet::overlays(pending)),
         client: client.clone(),
@@ -2270,6 +2465,7 @@ fn sliced_sleep(total: Duration, stop: &AtomicBool) {
 }
 
 pub struct RunCtx {
+    pub chatgpt_readiness: Option<(u64, String)>,
     pub cage: Arc<Cage>,
     /// what the loop is waiting for (ADR-009 §8): unreadable overlays
     /// and missed programs — gates program runs, never the cage
@@ -2345,6 +2541,17 @@ pub struct RunCtx {
 }
 
 impl RunCtx {
+    /// Immutable source/session binding; only the background probe performs I/O.
+    fn readiness_source(&self) -> Option<ModelReadinessSource> {
+        let (generation, scope) = self.chatgpt_readiness.as_ref()?;
+        Some(ModelReadinessSource {
+            generation: *generation,
+            scope: scope.clone(),
+            config: self.config_store.clone(),
+            auth: self.cfg.chatgpt_auth.clone(),
+        })
+    }
+
     pub fn new_run_id() -> String {
         format!("run_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
     }
@@ -2443,6 +2650,7 @@ impl RunCtx {
         b.secrets_guard = self.secrets_guard.clone();
         b.secrets_collection = Some(self.secrets_ds.clone());
         b.oauth = Some(self.oauth.clone());
+        b.chatgpt_auth = self.cfg.chatgpt_auth.clone();
         b.trace_store = Some(self.traces.clone());
         b.secret_store = self
             .secret_store
@@ -4374,7 +4582,16 @@ mod tests {
         pass(&runs, &mut st, t + 5.0); // no change: not due
         t += 95.0; // past the 90s decay from the line's set (ADR-025 §3)
         pass(&runs, &mut st, t); // cadence, line gone
-        publish_status_beat(&c, "peer1", &status, None, "shutdown", &active(), t + 1.0);
+        publish_status_beat(
+            &c,
+            "peer1",
+            &status,
+            None,
+            "shutdown",
+            &active(),
+            t + 1.0,
+            None,
+        );
         let mut i = status_calls(&log).into_iter();
         let boot = i.next().unwrap();
         assert_eq!(boot["state"], "boot");
@@ -5294,12 +5511,7 @@ mod tests {
             json!({"records": [{"id": "llm.tier.codegen", "key": "llm.tier.codegen",
                                 "value": {"model": "m"}}]}),
         )]);
-        let store = ServeConfigStore {
-            client: Arc::new(c),
-            space: "s1".into(),
-            obj: "cfgobj".into(),
-            dataset: "t1_agent_config".into(),
-        };
+        let store = ServeConfigStore::new(Arc::new(c), "s1", "cfgobj", "t1_agent_config");
         use crate::broker::ConfigStore as _;
         assert_eq!(
             store.read("llm.tier.codegen").unwrap(),
@@ -5309,5 +5521,114 @@ mod tests {
         assert!(calls[0].1.ends_with("/query"));
         // the resolved collection, never the bare key (ADR-027 §2)
         assert_eq!(calls[0].2.as_ref().unwrap()["dataset"], "t1_agent_config");
+    }
+    #[test]
+    fn chatgpt_readiness_is_on_the_real_presence_wire_and_ordered_after_failure() {
+        let (client, log) = scripted(&[(200, json!({})), (200, json!({})), (200, json!({}))]);
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../docs/fixtures/chatgpt-readiness-v1.json"
+        ))
+        .unwrap();
+        let mut st = PresenceLoop {
+            readiness: Some(fixture["extension"].clone()),
+            ..Default::default()
+        };
+        let status = PresenceState::default();
+        assert!(presence_pass(
+            &client,
+            "peer",
+            &status,
+            None,
+            &active(),
+            &mut st,
+            1.0
+        ));
+        assert!(!presence_pass(
+            &client,
+            "peer",
+            &status,
+            None,
+            &active(),
+            &mut st,
+            1.1
+        ));
+        st.readiness = Some(fixture["failedProjection"].clone());
+        assert!(presence_pass(
+            &client,
+            "peer",
+            &status,
+            None,
+            &active(),
+            &mut st,
+            2.0
+        ));
+        publish_status_beat(
+            &client,
+            "peer",
+            &status,
+            None,
+            "shutdown",
+            &active(),
+            3.0,
+            st.next_readiness(),
+        );
+        let calls = log.lock().unwrap();
+        for (i, call) in calls.iter().enumerate() {
+            let data = &call.2.as_ref().unwrap()["data"];
+            assert_eq!(data["chatgpt"]["sequence"], (i + 1).to_string());
+            assert_eq!(data["chatgpt"]["bootGeneration"], "9007199254740993");
+        }
+        assert_eq!(
+            calls[1].2.as_ref().unwrap()["data"]["chatgpt"]["provider"]["state"],
+            "unavailable"
+        );
+        assert_eq!(calls[2].2.as_ref().unwrap()["data"]["state"], "shutdown");
+    }
+
+    #[test]
+    fn chatgpt_config_is_one_raw_query_and_failures_are_not_cached() {
+        let (client, log) = scripted(&[
+            (200, json!({"records":[]})),
+            (500, json!({"code":"synthetic"})),
+        ]);
+        let store = ServeConfigStore::new(Arc::new(client), "space", "obj", "config");
+        assert_eq!(
+            store.model_configuration().unwrap().configuration,
+            "ordinary"
+        );
+        assert!(store.model_configuration().is_none());
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        for call in calls.iter() {
+            let request = call.2.as_ref().unwrap();
+            assert_eq!(request["limit"], 1025);
+        }
+    }
+
+    #[test]
+    fn reserved_chatgpt_secrets_are_never_seeded_read_or_synced() {
+        let key = crate::local_grant::CHATGPT_REF;
+        let (client, log) = scripted(&[(
+            200,
+            json!({"records":[{"key":key,"secret":true,"value":"SYNTHETIC-NOT-A-TOKEN"}]}),
+        )]);
+        let mut secrets = BTreeMap::from([(key.into(), "SYNTHETIC-SOFT-SEED".into())]);
+        let overrides = BTreeMap::from([(key.into(), "SYNTHETIC-HARD-SEED".into())]);
+        assert!(bootstrap_secrets(
+            &client,
+            "s",
+            "o",
+            "d",
+            SECRETS_FIELD,
+            &mut secrets,
+            &overrides
+        )
+        .is_empty());
+        assert!(secrets.is_empty());
+        assert_eq!(log.lock().unwrap().len(), 1);
+        assert!(
+            persist_local_secret(&client, "s", "o", "d", SECRETS_FIELD, key, "SYNTHETIC").is_err()
+        );
+        assert_eq!(log.lock().unwrap().len(), 1);
     }
 }

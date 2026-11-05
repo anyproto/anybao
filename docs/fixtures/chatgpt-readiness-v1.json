@@ -1,0 +1,63 @@
+{
+  "extension": {
+    "schemaVersion": 1,
+    "capability": "chatgpt-local-v1",
+    "publisherScope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bootGeneration": "9007199254740993",
+    "sequence": "1",
+    "configuration": "matched",
+    "applyId": "apply-fixture",
+    "configId": "v1:02af26722d6e8e3729cd7435419ea979cb0323fe0d2c2afa16185f14ff8e5b3a",
+    "chatgpt": true,
+    "provider": {
+      "state": "connected",
+      "reason": "none"
+    }
+  },
+  "rejectedPatches": [
+    {
+      "sequence": 0
+    },
+    {
+      "sequence": 1
+    },
+    {
+      "sequence": "0"
+    },
+    {
+      "sequence": "01"
+    },
+    {
+      "sequence": "18446744073709551616"
+    },
+    {
+      "publisherScope": "profile-path"
+    },
+    {
+      "provider": {
+        "state": "connected",
+        "reason": "none",
+        "accountLabel": "private"
+      }
+    },
+    {
+      "capability": "future"
+    }
+  ],
+  "scopeContract": "publisherScope binds the declared store namespace, application, canonical profile, account and device; it is not cryptographic device attestation. Competing scopes for one device remain ambiguous for the account session after expiry or removal.",
+  "failedProjection": {
+    "schemaVersion": 1,
+    "capability": "chatgpt-local-v1",
+    "publisherScope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bootGeneration": "9007199254740993",
+    "sequence": "2",
+    "configuration": "unknown",
+    "applyId": null,
+    "configId": null,
+    "chatgpt": false,
+    "provider": {
+      "state": "unavailable",
+      "reason": "local_store_unavailable"
+    }
+  }
+}
