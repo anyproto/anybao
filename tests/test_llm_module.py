@@ -62,6 +62,23 @@ def T(**over):
 CLAUDE = T(reasoning="roundtrip", cache="markers", max_output=32768)
 
 
+@pytest.mark.parametrize("mode,tool", [
+    ("fenced", "```cell\nunsafe_execution = True\n```"),
+    ("xml", '<tool_call>{"name":"run_cell","arguments":{"code":"unsafe()"}}</tool_call>'),
+    ("native", "partial answer"),
+])
+@pytest.mark.parametrize("reasoning", ["roundtrip", "discard"])
+def test_step15_length_still_extracts_reasoning_without_lifting_tools(mode, tool, reasoning):
+    # _lift is shared by every provider; do not special-case Responses here.
+    usage = {"in": 2, "out": 5}
+    reply = LLM["_lift"]({"parts": [{"type": "text", "text": "<think>reasoning</think>" + tool}],
+                          "stop": "length", "usage": usage},
+                         T(reasoning=reasoning, tool_mode=mode))
+    assert reply["stop"] == "length" and reply["usage"] == usage
+    assert reply["parts"] == [{"type": "thinking", "text": "reasoning"},
+                              {"type": "text", "text": tool}]
+
+
 # --- fixtures: minimal recorded response shapes (seed from a real call) -----
 
 ANTHROPIC_TOOL_RESP = {

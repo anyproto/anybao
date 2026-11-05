@@ -453,7 +453,9 @@ fn provider_code(value: &Value, status: u16) -> (&'static str, u16, bool) {
         }
         "server_error" | "overloaded_error" => ("provider_unavailable", 502, false),
         "model_not_found" => ("model_unavailable", 404, false),
-        _ if status == 401 => ("authentication_failed", 401, false),
+        // One recovery for unusable credentials, after known non-auth exclusions.
+        // A fresh rejection is not evidence that the refresh token was revoked.
+        _ if status == 401 => ("authentication_failed", 401, true),
         _ if status == 403 => ("policy_denied", 403, false),
         _ if status == 429 => ("rate_limited", 429, false),
         _ if status >= 500 => ("provider_unavailable", 502, false),
@@ -668,6 +670,9 @@ impl ResponseFields {
         let Some((prefix, suffix)) = kind.rsplit_once('.') else {
             return Ok(());
         };
+        if !matches!(suffix, "delta" | "done") {
+            return Ok(());
+        }
         let field = match prefix {
             "response.output_text" => "text",
             "response.refusal" => "refusal",

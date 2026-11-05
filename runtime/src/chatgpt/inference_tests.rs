@@ -693,9 +693,15 @@ fn second_rejection_blocks_same_grant_and_failure_replays_without_authorization(
 }
 
 #[test]
-fn quota_policy_unknown_auth_and_stream_auth_never_refresh_or_reflect() {
+fn quota_policy_and_stream_auth_never_refresh_or_reflect() {
     for (status, code, expected, streaming) in [
-        (401, "unknown", 401, false),
+        (401, "unknown", 401, true),
+        (401, "policy_violation", 403, false),
+        (401, "insufficient_quota", 402, false),
+        (401, "residency_mismatch", 403, false),
+        (401, "rate_limit_exceeded", 429, false),
+        (401, "model_not_found", 404, false),
+        (401, "server_error", 502, false),
         (403, "policy_violation", 403, false),
         (429, "insufficient_quota", 402, false),
         (403, "residency_mismatch", 403, false),
@@ -733,8 +739,87 @@ fn quota_policy_unknown_auth_and_stream_auth_never_refresh_or_reflect() {
 }
 
 #[test]
+fn step15_unknown_nonstreaming_401_recovers_once_without_reflecting_raw_body() {
+    for body in [
+        json!({"error": {"code": "unknown", "message": "REFLECTED-SENTINEL"}}).to_string(),
+        json!({"error": {"message": "REFLECTED-SENTINEL"}}).to_string(),
+        "REFLECTED-SENTINEL not JSON".into(),
+    ] {
+        let (h, script, mut b) = setup();
+        script.reply(401, body);
+        script.reply(200, success("recovered"));
+        h.script.response(
+            Endpoint::Token,
+            200,
+            tokens("synthetic-account", NOW + 7200, Some("synthetic-rotated")),
+        );
+        assert_eq!(b.call("http.post", payload()).unwrap()["status"], 200);
+        assert_eq!(h.script.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(script.1.load(Ordering::Relaxed), 2);
+        assert_eq!(h.peer().get_connection().state, ConnectionState::Connected);
+        assert!(!json!(b.writer.records)
+            .to_string()
+            .contains("REFLECTED-SENTINEL"));
+    }
+}
+
+#[test]
+fn step15_second_unknown_401_blocks_current_pair_but_policy_keeps_rotated_pair() {
+    for policy in [false, true] {
+        let (h, script, mut b) = setup();
+        script.reply(401, "non JSON".into());
+        script.reply(
+            401,
+            json!({"error": {"code": if policy { "policy_violation" } else { "unknown" }}})
+                .to_string(),
+        );
+        h.script.response(
+            Endpoint::Token,
+            200,
+            tokens("synthetic-account", NOW + 7200, Some("synthetic-rotated")),
+        );
+        assert_eq!(
+            b.call("http.post", payload()).unwrap()["status"],
+            if policy { 403 } else { 401 }
+        );
+        assert_eq!(h.script.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(script.1.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            h.peer().get_connection().state,
+            if policy {
+                ConnectionState::Connected
+            } else {
+                ConnectionState::ReauthRequired
+            }
+        );
+        let saved = h
+            .store
+            .value
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap()
+            .grant
+            .unwrap();
+        if policy {
+            assert_eq!(saved.refresh.0, "synthetic-rotated");
+        } else {
+            assert!(saved.refresh.0.is_empty());
+            assert_eq!(
+                h.peer()
+                    .authorize_dispatch(None, &AtomicBool::new(false))
+                    .unwrap_err()
+                    .code,
+                AuthErrorCode::GrantRejected
+            );
+            assert_eq!(h.script.calls.load(Ordering::Relaxed), 1);
+        }
+    }
+}
+
+#[test]
 fn peer_rotation_adopts_pair_but_replacement_never_gets_a_resend() {
-    for replace in [false, true] {
+    for (replace, unknown) in [(false, false), (true, false), (false, true), (true, true)] {
         let (h, script, mut b) = setup();
         let store = h.store.clone();
         script.add(move |_, _, _| {
@@ -749,7 +834,11 @@ fn peer_rotation_adopts_pair_but_replacement_never_gets_a_resend() {
             slot.as_mut().unwrap().grant = Some(next);
             Ok(WireReply {
                 status: 401,
-                body: rejected(),
+                body: if unknown {
+                    "unknown authentication body".into()
+                } else {
+                    rejected()
+                },
                 retry_after: None,
                 streaming: false,
             })
@@ -767,6 +856,109 @@ fn peer_rotation_adopts_pair_but_replacement_never_gets_a_resend() {
         }
         assert_eq!(h.script.calls.load(Ordering::Relaxed), 0);
     }
+}
+
+#[test]
+fn step15_second_unknown_rejection_does_not_revoke_peer_rotation_or_replacement() {
+    for replace in [false, true] {
+        let (h, script, mut b) = setup();
+        script.reply(401, "unknown first rejection".into());
+        h.script.response(
+            Endpoint::Token,
+            200,
+            tokens("synthetic-account", NOW + 7200, Some("synthetic-rotated")),
+        );
+        let store = h.store.clone();
+        script.add(move |_, _, _| {
+            let mut slot = store.value.lock().unwrap();
+            let old = slot.as_ref().unwrap().grant.as_ref().unwrap().clone();
+            let next = parse_grant(
+                &tokens("synthetic-account", NOW + 8000, Some("synthetic-peer")),
+                NOW,
+                if replace { None } else { Some(&old) },
+            )
+            .unwrap();
+            slot.as_mut().unwrap().grant = Some(next);
+            Ok(WireReply {
+                status: 401,
+                body: "unknown second rejection".into(),
+                retry_after: None,
+                streaming: false,
+            })
+        });
+        let result = b.call("http.post", payload());
+        if replace {
+            assert_eq!(result.unwrap_err().type_, "account_changed");
+        } else {
+            assert_eq!(result.unwrap()["status"], 401);
+        }
+        let saved = h
+            .store
+            .value
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap()
+            .grant
+            .unwrap();
+        assert!(matches!(saved.state, GrantState::Ready));
+        assert_eq!(saved.refresh.0, "synthetic-peer");
+        assert_eq!(h.peer().get_connection().state, ConnectionState::Connected);
+        assert_eq!(h.script.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(script.1.load(Ordering::Relaxed), 2);
+    }
+}
+
+#[test]
+fn step15_unknown_metadata_crosses_host_real_guest_and_replay_but_not_custody() {
+    let fixture: Vec<Value> = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/responses-codex-lifecycle.json"
+    )))
+    .unwrap();
+    let (h, script, b) = setup();
+    let mut events = fixture.clone();
+    for event in [
+        json!({"type": "response.output_text.annotation.added", "annotation": {"type": "future_metadata"}}),
+        json!({"type": "vendor.future.metadata", "output_index": 0, "item_id": "lookup_final_answer"}),
+        json!({"type": "response.output_text.future", "output_index": "metadata-only"}),
+    ] {
+        events.insert(1, event.clone());
+        events.insert(events.len() - 1, event);
+    }
+    script.reply(200, wire_events(&events));
+    let result = run_guest(b, ONE_CHAT);
+    assert_eq!(result.status, "ok", "{:?}", result.error);
+    assert_eq!(result.value["stop"], "tool");
+    assert_eq!(result.value["parts"][2]["args"], json!({"code": "1+1"}));
+    assert_eq!(script.1.load(Ordering::Relaxed), 1);
+    replay_guest(&h, &result, ONE_CHAT);
+
+    let (h, script, mut b) = setup();
+    let mut reflected = fixture;
+    let secret = h
+        .store
+        .value
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .grant
+        .as_ref()
+        .unwrap()
+        .access
+        .0
+        .clone();
+    reflected.insert(
+        1,
+        json!({"type": "vendor.future.metadata", "annotation": secret}),
+    );
+    script.reply(200, wire_events(&reflected));
+    assert_eq!(
+        b.call("http.post", payload()).unwrap_err().type_,
+        "chatgpt_response_rejected"
+    );
+    assert!(!json!(b.writer.records).to_string().contains(&secret));
 }
 
 #[test]
@@ -818,16 +1010,18 @@ fn expired_and_stopped_requests_do_not_start_authorization_or_inference() {
 
 #[test]
 fn reflected_errors_never_spill_into_the_trace_store() {
-    let (_h, script, mut b) = setup();
+    let (h, script, mut b) = setup();
     let store = MemTraceStore::new();
     b.writer.stream_to(&store).unwrap();
     script.reply(
         401,
         json!({"error": {"message": "REFLECTED-SENTINEL".repeat(10000)}}).to_string(),
     );
+    h.script
+        .response(Endpoint::Token, 400, json!({"error": "invalid_grant"}));
     let mut p = payload();
     p["json"]["instructions"] = json!("safe".repeat(30000));
-    b.call("http.post", p).unwrap();
+    assert_eq!(b.call("http.post", p).unwrap_err().type_, "grant_rejected");
     b.writer.dump(&store).unwrap();
     let records = store.load_resolved("run_inference").unwrap();
     assert!(!json!(records).to_string().contains("REFLECTED-SENTINEL"));

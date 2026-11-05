@@ -1088,6 +1088,17 @@ class OpenAIResponsesAdapter:
                 ids.add(item["id"])
                 items.append({"added": item, "done": None})
                 continue
+            prefix, _, suffix = kind.rpartition(".")
+            part_event = (prefix in ("response.content_part", "response.reasoning_summary_part")
+                          and suffix in ("added", "done"))
+            field_event = (prefix in ("response.output_text", "response.refusal",
+                                     "response.function_call_arguments",
+                                     "response.reasoning_summary_text")
+                           and suffix in ("delta", "done"))
+            if kind != "response.output_item.done" and not part_event and not field_event:
+                # Additive metadata has no consumed item coordinates. Common framing,
+                # sequence, response-start and terminal/EOF checks still apply.
+                continue
             index = _responses_index(e.get("output_index"))
             if index >= len(items) or items[index]["done"] is not None:
                 _responses_bad()
@@ -1118,7 +1129,6 @@ class OpenAIResponsesAdapter:
                 continue
             if e.get("item_id") != added["id"]:
                 _responses_bad()
-            prefix, _, suffix = kind.rpartition(".")
             if prefix in ("response.content_part", "response.reasoning_summary_part"):
                 summary = prefix == "response.reasoning_summary_part"
                 group = "summary" if summary else "content"
@@ -1334,8 +1344,7 @@ def _lift(reply, traits):
     """Lift what the server left in plain text: `<think>` blocks →
     Thinking parts (kept for the trace); ```cell (fenced) or
     `<tool_call>` JSON (xml) → ToolCall parts, stop → tool."""
-    if reply["stop"] == "length":
-        return reply
+    allow_tools = reply["stop"] != "length"
     parts = []
     lifted = []
     for p in reply["parts"]:
@@ -1348,13 +1357,13 @@ def _lift(reply, traits):
                 if m.group(1).strip():
                     parts.append({"type": "thinking", "text": m.group(1).strip()})
             text = _THINK_RE.sub("", text)
-        if traits["tool_mode"] == "fenced":
+        if allow_tools and traits["tool_mode"] == "fenced":
             code = _extract_fenced(text)
             if code is not None:
                 lifted.append({"type": "tool_call", "id": f"fenced_{len(lifted)}",
                                "name": "run_cell", "args": {"code": code}})
                 continue
-        elif traits["tool_mode"] == "xml":
+        elif allow_tools and traits["tool_mode"] == "xml":
             calls = _XML_CALL_RE.findall(text)
             if calls:
                 for body in calls:

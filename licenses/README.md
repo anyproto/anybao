@@ -23,7 +23,7 @@ unchanged in a release archive.
 Install the pinned generator, then regenerate the runtime notices:
 
 ```sh
-cargo install cargo-about --version 0.9.2 --locked
+cargo install cargo-about --version 0.9.2 --locked --features cli
 cargo-about generate --locked --all-features --fail \
   --manifest-path runtime/Cargo.toml --config licenses/about.toml \
   --output-file licenses/RUST_DEPENDENCIES.md licenses/about.hbs
@@ -34,6 +34,8 @@ expressions retain every required term; `OR` expressions select an
 accepted alternative. `about.toml` preserves libm's complete composite
 license and attribution text with a checksum. Do not replace actual
 copyright notices with generic SPDX templates.
+The same configuration retains atomic-waker's separate third-party notice
+alongside its Apache license, including the original Tokio attribution.
 
 ## Kernel or vendored Python updates
 

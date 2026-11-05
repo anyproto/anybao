@@ -386,6 +386,53 @@ def test_output_limit_cannot_be_lifted_to_a_call(mode, text):
     assert r["stop"] == "length" and not any(p["type"] == "tool_call" for p in r["parts"])
 
 
+@pytest.mark.parametrize("kind", ["response.output_text.annotation.added",
+                                 "vendor.future.metadata", "response.output_text.future"])
+@pytest.mark.parametrize("location", [{}, {"output_index": 0, "item_id": "lookup_final_answer"},
+                                     {"output_index": "metadata-only", "item_id": None}])
+@pytest.mark.parametrize("position", [1, -1])
+def test_step15_unknown_metadata_does_not_require_item_coordinates(kind, location, position):
+    ev = backend_events([message(), call()], "missing")
+    ev.insert(position, {"type": kind, **location, "annotation": {"type": "future_metadata"}})
+    reply = adapter().parse_response(adapter().parse_stream(stream(ev)))
+    assert reply["stop"] == "tool"
+    assert reply["parts"][0]["text"] == "answer"
+    assert reply["parts"][1]["args"] == {"code": "1+1"}
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "response.output_text.delta", "delta": "missing coordinates"},
+    {"type": "response.output_item.done", "output_index": 999, "item": message()},
+    {"type": "response.completed", "response": {"status": "completed"}},
+])
+def test_step15_known_events_still_require_coordinates_and_terminal_identity(event):
+    ev = backend_events([message()])
+    ev.insert(1, event)
+    with pytest.raises(LLM["IncompleteReply"]):
+        adapter().parse_stream(stream(ev))
+
+
+@pytest.mark.parametrize("mutation", ["before_created", "after_terminal", "missing_terminal",
+                                    "nonmonotonic_sequence", "event_name_mismatch"])
+def test_step15_unknown_metadata_does_not_bypass_stream_bounds(mutation):
+    ev = backend_events([message()])
+    extra = {"type": "vendor.future.metadata"}
+    if mutation == "before_created":
+        ev.insert(0, extra)
+    elif mutation == "after_terminal":
+        ev.append(extra)
+    elif mutation == "missing_terminal":
+        ev[-1] = extra
+    else:
+        ev[0]["sequence_number"] = 1
+        ev.insert(1, {**extra, "sequence_number": 1 if mutation == "nonmonotonic_sequence" else 2})
+    wire = stream(ev)
+    if mutation == "event_name_mismatch":
+        wire = wire.replace("event: vendor.future.metadata", "event: another.event")
+    with pytest.raises(LLM["IncompleteReply"]):
+        adapter().parse_stream(wire)
+
+
 def test_refusal_missing_usage_and_failed_response():
     m = message()
     m["content"] = [{"type": "refusal", "refusal": "Cannot help."}]

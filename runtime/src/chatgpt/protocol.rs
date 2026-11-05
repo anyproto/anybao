@@ -45,8 +45,6 @@ pub(super) struct AuthReply {
 
 #[derive(Clone, Copy)]
 pub(super) enum TransportFailure {
-    // The production transport conservatively classifies every failure as uncertain.
-    #[cfg(test)]
     BeforeSend,
     Uncertain,
 }
@@ -86,31 +84,51 @@ impl AuthTransport for FixedTransport {
                 request.send_form(&pairs)
             }
         };
-        let response = match response {
-            Ok(response) | Err(ureq::Error::Status(_, response)) => response,
-            Err(_) => return Err(TransportFailure::Uncertain),
-        };
-        let status = response.status();
-        let retry_after = response
-            .header("Retry-After")
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|s| s.clamp(3, 60));
-        let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .take(MAX_AUTH_BODY + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| TransportFailure::Uncertain)?;
-        if bytes.len() as u64 > MAX_AUTH_BODY {
-            return Err(TransportFailure::Uncertain);
-        }
-        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        Ok(AuthReply {
-            status,
-            body,
-            retry_after,
-        })
+        read_auth_reply(response)
     }
+}
+
+// Keep transport classification and bounded response reads on the same path.
+pub(super) fn read_auth_reply(
+    response: Result<ureq::Response, ureq::Error>,
+) -> Result<AuthReply, TransportFailure> {
+    let response = match response {
+        Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+        // Pinned ureq 2.12.1: unit::connect_inner connects before send_prelude/send_body;
+        // stream::connect_host and rtls::connect return these kinds only while
+        // resolving/connecting, before any HTTP bytes. This relies on the fresh
+        // agent above: no redirects, proxy, or pooled-connection replay. Generic
+        // I/O (including TLS I/O), HTTP errors and body-read errors stay uncertain.
+        Err(ureq::Error::Transport(error))
+            if matches!(
+                error.kind(),
+                ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed
+            ) =>
+        {
+            return Err(TransportFailure::BeforeSend);
+        }
+        Err(_) => return Err(TransportFailure::Uncertain),
+    };
+    let status = response.status();
+    let retry_after = response
+        .header("Retry-After")
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|s| s.clamp(3, 60));
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_AUTH_BODY + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| TransportFailure::Uncertain)?;
+    if bytes.len() as u64 > MAX_AUTH_BODY {
+        return Err(TransportFailure::Uncertain);
+    }
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    Ok(AuthReply {
+        status,
+        body,
+        retry_after,
+    })
 }
 
 fn number(value: &Value) -> Option<u64> {
@@ -322,7 +340,7 @@ pub(super) fn validate_envelope(
     Ok(())
 }
 
-fn error_code(body: &Value) -> &str {
+pub(super) fn error_code(body: &Value) -> &str {
     body["error"]
         .as_str()
         .or_else(|| body["error"]["code"].as_str())
@@ -489,6 +507,9 @@ pub(super) fn receive_browser(
                 let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Security-Policy: default-src 'none'\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}", if outcome.is_ok() { "200 OK" } else { "400 Bad Request" }, body.len(), body);
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
                 let _ = stream.write_all(response.as_bytes());
+                if outcome == Err(AuthErrorCode::CallbackMismatch) {
+                    continue;
+                }
                 return outcome;
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

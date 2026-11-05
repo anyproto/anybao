@@ -937,6 +937,125 @@ fn device_pending_rate_limit_and_absolute_server_expiry() {
 }
 
 #[test]
+fn step15_device_poll_transients_back_off_and_slow_down_persists() {
+    let h = Harness::new();
+    h.script.response(Endpoint::DeviceCode, 200, json!({"device_auth_id": "synthetic-id", "user_code": "SYN", "interval": 3, "expires_in": 120}));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    for (status, body) in [
+        (0, Value::Null),
+        (503, Value::Null),
+        (400, json!({"error": "slow_down"})),
+        (403, Value::Null),
+        (
+            200,
+            json!({"authorization_code": "synthetic-code", "code_verifier": "synthetic-verifier"}),
+        ),
+    ] {
+        let clock = h.clock.clone();
+        let observed = observed.clone();
+        h.script.add(Box::new(move |endpoint, _| {
+            assert_eq!(endpoint, Endpoint::DevicePoll);
+            observed.lock().unwrap().push(clock.now() - NOW);
+            if status == 0 {
+                Err(TransportFailure::Uncertain)
+            } else {
+                Ok(AuthReply {
+                    status,
+                    body,
+                    retry_after: None,
+                })
+            }
+        }));
+    }
+    h.script.response(
+        Endpoint::Token,
+        200,
+        tokens("synthetic-account", NOW + 3600, Some("synthetic-refresh")),
+    );
+    h.auth.start_login(LoginFlow::DeviceCode).unwrap();
+    workers_done(&h.auth);
+    assert_eq!(h.auth.get_connection().state, ConnectionState::Connected);
+    // Every retry waits. slow_down adds at least five seconds and persists after pending.
+    let observed = observed.lock().unwrap();
+    assert_eq!(&observed[..3], &[3, 9, 21]);
+    assert!(observed[3] - observed[2] >= 17);
+    assert!(observed[4] - observed[3] >= 8);
+    assert_eq!(h.script.calls.load(Ordering::Relaxed), 7);
+}
+
+#[test]
+fn step15_device_poll_transients_keep_original_expiry_and_exchange_is_not_retried() {
+    for exchange in [false, true] {
+        let h = Harness::new();
+        h.script.response(Endpoint::DeviceCode, 200, json!({"device_auth_id": "synthetic-id", "user_code": "SYN", "interval": 3, "expires_in": 10}));
+        if exchange {
+            h.script.response(Endpoint::DevicePoll, 200, json!({"authorization_code": "synthetic-code", "code_verifier": "synthetic-verifier"}));
+            h.script.add(Box::new(|endpoint, _| {
+                assert_eq!(endpoint, Endpoint::Token);
+                Err(TransportFailure::Uncertain)
+            }));
+        } else {
+            for status in [500, 504] {
+                h.script.response(Endpoint::DevicePoll, status, Value::Null);
+            }
+        }
+        h.auth.start_login(LoginFlow::DeviceCode).unwrap();
+        workers_done(&h.auth);
+        assert_eq!(
+            h.auth.session.lock().unwrap().snapshot.error_code,
+            Some(if exchange {
+                AuthErrorCode::AuthNetwork
+            } else {
+                AuthErrorCode::LoginExpired
+            })
+        );
+        assert_eq!(h.script.calls.load(Ordering::Relaxed), 3);
+        assert!(h
+            .store
+            .value
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .grant
+            .is_none());
+    }
+}
+
+#[test]
+fn step15_device_poll_backoff_remains_cancellable() {
+    let h = Harness::new();
+    h.clock.advance.store(false, Ordering::Release);
+    h.script.response(
+        Endpoint::DeviceCode,
+        200,
+        json!({"device_auth_id": "synthetic-id", "user_code": "SYN", "interval": 3}),
+    );
+    let (entered, release) = h.script.blocked(Endpoint::DevicePoll, 503, Value::Null);
+    let started = h.auth.start_login(LoginFlow::DeviceCode).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    release.send(()).unwrap();
+    // Wait for the post-poll backoff to begin, then cancel inside its sliced wait.
+    let before = Instant::now();
+    while h.clock.waits.lock().unwrap().len() <= 12 && before.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(h.clock.waits.lock().unwrap().len() > 12);
+    h.auth.cancel_login(&started.login_id).unwrap();
+    workers_done(&h.auth);
+    assert_eq!(h.script.calls.load(Ordering::Relaxed), 2);
+    assert!(h
+        .store
+        .value
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .pending
+        .is_none());
+}
+
+#[test]
 fn device_deny_disabled_and_malformed_are_bounded_errors() {
     for (status, body, expected) in [
         (
@@ -1931,7 +2050,7 @@ fn refresh_marker_save_failure_sends_nothing_and_pair_save_failure_never_replays
 
 #[test]
 fn refresh_transport_unknown_errors_and_malformed_success_are_never_retried() {
-    for case in 0..5 {
+    for case in 0..8 {
         let h = Harness::new();
         seed(&h.store, NOW + 1);
         match case {
@@ -1949,11 +2068,14 @@ fn refresh_transport_unknown_errors_and_malformed_success_are_never_retried() {
             3 => h
                 .script
                 .response(Endpoint::Token, 429, json!({"error": "unknown-rate-limit"})),
-            _ => h.script.response(
+            4 => h.script.response(
                 Endpoint::Token,
                 302,
                 json!({"location": "https://synthetic.invalid/"}),
             ),
+            _ => h
+                .script
+                .response(Endpoint::Token, 502 + (case - 5), Value::Null),
         }
         assert_eq!(
             h.authorize().unwrap_err().code,
@@ -2013,6 +2135,196 @@ fn definitively_unsent_failure_can_restore_ready_but_rejected_or_changed_princip
                 ConnectionState::Connected
             } else {
                 ConnectionState::ReauthRequired
+            }
+        );
+    }
+}
+
+#[test]
+fn step15_production_transport_classifies_only_proven_unsent_failures() {
+    // Custom DNS and loopback fixtures exercise ureq's actual typed errors; no live resolver.
+    let dns = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .resolver(|_: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+            Err(std::io::Error::other("synthetic DNS failure"))
+        })
+        .build()
+        .post("https://synthetic.invalid/token")
+        .send_form(&[("refresh_token", "synthetic")]);
+    assert_eq!(dns.as_ref().unwrap_err().kind(), ureq::ErrorKind::Dns);
+    assert!(matches!(
+        read_auth_reply(dns),
+        Err(TransportFailure::BeforeSend)
+    ));
+
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let connect = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .timeout(Duration::from_secs(1))
+        .build()
+        .post(&format!("http://{addr}/token"))
+        .send_form(&[]);
+    assert_eq!(
+        connect.as_ref().unwrap_err().kind(),
+        ureq::ErrorKind::ConnectionFailed
+    );
+    assert!(matches!(
+        read_auth_reply(connect),
+        Err(TransportFailure::BeforeSend)
+    ));
+    // Generic I/O cannot establish which side of request transmission failed.
+    assert!(matches!(
+        read_auth_reply(Err(std::io::Error::other("synthetic I/O").into())),
+        Err(TransportFailure::Uncertain)
+    ));
+    // A received success header cannot make a truncated response safe to retry.
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = [0; 4096];
+        assert!(stream.read(&mut request).unwrap() > 0);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{")
+            .unwrap();
+    });
+    let response = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .timeout(Duration::from_secs(2))
+        .build()
+        .post(&format!("http://{addr}/token"))
+        .send_form(&[]);
+    assert!(response.is_ok());
+    assert!(matches!(
+        read_auth_reply(response),
+        Err(TransportFailure::Uncertain)
+    ));
+    server.join().unwrap();
+    for status in [429, 500, 502, 503, 504] {
+        let response = ureq::Response::new(status, "synthetic", "{}").unwrap();
+        assert_eq!(
+            read_auth_reply(Err(ureq::Error::Status(status, response)))
+                .ok()
+                .unwrap()
+                .status,
+            status
+        );
+    }
+}
+
+#[test]
+fn step15_unsent_refresh_restores_exact_pair_durably_or_fails_closed() {
+    for fail_restore in [false, true] {
+        let h = Harness::new();
+        let old = seed(&h.store, NOW + 1).grant.unwrap();
+        if fail_restore {
+            h.store.fail_saves.lock().unwrap().insert(2);
+        }
+        h.script.add(Box::new(|_, _| {
+            read_auth_reply(
+                ureq::AgentBuilder::new()
+                    .try_proxy_from_env(false)
+                    .resolver(|_: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+                        Err(std::io::Error::other("synthetic DNS failure"))
+                    })
+                    .build()
+                    .post("https://synthetic.invalid/token")
+                    .send_form(&[]),
+            )
+        }));
+        let failure = h.authorize().unwrap_err().code;
+        if fail_restore {
+            assert_eq!(failure, AuthErrorCode::LocalStoreUnavailable);
+            assert_eq!(
+                h.peer()
+                    .authorize_dispatch(None, &AtomicBool::new(false))
+                    .unwrap_err()
+                    .code,
+                AuthErrorCode::RefreshUncertain
+            );
+        } else {
+            assert_eq!(failure, AuthErrorCode::AuthNetwork);
+            let env = h.store.value.lock().unwrap().clone().unwrap();
+            let saved = env.grant.unwrap();
+            assert_eq!(saved.id, old.id);
+            assert_eq!(saved.access.0, old.access.0);
+            assert_eq!(saved.refresh.0, old.refresh.0);
+            assert!(matches!(saved.state, GrantState::Ready));
+            assert!(env.revision > 1);
+            h.script.response(
+                Endpoint::Token,
+                200,
+                tokens(
+                    "synthetic-account",
+                    NOW + 3600,
+                    Some("synthetic-new-refresh"),
+                ),
+            );
+            assert!(h
+                .peer()
+                .authorize_dispatch(None, &AtomicBool::new(false))
+                .is_ok());
+            assert_eq!(h.script.calls.load(Ordering::Relaxed), 2);
+        }
+    }
+}
+
+#[test]
+fn step15_browser_stray_requests_do_not_consume_valid_callback() {
+    for denied in [false, true] {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let receiving = std::thread::spawn(move || {
+            let clock = TestClock::new();
+            clock.advance.store(false, Ordering::Release);
+            receive_browser(
+                listener,
+                "synthetic-state",
+                NOW + 300,
+                Instant::now() + Duration::from_secs(3),
+                &clock,
+                &AtomicBool::new(false),
+                || Ok(()),
+            )
+        });
+        for (path, expected) in [
+            ("/favicon.ico", "400"),
+            ("/auth/callback?code=synthetic-code&state=wrong", "400"),
+            (
+                if denied {
+                    "/auth/callback?error=access_denied&state=synthetic-state"
+                } else {
+                    "/auth/callback?code=synthetic-code&state=synthetic-state"
+                },
+                if denied { "400" } else { "200" },
+            ),
+        ] {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .write_all(
+                    format!("GET {path} HTTP/1.1\r\nHost: localhost:1455\r\n\r\n").as_bytes(),
+                )
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with(&format!("HTTP/1.1 {expected}")));
+            assert!(!response.contains("synthetic-code"));
+        }
+        assert_eq!(
+            receiving.join().unwrap(),
+            if denied {
+                Err(AuthErrorCode::ConsentDenied)
+            } else {
+                Ok("synthetic-code".into())
             }
         );
     }
@@ -2617,15 +2929,13 @@ fn browser_expiry_and_mismatched_state_never_exchange() {
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             assert!(response.starts_with("HTTP/1.1 400"));
+            // A stray request does not consume the login, nor extend its deadline.
+            h.clock.now.store(started.expires_at, Ordering::Release);
         }
         workers_done(&h.auth);
         assert_eq!(
             h.auth.session.lock().unwrap().snapshot.error_code,
-            Some(if expire {
-                AuthErrorCode::LoginExpired
-            } else {
-                AuthErrorCode::CallbackMismatch
-            })
+            Some(AuthErrorCode::LoginExpired)
         );
         assert_eq!(h.script.calls.load(Ordering::Relaxed), 0);
     }

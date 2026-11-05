@@ -860,7 +860,8 @@ impl ChatGptAuth {
                     },
                     device.expires_at,
                 )?;
-                let mut delay = device.interval;
+                let mut interval = device.interval;
+                let mut delay = interval;
                 loop {
                     let remaining = device.expires_at.saturating_sub(self.clock.now());
                     let wait = Duration::from_secs(delay.min(remaining)).min(
@@ -870,24 +871,48 @@ impl ChatGptAuth {
                             .saturating_duration_since(Instant::now()),
                     );
                     self.wait_login(work, wait)?;
-                    let response = self.post_login(
+                    let response = match self.post_login(
                         work,
                         Endpoint::DevicePoll,
                         AuthBody::Json(
                             json!({"device_auth_id": device.id.0, "user_code": device.code.0}),
                         ),
-                    )?;
-                    self.check_work(work)?;
-                    match response.status {
-                        403 | 404 => {
-                            delay = device.interval;
+                    ) {
+                        Ok(response) => response,
+                        Err(AuthErrorCode::AuthNetwork) => {
+                            // Polling does not consume the one-time authorization code.
+                            // Keep the original deadlines and sliced cancellation checks.
+                            delay = delay.saturating_mul(2).clamp(3, 60).max(interval);
                             continue;
                         }
-                        429 => {
+                        Err(code) => return Err(code),
+                    };
+                    self.check_work(work)?;
+                    match (response.status, error_code(&response.body)) {
+                        (400 | 429, "slow_down") => {
+                            // Defensive support; this is not a claimed private-endpoint contract.
+                            interval = interval.saturating_add(5).min(900);
+                            delay = delay.saturating_add(5).min(900).max(interval);
+                            continue;
+                        }
+                        (
+                            _,
+                            "access_denied"
+                            | "authorization_declined"
+                            | "expired_token"
+                            | "device_auth_disabled"
+                            | "device_auth_not_allowed",
+                        ) if response.status != 200 => return Err(login_error(&response)),
+                        (403 | 404, _) => {
+                            delay = interval;
+                            continue;
+                        }
+                        (429 | 500..=599, _) => {
                             delay = response
                                 .retry_after
                                 .unwrap_or(delay.saturating_mul(2).clamp(3, 60))
-                                .max(device.interval);
+                                .clamp(3, 60)
+                                .max(interval);
                             continue;
                         }
                         _ => {
@@ -1520,7 +1545,6 @@ impl ChatGptAuth {
                 })
             }
             Ok(reply) if rejected_grant(&reply) => Err(AuthErrorCode::GrantRejected),
-            #[cfg(test)]
             Err(TransportFailure::BeforeSend) => {
                 env.grant = Some(old);
                 self.save(env)?;

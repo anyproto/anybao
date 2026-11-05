@@ -1,8 +1,8 @@
 # Fresh ChatGPT OAuth on current Bao
 
-Runtime contract, 2026-11-03. This is the Step 7 port onto
-`fb1de0f0732e296693116b1b0e80f64d7485ad1d`. Desktop integration follows in
-Step 8. ADR-030 remains the independent judge-tier decision.
+Runtime contract, updated 2026-11-05. The Step 7 port started from
+`fb1de0f0732e296693116b1b0e80f64d7485ad1d`; paired desktop integration is in
+any-ui. ADR-030 remains the independent judge-tier decision.
 
 ## 1. Two independent ways to use a subscription
 
@@ -73,6 +73,14 @@ Before refresh sends anything, the host durably writes `refresh_inflight`.
 An ambiguous send, invalid success payload, or interrupted process requires
 fresh login; another process never retries a potentially consumed refresh
 token. A successful rotated pair is persisted before inference can use it.
+Only a failure proven to precede the request restores the exact old pair to
+durable `ready`. With pinned ureq 2.12.1, `Dns` and `ConnectionFailed` arise
+during resolution/initial connection, before `send_prelude`/`send_body`. This
+classification relies on a fresh agent with proxies, redirects and connection
+pool replay disabled. Generic I/O, response-body read failures and HTTP 429/5xx
+remain uncertain: they do not prove a refresh token was unconsumed. A failed
+restoration write also authorizes no reuse. Recheck this proof when upgrading
+the transport dependency.
 If the endpoint omits the refresh field, a valid old refresh token is retained;
 an explicitly invalid replacement is rejected. Issuer, subject and account
 identity must remain consistent across refresh.
@@ -85,7 +93,9 @@ readiness. Generation counters and lock files are separate from token data.
 Every login belongs to a session generation, owner instance and durable slot
 epoch. Cancellation, replacement login, disconnect and Any logout fence old
 workers. Late completions cannot install into another session or account.
-Disconnect writes a tombstone; a failed deletion suspends local use.
+Disconnect writes a tombstone; a failed deletion suspends local use. That
+suspension is process-local until durable removal succeeds. A failed disconnect
+must be retried; restart or another process can still see the stored grant.
 
 The embedder must call `ChatGptAuth::shutdown` before discarding a service on
 Any logout/account switch. It cancels pending login work, waits for an
@@ -94,10 +104,33 @@ own pending login. Stopping/restarting Bao alone need not end the native Any
 session or disconnect its grant.
 
 Each logical `llm.chat` span owns one inference binding, total deadline and
-authentication-recovery budget. A known, nonstreaming token rejection permits
-one refresh/adoption retry. Quota, policy, unknown authentication failures and
-stream errors do not refresh. Completion is checked under the slot lock before
-any response is released; account replacement or logout invalidates it.
+authentication-recovery budget. A nonstreaming HTTP 401 permits one
+refresh/adoption retry, including an absent/unknown error code or non-JSON body,
+after known quota, rate-limit, policy, residency, model and server exclusions.
+Stream errors never trigger auth recovery. A second rejection durably requires
+reconnect only for the still-current grant and exact pair revision; it cannot
+invalidate a peer's rotated/replacement grant. This is an availability policy:
+freshly authorized credentials remain unusable for inference, not proof that
+the provider revoked the refresh token. A policy error after refresh keeps the
+new pair. Completion is checked under the slot lock before any response is
+released; account replacement or logout invalidates it.
+
+Device-code polling retries network failures and HTTP 5xx with bounded backoff,
+and observes cancellation and the original wall-clock/monotonic deadlines on
+every wait. Explicit `slow_down` conservatively increases the polling interval;
+support is defensive, not a verified private-endpoint promise. Pending 403/404
+responses retain the flow; explicit denial/expiry remains terminal. Creating a
+device code and exchanging the resulting one-time authorization code do not
+share this retry loop. A browser callback mismatch receives a sanitized 400
+and leaves the bounded listener open for the valid callback; matching-state
+denial, cancellation and expiry terminate it.
+
+The Responses codec ignores bounded, unknown nonterminal metadata before item
+coordinate validation. It still validates common framing/sequence, response
+identity, all consumed item/field/tool lifecycles, terminal output equality and
+EOF. The native host still inspects ignored metadata for reflected custody
+values before recording it. Truncated replies from every provider retain
+reasoning extraction but cannot become fenced/XML tool calls.
 
 ### Explicit custody recovery (2026-11-04)
 

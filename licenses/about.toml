@@ -6,6 +6,20 @@ accepted = [
 ]
 ignore-dev-dependencies = true
 
+# The crate's Apache alternative includes the copied Tokio code's attribution.
+[atomic-waker.clarify]
+license = "Apache-2.0"
+
+[[atomic-waker.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+
+[[atomic-waker.clarify.files]]
+path = "LICENSE-THIRD-PARTY"
+license = "Apache-2.0"
+checksum = "6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5"
+
 
 # Preserve libm's complete composite license and attribution text.
 [libm.clarify]
