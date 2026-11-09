@@ -912,6 +912,17 @@ that sends mail. Gmail drafts are not used either: the scope that writes
 them (`gmail.compose`) can also send them, which would put a send
 capability behind the same guest-injectable token.
 
+**Amended 2026-11-09 (ADR-034):** the property no longer rests on the
+scope. The runtime's Google descriptor carries a host-only write
+allowlist (ADR-034 §2) with no send endpoint on it, so a token that
+writes Gmail drafts still cannot send, and neither can a grant a cell
+widened with `googleAuth.connect(scopes=…)`. Gmail drafts become
+possible: `gmail@v1.create_draft` writes Bao-marked `text/plain` drafts
+from a chat turn. The brain is unchanged: `brainDrafter@v1` still
+writes `drafts` records and the hand-off below stays any-ui's.
+Mirroring an approved reply into a Gmail draft is a later amendment of
+this part.
+
 ### 5.2 The hand-off is any-ui's
 
 After Approve, the reply's card offers Open in Gmail (the thread, with
