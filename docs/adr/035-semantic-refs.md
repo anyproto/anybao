@@ -95,19 +95,22 @@ run, and expires with it. any@v1 does not change.
 ### 1. A ref and its handle
 
 ```
-ref:o/book/gyuu   {"kind": "o", "type": "book", "name": "Dune", "spaceId": "...",
-                   "objectId": "...", "uri": "any://o/<spaceId>/<objectId>"}
-ref:f/3V2A        {"kind": "f", "name": "demo.png", "spaceId": "...", "fileId": "...",
-                   "on": "<objectId>", "uri": "any://f/<spaceId>/<fileId>"}
-ref:s/a3nq        {"kind": "s", "name": "Garden", "spaceId": "..."}
+ref:object/gyuu#book  {"kind": "object", "type": "book", "name": "Dune", "spaceId": "...",
+                       "objectId": "...", "uri": "any://o/<spaceId>/<objectId>"}
+ref:file/3V2A         {"kind": "file", "name": "demo.png", "spaceId": "...", "fileId": "...",
+                       "on": "<objectId>", "uri": "any://f/<spaceId>/<fileId>"}
+ref:space/a3nq        {"kind": "space", "name": "Garden", "spaceId": "..."}
 ```
 
-A handle is `ref:<kind>/<key>` for a file (`f`) or a space (`s`) and
-`ref:o/<type>/<key>` for an object. The scheme is `ref:`, not
-`any://`: the model already reads real `any://o/…` and `any://f/…`
-links in the window and in `_core`, and a look-alike invites it to
-pass the short form where a real uri is expected. A `ref:` handle
-is never a link and never reaches the chat as one.
+A handle is `ref:<kind>/<key>`, one shape for every kind — `object`,
+`file`, `space` — with an optional `#<type>` fragment on an object.
+The kind is a word, not a letter: `object`, `file` and `space` are
+one token each, the same cost as `o`, `f`, `s`, and they carry the
+meaning. The scheme is `ref:`, not `any://`: the model already reads
+real `any://o/…` and `any://f/…` links in the window and in `_core`,
+and a look-alike invites it to pass the short form where a real uri
+is expected. A `ref:` handle is never a link and never reaches the
+chat as one.
 
 The **key** is a slice of the id itself. An id that starts with
 `bafy` drops its first seven characters (multibase, codec and hash
@@ -119,10 +122,11 @@ one million values; two keys of the same kind that collide inside
 one table are lengthened until distinct (§2). The kind keeps the
 three id spaces apart.
 
-The **type** segment is a label, not part of the identity: the
-resolver reads kind + key and ignores it, so `ref:o/novel/gyuu`
-still resolves after a `set_type`. Files and spaces carry no type
-segment.
+The **type** rides as a `#` fragment, the way a fragment rides a
+URL: a label, not part of the identity. The resolver reads kind +
+key and ignores the fragment, so `ref:object/gyuu#novel` and a bare
+`ref:object/gyuu` both resolve after a `set_type`. Files and spaces
+carry no fragment.
 
 A ref carries its space, so `spaceId` + `objectId` go wherever a
 call takes them. It holds no content — reading the body is still
@@ -199,10 +203,13 @@ The loop:
 - binds `getRef` and `toRef` in the `_ctx` prelude cell next to
   `baoSpaceConfig` (§4) — two functions over the table of §2, no
   class, no query sugar;
-- adds one line to the user message suffix, handle + name + where:
-  `[refs: ref:o/book/gyuu Dune (Garden) · ref:o/folder/k7mp Books
-  (Garden) · ref:f/3V2A demo.png (on Dune) · ref:s/a3nq Garden]`.
-  No long ids in the prompt.
+- adds one line to the user message suffix, each entry a markdown
+  link whose text is name + where and whose target is the handle:
+  `[refs: [Dune (Garden)](ref:object/gyuu#book) · [Books
+  (Garden)](ref:object/k7mp#folder) · [demo.png (on
+  Dune)](ref:file/3V2A) · [Garden](ref:space/a3nq)]`. The link shape
+  is the one the model reads and writes everywhere else; only the
+  scheme differs. No long ids in the prompt.
 
 **Placement is load-bearing.** The line rides the current user
 message, after the `[now: …]` stamp, and nowhere earlier: the system
@@ -218,7 +225,8 @@ inject with a view gets the same line, rebuilt.
 ### 4. Use — `getRef`, `toRef`, and two sentences in `_core`
 
 `getRef(x)` returns the dict of §1 for one entry. `x` is a handle
-with or without the `ref:` prefix (`"o/book/gyuu"`, `"ref:f/3V2A"`),
+with or without the `ref:` prefix (`"object/gyuu#book"`,
+`"ref:file/3V2A"`),
 a bare key or a unique prefix of one (`"gyuu"`), a full `any://`
 uri, or a name (`"Dune"`). A bare key or a name searches every kind
 and raises when more than one entry matches, naming the candidates;
@@ -226,7 +234,7 @@ a miss raises naming the nearest handles. No silent fallback.
 Calls stay exactly as today:
 
 ```python
-d = getRef("o/book/gyuu")
+d = getRef("object/gyuu")
 c.update_object(d["spaceId"], d["objectId"], {"book": {"rating": 9}})
 llm.read(getRef("demo.png")["uri"], "describe the image")
 ```
@@ -290,17 +298,19 @@ end record holds the id and link; the reply is `Added [Dune](…)`.
 Exchange 2, the user sends demo.png, "this is the cover". At start
 the query over run 1 yields two ids, the read names them `Dune`
 (book) and `Garden`; `_ctx` binds the resolver, the message ends
-with the stamp and `[refs: ref:o/book/gyuu Dune (Garden) · ref:s/a3nq
-Garden]`. The cell `d = getRef("o/book/gyuu"); c.attach_file(
+with the stamp and `[refs: [Dune (Garden)](ref:object/gyuu#book) ·
+[Garden](ref:space/a3nq)]`. The cell `d = getRef("object/gyuu");
+c.attach_file(
 d["spaceId"], d["objectId"], "demo.png", data)` copies no id. The
 reply `Attached the cover to Dune.` carries no link; §5 chips Dune
 anyway, because the run changed it.
 
 Exchange 3, "what's in that image?". The window shows the two past
 turns exactly as today (stamp, `[ran: any.attach_file×1 · run_…]`,
-replies); the current message ends with `[refs: ref:f/3V2A demo.png
-(on Dune) · ref:o/book/gyuu Dune (Garden) · ref:s/a3nq Garden]`. The
-cell `llm.read(getRef("f/3V2A")["uri"], "describe the image")` is
+replies); the current message ends with `[refs: [demo.png (on
+Dune)](ref:file/3V2A) · [Dune (Garden)](ref:object/gyuu#book) ·
+[Garden](ref:space/a3nq)]`. The cell
+`llm.read(getRef("file/3V2A")["uri"], "describe the image")` is
 where round 2 failed: the file link was in no reply, the model built
 a wrong one. Had the user renamed the book to "Dune: Part One"
 between the exchanges, the line would carry the new name and the
@@ -347,10 +357,11 @@ same handle.
   follow-up under open question 4.
 - Cost: one local aggregate plus one batched read per run start
   (milliseconds), and a refs line of ~100–250 tokens per message
-  (about 14 per entry: a 6-token handle, the name, the type and
-  space) that rides the message suffix, outside the cached prefix
+  (about 16 per entry: an 8-token handle, the name, the type and
+  space, the link brackets) that rides the message suffix, outside
+  the cached prefix
   (system blocks and boot window), so it never costs a cache write.
-  The saving is on the other side: cells that pass a 6-token handle
+  The saving is on the other side: cells that pass an 8-token handle
   instead of a 40-token id, and lookups that do not happen — the
   2026-10-16 replay put the window's stamps and footers at ~2k
   tokens with ids in them; handles would cut that by more than half
@@ -382,7 +393,12 @@ same handle.
 - **`any://` look-alike handles** — a short form under the real
   scheme (`any://book/7`) reads as a link the model already knows
   and gets passed where a real uri goes; any-ui would chip it as a
-  dead link. `ref:` is a scheme of its own.
+  dead link. `ref:` is a scheme of its own, with the link *shape*
+  kept (`[name](ref:kind/key#type)`) so nothing new is learned.
+- **A type segment in the path** (`ref:o/book/gyuu`, the 11-04
+  draft) — put the label where identity lives; one shape per kind.
+  The `#` fragment says what the type is: a hint that does not change
+  the identity.
 - **Expanding `ref:` in replies** — would let the model write the
   handle instead of the link; it is a second machinery and teaches
   the wrong lesson (§5). Replies carry real links.
@@ -416,7 +432,8 @@ same handle.
 4. Follow-up, not blocking: the view stamp and the links in past
    replies carry long ids at 1.6 chars/token. Because a handle needs
    no table, the renderer could rewrite them to handles
-   (`space: ref:s/a3nq Garden`, `[Dune](ref:o/book/gyuu)`) and the
+   (`space: [Garden](ref:space/a3nq)`, `[Dune](ref:object/gyuu)`) and
+   the
    window would stay byte-stable across runs. The stamp is persisted
    as `context`, so this is a render-time rewrite, and the rewrite
    must pick a fixed key length (no table-dependent lengthening) to
