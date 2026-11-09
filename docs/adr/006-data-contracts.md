@@ -5,6 +5,8 @@ Date: 2026-07-07
 Builds on: ADR-001..005 (accepted); plan §4b (memory & history), §4
 (config effect, triggers); no-backcompat principle
 
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §§2, 5](034-android-agent-host.md#2-native-build-kernel-and-capabilities) governs Android capacity admission and deferred scheduling without consuming once occurrences. Desktop defaults remain unchanged.
+
 ## Context
 
 The shapes anybao writes into `any`. The no-backcompat principle frees

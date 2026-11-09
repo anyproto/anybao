@@ -9,6 +9,8 @@ Amends when accepted: ADR-006 §4 (owner-state vocabulary, event
 spec), ADR-009 §8 (the watcher's home), ADR-015 §3 (the
 election-following set)
 
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §§2, 5, 7](034-android-agent-host.md#5-preparation-election-and-account-safety) governs Android event admission, chat ownership and stand-down. Desktop defaults remain unchanged.
+
 ## Context
 
 `kind: "event"` has been declared in the trigger shape since ADR-006

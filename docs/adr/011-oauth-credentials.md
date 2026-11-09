@@ -9,6 +9,8 @@ account-scoped since ADR-021 §4 was amended, 2026-08-26), ADR-008 §1–2 (cred
 the LLM key; the http redirect surface), ADR-009 §6 (lib mode);
 `docs/config-secrets.md` (seed/rotate/revoke + the guest read-guard)
 
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §2](034-android-agent-host.md#2-native-build-kernel-and-capabilities) governs Android consent and platform-local grant restrictions. Desktop defaults remain unchanged.
+
 ## Context
 
 Six token connectors ship (`repos/_connectors`: linear, github,

@@ -9,6 +9,8 @@ Amends when accepted: ADR-006 (new §7 instants), ADR-007 §temporal
 datasets are `datetime`), ADR-016 §stamps wording
 Upstream: `any` #179 (SYN-136), `any-sync-sdk` #107 / v0.2.5
 
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §§2, 7](034-android-agent-host.md#7-embedder-contract-and-cross-repository-changes) governs Android host time providers and suspend-inclusive admission-grant expiry. Desktop defaults remain unchanged.
+
 ## Context
 
 `any` stores time as any-store's native `TypeDateTime`: every

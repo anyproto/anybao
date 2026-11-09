@@ -26,6 +26,8 @@ Companion: SYN-165 (`any` + SDK: tech-space `devices` dataset,
 ADR; the registry model, election contract, and decision matrix are
 documented in the `any` repo (`docs/21-devices.md`).
 
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §§5, 7](034-android-agent-host.md#5-preparation-election-and-account-safety) governs Android HostControlled election, with claims and release owned by Kotlin main. Desktop defaults remain unchanged.
+
 ## Context
 
 Two `anyrt serve` processes on the same account (laptop + mac) both

@@ -5,6 +5,10 @@ defaults to the decorated def's `<module>.<function>`)
 Date: 2026-07-07
 Builds on: ADR-001 (trace v2), ADR-002 (effect boundary) — both accepted
 
+Android Stage 0: [ADR-034 §0](034-android-agent-host.md#0-staged-acceptance-and-feasibility-gate), accepted 2026-11-03, specifies the trusted AOT/profile, explicit native stack, test fuel/epoch hooks and recording-only resource measurements. Stage-1 resource enforcement is governed by the separately accepted contract below.
+
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §2](034-android-agent-host.md#2-native-build-kernel-and-capabilities) governs Android execution lanes, aggregate resource limits and managed cancellation. Desktop defaults remain unchanged.
+
 ## Context
 
 The executor runs LLM-written cells against a persistent kernel; the

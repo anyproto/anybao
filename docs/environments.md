@@ -3,7 +3,8 @@
 Every environment is one or more `any` server accounts (a data dir = an
 account; deleting it destroys the spaces it owns unless the mnemonic in
 its `ACCOUNT.txt` is saved elsewhere) plus an `anyrt serve` reading one
-`configs/anybao.*.toml`. The server binary is `~/any/any/bin/any`,
+`configs/anybao.*.toml`. For the existing environments, the server binary
+is `~/any/any/bin/any`,
 built from any main with the search tags and always run through
 `nix develop` (it links `libffi.so.8`):
 
@@ -27,9 +28,10 @@ only rollback.
 | prod-smoke | `:7007` `datadirs/prod-test-user2` | 7014 | `anybao.prod.smoke.toml` — joins the REAL prod repo spaces | repo acct :7006 | prod |
 | prod-test | `:7007` `datadirs/prod-test-user2` | 7014 | `anybao.prod.test.toml` — joins the `*-test` copies | test repo acct **:7008** `datadirs/repo-prod4-test` (`_agentrepo-test`, `_connectorsrepo-test`) | prod |
 | staging | `:7134` `datadirs/staging` | 7016 | `anybao.staging.toml` | itself (one account owns bao + both repo spaces) | staging |
+| android-poc (**proposed, not provisioned**) | desktop `:7140` `datadirs/android-poc-user`; phone uses the same throwaway account | desktop 7141; phone disabled | `configs/anybao.android-poc.toml` (planned) | new repo account `:7142` `datadirs/android-poc-repo`; frozen `_agentrepo-android-poc` / `_connectorsrepo-android-poc` | prod, synthetic data only |
 
 prod-smoke and prod-test share the :7007 account and control port
-7014: run one of the two serves at a time. Every server in this table
+7014: run one of the two serves at a time. Every provisioned server above
 runs `bin/any`, built fresh from `~/any/any` main (`nix develop -c go
 build -tags 'fts vector' -o bin/any ./cmd/any`); every account was
 created 2026-09-18 on any b5be51c (ADR-029, CRDT mark 2). Two repo accounts because the prod network
@@ -37,8 +39,8 @@ allows three shareable spaces per account (`acl: make shareable: space
 limit reached` on the fourth guest-key invite).
 
 Space ids and guest-key invite tokens live in each config's
-`[overlays]` block. This file is local (not in git): it names accounts
-and ports of this box.
+`[overlays]` block. Those per-environment config files remain local;
+this tracked inventory names accounts and ports of the original host.
 
 **The old prod repo account** (`datadirs/repo-prod3`, `:7004`, account
 A6BkPD…, plus the old prod-test user `datadirs/prod-test-user` on
@@ -50,6 +52,154 @@ rebuilt, desktop installs before the nightly that carries any-ui
 Keep it running until every client is on the new stack, then stop it;
 do not open its data dir with the new binary. The still older
 `repo-prod` (`:7003`, pre-ADR-027) is retired.
+
+## Android PoC (proposed)
+
+[ADR-034](adr/034-android-agent-host.md) is still Proposed. This is the
+fixture specification for T4/T7/T10/T11, not a record of running services.
+Check port availability before provisioning; never stop an unrelated
+listener to obtain these ports. Do not reuse prod/prod-test accounts,
+overlay spaces, control ports or data directories.
+
+Use the user's Mac as the desktop peer and remote probe sender, with
+sleep disabled for the test and independent network/provider monitoring.
+The phone stays on a wall charger. The desktop Any peer and phone share
+one new throwaway user account, with distinct device keys. A second new
+repo account owns two shareable test overlay spaces, leaving its third
+shareable-space slot unused. Keep account mnemonics outside all repos in
+`~/.any-accounts/`; do not put keys in this document or trace exports.
+
+Pin the desktop Any binary to the exact source tag/commit and CRDT version
+of the phone's AAR, and desktop `anyrt` to the phone's runtime revision.
+Pin each overlay by deployed content hash and record its source revision
+independently; a Rust-only change does not force an identical redeploy. Store the binaries separately at
+`~/.local/share/anybao-android-poc/bin/`, with their hashes in the test
+manifest. A moving main/stable/nightly build is not this fixture. The
+current AAR pin is not declared compatible until T1–T4 pass.
+
+Use absolute data paths rooted at
+`~/.local/share/anybao-android-poc/datadirs/`: `android-poc-user` on
+`127.0.0.1:7140`, and `android-poc-repo` on `127.0.0.1:7142`. Both use the
+same prod network as the phone, carrying synthetic data only. Deploy
+`repos/_agent` and `repos/_connectors` through the new repo owner, then
+record its two space IDs/invites and source hashes in the fixture manifest
+and phone configuration, and the per-object pins of the
+[setup manifest](#android-poc--explicit-setup-manifest-fields-stage-1-adr-034-25),
+read back from the **phone's** local server once it holds the deployed
+versions. Freeze these overlays for the whole run.
+
+The planned `configs/anybao.android-poc.toml` has this shape; replace all
+placeholders and use an absolute trace path before starting it:
+
+```toml
+addr = "http://127.0.0.1:7140"
+
+[agent]
+space = "<throwaway-bao-space-id>"
+name = "bao"
+control_port = 7141
+
+[paths]
+traces = "<absolute-private-path>/anybao-android-poc/traces"
+
+[overlays]
+agent = { space = "<android-poc-agent-space-id>", invite = "<guest-invite>" }
+connectors = { space = "<android-poc-connectors-space-id>", invite = "<guest-invite>" }
+```
+
+Keep test API keys in a dedicated local secrets file beside this config,
+passed explicitly with `--secrets-file`; never inherit real connector
+credentials. Start `anyrt serve` with this config and verify that port
+7141 belongs to that process and returns this fixture's identity. A
+nonfatal control bind error must fail setup. Traces in Any's local store
+belong to the throwaway data dir; `[paths].traces` isolates blob storage.
+
+The Mac sends the 320 nonce messages through its test Any API, records
+all replies through hour 81, and keeps evidence in
+`~/.local/share/anybao-android-poc/evidence/<run-id>/`. During the phone
+soak, desktop `anyrt` is stopped after handoff so it cannot mask a phone
+failure. Start it only in the explicit activation/takeover tests; keep
+the desktop Any peer and sender running. Record both peer IDs, elected
+winner, resolved versions, listening PIDs, account/space IDs and sync
+status before each phase. Inventory phone model via device properties
+(the user says Phone (2a); a skill's `A063` label is not evidence).
+
+### Campaign reservation and selective network fixture
+
+This setup is proposed; no router, device window or user setting has been
+reserved/changed. Stage 0 needs only a supervised phone/desktop fixture;
+the full campaign also needs this network setup before T10 can pass.
+
+Reserve the Mac on AC and the phone on a wall charger. Use the separate
+`org.any.anykotlin.baoPoc` ID from Stage 0 onward. The `.dev` installation
+belongs to devpass/shared staging: never overwrite, uninstall, sign it out
+or change its account network. Reserve a non-overlapping idle window and
+keep its server stopped without changing its data; if that is impossible,
+use another device. On Mac, run `caffeinate -s`, collect `pmset -g log` and
+use a sleep-inclusive sender clock. Any sleep invalidates an active soak.
+
+With user agreement, reserve OS/Mainline updates outside the campaign.
+Record fingerprint, patch, GMS/APEX versions and BOOT_COUNT at both ends.
+OS/APEX changes or reboot invalidate; GMS/Play app updates without reboot
+are logged and assessed using the plan's user-reviewed impact matrix,
+not automatically treated as host failure. Never silently change security
+settings. Inactivity reboot must be resolved before accepting the 80-hour
+locked claim. Stage 0 includes the chosen supervised 8-hour screen-off
+probe; no reservation or setting has been performed by writing this plan.
+
+Use a dedicated controllable router/SSID, separately addressed phone/Mac,
+and IPv4/IPv6 captures/rule counters. Inspect pinned v0.3.5 defaults for
+nodeconf peers, iroh relays, pkarr discovery relays, direct hole-punched
+P2P and Go push-node traffic. Earlier source observations are provisional.
+Client isolation/mDNS suppression alone cannot block global P2P. The sync
+partition rule defaults phone egress to deny, allowing only verified model
+provider/DNS/essential device-control destinations. Explicitly deny sync
+nodes/relays, direct TCP/UDP to Mac/other peers (IPv4, IPv6 and link-local)
+and mDNS; inspect mobile-data/alternate-network bypasses too. If a bypass
+cannot be excluded, the partition fixture is blocked.
+
+Provide normal, phone-sync-unavailable/provider-reachable, and
+phone-provider-unavailable/sync-reachable rule sets with independent
+router-side expiry. Mac remains able to sync/claim. Prove dry-run phone
+`networkPeers == localPeers == globalPeers == 0`, no phone global peer on
+Mac, and no convergence of a nonce canary object until restore, while a
+real provider request succeeds. Missing API fields require a revised
+measurement contract, not inferred zero. Node-only loss with P2P alive
+may be diagnostic, but cannot satisfy the partition arm. Re-resolve DNS/
+nodeconf on drift and repeat controls; never rely solely on stale IP lists.
+
+Forced Doze restoration is separate from router expiry. Run three 30 min
+unplugged arms, with three probes each at +5/+15/+25 min. The operator stays
+present, replugs at minute 30 and completes `deviceidle unforce` plus
+`dumpsys battery reset` by minute 32, then verifies state. Late restoration
+invalidates the arm. A Mac timer alerts the operator; no on-phone detached
+shell timer or wireless ADB is presumed reliable. Wired host profiling is
+pre-soak only; smoke/soak use self samples and desktop diagnostic beats.
+
+T11's separate telemetry window uses a consented probe-APK VpnService with
+baoPoc-only routing, complete IPv4/IPv6 TCP/UDP forwarding and per-flow
+`getConnectionOwnerUid` attribution. Retain UID/package/APK mapping and
+labelled positive controls. Go and Rust share one UID; this cannot separate
+their flows. Corroborate with router DNS/TLS-name/IP captures and per-UID
+netstats deltas, not blanket allowlisting of unclassified OS traffic.
+Explicitly record/restore Private DNS or QUIC changes; unresolved app flows
+and coverage gaps yield INCOMPLETE. Compare against pinned expected Any,
+provider and Go push-node flows. Inspect absent Android FCM/telemetry
+components and call paths; encrypted payload contents cannot be proven
+from capture alone. Do not use a production Sentry DSN. Remove VPN routing
+and verify normal networking before T10/smoke/soak.
+
+The provider canary has its own test key; record whether it still shares
+an account/project quota with the phone, and do not call it independent
+quota evidence when it does. Collect host-status/diagnostic-freshness beats
+and scheduled-heartbeat records live via the desktop peer, with a local
+alert at 30 s beat staleness and invalidate at 60 s during smoke/soak;
+hourly export grace expires at 65 min. Expected T10 partitions are separate
+armed tests with local evidence, never missing-data exceptions in a soak.
+Keep two raw evidence copies outside git until handoff, with hashes and
+sanitized verdict/arm/ruling/restore artifacts in gate reports. Tooling and
+evaluator are planned under tools/android-poc; the reviewable schema,
+arm manifest and predicates live in docs/plans/android-host.
 
 ## The prod repo account
 
@@ -307,3 +457,54 @@ owns everything, so deploys go through :7134 (Deploying, above).
   every time, prod included.
 - The `/v1/health` `version` of every server in a fleet must match.
 - Retired account mnemonics: `~/any/any/datadirs/ACCOUNTS-retired-*/`.
+
+## android-poc — explicit setup manifest fields (Stage 1, ADR-034 §2/§5)
+
+Explicit setup writes the `PreseededFixture` the phone's worker verifies at
+preparation (`runtime/src/managed/preparation.rs`). Every field is read-only
+input for the worker; it never derives or repairs one.
+
+| Field | Source at setup |
+|---|---|
+| `account_root`, `account_id`, `self_peer_id` | the app-private account dir, `/v1/account` id, the self peer of `/v1/devices` |
+| `bao_root`, `chat`, `config`/`secrets`/`triggers`/`runs` (`object_id` + `collection`) | the bao/v1 bundle root, the derived general chat, the four store objects and their declared collections |
+| `frozen.source_revision` | the repos checkout the overlays were deployed from |
+| `frozen.anyrt_revision`, `frozen.trace_schema`, `frozen.kernel_source_sha256`, `frozen.profile_sha256` | the trusted artifact manifest of the APK being set up |
+| `frozen.overlays` | every configured overlay alias (`agent`, `connectors`, …); the working space is implicit under the reserved `working` alias and is never listed here |
+| `frozen.programs[]` | per program: alias (`working` for working-space programs such as `android-poc-heartbeat@v1`), name, version, `fingerprint` = `deploy::fingerprint` as `anyrt deploy` computes it, `credentials_sha256` = SHA-256 of the raw `credentials` property text as the server returns it (SHA-256 of `""` when absent), and `manifest` = whether the program has a `program_manifest` record (deploy writes one only for a truthy manifest sidecar; a pinned manifest not yet on the device is `NotSynced`, an unexpected one is drift) |
+| `frozen.skills[]` | per `agent_skill` object: alias, name, `sha256` of the markdown body **as the server's editor markdown route returns it** — not the repo `.md` file (the deployed body can differ in wrapping/trailing newline); read it back after deploy, from the phone's server (trap 6) |
+
+Rules the worker enforces: an overlay without pins must hold no program and no
+skill; a pin alias must be a configured overlay or `working`; every pinned
+object must be present with exactly that content; a missing or unsynced
+prerequisite is `NeedsSetup(NotSynced)` (main re-requests preparation), drift
+is `NeedsSetup(Invalid)`.
+
+Traps a setup implementer must know (N2a round-2 review, R2-10):
+
+1. **Open-ref hosts.** A configured tier/provider/MCP key in an open namespace
+   (`llm.key.*` for a self-hosted backend, `local.key.*`, `mcp.key.*`) is usable
+   only if its secrets row already carries `hosts` covering the endpoint:
+   `persist_local_secret`/`setSecret` write none, and the managed host never
+   binds hosts on first use. Setup stamps `hosts` on such rows itself, or
+   preparation is `NeedsSetup(Invalid)`.
+2. **Working-space completeness.** The working space may hold only pinned
+   programs and skills: a `_soul` copy, a user skill or an agent-authored
+   program seeded there needs a `working` pin, or preparation is `Invalid`.
+   Working-space programs declare no credentials (ADR-021 §8.1), whatever
+   their `credentials` property says.
+3. **Fingerprints.** `deploy::fingerprint(code, summary, any_tool, category,
+   manifest)` over the in-space `program_source.code`, the object's derived
+   `summary`/`any_tool`/`category` properties and the `program_manifest`
+   record's `manifest` value (`{}` when absent) in Python-canonical JSON —
+   `anyrt deploy` prints only `{spec: status}`; compute it from the server
+   read-back (a desktop `anyrt` pins emitter is the planned helper).
+4. **Skill hashes** are over the JSON `content` field of
+   `GET …/objects/{o}/editor/editor_blocks/markdown`, not the HTTP body.
+5. This section is the only place these fields are documented; the
+   android-poc environment section above points here.
+6. **Pin what the phone holds.** Read every pin back from the *phone's* local
+   server, after it has synced the deploy — not from the desktop's right after
+   deploying. A phone copy still at the previous version of a pinned program
+   or skill fails its fingerprint or digest and is `NeedsSetup(Invalid)`, not
+   `NotSynced`: preparation does not wait for the newer version (ADR-034 §2).

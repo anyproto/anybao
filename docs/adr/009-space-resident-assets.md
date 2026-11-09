@@ -11,6 +11,10 @@ delivers §7's deferred overlay config), ADR-006 §3 (secrets), ADR-008
 (capabilities); plan §4 Overlays + the `agent:` overlay split (00-plan,
 decided 2026-07-08)
 
+Android Stage 0: [ADR-034 §0](034-android-agent-host.md#0-staged-acceptance-and-feasibility-gate), accepted 2026-11-03, permits the isolated fixture embedder to use a trusted precompiled component and hashed local guest-source bundle. It does not change desktop serve resolution or accept the full Android host.
+
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §§2, 5, 7](034-android-agent-host.md#2-native-build-kernel-and-capabilities) governs trusted Android AOT loading, managed preparation and the embedder interface. Desktop defaults remain unchanged.
+
 ## Context
 
 The runtime locates all three asset kinds through cwd-relative clap

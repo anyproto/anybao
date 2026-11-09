@@ -13,6 +13,8 @@ Upstream: `~/any/any` PR #195 — local store (`docs/26-local-store.md`,
 `/v1/local/*`); gated follow-ups in `docs/07-roadmap.md`; the asks this
 ADR adds are filed as SYN-204 (text: [`../localstore-traces-upstream-ticket.md`](../localstore-traces-upstream-ticket.md))
 
+Android Stage 0 exception: [ADR-034 §0](034-android-agent-host.md#0-staged-acceptance-and-feasibility-gate), accepted 2026-11-03, uses a bounded in-memory trace sink exposed only by the spike feature, with explicit local synthetic export. Ordinary run/serve traces still use AnyTraceStore; no general file-store mode is introduced.
+
 ## Context
 
 A run's trace is the only record of what the agent did (ADR-001: if it

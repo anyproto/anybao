@@ -13,6 +13,8 @@ pub/sub note
 Tasks: BOB-73; BOB-111 (`role`/`winner` in the beat), BOB-117 (the
 UI consumer of §6)
 
+Android Stage 1 (accepted 2026-11-05): [ADR-034 §§5, 7](034-android-agent-host.md#5-preparation-election-and-account-safety) governs Android host-ready preparation beats and Open-gated responder presence. Desktop defaults remain unchanged.
+
 ## Context
 
 The UI fakes bao's online/activity status client-side (local timing

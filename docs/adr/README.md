@@ -47,6 +47,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 031 | toMarkdown — one conversion program for HTML and PDF, pypdf in the kernel, fuel budget 250 G | Accepted |
 | 032 | MCP client — `mcp@v1` over streamable HTTP, `mcp.server.*` rows, `mcp.key.*` refs | Accepted |
 | 033 | The AI brain — a plugin in the connectors overlay: setup, people, promises, facts, cards and drafts, the reply hand-off, the caretaker, chats (Parts 1–7; code points at `§<part>.<section>`) | Accepted |
+| 034 | [Android host for an always-on bao](034-android-agent-host.md) | Stage 0 measured K1–K7 GO, [final review](../plans/android-host/reviews/round-13-results.md) 2026-11-05; Stage 1 accepted for implementation 2026-11-05; qualification pending |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the
