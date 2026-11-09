@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store, UpdateDeadline};
+#[cfg(feature = "compiler")]
+use wasmtime::Config;
+use wasmtime::{Engine, Store, UpdateDeadline};
 use wasmtime_wasi::p2::add_to_linker_sync;
 use wasmtime_wasi::{HostMonotonicClock, HostWallClock, ResourceTable, WasiCtxBuilder};
 
@@ -106,6 +108,9 @@ impl rand::TryRng for FloorRng {
     }
 }
 
+/// The kernel boot protocol a frozen overlay was validated against (ADR-034 §2):
+/// `kernel.boot`'s `trace_schema`. A bump invalidates every pinned program set.
+pub const TRACE_SCHEMA: u32 = 2;
 pub const EPOCH_TICK_MS: u64 = 10;
 /// Per-run compute budget (ADR-003 §2 fuel, ADR-031 §6): 250B ≈ 20-25s
 /// of pure compute — room for a ~100-page PDF conversion or a mail-sync
@@ -116,6 +121,92 @@ pub struct Host {
     pub wasi: wasmtime_wasi::WasiCtx,
     pub table: ResourceTable,
     pub broker: Broker,
+    #[cfg(feature = "android-spike")]
+    pub resources: crate::stage0::RecordingLimiter,
+    /// The managed lane permit (ADR-034 §2): enforces the lane/aggregate
+    /// memory ceilings and the explicit table/instance bounds for every
+    /// memory and table of this store. None on desktop and Stage-0 stores,
+    /// whose behavior is unchanged.
+    pub(crate) limiter: Option<crate::managed::admission::StorePermit>,
+}
+
+/// One limiter per store: the permit enforces, the Stage-0 recorder observes
+/// (ADR-034 §0/§2). Without a permit every decision is the recorder's — the
+/// measured Stage-0 behavior — or, without the recorder, unlimited.
+impl wasmtime::ResourceLimiter for Host {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if let Some(permit) = &mut self.limiter {
+            if !permit.memory_growing(current, desired, maximum)? {
+                return Ok(false);
+            }
+        }
+        #[cfg(feature = "android-spike")]
+        {
+            return self.resources.memory_growing(current, desired, maximum);
+        }
+        #[cfg(not(feature = "android-spike"))]
+        Ok(true)
+    }
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some(permit) = &mut self.limiter {
+            permit.memory_grow_failed(wasmtime::Error::msg(error.to_string()))?;
+        }
+        #[cfg(feature = "android-spike")]
+        {
+            return self.resources.memory_grow_failed(error);
+        }
+        #[cfg(not(feature = "android-spike"))]
+        Ok(())
+    }
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if let Some(permit) = &mut self.limiter {
+            if !permit.table_growing(current, desired, maximum)? {
+                return Ok(false);
+            }
+        }
+        #[cfg(feature = "android-spike")]
+        {
+            return self.resources.table_growing(current, desired, maximum);
+        }
+        #[cfg(not(feature = "android-spike"))]
+        Ok(true)
+    }
+    fn table_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some(permit) = &mut self.limiter {
+            permit.table_grow_failed(wasmtime::Error::msg(error.to_string()))?;
+        }
+        #[cfg(feature = "android-spike")]
+        {
+            return self.resources.table_grow_failed(error);
+        }
+        #[cfg(not(feature = "android-spike"))]
+        Ok(())
+    }
+    fn instances(&self) -> usize {
+        self.limiter
+            .as_ref()
+            .map_or(usize::MAX, wasmtime::ResourceLimiter::instances)
+    }
+    fn tables(&self) -> usize {
+        self.limiter
+            .as_ref()
+            .map_or(usize::MAX, wasmtime::ResourceLimiter::tables)
+    }
+    fn memories(&self) -> usize {
+        self.limiter
+            .as_ref()
+            .map_or(usize::MAX, wasmtime::ResourceLimiter::memories)
+    }
 }
 
 pub struct HostData;
@@ -135,6 +226,8 @@ impl wasmtime_wasi::WasiView for Host {
 
 impl crate::bindings::KernelImports for &mut Host {
     fn host_effect(&mut self, name: String, payload: String) -> String {
+        #[cfg(feature = "android-spike")]
+        self.resources.commit_pending();
         let reply = (|| -> Result<Value, crate::broker::EffectFailure> {
             let p: Value =
                 serde_json::from_str(&payload).map_err(|e| crate::broker::EffectFailure {
@@ -178,6 +271,7 @@ impl crate::bindings::KernelImports for &mut Host {
 /// artifact cache, no load-order question (the wasmtime *compile*
 /// cache in `Cage::new` is a different thing). `make kernel` must run
 /// before the crate builds (the Makefile runtime targets depend on it).
+#[cfg(feature = "desktop")]
 pub const EMBEDDED_KERNEL: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../bin/kernel.wasm"));
 
@@ -194,10 +288,12 @@ pub struct Cage {
 impl Cage {
     /// The embedded kernel — the normal path; `new` stays for dev
     /// overrides (`--kernel <path>`) and embedders with custom builds.
+    #[cfg(feature = "desktop")]
     pub fn embedded() -> Result<Arc<Self>> {
         Cage::new(EMBEDDED_KERNEL)
     }
 
+    #[cfg(feature = "compiler")]
     pub fn new(kernel_bytes: &[u8]) -> Result<Arc<Self>> {
         use sha2::{Digest, Sha256};
         let mut cfg = Config::new();
@@ -207,6 +303,7 @@ impl Cage {
         // wasm hash, so a rebuilt kernel invalidates itself. Compilation
         // latency only — execution and the trace are untouched.
         // Best-effort: an unusable cache dir must not fail the boot.
+        #[cfg(feature = "desktop")]
         match wasmtime::Cache::from_file(None) {
             Ok(cache) => {
                 cfg.cache(Some(cache));
@@ -215,24 +312,82 @@ impl Cage {
         }
         let engine = Engine::new(&cfg)?;
         let component = Component::from_binary(&engine, kernel_bytes)?;
+        Self::from_component(engine, component, hex::encode(Sha256::digest(kernel_bytes)))
+    }
+
+    /// Load only the immutable artifact/manifest pair shipped by the trusted build.
+    ///
+    /// # Safety
+    /// The caller must establish provenance independently of these hashes: both
+    /// inputs must come from the trusted application build, never a download,
+    /// user input, space or writable cache. A matching hash is not authentication.
+    pub unsafe fn from_trusted_artifact(
+        artifact: &[u8],
+        manifest: &crate::engine_profile::ArtifactManifestV1,
+    ) -> Result<Arc<Self>> {
+        unsafe { Self::load_trusted_artifact(artifact, manifest, true) }
+    }
+
+    /// The managed owner supplies epochs while stores are live (ADR-034 §2).
+    /// # Safety
+    /// Same trusted-build provenance requirement as `from_trusted_artifact`.
+    pub(crate) unsafe fn from_trusted_artifact_managed(
+        artifact: &[u8],
+        manifest: &crate::engine_profile::ArtifactManifestV1,
+    ) -> Result<Arc<Self>> {
+        unsafe { Self::load_trusted_artifact(artifact, manifest, false) }
+    }
+
+    unsafe fn load_trusted_artifact(
+        artifact: &[u8],
+        manifest: &crate::engine_profile::ArtifactManifestV1,
+        ticking: bool,
+    ) -> Result<Arc<Self>> {
+        let load = || -> Result<Arc<Self>> {
+            let engine = Engine::new(&manifest.profile.config()?)?;
+            manifest.verify(artifact, &engine)?;
+            // SAFETY: provenance is the caller's explicit contract; integrity was checked above.
+            let component = unsafe { Component::deserialize(&engine, artifact)? };
+            Self::build(engine, component, manifest.source_sha256.clone(), ticking)
+        };
+        load().map_err(|e| crate::engine_profile::IncompatibleArtifact(format!("{e:#}")).into())
+    }
+
+    #[cfg(feature = "compiler")]
+    fn from_component(
+        engine: Engine,
+        component: Component,
+        kernel_sha256: String,
+    ) -> Result<Arc<Self>> {
+        Self::build(engine, component, kernel_sha256, true)
+    }
+
+    fn build(
+        engine: Engine,
+        component: Component,
+        kernel_sha256: String,
+        ticking: bool,
+    ) -> Result<Arc<Self>> {
         let mut linker: Linker<Host> = Linker::new(&engine);
         add_to_linker_sync(&mut linker)?;
         bindings::Kernel::add_to_linker::<Host, HostData>(&mut linker, |h| h)?;
         let ticker_stop = Arc::new(AtomicBool::new(false));
         let (ticker_engine, stop) = (engine.clone(), ticker_stop.clone());
-        let ticker = std::thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
-                ticker_engine.increment_epoch();
-            }
+        let ticker = ticking.then(|| {
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
+                    ticker_engine.increment_epoch();
+                }
+            })
         });
         Ok(Arc::new(Cage {
             engine,
             component,
             linker,
-            kernel_sha256: hex::encode(Sha256::digest(kernel_bytes)),
+            kernel_sha256,
             ticker_stop,
-            ticker: std::sync::Mutex::new(Some(ticker)),
+            ticker: std::sync::Mutex::new(ticker),
         }))
     }
 }
@@ -248,6 +403,22 @@ impl Drop for Cage {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum ExecutionStop {
+    Interrupted,
+    Timeout,
+}
+
+impl std::fmt::Display for ExecutionStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Interrupted => "interrupted",
+            Self::Timeout => "timeout",
+        })
+    }
+}
+impl std::error::Error for ExecutionStop {}
+
 pub struct RunOutcome {
     pub status: String, // ok | error | interrupted
     pub duration_ms: i64,
@@ -255,19 +426,38 @@ pub struct RunOutcome {
     pub value: Value,
     pub error: Option<Value>,
     pub broker: Broker, // carries the finished trace
+    #[cfg(feature = "android-spike")]
+    pub resources: crate::stage0::ResourceSample,
+    #[cfg(feature = "android-spike")]
+    pub native_failure: Option<crate::stage0::NativeFailure>,
+    #[cfg(feature = "android-spike")]
+    pub fuel: crate::stage0::FuelSample,
 }
 
 /// Run `spec`'s main(args) in a fresh store. `interrupt` may be
 /// flipped from any thread (the watcher's hard break).
-pub fn run_program(
+#[cfg_attr(not(feature = "android-spike"), allow(dead_code))] // Stage-0's entry
+pub(crate) fn prepare_store(
     cage: &Cage,
-    mut broker: Broker,
-    spec: &str,
-    args: &Value,
+    broker: Broker,
     mailbox: SharedMailbox,
     interrupt: Arc<AtomicBool>,
     timeout_s: f64,
-) -> Result<RunOutcome> {
+) -> Result<(Store<Host>, bindings::Kernel)> {
+    prepare_store_with(cage, broker, mailbox, interrupt, timeout_s, None)
+}
+
+/// `prepare_store` with the managed lane permit as the store's limiter
+/// (ADR-034 §2); `None` keeps the desktop/Stage-0 limiter wiring exactly.
+pub(crate) fn prepare_store_with(
+    cage: &Cage,
+    mut broker: Broker,
+    mailbox: SharedMailbox,
+    interrupt: Arc<AtomicBool>,
+    timeout_s: f64,
+    limiter: Option<crate::managed::admission::StorePermit>,
+) -> Result<(Store<Host>, bindings::Kernel)> {
+    let timeout = Duration::try_from_secs_f64(timeout_s)?;
     broker.mailbox = mailbox;
     // the run's interrupt flag is the broker's too: a host call that
     // blocks (sh.run, ADR-024 §1) polls it and kills its child, where
@@ -289,14 +479,34 @@ pub fn run_program(
             floor.seed[..16].try_into().expect("16 of 32 seed bytes"),
         ))
         .build();
+    let limited = limiter.is_some();
+    // the store exists from here: the epoch driver ticks for attached permits
+    // only; a pool closed by Stop refuses the attach and no store starts
+    let limiter = match limiter {
+        Some(mut permit) => {
+            permit
+                .attach()
+                .map_err(|_| anyhow::Error::new(ExecutionStop::Interrupted))?;
+            Some(permit)
+        }
+        None => None,
+    };
     let mut store = Store::new(
         &cage.engine,
         Host {
             wasi,
             table: ResourceTable::new(),
             broker,
+            #[cfg(feature = "android-spike")]
+            resources: Default::default(),
+            limiter,
         },
     );
+    // the composed limiter (permit enforces, recorder observes); desktop
+    // stores without a permit keep Wasmtime's unlimited default
+    if limited || cfg!(feature = "android-spike") {
+        store.limiter(|host| host);
+    }
     store.set_fuel(FUEL_PER_CELL)?;
     // Live fuel gauge for the `fuel.state` syscall: host fns can't
     // reach the store, but the epoch callback can — it refreshes the
@@ -305,18 +515,23 @@ pub fn run_program(
     let gauge = store.data().broker.fuel_gauge.clone();
     gauge.store(FUEL_PER_CELL, Ordering::Relaxed);
     store.set_epoch_deadline(1);
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| anyhow::anyhow!("run timeout overflows the monotonic clock"))?;
     store.data_mut().broker.deadline = Some(deadline); // sh.run clamps to it (ADR-024 §1)
     let flag = interrupt.clone();
-    store.epoch_deadline_callback(move |ctx| {
+    #[allow(unused_mut)]
+    store.epoch_deadline_callback(move |mut ctx| {
+        #[cfg(feature = "android-spike")]
+        ctx.data_mut().resources.commit_pending();
         if let Ok(fuel) = ctx.get_fuel() {
             gauge.store(fuel, Ordering::Relaxed);
         }
         if flag.load(Ordering::Relaxed) {
-            return Err(wasmtime::Error::msg("interrupted"));
+            return Err(wasmtime::Error::new(ExecutionStop::Interrupted));
         }
         if Instant::now() > deadline {
-            return Err(wasmtime::Error::msg("timeout"));
+            return Err(wasmtime::Error::new(ExecutionStop::Timeout));
         }
         Ok(UpdateDeadline::Continue(1))
     });
@@ -328,9 +543,43 @@ pub fn run_program(
         .call(
             "kernel.boot",
             json!({"kernel_sha256": cage.kernel_sha256, "hashseed": "0",
-                   "trace_schema": 2}),
+                   "trace_schema": TRACE_SCHEMA}),
         )
         .ok();
+
+    #[cfg(feature = "android-spike")]
+    store.data_mut().resources.commit_pending();
+    Ok((store, kernel))
+}
+
+pub fn run_program(
+    cage: &Cage,
+    broker: Broker,
+    spec: &str,
+    args: &Value,
+    mailbox: SharedMailbox,
+    interrupt: Arc<AtomicBool>,
+    timeout_s: f64,
+) -> Result<RunOutcome> {
+    run_program_with(
+        cage, broker, spec, args, mailbox, interrupt, timeout_s, None,
+    )
+}
+
+/// `run_program` under a managed lane permit (ADR-034 §2).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_program_with(
+    cage: &Cage,
+    broker: Broker,
+    spec: &str,
+    args: &Value,
+    mailbox: SharedMailbox,
+    interrupt: Arc<AtomicBool>,
+    timeout_s: f64,
+    limiter: Option<crate::managed::admission::StorePermit>,
+) -> Result<RunOutcome> {
+    let (mut store, kernel) =
+        prepare_store_with(cage, broker, mailbox, interrupt.clone(), timeout_s, limiter)?;
 
     // the driver cell: main()'s return rides back as the LAST PRINT
     let args_lit = canonical_json(&json!(canonical_json(args)));
@@ -342,8 +591,18 @@ pub fn run_program(
     let t0 = Instant::now();
     let fuel_before = store.get_fuel()?;
     let raw = kernel.call_run_cell(&mut store, &cell, "main");
+    #[cfg(feature = "android-spike")]
+    store.data_mut().resources.commit_pending();
+    #[cfg(feature = "android-spike")]
+    let native_failure = raw
+        .as_ref()
+        .err()
+        .map(crate::stage0::NativeFailure::from_error);
     let duration_ms = t0.elapsed().as_millis() as i64;
-    let fuel_used = fuel_before.saturating_sub(store.get_fuel().unwrap_or(0));
+    let fuel_remaining = store.get_fuel().ok();
+    let fuel_used = fuel_before.saturating_sub(fuel_remaining.unwrap_or(0));
+    #[cfg(feature = "android-spike")]
+    let fuel = crate::stage0::FuelSample::after_call(fuel_before, fuel_remaining, raw.is_ok());
 
     // interrupted = the trap actually landed. A flag raised after the
     // guest already returned Ok (the soft-break timer racing the final
@@ -382,13 +641,16 @@ pub fn run_program(
             })
         });
     let mut host = store.into_data();
-    host.broker.cell_done(
-        "main",
-        ok,
-        error.clone(),
-        interrupted,
-        json!({"duration_ms": duration_ms, "fuel_used": fuel_used}),
-    );
+    #[cfg(feature = "android-spike")]
+    let metrics = {
+        let mut metrics = serde_json::to_value(fuel)?;
+        metrics["duration_ms"] = json!(duration_ms);
+        metrics
+    };
+    #[cfg(not(feature = "android-spike"))]
+    let metrics = json!({"duration_ms": duration_ms, "fuel_used": fuel_used});
+    host.broker
+        .cell_done("main", ok, error.clone(), interrupted, metrics);
     let value = reply["prints"]
         .as_array()
         .and_then(|p| p.last())
@@ -408,10 +670,16 @@ pub fn run_program(
         value,
         error,
         broker: host.broker,
+        #[cfg(feature = "android-spike")]
+        resources: host.resources.sample(),
+        #[cfg(feature = "android-spike")]
+        native_failure,
+        #[cfg(feature = "android-spike")]
+        fuel,
     })
 }
 
-#[cfg(all(test, feature = "shell"))]
+#[cfg(all(test, feature = "shell", feature = "desktop"))]
 mod tests {
     use super::*;
     use crate::broker::Broker;
@@ -471,7 +739,7 @@ mod tests {
 /// deterministic from its header alone — including module-internal
 /// calls no proxy reaches (os.urandom behind uuid4/secrets, the
 /// stdlib random's import-time seeding, time.gmtime()).
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 mod floor_tests {
     use super::*;
     use crate::broker::{Broker, Mode};
@@ -599,7 +867,7 @@ return {\"r\": [random.random() for _ in range(3)], \"shuffled\": xs,\n         
 /// ambient calls deterministic — a zip written in two cells of one run
 /// is byte-identical, its entry stamp is the header's startedAt, and
 /// two runs from one header produce the same archive bytes.
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 mod allowlist_tests {
     use super::*;
     use crate::broker::Broker;

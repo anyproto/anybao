@@ -1597,3 +1597,35 @@ def test_the_boot_window_end_is_flagged_as_a_cache_breakpoint():
     w = World([done_reply("ok")])
     run(w)
     assert all("cache" not in p for m in w.llm_calls[0]["messages"] for p in m["parts"])
+
+
+def test_tools_off_keeps_normal_prompt_history_recall_and_reply():
+    w = World([done_reply("synthetic reply")], hits={
+        "messages": [{"role": "user", "parts": [{"type": "text", "text": "recall evidence"}]}],
+        "injected": [("hit", "memory")],
+    })
+    out = run(w, allowTools=False)
+    assert out["replies"] == ["synthetic reply"]
+    assert w.llm_calls[0]["tools"] == []
+    assert "## Runtime context" in w.llm_calls[0]["system"]
+    assert any(m["parts"][0].get("text") == "recall evidence"
+               for m in w.llm_calls[0]["messages"])
+    assert w.anchor_calls and w.boot_budgets and w.preludes
+    assert w.chat_posts and w.turns and w.roi
+    assert not w.spans
+
+
+@pytest.mark.parametrize("stop", ["tool", "done"])
+def test_tools_off_rejects_unsolicited_model_cells(stop):
+    reply = tool_reply("raise AssertionError('must not execute')")
+    reply["stop"] = stop
+    w = World([reply])
+    with pytest.raises(RuntimeError, match="model tool execution disabled"):
+        run(w, allowTools=False)
+    assert not w.spans and not w.chat_posts and not w.turns
+    assert len(w.preludes) == 1
+
+
+def test_allow_tools_requires_boolean():
+    with pytest.raises(ValueError, match="allowTools must be a boolean"):
+        run(World([]), allowTools="false")

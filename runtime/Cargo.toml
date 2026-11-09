@@ -10,16 +10,28 @@ description = "anyrt — the anybao runtime: wasmtime cage + the syscall surface
 [lib]
 name = "anyrt"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "anyrt"
 path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "anyrt-precompile"
+path = "src/precompile.rs"
+required-features = ["precompiler"]
+
+[[bin]]
+name = "anyrt-stage0"
+path = "src/stage0_desktop.rs"
+required-features = ["android-spike", "precompiler"]
 
 [dependencies]
 # wasmtime + wasmtime-wasi move together (same major); sha2/base64
 # below track the versions wasmtime itself pulls, so the tree keeps one copy
-wasmtime = { version = "49", features = ["component-model"] }
-wasmtime-wasi = "49"
+wasmtime = { version = "=49.0.3", default-features = false, features = ["anyhow", "runtime", "std", "component-model", "async", "backtrace"] }
+wasmtime-wasi = { version = "=49.0.3", default-features = false, features = ["p2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"          # default Map = BTreeMap → sorted keys = canonical JSON
 toml = "1"                # anybao.toml host config (ADR-009 §1)
@@ -28,30 +40,44 @@ hex = "0.4"
 ureq = { version = "2", features = ["tls", "json"] }
 url = "2"                # redirect Location resolution (ADR-011 §4; already in-tree via ureq)
 base64 = "0.22"          # http `response: "base64"` bodies (ADR-020 §1; already in-tree)
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.10"            # the WASI floor: per-run seed + its seeded stream (ADR-002 §4)
 cron = "0.17"            # trigger cron expressions (every_s needs nothing)
 chrono = "0.4"           # cron's time source
-tiny_http = "0.12"       # the localhost trigger control API
+tiny_http = { version = "0.12", optional = true } # desktop control/OAuth listeners
 tracing = "0.1"          # runtime logs (embedders subscribe or get silence)
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # bin-side fmt
-libc = { version = "0.2", optional = true }  # `shell`: killpg on timeout/break (ADR-024 §1)
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true } # bin-side fmt
+libc = "0.2" # CLOCK_BOOTTIME (ADR-034 §7); shell process groups (ADR-024 §1)
+wat = { version = "=1.262.0", optional = true } # trusted build-time trap component only
 
 # ADR-024 §6: shell effects (`sh.*`/`fs.*`, the `bash` tool) are a
 # compile-time feature, OFF by default — any-ui's path dependency
 # never enables it, so desktop builds carry no shell code at all.
 # `make runtime-shell` / `cargo build --features shell` turns it on.
 [features]
-default = []
-shell = ["dep:libc"]
+default = ["desktop"]
+# ADR-034 §2: Android uses --no-default-features; no compiler, cache or listeners.
+desktop = ["compiler", "wasmtime/default", "wasmtime/cache", "loopback-oauth", "dep:clap", "dep:tracing-subscriber"]
+compiler = ["wasmtime/cranelift", "wasmtime/parallel-compilation"]
+precompiler = ["compiler", "wasmtime/all-arch", "dep:wat"]
+loopback-oauth = ["dep:tiny_http"]
+android-spike = []
+shell = []
 
 [dev-dependencies]
 tempfile = "3"
+tiny_http = "0.12"
 
 [profile.release]
 strip = true
+
+[profile.android]
+inherits = "release"
+panic = "unwind"
+strip = false
+debug = "line-tables-only"
 
 # Three unit tests compile the 23 MB CPython kernel through cranelift
 # (`Cage::embedded`); unoptimized cranelift needs minutes of CPU per cold

@@ -8,11 +8,16 @@
 
 use crate::broker::EffectFailure;
 use serde_json::{json, Value};
+#[cfg(feature = "loopback-oauth")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "loopback-oauth")]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "loopback-oauth")]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Managed refs live under this namespace; the suffix is the provider
 /// handle, dotted sub-refs are its stored pieces (ADR-011 §3).
@@ -32,10 +37,12 @@ const TOKEN_TIMEOUT_S: u64 = 30;
 /// The consent receiver's fixed lifetime (ADR-011 §5): it outlives a
 /// timed-out `connect` — slow consent is the common case — and dies at
 /// window end regardless.
+#[cfg(feature = "loopback-oauth")]
 const CONSENT_WINDOW_S: f64 = 300.0;
 
 /// `oauth.connect`'s default blocking wait (ADR-011 §5, resolved Q3);
 /// afterwards the guest polls `oauth.status`.
+#[cfg(feature = "loopback-oauth")]
 const CONNECT_TIMEOUT_S: f64 = 120.0;
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -100,11 +107,13 @@ impl std::fmt::Debug for ConsentHook {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "loopback-oauth"), allow(dead_code))]
 struct FlowOutcome {
     granted_scopes: Vec<String>,
     account: Option<String>,
 }
 
+#[cfg_attr(not(feature = "loopback-oauth"), allow(dead_code))]
 enum FlowState {
     Pending,
     Done(Result<FlowOutcome, (String, String)>),
@@ -118,6 +127,7 @@ struct ConsentFlow {
 }
 
 /// What the receiver thread needs from its spawn site.
+#[cfg(feature = "loopback-oauth")]
 struct FlowParams {
     provider: String,
     desc: ProviderDescriptor,
@@ -396,6 +406,7 @@ impl OauthState {
     /// window); the receiver runs on to window end — a late completion
     /// is observable via `oauth.status`. A concurrent connect for the
     /// same provider joins the pending flow.
+    #[cfg(feature = "loopback-oauth")]
     pub fn connect(
         self: &Arc<Self>,
         provider: &str,
@@ -487,6 +498,21 @@ impl OauthState {
                 .expect("oauth flow lock poisoned");
             st = guard;
         }
+    }
+
+    /// ADR-034 §2: reject before reading a grant, persisting client data or opening a listener.
+    #[cfg(not(feature = "loopback-oauth"))]
+    pub fn connect(
+        self: &Arc<Self>,
+        _provider: &str,
+        _scopes: Option<Vec<String>>,
+        _timeout_s: Option<f64>,
+        _client: Option<(String, String)>,
+    ) -> Result<Value, EffectFailure> {
+        Err(fail(
+            "UnsupportedCapability",
+            "connector OAuth initiation is unavailable in this build".into(),
+        ))
     }
 
     /// `oauth.status` (ADR-011 §5): state only, no network.
@@ -605,6 +631,7 @@ impl OauthState {
     /// listening is a dead-end consent), build the consent URL (PKCE
     /// S256 + state, generated here and never leaving this process —
     /// ADR-011 §5.1), start the receiver thread, deliver the URL.
+    #[cfg(feature = "loopback-oauth")]
     fn spawn_flow(
         self: &Arc<Self>,
         provider: &str,
@@ -676,6 +703,7 @@ impl OauthState {
 
     /// Hook → system browser → the URL on the host log (the honest CLI
     /// path; host-side output, the guest never sees it — ADR-011 §5.1).
+    #[cfg(feature = "loopback-oauth")]
     fn deliver_consent(&self, req: ConsentRequest) {
         if let Some(h) = &self.consent {
             (h.0)(req);
@@ -693,6 +721,7 @@ impl OauthState {
     /// The receiver: single-use, bounded by the 5-minute window and the
     /// shutdown flag; `state` mismatch tears it down (a forged or
     /// replayed redirect gets no retries against a live verifier).
+    #[cfg(feature = "loopback-oauth")]
     fn run_flow(self: Arc<Self>, server: tiny_http::Server, flow: Arc<ConsentFlow>, p: FlowParams) {
         let FlowParams {
             provider,
@@ -782,6 +811,7 @@ impl OauthState {
     /// The authorization-code exchange (ADR-011 §5): host-side over
     /// TLS, refresh token straight into the device-local store — it
     /// never crosses the boundary.
+    #[cfg(feature = "loopback-oauth")]
     fn exchange_code(
         &self,
         provider: &str,
@@ -927,6 +957,7 @@ impl OauthState {
 /// RFC 4648 §5 base64url, no padding — the PKCE challenge encoding.
 /// Local (~15 lines): a base64 crate for one call is not worth a
 /// dependency here.
+#[cfg(feature = "loopback-oauth")]
 fn b64url_nopad(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -945,6 +976,7 @@ fn b64url_nopad(bytes: &[u8]) -> String {
 }
 
 /// base64url decode (padding-tolerant) — only for the id_token payload.
+#[cfg(feature = "loopback-oauth")]
 fn b64url_decode(s: &str) -> Option<Vec<u8>> {
     let mut acc: u32 = 0;
     let mut bits = 0;
@@ -972,18 +1004,21 @@ fn b64url_decode(s: &str) -> Option<Vec<u8>> {
 /// PKCE S256 (RFC 7636), unconditional for every provider (ADR-011
 /// §2): verifier = 64 hex chars (43–128 legal), challenge =
 /// base64url(sha256(verifier)).
+#[cfg(feature = "loopback-oauth")]
 fn pkce_pair() -> (String, String) {
     let verifier = rand_hex(32);
     let challenge = b64url_nopad(&Sha256::digest(verifier.as_bytes()));
     (verifier, challenge)
 }
 
+#[cfg(feature = "loopback-oauth")]
 fn rand_hex(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
     crate::broker::getrandom(&mut buf);
     hex::encode(buf)
 }
 
+#[cfg(feature = "loopback-oauth")]
 fn urldecode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1013,6 +1048,7 @@ fn urldecode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+#[cfg(feature = "loopback-oauth")]
 pub(crate) fn parse_query(query: &str) -> BTreeMap<String, String> {
     query
         .split('&')
@@ -1026,6 +1062,7 @@ pub(crate) fn parse_query(query: &str) -> BTreeMap<String, String> {
 /// The email claim off an id_token, decoded WITHOUT verification — the
 /// token arrived over TLS directly from the token endpoint we chose
 /// (ADR-011 §5); it is display metadata, not an authority.
+#[cfg(feature = "loopback-oauth")]
 fn id_token_email(id_token: &str) -> Option<String> {
     let payload = id_token.split('.').nth(1)?;
     let claims: Value = serde_json::from_slice(&b64url_decode(payload)?).ok()?;
@@ -1034,6 +1071,7 @@ fn id_token_email(id_token: &str) -> Option<String> {
 
 /// `rundll32 url.dll,FileProtocolHandler` is the Windows opener: Windows has
 /// no `xdg-open`, and `cmd /c start` splits the URL at its first `&`.
+#[cfg(feature = "loopback-oauth")]
 fn system_browser(url: &str) -> std::process::Command {
     let mut command = if cfg!(target_os = "macos") {
         std::process::Command::new("open")
@@ -1048,7 +1086,7 @@ fn system_browser(url: &str) -> std::process::Command {
     command
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "loopback-oauth"))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1597,5 +1635,15 @@ mod tests {
         for secret in ["tok-a", "refresh-new", "authcode9", "code_verifier"] {
             assert!(!dump.contains(secret), "trace leaked {secret}");
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "loopback-oauth")))]
+mod no_loopback_tests {
+    #[test]
+    fn connect_rejects_before_provider_or_secret_lookup() {
+        let state = std::sync::Arc::new(super::OauthState::new(Default::default(), None));
+        let error = state.connect("unknown", None, None, None).unwrap_err();
+        assert_eq!(error.type_, "UnsupportedCapability");
     }
 }

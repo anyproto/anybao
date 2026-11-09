@@ -6,21 +6,39 @@
 //! Conversations and trigger runs are guest programs through the
 //! shared cage.
 
-use crate::anyapi::{AnyError, Client};
-use crate::broker::{
-    Broker, DeclaredCredentials, PresenceState, SecretSource, SharedMailbox, SharedPresence,
+// ADR-034 §7: managed startup is available without the desktop serve dependencies.
+pub use crate::managed::{start_managed, CancelToken, ManagedAgent, ManagedOptions};
+pub use crate::stores::{
+    alias_map, dataset_collection, store_collection, AgentStores, DeclaredTable, ServeConfigStore,
+    ServeSecretStore, ShadowedConfigStore,
+};
+// ADR-025 / ADR-009 §8 helpers shared with the managed host (N2b-1): moved
+// verbatim to `presence` / `chatwatch`, re-exported here for the callers.
+pub use crate::presence::STATUS_BEAT_S;
+
+use crate::anyapi::Client;
+use crate::broker::{Broker, DeclaredCredentials, SharedMailbox, SharedPresence};
+use crate::chatwatch::{
+    escalate_soft_break, follow_up_body, follow_ups, preview, records_in, release_chat_watch,
+    resolve_reply, seed_chat_watch, snapshot_backlog, FollowUp, BREAK_GRACE,
 };
 use crate::config::Config;
+use crate::presence::{
+    current_run, presence_pass, publish_status_beat, status_envelope, BeatRole, PresenceLoop,
+};
 use crate::resolver::{AnyModuleResolver, ModuleResolver};
 use crate::routes::Classifier;
 use crate::runner::{run_program, Cage};
+use crate::stores::{
+    now_rfc3339, persist_local_secret, stored_local_secret, upsert_config_row, upsert_secret_row,
+    SECRETS_FIELD,
+};
 use crate::trace::TraceWriter;
 use crate::tracestore::TraceStore;
 use crate::triggers::{
-    chat_watch_trigger, desired_event_sources, event_args, event_source, event_space, health_pass,
-    is_chat_watch, owned_chat_watch, reconcile_registry, record_to_trigger, rollup,
-    standing_triggers, trigger_to_record, ChatInput, EventSource, LiveRun, RunResult, Scheduler,
-    Trigger, WatchAction, Watcher, CHAT_MESSAGES, CHAT_WATCH_ID,
+    desired_event_sources, event_args, event_targets, health_pass, owned_chat_watch,
+    reconcile_registry, record_to_trigger, rollup, standing_triggers, trigger_to_record, ChatInput,
+    EventSource, LiveRun, RunResult, Scheduler, Trigger, WatchAction, Watcher, CHAT_MESSAGES,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -28,7 +46,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// The chat loop's program spec — the "conversation" class for
 /// retention (ADR-023 §6).
@@ -125,25 +143,6 @@ fn general_chat(c: &Client, space: &str) -> Result<String> {
     Err(last_err.unwrap()).context("general chat never became ready")
 }
 
-/// The host-written agent stores (ADR-017 §0/§1, ADR-027 §2): anyrt
-/// registers the `bao/v1` bundle and derives + declares ONLY what it
-/// writes before guest code can run — config, secrets, triggers,
-/// runs. Brain and chat logs are guest-owned (any@v1 ensures them
-/// lazily). Every store is a part of its type; the collection each
-/// one lives in is read back from the declaration, never composed.
-pub struct AgentStores {
-    pub config: String,
-    pub secrets: String,
-    pub triggers: String,
-    /// `bao/runs/v1` — the synced per-run summaries (ADR-023 §1)
-    pub runs: String,
-    /// the collections (`<typeId>_<key>`) the four stores' records live in
-    pub config_ds: String,
-    pub secrets_ds: String,
-    pub triggers_ds: String,
-    pub runs_ds: String,
-}
-
 /// Find-or-create a harness type by xKey. Harness types are HIDDEN
 /// (ADR-027 §2): a client's type picker never offers them; the
 /// listing includes hidden rows, so the find never re-creates one.
@@ -159,41 +158,6 @@ fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String
     }
     let created = c.create_type(space, &json!({"name": name, "xKey": xkey, "hidden": true}))?;
     Ok(created["typeId"].as_str().unwrap_or_default().to_string())
-}
-
-/// The collection a type's dataset lives in, read off the datasets
-/// listing (`None` = the type declares no such key).
-pub fn dataset_collection(
-    c: &Client,
-    space: &str,
-    type_id: &str,
-    key: &str,
-) -> Result<Option<String>> {
-    Ok(c.list_datasets(space, type_id)?
-        .iter()
-        .find(|d| d["key"] == key)
-        .and_then(|d| d["collection"].as_str())
-        .map(str::to_string))
-}
-
-/// The collection of a harness store addressed by type xKey + dataset
-/// key — for stores another writer declares (the guest's `agent_log`).
-/// `None` when the type or the key is not there yet.
-pub fn store_collection(
-    c: &Client,
-    space: &str,
-    type_xkey: &str,
-    key: &str,
-) -> Result<Option<String>> {
-    let Some(tid) = c
-        .list_types(space)?
-        .into_iter()
-        .find(|t| t["xKey"] == type_xkey)
-        .and_then(|t| t["id"].as_str().map(str::to_string))
-    else {
-        return Ok(None);
-    };
-    dataset_collection(c, space, &tid, key)
 }
 
 /// Declare one store as a part of its type — `{key, datasets: [draft]}`
@@ -433,13 +397,13 @@ const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 /// declaration reports (`<typeId>_<key>`, `AgentStores::*_ds`); no
 /// read or write names a key on the wire.
 const CONFIG_KEY: &str = "agent_config";
-/// The secrets store's key + its value field: the dedicated home of
-/// account-scoped secrets (ADR-021 §4), split out of `agent_config` so
+/// The secrets store's key (its value field is `stores::SECRETS_FIELD`):
+/// the dedicated home of account-scoped secrets (ADR-021 §4), split out
+/// of `agent_config` so
 /// the broker can block guest reads of the whole collection (by the
 /// `_agent_secrets` suffix, ADR-011 §4) and of the object while the
 /// config object stays guest-readable.
 const SECRETS_KEY: &str = "agent_secrets";
-const SECRETS_FIELD: &str = "value";
 const TRIGGERS_KEY: &str = "agent_triggers";
 const RUNS_KEY: &str = "agent_runs";
 
@@ -498,79 +462,6 @@ fn bootstrap_config(
     }
 }
 
-/// One synced upsert of a config row — per-path ops, no
-/// read-merge-write (a concurrent UI save is never clobbered).
-fn upsert_config_row(
-    c: &Client,
-    space: &str,
-    obj: &str,
-    dataset: &str,
-    key: &str,
-    value: &Value,
-) -> Result<()> {
-    c.modify(
-        space,
-        &json!({
-            "objectId": obj, "dataset": dataset,
-            "records": [{"id": key, "upsert": true, "ops": [
-                {"type": "$set", "path": "key", "value": key},
-                {"type": "$set", "path": "value", "value": value}]}]}),
-    )?;
-    Ok(())
-}
-
-/// The serve-side agent-config store (ADR-006 §3): the config child's
-/// `agent_config` dataset, read through per `config.get`, written per
-/// `config.set`. One per serve, threaded into every Broker; no cache.
-pub struct ServeConfigStore {
-    client: Arc<Client>,
-    space: String,
-    obj: String,
-    /// the `agent_config` collection (resolved at provisioning)
-    dataset: String,
-}
-
-impl ServeConfigStore {
-    pub fn new(client: Arc<Client>, space: &str, obj: &str, dataset: &str) -> Self {
-        Self {
-            client,
-            space: space.to_string(),
-            obj: obj.to_string(),
-            dataset: dataset.to_string(),
-        }
-    }
-}
-
-impl crate::broker::ConfigStore for ServeConfigStore {
-    fn read(&self, key: &str) -> Result<Option<Value>, String> {
-        let rows = self
-            .client
-            .query(
-                &self.space,
-                &self.obj,
-                &self.dataset,
-                &json!({"filter": {"key": key}}),
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(rows
-            .iter()
-            .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
-            .and_then(|r| r.get("value").cloned()))
-    }
-
-    fn set(&self, key: &str, value: &Value) -> Result<(), String> {
-        upsert_config_row(
-            &self.client,
-            &self.space,
-            &self.obj,
-            &self.dataset,
-            key,
-            value,
-        )
-        .map_err(|e| e.to_string())
-    }
-}
-
 /// The `anyrt run --from-space` store binding (ADR-004 §6 parity):
 /// the space's `agent_config` rows read through and written exactly
 /// like serve, so a one-shot run reads the tiers the serve reads and
@@ -604,27 +495,6 @@ pub fn run_config_store(
         inner: ServeConfigStore::new(client.clone(), space, &stores.config, &stores.config_ds),
         overrides,
     })))
-}
-
-/// A config store with a read-only shadow in front: keys in
-/// `overrides` answer from the map, everything else reads through;
-/// every write goes to the inner store.
-pub struct ShadowedConfigStore {
-    inner: ServeConfigStore,
-    overrides: BTreeMap<String, Value>,
-}
-
-impl crate::broker::ConfigStore for ShadowedConfigStore {
-    fn read(&self, key: &str) -> Result<Option<Value>, String> {
-        if let Some(v) = self.overrides.get(key) {
-            return Ok(Some(v.clone()));
-        }
-        crate::broker::ConfigStore::read(&self.inner, key)
-    }
-
-    fn set(&self, key: &str, value: &Value) -> Result<(), String> {
-        crate::broker::ConfigStore::set(&self.inner, key, value)
-    }
 }
 
 /// Secret persistence (ADR-021 §4). Config secrets (the provider API
@@ -775,214 +645,6 @@ fn stamp_set_if_needed(
     }
 }
 
-/// The stored secret value for `key` from already-queried rows
-/// (None when unset/empty).
-fn stored_local_secret(rows: &[Value], key: &str, field: &str) -> Option<String> {
-    rows.iter()
-        .find(|r| r.get("key").and_then(|v| v.as_str()) == Some(key))
-        .and_then(|r| r.get(field).and_then(|v| v.as_str()))
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-}
-
-/// One synced per-path write (ADR-021 §4): metadata stamps + the value.
-/// The value is account-scoped — end-to-end encrypted by any-sync, never
-/// in a trace (resolved after recording), never guest-readable (the
-/// read-guard covers the whole object).
-fn persist_local_secret(
-    c: &Client,
-    space: &str,
-    obj: &str,
-    dataset: &str,
-    field: &str,
-    key: &str,
-    secret: &str,
-) -> Result<()> {
-    let status = if secret.is_empty() { "missing" } else { "set" };
-    upsert_secret_row(
-        c,
-        space,
-        obj,
-        dataset,
-        key,
-        &json!({"status": status, "updatedAt": {"$date": now_rfc3339()},
-                "requestedIn": Value::Null, field: secret}),
-    )
-}
-
-/// Stamp `patch` onto the ref's synced row as per-path ops (`$set`,
-/// null = `$unset`), upserting the record — no read-merge-write, so a
-/// concurrent UI save is never clobbered by a stamp built on a stale
-/// read. `key`/`secret` ride along on every write (the row may be new);
-/// the device-local value is never touched (local scope, separate
-/// write). ADR-021 §2/§4.
-fn upsert_secret_row(
-    c: &Client,
-    space: &str,
-    obj: &str,
-    dataset: &str,
-    key: &str,
-    patch: &Value,
-) -> Result<()> {
-    let mut ops = vec![
-        json!({"type": "$set", "path": "key", "value": key}),
-        json!({"type": "$set", "path": "secret", "value": true}),
-    ];
-    if let Some(p) = patch.as_object() {
-        for (k, v) in p {
-            if v.is_null() {
-                ops.push(json!({"type": "$unset", "path": k}));
-            } else {
-                ops.push(json!({"type": "$set", "path": k, "value": v}));
-            }
-        }
-    }
-    let reply = c.modify(
-        space,
-        &json!({
-            "objectId": obj, "dataset": dataset,
-            "records": [{"id": key, "upsert": true, "ops": ops}]}),
-    )?;
-    // a 200 can still carry per-record rejections (a tombstoned id, an
-    // undeclared field) — the row did not change, say so
-    if let Some(rej) = reply["rejections"].as_array().filter(|r| !r.is_empty()) {
-        let reason = rej[0]["reason"]
-            .as_str()
-            .or_else(|| rej[0]["code"].as_str())
-            .unwrap_or("rejected");
-        anyhow::bail!("modify rejected {key}: {reason}");
-    }
-    Ok(())
-}
-
-/// The patch a miss/rejection writes (ADR-021 §8.4): the status base
-/// always; the descriptor only when the row does not exist yet.
-fn descriptor_patch(exists: bool, about: &Value, base: Value) -> Value {
-    let mut patch = base.as_object().cloned().unwrap_or_default();
-    if !exists {
-        for k in ["label", "hosts", "help", "note"] {
-            if let Some(v) = about.get(k).filter(|v| !v.is_null()) {
-                patch.insert(k.into(), v.clone());
-            }
-        }
-    }
-    Value::Object(patch)
-}
-
-/// ADR-021 §8.1: the declared table — every `__any_credentials__` entry
-/// of every program in the configured overlay spaces, read off the
-/// program objects' `credentials` property (deploy-written, guest-
-/// unwritable). Refreshed at boot and, rate-limited, on a miss.
-pub struct DeclaredTable {
-    client: Arc<Client>,
-    spaces: Vec<String>,
-    table: Mutex<BTreeMap<String, Value>>,
-    refreshed: Mutex<Option<std::time::Instant>>,
-}
-
-impl DeclaredTable {
-    const MISS_REFRESH_EVERY: Duration = Duration::from_secs(10);
-
-    pub fn new(client: Arc<Client>, spaces: Vec<String>) -> Self {
-        DeclaredTable {
-            client,
-            spaces,
-            table: Mutex::new(BTreeMap::new()),
-            refreshed: Mutex::new(None),
-        }
-    }
-
-    /// Re-read every overlay's declarations. A space that is not synced
-    /// yet (no program type) contributes nothing until it is. Two
-    /// programs declaring one ref must agree; the first wins and a
-    /// conflict is logged.
-    pub fn refresh(&self) -> usize {
-        let mut fresh: BTreeMap<String, Value> = BTreeMap::new();
-        for space in &self.spaces {
-            let schema = match crate::program_schema::ProgramSchema::lookup(&self.client, space) {
-                Ok(Some(s)) => s,
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!("credentials: cannot read programs in {space} ({e})");
-                    continue;
-                }
-            };
-            if schema.credentials_prop().is_none() {
-                continue; // deployed before ADR-021 §8.1: declares nothing
-            }
-            let rows = match self.client.query_objects(
-                space,
-                &json!({"filter": {"any.type": schema.type_id}, "limit": 500}),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!("credentials: cannot list programs in {space} ({e})");
-                    continue;
-                }
-            };
-            for row in &rows {
-                let props = schema.read(row);
-                let Some(text) = props.get("credentials").and_then(Value::as_str) else {
-                    continue;
-                };
-                let Ok(Value::Array(list)) = serde_json::from_str::<Value>(text) else {
-                    continue;
-                };
-                for entry in list {
-                    let Some(r) = entry.get("ref").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let about = entry.get("about").cloned().unwrap_or(Value::Null);
-                    let program = props.get("name").and_then(Value::as_str).unwrap_or("?");
-                    match fresh.get(r) {
-                        Some(prev) if *prev != about => warn!(
-                            "credentials: {r} declared twice with different descriptors \
-                             ({program} keeps the first)"
-                        ),
-                        Some(_) => {}
-                        None => {
-                            fresh.insert(r.to_string(), about);
-                        }
-                    }
-                }
-            }
-        }
-        let n = fresh.len();
-        *self.table.lock().expect("declared table poisoned") = fresh;
-        *self.refreshed.lock().expect("declared table poisoned") = Some(std::time::Instant::now());
-        n
-    }
-
-    pub fn snapshot(&self) -> BTreeMap<String, Value> {
-        self.table.lock().expect("declared table poisoned").clone()
-    }
-}
-
-impl DeclaredCredentials for DeclaredTable {
-    fn about(&self, key: &str) -> Option<Value> {
-        if let Some(a) = self.table.lock().expect("declared table poisoned").get(key) {
-            return Some(a.clone());
-        }
-        // a miss may be a redeploy while serve runs (or an overlay that
-        // synced after boot): re-read, at most every few seconds
-        let stale = self
-            .refreshed
-            .lock()
-            .expect("declared table poisoned")
-            .is_none_or(|t| t.elapsed() >= Self::MISS_REFRESH_EVERY);
-        if stale {
-            self.refresh();
-            return self
-                .table
-                .lock()
-                .expect("declared table poisoned")
-                .get(key)
-                .cloned();
-        }
-        None
-    }
-}
-
 /// Boot stamp (ADR-021 §8.1/§8.4): every declared ref's row carries the
 /// declared descriptor — the manifest is the authority for label and
 /// hosts, so an existing row is overwritten here (and only here); a
@@ -995,170 +657,13 @@ fn stamp_declared(c: &Client, space: &str, obj: &str, dataset: &str, table: &Dec
         let existing = rows
             .iter()
             .find(|r| r.get("key").and_then(Value::as_str) == Some(key.as_str()));
-        let mut patch = Map::new();
-        for k in ["label", "hosts", "help", "note"] {
-            match about.get(k).filter(|v| !v.is_null()) {
-                Some(v) => {
-                    patch.insert(k.into(), v.clone());
-                }
-                None if existing.is_some_and(|r| r.get(k).is_some()) => {
-                    patch.insert(k.into(), Value::Null); // dropped from the declaration
-                }
-                None => {}
-            }
-        }
-        if existing.is_none() {
-            patch.insert("status".into(), json!("missing"));
-        }
+        let patch = crate::managed::takeover::declared_stamp_patch(&about, existing);
         match upsert_secret_row(c, space, obj, dataset, &key, &Value::Object(patch)) {
             Ok(()) => stamped += 1,
             Err(e) => warn!("credentials: could not stamp declared {key} ({e})"),
         }
     }
     info!("credentials: {stamped} declared refs stamped from the overlays");
-}
-
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-/// The serve-side secret write path for managed OAuth (ADR-011 §3) —
-/// the same two-step local-scope write the bootstrap uses, plus the
-/// synced non-secret metadata record.
-pub struct ServeSecretStore {
-    client: Arc<Client>,
-    space: String,
-    obj: String,
-    /// the `agent_secrets` collection (resolved at provisioning)
-    dataset: String,
-}
-
-impl crate::broker::SecretSource for ServeSecretStore {
-    fn read(&self, key: &str) -> Result<Option<String>, String> {
-        let rows = self
-            .client
-            .query(&self.space, &self.obj, &self.dataset, &json!({}))
-            .map_err(|e| e.to_string())?;
-        Ok(stored_local_secret(&rows, key, SECRETS_FIELD))
-    }
-
-    fn mark_missing(&self, key: &str, about: &Value, run_id: &str) {
-        self.stamp(
-            key,
-            about,
-            json!({"status": "missing", "requestedBy": run_id}),
-        );
-    }
-
-    fn mark_rejected(&self, key: &str, about: &Value, run_id: &str, http_status: u16) {
-        self.stamp(
-            key,
-            about,
-            // a rejection is a new event: the previous bubble (a
-            // "missing" card, or an older rejection) no longer covers
-            // it — clearing requestedIn lets the wrapper re-ask
-            json!({"status": "rejected", "requestedBy": run_id,
-                   "rejectedAt": {"$date": now_rfc3339()}, "rejectedWith": http_status,
-                   "requestedIn": Value::Null}),
-        );
-    }
-
-    fn read_row(&self, key: &str) -> Result<Option<Value>, String> {
-        let rows = self
-            .client
-            .query(&self.space, &self.obj, &self.dataset, &json!({}))
-            .map_err(|e| e.to_string())?;
-        Ok(rows
-            .into_iter()
-            .find(|r| r.get("key").and_then(Value::as_str) == Some(key)))
-    }
-
-    fn mark_used(&self, key: &str) {
-        let patch = json!({"lastUsedAt": {"$date": now_rfc3339()}});
-        if let Err(e) = upsert_secret_row(
-            &self.client,
-            &self.space,
-            &self.obj,
-            &self.dataset,
-            key,
-            &patch,
-        ) {
-            warn!("secrets: could not stamp lastUsedAt for {key} ({e})");
-        }
-    }
-
-    /// ADR-032 §3 (ADR-021 §8.4 amended): the descriptor of the first
-    /// request an open, hostless row served — written once, onto the
-    /// existing row, so the key is bound from here on.
-    fn bind_hosts(&self, key: &str, about: &Value) {
-        let patch = descriptor_patch(false, about, json!({}));
-        if patch.as_object().is_some_and(|p| p.is_empty()) {
-            return;
-        }
-        if let Err(e) = upsert_secret_row(
-            &self.client,
-            &self.space,
-            &self.obj,
-            &self.dataset,
-            key,
-            &patch,
-        ) {
-            warn!("secrets: could not bind hosts for {key} ({e})");
-        }
-    }
-}
-
-impl ServeSecretStore {
-    /// ADR-021 §8.4 stamp rule: descriptor fields (`label`, `hosts`,
-    /// `help`, `note`) are written only when this stamp CREATES the row
-    /// — never onto an existing one, so a later miss or a 401 cannot
-    /// move where the secret goes; status fields stamp as before.
-    fn stamp(&self, key: &str, about: &Value, base: Value) {
-        let exists = self.read_row(key).ok().flatten().is_some();
-        let patch = descriptor_patch(exists, about, base);
-        if let Err(e) = upsert_secret_row(
-            &self.client,
-            &self.space,
-            &self.obj,
-            &self.dataset,
-            key,
-            &patch,
-        ) {
-            warn!("secrets: could not stamp {key} ({e})");
-        }
-    }
-}
-
-impl crate::oauth::SecretPersist for ServeSecretStore {
-    fn persist_secret(&self, key: &str, value: &str) -> Result<()> {
-        persist_local_secret(
-            &self.client,
-            &self.space,
-            &self.obj,
-            &self.dataset,
-            SECRETS_FIELD,
-            key,
-            value,
-        )
-    }
-
-    fn persist_meta(&self, key: &str, value: &Value) -> Result<()> {
-        let mut ops = vec![
-            json!({"type": "$set", "path": "key", "value": key}),
-            json!({"type": "$set", "path": "secret", "value": false}),
-        ];
-        ops.push(if value.is_null() {
-            json!({"type": "$unset", "path": "meta"})
-        } else {
-            json!({"type": "$set", "path": "meta", "value": {"value": value}})
-        });
-        self.client.modify(
-            &self.space,
-            &json!({"objectId": self.obj, "dataset": self.dataset,
-                    "records": [{"id": key, "upsert": true, "ops": ops}]}),
-        )?;
-        Ok(())
-    }
 }
 
 struct Shared {
@@ -1179,76 +684,8 @@ struct Shared {
     chat_watch_id: String,
 }
 
-/// The resolver alias namespace (ADR-009 §2): every `[overlays]` entry
-/// (its space id) verbatim; a missing `agent` entry binds the alias to
-/// the working space — the degenerate single-space shape.
-pub fn alias_map(
-    overlays: &BTreeMap<String, crate::config::Overlay>,
-    working_space: &str,
-) -> BTreeMap<String, String> {
-    let mut m: BTreeMap<String, String> = overlays
-        .iter()
-        .map(|(name, o)| (name.clone(), o.space.clone()))
-        .collect();
-    m.entry("agent".into())
-        .or_insert_with(|| working_space.to_string());
-    m
-}
-
-// --- bao presence beats (ADR-025) ------------------------------------------------
-//
-// Layer 1 only — deterministic, never model-generated (§1). Serve is
-// the SOLE publisher of `bao.status`: a beat every `STATUS_BEAT_S`
-// (and immediately when the guest sets a status line — the generation
-// poll below), a full-state idempotent envelope on the at-most-once
-// bus. The UI marks offline after 3 missed beats (30s, its clock); a
-// graceful shutdown publishes one `shutdown` beat for instant
-// offline, a crash is covered by the beat TTL.
-
-/// Beat cadence; the UI pairs it with a 3-missed-beats offline cutoff.
-pub const STATUS_BEAT_S: f64 = 10.0;
 /// The presence thread's poll: how fast a `bao.status` set republishes.
 const STATUS_POLL_S: f64 = 1.0;
-
-/// The freshest in-flight run's stamp — presence derives `working`
-/// from `RunCtx::live_runs`, the SAME registry `/break` resolves
-/// against (one source of truth for what's running, never a parallel
-/// counter). Freshest by `startedAt`; stampless entries (only the
-/// watcher's chat-keyed overlay has those, and it never lands here)
-/// are skipped defensively.
-fn current_run(runs: &BTreeMap<String, crate::triggers::LiveRun>) -> Option<Value> {
-    runs.values()
-        .filter(|l| l.stamp.is_object())
-        .max_by(|a, b| {
-            let at = |l: &&crate::triggers::LiveRun| l.stamp["startedAt"].as_f64().unwrap_or(0.0);
-            at(a).total_cmp(&at(b))
-        })
-        .map(|l| {
-            // live activity rides the stamp (ADR-025 §1): tool calls so
-            // far + the newest cell's preview — what bao is doing NOW
-            let mut run = l.stamp.clone();
-            run["cells"] = json!(l.activity.cells());
-            if let Some(preview) = l.activity.preview() {
-                run["cell"] = json!(preview);
-            }
-            run
-        })
-}
-
-/// What a beat says about this device (ADR-025 §1 `role`/`winner`).
-/// `responder` becomes `role`: does this device OWN the enabled
-/// chat-watch record — the check the chat watch itself connects on
-/// (ADR-018 §3) — so `role: active` means "chat is answered here",
-/// not "won the election": a paused or repinned responder leaves the
-/// election winner beating while nothing answers, which is the
-/// BOB-111 symptom. `winner` is the election's claim holder (ADR-015
-/// §2), for naming the device that holds bao when this one does not.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BeatRole {
-    responder: bool,
-    /// None when no claim exists, or the election is disabled/pruned
-    winner: Option<String>,
-}
 
 /// The role a beat carries right now, read against a registry guard
 /// the caller already holds (the control API keeps it across a
@@ -1318,138 +755,6 @@ impl NotAnsweringLog {
             now
         })
     }
-}
-
-/// The full-state beat envelope (ADR-025 §1). `state` ∈ boot | idle |
-/// working | shutdown; `role` ∈ active | standby with `winner` beside
-/// it when the registry names one; `run` rides only while working
-/// (the caller passes `current_run`), the line only while fresh
-/// (decay: `PresenceState::line`). Timestamps are unix seconds
-/// (staleness math is the consumer's job, same as `AgentTypingRow`'s
-/// `sinceSec`).
-fn status_envelope(
-    identity: &str,
-    status: &PresenceState,
-    run: Option<Value>,
-    state: &str,
-    role: &BeatRole,
-    now: f64,
-) -> Value {
-    let mut data = json!({
-        "identity": identity,
-        "state": state,
-        "role": if role.responder { "active" } else { "standby" },
-    });
-    if let Some(w) = &role.winner {
-        data["winner"] = json!(w);
-    }
-    if let Some(run) = run {
-        data["run"] = run;
-    }
-    if let Some((line, at)) = status.line(now) {
-        data["line"] = json!(line);
-        data["lineAt"] = json!(at);
-    }
-    json!({
-        "type": "bao.status",
-        "scope": "account",
-        // the serving peer id (ADR-015 identity) — filterable + the
-        // multi-device dedup key (ADR-025 §6)
-        "target": identity,
-        "data": data,
-    })
-}
-
-/// Publish one beat at `now` (threaded for the fake-clock sequence
-/// tests). Best-effort like every bus write: a failed beat is logged
-/// noise, never a serve failure (the next one covers it).
-fn publish_status_beat(
-    client: &Client,
-    identity: &str,
-    status: &PresenceState,
-    run: Option<Value>,
-    state: &str,
-    role: &BeatRole,
-    now: f64,
-) {
-    if let Err(e) = client.publish_event(&status_envelope(identity, status, run, state, role, now))
-    {
-        if is_signed_out(&e) {
-            debug!("bao.status beat not published: {e}");
-        } else {
-            warn!("bao.status beat not published: {e}");
-        }
-    }
-}
-
-/// `401 auth.required`: the server has no account — the embedder signed
-/// out. On a desktop sign-out the host sends `DELETE /v1/auth` while
-/// this serve is still stopping (stop joins up to a heartbeat), so the
-/// last `shutdown` beat lands on a signed-out server. Expected, and
-/// nobody is left to read the beat (BOB-153).
-fn is_signed_out(e: &AnyError) -> bool {
-    e.status == 401 && e.code == "auth.required"
-}
-
-/// The presence loop's carried state — split out so a pass is
-/// unit-testable without real sleeps.
-#[derive(Default)]
-struct PresenceLoop {
-    last_beat: Option<f64>,
-    last_sig: String,
-    booted: bool,
-}
-
-/// What makes a beat DUE besides cadence: any change in what the beat
-/// would say — the line generation, which run is live, how far it
-/// has come, and the role/winner. Run start/end, every new tool
-/// call, a responder flip (takeover, stand-down, pause, repin) and a
-/// winner change republish within a poll (~1s),
-/// which is what keeps the UI's working/idle flip, the call counter
-/// and the role live instead of up to a beat behind (ADR-025 §2).
-fn presence_sig(status: &PresenceState, run: Option<&Value>, role: &BeatRole) -> String {
-    format!(
-        "{}|{}|{}|{}|{}",
-        status.line_gen(),
-        run.and_then(|r| r["id"].as_str()).unwrap_or(""),
-        run.and_then(|r| r["cells"].as_u64()).unwrap_or(0),
-        role.responder,
-        role.winner.as_deref().unwrap_or(""),
-    )
-}
-
-/// One poll pass: publish a beat if due (boot, cadence, or a change —
-/// line set, run start/end, tool call, role flip). Returns true when a
-/// beat went out.
-fn presence_pass(
-    client: &Client,
-    identity: &str,
-    status: &PresenceState,
-    run: Option<Value>,
-    role: &BeatRole,
-    st: &mut PresenceLoop,
-    now: f64,
-) -> bool {
-    let sig = presence_sig(status, run.as_ref(), role);
-    let due = st.last_beat.is_none()
-        || now - st.last_beat.unwrap() >= STATUS_BEAT_S
-        || sig != st.last_sig;
-    if !due {
-        return false;
-    }
-    // boot once, then working/idle off the live-run registry (ADR-025 §1)
-    let state = if !st.booted {
-        "boot"
-    } else if run.is_some() {
-        "working"
-    } else {
-        "idle"
-    };
-    publish_status_beat(client, identity, status, run, state, role, now);
-    st.last_beat = Some(now);
-    st.last_sig = sig;
-    st.booted = true;
-    true
 }
 
 /// The presence thread: beats while serve lives, one `shutdown` beat
@@ -2296,23 +1601,17 @@ impl RunCtx {
     /// per run in the `bao/runs/v1` child — every device sees every
     /// device's runs. Best-effort: the trace itself is already landed;
     /// a failed publish is logged, never fails the run.
-    fn publish_run(&self, mut summary: Value, trigger: Option<&str>) {
-        let Some(id) = summary["id"].as_str().map(str::to_string) else {
-            return;
-        };
-        summary["triggerId"] = json!(trigger);
-        if summary["device"].is_null() {
-            summary["device"] = json!(self.self_peer);
-        }
-        // the record id is the run id; `id` inside a value is immutable
-        // to the dataset validator — `runId` carries it in the row
-        if let Some(o) = summary.as_object_mut() {
-            o.remove("id");
-        }
-        if let Err(e) =
-            self.client
-                .upsert_record(&self.space, &self.runs_anchor, &self.runs_ds, &id, &summary)
-        {
+    fn publish_run(&self, summary: Value, trigger: Option<&str>) {
+        let id = summary["id"].as_str().unwrap_or_default().to_string();
+        if let Err(e) = crate::tracestore::publish_run_summary(
+            &self.client,
+            &self.space,
+            &self.runs_anchor,
+            &self.runs_ds,
+            self.self_peer.as_deref(),
+            summary,
+            trigger,
+        ) {
             warn!("agent_runs {id}: summary not published: {e}");
         }
     }
@@ -2437,6 +1736,7 @@ impl RunCtx {
                 error: outcome.error.map(|e| e.to_string()),
                 missing_secrets: outcome.broker.missing_secrets.clone(),
                 missing_programs: outcome.broker.missing_programs.clone(),
+                refused_programs: outcome.broker.refused_programs.clone(),
                 mutated: outcome.broker.mutations > 0,
             },
         ))
@@ -2497,210 +1797,28 @@ impl RunCtx {
     }
 }
 
-/// `type: message` of a run's error envelope, clipped for a chat line.
-fn short_error(raw: &str) -> String {
-    let s = serde_json::from_str::<Value>(raw)
-        .ok()
-        .and_then(|v| {
-            Some(format!(
-                "{}: {}",
-                v["type"].as_str()?,
-                v["message"].as_str()?
-            ))
-        })
-        .unwrap_or_else(|| raw.to_string());
-    let s = s.replace('\n', " ");
-    if s.chars().count() > 160 {
-        format!("{}…", s.chars().take(160).collect::<String>())
-    } else {
-        s
-    }
-}
-
-/// Post the credential-request bubble for each ref still `missing`
-/// whose row does not already name this chat as the place a live
-/// request sits (`requestedIn`; cleared by the write that sets the
-/// value) — ADR-021 §2. Everything the UI renders comes off the row;
-/// the message only links it.
-/// The onboarding marker (BOB-78, ADR-021 §2): a missing model key on a
-/// space that has never chosen a provider — the client renders the
-/// provider chooser instead of the plain key card. Derived from state,
-/// never tracked: the missing ref is the codegen tier's `api_key_ref` AND
-/// every `llm.tier.*` row still equals the embedded seed
-/// (`config_defaults.json`). A row seeded by a toml `[config]` table or
-/// written by a previous choice differs, and the plain card is posted.
-/// No config store (or an unreadable one) = no marker.
-fn is_model_setup(missing_ref: &str, tier: impl Fn(&str) -> Option<Value>) -> bool {
-    let defaults = crate::config::config_defaults();
-    let tiers: Vec<(&String, &Value)> = defaults
-        .iter()
-        .filter(|(k, _)| k.starts_with("llm.tier."))
-        .collect();
-    let Some(codegen) = tier("llm.tier.codegen") else {
-        return false;
-    };
-    if codegen.get("api_key_ref").and_then(|v| v.as_str()) != Some(missing_ref) {
-        return false;
-    }
-    tiers.iter().all(|(key, seed)| {
-        tier(key)
-            .as_ref()
-            .map(|row| tier_identity(row) == tier_identity(seed))
-            == Some(true)
-    })
-}
-
-/// The four fields that make a tier row THIS provider — what the seed and a
-/// stored row are compared on (extra inferred keys never break equality).
-fn tier_identity(row: &Value) -> [Option<String>; 4] {
-    ["provider", "model", "base_url", "api_key_ref"].map(|k| {
-        row.get(k)
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim_end_matches('/').to_string())
-    })
-}
-
+/// Post the credential-request bubbles for this run's missing refs
+/// (ADR-021 §2): the shared body in `chatwatch` (N2b-2 C0), fed from this
+/// serve's stores. No secrets store = nothing to post.
 fn post_credential_requests(ctx: &RunCtx, refs: &[String]) -> usize {
     let Some(store) = &ctx.secret_store else {
         return 0;
     };
-    let mut posted = 0;
-    for r in refs {
-        let rows = ctx
-            .client
-            .query(&ctx.space, &store.obj, &store.dataset, &json!({}))
-            .unwrap_or_default();
-        let row = rows
-            .iter()
-            .find(|row| row.get("key").and_then(|v| v.as_str()) == Some(r.as_str()));
-        let status = row
-            .and_then(|row| row.get("status"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("missing");
-        let requested_in = row
-            .and_then(|row| row.get("requestedIn"))
-            .and_then(|v| v.as_str());
-        if status == "set" || requested_in == Some(ctx.chat.as_str()) {
-            continue;
-        }
-        let label = row
-            .and_then(|row| row.get("label"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| r.clone());
-        let hosts: Vec<String> = row
-            .and_then(|row| row.get("hosts"))
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|h| h.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let used_for = if hosts.is_empty() {
-            String::new()
-        } else {
-            format!(", used for {}", hosts.join(", "))
-        };
-        // BOB-78: a never-chosen space asking for its model key gets the
-        // provider chooser — a `&setup=model` marker on the row LINK (the
-        // server's strict body rejects extra attachment fields; the link
-        // is stored opaquely and an old client reads only `key`, so it
-        // renders today's plain card) and provider-neutral text.
-        let setup_model = status != "rejected"
-            && ctx.config_store.as_ref().is_some_and(|cs| {
-                is_model_setup(r, |key| {
-                    crate::broker::ConfigStore::read(cs.as_ref(), key)
-                        .ok()
-                        .flatten()
-                })
-            });
-        let unreviewed = r.starts_with(crate::broker::LOCAL_KEY_PREFIX);
-        let text = if unreviewed && status != "rejected" {
-            // ADR-021 §8.2: the warning is in the TEXT (old clients render
-            // only that); no program is named — a name would be the
-            // requester's claim; the run is the provenance the host vouches for
-            format!(
-                "⚠ Code written by {} (reviewed by no one) asks for a credential: {label} \
-                 (`{r}`). It will be sent only to {}.",
-                ctx.cfg.agent_name,
-                if hosts.is_empty() {
-                    "nowhere".to_string()
-                } else {
-                    hosts.join(", ")
-                }
-            )
-        } else if status == "rejected" {
-            let code = row
-                .and_then(|row| row.get("rejectedWith"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(401);
-            let by = if hosts.is_empty() {
-                "the service".to_string()
-            } else {
-                hosts.join(", ")
-            };
-            format!("The {label} was rejected by {by} ({code}) — please enter a new one (`{r}`).")
-        } else if setup_model {
-            "Before I can think, I need a language model. Choose a provider and paste its \
-             API key — you can change this later in Model settings."
-                .to_string()
-        } else {
-            format!("I need a credential to continue: {label} (`{r}`{used_for}).")
-        };
-        let marker = if setup_model { "&setup=model" } else { "" };
-        let mut agent = json!({"name": ctx.cfg.agent_name, "done": true});
-        if let Some(run) = row
-            .and_then(|row| row.get("requestedBy"))
-            .and_then(Value::as_str)
-            .filter(|_| unreviewed)
-        {
-            agent["debugLink"] = json!(run); // §8.2: the trace shows the code
-        }
-        let sent = ctx.client.chat_send(
-            &ctx.space,
-            &ctx.chat,
-            &json!({
-                "text": text,
-                "agent": agent,
-                "attachments": {"credreq": {
-                    "type": "credential_request",
-                    "link": format!("any://o/{}?key={r}{marker}", store.obj)}}}),
-        );
-        match sent {
-            Ok(_) => {
-                posted += 1;
-                // requestedIn/At only — status was stamped by the miss;
-                // re-asserting it here could undo a save that landed
-                // between the miss and this write
-                let patch = json!({"requestedIn": ctx.chat,
-                                   "requestedAt": {"$date": now_rfc3339()}});
-                if let Err(e) = upsert_secret_row(
-                    &ctx.client,
-                    &ctx.space,
-                    &store.obj,
-                    &store.dataset,
-                    r,
-                    &patch,
-                ) {
-                    warn!("secrets: could not stamp request for {r} ({e})");
-                }
-            }
-            Err(e) => warn!("secrets: could not post request for {r} ({e})"),
-        }
-    }
-    posted
+    crate::chatwatch::post_credential_requests(
+        &ctx.client,
+        &ctx.space,
+        &ctx.chat,
+        &store.obj,
+        &store.dataset,
+        ctx.config_store
+            .as_deref()
+            .map(|cs| cs as &dyn crate::broker::ConfigStore),
+        &ctx.cfg.agent_name,
+        refs,
+        // the shared body's warnings, under this module's target as before
+        &|warning| warn!("{warning}"),
+    )
 }
-
-/// Soft-break grace (ADR-005 §3): the guest only drains its mailbox
-/// between turns, so a run stuck inside a long cell cannot honor
-/// "stop" by itself. If the break item is still UNDRAINED after this
-/// long, the flag goes up and the epoch callback traps the guest at
-/// its next tick (a blocked host call — an LLM or HTTP request —
-/// returns first; the broker does not yet check the flag mid-call).
-/// A guest that HAS drained the item is wrapping up: the escalation
-/// stands down and the run's wall deadline is the backstop.
-const BREAK_GRACE: Duration = Duration::from_secs(20);
 
 /// A stop landed on a live run. Hard: the watcher already set the
 /// flag. Soft: arm the escalation — after BREAK_GRACE, if the break
@@ -2720,18 +1838,7 @@ fn on_break(chat: &str, live: &crate::triggers::LiveRun, hard: bool) {
     let chat = chat.to_string();
     std::thread::spawn(move || {
         std::thread::sleep(BREAK_GRACE);
-        let undrained = live
-            .mailbox
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|m| m["kind"] == "break");
-        if !undrained {
-            return; // acknowledged: the guest is wrapping up
-        }
-        if !live.interrupt.swap(true, Ordering::Relaxed) && Arc::strong_count(&live.interrupt) > 1 {
-            info!("soft break on chat {chat} escalated to hard");
-        }
+        escalate_soft_break(&chat, &live);
     });
 }
 
@@ -2771,31 +1878,15 @@ fn append_interrupted_turn(ctx: &RunCtx, user_text: &str, trace_ref: &str) -> Re
         .as_str()
         .context("bundle_child returned no objectId")?
         .to_string();
-    // ADR-017 §2: one past the highest id ever written, tombstones
-    // included (a deleted id never reuses; tombstones carry no `seq`,
-    // so the probe sorts on the record id = the zero-padded seq)
-    let rows = ctx.client.query(
-        &ctx.space,
-        &log,
-        &turns,
-        &json!({"includeDeleted": true, "sort": ["-id"], "limit": 1}),
-    )?;
-    let seq = rows
-        .first()
-        .and_then(|r| r["id"].as_str())
-        .and_then(|id| id.parse::<i64>().ok())
-        .unwrap_or(0)
-        + 1;
+    // the seq probe and the record are shared with the managed host
+    // (`chatwatch`, N2b-2 C0)
+    let seq = crate::chatwatch::next_turn_seq(&ctx.client, &ctx.space, &log, &turns)?;
     ctx.client.upsert_record(
         &ctx.space,
         &log,
         &turns,
         &format!("{seq:08}"),
-        &json!({
-            "seq": seq, "fromAgent": ctx.cfg.agent_name,
-            "userText": user_text, "replies": [], "interrupted": true,
-            "traceRef": trace_ref, "searchText": user_text,
-            "llm": {"stopReason": "break_hard"}}),
+        &crate::chatwatch::interrupted_turn_record(seq, &ctx.cfg.agent_name, user_text, trace_ref),
     )?;
     Ok(())
 }
@@ -2864,122 +1955,44 @@ fn start_or_inject(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, input: ChatInput) {
             mailbox.lock().unwrap().drain(..).collect()
         };
         if let Ok((trace_ref, rr)) = &result {
-            // ADR-021 §2: one request bubble per missing ref (the host
-            // is the only emitter). A run that died ON the miss — the
-            // LLM key — gets the request instead of "Something broke".
-            // …or on the destination's 401 (LlmError) — either way the
-            // request bubble (or the "still waiting" line) IS the reply
-            // "error" only: an interrupted run's reply is "Stopped.",
-            // never the "Still waiting for the credential" line (review)
-            let died_on_miss = rr.status == "error" && !rr.missing_secrets.is_empty();
+            // the selection and the bubbles are shared with the managed
+            // host (`chatwatch::follow_ups`, N2b-2 C0): the credential
+            // cards first, then at most one follow-up, in this order
             let posted = post_credential_requests(&ctx, &rr.missing_secrets);
-            if died_on_miss && posted == 0 {
-                // the bubble for this ref already sits in the chat
-                // (dedup) — a silent turn would read as "bao is gone";
-                // the last error rides along so the human can see WHY
-                let refs = rr.missing_secrets.join("`, `");
-                let why = rr
-                    .error
-                    .as_deref()
-                    .map(short_error)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| format!(" Last attempt: {s}"))
-                    .unwrap_or_default();
-                let _ = ctx.client.chat_send(
-                    &ctx.space,
-                    &ctx.chat,
-                    &json!({
-                    "text": format!("Still waiting for `{refs}` — see the credential prompt above.{why}"),
-                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
-                );
-            }
-            // ADR-009 §8: a run that died asking for a program this
-            // device hasn't synced yet is a WAIT, not a failure to
-            // show: the miss joins the wait set, the message goes back
-            // on the backlog (once), and the ticker re-runs it when the
-            // program arrives. Only a run that changed nothing is safe
-            // to re-run — the trace's mutate count is the oracle; a
-            // second miss, or a miss after a mutation, fails loudly
-            // below like any other error.
-            let program_gap = rr.status == "error" && !rr.missing_programs.is_empty();
-            if program_gap && !died_on_miss && !rr.mutated && input.deferrals == 0 {
-                let added = ctx
-                    .waiting
-                    .lock()
-                    .unwrap()
-                    .wait_for_programs(&rr.missing_programs, Instant::now());
-                let specs = rr
-                    .missing_programs
-                    .iter()
-                    .map(|(_, spec)| format!("`{spec}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                warn!("deferred on a program miss ({specs}, {added} new) — re-run once it syncs");
-                let _ = ctx.client.chat_send(
-                    &ctx.space,
-                    &ctx.chat,
-                    &json!({
-                    "text": format!(
-                        "Still fetching my agent code: {specs} hasn't synced to this device yet. \
-                         I'll answer as soon as it arrives."
-                    ),
-                    "agent": {"name": ctx.cfg.agent_name, "done": true}}),
-                );
-                shared.backlog.lock().unwrap().push(ChatInput {
-                    deferrals: input.deferrals + 1,
-                    ..input.clone()
-                });
-            } else if rr.status == "interrupted" {
-                // a hard break (ADR-005 §3): the host says the one thing
-                // the guest no longer can — the run is over
-                let _ = ctx.client.chat_send(
-                    &ctx.space,
-                    &ctx.chat,
-                    &json!({
-                    "text": "Stopped.",
-                    "agent": {"name": ctx.cfg.agent_name, "done": true,
-                              "outcome": "interrupted", "debugLink": trace_ref}}),
-                );
-                // …and writes the turn the guest could not (ADR-005 §3):
-                // without it the next boot window has no trace of the
-                // stopped request and the model's view of the
-                // conversation diverges from the chat on screen
-                if let Err(e) = append_interrupted_turn(&ctx, &input.text, trace_ref) {
-                    warn!("interrupted turn not logged (trace {trace_ref}): {e}");
+            for follow_up in follow_ups(rr, posted, input.deferrals) {
+                if let FollowUp::ProgramDeferred { specs } = &follow_up {
+                    let added = ctx
+                        .waiting
+                        .lock()
+                        .unwrap()
+                        .wait_for_programs(&rr.missing_programs, Instant::now());
+                    warn!(
+                        "deferred on a program miss ({specs}, {added} new) — re-run once it syncs"
+                    );
                 }
-            } else if rr.status != "ok" && !died_on_miss {
-                // The typed error goes INTO the chat: the next turn
-                // boots with this message in its window, so the model
-                // can act on it (FuelExhausted's text says to redo the
-                // work in smaller chunks — a bare "something broke"
-                // teaches nothing).
-                let detail = rr.error.as_deref().map(|raw| {
-                    serde_json::from_str::<Value>(raw)
-                        .ok()
-                        .and_then(|v| {
-                            Some(format!(
-                                "{}: {}",
-                                v["type"].as_str()?,
-                                v["message"].as_str()?
-                            ))
-                        })
-                        .unwrap_or_else(|| raw.to_string())
-                });
-                // How the run ended rides the `agent` group (`outcome`,
-                // the run id as `debugLink`), not the text (ADR-005 §3):
-                // the client renders the mark, the text stays human
-                let text = match detail {
-                    Some(d) => format!("Something broke mid-run: {d}"),
-                    None => "Something broke mid-run.".to_string(),
-                };
                 let _ = ctx.client.chat_send(
                     &ctx.space,
                     &ctx.chat,
-                    &json!({
-                    "text": text,
-                    "agent": {"name": ctx.cfg.agent_name, "done": true,
-                              "outcome": "error", "debugLink": trace_ref}}),
+                    &follow_up_body(&follow_up, &ctx.cfg.agent_name, trace_ref),
                 );
+                match follow_up {
+                    FollowUp::ProgramDeferred { .. } => {
+                        shared.backlog.lock().unwrap().push(ChatInput {
+                            deferrals: input.deferrals + 1,
+                            ..input.clone()
+                        });
+                    }
+                    FollowUp::Stopped => {
+                        // …and writes the turn the guest could not (ADR-005 §3):
+                        // without it the next boot window has no trace of the
+                        // stopped request and the model's view of the
+                        // conversation diverges from the chat on screen
+                        if let Err(e) = append_interrupted_turn(&ctx, &input.text, trace_ref) {
+                            warn!("interrupted turn not logged (trace {trace_ref}): {e}");
+                        }
+                    }
+                    FollowUp::StillWaiting { .. } | FollowUp::Error { .. } => {}
+                }
             }
         }
         for item in leftovers {
@@ -3026,7 +2039,12 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
                 }
                 let ready = ctx.ensure_ready().is_ok();
                 for record in backlog {
-                    let record = resolve_reply(ctx, resolve_sender(ctx, record));
+                    let record = resolve_reply(
+                        &ctx.client,
+                        &ctx.space,
+                        &ctx.chat,
+                        resolve_sender(ctx, record),
+                    );
                     let action = shared
                         .watcher
                         .lock()
@@ -3064,7 +2082,12 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
             }
             "changes" => {
                 for record in records_in(&frame.data) {
-                    let record = resolve_reply(ctx, resolve_sender(ctx, record));
+                    let record = resolve_reply(
+                        &ctx.client,
+                        &ctx.space,
+                        &ctx.chat,
+                        resolve_sender(ctx, record),
+                    );
                     let action = shared
                         .watcher
                         .lock()
@@ -3118,90 +2141,6 @@ fn watch_chat(shared: &Arc<Shared>, ctx: &Arc<RunCtx>, stop: &AtomicBool) -> Res
     Ok(())
 }
 
-/// Messages newer than this agent's last own reply, oldest first. The
-/// snapshot window is sorted `-createdAt`: walk from the newest record
-/// and stop at the first SELF-authored one (own `agent.name`, or a
-/// nameless agent record — same rule as the watcher, ADR-009 §8
-/// amendment) — everything before it is unanswered. Foreign
-/// agent-named messages (`trigger:*` nudges, peers) count as
-/// unanswered input. Snapshot records are bare docs (each carries its
-/// own `id`), unlike the `{id, doc}` entries of `changes` frames.
-fn snapshot_backlog(data: &Value, self_name: &str) -> Vec<Value> {
-    let mut out: Vec<Value> = Vec::new();
-    for rec in data["records"].as_array().unwrap_or(&Vec::new()) {
-        if Watcher::is_self_message(rec, self_name) {
-            // a done:false progress bubble is not an answer — keep
-            // scanning; the cut is the last TERMINAL self reply
-            if rec["agent"]["done"].as_bool().unwrap_or(true) {
-                break;
-            }
-            continue;
-        }
-        // a control record (a Stop pressed during a feed gap) must
-        // reach on_message — it is text-less by contract
-        if crate::triggers::is_control(rec) {
-            out.push(rec.clone());
-            continue;
-        }
-        // content = text OR attachments (the server enforces at least
-        // one); an attachment-only message is real input, not noise
-        let has_text = rec["text"].as_str().is_some_and(|t| !t.is_empty());
-        let has_atts = rec["attachments"]
-            .as_object()
-            .is_some_and(|a| !a.is_empty());
-        if has_text || has_atts {
-            out.push(rec.clone());
-        }
-    }
-    out.reverse();
-    out
-}
-
-/// Log-safe head of a message (char-boundary aware — byte slicing
-/// panics mid-codepoint).
-fn preview(text: &str) -> String {
-    text.chars().take(60).collect()
-}
-
-/// The NEW `chat_messages` records in a `changes` frame. Only `added`
-/// entries are input: an `updated` entry is a reaction toggle or a
-/// text edit on a message that already had its turn, and neither
-/// starts or injects a run (ADR-018 §2). Reading `updated` too made
-/// a reaction on a message older than the process — absent from the
-/// watcher's seen-set, which is seeded from the unanswered backlog
-/// only — look like a fresh message, and the agent re-answered it.
-///
-/// And only an `added` entry WITH `ops` is a message (ADR-009 §8
-/// promoted rows, BOB-204): `added` means the row entered the watch's
-/// visible window, not that it was written. The server keeps one row
-/// past the window's limit and, when a visible row is deleted, slides
-/// it into view as `added` with its stored doc and NO ops — nothing
-/// was written, so there is no change to ship. A written record always
-/// carries ops (its stamps at least). The watch uses no projection,
-/// the one case where a real change can ship empty ops.
-/// A reply's referent, read from the chat before the watcher sees the
-/// record (ADR-005 §5, BOB-65): deleted rows included so a tombstone
-/// folds as such; a failed read folds as "not found" — a reply never
-/// stalls on its target. Not an effect: like the record itself, it is
-/// host-side input; the folded text is what the trace records.
-fn resolve_reply(ctx: &RunCtx, record: Value) -> Value {
-    Watcher::with_reply(record, |id| {
-        match ctx.client.query(
-            &ctx.space,
-            &ctx.chat,
-            "chat_messages",
-            &json!({"filter": {"id": id}, "includeDeleted": true, "limit": 1}),
-        ) {
-            Ok(mut rows) if !rows.is_empty() => Some(rows.remove(0)),
-            Ok(_) => None,
-            Err(e) => {
-                warn!("reply target {id}: {e}");
-                None
-            }
-        }
-    })
-}
-
 /// How long a roster read stays fresh — a rename or a join shows up
 /// within this; an unknown creator forces an earlier re-read, at most
 /// once per `ROSTER_MISS_BACKOFF` so a stream of messages from an
@@ -3247,28 +2186,6 @@ fn resolve_sender(ctx: &RunCtx, record: Value) -> Value {
             None
         }
     })
-}
-
-fn records_in(data: &Value) -> Vec<Value> {
-    let mut out = Vec::new();
-    if let Some(batches) = data.as_array() {
-        for batch in batches {
-            for entry in batch["added"].as_array().unwrap_or(&Vec::new()) {
-                if entry["ops"].as_array().is_none_or(Vec::is_empty) {
-                    warn!(
-                        "chat message {} entered the window with no ops — a row promoted \
-                         from past the limit, not a new message (ADR-009 §8)",
-                        entry["id"].as_str().unwrap_or("")
-                    );
-                    continue;
-                }
-                let mut rec = entry["doc"].as_object().cloned().unwrap_or_default();
-                rec.insert("id".into(), entry["id"].clone());
-                out.push(Value::Object(rec));
-            }
-        }
-    }
-    out
 }
 
 fn trigger_ticker(
@@ -3417,16 +2334,7 @@ fn run_trigger_program(ctx: &RunCtx, trigger_id: &str, program: &str, args: &Val
     let interrupt = Arc::new(AtomicBool::new(false));
     ctx.run(program, args, mailbox, interrupt, None, Some(trigger_id))
         .map(|(_, rr)| rr)
-        .unwrap_or_else(|e| RunResult {
-            status: "error".into(),
-            duration_ms: 0,
-            trace_ref: None,
-            fuel: None,
-            error: Some(e.to_string()),
-            missing_secrets: Vec::new(),
-            missing_programs: Vec::new(),
-            mutated: false,
-        })
+        .unwrap_or_else(|e| RunResult::failed(e.to_string()))
 }
 
 /// Run bookkeeping (ADR-006 §4): the breaker + scheduler state on the
@@ -3558,12 +2466,7 @@ fn fire_event(shared: &Shared, ctx: &RunCtx, space: &str, object_id: &str, recor
     let targets: Vec<Trigger> = {
         let reg = shared.triggers.lock().unwrap();
         let instance = shared.scheduler.lock().unwrap().instance_id().to_string();
-        reg.values()
-            .filter(|t| t.owner == instance && t.enabled && !is_chat_watch(&t.id))
-            .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
-            .filter(|t| event_space(t, &ctx.space) == space)
-            .cloned()
-            .collect()
+        event_targets(&reg, &instance, &ctx.space, space, object_id)
     };
     for t in targets {
         let args = event_args(&t, space, object_id, record);
@@ -3651,14 +2554,13 @@ fn election_thread(
                     // cleared ON THE RECORD (the one stand-down write,
                     // ADR-018 §3): a local-only evict would be undone by
                     // the next reconcile, which still reads our peer id
-                    if let Some(mut t) = reg.remove(&shared.chat_watch_id) {
-                        t.owner.clear();
-                        let _ = ctx.client.upsert_record(
+                    if let Some(t) = reg.remove(&shared.chat_watch_id) {
+                        let _ = release_chat_watch(
+                            &ctx.client,
                             &ctx.space,
                             &ctx.anchor,
                             &ctx.triggers_ds,
-                            &t.id,
-                            &trigger_to_record(&t),
+                            &t,
                         );
                     }
                     info!("election: stand-down — {}", verdict.describe());
@@ -3760,57 +2662,6 @@ fn note_chat_start(shared: &Shared, ctx: &RunCtx) {
         &t.id,
         &trigger_to_record(t),
     );
-}
-
-/// Seed the chat-responder record once (ADR-018 §3): an existing
-/// `chat-watch*` record is left untouched (its owner/enabled are user
-/// state); otherwise write `chat-watch`, falling through generation
-/// suffixes when the bare id was tombstoned by a delete. Returns the
-/// live id and the trigger when this boot created it.
-fn seed_chat_watch(
-    client: &Client,
-    space: &str,
-    anchor: &str,
-    dataset: &str,
-    chat: &str,
-    owner: &str,
-) -> Result<(String, Option<Trigger>)> {
-    let recs = client
-        .query(space, anchor, dataset, &json!({}))
-        .context("reading agent_triggers to seed the chat responder")?;
-    if let Some(id) = recs
-        .iter()
-        .filter_map(|r| r.get("id").and_then(|v| v.as_str()))
-        .find(|id| is_chat_watch(id))
-    {
-        return Ok((id.to_string(), None));
-    }
-    for gen in 1..=5u32 {
-        let id = if gen == 1 {
-            CHAT_WATCH_ID.to_string()
-        } else {
-            format!("{CHAT_WATCH_ID}-g{gen}")
-        };
-        let t = chat_watch_trigger(&id, chat, owner);
-        match client.upsert_record(space, anchor, dataset, &id, &trigger_to_record(&t)) {
-            Ok(reply) if reply_tombstoned(&reply) => continue,
-            Ok(_) => return Ok((id, Some(t))),
-            Err(e) if e.code.contains("record_deleted") => continue,
-            Err(e) => return Err(e).context("seeding the chat responder record"),
-        }
-    }
-    anyhow::bail!("chat responder: every generation id is tombstoned")
-}
-
-/// A modify reply whose rejections say the id is a deleted record.
-fn reply_tombstoned(reply: &Value) -> bool {
-    reply["rejections"].as_array().is_some_and(|rs| {
-        rs.iter().any(|r| {
-            ["reason", "code"]
-                .iter()
-                .any(|k| r[k].as_str().is_some_and(|v| v.contains("record_deleted")))
-        })
-    })
 }
 
 // --- the localhost control API -------------------------------------------------
@@ -4014,7 +2865,10 @@ fn handle_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anyapi::AnyError;
+    use crate::chatwatch::is_model_setup;
     use crate::config::Overlay;
+    use crate::presence::is_signed_out;
     use crate::testutil::StubTransport;
 
     fn overlay(space: &str, invite: Option<&str>) -> Overlay {

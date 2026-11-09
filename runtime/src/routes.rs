@@ -30,7 +30,15 @@ impl Classifier {
         }
     }
 
-    fn is_any(&self, url: &str) -> bool {
+    /// The configured Any netloc (`host:port`), None when unconfigured.
+    pub(crate) fn any_netloc(&self) -> Option<&str> {
+        self.any_netloc.as_deref()
+    }
+
+    /// The configured Any netloc (or, unconfigured, the `/v1/spaces` path
+    /// shape). Replay classification — the broker's guards pair it with a
+    /// loopback-alias check, never this alone (ADR-034 §5: not a boundary).
+    pub(crate) fn is_any(&self, url: &str) -> bool {
         let (netloc, path) = split_url(url);
         match &self.any_netloc {
             Some(n) => netloc == n,

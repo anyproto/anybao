@@ -282,6 +282,40 @@ pub fn summary_of(
     s
 }
 
+/// The synced per-run summary (ADR-023 §1): one `agent_runs` record
+/// per run in the `bao/runs/v1` child — every device sees every
+/// device's runs. Best-effort: the trace itself is already landed;
+/// a failed publish is the caller's to log (desktop keeps its
+/// `anyrt::serve` warning, round A review A9), never a run failure.
+/// Moved out of the desktop `RunCtx::publish_run` (N2b-2) so the
+/// managed lanes publish the same record; `anchor`/`dataset` address
+/// the runs store. A summary without an id publishes nothing.
+pub fn publish_run_summary(
+    client: &Client,
+    space: &str,
+    anchor: &str,
+    dataset: &str,
+    self_peer: Option<&str>,
+    mut summary: Value,
+    trigger: Option<&str>,
+) -> Result<(), crate::anyapi::AnyError> {
+    let Some(id) = summary["id"].as_str().map(str::to_string) else {
+        return Ok(());
+    };
+    summary["triggerId"] = json!(trigger);
+    if summary["device"].is_null() {
+        summary["device"] = json!(self_peer);
+    }
+    // the record id is the run id; `id` inside a value is immutable
+    // to the dataset validator — `runId` carries it in the row
+    if let Some(o) = summary.as_object_mut() {
+        o.remove("id");
+    }
+    client
+        .upsert_record(space, anchor, dataset, &id, &summary)
+        .map(|_| ())
+}
+
 /// What a run costs the store (ADR-023 §6): the canonical bytes of its
 /// records + its spilled text blobs + the raw blobs its records
 /// reference (`{__blob, bytes, mime}`). A content-addressed blob two
@@ -1086,6 +1120,64 @@ fn resolve_record(
 mod tests {
     use super::*;
 
+    /// N2b-2 C0: the desktop `publish_run` body, now shared: the record id
+    /// is the run id (dropped from the value), `triggerId` always present,
+    /// `device` filled only when the summary has none; a failed write is
+    /// logged, and a summary without an id writes nothing.
+    #[test]
+    fn publish_run_summary_writes_the_desktop_record() {
+        let stub = crate::testutil::StubTransport::new();
+        stub.push(200, json!({}));
+        stub.push(500, json!({"error": {"code": "boom", "message": "down"}}));
+        let log = stub.log();
+        let client = Client::with_transport(Box::new(stub));
+        let summary = json!({"id": "run_a", "title": "t", "device": null});
+        let ok = publish_run_summary(
+            &client,
+            "ws",
+            "runs-obj",
+            "t_agent_runs",
+            Some("peer"),
+            summary,
+            Some("cron-1"),
+        );
+        assert!(ok.is_ok());
+        let failed = publish_run_summary(
+            &client,
+            "ws",
+            "runs-obj",
+            "t_agent_runs",
+            None,
+            json!({"id": "run_b", "device": "phone"}),
+            None,
+        );
+        assert_eq!(failed.unwrap_err().code, "boom", "the caller logs it");
+        let nothing = publish_run_summary(
+            &client,
+            "ws",
+            "runs-obj",
+            "t_agent_runs",
+            Some("peer"),
+            json!({}),
+            None,
+        );
+        assert!(nothing.is_ok());
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2, "no id, no write");
+        assert_eq!(calls[0].0, "POST");
+        assert_eq!(calls[0].1, "/v1/spaces/ws/modify");
+        assert_eq!(
+            calls[0].2,
+            Some(json!({"objectId": "runs-obj", "dataset": "t_agent_runs",
+                        "records": [{"id": "run_a", "upsert": true, "ops": [{"type": "$set", "path": "",
+                          "value": {"title": "t", "device": "peer", "triggerId": "cron-1"}}]}]}))
+        );
+        assert_eq!(
+            calls[1].2.as_ref().unwrap()["records"][0]["ops"][0]["value"],
+            json!({"device": "phone", "triggerId": null})
+        );
+    }
+
     #[test]
     fn run_ids_are_gated() {
         assert!(valid_run_id("run_0123abcd"));
@@ -1229,27 +1321,67 @@ mod tests {
     }
 }
 
-// --- in-memory store: the unit tests' stand-in for a server -----------------
+// --- in-memory store: unit tests and the explicit Android spike ------------
 
-/// A `TraceStore` in process memory — what the writer/view/broker unit
-/// tests stream into and read back. Not a storage option: bao's traces
-/// live in the any local store (ADR-023 §1), and this double exists so
-/// the trait's consumers test without a server.
-#[cfg(test)]
+/// ADR-034 §0: synthetic spike traces only; production retains AnyTraceStore.
+#[cfg(any(test, feature = "android-spike"))]
 #[derive(Default)]
 pub struct MemTraceStore {
-    runs: Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
-    text_blobs: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    state: Arc<std::sync::Mutex<MemTraceState>>,
     blob_dir: Option<BlobDir>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "android-spike"))]
+#[derive(Default)]
+struct MemTraceState {
+    runs: BTreeMap<String, Vec<Value>>,
+    text_blobs: BTreeMap<String, String>,
+    bytes: usize,
+    max_bytes: Option<usize>,
+    overflowed: bool,
+}
+
+#[cfg(any(test, feature = "android-spike"))]
+impl MemTraceState {
+    fn reserve(&mut self, added: usize, replaced: usize) -> anyhow::Result<()> {
+        let next = self.bytes.saturating_sub(replaced).saturating_add(added);
+        if self.max_bytes.is_some_and(|limit| next > limit) {
+            self.overflowed = true;
+            anyhow::bail!("in-memory trace capacity exceeded");
+        }
+        self.bytes = next;
+        Ok(())
+    }
+
+    fn append_blob(&mut self, hash: &str, data: &str) -> anyhow::Result<()> {
+        let old = self
+            .text_blobs
+            .get(hash)
+            .map_or(0, |v| hash.len() + v.len());
+        self.reserve(hash.len() + data.len(), old)?;
+        self.text_blobs.insert(hash.to_string(), data.to_string());
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "android-spike"))]
 impl MemTraceStore {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// With a raw-blob directory beside it (ADR-026 §1).
+    /// Bound retained serialized records/text blobs. The TraceWriter's own live
+    /// buffer and allocator overhead are separate and still need measurement.
+    pub fn bounded(max_bytes: usize) -> Self {
+        Self {
+            state: Arc::new(std::sync::Mutex::new(MemTraceState {
+                max_bytes: Some(max_bytes),
+                ..MemTraceState::default()
+            })),
+            blob_dir: None,
+        }
+    }
+
     pub fn with_blob_dir(dir: &std::path::Path) -> Self {
         Self {
             blob_dir: Some(BlobDir::new(dir)),
@@ -1257,54 +1389,77 @@ impl MemTraceStore {
         }
     }
 
-    /// The records of a run as stored (empty when unknown).
     pub fn records(&self, run_id: &str) -> Vec<Value> {
-        self.runs
+        self.state
             .lock()
             .unwrap()
+            .runs
             .get(run_id)
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn text_blob_count(&self) -> usize {
-        self.text_blobs.lock().unwrap().len()
+        self.state.lock().unwrap().text_blobs.len()
+    }
+
+    /// Call only after joining the run and dropping its writer/sinks. An
+    /// overflow makes evidence incomplete; it must never become a K pass.
+    #[cfg(feature = "android-spike")]
+    pub fn drain_export(&self) -> MemTraceExport {
+        let mut state = self.state.lock().unwrap();
+        let bytes = std::mem::take(&mut state.bytes);
+        MemTraceExport {
+            runs: std::mem::take(&mut state.runs),
+            text_blobs: std::mem::take(&mut state.text_blobs),
+            retained_bytes: bytes,
+            overflowed: std::mem::take(&mut state.overflowed),
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "android-spike")]
+#[derive(serde::Serialize)]
+pub struct MemTraceExport {
+    pub runs: BTreeMap<String, Vec<Value>>,
+    pub text_blobs: BTreeMap<String, String>,
+    pub retained_bytes: usize,
+    pub overflowed: bool,
+}
+
+#[cfg(any(test, feature = "android-spike"))]
 struct MemSink {
-    runs: Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
-    text_blobs: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    state: Arc<std::sync::Mutex<MemTraceState>>,
     run_id: String,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "android-spike"))]
 impl TraceSink for MemSink {
     fn append(&mut self, record: &Value) -> anyhow::Result<()> {
-        self.runs
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        let run_bytes = if state.runs.contains_key(&self.run_id) {
+            0
+        } else {
+            self.run_id.len()
+        };
+        state.reserve(canonical_json(record).len() + run_bytes, 0)?;
+        state
+            .runs
             .entry(self.run_id.clone())
             .or_default()
             .push(record.clone());
         Ok(())
     }
     fn append_blob(&mut self, hash: &str, data: &str) -> anyhow::Result<()> {
-        self.text_blobs
-            .lock()
-            .unwrap()
-            .insert(hash.to_string(), data.to_string());
-        Ok(())
+        self.state.lock().unwrap().append_blob(hash, data)
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "android-spike"))]
 impl TraceStore for MemTraceStore {
     fn open_sink(&self, run_id: &str) -> anyhow::Result<Box<dyn TraceSink>> {
         Ok(Box::new(MemSink {
-            runs: self.runs.clone(),
-            text_blobs: self.text_blobs.clone(),
+            state: self.state.clone(),
             run_id: run_id.to_string(),
         }))
     }
@@ -1314,17 +1469,24 @@ impl TraceStore for MemTraceStore {
         records: &[Value],
         blobs: &[(String, String)],
     ) -> anyhow::Result<()> {
-        self.runs
-            .lock()
-            .unwrap()
-            .insert(run_id.to_string(), records.to_vec());
+        {
+            let mut state = self.state.lock().unwrap();
+            let size =
+                |items: &[Value]| items.iter().map(|r| canonical_json(r).len()).sum::<usize>();
+            let old = state
+                .runs
+                .get(run_id)
+                .map_or(0, |items| size(items) + run_id.len());
+            state.reserve(size(records) + run_id.len(), old)?;
+            state.runs.insert(run_id.to_string(), records.to_vec());
+        }
         self.write_blobs(blobs)
     }
     fn write_blobs(&self, blobs: &[(String, String)]) -> anyhow::Result<()> {
-        self.text_blobs
-            .lock()
-            .unwrap()
-            .extend(blobs.iter().cloned());
+        let mut state = self.state.lock().unwrap();
+        for (hash, data) in blobs {
+            state.append_blob(hash, data)?;
+        }
         Ok(())
     }
     fn blob_dir(&self) -> Option<&BlobDir> {
@@ -1332,9 +1494,10 @@ impl TraceStore for MemTraceStore {
     }
     fn list(&self) -> anyhow::Result<Vec<RunMeta>> {
         Ok(self
-            .runs
+            .state
             .lock()
             .unwrap()
+            .runs
             .keys()
             .rev()
             .map(|id| RunMeta {
@@ -1345,22 +1508,22 @@ impl TraceStore for MemTraceStore {
     }
     fn load(&self, run_id: &str) -> anyhow::Result<Vec<Value>> {
         let records = self
-            .runs
+            .state
             .lock()
             .unwrap()
+            .runs
             .get(run_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("unknown run {run_id}"))?;
         validate_records(records, run_id)
     }
     fn blobs(&self, _run_id: &str) -> anyhow::Result<BTreeMap<String, String>> {
-        Ok(self.text_blobs.lock().unwrap().clone())
+        Ok(self.state.lock().unwrap().text_blobs.clone())
     }
     fn blob(&self, _run_id: &str, hash: &str) -> anyhow::Result<Option<String>> {
-        if let Some(t) = self.text_blobs.lock().unwrap().get(hash) {
+        if let Some(t) = self.state.lock().unwrap().text_blobs.get(hash) {
             return Ok(Some(t.clone()));
         }
-        // an oversize text spill is a raw blob in the directory (ADR-026 §2)
         match &self.blob_dir {
             Some(dir) => dir.read_string(hash),
             None => Ok(None),
@@ -1368,9 +1531,6 @@ impl TraceStore for MemTraceStore {
     }
 }
 
-/// Round-trip against a live any server with the local store (any PR
-/// #195). Gated: `ANYRT_TEST_ANY_ADDR=http://127.0.0.1:7137 cargo test
-/// any_trace_store_round_trip -- --ignored --nocapture`.
 #[cfg(test)]
 mod live {
     use super::*;
@@ -1576,5 +1736,41 @@ mod live {
         );
         // leave nothing behind on the account the test borrowed
         client.delete_space(&space).expect("delete test space");
+    }
+}
+
+#[cfg(all(test, feature = "android-spike"))]
+mod spike_mem_tests {
+    use super::*;
+
+    #[test]
+    fn spike_memory_trace_limit_and_drain_keep_overflow_visible() {
+        let store = MemTraceStore::bounded(100);
+        let mut sink = store.open_sink("run_fixture").unwrap();
+        sink.append(&json!({"small": 1})).unwrap();
+        sink.append_blob("sha256:test", "text").unwrap();
+        assert!(sink.append(&json!({"tooLarge": "x".repeat(100)})).is_err());
+        drop(sink);
+        let exported = store.drain_export();
+        assert!(exported.overflowed);
+        assert!(exported.retained_bytes <= 100);
+        assert_eq!(exported.runs["run_fixture"].len(), 1);
+        assert_eq!(exported.text_blobs["sha256:test"], "text");
+        let empty = store.drain_export();
+        assert_eq!(empty.retained_bytes, 0);
+        assert!(!empty.overflowed && empty.runs.is_empty());
+    }
+
+    #[test]
+    fn spike_fallback_write_cannot_bypass_capacity() {
+        let store = MemTraceStore::bounded(30);
+        assert!(store
+            .write_run("run_fixture", &[json!({"large": "x".repeat(40)})], &[])
+            .is_err());
+        assert!(store.drain_export().overflowed);
+        assert!(store
+            .write_blobs(&[("sha256:test".into(), "x".repeat(40))])
+            .is_err());
+        assert!(store.drain_export().overflowed);
     }
 }

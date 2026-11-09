@@ -40,6 +40,9 @@ pub enum ResolveError {
     },
     /// any-server call failed
     Api(AnyError),
+    /// the managed path (ADR-034 §2): `name@vN` is not in the frozen
+    /// content of `space`, so it cannot run here — never a sync wait
+    NotPinned { space: String, spec: String },
 }
 
 impl fmt::Display for ResolveError {
@@ -50,6 +53,11 @@ impl fmt::Display for ResolveError {
             ResolveError::NotFound(m) => write!(f, "{m}"),
             ResolveError::Missing { msg, .. } => write!(f, "{msg}"),
             ResolveError::Api(e) => write!(f, "{e}"),
+            ResolveError::NotPinned { space, spec } => write!(
+                f,
+                "program {spec} is not pinned in the frozen content of space {space} \
+                 (ADR-034 §2): the managed path runs verified overlay content only"
+            ),
         }
     }
 }
@@ -101,7 +109,7 @@ impl ModuleResolver for InlineResolver {
 }
 
 /// (alias|None, name, version) from `[alias:]name@vN`.
-fn parse(spec: &str) -> Result<(Option<&str>, &str, &str), ResolveError> {
+pub(crate) fn parse(spec: &str) -> Result<(Option<&str>, &str, &str), ResolveError> {
     let (alias, rest) = match spec.split_once(':') {
         Some((a, r)) => (Some(a), r),
         None => (None, spec),
@@ -336,6 +344,107 @@ impl ModuleResolver for LocalDirResolver {
         });
         self.cache.insert(spec.to_string(), out.clone());
         Ok(out)
+    }
+}
+
+/// ADR-034 §0: the same frozen source bytes and exact spec map on desktop/phone.
+#[cfg(feature = "android-spike")]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenBundleManifest {
+    pub format: u32,
+    /// Canonical local spec -> SHA-256 of the UTF-8 source bytes.
+    pub modules: BTreeMap<String, String>,
+    /// Every accepted spelling, including `agent:` aliases -> canonical spec.
+    pub specs: BTreeMap<String, String>,
+}
+
+#[cfg(feature = "android-spike")]
+pub struct FrozenBundleResolver {
+    inner: LocalDirResolver,
+    manifest: FrozenBundleManifest,
+    fixture_space: Option<String>,
+}
+
+#[cfg(feature = "android-spike")]
+impl FrozenBundleResolver {
+    pub fn new(dir: PathBuf, manifest: FrozenBundleManifest) -> Result<Self, ResolveError> {
+        let invalid = |message: &str| ResolveError::NotFound(message.to_string());
+        if manifest.format != 1 || manifest.modules.is_empty() || manifest.specs.is_empty() {
+            return Err(invalid("unsupported or empty frozen bundle manifest"));
+        }
+        let mut inner = LocalDirResolver::new(dir);
+        for (spec, expected) in &manifest.modules {
+            let (alias, name, version) = parse(spec)?;
+            if alias.is_some()
+                || name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                || !version
+                    .strip_prefix('v')
+                    .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(ResolveError::BadSpec(spec.clone()));
+            }
+            let resolved = inner.resolve(spec, None)?;
+            if resolved["sourceHash"].as_str() != Some(expected) {
+                return Err(invalid(&format!("frozen source hash mismatch: {spec}")));
+            }
+        }
+        for (spec, target) in &manifest.specs {
+            let (alias, name, version) = parse(spec)?;
+            if !manifest.modules.contains_key(target)
+                || format!("{name}@{version}") != *target
+                || alias.is_some_and(|a| a != "agent" && a != "$fixtureSpace")
+            {
+                return Err(ResolveError::BadSpec(spec.clone()));
+            }
+        }
+        Ok(Self {
+            inner,
+            manifest,
+            fixture_space: None,
+        })
+    }
+
+    /// Bind the manifest's one declared fixture-space placeholder to this turn's
+    /// preseeded copy. Tool-doc imports use the raw space ID (ADR-034 §0).
+    pub fn bind_fixture_space(mut self, space: &str) -> Result<Self, ResolveError> {
+        if space.is_empty()
+            || !space
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(ResolveError::BadSpec(space.into()));
+        }
+        self.fixture_space = Some(space.into());
+        Ok(self)
+    }
+
+    pub fn manifest_hash(&self) -> String {
+        let bytes = serde_json::to_vec(&self.manifest).expect("manifest is serializable");
+        format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+    }
+}
+
+#[cfg(feature = "android-spike")]
+impl ModuleResolver for FrozenBundleResolver {
+    fn resolve(&mut self, spec: &str, _frm: Option<&str>) -> Result<Value, ResolveError> {
+        let mapped = spec.split_once(':').and_then(|(alias, module)| {
+            (Some(alias) == self.fixture_space.as_deref())
+                .then(|| format!("$fixtureSpace:{module}"))
+        });
+        let target = self
+            .manifest
+            .specs
+            .get(mapped.as_deref().unwrap_or(spec))
+            .ok_or_else(|| {
+                ResolveError::NotFound(format!("spec absent from frozen bundle: {spec}"))
+            })?;
+        // Construction verified and cached every module, so later filesystem changes
+        // cannot silently change a turn's source bytes.
+        self.inner.resolve(target, None)
     }
 }
 
@@ -605,5 +714,50 @@ mod tests {
         let mut r = LocalDirResolver::new(dir.path().to_path_buf());
         let err = r.resolve("ghost@v9", None).unwrap_err();
         assert!(err.to_string().starts_with("program not found: ghost@v9"));
+    }
+}
+
+#[cfg(all(test, feature = "android-spike"))]
+mod frozen_tests {
+    use super::*;
+
+    #[test]
+    fn frozen_bundle_verifies_hashes_and_exact_aliases_before_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = "def main(args): return 1\n";
+        std::fs::write(dir.path().join("fixture@v1.py"), code).unwrap();
+        let manifest = FrozenBundleManifest {
+            format: 1,
+            modules: BTreeMap::from([(
+                "fixture@v1".into(),
+                format!("sha256:{}", hex::encode(Sha256::digest(code))),
+            )]),
+            specs: BTreeMap::from([
+                ("fixture@v1".into(), "fixture@v1".into()),
+                ("agent:fixture@v1".into(), "fixture@v1".into()),
+                ("$fixtureSpace:fixture@v1".into(), "fixture@v1".into()),
+            ]),
+        };
+        let mut resolver = FrozenBundleResolver::new(dir.path().into(), manifest.clone())
+            .unwrap()
+            .bind_fixture_space("fixture-copy-001")
+            .unwrap();
+        std::fs::write(dir.path().join("fixture@v1.py"), "changed").unwrap();
+        assert_eq!(
+            resolver.resolve("agent:fixture@v1", None).unwrap()["source"],
+            code
+        );
+        assert_eq!(
+            resolver
+                .resolve("fixture-copy-001:fixture@v1", None)
+                .unwrap()["source"],
+            code
+        );
+        assert!(resolver
+            .resolve("fixture-copy-002:fixture@v1", None)
+            .is_err());
+        assert!(resolver.resolve("../fixture@v1", None).is_err());
+        assert!(resolver.resolve("connectors:fixture@v1", None).is_err());
+        assert!(FrozenBundleResolver::new(dir.path().into(), manifest).is_err());
     }
 }

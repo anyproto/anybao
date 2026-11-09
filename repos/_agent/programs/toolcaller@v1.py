@@ -9,7 +9,7 @@ record written through the any module. Everything nondeterministic is
 an effect, so a recorded conversation replays whole.
 
 args: {space, chatId, userText, uiContext?, system?, agentName?, traceRef?,
-maxTurns?, maxTokensTotal?, tier?, bootTokens?, quiet?}.
+maxTurns?, maxTokensTotal?, tier?, bootTokens?, quiet?, allowTools?}.
 
 quiet (ADR-008 §5): a delegated sub-run — no chat bubbles, no boot
 window/auto-recall, no persisted turn/ROI, and the parent's mailbox is
@@ -1223,6 +1223,10 @@ def main(args):
     max_tokens = args.get("maxTokensTotal", MAX_TOKENS_TOTAL)
     agent_name = args.get("agentName", "bao")
     quiet = args.get("quiet", False)
+    # ADR-034 §0: fixture-only tools-off; ordinary turns retain their tools.
+    allow_tools = args.get("allowTools", True)
+    if not isinstance(allow_tools, bool):
+        raise ValueError("allowTools must be a boolean")
     code_space = args.get("codeSpace") or space
     overlays = args.get("overlays") or {}
 
@@ -1238,7 +1242,7 @@ def main(args):
     # shell effects (ADR-024): the second tool + the _coding skill + a
     # runtime-context line exist only when the binary has them
     shell = _shell_info()
-    tools = [run_cell] + ([BASH_TOOL] if shell else [])
+    tools = ([run_cell] + ([BASH_TOOL] if shell else [])) if allow_tools else []
     context_window = traits["context_window"]
     boot_tokens = min(args.get("bootTokens", 40000), context_window // 4)
 
@@ -1411,6 +1415,9 @@ def main(args):
             last_in = max(last_in, _prompt_floor(messages, system, tools))
         else:
             last_in = u.get("in", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0)
+        if not allow_tools and (reply["stop"] == "tool" or any(
+                p.get("type") == "tool_call" for p in reply["parts"])):
+            raise RuntimeError("model tool execution disabled by allowTools=false")
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":

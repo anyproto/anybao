@@ -13,19 +13,31 @@ pub mod anyapi;
 pub mod blob;
 pub mod broker;
 pub mod caps;
+pub(crate) mod chatwatch;
 pub mod config;
 pub mod deploy;
 pub mod drift;
 pub mod election;
+pub mod engine_profile;
+pub mod guest_egress;
+pub mod managed;
 pub mod oauth;
+pub(crate) mod presence;
 pub mod program_schema;
 pub mod replay;
 pub mod resolver;
 pub mod routes;
 pub mod runner;
+#[cfg(feature = "desktop")]
 pub mod serve;
 #[cfg(feature = "shell")]
 pub mod shell;
+#[cfg(feature = "android-spike")]
+pub mod stage0;
+#[cfg(feature = "android-spike")]
+pub mod stage0_fixture;
+#[cfg(all(feature = "android-spike", target_os = "android"))]
+mod stage0_jni;
 
 /// `runtime.get("shell")` (ADR-024 §4): where bao is — `{cwd, home,
 /// shell, os}` in a `--features shell` binary, `null` without. The key
@@ -56,6 +68,7 @@ mod shell_runtime_value_tests {
     }
 }
 pub mod stats;
+pub mod stores;
 #[cfg(test)]
 pub mod testutil;
 pub mod trace;
@@ -71,5 +84,20 @@ pub(crate) mod bindings {
 }
 
 pub use config::{Config, ConfigBuilder};
+pub use managed::{start_managed, CancelToken, ManagedAgent, ManagedOptions};
 pub use runner::{run_program, Cage, RunOutcome};
+#[cfg(feature = "desktop")]
 pub use serve::{start, AgentHandle, RunCtx};
+
+#[cfg(all(
+    target_os = "android",
+    any(
+        feature = "desktop",
+        feature = "compiler",
+        feature = "loopback-oauth",
+        feature = "shell"
+    )
+))]
+compile_error!(
+    "Android must omit desktop, compiler, loopback-oauth and shell features (ADR-034 §2)"
+);

@@ -274,7 +274,276 @@ enum RefKind {
     Undeclared,
 }
 
+/// One exact fixture request, with JSON pointers binding object/dataset IDs.
+/// Populate from the verified pinned server and the fresh per-turn copy (ADR-034 §0).
+#[cfg(feature = "android-spike")]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpikeDataRoute {
+    pub method: String,
+    pub path: String,
+    #[serde(default)]
+    pub json_matches: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_exact: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_sha256: Option<String>,
+}
+
+#[cfg(feature = "android-spike")]
+pub struct SpikePolicy {
+    any_base_url: String,
+    fixture_space: String,
+    provider_url: String,
+    provider_credential: String,
+    routes: Vec<SpikeDataRoute>,
+}
+
+#[cfg(feature = "android-spike")]
+impl SpikePolicy {
+    pub fn new(
+        any_base_url: &str,
+        space: &str,
+        provider_url: &str,
+        provider_credential: &str,
+        routes: Vec<SpikeDataRoute>,
+    ) -> anyhow::Result<Self> {
+        let base = url::Url::parse(any_base_url)?;
+        anyhow::ensure!(
+            base.scheme() == "http"
+                && base.host_str() == Some("127.0.0.1")
+                && base.port().is_some()
+                && base.path() == "/"
+                && base.query().is_none()
+                && base.fragment().is_none()
+                && base.username().is_empty()
+                && base.password().is_none(),
+            "spike Go URL must be fixed IPv4 loopback with an explicit port"
+        );
+        anyhow::ensure!(
+            !space.is_empty()
+                && space
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+            "invalid fixture space ID"
+        );
+        let provider = url::Url::parse(provider_url)?;
+        anyhow::ensure!(
+            provider.scheme() == "https"
+                && provider.username().is_empty()
+                && provider.password().is_none()
+                && provider.fragment().is_none()
+                && provider.query().is_none()
+                && matches!(provider.host(), Some(url::Host::Domain(host)) if host.contains('.') && !host.ends_with(".localhost")),
+            "spike provider must be a fixed public HTTPS endpoint"
+        );
+        anyhow::ensure!(
+            provider_credential.starts_with("llm.key.") && provider_credential.len() > 8,
+            "spike provider needs an llm.key credential ref"
+        );
+        let prefix = format!("/v1/spaces/{space}/");
+        for route in &routes {
+            let url = url::Url::parse(&format!(
+                "{}{}",
+                any_base_url.trim_end_matches('/'),
+                route.path
+            ))?;
+            anyhow::ensure!(
+                route.path.starts_with('/')
+                    && route
+                        .path
+                        .split('%')
+                        .skip(1)
+                        .all(|part| part.starts_with("2F") || part.starts_with("3A"))
+                    && !route.path.contains('#')
+                    && !route.path.contains("..")
+                    && !route.path.contains('\\')
+                    && url.origin() == base.origin(),
+                "invalid fixture route"
+            );
+            let local = route.path.strip_prefix(&prefix);
+            let read = route.method == "GET"
+                && (local.is_some()
+                    || matches!(
+                        route.path.as_str(),
+                        "/v1/account"
+                            | "/v1/identities"
+                            | "/v1/spaces"
+                            | "/v1/catalog"
+                            | "/v1/health"
+                    ));
+            let post_read = route.method == "POST"
+                && matches!(local, Some("objects/query" | "query" | "search"));
+            let write = route.method == "POST" && matches!(local, Some("modify" | "upsert"));
+            let chat_reply = route.method == "POST" && local.is_some_and(|path| {
+                let parts: Vec<_> = path.split('/').collect();
+                matches!(parts.as_slice(), ["objects", id, "chat", "messages"] if !id.is_empty())
+            });
+            let child = route.method == "POST"
+                && local.is_some_and(|path| {
+                    let parts: Vec<_> = path.split('/').collect();
+                    matches!(
+                        parts.as_slice(),
+                        [
+                            "bundles",
+                            "bao%2Fv1" | "system%3Ageneral-chat%2Fv1",
+                            "children"
+                        ]
+                    )
+                });
+            anyhow::ensure!(
+                read || post_read || write || chat_reply || child,
+                "route is outside Stage-0 fixture data surface"
+            );
+            if child {
+                let exact = route.json_exact.as_ref().and_then(Value::as_object);
+                anyhow::ensure!(
+                    exact.is_some_and(|body| body.len() == 2
+                        && body
+                            .get("seed")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| matches!(
+                                s,
+                                "bao/config/v1" | "bao/brain/v1" | "bao/log/v1"
+                            ))
+                        && body
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.is_empty())),
+                    "fixture bundle child requires its exact preseeded seed/type body"
+                );
+            }
+            if write || local == Some("query") {
+                anyhow::ensure!(
+                    ["/objectId", "/dataset"].iter().all(|key| route
+                        .json_matches
+                        .get(*key)
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.is_empty())),
+                    "fixture record routes require exact objectId and dataset bindings"
+                );
+            }
+            anyhow::ensure!(
+                route.json_matches.keys().all(|key| key.starts_with('/')),
+                "invalid fixture JSON pointer"
+            );
+            if let Some(hash) = &route.response_sha256 {
+                anyhow::ensure!(
+                    hash.len() == 71
+                        && hash.starts_with("sha256:")
+                        && hash[7..].bytes().all(|c| c.is_ascii_hexdigit())
+                        && (read || post_read || child),
+                    "invalid fixture response hash"
+                );
+            }
+        }
+        Ok(Self {
+            any_base_url: any_base_url.trim_end_matches('/').to_string(),
+            fixture_space: space.to_string(),
+            provider_url: provider_url.to_string(),
+            provider_credential: provider_credential.to_string(),
+            routes,
+        })
+    }
+
+    fn allows(&self, name: &str, payload: &Value) -> bool {
+        let Some(method) = name.strip_prefix("http.") else {
+            return matches!(
+                name,
+                "module.resolve"
+                    | "config.get"
+                    | "runtime.get"
+                    | "time.now"
+                    | "uuid4"
+                    | "sleep"
+                    | "mailbox.drain"
+                    | "kernel.boot"
+                    | "fuel.state"
+                    | "batch"
+            );
+        };
+        let Some(url) = payload["url"].as_str() else {
+            return false;
+        };
+        if payload.get("params").is_some_and(|v| !v.is_null())
+            || payload.get("redirects").is_some_and(|v| v != 0)
+        {
+            return false;
+        }
+        if url == self.provider_url {
+            return method == "post" && payload["credential"]["ref"] == self.provider_credential;
+        }
+        if payload.get("credential").is_some_and(|v| !v.is_null()) {
+            return false;
+        }
+        self.routes.iter().any(|route| {
+            route.method.eq_ignore_ascii_case(method)
+                && url == format!("{}{}", self.any_base_url, route.path)
+                && route
+                    .json_exact
+                    .as_ref()
+                    .is_none_or(|body| payload.get("json") == Some(body))
+                && route.json_matches.iter().all(|(pointer, expected)| {
+                    payload.get("json").and_then(|body| body.pointer(pointer)) == Some(expected)
+                })
+        })
+    }
+
+    fn verify_output(
+        &self,
+        name: &str,
+        payload: &Value,
+        output: &Value,
+    ) -> Result<(), EffectFailure> {
+        for route in &self.routes {
+            let Some(expected) = &route.response_sha256 else {
+                continue;
+            };
+            if !name
+                .strip_prefix("http.")
+                .is_some_and(|method| route.method.eq_ignore_ascii_case(method))
+                || payload["url"] != format!("{}{}", self.any_base_url, route.path)
+                || route
+                    .json_exact
+                    .as_ref()
+                    .is_some_and(|body| payload.get("json") != Some(body))
+                || !route
+                    .json_matches
+                    .iter()
+                    .all(|(p, v)| payload.get("json").and_then(|b| b.pointer(p)) == Some(v))
+            {
+                continue;
+            }
+            let body = output["body"].as_str().unwrap_or("");
+            let actual = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
+            if &actual != expected
+                || output["status"]
+                    .as_u64()
+                    .is_none_or(|s| !(200..300).contains(&s))
+            {
+                return Err(EffectFailure {
+                    type_: "spike_input_drift".into(),
+                    message: format!(
+                        "fixture read changed: {} {} expected {expected}, observed {actual}",
+                        route.method, route.path
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct Broker {
+    guest_egress: Option<crate::guest_egress::AndroidPocEgress>,
+    /// ADR-034 §2: the embedder-supplied zone `time.now` reports; None = this
+    /// process's own local zone and `TZ` (desktop). Never derived from, or
+    /// written to, the process environment.
+    time_context: Option<crate::managed::ManagedTimeContext>,
+    #[cfg(feature = "android-spike")]
+    spike_policy: Option<SpikePolicy>,
+    #[cfg(feature = "android-spike")]
+    spike_clock: Option<Instant>,
     pub writer: TraceWriter,
     /// space-backed module resolution (serve); None = programs_dir only
     pub resolver: Option<Box<dyn crate::resolver::ModuleResolver + Send>>,
@@ -366,10 +635,18 @@ pub struct Broker {
     /// device, as `(space, name@vN)` in first-miss order (ADR-009 §8):
     /// serve waits for them to sync before re-running the message.
     pub missing_programs: Vec<(String, String)>,
+    /// Programs the frozen managed resolver refused typed (`NotPinned`,
+    /// ADR-034 §2), as `(space, name@vN)`: visible in the run result, never a
+    /// wait and never in `missing_programs` (which re-runs the message).
+    pub refused_programs: Vec<(String, String)>,
     /// Run-level mutate count — the whole run's oracle for "did this
     /// run change anything", independent of the span stack (ADR-009
     /// §8: a miss-deferred message is re-run only when this is 0).
     pub mutations: u64,
+    /// ADR-034 §2 (managed path): a credential's destination comes from the
+    /// declared table or its stored row only — never from the guest request,
+    /// and the broker never binds a row from first use.
+    pub managed_credentials: bool,
     /// The declared table (ADR-021 §8.1). None = no overlays behind this
     /// broker (`anyrt run`, tests): every ref is open and a ref with no
     /// known hosts is injected unbound — the seed file is the
@@ -521,6 +798,12 @@ impl Broker {
         classifier: Classifier,
     ) -> Self {
         Broker {
+            guest_egress: None,
+            time_context: None,
+            #[cfg(feature = "android-spike")]
+            spike_policy: None,
+            #[cfg(feature = "android-spike")]
+            spike_clock: None,
             writer,
             resolver: None,
             current_cell: None,
@@ -551,7 +834,9 @@ impl Broker {
             config_store: None,
             missing_secrets: Vec::new(),
             missing_programs: Vec::new(),
+            refused_programs: Vec::new(),
             mutations: 0,
+            managed_credentials: false,
             declared: None,
             used_refs: BTreeSet::new(),
             hosted: 0,
@@ -559,6 +844,41 @@ impl Broker {
             span_n: 0,
             resolve_cache: BTreeMap::new(),
         }
+    }
+
+    /// ADR-034 §5: the managed host installs the current lease's policy on
+    /// every guest broker; trusted host-management clients remain separate.
+    pub fn set_guest_egress(&mut self, policy: crate::guest_egress::AndroidPocEgress) {
+        self.guest_egress = Some(policy);
+    }
+
+    /// ADR-034 §2: `time.now` reports the embedder's zone sample instead of the
+    /// process environment; Android updates it on timezone changes.
+    pub fn set_time_context(&mut self, zone: crate::managed::ManagedTimeContext) {
+        self.time_context = Some(zone);
+    }
+
+    /// ADR-034 §0: opt in before running the trusted frozen fixture.
+    #[cfg(feature = "android-spike")]
+    pub fn set_spike_policy(
+        &mut self,
+        policy: SpikePolicy,
+        resolver: crate::resolver::FrozenBundleResolver,
+    ) -> anyhow::Result<()> {
+        self.resolver = Some(Box::new(
+            resolver.bind_fixture_space(&policy.fixture_space)?,
+        ));
+        self.runtime
+            .insert("any.base_url".into(), json!(policy.any_base_url));
+        self.runtime
+            .insert("bao.space".into(), json!(policy.fixture_space));
+        self.runtime.insert("overlays.aliases".into(), json!({}));
+        self.secret_store = None;
+        self.config_store = None;
+        self.oauth = None;
+        self.spike_policy = Some(policy);
+        self.spike_clock = Some(Instant::now());
+        Ok(())
     }
 
     /// Open a guest-declared span (ADR-001 §4c). In strict replay the
@@ -569,6 +889,27 @@ impl Broker {
         kind: Option<String>,
         input: Value,
     ) -> Result<String, EffectFailure> {
+        #[cfg(feature = "android-spike")]
+        if self.spike_policy.is_some()
+            && (matches!(name, "cell" | "bash") || input.get("mock").is_some_and(|v| !v.is_null()))
+        {
+            let message = "model tool execution and mock spans are disabled in Stage 0";
+            let payload = json!({"name": name, "input": input});
+            self.writer.effect(
+                "span.begin",
+                self.current_cell.as_deref(),
+                payload.clone(),
+                &input_key("span.begin", &payload),
+                None,
+                Some(json!({"type": "spike_denied", "message": message})),
+                json!({"mocked": false, "class": "read"}),
+                None,
+            );
+            return Err(EffectFailure {
+                type_: "spike_denied".into(),
+                message: message.into(),
+            });
+        }
         self.span_n += 1;
         let sid = format!("s{}", self.span_n); // execution order => deterministic
         let key = input_key(name, &input);
@@ -868,7 +1209,11 @@ impl Broker {
         // ADR-026 §4: `blob.put`'s normaliser materialises — the bytes go
         // to the directory here, the recorded input is the ref (its key
         // is content-addressed; replay re-mints the same ref).
-        let payload = if name == "blob.put" {
+        #[cfg(feature = "android-spike")]
+        let spike_rejects_blobs = self.spike_policy.is_some();
+        #[cfg(not(feature = "android-spike"))]
+        let spike_rejects_blobs = false;
+        let payload = if name == "blob.put" && !spike_rejects_blobs {
             self.materialize_put(&payload)?
         } else {
             payload
@@ -883,6 +1228,30 @@ impl Broker {
         let canonical = payload.clone();
         let key = input_key(name, &canonical);
         let span = self.span_stack.last().map(|s| s.id.clone());
+
+        #[cfg(feature = "android-spike")]
+        if self
+            .spike_policy
+            .as_ref()
+            .is_some_and(|policy| self.mode != Mode::Record || !policy.allows(name, &payload))
+        {
+            let message = format!("effect outside the Stage-0 fixture allowlist: {name}");
+            self.bump(class);
+            self.writer.effect(
+                name,
+                self.current_cell.as_deref(),
+                canonical,
+                &key,
+                None,
+                Some(json!({"type": "spike_denied", "message": message})),
+                json!({"mocked": false, "class": class}),
+                span.as_deref(),
+            );
+            return Err(EffectFailure {
+                type_: "spike_denied".into(),
+                message,
+            });
+        }
 
         // Capability check precedes replay/mock consult AND execute
         // (ADR-002 §2): a denial is a recorded fact, never a silent gap.
@@ -1027,12 +1396,23 @@ impl Broker {
 
         self.bump(class);
         let t0 = Instant::now();
+        #[cfg(feature = "android-spike")]
+        let spike_start_ms = self
+            .spike_clock
+            .map(|clock| clock.elapsed().as_secs_f64() * 1000.0);
         let result = self.execute(name, &payload);
         let dur_ms = t0.elapsed().as_millis() as i64;
         let mut meta = Map::new();
         meta.insert("durMs".into(), json!(dur_ms));
         meta.insert("mocked".into(), json!(false));
         meta.insert("class".into(), json!(class));
+        #[cfg(feature = "android-spike")]
+        if let Some(start_ms) = spike_start_ms {
+            meta.insert(
+                "stage0IntervalMs".into(),
+                json!([start_ms, start_ms + t0.elapsed().as_secs_f64() * 1000.0]),
+            );
+        }
         if unmatched_live {
             meta.insert("mock".into(), json!({"unmatched": true}));
         }
@@ -1050,6 +1430,24 @@ impl Broker {
         let cell = self.current_cell.clone();
         match result {
             Ok(output) => {
+                #[cfg(feature = "android-spike")]
+                if let Some(error) = self
+                    .spike_policy
+                    .as_ref()
+                    .and_then(|p| p.verify_output(name, &payload, &output).err())
+                {
+                    self.writer.effect(
+                        name,
+                        cell.as_deref(),
+                        canonical,
+                        &key,
+                        Some(output),
+                        Some(json!({"type": error.type_, "message": error.message})),
+                        Value::Object(meta),
+                        span.as_deref(),
+                    );
+                    return Err(error);
+                }
                 // ADR-026 §4: a blob read's bytes are never a record —
                 // the ref in the input names them, the directory holds them
                 let recorded = if name == "blob.read" {
@@ -1119,6 +1517,16 @@ impl Broker {
 
     // --- the syscall implementations -------------------------------------
     fn execute(&mut self, name: &str, payload: &Value) -> Result<Value, EffectFailure> {
+        if self.guest_egress.is_some()
+            && (name.starts_with("oauth.") || name.starts_with("sh.") || name.starts_with("fs."))
+        {
+            return Err(EffectFailure {
+                type_: "UnsupportedCapability".into(),
+                message:
+                    "Android PoC supports API-key HTTP credentials and no OAuth or shell effects"
+                        .into(),
+            });
+        }
         match name {
             n if n.starts_with("http.") => self.sys_http(n, payload),
             "config.get" => self.sys_config_get(payload),
@@ -1136,11 +1544,19 @@ impl Broker {
             // ADR-019 §8: the host's UTC offset rides the same recorded
             // effect — the guest renders times in the user's local zone
             // without a second nondeterministic source.
-            "time.now" => Ok(json!({
-                "epoch": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
-                "offset_s": chrono::Local::now().offset().local_minus_utc(),
-                "tz": std::env::var("TZ").ok(),
-            })),
+            "time.now" => Ok(match &self.time_context {
+                // ADR-034 §2: a stale or failed zone sample is a typed refusal,
+                // never a wrong offset served as fact
+                Some(zone) => zone.now().map_err(|e| EffectFailure {
+                    type_: "TimeContextStale".into(),
+                    message: e.to_string(),
+                })?,
+                None => json!({
+                    "epoch": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
+                    "offset_s": chrono::Local::now().offset().local_minus_utc(),
+                    "tz": std::env::var("TZ").ok(),
+                }),
+            }),
             // Cooperative budgeting (ADR-003 §2 fuel): long jobs check
             // remaining fuel and checkpoint + exit before exhausting —
             // an out-of-fuel trap kills the whole run unrecoverably.
@@ -1222,6 +1638,7 @@ impl Broker {
 
     /// `oauth.connect` (ADR-011 §5): consent as an effect that returns
     /// no tokens — blocks while the human clicks (default 120s).
+    #[cfg(feature = "loopback-oauth")]
     fn sys_oauth_connect(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
         let state = self.oauth_state()?;
         let provider = payload
@@ -1247,6 +1664,14 @@ impl Broker {
             )
         });
         state.connect(provider, scopes, timeout, client)
+    }
+
+    #[cfg(not(feature = "loopback-oauth"))]
+    fn sys_oauth_connect(&mut self, _payload: &Value) -> Result<Value, EffectFailure> {
+        Err(EffectFailure {
+            type_: "UnsupportedCapability".into(),
+            message: "oauth.connect requires the loopback-oauth feature".into(),
+        })
     }
 
     fn sys_oauth_status(&mut self, payload: &Value) -> Result<Value, EffectFailure> {
@@ -1407,8 +1832,14 @@ impl Broker {
             .filter(|h| !h.is_empty());
         let hosts = declared_hosts
             .or_else(|| row.as_ref().map(hosts_of).filter(|h| !h.is_empty()))
-            .unwrap_or_else(|| hosts_of(&guest_about));
-        let strict = self.declared.is_some();
+            .unwrap_or_else(|| {
+                if self.managed_credentials {
+                    Vec::new() // the guest's hosts are never a binding on the managed path
+                } else {
+                    hosts_of(&guest_about)
+                }
+            });
+        let strict = self.declared.is_some() || self.managed_credentials;
         if hosts.is_empty() && strict {
             // an open ref with no destination anywhere: no card, no
             // injection — the destination is what the human is asked to check
@@ -1446,7 +1877,7 @@ impl Broker {
         }
         // ADR-032 §3: an open row with no binding takes this request's —
         // the first use freezes where the key goes; one write
-        if matches!(kind, RefKind::Open) && !hosts.is_empty() {
+        if matches!(kind, RefKind::Open) && !hosts.is_empty() && !self.managed_credentials {
             if let (Some(store), Some(row)) = (&self.secret_store, &row) {
                 if hosts_of(row).is_empty() {
                     store.bind_hosts(r, &descriptor);
@@ -1471,7 +1902,6 @@ impl Broker {
                 message: "http call without url".into(),
             })?
             .to_string();
-        self.secrets_read_guard(&url, payload)?;
         if let Some(params) = payload.get("params").and_then(|p| p.as_object()) {
             let qs: Vec<String> = params
                 .iter()
@@ -1486,6 +1916,11 @@ impl Broker {
             url.push(if url.contains('?') { '&' } else { '?' });
             url.push_str(&qs.join("&"));
         }
+        // The guards see the FINAL url (params appended) and the effective
+        // wire body the server will parse — `json` or a text `body` alike —
+        // never one kwarg (ADR-021 §4, ADR-023 §9; fixed 2026-11-05).
+        let (wire, guarded) = self.wire_body(&url, payload)?;
+        self.secrets_read_guard(&url, guarded.as_ref())?;
         // `stream` + `timeout` — ADR-002 §1 (BOB-149)
         let stream = payload
             .get("stream")
@@ -1495,6 +1930,24 @@ impl Broker {
         // redirects: max follows for THIS request; 0 = manual (the 3xx
         // and its location header come back as data — ADR-008 §2)
         let explicit_redirects = payload.get("redirects").and_then(|r| r.as_u64());
+        #[cfg(feature = "android-spike")]
+        let explicit_redirects = if self.spike_policy.is_some() {
+            Some(0)
+        } else {
+            explicit_redirects
+        };
+        // ADR-034 §5: replay already returned; validate and pin before credential reads.
+        let mut pinned = if let Some(policy) = &self.guest_egress {
+            if let Some(reference) = payload["credential"]["ref"].as_str() {
+                crate::guest_egress::validate_api_key_credential(reference)?;
+            }
+            crate::guest_egress::validate_headers(payload)?;
+            let target = policy.resolve(&verb, &url)?;
+            url = target.url().to_string();
+            Some(target)
+        } else {
+            None
+        };
         // named-credential injection: value resolved AFTER recording.
         // Static refs read the per-run map; managed oauth refs resolve
         // through the token lifecycle (ADR-011 §6) — same guest shape,
@@ -1557,47 +2010,36 @@ impl Broker {
         // same-host). The host owns the follow decision — default manual,
         // an explicit count follows same-origin only with the header
         // re-attached per hop — ADR-011 §4.
-        let mut builder = ureq::AgentBuilder::new();
-        if stream {
-            // socket timeouts stand in for the whole-request cap a
-            // stream cannot have: read = "no chunk for idle s" (headers
-            // too), write = the request body, connect = total capped
-            // at 30 s; the total deadline is checked between chunks
-            builder = builder
-                .timeout_read(timeout_idle)
-                .timeout_write(timeout_idle)
-                .timeout_connect(timeout_total.min(std::time::Duration::from_secs(30)));
-        }
-        let (agent, mut hops_left) = if cred.is_some() {
-            let agent = builder.redirects(0).build();
-            (agent, explicit_redirects.unwrap_or(0))
+        let make_builder = || {
+            let mut builder = ureq::AgentBuilder::new();
+            if stream {
+                // socket timeouts stand in for the whole-request cap a
+                // stream cannot have: read = "no chunk for idle s" (headers
+                // too), write = the request body, connect = total capped
+                // at 30 s; the total deadline is checked between chunks
+                builder = builder
+                    .timeout_read(timeout_idle)
+                    .timeout_write(timeout_idle)
+                    .timeout_connect(timeout_total.min(std::time::Duration::from_secs(30)));
+            }
+            builder
+        };
+        let (agent, mut hops_left) = if self.guest_egress.is_some() {
+            (
+                None,
+                explicit_redirects
+                    .unwrap_or(if cred.is_some() { 0 } else { 5 })
+                    .min(20),
+            )
+        } else if cred.is_some() {
+            let agent = make_builder().redirects(0).build();
+            (Some(agent), explicit_redirects.unwrap_or(0))
         } else {
             let agent = match explicit_redirects {
-                Some(max) => builder.redirects(max as u32).build(),
-                None => builder.build(),
+                Some(max) => make_builder().redirects(max as u32).build(),
+                None => make_builder().build(),
             };
-            (agent, 0) // uncredentialed: the client follows internally
-        };
-        // the wire body (ADR-026 §3): `json` with refs expanded to base64,
-        // a text `body`, or a raw ref as raw bytes + its mime
-        enum Wire {
-            None,
-            Json(String),
-            Text(String),
-            Bytes(Vec<u8>, String),
-        }
-        let wire = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
-            Wire::Json(crate::trace::canonical_json(&self.expand_refs(body)?))
-        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
-            Wire::Text(body.to_string())
-        } else if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
-            let mime = r["mime"]
-                .as_str()
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            Wire::Bytes(self.blob_bytes(r)?, mime)
-        } else {
-            Wire::None
+            (Some(agent), 0) // desktop uncredentialed: the client follows internally
         };
         let has_content_type = payload
             .get("headers")
@@ -1627,6 +2069,17 @@ impl Broker {
             }
         };
         let resp = loop {
+            let hop_agent;
+            let agent = if let Some(policy) = &self.guest_egress {
+                let target = match pinned.take() {
+                    Some(target) => target,
+                    None => policy.resolve(&cur_verb, &cur_url)?,
+                };
+                hop_agent = target.agent(make_builder());
+                &hop_agent
+            } else {
+                agent.as_ref().unwrap()
+            };
             let mut req = agent.request(&cur_verb, &cur_url);
             if !stream {
                 req = req.timeout(timeout_total);
@@ -1671,13 +2124,36 @@ impl Broker {
             if hops_left == 0 || !matches!(resp.status(), 301 | 302 | 303 | 307 | 308) {
                 break resp;
             }
-            let next = resp
-                .header("location")
-                .and_then(|loc| same_origin_target(&cur_url, loc));
+            let next = if let Some(policy) = &self.guest_egress {
+                match resp.header("location") {
+                    Some(location) => {
+                        let next = policy.redirect(&cur_url, location)?;
+                        let next_verb = if matches!(resp.status(), 301..=303)
+                            && cur_verb != "GET"
+                            && cur_verb != "HEAD"
+                        {
+                            "GET"
+                        } else {
+                            &cur_verb
+                        };
+                        // Validate even a cross-origin hop before declining to forward credentials.
+                        let target = policy.resolve(next_verb, &next)?;
+                        if same_origin_target(&cur_url, &next).is_none() {
+                            break resp;
+                        }
+                        pinned = Some(target);
+                        Some(next)
+                    }
+                    None => None,
+                }
+            } else {
+                resp.header("location")
+                    .and_then(|loc| same_origin_target(&cur_url, loc))
+            };
             let Some(next) = next else {
                 break resp; // cross-origin (or unparsable): the 3xx is data
             };
-            self.secrets_read_guard(&next, payload)?; // guard every hop
+            self.secrets_read_guard(&next, guarded.as_ref())?; // guard every hop
             hops_left -= 1;
             if matches!(resp.status(), 301..=303) && cur_verb != "GET" && cur_verb != "HEAD" {
                 cur_verb = "GET".to_string();
@@ -1816,14 +2292,20 @@ impl Broker {
     /// on purpose: host aliasing (localhost vs 127.0.0.1) can't dodge
     /// it, and a benign body that merely MENTIONS the words in text
     /// fields passes.
-    fn secrets_read_guard(&self, url: &str, payload: &Value) -> Result<(), EffectFailure> {
+    ///
+    /// `url` is the final url (params appended) and `body` the effective
+    /// JSON body (`wire_body`): both are read as the server decodes them —
+    /// percent-decoded path and query, parsed query pairs — so neither a
+    /// `params` kwarg nor an encoded id can slip past (found 2026-11-05).
+    fn secrets_read_guard(&self, url: &str, body: Option<&Value>) -> Result<(), EffectFailure> {
+        let decoded = percent_decode(url);
+        let query = query_pairs(&decoded);
         // ADR-021 §8.6: a credential card is the host's statement — a guest
         // chat write (any verb, any path under chat/messages, batch items
         // included since they re-enter `call`) carrying a host-only
         // attachment type is refused before it leaves
-        if url.contains("/chat/messages") {
-            let types = payload
-                .get("json")
+        if decoded.contains("/chat/messages") {
+            let types = body
                 .and_then(|b| b.get("attachments"))
                 .and_then(Value::as_object)
                 .into_iter()
@@ -1851,20 +2333,24 @@ impl Broker {
                  anybao.toml)"
             ),
         };
-        let body = payload.get("json");
-        let body_dataset = body.and_then(|b| b.get("dataset")).and_then(|d| d.as_str());
-        if body_dataset.is_some_and(|d| {
+        let secrets_dataset = |d: &str| {
             d.ends_with("_agent_secrets")
                 || d == "agent_secrets"
                 || self.secrets_collection.as_deref() == Some(d)
-        }) {
+        };
+        let body_dataset = body.and_then(|b| b.get("dataset")).and_then(|d| d.as_str());
+        if body_dataset.is_some_and(secrets_dataset)
+            || query
+                .iter()
+                .any(|(k, v)| k == "dataset" && secrets_dataset(v))
+        {
             return Err(forbidden("the agent_secrets dataset"));
         }
         if let Some(id) = &self.secrets_guard {
             let body_object = body
                 .and_then(|b| b.get("objectId"))
                 .and_then(|o| o.as_str());
-            if url.contains(id.as_str()) || body_object == Some(id.as_str()) {
+            if decoded.contains(id.as_str()) || body_object == Some(id.as_str()) {
                 return Err(forbidden("the secrets object"));
             }
         }
@@ -1872,14 +2358,17 @@ impl Broker {
         // read them (query / aggregate / get) and never write — insert,
         // upsert, update, delete, index or collection changes, and
         // aggregate sinks ($out/$merge) that name a trace collection.
-        if let Some(rest) = url.split("/v1/local/").nth(1) {
-            let op = rest.split('?').next().unwrap_or("");
+        if let Some(rest) = decoded.split("/v1/local/").nth(1) {
+            let op = rest.split(['?', '/']).next().unwrap_or("");
             let coll = body
                 .and_then(|b| b.get("coll"))
                 .and_then(|c| c.get("name"))
                 .and_then(|n| n.as_str())
                 .unwrap_or("");
-            let names_trace = coll.starts_with("trace_") || url.contains("name=trace_");
+            let names_trace = coll.starts_with("trace_")
+                || query
+                    .iter()
+                    .any(|(k, v)| k == "name" && v.starts_with("trace_"));
             let write_op = matches!(
                 op,
                 "insert" | "upsert" | "update" | "delete" | "indexes" | "collections"
@@ -1906,6 +2395,91 @@ impl Broker {
             }
         }
         Ok(())
+    }
+
+    /// The wire body (ADR-026 §3) plus the JSON value the guards inspect:
+    /// the body as the Any server will parse it. `json` is sent with its
+    /// refs expanded; a text `body` that parses as a JSON object or array
+    /// is guarded as that value and, toward the Any server, SENT
+    /// re-serialized — so a duplicate key cannot mean one thing to the
+    /// guard (serde keeps the last) and another to the server (fastjson
+    /// takes the first); elsewhere the text goes out verbatim. A text body
+    /// the Any server could not parse as JSON, and raw bytes to any Any
+    /// route but the file upload (`any@v1.attach_file`), are refused typed
+    /// before execution (ADR-021 §4, ADR-023 §9; found 2026-11-05).
+    fn wire_body(
+        &self,
+        url: &str,
+        payload: &Value,
+    ) -> Result<(Wire, Option<Value>), EffectFailure> {
+        let any_route = self.any_route(url);
+        let refused = |what: &str| EffectFailure {
+            type_: "forbidden".into(),
+            message: format!(
+                "{what} is not sent to the Any server: its data routes take `json=`, which \
+                 the host inspects before the request leaves (ADR-021 §4)"
+            ),
+        };
+        if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
+            let expanded = self.expand_refs(body)?;
+            let text = crate::trace::canonical_json(&expanded);
+            return Ok((Wire::Json(text), Some(expanded)));
+        }
+        if let Some(text) = payload.get("body").and_then(|b| b.as_str()) {
+            return Ok(match serde_json::from_str::<Value>(text) {
+                Ok(parsed) if parsed.is_object() || parsed.is_array() => {
+                    let wire = if any_route {
+                        Wire::Json(crate::trace::canonical_json(&parsed))
+                    } else {
+                        Wire::Text(text.to_string())
+                    };
+                    (wire, Some(parsed))
+                }
+                Ok(_) => (Wire::Text(text.to_string()), None),
+                Err(_) if any_route => return Err(refused("a non-JSON text body")),
+                Err(_) => (Wire::Text(text.to_string()), None),
+            });
+        }
+        if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
+            if any_route && !file_upload_route(url) {
+                return Err(refused("a raw body"));
+            }
+            let mime = r["mime"]
+                .as_str()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            return Ok((Wire::Bytes(self.blob_bytes(r)?, mime), None));
+        }
+        Ok((Wire::None, None))
+    }
+
+    /// Is `url` the Any server as far as the body guards go: the configured
+    /// base (the classifier's netloc), or a loopback alias of it — the same
+    /// port reached as `localhost`, `[::1]`, `127.1`, a decimal address or
+    /// IPv4-mapped IPv6 (what the url crate folds). Unconfigured (`anyrt
+    /// run` without an address, tests), a loopback host with a `/v1/` path.
+    /// A DNS name that resolves to loopback is not recognized (the guard
+    /// never resolves); its JSON bodies are still content-guarded. A local
+    /// non-Any service on another port is untouched.
+    fn any_route(&self, url: &str) -> bool {
+        if self.classifier.is_any(url) {
+            return true;
+        }
+        let Ok(u) = url::Url::parse(url) else {
+            return false;
+        };
+        if !loopback_host(&u) {
+            return false;
+        }
+        match self.classifier.any_netloc() {
+            Some(netloc) => {
+                url::Url::parse(&format!("http://{netloc}"))
+                    .ok()
+                    .and_then(|base| base.port_or_known_default())
+                    == u.port_or_known_default()
+            }
+            None => u.path().starts_with("/v1/"),
+        }
     }
 
     /// Secret refs are refused by NAMESPACE, not presence — oauth
@@ -2009,11 +2583,21 @@ impl Broker {
             // the `run` subcommand's offline path
             let frm = payload.get("frm").and_then(|f| f.as_str());
             return resolver.resolve(spec, frm).map_err(|e| {
-                if let crate::resolver::ResolveError::Missing { space, spec, .. } = &e {
-                    let key = (space.clone(), spec.clone());
-                    if !self.missing_programs.contains(&key) {
-                        self.missing_programs.push(key);
+                use crate::resolver::ResolveError;
+                match &e {
+                    ResolveError::Missing { space, spec, .. } => {
+                        let key = (space.clone(), spec.clone());
+                        if !self.missing_programs.contains(&key) {
+                            self.missing_programs.push(key);
+                        }
                     }
+                    ResolveError::NotPinned { space, spec } => {
+                        let key = (space.clone(), spec.clone());
+                        if !self.refused_programs.contains(&key) {
+                            self.refused_programs.push(key);
+                        }
+                    }
+                    _ => {}
                 }
                 EffectFailure {
                     type_: "KeyError".into(),
@@ -2372,7 +2956,7 @@ const HOST_ONLY_ATTACHMENTS: [&str; 2] = ["credential_request", "credential_set"
 
 /// The `hosts` list of a descriptor or row (`about.hosts` / row
 /// `hosts`): trimmed, lowercased, empties dropped.
-fn hosts_of(v: &Value) -> Vec<String> {
+pub(crate) fn hosts_of(v: &Value) -> Vec<String> {
     v.get("hosts")
         .and_then(Value::as_array)
         .map(|a| {
@@ -2399,7 +2983,7 @@ fn url_host(url: &str) -> Option<String> {
 /// ADR-021 §7: the request's host is one of the binding's — exact host
 /// (case-insensitive, no suffix matching), a declared port must match,
 /// an undeclared one admits any.
-fn host_allowed(url: &str, hosts: &[String]) -> bool {
+pub(crate) fn host_allowed(url: &str, hosts: &[String]) -> bool {
     let Ok(u) = url::Url::parse(url) else {
         return false;
     };
@@ -2487,6 +3071,92 @@ pub(crate) fn urlencode(s: &str) -> String {
     out
 }
 
+/// The wire body of a guest http call (ADR-026 §3): `json` with refs
+/// expanded to base64, a text `body`, or a raw ref as raw bytes + its mime.
+#[derive(Debug, PartialEq)]
+enum Wire {
+    None,
+    Json(String),
+    Text(String),
+    Bytes(Vec<u8>, String),
+}
+
+/// A loopback destination by host literal: what the local Any server is
+/// reached as. `url::Url` already folds `127.1`, a decimal address and
+/// dot segments; `localhost` and `*.localhost` are loopback by name.
+fn loopback_host(u: &url::Url) -> bool {
+    match u.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|v| v.is_loopback() || v.is_unspecified())
+        }
+        Some(url::Host::Domain(d)) => {
+            let d = d.to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        None => false,
+    }
+}
+
+/// `POST /v1/spaces/{s}/objects/{o}/files` — the one Any route that takes
+/// raw bytes (`any@v1.attach_file`); never a store, query or local route.
+/// Matched on the raw path as whole, unencoded segments: an encoded slash
+/// is not an id here (the refusal is the safe side).
+fn file_upload_route(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    let parts: Vec<&str> = u.path().trim_start_matches('/').split('/').collect();
+    matches!(
+        parts.as_slice(),
+        ["v1", "spaces", s, "objects", o, "files"]
+            if !s.is_empty() && !o.is_empty() && !s.contains('%') && !o.contains('%')
+    )
+}
+
+/// `%XX` → the byte, everything else verbatim (lossy UTF-8): the guards
+/// compare ids and collection names as the server decodes them.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(b) = hex {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The `k=v` pairs of a (decoded) url's query, in order; a bare key has an
+/// empty value.
+fn query_pairs(url: &str) -> Vec<(String, String)> {
+    url.split_once('?')
+        .map(|(_, q)| q)
+        .unwrap_or("")
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (k.to_string(), v.to_string()),
+            None => (p.to_string(), String::new()),
+        })
+        .collect()
+}
+
+#[cfg(feature = "loopback-oauth")]
 pub(crate) fn getrandom(buf: &mut [u8]) {
     // uuid's rng is already OS-backed; reuse it (oauth's PKCE verifier)
     for chunk in buf.chunks_mut(16) {
@@ -2524,6 +3194,20 @@ mod tests {
             Some(PathBuf::from("programs")),
             Classifier::new(None),
         )
+    }
+
+    #[cfg(not(feature = "loopback-oauth"))]
+    #[test]
+    fn oauth_connect_without_loopback_is_typed_even_without_state() {
+        let mut broker = make_broker("run_oauth_unavailable");
+        let error = broker
+            .call("oauth.connect", json!({"provider": "test"}))
+            .unwrap_err();
+        assert_eq!(error.type_, "UnsupportedCapability");
+        assert_eq!(
+            broker.writer.records.last().unwrap()["error"]["type"],
+            "UnsupportedCapability"
+        );
     }
 
     // --- span-scoped mocks (ADR-028 §3/§5/§8) ------------------------------------
@@ -2979,6 +3663,40 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(e.type_, "forbidden");
+        // the same writes through a text body, a `params` kwarg or an encoded
+        // name (found 2026-11-05): the fence reads what the server decodes
+        let e = b
+            .call(
+                "http.post",
+                json!({"url": "http://any.local:8080/v1/local/delete",
+                       "body": r#"{"coll": {"scope": "space", "spaceId": "sp", "name": "trace_records"}, "filter": {}}"#}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
+        let e = b
+            .call(
+                "http.delete",
+                json!({"url": "http://any.local:8080/v1/local/collections",
+                       "params": {"scope": "space", "spaceId": "sp", "name": "trace_records"}}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
+        let e = b
+            .call(
+                "http.delete",
+                json!({"url": "http://any.local:8080/v1/local/collections?scope=space&spaceId=sp&name=%74race_runs"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "forbidden");
+        // a text body that names no trace collection is not a fence hit
+        let e = b
+            .call(
+                "http.post",
+                json!({"url": "http://127.0.0.1:1/v1/local/insert", "timeout": 0.5,
+                       "body": r#"{"coll": {"scope": "space", "spaceId": "sp", "name": "scratch"}, "docs": []}"#}),
+            )
+            .unwrap_err();
+        assert_eq!(e.type_, "URLError");
     }
 
     #[test]
@@ -2997,6 +3715,234 @@ mod tests {
             )
             .unwrap_err();
         assert_ne!(err.type_, "forbidden");
+    }
+
+    /// The guard inspects what the SERVER parses: a text `body`, a `params`
+    /// kwarg, an encoded id — the shapes that slipped past the `json`-only
+    /// check (found 2026-11-05, ADR-021 §4 / ADR-023 §9).
+    #[test]
+    fn secrets_guard_covers_text_bodies_params_and_encoded_urls() {
+        let mut b = make_broker("run_guard_wire");
+        b.secrets_guard = Some("bafysecretsobj".into());
+        b.secrets_collection = Some("resolved-at-boot".into());
+        let base = "http://127.0.0.1:7001/v1/spaces/s";
+        let refused = |b: &mut Broker, verb: &str, payload: Value| {
+            let shown = payload.to_string();
+            let err = b.call(verb, payload).unwrap_err();
+            assert_eq!(err.type_, "forbidden", "{shown}");
+        };
+        // a string body naming the secrets object or the dataset
+        for text in [
+            r#"{"objectId": "bafysecretsobj", "dataset": "agent_config"}"#,
+            r#"{"objectId": "whatever", "dataset": "resolved-at-boot"}"#,
+            r#"{"objectId": "whatever", "dataset": "bafytype_agent_secrets"}"#,
+            // a duplicate key whose LAST value is the secret: serde's view, the one sent
+            r#"{"objectId": "benign", "objectId": "bafysecretsobj", "dataset": "agent_config"}"#,
+        ] {
+            refused(
+                &mut b,
+                "http.post",
+                json!({"url": format!("{base}/query"), "body": text,
+                       "headers": {"Content-Type": "application/json"}}),
+            );
+        }
+        // the id or the dataset in `params` (appended after the old check ran)
+        refused(
+            &mut b,
+            "http.post",
+            json!({"url": format!("{base}/query"), "json": {"dataset": "agent_config"},
+                   "params": {"objectId": "bafysecretsobj"}}),
+        );
+        refused(
+            &mut b,
+            "http.get",
+            json!({"url": format!("{base}/objects/o/editor/markdown"),
+                   "params": {"dataset": "agent_secrets"}}),
+        );
+        // a percent-encoded id in the path or query
+        refused(
+            &mut b,
+            "http.get",
+            json!({"url": format!("{base}/objects/bafysecret%73obj/editor/markdown")}),
+        );
+        refused(
+            &mut b,
+            "http.get",
+            json!({"url": format!("{base}/query?objectId=bafysecret%73obj")}),
+        );
+        // a host-only chat attachment riding a text body (ADR-021 §8.6)
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": format!("{base}/objects/chat/chat/messages"),
+                       "body": r#"{"text": "x", "attachments": {"a": {"type": "credential_request"}}}"#}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "host_only");
+        // a text body the server could not parse as JSON never reaches an Any
+        // route — on `localhost` as much as on the configured address
+        for url in [
+            format!("{base}/query"),
+            "http://localhost:7001/v1/spaces/s/query".into(),
+            "http://[::1]:7001/v1/spaces/s/query".into(),
+            "http://127.1:7001/v1/local/query".into(),
+        ] {
+            refused(
+                &mut b,
+                "http.post",
+                json!({"url": url, "body": "objectId=x"}),
+            );
+        }
+        // every refusal above is a recorded fact
+        assert!(
+            b.writer
+                .records
+                .iter()
+                .filter(|r| r.get("error").is_some())
+                .count()
+                >= 11
+        );
+    }
+
+    #[test]
+    fn wire_body_reserializes_json_text_for_the_any_server_and_leaves_the_rest_verbatim() {
+        let b = make_broker("run_wire");
+        // toward the Any server a JSON text body goes out as the value the
+        // guard saw: one `objectId`, serde's last
+        let dup = r#"{"objectId": "bafysecretsobj", "objectId": "benign", "dataset": "d"}"#;
+        let (wire, guarded) = b
+            .wire_body(
+                "http://127.0.0.1:7001/v1/spaces/s/query",
+                &json!({"body": dup}),
+            )
+            .unwrap();
+        assert_eq!(guarded, Some(json!({"objectId": "benign", "dataset": "d"})));
+        assert_eq!(
+            wire,
+            Wire::Json(crate::trace::canonical_json(
+                &json!({"objectId": "benign", "dataset": "d"})
+            ))
+        );
+        // elsewhere the text is sent verbatim and still content-guarded
+        let (wire, guarded) = b
+            .wire_body(
+                "https://api.example/v1/items",
+                &json!({"body": r#"{"a": 1}"#}),
+            )
+            .unwrap();
+        assert_eq!(wire, Wire::Text(r#"{"a": 1}"#.into()));
+        assert_eq!(guarded, Some(json!({"a": 1})));
+        let (wire, guarded) = b
+            .wire_body(
+                "https://api.example/token",
+                &json!({"body": "grant=client&x=1"}),
+            )
+            .unwrap();
+        assert_eq!(wire, Wire::Text("grant=client&x=1".into()));
+        assert_eq!(guarded, None);
+        // a JSON scalar is sent as it was (nothing to guard in it)
+        let (wire, _) = b
+            .wire_body(
+                "http://127.0.0.1:7001/v1/spaces/s/query",
+                &json!({"body": "42"}),
+            )
+            .unwrap();
+        assert_eq!(wire, Wire::Text("42".into()));
+        assert!(matches!(
+            b.wire_body("http://127.0.0.1:7001/v1/spaces/s/query", &json!({})),
+            Ok((Wire::None, None))
+        ));
+        // the Any-route decision, unconfigured: a loopback host with a `/v1/` path
+        assert!(b.any_route("http://localhost:7001/v1/spaces/s/query"));
+        for url in [
+            "https://api.example/v1/items",
+            "http://10.0.0.1:7001/v1/local/query",
+            "http://127.0.0.1:1/raw",
+        ] {
+            assert!(!b.any_route(url), "{url}");
+        }
+        // configured: the netloc and every loopback alias of its port, nothing else local
+        let configured = Broker::new(
+            TraceWriter::new(json!({"id": "run_wire_cfg"})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            Classifier::new(Some("http://127.0.0.1:7001")),
+        );
+        for url in [
+            "http://127.0.0.1:7001/x",
+            "http://localhost:7001/x",
+            "http://sub.localhost:7001/x",
+            "http://[::1]:7001/x",
+            "http://[::ffff:127.0.0.1]:7001/x",
+            "http://127.1:7001/x",
+            "http://2130706433:7001/x",
+            "http://0.0.0.0:7001/x",
+        ] {
+            assert!(configured.any_route(url), "{url}");
+        }
+        for url in [
+            "https://api.example/v1/items",
+            "http://10.0.0.1:7001/x",
+            "http://127.0.0.1:7002/v1/spaces/s/query",
+            "http://localhost:11434/api/generate",
+        ] {
+            assert!(!configured.any_route(url), "{url}");
+        }
+        assert!(file_upload_route(
+            "http://127.0.0.1:7001/v1/spaces/s.1/objects/o/files?name=a.png"
+        ));
+        for url in [
+            "http://127.0.0.1:7001/v1/spaces/s/objects/o/files/query",
+            "http://127.0.0.1:7001/v1/local/insert",
+            "http://127.0.0.1:7001/v1/spaces/s/objects/o%2Ffiles",
+            "http://127.0.0.1:7001/v1/spaces/s/objects/o%2Fx/files",
+        ] {
+            assert!(!file_upload_route(url), "{url}");
+        }
+        assert_eq!(percent_decode("a%2Fb%zz%4"), "a/b%zz%4");
+        assert_eq!(
+            query_pairs("http://h/p?name=trace_runs&flag&x=1=2"),
+            vec![
+                ("name".to_string(), "trace_runs".to_string()),
+                ("flag".to_string(), String::new()),
+                ("x".to_string(), "1=2".to_string()),
+            ]
+        );
+    }
+
+    /// Raw bytes reach the Any server only on the file upload route
+    /// (`any@v1.attach_file`), which keeps working on desktop; every other
+    /// Any route refuses them before execution.
+    #[test]
+    fn raw_bodies_reach_the_any_server_only_through_the_file_upload_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = crate::blob::BlobDir::create(dir.path()).unwrap();
+        let r = blobs.put(b"\x89PNG", "image/png").unwrap();
+        let mut b = make_broker("run_raw");
+        b.writer.blob_dir = Some(blobs);
+        for url in [
+            "http://127.0.0.1:7001/v1/local/insert",
+            "http://127.0.0.1:7001/v1/spaces/s/query",
+            "http://127.0.0.1:7001/v1/spaces/s/objects/o/files/query",
+        ] {
+            let err = b
+                .call(
+                    "http.post",
+                    json!({"url": url, "body": r, "headers": {"Content-Type": "image/png"}}),
+                )
+                .unwrap_err();
+            assert_eq!(err.type_, "forbidden", "{url}");
+        }
+        // the upload passes the guards and fails only at the network (no server on :1)
+        let err = b
+            .call(
+                "http.post",
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/o/files?name=a.png",
+                       "body": r, "headers": {"Content-Type": "image/png"}, "timeout": 0.5}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
     }
 
     #[test]
@@ -5042,5 +5988,238 @@ mod tests {
                 .unwrap()["results"],
             json!([])
         );
+    }
+}
+
+#[cfg(test)]
+#[path = "broker/guest_egress_tests.rs"]
+mod guest_egress_tests;
+
+#[cfg(test)]
+#[path = "broker/managed_credentials_tests.rs"]
+mod managed_credentials_tests;
+
+#[cfg(all(test, feature = "android-spike"))]
+mod spike_tests {
+    use super::*;
+
+    fn policy(base: &str, routes: Vec<SpikeDataRoute>) -> SpikePolicy {
+        SpikePolicy::new(
+            base,
+            "fixture-space",
+            "https://api.anthropic.com/v1/messages",
+            "llm.key.anthropic",
+            routes,
+        )
+        .unwrap()
+    }
+
+    fn record_route() -> SpikeDataRoute {
+        SpikeDataRoute {
+            method: "POST".into(),
+            path: "/v1/spaces/fixture-space/modify".into(),
+            json_matches: BTreeMap::from([
+                ("/objectId".into(), json!("fixture-chat")),
+                ("/dataset".into(), json!("fixture-turns")),
+            ]),
+            json_exact: None,
+            response_sha256: None,
+        }
+    }
+
+    #[test]
+    fn spike_routes_bind_origin_method_object_dataset_and_credential() {
+        let p = policy("http://127.0.0.1:1234", vec![record_route()]);
+        let mut request = json!({"url": "http://127.0.0.1:1234/v1/spaces/fixture-space/modify",
+            "json": {"objectId": "fixture-chat", "dataset": "fixture-turns", "records": []}});
+        assert!(p.allows("http.post", &request));
+        assert!(!p.allows("http.get", &request));
+        request["json"]["objectId"] = json!("another-chat");
+        assert!(!p.allows("http.post", &request));
+        request["json"]["objectId"] = json!("fixture-chat");
+        request["json"]["dataset"] = json!("agent_secrets");
+        assert!(!p.allows("http.post", &request));
+        let provider = json!({"url": "https://api.anthropic.com/v1/messages",
+            "credential": {"ref": "llm.key.anthropic"}});
+        assert!(p.allows("http.post", &provider));
+        let mut wrong = provider.clone();
+        wrong["credential"]["ref"] = json!("connector.key.secret");
+        assert!(!p.allows("http.post", &wrong));
+        let mut redirects = provider;
+        redirects["redirects"] = json!(1);
+        assert!(!p.allows("http.post", &redirects));
+        assert!(!p.allows("config.set", &json!({})));
+        assert!(!p.allows("oauth.connect", &json!({})));
+        assert!(!p.allows("blob.put", &json!({})));
+    }
+
+    #[test]
+    fn spike_policy_refuses_unbound_writes_and_registry_routes() {
+        let mut route = record_route();
+        route.json_matches.clear();
+        assert!(SpikePolicy::new(
+            "http://127.0.0.1:1234",
+            "fixture-space",
+            "https://api.anthropic.com/v1/messages",
+            "llm.key.anthropic",
+            vec![route]
+        )
+        .is_err());
+        let mut route = record_route();
+        route.path = "/v1/devices".into();
+        assert!(SpikePolicy::new(
+            "http://127.0.0.1:1234",
+            "fixture-space",
+            "https://api.anthropic.com/v1/messages",
+            "llm.key.anthropic",
+            vec![route]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn spike_existing_children_require_exact_preseeded_body_and_response() {
+        let body = json!({"seed": "bao/brain/v1", "type": "fixture-brain-type"});
+        let response = json!({"objectId": "fixture-brain"});
+        let route = SpikeDataRoute {
+            method: "POST".into(),
+            path: "/v1/spaces/fixture-space/bundles/bao%2Fv1/children".into(),
+            json_matches: BTreeMap::new(),
+            json_exact: Some(body.clone()),
+            response_sha256: Some(format!(
+                "sha256:{:x}",
+                Sha256::digest(crate::trace::canonical_json(&response).as_bytes())
+            )),
+        };
+        let p = policy("http://127.0.0.1:1234", vec![route.clone()]);
+        let input = json!({"url": "http://127.0.0.1:1234/v1/spaces/fixture-space/bundles/bao%2Fv1/children", "json": body});
+        assert!(p.allows("http.post", &input));
+        let mut changed = input.clone();
+        changed["json"]["collections"] = json!(["unrelated"]);
+        assert!(!p.allows("http.post", &changed));
+        changed["json"] = json!({"seed": "other-child", "type": "fixture-brain-type"});
+        assert!(!p.allows("http.post", &changed));
+        assert!(p
+            .verify_output(
+                "http.post",
+                &input,
+                &json!({"status":200, "body":response.to_string()})
+            )
+            .is_ok());
+        assert_eq!(
+            p.verify_output("http.post", &input, &json!({"status":200, "body":"{}"}))
+                .unwrap_err()
+                .type_,
+            "spike_input_drift"
+        );
+        let mut unbound = route;
+        unbound.json_exact = None;
+        assert!(SpikePolicy::new(
+            "http://127.0.0.1:1234",
+            "fixture-space",
+            "https://api.openai.com/v1/chat/completions",
+            "llm.key.openai",
+            vec![unbound]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn spike_input_hash_is_the_exact_wire_body_including_go_newline() {
+        let raw = "{\"status\":\"ok\",\"account\":\"fixture-account\"}\n";
+        let route = SpikeDataRoute {
+            method: "GET".into(),
+            path: "/v1/health".into(),
+            json_matches: BTreeMap::new(),
+            json_exact: None,
+            response_sha256: Some(format!("sha256:{:x}", Sha256::digest(raw.as_bytes()))),
+        };
+        let p = policy("http://127.0.0.1:1234", vec![route]);
+        let input = json!({"url":"http://127.0.0.1:1234/v1/health"});
+        assert!(p
+            .verify_output("http.get", &input, &json!({"status":200,"body":raw}))
+            .is_ok());
+        let reordered = "{\"account\":\"fixture-account\",\"status\":\"ok\"}";
+        assert!(p
+            .verify_output("http.get", &input, &json!({"status":200,"body":reordered}))
+            .is_err());
+    }
+
+    #[test]
+    fn spike_denials_are_traced_and_model_spans_never_open() {
+        let mut broker = Broker::new(
+            TraceWriter::new(json!({"id": "run_spike"})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            Classifier::new(None),
+        );
+        broker.spike_policy = Some(policy("http://127.0.0.1:1234", vec![]));
+        assert_eq!(
+            broker
+                .call("config.set", json!({"key": "x", "value": 1}))
+                .unwrap_err()
+                .type_,
+            "spike_denied"
+        );
+        assert!(broker.config.is_empty());
+        assert_eq!(
+            broker
+                .try_span_begin("cell", None, json!({"cell": "model-1"}))
+                .unwrap_err()
+                .type_,
+            "spike_denied"
+        );
+        assert!(broker.span_stack.is_empty());
+        assert_eq!(
+            broker.writer.records.last().unwrap()["error"]["type"],
+            "spike_denied"
+        );
+        assert_eq!(
+            broker.writer.records.last().unwrap()["meta"]["mocked"],
+            false
+        );
+        assert!(broker
+            .try_span_begin("history.recent_turns", None, json!({}))
+            .is_ok());
+    }
+
+    #[test]
+    fn spike_http_never_follows_uncredentialed_redirects() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr());
+        let route = SpikeDataRoute {
+            method: "GET".into(),
+            path: "/v1/account".into(),
+            json_matches: BTreeMap::new(),
+            json_exact: None,
+            response_sha256: None,
+        };
+        let handle =
+            std::thread::spawn(move || {
+                let request = server.recv().unwrap();
+                request
+                    .respond(tiny_http::Response::empty(302).with_header(
+                        tiny_http::Header::from_bytes("Location", "/v1/devices").unwrap(),
+                    ))
+                    .unwrap();
+                assert!(server
+                    .recv_timeout(std::time::Duration::from_millis(250))
+                    .unwrap()
+                    .is_none());
+            });
+        let mut broker = Broker::new(
+            TraceWriter::new(json!({"id": "run_redirect"})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            Classifier::new(None),
+        );
+        broker.spike_policy = Some(policy(&base, vec![route]));
+        let reply = broker
+            .call("http.get", json!({"url": format!("{base}/v1/account")}))
+            .unwrap();
+        assert_eq!(reply["status"], 302);
+        handle.join().unwrap();
     }
 }

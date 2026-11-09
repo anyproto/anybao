@@ -165,11 +165,29 @@ pub struct HttpTransport {
     base: String,
     agent: ureq::Agent,
     request_timeout: Duration,
+    /// The managed stream-line bound (ADR-034 §2), enforced at the read: a
+    /// line longer than this is never buffered whole. None on desktop.
+    line_cap: Option<usize>,
 }
 
 impl HttpTransport {
     pub fn new(base_url: &str) -> Self {
         Self::with_timeouts(base_url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// Trusted managed transport: preserve operation budgets and forbid redirects
+    /// from escaping the preparation method/path boundary (ADR-034 §5); a
+    /// stream line is read at most `line_cap + 1` bytes at a time.
+    pub(crate) fn managed(base_url: &str, line_cap: usize) -> Self {
+        Self {
+            base: base_url.trim_end_matches('/').to_string(),
+            agent: ureq::AgentBuilder::new()
+                .redirects(0)
+                .timeout_connect(CONNECT_TIMEOUT)
+                .build(),
+            request_timeout: REQUEST_TIMEOUT,
+            line_cap: Some(line_cap),
+        }
     }
 
     /// `connect` bounds every dial; `request` bounds each one-shot
@@ -179,6 +197,7 @@ impl HttpTransport {
             base: base_url.trim_end_matches('/').to_string(),
             agent: ureq::AgentBuilder::new().timeout_connect(connect).build(),
             request_timeout: request,
+            line_cap: None,
         }
     }
 
@@ -253,6 +272,8 @@ impl Transport for HttpTransport {
         let resp = Self::dispatch(req, body)?;
         Ok(Box::new(RawLines {
             reader: BufReader::new(resp.into_reader()),
+            cap: self.line_cap,
+            ended: false,
         }))
     }
 
@@ -294,21 +315,36 @@ impl Transport for HttpTransport {
 
 /// Decoded text lines off a byte stream: split on `\n`, lossy UTF-8,
 /// trailing `\n` stripped (and nothing else — the Python transport's
-/// `rstrip("\n")`).
+/// `rstrip("\n")`). With `cap`, a line is read at most `cap + 1` bytes: an
+/// over-long line is yielded as those bytes (longer than `cap`, for the
+/// caller's bound to refuse) and ends the stream, so it is never buffered whole.
 struct RawLines<R: Read> {
     reader: BufReader<R>,
+    cap: Option<usize>,
+    ended: bool,
 }
 
 impl<R: Read> Iterator for RawLines<R> {
     type Item = String;
 
     fn next(&mut self) -> Option<String> {
+        if self.ended {
+            return None;
+        }
         let mut buf = Vec::new();
-        match self.reader.read_until(b'\n', &mut buf) {
+        let read = match self.cap {
+            Some(cap) => (&mut self.reader)
+                .take(cap as u64 + 1)
+                .read_until(b'\n', &mut buf),
+            None => self.reader.read_until(b'\n', &mut buf),
+        };
+        match read {
             Ok(0) | Err(_) => None,
             Ok(_) => {
                 if buf.last() == Some(&b'\n') {
                     buf.pop();
+                } else if self.cap.is_some_and(|cap| buf.len() > cap) {
+                    self.ended = true;
                 }
                 Some(String::from_utf8_lossy(&buf).into_owned())
             }
@@ -1164,6 +1200,37 @@ mod tests {
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    // --- RawLines' read-side cap (ADR-034 §2, N2a-r2 item 7) ---
+
+    #[test]
+    fn raw_lines_cap_reads_at_most_cap_plus_one_bytes_and_ends_on_an_over_long_line() {
+        let raw = |bytes: &'static [u8], cap: Option<usize>| RawLines {
+            reader: BufReader::new(bytes),
+            cap,
+            ended: false,
+        };
+        let lines: Vec<String> = raw(b"abc\n12345678\nlast", Some(8)).collect();
+        assert_eq!(
+            lines,
+            vec!["abc", "12345678", "last"],
+            "a line of exactly cap"
+        );
+        // the 9-byte line is cut at cap + 1 and the stream ends: the rest of
+        // that line is never read as another line, nothing after it either
+        let mut lines = raw(b"ok\n123456789abc\nafter\n", Some(8));
+        assert_eq!(lines.next().as_deref(), Some("ok"));
+        assert_eq!(lines.next().as_deref(), Some("123456789"));
+        assert_eq!(lines.next(), None);
+        assert_eq!(
+            lines.reader.buffer(),
+            b"abc\nafter\n",
+            "only cap + 1 bytes of the long line were consumed"
+        );
+        // no cap: the desktop behaviour, whole lines
+        let lines: Vec<String> = raw(b"123456789abc\nafter", None).collect();
+        assert_eq!(lines, vec!["123456789abc", "after"]);
     }
 
     // --- sanitize_nuls ---

@@ -73,9 +73,31 @@ pub struct RunResult {
     /// `(space, name@vN)` (ADR-009 §8) — the chat wrapper defers the
     /// message until they sync.
     pub missing_programs: Vec<(String, String)>,
+    /// Programs the frozen managed resolver refused typed (ADR-034 §2
+    /// `NotPinned`), never a wait: empty on desktop.
+    pub refused_programs: Vec<(String, String)>,
     /// Whether the run recorded any mutating effect — a miss-deferred
     /// message is re-run only when it did not (ADR-009 §8).
     pub mutated: bool,
+}
+
+impl RunResult {
+    /// A run path failure folded into an error result (never a panic): the
+    /// desktop `run_trigger_program` fold, shared with the managed lane
+    /// bookkeeping so a failed run trips the same breaker (ADR-006 §4).
+    pub fn failed(error: String) -> Self {
+        RunResult {
+            status: "error".into(),
+            duration_ms: 0,
+            trace_ref: None,
+            fuel: None,
+            error: Some(error),
+            missing_secrets: Vec::new(),
+            missing_programs: Vec::new(),
+            refused_programs: Vec::new(),
+            mutated: false,
+        }
+    }
 }
 
 pub struct Scheduler {
@@ -436,6 +458,26 @@ pub fn desired_event_sources(
         }
     }
     out
+}
+
+/// The triggers one message on the `(space, object_id)` source fires
+/// (ADR-018 §2): this device's enabled `chat_messages` event triggers that
+/// name the source, the responder excepted — `home` is the agent space, the
+/// default for records without a `spaceId`. In registry order; the desktop
+/// `fire_event` and the managed event source both fire each in turn.
+pub fn event_targets(
+    reg: &BTreeMap<String, Trigger>,
+    instance: &str,
+    home: &str,
+    space: &str,
+    object_id: &str,
+) -> Vec<Trigger> {
+    reg.values()
+        .filter(|t| t.owner == instance && t.enabled && !is_chat_watch(&t.id))
+        .filter(|t| matches!(event_source(t), Some((CHAT_MESSAGES, oid)) if oid == object_id))
+        .filter(|t| event_space(t, home) == space)
+        .cloned()
+        .collect()
 }
 
 /// Per-source delivery state (ADR-018 §2): LIVE-ONLY. A (re)connect
@@ -1626,6 +1668,7 @@ mod tests {
             error: Some("boom".into()),
             missing_secrets: Vec::new(),
             missing_programs: Vec::new(),
+            refused_programs: Vec::new(),
             mutated: false,
         };
         for _ in 0..3 {
@@ -2008,5 +2051,81 @@ mod tests {
         break_live_run(&l2, true);
         assert!(l2.interrupt.load(Ordering::Relaxed));
         assert!(l2.mailbox.lock().unwrap().is_empty());
+    }
+
+    /// N2b-2 C0: the desktop `run_trigger_program` fold, field for field.
+    #[test]
+    fn run_result_failed_is_the_run_path_fold() {
+        let rr = RunResult::failed("resolver: boom".into());
+        assert_eq!(rr.status, "error");
+        assert_eq!(rr.duration_ms, 0);
+        assert_eq!(rr.trace_ref, None);
+        assert_eq!(rr.fuel, None);
+        assert_eq!(rr.error.as_deref(), Some("resolver: boom"));
+        assert!(rr.missing_secrets.is_empty());
+        assert!(rr.missing_programs.is_empty());
+        assert!(rr.refused_programs.is_empty());
+        assert!(!rr.mutated);
+    }
+
+    /// N2b-2 C0: `fire_event`'s target filter — own, enabled, not the
+    /// responder, naming this `chat_messages` object in this space (a
+    /// record without `spaceId` lives in `home`), in registry order.
+    #[test]
+    fn event_targets_pick_own_enabled_triggers_naming_the_source() {
+        let event = |id: &str, owner: &str, enabled: bool, spec: Value| {
+            let mut t = Trigger::cron(id, id, 0.0, "p@v1", json!({}), owner, enabled);
+            t.kind = "event".into();
+            t.spec = spec;
+            t
+        };
+        let here = json!({"dataset": CHAT_MESSAGES, "objectId": "chat-1"});
+        let mut reg = BTreeMap::new();
+        for t in [
+            event("a", "me", true, here.clone()),
+            event(
+                "b",
+                "me",
+                true,
+                json!({"dataset": CHAT_MESSAGES, "objectId": "chat-1", "spaceId": "home"}),
+            ),
+            event("c", "other", true, here.clone()),
+            event("d", "me", false, here.clone()),
+            event(
+                "e",
+                "me",
+                true,
+                json!({"dataset": CHAT_MESSAGES, "objectId": "chat-2"}),
+            ),
+            event(
+                "f",
+                "me",
+                true,
+                json!({"dataset": "agent_turns", "objectId": "chat-1"}),
+            ),
+            event(
+                "g",
+                "me",
+                true,
+                json!({"dataset": CHAT_MESSAGES, "objectId": "chat-1", "spaceId": "far"}),
+            ),
+            chat_watch_trigger("chat-watch", "chat-1", "me"),
+        ] {
+            reg.insert(t.id.clone(), t);
+        }
+        let ids = |v: Vec<Trigger>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(event_targets(&reg, "me", "home", "home", "chat-1")),
+            ["a", "b"]
+        );
+        assert_eq!(
+            ids(event_targets(&reg, "me", "home", "far", "chat-1")),
+            ["g"]
+        );
+        assert_eq!(
+            ids(event_targets(&reg, "me", "home", "home", "chat-2")),
+            ["e"]
+        );
+        assert!(event_targets(&reg, "other", "home", "far", "chat-1").is_empty());
     }
 }
