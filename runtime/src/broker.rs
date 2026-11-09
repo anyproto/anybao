@@ -3195,9 +3195,10 @@ mod tests {
 
     // --- the write allowlist (ADR-034) -----------------------------------
 
-    /// The built-in Google table, mounted on the test provider.
+    /// The built-in Google write handle's table, mounted on the test
+    /// provider.
     fn google_writes() -> Option<Vec<crate::oauth_writes::WriteRule>> {
-        crate::oauth::builtin_providers()["google"]
+        crate::oauth::builtin_providers()["google_write"]
             .guest_writes
             .clone()
     }

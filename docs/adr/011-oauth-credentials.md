@@ -418,11 +418,16 @@ In `repos/_connectors`, matching the existing connector conventions
   shapes and field trimming (C1: trim, don't rename), not for auth.
 - **Writes (2026-11-09, ADR-034).** gmail gains drafts and
   googleCalendar gains private holds on the primary calendar, through
-  `googleAuth.connect(writes=True)` — the default union plus
-  `gmail.compose` and `calendar.events`, consented incrementally. The
-  default union below stays read-only. What a cell may write is fixed
-  by the descriptor's `guest_writes` (ADR-034 §2), not by the scopes:
-  no Google write sends mail or invites anyone.
+  a second provider handle, `connector.oauth.google_write`, with its
+  own consent (`googleAuth.connect(writes=True)`: `gmail.compose`,
+  `calendar.events`) and its own refresh token, so a runtime without
+  the write guard can never mint or inject a write-capable token. The
+  default union below stays read-only, and both Google descriptors now
+  set `include_granted_scopes=false`: incremental consent becomes
+  explicit (`connect(scopes=[…])` adds to the read union), not folded
+  by Google. What a cell may write is fixed by the descriptor's
+  `guest_writes` (ADR-034 §2), not by the scopes: no Google write
+  sends mail or invites anyone.
 - **Calendar selection (2026-10-25, PRO-1919).**
   `googleCalendar@v1.list_calendars()` retains Google's `selected` and
   `hidden` booleans, both false when omitted, alongside calendar

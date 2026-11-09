@@ -635,11 +635,22 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The write handle's table (drafts, holds) plus the read handle's
+    /// (the sync's batch) — each request below is decided by the one
+    /// table that could admit it; `the_two_handles_split_the_writes`
+    /// pins which table holds which rule.
     fn google_rules() -> Vec<WriteRule> {
-        crate::oauth::builtin_providers()["google"]
+        let p = crate::oauth::builtin_providers();
+        let mut rules = p["google_write"].guest_writes.clone().expect("write table");
+        rules.extend(p["google"].guest_writes.clone().expect("read table"));
+        rules
+    }
+
+    fn table(provider: &str) -> Vec<WriteRule> {
+        crate::oauth::builtin_providers()[provider]
             .guest_writes
             .clone()
-            .expect("the google descriptor carries guest_writes")
+            .unwrap_or_else(|| panic!("{provider} carries guest_writes"))
     }
 
     fn b64url(s: &str) -> String {
@@ -696,6 +707,52 @@ mod tests {
     }
 
     // --- the table and the read path ---------------------------------------
+
+    #[test]
+    fn the_two_handles_split_the_writes() {
+        // ADR-034 §2: the read handle writes nothing but the sync's
+        // batch; drafts and holds need the write handle, which an older
+        // runtime does not know
+        let read = table("google");
+        let write = table("google_write");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].check, Some(BodyCheck::GmailBatchReads));
+        assert_eq!(write.len(), 6);
+        assert!(write
+            .iter()
+            .all(|r| r.check != Some(BodyCheck::GmailBatchReads)));
+        let draft = draft_body(PLAIN);
+        let url = format!("{GMAIL}/gmail/v1/users/me/drafts");
+        assert!(check(&read, "POST", &url, None, Body::Json(&draft)).is_err());
+        assert_eq!(
+            check(&write, "POST", &url, None, Body::Json(&draft)),
+            Ok(None)
+        );
+        let hold = hold();
+        let cal = format!("{CAL}?sendUpdates=none");
+        assert!(check(&read, "POST", &cal, None, Body::Json(&hold)).is_err());
+        assert_eq!(
+            check(&write, "POST", &cal, None, Body::Json(&hold)),
+            Ok(None)
+        );
+        let h = batch_headers();
+        let b = format!("{GMAIL}/batch/gmail/v1");
+        let body = batch(&["GET /gmail/v1/users/me/messages/m1"]);
+        assert_eq!(
+            check(&read, "POST", &b, Some(&h), Body::Text(&body)),
+            Ok(None)
+        );
+        assert!(check(&write, "POST", &b, Some(&h), Body::Text(&body)).is_err());
+        // neither handle folds earlier grants into a new token (§6)
+        for p in ["google", "google_write"] {
+            let d = &crate::oauth::builtin_providers()[p];
+            assert_eq!(d.auth_params["include_granted_scopes"], "false", "{p}");
+        }
+        let w = &crate::oauth::builtin_providers()["google_write"].default_scopes;
+        assert!(w
+            .iter()
+            .all(|s| !s.contains("gmail.send") && !s.contains("mail.google.com")));
+    }
 
     #[test]
     fn the_google_table_parses_and_reads_pass() {

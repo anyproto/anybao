@@ -8,7 +8,8 @@ except through it), ADR-011 §2 (provider descriptors, host-only data),
 drain), §7 (the Google family), ADR-021 §7 (host binding at hop zero),
 ADR-033 §5.1 (the brain cannot send)
 Amends: ADR-011 §2 (a descriptor gains `guest_writes`), ADR-011 §7 (the
-family is no longer read-only; the write scopes are incremental),
+family is no longer read-only; writes get their own provider handle;
+Google no longer folds earlier grants into a new token),
 ADR-033 §5.1 (why Gmail drafts were not used, and what now holds the
 no-send property)
 Tracks: Linear GO-7602 "Bao: write Gmail drafts and Calendar holds
@@ -65,6 +66,20 @@ config row can widen it. It holds whatever scopes the grant carries:
 a token with `gmail.send` or full `https://mail.google.com/` access is
 bound by the same list.
 
+Because the guard lives in the binary, a write-capable token must
+never reach a binary without it. Grants are account-scoped and sync to
+every device (ADR-011 §3, amended), and a device may run an older
+anyrt. So writes get **their own provider handle**,
+`connector.oauth.google_write`, with its own consent and its own
+refresh token (§2, §6). An older runtime has no `google_write`
+descriptor: it cannot run that consent (`not_configured`), and the
+synced refresh token is a sub-ref it can never inject (ADR-011 §4). The
+read handle's token no longer picks up write scopes by folding (§6). A
+cell can still name a write scope on the read handle
+(`connect(scopes=[…])`), which is the gap from the Context, not a new
+one. On this runtime the read handle's table bounds it to the sync's
+batch. A rollout in either order therefore fails closed.
+
 ### 2. `guest_writes` on a provider descriptor (amends ADR-011 §2)
 
 ADR-011 §2 kept injection metadata out of the descriptor and deferred
@@ -97,11 +112,19 @@ rules (a MIME header block, a multipart batch, an event's attendees)
 are not worth a policy language. An unknown name fails the descriptor
 parse, which tests run.
 
-The Google table:
+The Google tables. The read handle `google` writes only the sync's
+batch:
 
 ```json
 "guest_writes": [
-  {"method": "POST",   "path": "/batch/gmail/v1", "check": "gmail_batch_reads"},
+  {"method": "POST", "path": "/batch/gmail/v1", "check": "gmail_batch_reads"}
+]
+```
+
+The write handle `google_write` (same endpoints, its own scopes, §6):
+
+```json
+"guest_writes": [
   {"method": "POST",   "path": "/gmail/v1/users/me/drafts", "check": "gmail_draft_text"},
   {"method": "PUT",    "path": "/gmail/v1/users/me/drafts/*",
    "check": "gmail_draft_text", "preflight": "gmail_draft_owned"},
@@ -234,15 +257,35 @@ or adds guests in Google Calendar.
 Drive, Sheets and Meet get no rules, so they stay read-only by policy
 as well as by scope.
 
-### 6. Scopes: incremental consent (amends ADR-011 §7)
+### 6. Scopes: a second consent, and no folding (amends ADR-011 §7)
 
-The default scope union is unchanged and read-only. `googleAuth.connect(
-writes=True)` requests the default union plus `gmail.compose` and
-`calendar.events`. `include_granted_scopes=true` keeps earlier grants.
-A write against a read-only grant gets Google's 403 "insufficient
-scopes", and the connector says to run `googleAuth.connect(writes=True)`
-in a user-facing turn. The guest's copy of the default union is pinned
-to `oauth_providers.json` by a test.
+- **Two handles, two consents.** `googleAuth.connect()` is unchanged:
+  the read handle `google`, the read-only default union.
+  `googleAuth.connect(writes=True)` runs a separate consent for the
+  write handle `google_write`, whose scopes (`openid`, `email`,
+  `gmail.compose`, `calendar.events`) live only in the host table; it
+  takes no guest scope list. Both use the same shipped OAuth client.
+- **No folding.** Both descriptors set `include_granted_scopes=false`.
+  With `true`, Google adds every scope the user ever granted the client
+  to each new token, so a later read re-consent would mint a read token
+  that can compose, which an older runtime would inject unguarded (§1).
+  Each token now carries exactly what its consent asked for.
+- **Partial read lists still work.** Without folding, a guest scope
+  list replaces the default, so `googleAuth.connect(scopes=[…])` now
+  sends the read union plus the extra scopes (googleDrive's
+  `drive.readonly` re-consent keeps Gmail). The guest's copy of the
+  union is pinned to `oauth_providers.json` by a test.
+- **Errors say what to do.** A write without the write grant fails
+  `not_connected` on `google_write`, and the connectors say to run
+  `googleAuth.connect(writes=True)` in a user-facing turn. A runtime
+  without the descriptor (`no oauth provider "google_write"`) gets
+  "this runtime predates the write guard — update the app". A 403 on a
+  write (the user unticked a scope on Google's granular consent screen)
+  points at the same `connect(writes=True)`.
+- **One disconnect.** `googleAuth.disconnect()` revokes and deletes the
+  write grant, then the read grant. Google may end every token of the
+  client at the first revoke, so a partial disconnect is not offered;
+  to stop drafts and holds only, disconnect and run `connect()` again.
 
 Operational prerequisite, the owner's: the shipped OAuth client's
 consent screen in Google Cloud Console must list both scopes, or Google
@@ -269,6 +312,9 @@ address):
   is not given. `delete_draft(draft_id)` deletes one. Both work on
   Bao's own drafts only (§4); on any other draft they return an error
   saying the draft is the user's.
+- Reads use `googleAuth._CRED`; writes use `googleAuth._CRED_WRITE`
+  (§1). The runtime's preflight reads go out on the write handle,
+  which can read drafts and events.
 - A refusal (`credential_write_refused`) is returned as `{ok: False,
   refused: True, error}`, and is never retried.
 
@@ -331,6 +377,10 @@ grants both scopes.
 - ADR-033 §5.1's rationale is superseded: drafts no longer put a send
   capability behind a guest-injectable token, because the token cannot
   reach a send endpoint. The brain is unchanged by this ADR.
+- Rollout fails closed in either order (§1): an older anyrt cannot
+  create or use the write grant, and new connectors on it answer
+  "update the app". The cost is a second consent screen the first time
+  the user asks for a draft or a hold, and a second refresh token.
 - Cost accepted: provider-specific host code. The descriptor names the
   checks and the code implements them, so a new Google write is an
   amendment, a rule and possibly a check. Each guarded update or

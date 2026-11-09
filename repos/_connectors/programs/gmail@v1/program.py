@@ -27,6 +27,8 @@ from email.message import EmailMessage
 
 _auth = use("googleAuth@v1")  # noqa: F821 - guest global
 _CRED = _auth._CRED
+# ADR-034 §2: writes ride the separate drafts-and-holds handle
+_CRED_WRITE = _auth._CRED_WRITE
 
 _BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 _DEFAULT_MAX = 20
@@ -84,6 +86,17 @@ def _get(path):
     return _request("get", path)
 
 
+def _write_auth_error(msg):
+    """A write-handle failure → what to do (ADR-034 §6)."""
+    if "no oauth provider" in msg:
+        return ("this runtime predates the write guard (ADR-034) — Bao cannot write "
+                "Gmail drafts until the app is updated")
+    if msg.startswith(("not_connected", "oauth_reconsent_required")):
+        return (msg + " — Gmail drafts need their own consent: ask the user, then run "
+                "googleAuth.connect(writes=True) in a user-facing turn")
+    return _auth._friendly(msg)
+
+
 def _request(verb, path, body=None):
     """One authed request with bounded 429 backoff → {ok, body, status}
     | {ok: False, error, status?, refused?}. body goes as json= — the
@@ -91,7 +104,7 @@ def _request(verb, path, body=None):
     {ok, body: {}}."""
     write = verb != "get"
     send = getattr(http, verb)  # noqa: F821 - guest global
-    kw = {"timeout": _TIMEOUT_S, "credential": _CRED}
+    kw = {"timeout": _TIMEOUT_S, "credential": _CRED_WRITE if write else _CRED}
     if body is not None:
         kw["json"] = body
     for attempt in range(_MAX_RETRIES + 1):
@@ -99,6 +112,8 @@ def _request(verb, path, body=None):
             resp = send(_BASE + path, **kw)
         except EffectError as e:  # noqa: F821 - guest global
             msg = str(e)
+            if write and msg.startswith(_AUTH_PREFIXES):
+                return {"ok": False, "error": _write_auth_error(msg)}
             if msg.startswith(_AUTH_PREFIXES):
                 return {"ok": False, "error": _auth._friendly(msg)}
             if msg.startswith(_REFUSED):

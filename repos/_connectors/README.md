@@ -88,8 +88,9 @@ a traceback.
 no stored key — the host runs consent (`googleAuth.connect()`), holds
 the refresh token device-local, and refreshes/injects access tokens
 at request time. One consent covers gmail/googleCalendar/googleDrive/
-googleSheets; `googleAuth.connect(writes=True)` adds Gmail drafts and
-calendar holds (`gmail.compose`, `calendar.events`). What a cell may
+googleSheets; `googleAuth.connect(writes=True)` is a second, separate
+consent for Gmail drafts and calendar holds (`gmail.compose`,
+`calendar.events`, the `connector.oauth.google_write` ref). What a cell may
 write through the Google token is fixed by the runtime, not the scopes
 (anybao ADR-034): Bao-marked plain-text drafts and Bao's own private,
 guest-less holds on the primary calendar — no send, no invitation, no

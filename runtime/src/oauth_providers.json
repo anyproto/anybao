@@ -6,7 +6,7 @@
     "auth_params": {
       "access_type": "offline",
       "prompt": "consent",
-      "include_granted_scopes": "true"
+      "include_granted_scopes": "false"
     },
     "default_scopes": [
       "openid",
@@ -19,7 +19,27 @@
     "rotates_refresh_token": false,
     "client_auth": "post_body",
     "guest_writes": [
-      {"method": "POST", "path": "/batch/gmail/v1", "check": "gmail_batch_reads"},
+      {"method": "POST", "path": "/batch/gmail/v1", "check": "gmail_batch_reads"}
+    ]
+  },
+  "google_write": {
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "revoke_url": "https://oauth2.googleapis.com/revoke",
+    "auth_params": {
+      "access_type": "offline",
+      "prompt": "consent",
+      "include_granted_scopes": "false"
+    },
+    "default_scopes": [
+      "openid",
+      "email",
+      "https://www.googleapis.com/auth/gmail.compose",
+      "https://www.googleapis.com/auth/calendar.events"
+    ],
+    "rotates_refresh_token": false,
+    "client_auth": "post_body",
+    "guest_writes": [
       {"method": "POST", "path": "/gmail/v1/users/me/drafts", "check": "gmail_draft_text"},
       {"method": "PUT", "path": "/gmail/v1/users/me/drafts/*",
        "check": "gmail_draft_text", "preflight": "gmail_draft_owned"},

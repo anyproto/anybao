@@ -16,6 +16,9 @@ from connectorenv import connector_kernel
 
 CRED = {"ref": "connector.oauth.google", "header": "Authorization",
         "prefix": "Bearer "}
+# ADR-034 §2: writes ride the separate drafts-and-holds handle
+CRED_WRITE = {"ref": "connector.oauth.google_write", "header": "Authorization",
+              "prefix": "Bearer "}
 BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
@@ -41,8 +44,9 @@ class FakeGmail:
 
     def __call__(self, name, payload):
         assert name.startswith("http."), f"unexpected effect {name}"
-        assert payload["credential"] == CRED
         verb = name.split(".", 1)[1]
+        # reads on the read handle, writes on the write handle — never mixed
+        assert payload["credential"] == (CRED if verb == "get" else CRED_WRITE), verb
         self.requests.append((verb, payload))
         for (rverb, pattern), resp in self.routes:
             if rverb == verb and pattern in payload["url"]:
@@ -215,11 +219,20 @@ def test_a_read_only_grant_points_at_connect_writes():
     assert "googleAuth.connect(writes=True)" in out["error"]
 
 
-def test_not_connected_maps_to_connect_help_on_writes_too():
+def test_the_write_grant_has_its_own_consent():
     gm, _ = load([(("post", "/drafts"),
-                   typed("not_connected", "google is not connected"))])
+                   typed("not_connected", "google_write is not connected"))])
     out = gm.create_draft(to="ann@x.io", body="x")
-    assert out["ok"] is False and "connect()" in out["error"]
+    assert out["ok"] is False and "connect(writes=True)" in out["error"]
+
+
+def test_an_older_runtime_cannot_write():
+    """An anyrt without ADR-034's guard has no google_write provider:
+    the write fails closed, and says why."""
+    gm, _ = load([(("post", "/drafts"),
+                   typed("not_configured", 'no oauth provider "google_write"'))])
+    out = gm.create_draft(to="ann@x.io", body="x")
+    assert out["ok"] is False and "predates the write guard" in out["error"]
 
 
 # ---- read -------------------------------------------------------------------

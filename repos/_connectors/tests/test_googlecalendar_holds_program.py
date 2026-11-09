@@ -13,6 +13,8 @@ from connectorenv import connector_kernel
 
 CRED = {"ref": "connector.oauth.google", "header": "Authorization",
         "prefix": "Bearer "}
+CRED_WRITE = {"ref": "connector.oauth.google_write", "header": "Authorization",
+              "prefix": "Bearer "}
 EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 HOLD_ID = re.compile(r"baoagent[0-9a-f]{32}")
 
@@ -38,8 +40,8 @@ class FakeCalendar:
         if name == "time.now":
             return {"epoch": 1785400000.0}
         assert name.startswith("http."), f"unexpected effect {name}"
-        assert payload["credential"] == CRED
         verb = name.split(".", 1)[1]
+        assert payload["credential"] == (CRED if verb == "get" else CRED_WRITE), verb
         self.requests.append((verb, payload))
         for (rverb, pattern), resp in self.routes:
             if rverb == verb and pattern in payload["url"]:
@@ -233,3 +235,14 @@ def test_delete_event():
                  "HTTP 410 (ADR-034)")
     gc, _ = load([(("delete", f"/events/{HOLD}"), gone)])
     assert gc.delete_event(HOLD) == {"ok": True, "id": HOLD, "deleted": False}
+
+
+def test_holds_need_the_write_consent():
+    gc, _ = load([(("post", "/calendars/primary/events"),
+                   typed("not_connected", "google_write is not connected"))])
+    out = gc.create_event("x", "2026-11-10T10:00:00Z", "2026-11-10T11:00:00Z")
+    assert out["ok"] is False and "connect(writes=True)" in out["error"]
+    gc, _ = load([(("post", "/calendars/primary/events"),
+                   typed("not_configured", 'no oauth provider "google_write"'))])
+    out = gc.create_event("x", "2026-11-10T10:00:00Z", "2026-11-10T11:00:00Z")
+    assert out["ok"] is False and "predates the write guard" in out["error"]
