@@ -18,6 +18,7 @@ pub mod deploy;
 pub mod drift;
 pub mod election;
 pub mod oauth;
+pub mod oauth_writes;
 pub mod program_schema;
 pub mod replay;
 pub mod resolver;

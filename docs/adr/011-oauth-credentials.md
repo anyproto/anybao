@@ -93,6 +93,14 @@ default when the guest passes none. Injection metadata and destination
 allowlists are deliberately *not* here — they belong to the deferred
 host-binding design (§4).
 
+**Amended 2026-11-09 (ADR-034 §2):** a descriptor may carry
+`guest_writes`, the host-only allowlist of non-`GET`/`HEAD` requests a
+cell may send through the provider's handle; anything else fails typed
+`credential_write_refused`, whatever scopes the grant carries. It lives
+here, not on the credential row, because the row's `hosts` come from a
+guest-authored manifest (ADR-021 §8.1) and a write fence must not.
+Destination hosts stay on the row (ADR-021 §7).
+
 PKCE S256 is unconditional for every provider. No descriptor flag
 disables it; a provider that cannot accept a `code_challenge` ignores
 it harmlessly.
@@ -408,6 +416,18 @@ In `repos/_connectors`, matching the existing connector conventions
   read-only REST connectors passing `credential=_CRED`, structurally
   identical to github@v1. Ported from the bobrik branch for endpoint
   shapes and field trimming (C1: trim, don't rename), not for auth.
+- **Writes (2026-11-09, ADR-034).** gmail gains drafts and
+  googleCalendar gains private holds on the primary calendar, through
+  a second provider handle, `connector.oauth.google_write`, with its
+  own consent (`googleAuth.connect(writes=True)`: `gmail.compose`,
+  `calendar.events`) and its own refresh token, so a runtime without
+  the write guard can never mint or inject a write-capable token. The
+  default union below stays read-only, and both Google descriptors now
+  set `include_granted_scopes=false`: incremental consent becomes
+  explicit (`connect(scopes=[…])` adds to the read union), not folded
+  by Google. What a cell may write is fixed by the descriptor's
+  `guest_writes` (ADR-034 §2), not by the scopes: no Google write
+  sends mail or invites anyone.
 - **Calendar selection (2026-10-25, PRO-1919).**
   `googleCalendar@v1.list_calendars()` retains Google's `selected` and
   `hidden` booleans, both false when omitted, alongside calendar

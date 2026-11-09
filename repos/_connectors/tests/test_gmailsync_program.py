@@ -993,3 +993,34 @@ def test_stale_generation_hop_exits_without_tick_or_arm():
     # the live generation still runs
     out = mod.main(chain_args(hop=3, gen=3))
     assert "stale" not in out
+
+
+def test_gmailsync_batch_matches_the_runtime_vector():
+    """The hydration batch is the one write-method request gmailSync
+    sends through the Google token; the runtime admits it only as a
+    strict batch of inner GETs (ADR-034 §4). Pinned against the Rust
+    vector `SYNC_BATCH` in runtime/src/oauth_writes.rs."""
+    import contextlib
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[3] / "runtime" / "src"
+           / "oauth_writes.rs").read_text()
+    m = re.search(r'const SYNC_BATCH: &str = "(.*?)";', src, re.S)
+    vector = re.sub(r"\\\n\s*", "", m.group(1)).replace("\\r\\n", "\r\n")
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def effect(name, payload):
+        assert name == "http.post", name
+        seen.update(payload)
+        raise Stop("captured")
+
+    gs = load(effect, FakeAny())
+    with contextlib.suppress(Exception):  # the guest re-raises the host's Stop
+        gs._batch_get(["19a1", "19a2"], "full")
+    assert seen["url"] == "https://gmail.googleapis.com/batch/gmail/v1"
+    assert seen["headers"] == {
+        "Content-Type": "multipart/mixed; boundary=anybao_gmail_sync"}
+    assert seen["body"] == vector

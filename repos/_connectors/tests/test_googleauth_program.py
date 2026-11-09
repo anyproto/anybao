@@ -54,8 +54,11 @@ def test_connect_passes_scopes_and_timeout():
     assert out == granted
     client = {"client_id": ga._CLIENT_ID, "client_secret": ga._CLIENT_SECRET}
     assert client["client_id"] and client["client_secret"]  # bundled, ADR-011 §3
+    # extra scopes are ADDED to the read union: the host no longer folds
+    # earlier grants into a new token (ADR-034 §6)
     assert fake.calls == [("oauth.connect", {
-        "provider": "google", "scopes": ["s1", "s2"], "timeout": 30.0, **client})]
+        "provider": "google", "scopes": list(ga._READ_SCOPES) + ["s1", "s2"],
+        "timeout": 30.0, **client})]
 
     out = ga.connect()
     assert out == granted
@@ -69,8 +72,14 @@ def test_status_and_disconnect_pass_through():
                      "oauth.disconnect": {"ok": True, "provider": "google",
                                           "revoked": True}})
     assert ga.status() == st
-    assert ga.disconnect()["revoked"] is True
-    assert [c[0] for c in fake.calls] == ["oauth.status", "oauth.disconnect"]
+    out = ga.disconnect()
+    assert out["revoked"] is True
+    # both grants: the write handle first, then the read one (ADR-034 §6)
+    assert [c for c in fake.calls] == [
+        ("oauth.status", {"provider": "google"}),
+        ("oauth.disconnect", {"provider": "google_write"}),
+        ("oauth.disconnect", {"provider": "google"})]
+    assert out["writes"]["revoked"] is True
 
 
 def test_typed_failures_map_to_actionable_messages():
@@ -99,3 +108,61 @@ def test_unknown_failure_passes_through_verbatim():
     ga, _ = load({"oauth.status": typed("URLError", "transport down")})
     out = ga.status()
     assert out == {"ok": False, "error": "URLError: transport down"}
+
+
+def test_read_scopes_mirror_the_host_default():
+    """connect(scopes=[…]) unions with the guest's copy of the read
+    union; it must not drift from runtime/src/oauth_providers.json.
+    The write handle's scopes live only in the host table (ADR-034 §6)."""
+    import json
+    from pathlib import Path
+
+    table = Path(__file__).resolve().parents[3] / "runtime" / "src" / "oauth_providers.json"
+    host = json.loads(table.read_text())
+    ga, _ = load({})
+    assert list(ga._READ_SCOPES) == host["google"]["default_scopes"]
+    assert not hasattr(ga, "_WRITE_SCOPES")
+    writes = host["google_write"]["default_scopes"]
+    assert not any(s.endswith(("gmail.send", "mail.google.com/")) for s in writes)
+    assert ga._CRED_WRITE == {"ref": "connector.oauth.google_write",
+                              "header": "Authorization", "prefix": "Bearer "}
+    refs = [c["ref"] for c in ga.__any_credentials__]
+    assert refs == ["connector.oauth.google", "connector.oauth.google_write"]
+
+
+def test_connect_writes_is_its_own_consent():
+    granted = {"ok": True, "provider": "google_write", "grantedScopes": [],
+               "account": "u@x"}
+    ga, fake = load({"oauth.connect": granted, "oauth.status": {"connected": False}})
+    assert ga.connect(writes=True, timeout=60) == granted
+    client = {"client_id": ga._CLIENT_ID, "client_secret": ga._CLIENT_SECRET}
+    # no scopes: the host table fixes the write consent
+    assert fake.calls[0] == ("oauth.connect", {"provider": "google_write",
+                                               "timeout": 60.0, **client})
+    out = ga.connect(scopes=["s1"], writes=True)
+    assert out["ok"] is False and len(fake.calls) == 1
+    ga.status(writes=True)
+    assert fake.calls[1] == ("oauth.status", {"provider": "google_write"})
+    # the default stays read-only
+    ga.connect()
+    assert fake.calls[2][1]["provider"] == "google" and "scopes" not in fake.calls[2][1]
+
+
+def test_an_older_runtime_refuses_the_write_consent():
+    ga, _ = load({"oauth.connect": typed("not_configured",
+                                         'no oauth provider "google_write"')})
+    out = ga.connect(writes=True)
+    assert out["ok"] is False and "predates the write guard" in out["error"]
+    # disconnect still drops the read grant; no writes key without a write handle
+    calls = []
+
+    def disc(name, payload):
+        calls.append(payload["provider"])
+        if payload["provider"] == "google_write":
+            raise typed("not_configured", 'no oauth provider "google_write"')
+        return {"ok": True, "provider": "google", "revoked": True}
+
+    ga2 = connector_kernel(effect=disc).use("googleAuth@v1")
+    out = ga2.disconnect()
+    assert calls == ["google_write", "google"]
+    assert out == {"ok": True, "provider": "google", "revoked": True}
