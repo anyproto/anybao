@@ -99,3 +99,36 @@ def test_unknown_failure_passes_through_verbatim():
     ga, _ = load({"oauth.status": typed("URLError", "transport down")})
     out = ga.status()
     assert out == {"ok": False, "error": "URLError: transport down"}
+
+
+def test_read_scopes_mirror_the_host_default():
+    """connect(writes=True) sends the host's default union + the write
+    scopes; the guest's copy of the union must not drift from
+    runtime/src/oauth_providers.json (ADR-034 §6)."""
+    import json
+    from pathlib import Path
+
+    table = Path(__file__).resolve().parents[3] / "runtime" / "src" / "oauth_providers.json"
+    host = json.loads(table.read_text())["google"]["default_scopes"]
+    ga, _ = load({})
+    assert list(ga._READ_SCOPES) == host
+    assert list(ga._WRITE_SCOPES) == [
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/calendar.events",
+    ]
+    # no write scope can send: gmail.send / mail.google.com stay out
+    assert not any(s.endswith(("gmail.send", "mail.google.com/")) for s in ga._WRITE_SCOPES)
+
+
+def test_connect_writes_requests_reads_plus_writes():
+    granted = {"ok": True, "provider": "google", "grantedScopes": [], "account": "u@x"}
+    ga, fake = load({"oauth.connect": granted})
+    ga.connect(writes=True)
+    payload = fake.calls[0][1]
+    assert payload["scopes"] == list(ga._READ_SCOPES) + list(ga._WRITE_SCOPES)
+    # an explicit list still wins
+    ga.connect(scopes=["s1"], writes=True)
+    assert fake.calls[1][1]["scopes"] == ["s1"]
+    # the default stays read-only: no scopes key, the host's union applies
+    ga.connect()
+    assert "scopes" not in fake.calls[2][1]

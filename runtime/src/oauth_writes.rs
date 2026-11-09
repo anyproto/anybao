@@ -877,6 +877,17 @@ mod tests {
         assert_eq!(post(&url, &draft_body(folded)), Ok(None));
     }
 
+    /// The exact `drafts.create` body `connectors:gmail@v1.create_draft`
+    /// builds (a threaded reply, non-ASCII name and subject, QP body)
+    /// under the real guest kernel — the two halves of ADR-034 §4 agree.
+    #[test]
+    fn the_connectors_draft_is_admitted() {
+        let body = json!({"message": {"threadId": "t1", "raw":
+            "VG86ID0_dXRmLTg_cT9KPUMzPUI2cmdfTT1DMz1CQ2xsZXI_PSA8am9lcmdAZXhhbXBsZS5jb20-DQpDYzogQW5uIDxhbm5AeC5pbz4NClN1YmplY3Q6IFJlOiA9P3V0Zi04P3E_R3I9QzM9QkM9QzM9OUZlPz0genVtIFBsYW4NCkluLVJlcGx5LVRvOiA8b3JpZ0BtYWlsLmV4YW1wbGUuY29tPg0KUmVmZXJlbmNlczogPG9yaWdAbWFpbC5leGFtcGxlLmNvbT4NClgtQW55YmFvLURyYWZ0OiAxDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9InV0Zi04Ig0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogcXVvdGVkLXByaW50YWJsZQ0KTUlNRS1WZXJzaW9uOiAxLjANCg0KSGFsbG8gSj1DMz1CNnJnLA0KDQpwYXNzdCA9RTI9ODA9OTQgYmlzIE1vbnRhZy4NCg"}});
+        let url = format!("{GMAIL}/gmail/v1/users/me/drafts");
+        assert_eq!(post(&url, &body), Ok(None));
+    }
+
     #[test]
     fn draft_bodies_outside_the_shape_are_refused() {
         let url = format!("{GMAIL}/gmail/v1/users/me/drafts");
@@ -987,6 +998,26 @@ mod tests {
             &format!("{GMAIL}/batch/gmail/v1"),
             h.as_object(),
             Body::Text(sync),
+        );
+        assert_eq!(got, Ok(None));
+    }
+
+    /// gmailSync@v1's hydration batch, byte for byte (pinned on the guest
+    /// side by test_gmailsync_batch_matches_the_runtime_vector).
+    pub(crate) const SYNC_BATCH: &str = "--anybao_gmail_sync\r\nContent-Type: application/http\r\n\
+        Content-ID: <item0>\r\n\r\nGET /gmail/v1/users/me/messages/19a1?format=full\r\n\r\n\
+        --anybao_gmail_sync\r\nContent-Type: application/http\r\nContent-ID: <item1>\r\n\r\n\
+        GET /gmail/v1/users/me/messages/19a2?format=full\r\n\r\n--anybao_gmail_sync--\r\n";
+
+    #[test]
+    fn the_sync_batch_is_admitted() {
+        let h = json!({"Content-Type": "multipart/mixed; boundary=anybao_gmail_sync"});
+        let got = check(
+            &google_rules(),
+            "POST",
+            &format!("{GMAIL}/batch/gmail/v1"),
+            h.as_object(),
+            Body::Text(SYNC_BATCH),
         );
         assert_eq!(got, Ok(None));
     }

@@ -1,14 +1,12 @@
-"""Read-only Google Calendar connector — calendars, events, upcoming view.
+"""Google Calendar connector — read calendars and events; keep private holds.
 
-The user's calendar list, events in a time window (recurrences
-expanded, ordered by start), one event in full, and an upcoming view
-from now. Events trim to the useful fields (summary, start/end,
-attendees, location, conferenceLink, htmlLink). Incremental sync:
-sync_token in, nextSyncToken out — a sync call sends ONLY token +
-paging (Google rejects mixing syncToken with timeMin/orderBy/q).
-Auth rides googleAuth@v1 (one consent covers the Google family) —
-not-connected errors say to run googleAuth.connect(). Methods return
-{ok, ...} or {ok: False, error}. Scope: calendar.readonly."""
+Reads: the calendar list, events in a window (recurrences expanded),
+one event, an upcoming view; sync_token in, nextSyncToken out. Writes:
+create/update/delete Bao's own holds — private events on the primary
+calendar with no guests; no one is notified. Bao cannot invite: to set
+up a meeting, keep a hold and gmail.create_draft the invitation. Auth
+rides googleAuth@v1: reads need its default consent, holds
+connect(writes=True). Methods return {ok, ...} or {ok: False, error}."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -23,6 +21,9 @@ __any_tool__ = True  # agent-callable (ADR-010 §4)
 # scalar for "the meeting link").
 
 import datetime
+import hashlib
+import random
+import re
 
 _auth = use("googleAuth@v1")  # noqa: F821 - guest global
 _CRED = _auth._CRED
@@ -35,6 +36,17 @@ _TIMEOUT_S = 60
 
 _AUTH_PREFIXES = ("not_connected", "oauth_reconsent_required",
                   "not_configured", "consent_timeout")
+
+# ADR-034 §5: the runtime admits only private, guest-less holds on the
+# primary calendar whose id starts with this prefix, sendUpdates=none
+_HOLD_PREFIX = "baoagent"
+_HOLD_PATH = "/calendars/primary/events"
+_REFUSED = "credential_write_refused"
+_REFUSED_HINT = (" — a hard limit of the runtime, not a transient error: Bao keeps "
+                 "only its own private holds and never invites anyone. Do not retry "
+                 "or work around it; tell the user what to do in Google Calendar.")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_TEXT_CAP = 8_000
 
 
 def _clamp(n):
@@ -67,13 +79,28 @@ def _qs(params):
 def _get(path):
     """One authed GET with bounded 429 backoff → {ok, body} |
     {ok: False, error, status?}."""
+    return _request("get", path)
+
+
+def _request(verb, path, body=None):
+    """One authed request with bounded 429 backoff → {ok, body, status}
+    | {ok: False, error, status?, refused?}. body goes as json= (the
+    runtime's hold check reads it there, ADR-034 §3); a 204 is
+    {ok, body: {}}."""
+    write = verb != "get"
+    send = getattr(http, verb)  # noqa: F821 - guest global
+    kw = {"timeout": _TIMEOUT_S, "credential": _CRED}
+    if body is not None:
+        kw["json"] = body
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            resp = http.get(_BASE + path, timeout=_TIMEOUT_S, credential=_CRED)  # noqa: F821 - guest global
+            resp = send(_BASE + path, **kw)
         except EffectError as e:  # noqa: F821 - guest global
             msg = str(e)
             if msg.startswith(_AUTH_PREFIXES):
                 return {"ok": False, "error": _auth._friendly(msg)}
+            if msg.startswith(_REFUSED):
+                return {"ok": False, "refused": True, "error": msg + _REFUSED_HINT}
             return {"ok": False, "error": f"request failed: {msg}"}
         if resp.status == 429 and attempt < _MAX_RETRIES:
             try:
@@ -87,6 +114,11 @@ def _get(path):
                 return {"ok": False, "status": 401,
                         "error": "Calendar rejected the token (HTTP 401) — run "
                                  "googleAuth.connect() in a user-facing turn to reauthorize."}
+            if resp.status == 403 and write:
+                return {"ok": False, "status": 403,
+                        "error": "Calendar denied the write (HTTP 403) — the grant likely "
+                                 "lacks calendar.events; ask the user, then run "
+                                 "googleAuth.connect(writes=True) in a user-facing turn."}
             if resp.status == 403:
                 return {"ok": False, "status": 403,
                         "error": "Calendar denied access (HTTP 403) — the grant is likely "
@@ -97,8 +129,10 @@ def _get(path):
             except (ValueError, AttributeError):
                 api_msg = f"HTTP {resp.status}"
             return {"ok": False, "status": resp.status, "error": f"Calendar error: {api_msg}"}
+        if resp.status == 204 or not (resp.text or "").strip():
+            return {"ok": True, "body": {}, "status": resp.status}
         try:
-            return {"ok": True, "body": resp.json()}
+            return {"ok": True, "body": resp.json(), "status": resp.status}
         except ValueError:
             return {"ok": False, "error": "Calendar returned a non-JSON body"}
     return {"ok": False, "error": f"Calendar rate limit — gave up after {_MAX_RETRIES} retries."}
@@ -241,6 +275,176 @@ def upcoming(max_results=None, calendar_id=None, page_token=None):
         now(), datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: F821 - guest global
     return list_events(calendar_id=calendar_id or "primary", time_min=time_min,
                        max_results=max_results, page_token=page_token)
+
+
+# --- holds (ADR-034 §5, §7) -------------------------------------------------
+
+def _text(value, field, required=False):
+    if value is None:
+        if required:
+            raise ValueError(f"{field} is required")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if required and not value:
+        raise ValueError(f"{field} is required")
+    if len(value) > _TEXT_CAP:
+        raise ValueError(f"{field} is over {_TEXT_CAP} chars")
+    return value
+
+
+def _when(value, field, time_zone):
+    """"YYYY-MM-DD" → ({date}, date); an RFC 3339 date-time → ({dateTime,
+    timeZone?}, comparable). A date-time without an offset needs
+    time_zone (Google's rule)."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} is required (RFC 3339 date-time or YYYY-MM-DD)")
+    value = value.strip()
+    if _DATE.fullmatch(value):
+        try:
+            return {"date": value}, ("date", datetime.date.fromisoformat(value))
+        except ValueError:
+            raise ValueError(f"{field}: {value!r} is not a calendar date") from None
+    try:
+        dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"{field}: {value!r} is not an RFC 3339 date-time "
+                         f"(e.g. 2026-11-10T15:00:00+01:00) or a YYYY-MM-DD date") from None
+    out = {"dateTime": value}
+    if time_zone:
+        out["timeZone"] = time_zone
+    if dt.tzinfo is None:
+        if not time_zone:
+            raise ValueError(f"{field}: {value!r} has no UTC offset — add one "
+                             f"(…+01:00) or pass time_zone (e.g. \"Europe/Berlin\")")
+        return out, ("local", dt)
+    return out, ("abs", dt)
+
+
+def _span(start, end, time_zone):
+    """Validated {start}, {end} event times: same kind, end after start."""
+    tz = _text(time_zone, "time_zone")
+    s, (sk, sv) = _when(start, "start", tz)
+    e, (ek, ev) = _when(end, "end", tz)
+    if (sk == "date") != (ek == "date"):
+        raise ValueError("start and end must both be dates (all day) or both date-times")
+    if sk != "date" and sk != ek:
+        raise ValueError("start and end must both carry a UTC offset, or neither")
+    if not ev > sv:
+        hint = (" — all-day ends are exclusive: a one-day hold on 2026-11-10 ends "
+                "2026-11-11") if sk == "date" else ""
+        raise ValueError(f"end must be after start{hint}")
+    return s, e
+
+
+def _hold_id(key, summary, start, end):
+    """baoagent + 32 hex: from sha256(key) when keyed (a re-run finds
+    the same hold), else from the inputs, now() and the run's seeded
+    random stream (replay mints the same id, ADR-002 §4)."""
+    seed = (f"key|{key}" if key is not None
+            else f"{summary}|{start}|{end}|{now()}|{random.random()}")  # noqa: F821
+    return _HOLD_PREFIX + hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+
+def _own_id(event_id):
+    if not isinstance(event_id, str) or not event_id.startswith(_HOLD_PREFIX):
+        return {"ok": False, "refused": True,
+                "error": f"event {event_id!r} is not one of Bao's holds (ids start with "
+                         f"{_HOLD_PREFIX!r}) — Bao changes only its own; suggest the "
+                         f"change to the user instead"}
+    return None
+
+
+@span("googleCalendar.create_event", kind="mutator")  # noqa: F821 - guest global
+def create_event(summary, start, end, description=None, location=None,
+                 time_zone=None, key=None):
+    """Put a private hold on the user's primary calendar → {ok, event, created}.
+
+    start/end: RFC 3339 date-times ("2026-11-10T15:00:00+01:00"; no
+    offset needs time_zone, e.g. "Europe/Berlin") or YYYY-MM-DD dates
+    for all day (end exclusive). event has get_event's shape. Nobody
+    is invited or notified; Bao cannot add guests. key: a stable string
+    (e.g. "followup:<thread id>") — a re-run with the same key returns
+    the existing hold, created=False. Needs googleAuth.connect(writes=True)."""
+    try:
+        title = _text(summary, "summary", required=True)
+        s, e = _span(start, end, time_zone)
+        desc = _text(description, "description")
+        loc = _text(location, "location")
+        if key is not None and (not isinstance(key, str) or not key.strip()):
+            raise ValueError("key must be a non-empty string")
+    except ValueError as err:
+        return {"ok": False, "error": str(err)}
+    event_id = _hold_id(key, title, start, end)
+    body = {"id": event_id, "summary": title, "start": s, "end": e,
+            "visibility": "private",
+            "extendedProperties": {"private": {"anybao": "hold"}}}
+    if desc:
+        body["description"] = desc
+    if loc:
+        body["location"] = loc
+    r = _request("post", _HOLD_PATH + _qs({"sendUpdates": "none"}), body)
+    if not r["ok"]:
+        if r.get("status") == 409 and key is not None:
+            got = get_event(event_id)
+            if got.get("ok"):
+                return {"ok": True, "event": got["event"], "created": False}
+        return r
+    return {"ok": True, "event": _trim_event(r["body"]), "created": True}
+
+
+@span("googleCalendar.update_event", kind="mutator")  # noqa: F821 - guest global
+def update_event(event_id, summary=None, start=None, end=None, description=None,
+                 location=None, time_zone=None):
+    """Change one of Bao's holds; omitted fields stay → {ok, event}.
+
+    Only ids starting "baoagent" (create_event's), and only while the
+    hold has no guests — once the user adds people it is their meeting.
+    To move it, pass start AND end (same shapes as create_event)."""
+    refused = _own_id(event_id)
+    if refused:
+        return refused
+    body = {}
+    try:
+        if start is not None or end is not None:
+            if start is None or end is None:
+                raise ValueError("pass both start and end to move a hold")
+            body["start"], body["end"] = _span(start, end, time_zone)
+        for field, value in (("summary", summary), ("description", description),
+                             ("location", location)):
+            text = _text(value, field, required=field == "summary" and value is not None)
+            if text is not None:
+                body[field] = text
+    except ValueError as err:
+        return {"ok": False, "error": str(err)}
+    if not body:
+        return {"ok": False, "error": "nothing to update — pass summary, start/end, "
+                                      "description or location"}
+    r = _request("patch", f"{_HOLD_PATH}/{_quote(event_id)}" + _qs({"sendUpdates": "none"}),
+                 body)
+    if not r["ok"]:
+        return r
+    return {"ok": True, "event": _trim_event(r["body"])}
+
+
+@span("googleCalendar.delete_event", kind="mutator")  # noqa: F821 - guest global
+def delete_event(event_id):
+    """Remove one of Bao's holds → {ok, id, deleted}.
+
+    Only "baoagent…" ids without guests; deleted=False when it was
+    already gone."""
+    refused = _own_id(event_id)
+    if refused:
+        return refused
+    r = _request("delete", f"{_HOLD_PATH}/{_quote(event_id)}" + _qs({"sendUpdates": "none"}))
+    if not r["ok"]:
+        if r.get("refused") and ("HTTP 404" in r["error"] or "HTTP 410" in r["error"]):
+            return {"ok": True, "id": event_id, "deleted": False}
+        if r.get("status") == 410:
+            return {"ok": True, "id": event_id, "deleted": False}
+        return r
+    return {"ok": True, "id": event_id, "deleted": True}
 
 
 def main(args):

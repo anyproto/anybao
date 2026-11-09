@@ -253,7 +253,8 @@ verification class of the client does not change.
 ### 7. Connector surface
 
 `gmail@v1` gains `list_drafts`, `get_draft`, `create_draft`,
-`update_draft` and `delete_draft`:
+`update_draft`, `delete_draft` and `get_profile` (the user's own
+address):
 
 - `create_draft(to, subject, body, cc?, bcc?, reply_to?, reply_all?)`
   builds a `text/plain` UTF-8 message with Python's `email` package
@@ -298,7 +299,10 @@ checks, both preflights through the broker against a loopback server,
 the redirect re-check, and the built-in Google table (`messages/send`
 and `drafts/send` refused, the shipped connectors' requests allowed).
 Connector tests run the new methods through the real guest kernel
-(the `kernelenv` harness).
+(the `kernelenv` harness). Two vectors tie the halves together: a
+draft body the connector built under the kernel is a Rust test case
+the checker must admit, and gmailSync's batch body is pinned byte for
+byte on both sides.
 
 Not yet verified live, the owner's test: that `X-Anybao-Draft` survives
 `drafts.create` and is dropped when the user re-saves the draft; that

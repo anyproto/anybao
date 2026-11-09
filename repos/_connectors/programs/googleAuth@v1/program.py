@@ -1,14 +1,13 @@
 # ADR-011
 """Google account connection — one consent covers gmail/calendar/drive/sheets.
 
-connect(scopes?, timeout?) runs Google's consent in the user's browser
-(host-side OAuth — no token ever enters guest code)
-→ {ok, provider, grantedScopes, account}. status() → {connected,
-pending, scopes, account, expiresAt}; disconnect() revokes at Google
-AND deletes the local grant. Exposes _CRED, the shared credential ref
-every Google connector passes on http calls. connect blocks up to
-120s — user-facing turns only, never cron; after consent_timeout the
-consent window stays open ~5 min, poll status()."""
+connect(scopes?, timeout?, writes?) runs Google's consent in the user's
+browser (host-side OAuth — no token enters guest code) → {ok, provider,
+grantedScopes, account}; writes=True adds Gmail drafts + calendar holds
+to the read-only default. status() → {connected, pending, scopes,
+account, expiresAt}; disconnect() revokes at Google AND deletes the
+grant. Exposes _CRED, the shared ref every Google connector passes.
+connect blocks up to 120s — user-facing turns only, never cron."""
 
 __any_tool__ = True  # agent-callable (ADR-010 §4)
 
@@ -37,6 +36,24 @@ __any_credentials__ = [{"ref": "connector.oauth.google",
                                   "hosts": ["www.googleapis.com", "gmail.googleapis.com",
                                             "sheets.googleapis.com", "meet.googleapis.com"]}}]
 _CRED = {"ref": "connector.oauth.google", "header": "Authorization", "prefix": "Bearer "}
+
+# The host's default consent (runtime/src/oauth_providers.json
+# `default_scopes`, pinned equal by test_googleauth_program) and the
+# two write scopes ADR-034 §6 adds incrementally. What a cell may WRITE
+# is fixed by the runtime's `guest_writes` allowlist, not by these: no
+# grant lets a cell send mail or invite anyone (ADR-034 §1).
+_READ_SCOPES = [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+]
+_WRITE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/calendar.events",
+]
 
 _CONFIGURE_HINT = (
     " — this connector ships its own OAuth client, so this means the "
@@ -70,19 +87,25 @@ def _call(name, payload):
 
 
 @span("googleAuth.connect", kind="mutator")  # noqa: F821 - guest global
-def connect(scopes=None, timeout=None):
+def connect(scopes=None, timeout=None, writes=False):
     """Run Google consent → {ok, provider, grantedScopes, account}.
 
     Opens the browser on the serve machine and BLOCKS up to `timeout`
     seconds (default 120) — call only from a user-facing turn. On
     consent_timeout the window stays open ~5 min; poll status().
-    scopes: optional list to override the default read-only union
-    (gmail/calendar/drive-metadata/sheets); Google re-consents
-    incrementally, so adding a scope later keeps earlier grants."""
+    Default: the read-only union (gmail/calendar/drive-metadata/sheets).
+    writes=True adds gmail.compose + calendar.events — what
+    gmail.create_draft and googleCalendar.create_event need; ask the
+    user first. Bao still cannot send mail or invite anyone: the
+    runtime refuses it whatever is granted. scopes: an explicit list
+    overriding both. Google re-consents incrementally, so earlier
+    grants are kept."""
     payload = {"provider": _PROVIDER, "client_id": _CLIENT_ID,
                "client_secret": _CLIENT_SECRET}
     if scopes:
         payload["scopes"] = list(scopes)
+    elif writes:
+        payload["scopes"] = _READ_SCOPES + _WRITE_SCOPES
     if timeout is not None:
         payload["timeout"] = float(timeout)
     return _call("oauth.connect", payload)
