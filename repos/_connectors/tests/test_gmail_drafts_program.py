@@ -320,10 +320,10 @@ def test_delete_draft():
     assert gm.delete_draft("")["ok"] is False
 
 
-def test_delete_draft_maps_refusals():
-    gone = typed("credential_write_refused",
-                 "could not verify the item is Bao's: the ownership read answered "
-                 "HTTP 404 (ADR-034)")
+def test_delete_draft_maps_the_ownership_read():
+    """A failed ownership read comes back as its own HTTP answer, marked
+    preflight, with the write not sent (ADR-034 §4)."""
+    gone = {"status": 404, "headers": {}, "body": "{}", "url": "", "preflight": True}
     gm, _ = load([(("delete", "/drafts/r-1"), gone)])
     assert gm.delete_draft("r-1") == {"ok": True, "id": "r-1", "deleted": False}
     theirs = typed("credential_write_refused",
@@ -331,3 +331,84 @@ def test_delete_draft_maps_refusals():
     gm, _ = load([(("delete", "/drafts/r-2"), theirs)])
     out = gm.delete_draft("r-2")
     assert out["ok"] is False and out["refused"] is True
+
+
+def test_a_throttled_ownership_read_backs_off_and_retries():
+    slept = []
+    script = [{"status": 429, "headers": {"retry-after": "2"}, "body": "{}", "url": "",
+               "preflight": True}, NO_CONTENT]
+
+    def effect(name, payload):
+        if name == "sleep":
+            slept.append(payload["seconds"])
+            return {"slept": payload["seconds"]}
+        assert name == "http.delete"
+        return script.pop(0)
+
+    gm = connector_kernel(effect=effect).use("gmail@v1")
+    assert gm.delete_draft("r-1") == {"ok": True, "id": "r-1", "deleted": True}
+    assert slept == [2]
+
+
+def test_a_403_rate_limit_is_throttling_not_a_missing_scope():
+    limited = ok_json({"error": {"message": "User-rate limit exceeded",
+                                 "errors": [{"reason": "userRateLimitExceeded"}]}}, 403)
+    slept = []
+
+    def effect(name, payload):
+        if name == "sleep":
+            slept.append(payload["seconds"])
+            return {"slept": payload["seconds"]}
+        assert name == "http.post"
+        return limited
+
+    gm = connector_kernel(effect=effect).use("gmail@v1")
+    out = gm.create_draft(to="ann@x.io", body="x")
+    assert out["ok"] is False and "rate limit" in out["error"]
+    assert "gmail.compose" not in out["error"]
+    assert len(slept) == 3
+
+
+# ---- reply edge cases (review, 2026-11-09) ----------------------------------
+
+def test_reply_all_with_an_explicit_to_keeps_everyone_on_cc():
+    gm, fake = load([(("get", "/messages/m1"), ok_json(ORIGINAL)),
+                     (("get", "/profile"), ok_json({"emailAddress": "me@example.com"})),
+                     (("post", "/drafts"), ok_json(DRAFT_OUT))])
+    assert gm.create_draft(reply_to="m1", reply_all=True, to="ann@x.io",
+                           body="x")["ok"] is True
+    _, msg = decode(fake.writes()[0][1]["json"]["message"]["raw"])
+    assert msg["To"] == "ann@x.io"
+    assert msg["Cc"] == "Boss <boss@example.com>, bob@x.io"
+
+
+def test_group_and_odd_addresses_in_the_original_are_skipped():
+    original = json.loads(json.dumps(ORIGINAL))
+    original["payload"]["headers"][4]["value"] = "undisclosed-recipients:;"
+    original["payload"]["headers"][5]["value"] = "Jörg <jörg@bücher.de>, bob@x.io"
+    gm, fake = load([(("get", "/messages/m1"), ok_json(original)),
+                     (("get", "/profile"), ok_json({"emailAddress": "me@example.com"})),
+                     (("post", "/drafts"), ok_json(DRAFT_OUT))])
+    assert gm.create_draft(reply_to="m1", reply_all=True, body="x")["ok"] is True
+    data, msg = decode(fake.writes()[0][1]["json"]["message"]["raw"])
+    assert_runtime_admits(data)
+    assert msg["To"] == "Boss <boss@example.com>"
+    assert msg["Cc"] == "bob@x.io"
+
+
+def test_non_ascii_addresses_are_refused_up_front():
+    gm, fake = load([])
+    out = gm.create_draft(to="jörg@bücher.de", body="x")
+    assert out["ok"] is False and "ASCII" in out["error"]
+    assert fake.requests == []
+
+
+def test_a_reply_keeps_its_threads_subject():
+    gm, fake = load([(("get", "/messages/m1"), ok_json(ORIGINAL)),
+                     (("post", "/drafts"), ok_json(DRAFT_OUT))])
+    out = gm.create_draft(reply_to="m1", subject="something else", body="x")
+    assert out["ok"] is False and "subject" in out["error"]
+    assert fake.writes() == []
+    # the same subject with any reply prefix is fine
+    assert gm.create_draft(reply_to="m1", subject="AW: Quick Question",
+                           body="x")["ok"] is True

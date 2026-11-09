@@ -45,13 +45,13 @@
        "check": "gmail_draft_text", "preflight": "gmail_draft_owned"},
       {"method": "DELETE", "path": "/gmail/v1/users/me/drafts/*", "preflight": "gmail_draft_owned"},
       {"method": "POST", "path": "/calendar/v3/calendars/primary/events",
-       "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+       "query": {"sendUpdates": "none"},
        "check": "calendar_hold_insert"},
       {"method": "PATCH", "path": "/calendar/v3/calendars/primary/events/baoagent*",
-       "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+       "query": {"sendUpdates": "none"},
        "check": "calendar_hold_patch", "preflight": "calendar_event_solo"},
       {"method": "DELETE", "path": "/calendar/v3/calendars/primary/events/baoagent*",
-       "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+       "query": {"sendUpdates": "none"},
        "preflight": "calendar_event_solo"}
     ]
   }

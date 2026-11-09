@@ -48,6 +48,8 @@ _REFUSED_HINT = (" — a hard limit of the runtime, not a transient error: Bao k
                  "only its own private holds and never invites anyone. Do not retry "
                  "or work around it; tell the user what to do in Google Calendar.")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# RFC 3339 date-time; the offset is optional here (then time_zone names it)
+_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})?")
 _TEXT_CAP = 8_000
 
 
@@ -95,6 +97,32 @@ def _write_auth_error(msg):
     return _auth._friendly(msg)
 
 
+def _api_error(resp):
+    """Google's error envelope → (message, reasons, status)."""
+    try:
+        err = resp.json().get("error") or {}
+    except (ValueError, AttributeError):
+        return "", [], ""
+    if not isinstance(err, dict):
+        return "", [], ""
+    reasons = [e.get("reason") or "" for e in err.get("errors") or [] if isinstance(e, dict)]
+    return err.get("message") or "", reasons, err.get("status") or ""
+
+
+def _rate_limited(resp):
+    """Google also answers 403 for usage limits — those back off like a 429."""
+    _, reasons, status = _api_error(resp)
+    return status == "RESOURCE_EXHAUSTED" or any(
+        r in ("rateLimitExceeded", "userRateLimitExceeded") for r in reasons)
+
+
+def _scope_denied(resp):
+    """A 403 that means the grant lacks the scope (or says nothing)."""
+    message, reasons, _ = _api_error(resp)
+    return (not message and not reasons) or "insufficientPermissions" in reasons \
+        or "scope" in message.lower() or "insufficient" in message.lower()
+
+
 def _request(verb, path, body=None):
     """One authed request with bounded 429 backoff → {ok, body, status}
     | {ok: False, error, status?, refused?}. body goes as json= (the
@@ -117,7 +145,8 @@ def _request(verb, path, body=None):
             if msg.startswith(_REFUSED):
                 return {"ok": False, "refused": True, "error": msg + _REFUSED_HINT}
             return {"ok": False, "error": f"request failed: {msg}"}
-        if resp.status == 429 and attempt < _MAX_RETRIES:
+        throttled = resp.status == 429 or (resp.status == 403 and _rate_limited(resp))
+        if throttled and attempt < _MAX_RETRIES:
             try:
                 wait = int(resp.headers.get("retry-after") or 0)
             except ValueError:
@@ -125,11 +154,15 @@ def _request(verb, path, body=None):
             effect("sleep", {"seconds": min(max(wait, 2 ** attempt), 60)})  # noqa: F821 - guest global
             continue
         if resp.status >= 300:
+            if throttled:
+                return {"ok": False, "status": resp.status,
+                        "error": f"Calendar rate limit — still throttled after "
+                                 f"{_MAX_RETRIES} retries; back off and retry later."}
             if resp.status == 401:
                 return {"ok": False, "status": 401,
                         "error": "Calendar rejected the token (HTTP 401) — run "
                                  "googleAuth.connect() in a user-facing turn to reauthorize."}
-            if resp.status == 403 and write:
+            if resp.status == 403 and write and _scope_denied(resp):
                 return {"ok": False, "status": 403,
                         "error": "Calendar denied the write (HTTP 403) — the grant likely "
                                  "lacks calendar.events; ask the user, then run "
@@ -322,6 +355,8 @@ def _when(value, field, time_zone):
         except ValueError:
             raise ValueError(f"{field}: {value!r} is not a calendar date") from None
     try:
+        if not _DATETIME.fullmatch(value):
+            raise ValueError
         dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         raise ValueError(f"{field}: {value!r} is not an RFC 3339 date-time "
@@ -403,8 +438,18 @@ def create_event(summary, start, end, description=None, location=None,
     if not r["ok"]:
         if r.get("status") == 409 and key is not None:
             got = get_event(event_id)
-            if got.get("ok"):
+            if not got.get("ok"):
+                return got
+            if (got.get("event") or {}).get("status") != "cancelled":
                 return {"ok": True, "event": got["event"], "created": False}
+            # Google keeps a deleted id as a cancelled event: bring it back
+            restore = {k: v for k, v in body.items() if k != "id"}
+            restore["status"] = "confirmed"
+            r = _request("patch", f"{_HOLD_PATH}/{_quote(event_id)}"
+                         + _qs({"sendUpdates": "none"}), restore)
+            if not r["ok"]:
+                return r
+            return {"ok": True, "event": _trim_event(r["body"]), "created": True}
         return r
     return {"ok": True, "event": _trim_event(r["body"]), "created": True}
 
@@ -454,9 +499,8 @@ def delete_event(event_id):
         return refused
     r = _request("delete", f"{_HOLD_PATH}/{_quote(event_id)}" + _qs({"sendUpdates": "none"}))
     if not r["ok"]:
-        if r.get("refused") and ("HTTP 404" in r["error"] or "HTTP 410" in r["error"]):
-            return {"ok": True, "id": event_id, "deleted": False}
-        if r.get("status") == 410:
+        # the runtime's ownership read answers 404/410 for a gone hold
+        if r.get("status") in (404, 410):
             return {"ok": True, "id": event_id, "deleted": False}
         return r
     return {"ok": True, "id": event_id, "deleted": True}

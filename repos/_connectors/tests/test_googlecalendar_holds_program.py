@@ -130,6 +130,11 @@ def test_bad_times_never_reach_the_wire():
         ("x", "2026-02-30", "2026-03-02", {}),
         ("x", "2026-11-10T10:00:00Z", "2026-11-10T11:00:00Z", {"key": ""}),
         ("x", "2026-11-10T10:00:00Z", "2026-11-10T11:00:00Z", {"description": 5}),
+        # fromisoformat would take these; Google would not (review, 2026-11-09)
+        ("x", "20261110T150000Z", "20261110T160000Z", {}),
+        ("x", "2026-W46-2T15:00:00Z", "2026-W46-2T16:00:00Z", {}),
+        ("x", "2026-11-10 15:00:00+01:00", "2026-11-10 16:00:00+01:00", {}),
+        ("x", "2026-11-10T15:00", "2026-11-10T16:00", {"time_zone": "UTC"}),
     ]
     for summary, start, end, kw in cases:
         out = gc.create_event(summary, start, end, **kw)
@@ -230,11 +235,12 @@ def test_delete_event():
     assert gc.delete_event(HOLD) == {"ok": True, "id": HOLD, "deleted": True}
     assert_runtime_admits(*fake.writes()[0])
     assert gc.delete_event("someone-elses")["refused"] is True
-    gone = typed("credential_write_refused",
-                 "could not verify the item is Bao's: the ownership read answered "
-                 "HTTP 410 (ADR-034)")
-    gc, _ = load([(("delete", f"/events/{HOLD}"), gone)])
-    assert gc.delete_event(HOLD) == {"ok": True, "id": HOLD, "deleted": False}
+    # the runtime answers a gone hold with its ownership read's 404/410
+    for status in (404, 410):
+        gone = {"status": status, "headers": {}, "body": "{}", "url": "",
+                "preflight": True}
+        gc, _ = load([(("delete", f"/events/{HOLD}"), gone)])
+        assert gc.delete_event(HOLD) == {"ok": True, "id": HOLD, "deleted": False}
 
 
 def test_holds_need_the_write_consent():
@@ -246,3 +252,26 @@ def test_holds_need_the_write_consent():
                    typed("not_configured", 'no oauth provider "google_write"'))])
     out = gc.create_event("x", "2026-11-10T10:00:00Z", "2026-11-10T11:00:00Z")
     assert out["ok"] is False and "predates the write guard" in out["error"]
+
+
+def test_a_deleted_keyed_hold_is_restored_not_reported_as_existing():
+    """Google keeps a deleted id as a cancelled event, so re-creating a
+    keyed hold answers 409; the connector brings it back."""
+    conflict = ok_json({"error": {"message": "exists"}}, 409)
+    gc, fake = load([
+        (("post", "/calendars/primary/events"), conflict),
+        (("get", "/calendars/primary/events/baoagent"),
+         ok_json({"id": "x", "status": "cancelled"})),
+        (("patch", "/calendars/primary/events/baoagent"),
+         lambda payload: ok_json({"id": "x", "status": "confirmed",
+                                  "summary": payload["json"]["summary"]})),
+    ])
+    out = gc.create_event("Again", "2026-11-10T10:00:00Z", "2026-11-10T11:00:00Z",
+                          key="k1")
+    assert out["ok"] is True and out["created"] is True
+    verb, payload = fake.writes()[1]
+    assert verb == "patch"
+    assert_runtime_admits(verb, payload)
+    assert payload["json"]["status"] == "confirmed"
+    assert "id" not in payload["json"]
+    assert payload["json"]["visibility"] == "private"

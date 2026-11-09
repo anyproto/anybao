@@ -101,8 +101,7 @@ A rule:
 |---|---|
 | `method` | the HTTP method, exact |
 | `path` | a template: literal segments; `*` is one segment; `prefix*` is one segment that starts with `prefix` |
-| `query` | name → value: the parameter appears exactly once with exactly this value |
-| `query_forbid` | names that must not appear |
+| `query` | name → value: the parameter appears exactly once with exactly this value; the write carries no other parameter |
 | `check` | a named body check implemented in the host (§4, §5) |
 | `preflight` | a named ownership read the host performs before the write (§4, §5) |
 
@@ -130,13 +129,13 @@ The write handle `google_write` (same endpoints, its own scopes, §6):
    "check": "gmail_draft_text", "preflight": "gmail_draft_owned"},
   {"method": "DELETE", "path": "/gmail/v1/users/me/drafts/*", "preflight": "gmail_draft_owned"},
   {"method": "POST",   "path": "/calendar/v3/calendars/primary/events",
-   "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+   "query": {"sendUpdates": "none"},
    "check": "calendar_hold_insert"},
   {"method": "PATCH",  "path": "/calendar/v3/calendars/primary/events/baoagent*",
-   "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+   "query": {"sendUpdates": "none"},
    "check": "calendar_hold_patch", "preflight": "calendar_event_solo"},
   {"method": "DELETE", "path": "/calendar/v3/calendars/primary/events/baoagent*",
-   "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+   "query": {"sendUpdates": "none"},
    "preflight": "calendar_event_solo"}
 ]
 ```
@@ -159,12 +158,22 @@ read differently from the checker.
 - **Query names compare normalised**: ASCII-lowercased, with every
   non-alphanumeric character removed (`send_updates` = `sendUpdates`).
   Google's front end accepts aliases, so a required parameter must
-  appear exactly once under any spelling, and a forbidden one under
-  none.
+  appear exactly once under any spelling. A write carries no parameter
+  its rule does not name (`sendNotifications`, `supportsAttachments`,
+  `conferenceDataVersion` all refuse).
+- **Some headers are the host's.** A cell may not set `Host`,
+  `Authorization`, `Proxy-Authorization`, `Cookie`, `Content-Length`,
+  `Content-Encoding`, `Transfer-Encoding`, `Connection`, `Upgrade`,
+  `TE` or `Trailer` on any request through the handle, and no
+  `Content-Type` beside `json=`. A cell's `Host` would route the token
+  past the path rules, and ureq sends a cell's lower-case
+  `authorization` or `content-type` next to the host's own rather than
+  replacing it.
 - **Method tunnels are refused on every request through the handle**,
   reads included: a header or query parameter whose normalised name
   contains `method` (`X-HTTP-Method-Override` and kin) fails the
-  request. Those headers move a write past a method check.
+  request — and so does one in a batch's inner request line or inner
+  headers (§4). Those move a write past a method check.
 - **Bodies the checks read must be `json=`** (the broker sends their
   canonical serialisation, so a duplicate key cannot exist on the
   wire) — except the batch, which is a `body=` text with its
@@ -182,18 +191,21 @@ read differently from the checker.
   §2: 25 `messages.get` per multipart batch). A batch can wrap any
   request, including a send, so the body is parsed strictly. The
   boundary comes from the request's `Content-Type`
-  (`multipart/mixed`). Line endings are CRLF only. The preamble and
-  epilogue are empty, and the close delimiter is present. Every part
-  is `Content-Type: application/http` and holds exactly one inner
-  request: `GET /gmail/v1/users/me/…`, optionally followed by
-  ` HTTP/1.1`. An inner request has no body and no method-tunnel
-  header. Anything else in the body refuses the whole batch.
+  (`multipart/mixed`). Line endings are CRLF only. The preamble is
+  empty, the close delimiter is present, and at most one CRLF follows
+  it. Every part carries only `Content-Type: application/http` and an
+  optional `Content-ID` (a `Content-Transfer-Encoding` would hide the
+  inner request from the parser), and holds exactly one inner request:
+  `GET /gmail/v1/users/me/…`, optionally followed by ` HTTP/1.1`. An
+  inner request has no body and no method tunnel, in its query or its
+  headers. Anything else in the body refuses the whole batch.
 - **`gmail_draft_text`** reads the `drafts.create` / `drafts.update`
   body. Top-level keys are a subset of `{id, message}`, and
-  `message`'s keys a subset of `{raw, threadId}`. `raw` decodes
-  (base64url or base64, padding optional) to a message whose header
-  block parses strictly: ASCII only, no lone CR, every line a header
-  or a continuation. The type is `text/plain` (an absent `Content-Type`
+  `message`'s keys a subset of `{raw, threadId}`. A create carries no
+  `id`; an update's `id`, when present, is the one in its path. `raw`
+  decodes (base64url or base64, padding optional) to a message whose
+  header block parses strictly: printable ASCII and tab only (no NUL,
+  no lone CR), every line a header or a continuation. The type is `text/plain` (an absent `Content-Type`
   means `text/plain`; two of them refuse). The message carries the
   marker header `X-Anybao-Draft`.
   Why `text/plain`: an HTML draft can embed remote images, which load
@@ -202,8 +214,13 @@ read differently from the checker.
 - **`gmail_draft_owned`** guards update and delete. Before the write,
   the host reads `drafts/<id>?format=metadata&metadataHeaders=X-Anybao-Draft`
   with the same credential, as a host-emitted `http.get` record
-  (`meta.hosted`, drained on replay — the ADR-011 §6 mechanism). The
-  write proceeds only when the draft carries the marker. Gmail deletes
+  (`meta.hosted`, drained on replay — the ADR-011 §6 mechanism).
+  Host-emitted calls never consult a mock: a cell-authored span mock
+  (ADR-028) cannot answer the ownership read. The write proceeds only
+  when the draft carries the marker. A read that answers 300 or more
+  (a rate limit, an expired token, a draft that is gone) is returned as
+  the write's own answer, marked `preflight: true`, and the write is
+  not sent; the caller handles that status as it would its own. Gmail deletes
   drafts permanently, so without this a cell could destroy or overwrite
   a draft the user wrote. A draft the user re-saves in Gmail is
   expected to lose the marker and with it Bao's access (to verify
@@ -225,15 +242,24 @@ see, and that no one is invited to.
   and a hold written there is a message to its owner.
 - **`sendUpdates=none` on every write; `sendNotifications` never.**
   Google sends no email about the write.
-- **`calendar_hold_insert`**: the body's `id` starts with `baoagent`,
-  and the rest is base32hex (`0-9a-v`, 5–1024 characters overall —
-  `events.insert` lets the client choose an id). `visibility` is
-  `"private"`, so a calendar shared with "see all event details"
-  shows only "busy". The body has no `attendees`. A key that
-  normalises to one of the guarded names (`id`, `visibility`,
-  `attendees`) but is not spelled exactly so refuses the body.
-- **`calendar_hold_patch`**: no `attendees`, no `id`, and `visibility`
-  is `"private"` when present. Patch, not update: omitted fields stay.
+- **Bodies are allowlists.** A hold carries only `id`, `summary`,
+  `description`, `location`, `start`, `end` (`date` / `dateTime` /
+  `timeZone`), `visibility` (`"private"`), `transparency`, `colorId`,
+  `recurrence` (strings), `extendedProperties` (`private` only, string
+  values) and `eventType` (`"default"` only). Everything else refuses
+  the body, because Google acts on other people for keys a blocklist
+  would miss. `attendees` invites people. `eventType: "outOfOffice"` /
+  `"focusTime"` with `autoDeclineMode` declines the user's existing
+  meetings and sends their organisers a cell-chosen message.
+  `reminders` can email. `conferenceData` creates a meeting room.
+- **`calendar_hold_insert`**: the allowlist above, plus an `id` that
+  starts with `baoagent` and is base32hex (`0-9a-v`, 5–1024 characters
+  overall — `events.insert` lets the client choose an id) and
+  `visibility: "private"`, so a calendar shared with "see all event
+  details" shows only "busy".
+- **`calendar_hold_patch`**: the same allowlist without `id`, plus
+  `status: "confirmed"` (restoring a hold Google keeps as cancelled
+  after a delete). Patch, not update: omitted fields stay.
 - **The `baoagent` prefix in the path** limits patch and delete to
   events Bao created. The user's own events and other people's meetings
   carry Google-generated ids. An attacker can choose an id for an event
@@ -307,7 +333,13 @@ address):
   `References` are copied from the original, the subject defaults to
   `Re: <subject>`, and `to` defaults to the original's `Reply-To`,
   else its `From`. `reply_all` adds the original's To and Cc, minus
-  the user's own address (from `users.getProfile`).
+  the user's own address (from `users.getProfile`); with an explicit
+  `to`, the others go on Cc. A `subject` given with `reply_to` must
+  match the thread's, ignoring `Re:`/`Fwd:`/`AW:`/`WG:` prefixes, since
+  Gmail threads a draft only then. Addresses are ASCII
+  (internationalized ones would need SMTPUTF8). Addresses read from
+  the original that cannot be used, such as a group like
+  `undisclosed-recipients:;`, are skipped.
 - `update_draft(draft_id, …)` replaces a draft, keeping every field it
   is not given. `delete_draft(draft_id)` deletes one. Both work on
   Bao's own drafts only (§4); on any other draft they return an error
@@ -326,7 +358,10 @@ address):
   `start`/`end` are RFC 3339 date-times or `YYYY-MM-DD` dates (all
   day). With `key`, the event id is `baoagent` + the first 32 hex
   characters of `sha256(key)`, so a re-run with the same key returns
-  the existing hold (`created: False`) instead of a second one.
+  the existing hold (`created: False`) instead of a second one. If
+  that hold was deleted, Google answers 409 for the reused id and keeps
+  the event as cancelled, so the connector restores it with a patch
+  (`status: "confirmed"`).
   Without it, the id hashes the inputs, `now()` and a draw from the
   run's seeded stream (ADR-002 §4), so replay mints the same id.
 - `update_event` and `delete_event` take a `baoagent…` id. They return
@@ -337,13 +372,20 @@ address):
 ### 8. Tests and live verification
 
 Runtime unit tests cover the matcher (dot segments, case, percent
-encoding, the wildcard charset, query aliases and duplicates, method
-tunnels), the batch parser (accepted, inner `POST`, LF-only, preamble
-junk, missing close), the draft check (HTML, multipart, two content
-types, a malformed header line, no marker, extra keys), the calendar
-checks, both preflights through the broker against a loopback server,
-the redirect re-check, and the built-in Google table (`messages/send`
+encoding, the wildcard charset, query aliases, duplicates and extra
+parameters, method tunnels, host-only headers), the batch parser
+(accepted, inner `POST`, an inner query tunnel, a part transfer
+encoding, LF-only, preamble junk, missing close), the draft check
+(HTML, multipart, two content types, a malformed header line, NUL and
+control bytes, no marker, extra keys, ids), the calendar allowlists
+(out-of-office, email reminders, conference data, unknown keys), both
+preflights through the broker against a loopback server, a span mock
+that tries to answer an ownership read, a failed read returned as the
+answer, the redirect re-check, and the built-in tables (`messages/send`
 and `drafts/send` refused, the shipped connectors' requests allowed).
+An independent adversarial review (2026-11-09) found the mock bypass,
+the calendar blocklist, the `Host` header and the batch and draft
+looseness above; each has a regression test.
 Connector tests run the new methods through the real guest kernel
 (the `kernelenv` harness). Two vectors tie the halves together: a
 draft body the connector built under the kernel is a Rust test case

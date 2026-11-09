@@ -97,6 +97,32 @@ def _write_auth_error(msg):
     return _auth._friendly(msg)
 
 
+def _api_error(resp):
+    """Google's error envelope → (message, reasons, status)."""
+    try:
+        err = resp.json().get("error") or {}
+    except (ValueError, AttributeError):
+        return "", [], ""
+    if not isinstance(err, dict):
+        return "", [], ""
+    reasons = [e.get("reason") or "" for e in err.get("errors") or [] if isinstance(e, dict)]
+    return err.get("message") or "", reasons, err.get("status") or ""
+
+
+def _rate_limited(resp):
+    """Google also answers 403 for usage limits — those back off like a 429."""
+    _, reasons, status = _api_error(resp)
+    return status == "RESOURCE_EXHAUSTED" or any(
+        r in ("rateLimitExceeded", "userRateLimitExceeded") for r in reasons)
+
+
+def _scope_denied(resp):
+    """A 403 that means the grant lacks the scope (or says nothing)."""
+    message, reasons, _ = _api_error(resp)
+    return (not message and not reasons) or "insufficientPermissions" in reasons \
+        or "scope" in message.lower() or "insufficient" in message.lower()
+
+
 def _request(verb, path, body=None):
     """One authed request with bounded 429 backoff → {ok, body, status}
     | {ok: False, error, status?, refused?}. body goes as json= — the
@@ -119,7 +145,8 @@ def _request(verb, path, body=None):
             if msg.startswith(_REFUSED):
                 return {"ok": False, "refused": True, "error": msg + _REFUSED_HINT}
             return {"ok": False, "error": f"request failed: {msg}"}
-        if resp.status == 429 and attempt < _MAX_RETRIES:
+        throttled = resp.status == 429 or (resp.status == 403 and _rate_limited(resp))
+        if throttled and attempt < _MAX_RETRIES:
             try:
                 wait = int(resp.headers.get("retry-after") or 0)
             except ValueError:
@@ -127,15 +154,15 @@ def _request(verb, path, body=None):
             effect("sleep", {"seconds": min(max(wait, 2 ** attempt), 60)})  # noqa: F821 - guest global
             continue
         if resp.status >= 300:
-            if resp.status == 429:
-                return {"ok": False, "status": 429,
+            if throttled:
+                return {"ok": False, "status": resp.status,
                         "error": f"Gmail rate limit — still throttled after "
                                  f"{_MAX_RETRIES} retries; back off and retry later."}
             if resp.status == 401:
                 return {"ok": False, "status": 401,
                         "error": "Gmail rejected the token (HTTP 401) — run "
                                  "googleAuth.connect() in a user-facing turn to reauthorize."}
-            if resp.status == 403 and write:
+            if resp.status == 403 and write and _scope_denied(resp):
                 return {"ok": False, "status": 403,
                         "error": "Gmail denied the draft write (HTTP 403) — the grant "
                                  "likely lacks gmail.compose; ask the user, then run "
@@ -352,9 +379,12 @@ def _clean(value, field):
     return value.strip()
 
 
-def _addresses(value, field):
+def _addresses(value, field, lenient=False):
     """str ("a@x.io, B <b@y.io>") or list → ["B <b@y.io>", …]; raises
-    ValueError on anything that is not an address."""
+    ValueError on anything that is not an ASCII address (an
+    internationalized one would need SMTPUTF8). lenient (headers read
+    from Gmail): skips what it cannot use — a group like
+    "undisclosed-recipients:;" — instead of raising."""
     if value is None or value == "" or value == []:
         return []
     items = [value] if isinstance(value, str) else list(value)
@@ -364,10 +394,18 @@ def _addresses(value, field):
         if not text:
             continue
         for name, addr in email.utils.getaddresses([text]):
-            if not _ADDR.fullmatch(addr or ""):
-                raise ValueError(f"{field}: {text!r} is not an email address")
+            if not (addr or "").isascii() or not _ADDR.fullmatch(addr or ""):
+                if lenient:
+                    continue
+                raise ValueError(f"{field}: {text!r} is not an ASCII email address")
             out.append(email.utils.formataddr((name, addr)) if name else addr)
     return out
+
+
+def _bare_subject(subject):
+    """A subject without its reply/forward prefixes, for Gmail's
+    same-subject threading rule."""
+    return re.sub(r"^(\s*(re|fwd?|aw|wg)\s*:\s*)+", "", subject or "", flags=re.I).strip().lower()
 
 
 def _unfold(value):
@@ -441,15 +479,17 @@ def _reply_context(reply_to, reply_all):
     p = raw.get("payload")
     mid = _unfold(_header(p, "Message-ID"))
     refs = " ".join(x for x in (_unfold(_header(p, "References")), mid) if x)
-    to = _addresses(_header(p, "Reply-To") or _header(p, "From"), "reply_to.from")
+    to = _addresses(_header(p, "Reply-To") or _header(p, "From"), "reply_to.from",
+                    lenient=True)
     cc = []
     if reply_all:
         prof = _get("/profile")
         if not prof["ok"]:
             return prof
         own = (prof["body"] or {}).get("emailAddress") or ""
-        to = _dedupe(to + _addresses(_header(p, "To"), "reply_to.to"), drop=[own])
-        cc = _dedupe(_addresses(_header(p, "Cc"), "reply_to.cc"),
+        to = _dedupe(to + _addresses(_header(p, "To"), "reply_to.to", lenient=True),
+                     drop=[own])
+        cc = _dedupe(_addresses(_header(p, "Cc"), "reply_to.cc", lenient=True),
                      drop=[own] + [_addr_key(a) for a in to])
     return {"ok": True, "threadId": raw.get("threadId"), "inReplyTo": mid,
             "references": refs, "subject": _unfold(_header(p, "Subject")),
@@ -525,12 +565,21 @@ def create_draft(to=None, subject=None, body="", cc=None, bcc=None,
             return ctx
         thread_id, in_reply_to, references = (ctx["threadId"], ctx["inReplyTo"],
                                                ctx["references"])
+        orig = ctx["subject"].strip()
         if not subj:
-            orig = ctx["subject"].strip()
             subj = orig if orig.lower().startswith("re:") else f"Re: {orig}".strip()
+        elif _bare_subject(subj) != _bare_subject(orig):
+            # Gmail threads a draft only when its subject matches
+            return {"ok": False, "error": f"a reply keeps its thread's subject "
+                                          f"({orig!r}) — omit subject, or write a new "
+                                          f"draft without reply_to"}
         if not to_l:
             to_l = ctx["to"]
             cc_l = _dedupe(cc_l + ctx["cc"], drop=[_addr_key(a) for a in to_l])
+        elif reply_all:
+            # explicit to= replaces the To; everyone else the original
+            # reached still hears about it, on Cc
+            cc_l = _dedupe(cc_l + ctx["to"] + ctx["cc"], drop=[_addr_key(a) for a in to_l])
     elif reply_all:
         return {"ok": False, "error": "reply_all needs reply_to=<message id>"}
     if not (to_l or cc_l or bcc_l):
@@ -568,9 +617,12 @@ def update_draft(draft_id, to=None, subject=None, body=None, cc=None, bcc=None):
                 "error": f"draft {draft_id} is the user's (no {_DRAFT_MARKER} header) "
                          "— Bao changes only its own drafts; create a new one instead"}
     try:
-        to_l = _addresses(_header(p, "To") if to is None else to, "to")
-        cc_l = _addresses(_header(p, "Cc") if cc is None else cc, "cc")
-        bcc_l = _addresses(_header(p, "Bcc") if bcc is None else bcc, "bcc")
+        to_l = (_addresses(_header(p, "To"), "to", lenient=True) if to is None
+                else _addresses(to, "to"))
+        cc_l = (_addresses(_header(p, "Cc"), "cc", lenient=True) if cc is None
+                else _addresses(cc, "cc"))
+        bcc_l = (_addresses(_header(p, "Bcc"), "bcc", lenient=True) if bcc is None
+                 else _addresses(bcc, "bcc"))
         subj = _clean(_unfold(_header(p, "Subject")) if subject is None else subject,
                       "subject")
         text = _check_body(_extract_text(p) if body is None else body)
@@ -599,7 +651,7 @@ def delete_draft(draft_id):
         return {"ok": False, "error": "draft_id is required"}
     r = _request("delete", f"/drafts/{_quote(draft_id)}")
     if not r["ok"]:
-        if r.get("refused") and "HTTP 404" in r["error"]:
+        if r.get("status") == 404:
             return {"ok": True, "id": draft_id, "deleted": False}
         return r
     return {"ok": True, "id": draft_id, "deleted": True}

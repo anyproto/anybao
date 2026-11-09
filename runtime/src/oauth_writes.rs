@@ -26,8 +26,58 @@ pub const HOLD_PREFIX: &str = "baoagent";
 /// Inner requests a Gmail batch may carry (ADR-034 §4).
 const BATCH_GET_PREFIX: &str = "/gmail/v1/users/me/";
 
-/// Body keys the calendar checks guard by exact spelling (ADR-034 §5).
-const CALENDAR_GUARDED: [&str; 3] = ["id", "visibility", "attendees"];
+/// Headers only the host sets on a policy-bearing handle (ADR-034 §3):
+/// a cell's `Host` would route the token past the path rules, and ureq
+/// sends a cell's `authorization` / `content-type` NEXT TO the host's.
+const HOST_HEADERS: [&str; 11] = [
+    "host",
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "content-length",
+    "content-encoding",
+    "transfer-encoding",
+    "connection",
+    "upgrade",
+    "te",
+    "trailer",
+];
+
+/// The only keys a hold insert may carry (ADR-034 §5) — an allowlist:
+/// `attendees`, `reminders` (email), `conferenceData` and a non-default
+/// `eventType` (out-of-office auto-declines other people's meetings)
+/// are refused by absence.
+const HOLD_KEYS: [&str; 12] = [
+    "id",
+    "summary",
+    "description",
+    "location",
+    "start",
+    "end",
+    "visibility",
+    "transparency",
+    "colorId",
+    "recurrence",
+    "extendedProperties",
+    "eventType",
+];
+
+/// A hold patch: the insert keys minus `id`, plus `status: confirmed`
+/// (restoring a hold Google keeps as cancelled).
+const HOLD_PATCH_KEYS: [&str; 12] = [
+    "summary",
+    "description",
+    "location",
+    "start",
+    "end",
+    "visibility",
+    "transparency",
+    "colorId",
+    "recurrence",
+    "extendedProperties",
+    "eventType",
+    "status",
+];
 
 /// base64url or base64, padding optional — what Google's decoder takes.
 const LENIENT_B64: GeneralPurpose = GeneralPurpose::new(
@@ -45,11 +95,10 @@ pub struct WriteRule {
     /// `/`-separated template: literal segments, `*` (one segment) or
     /// `prefix*` (one segment starting with `prefix`).
     pub path: String,
-    /// name → value: the parameter appears exactly once with this value.
+    /// name → value: the parameter appears exactly once with this value,
+    /// and a write carries no other parameter.
     #[serde(default)]
     pub query: BTreeMap<String, String>,
-    #[serde(default)]
-    pub query_forbid: Vec<String>,
     #[serde(default)]
     pub check: Option<BodyCheck>,
     #[serde(default)]
@@ -113,6 +162,17 @@ pub fn check(
             "header {k:?} would tunnel a method past the write allowlist"
         ));
     }
+    if let Some(k) = headers.and_then(|h| {
+        h.keys().find(|k| {
+            let n = k.to_ascii_lowercase();
+            HOST_HEADERS.contains(&n.as_str())
+                || (n == "content-type" && matches!(body, Body::Json(_)))
+        })
+    }) {
+        return Err(format!(
+            "header {k:?} is the host's to set on this credential"
+        ));
+    }
     let pairs: Vec<(String, String)> = u
         .query_pairs()
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -135,7 +195,7 @@ pub fn check(
         if !path_matches(&rule.path, path) {
             continue;
         }
-        match check_rule(rule, &pairs, headers, body) {
+        match check_rule(rule, path, &pairs, headers, body) {
             Ok(()) => {
                 return Ok(rule.preflight.map(|kind| PreflightRead {
                     kind,
@@ -276,10 +336,19 @@ fn percent_decode(raw: &str) -> Option<Vec<u8>> {
 
 fn check_rule(
     rule: &WriteRule,
+    path: &str,
     pairs: &[(String, String)],
     headers: Option<&Map<String, Value>>,
     body: Body<'_>,
 ) -> Result<(), String> {
+    if let Some((k, _)) = pairs
+        .iter()
+        .find(|(k, _)| !rule.query.keys().any(|q| norm(q) == norm(k)))
+    {
+        return Err(format!(
+            "the query parameter {k:?} is not allowed on this write"
+        ));
+    }
     for (name, want) in &rule.query {
         let hits: Vec<&str> = pairs
             .iter()
@@ -293,17 +362,16 @@ fn check_rule(
             _ => return Err(format!("the query parameter {name} appears more than once")),
         }
     }
-    if let Some(name) = rule
-        .query_forbid
-        .iter()
-        .find(|f| pairs.iter().any(|(k, _)| norm(k) == norm(f)))
-    {
-        return Err(format!("the query parameter {name} is not allowed"));
-    }
+    // the wildcard id a PUT names in its path (`drafts/<id>`)
+    let path_id = rule
+        .path
+        .ends_with('*')
+        .then(|| path.rsplit('/').next().and_then(decode_segment))
+        .flatten();
     match rule.check {
         None => Ok(()),
         Some(BodyCheck::GmailBatchReads) => gmail_batch_reads(headers, body),
-        Some(BodyCheck::GmailDraftText) => gmail_draft_text(json_object(body)?),
+        Some(BodyCheck::GmailDraftText) => gmail_draft_text(json_object(body)?, path_id),
         Some(BodyCheck::CalendarHoldInsert) => calendar_hold_insert(json_object(body)?),
         Some(BodyCheck::CalendarHoldPatch) => calendar_hold_patch(json_object(body)?),
     }
@@ -360,7 +428,7 @@ fn gmail_batch_reads(headers: Option<&Map<String, Value>>, body: Body<'_>) -> Re
         return Err("a batch body has no parts".into());
     }
     match close.strip_prefix("--") {
-        Some(epilogue) if epilogue.trim_matches(['\r', '\n', ' ', '\t']).is_empty() => {}
+        Some("") | Some("\r\n") => {}
         _ => return Err("a batch body must end with its close delimiter".into()),
     }
     for (i, part) in parts.iter().enumerate() {
@@ -381,6 +449,13 @@ fn batch_part(content: &str) -> Result<(), String> {
             break;
         }
         part_headers.push(header_line(line)?);
+    }
+    // Content-Type and Content-ID only: a Content-Transfer-Encoding
+    // would hide the inner request from this parser
+    if let Some((n, _)) = part_headers.iter().find(|(n, _)| {
+        !n.eq_ignore_ascii_case("content-type") && !n.eq_ignore_ascii_case("content-id")
+    }) {
+        return Err(format!("part header {n:?} is not allowed"));
     }
     let ctypes: Vec<&String> = part_headers
         .iter()
@@ -406,6 +481,13 @@ fn batch_part(content: &str) -> Result<(), String> {
     }
     if !path.starts_with(BATCH_GET_PREFIX) || path.chars().any(|c| c.is_control()) {
         return Err(format!("inner path {path:?} is outside {BATCH_GET_PREFIX}"));
+    }
+    if let Some((_, q)) = path.split_once('?') {
+        if let Some((k, _)) =
+            url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| norm(k).contains("method"))
+        {
+            return Err(format!("inner query parameter {k:?} would tunnel a method"));
+        }
     }
     // inner headers, then nothing: a GET carries no body
     for line in lines.by_ref() {
@@ -477,12 +559,16 @@ fn header_line(line: &str) -> Result<(String, String), String> {
 
 /// The `drafts.create` / `drafts.update` body: a Bao-marked
 /// `text/plain` message and nothing else.
-fn gmail_draft_text(m: &Map<String, Value>) -> Result<(), String> {
+fn gmail_draft_text(m: &Map<String, Value>, path_id: Option<String>) -> Result<(), String> {
     if let Some(k) = m.keys().find(|k| *k != "id" && *k != "message") {
         return Err(format!("draft key {k:?} is not allowed"));
     }
-    if m.get("id").is_some_and(|v| !v.is_string()) {
-        return Err("draft id must be a string".into());
+    // create takes no id; an update's id is the one in its path
+    match (m.get("id"), &path_id) {
+        (None, _) => {}
+        (Some(_), None) => return Err("a new draft takes no id".into()),
+        (Some(Value::String(id)), Some(pid)) if id == pid => {}
+        (Some(_), Some(_)) => return Err("the draft id must match the path".into()),
     }
     let msg = m
         .get("message")
@@ -555,8 +641,11 @@ fn header_block(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
         if line.is_empty() {
             break;
         }
-        if !line.is_ascii() {
-            return Err("non-ASCII bytes in the message's header block".into());
+        if !line
+            .iter()
+            .all(|&c| c == b'\t' || (0x20..=0x7e).contains(&c))
+        {
+            return Err("control or non-ASCII bytes in the message's header block".into());
         }
         let text = std::str::from_utf8(line).expect("ascii is utf-8");
         if text.starts_with([' ', '\t']) {
@@ -581,22 +670,43 @@ fn header_block(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
 
 // --- Calendar (ADR-034 §5) --------------------------------------------------
 
-/// A guarded key spelled any other way (`Attendees`, `visibility_`) is
-/// refused rather than guessed at.
-fn calendar_spelling(m: &Map<String, Value>) -> Result<(), String> {
-    match m.keys().find(|k| {
-        CALENDAR_GUARDED.contains(&norm(k).as_str()) && !CALENDAR_GUARDED.contains(&k.as_str())
-    }) {
-        Some(k) => Err(format!("event key {k:?} is ambiguous")),
-        None => Ok(()),
+/// Every key in `allowed`, every value in its shape (ADR-034 §5).
+fn hold_fields(m: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
+    let string = |v: &Value| v.is_string();
+    for (k, v) in m {
+        if !allowed.contains(&k.as_str()) {
+            return Err(format!(
+                "event key {k:?} is not allowed on a hold (ADR-034 §5)"
+            ));
+        }
+        let ok = match k.as_str() {
+            "id" | "summary" | "description" | "location" | "colorId" => string(v),
+            "visibility" => v.as_str() == Some("private"),
+            "transparency" => matches!(v.as_str(), Some("opaque" | "transparent")),
+            "eventType" => v.as_str() == Some("default"),
+            "status" => v.as_str() == Some("confirmed"),
+            "start" | "end" => v.as_object().is_some_and(|o| {
+                o.iter().all(|(ok, ov)| {
+                    matches!(ok.as_str(), "date" | "dateTime" | "timeZone") && string(ov)
+                })
+            }),
+            "recurrence" => v.as_array().is_some_and(|a| a.iter().all(string)),
+            "extendedProperties" => v.as_object().is_some_and(|o| {
+                o.iter().all(|(ok, ov)| {
+                    ok == "private" && ov.as_object().is_some_and(|p| p.values().all(string))
+                })
+            }),
+            _ => false,
+        };
+        if !ok {
+            return Err(format!("event key {k:?} has a value a hold may not carry"));
+        }
     }
+    Ok(())
 }
 
 fn calendar_hold_insert(m: &Map<String, Value>) -> Result<(), String> {
-    calendar_spelling(m)?;
-    if m.contains_key("attendees") {
-        return Err("a hold has no attendees — Bao cannot invite anyone (ADR-034 §5)".into());
-    }
+    hold_fields(m, &HOLD_KEYS)?;
     let id = m
         .get("id")
         .and_then(Value::as_str)
@@ -609,25 +719,14 @@ fn calendar_hold_insert(m: &Map<String, Value>) -> Result<(), String> {
             "a hold id must be {HOLD_PREFIX:?} + base32hex (0-9a-v), not {id:?}"
         ));
     }
-    if m.get("visibility").and_then(Value::as_str) != Some("private") {
+    if !m.contains_key("visibility") {
         return Err("a hold must have visibility \"private\"".into());
     }
     Ok(())
 }
 
 fn calendar_hold_patch(m: &Map<String, Value>) -> Result<(), String> {
-    calendar_spelling(m)?;
-    if m.contains_key("attendees") {
-        return Err("a hold has no attendees — Bao cannot invite anyone (ADR-034 §5)".into());
-    }
-    if m.contains_key("id") {
-        return Err("a patch may not change the event id".into());
-    }
-    match m.get("visibility") {
-        None => Ok(()),
-        Some(v) if v.as_str() == Some("private") => Ok(()),
-        Some(_) => Err("a hold must stay visibility \"private\"".into()),
-    }
+    hold_fields(m, &HOLD_PATCH_KEYS)
 }
 
 #[cfg(test)]
@@ -882,6 +981,8 @@ mod tests {
             "?sendUpdates=none&sendNotifications=false",
             "?sendUpdates=none&SEND-NOTIFICATIONS=true",
             "?sendUpdates=None",
+            "?sendUpdates=none&supportsAttachments=true",
+            "?sendUpdates=none&conferenceDataVersion=1",
         ] {
             assert!(post(&format!("{CAL}{q}"), &h).is_err(), "{q}");
         }
@@ -906,6 +1007,40 @@ mod tests {
         let plain = json!({"Accept": "application/json"});
         assert_eq!(
             check(&rules, "GET", &url, plain.as_object(), Body::None),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn host_headers_are_the_hosts() {
+        let rules = google_rules();
+        let url = format!("{GMAIL}/gmail/v1/users/me/drafts");
+        let body = draft_body(PLAIN);
+        for h in [
+            json!({"Host": "evil.example.com"}),
+            json!({"authorization": "Bearer x"}),
+            json!({"Content-Encoding": "gzip"}),
+            json!({"transfer-encoding": "chunked"}),
+            json!({"content-type": "text/html"}),
+        ] {
+            let got = check(&rules, "POST", &url, h.as_object(), Body::Json(&body));
+            assert!(got.is_err(), "{h}");
+        }
+        // reads too: a Host header would route the token elsewhere
+        let host = json!({"Host": "evil.example.com"});
+        let read = format!("{GMAIL}/gmail/v1/users/me/labels");
+        assert!(check(&rules, "GET", &read, host.as_object(), Body::None).is_err());
+        // the batch's own content type is its to set
+        let h = batch_headers();
+        let b = batch(&["GET /gmail/v1/users/me/messages/m1"]);
+        let batch_url = format!("{GMAIL}/batch/gmail/v1");
+        assert_eq!(
+            check(&rules, "POST", &batch_url, Some(&h), Body::Text(&b)),
+            Ok(None)
+        );
+        let accept = json!({"Accept": "application/json"});
+        assert_eq!(
+            check(&rules, "POST", &url, accept.as_object(), Body::Json(&body)),
             Ok(None)
         );
     }
@@ -987,6 +1122,14 @@ mod tests {
         );
         refused(&json!({"message": {}}), "no raw");
         refused(&json!([]), "array");
+        refused(
+            &json!({"id": "r-1", "message": {"raw": b64url(PLAIN)}}),
+            "create with an id",
+        );
+        let nul = "X-Anybao-Draft: 1\r\nX-A: b\0Content-Type: text/html\r\n\r\nx";
+        refused(&draft_body(nul), "NUL in a header");
+        let vt = "X-Anybao-Draft: 1\r\nX-A: b\x0bc\r\n\r\nx";
+        refused(&draft_body(vt), "vertical tab in a header");
         // a json body must be json=
         let text = draft_body(PLAIN).to_string();
         assert!(check(&google_rules(), "POST", &url, None, Body::Text(&text)).is_err());
@@ -1010,6 +1153,13 @@ mod tests {
         assert_eq!(pf.kind, Preflight::GmailDraftOwned);
         let html = draft_body("X-Anybao-Draft: 1\r\nContent-Type: text/html\r\n\r\nx");
         assert!(check(&rules, "PUT", &url, None, Body::Json(&html)).is_err());
+        // an update's body id is the path's, or absent
+        let mut same = draft_body(PLAIN);
+        same["id"] = json!("r-42");
+        assert!(check(&rules, "PUT", &url, None, Body::Json(&same)).is_ok());
+        let mut other = draft_body(PLAIN);
+        other["id"] = json!("r-users-own");
+        assert!(check(&rules, "PUT", &url, None, Body::Json(&other)).is_err());
     }
 
     #[test]
@@ -1127,6 +1277,18 @@ mod tests {
             "boundary prefix",
         );
         refused("--b0und--\r\n", "no parts");
+        refused(
+            &batch(&["GET /gmail/v1/users/me/messages/m1?X-HTTP-Method-Override=DELETE"]),
+            "inner query tunnel",
+        );
+        refused(
+            &ok.replace("Content-ID: <item0>", "Content-Transfer-Encoding: base64"),
+            "part transfer encoding",
+        );
+        refused(
+            &ok.replace("--b0und--\r\n", "--b0und--\r\n\r\n"),
+            "epilogue lines",
+        );
         // the content type must name the boundary, once
         for h in [
             json!({}),
@@ -1161,15 +1323,16 @@ mod tests {
     #[test]
     fn a_private_solo_hold_is_allowed() {
         assert_eq!(post(&format!("{CAL}?sendUpdates=none"), &hold()), Ok(None));
-        let mut meet = hold();
-        meet["conferenceData"] = json!({"createRequest": {"requestId": "r1"}});
-        assert_eq!(
-            post(
-                &format!("{CAL}?sendUpdates=none&conferenceDataVersion=1"),
-                &meet
-            ),
-            Ok(None)
-        );
+        let mut full = hold();
+        full["description"] = json!("prep");
+        full["location"] = json!("home");
+        full["transparency"] = json!("transparent");
+        full["colorId"] = json!("5");
+        full["eventType"] = json!("default");
+        full["recurrence"] = json!(["RRULE:FREQ=WEEKLY;COUNT=3"]);
+        full["extendedProperties"] = json!({"private": {"anybao": "hold"}});
+        full["start"] = json!({"dateTime": "2026-11-10T10:00:00", "timeZone": "Europe/Berlin"});
+        assert_eq!(post(&format!("{CAL}?sendUpdates=none"), &full), Ok(None));
     }
 
     #[test]
@@ -1189,6 +1352,37 @@ mod tests {
             "attendees",
         );
         refused(with("attendees", json!([])), "empty attendees");
+        // an allowlist: Google side effects on other people are absent keys
+        refused(with("eventType", json!("outOfOffice")), "out of office");
+        refused(with("eventType", json!("focusTime")), "focus time");
+        refused(
+            with("autoDeclineMode", json!("declineAllConflictingInvitations")),
+            "auto decline",
+        );
+        refused(
+            with(
+                "reminders",
+                json!({"useDefault": false,
+                "overrides": [{"method": "email", "minutes": 1}]}),
+            ),
+            "email reminder",
+        );
+        refused(
+            with(
+                "conferenceData",
+                json!({"createRequest": {"requestId": "r"}}),
+            ),
+            "conference",
+        );
+        refused(
+            with("extendedProperties", json!({"shared": {"k": "v"}})),
+            "shared properties",
+        );
+        refused(
+            with("start", json!({"dateTime": "x", "x": 1})),
+            "start shape",
+        );
+        refused(with("guestsCanModify", json!(true)), "unknown key");
         refused(
             with("Attendees", json!([{"email": "x@evil.io"}])),
             "attendee spelling",
@@ -1218,6 +1412,9 @@ mod tests {
         assert!(patch(json!({"attendees": [{"email": "x@evil.io"}]})).is_err());
         assert!(patch(json!({"visibility": "public"})).is_err());
         assert!(patch(json!({"id": "baoagent9"})).is_err());
+        assert!(patch(json!({"status": "confirmed"})).unwrap().is_some());
+        assert!(patch(json!({"status": "cancelled"})).is_err());
+        assert!(patch(json!({"eventType": "outOfOffice"})).is_err());
         // a foreign id never reaches the preflight
         let foreign = format!("{CAL}/7kq9l2abc?sendUpdates=none");
         assert!(check(&rules, "PATCH", &foreign, None, Body::Json(&json!({}))).is_err());

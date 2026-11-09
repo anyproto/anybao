@@ -970,7 +970,10 @@ impl Broker {
         // mockable set the call is plainly live (no meta.mock at all);
         // inside it a miss follows the spec's policy.
         let mut unmatched_live = false;
-        if !never_mockable(name) {
+        // Host-emitted calls are never mocked: they are the host's own
+        // facts (an ADR-034 ownership read, an ADR-011 refresh), and a
+        // cell-authored span mock must not be able to answer them.
+        if self.hosted == 0 && !never_mockable(name) {
             // the globs see the enclosing facades too (ADR-028 §1)
             let facades: Vec<&str> = self.span_stack.iter().map(|s| s.name.as_str()).collect();
             let active = match self.span_mocks.last_mut() {
@@ -1592,13 +1595,21 @@ impl Broker {
                         }
                     }
                     // ADR-034 §4/§5: the ownership read, a host-emitted
-                    // record ahead of this one (replay drains it, ADR-011 §6)
+                    // record ahead of this one (replay drains it, ADR-011
+                    // §6). A read that answers ≥ 300 (rate limit, auth,
+                    // gone) is returned as this request's answer, marked
+                    // `preflight` — the write is not sent, and the caller
+                    // handles the status as it would its own.
                     if let Some(pf) = preflight {
-                        let out = self.call_hosted(
+                        let mut out = self.call_hosted(
                             "http.get",
                             json!({"url": pf.url, "credential": Value::Object(cred.clone()),
                                    "timeout": PREFLIGHT_TIMEOUT_S}),
                         )?;
+                        if out.get("status").and_then(Value::as_u64).unwrap_or(0) >= 300 {
+                            out["preflight"] = json!(true);
+                            return Ok(out);
+                        }
                         crate::oauth_writes::verify_preflight(pf.kind, &out)
                             .map_err(|reason| write_refused(&r, &reason))?;
                     }
@@ -3387,6 +3398,59 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|s| s.starts_with("GET ")));
+    }
+
+    #[test]
+    fn a_cell_mock_cannot_answer_the_ownership_read() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        // the live server says: the user's own draft (no marker)
+        let api = google_endpoint(seen.clone(), vec![(200, vec![], owned_draft_meta(false))]);
+        let mut b = make_broker("run_w_mock");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+        // a cell-authored span mock that would fake an owned draft
+        let forged = json!({"status": 200, "body": owned_draft_meta(true)});
+        span_with_mock(
+            &mut b,
+            json!({"records": [{"effect": "http.get", "output": forged, "repeat": true}],
+                   "unmatched": "live"}),
+        );
+        let err = b
+            .call(
+                "http.delete",
+                write_payload(&api, "/gmail/v1/users/me/drafts/r-1"),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, crate::oauth_writes::WRITE_REFUSED);
+        // the ownership read went live; the DELETE never did
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["GET /gmail/v1/users/me/drafts/r-1?format=metadata&metadataHeaders=X-Anybao-Draft"]
+        );
+    }
+
+    #[test]
+    fn a_failed_ownership_read_is_the_answer_and_nothing_is_written() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(
+            seen.clone(),
+            vec![(429, vec![("Retry-After", "3".into())], "{}".into())],
+        );
+        let mut b = make_broker("run_w_429");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+        let out = b
+            .call(
+                "http.delete",
+                write_payload(&api, "/gmail/v1/users/me/drafts/r-1"),
+            )
+            .unwrap();
+        assert_eq!(out["status"], json!(429));
+        assert_eq!(out["preflight"], json!(true));
+        assert_eq!(out["headers"]["retry-after"], json!("3"));
+        assert_eq!(seen.lock().unwrap().len(), 1); // the read only
     }
 
     #[test]
