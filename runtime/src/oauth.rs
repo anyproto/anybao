@@ -52,6 +52,10 @@ pub struct ProviderDescriptor {
     pub rotates_refresh_token: bool,
     #[serde(default = "client_auth_default")]
     pub client_auth: String,
+    /// ADR-034 §2: the only non-GET/HEAD requests a cell may send
+    /// through this provider's handle; `None` = no write policy.
+    #[serde(default)]
+    pub guest_writes: Option<Vec<crate::oauth_writes::WriteRule>>,
 }
 
 fn client_auth_default() -> String {
@@ -1076,6 +1080,7 @@ mod tests {
                 default_scopes: vec![],
                 rotates_refresh_token: false,
                 client_auth: "post_body".into(),
+                guest_writes: None,
             },
         );
         m

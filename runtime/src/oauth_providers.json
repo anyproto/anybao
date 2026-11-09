@@ -17,6 +17,22 @@
       "https://www.googleapis.com/auth/spreadsheets.readonly"
     ],
     "rotates_refresh_token": false,
-    "client_auth": "post_body"
+    "client_auth": "post_body",
+    "guest_writes": [
+      {"method": "POST", "path": "/batch/gmail/v1", "check": "gmail_batch_reads"},
+      {"method": "POST", "path": "/gmail/v1/users/me/drafts", "check": "gmail_draft_text"},
+      {"method": "PUT", "path": "/gmail/v1/users/me/drafts/*",
+       "check": "gmail_draft_text", "preflight": "gmail_draft_owned"},
+      {"method": "DELETE", "path": "/gmail/v1/users/me/drafts/*", "preflight": "gmail_draft_owned"},
+      {"method": "POST", "path": "/calendar/v3/calendars/primary/events",
+       "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+       "check": "calendar_hold_insert"},
+      {"method": "PATCH", "path": "/calendar/v3/calendars/primary/events/baoagent*",
+       "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+       "check": "calendar_hold_patch", "preflight": "calendar_event_solo"},
+      {"method": "DELETE", "path": "/calendar/v3/calendars/primary/events/baoagent*",
+       "query": {"sendUpdates": "none"}, "query_forbid": ["sendNotifications"],
+       "preflight": "calendar_event_solo"}
+    ]
   }
 }

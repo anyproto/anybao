@@ -1290,6 +1290,18 @@ impl Broker {
         state.refresh(provider)
     }
 
+    /// ADR-034 §2: the write allowlist of a managed ref's provider —
+    /// `None` when the provider has none (or the ref is no handle).
+    fn write_rules(&self, r: &str) -> Option<Vec<crate::oauth_writes::WriteRule>> {
+        let provider = r.strip_prefix(OAUTH_REF_PREFIX)?;
+        self.oauth
+            .as_ref()?
+            .providers
+            .get(provider)?
+            .guest_writes
+            .clone()
+    }
+
     /// ADR-011 §6: managed-ref resolution at injection time — cached
     /// access token while it outlives the margin, else a single-flight
     /// refresh through a host-emitted `oauth.refresh` record.
@@ -1495,6 +1507,30 @@ impl Broker {
         // redirects: max follows for THIS request; 0 = manual (the 3xx
         // and its location header come back as data — ADR-008 §2)
         let explicit_redirects = payload.get("redirects").and_then(|r| r.as_u64());
+        // the wire body (ADR-026 §3): `json` with refs expanded to base64,
+        // a text `body`, or a raw ref as raw bytes + its mime — built
+        // before the credential, whose write policy reads it (ADR-034 §3)
+        let expanded_json = match payload.get("json").filter(|v| !v.is_null()) {
+            Some(body) => Some(self.expand_refs(body)?),
+            None => None,
+        };
+        let wire = if let Some(body) = &expanded_json {
+            Wire::Json(crate::trace::canonical_json(body))
+        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
+            Wire::Text(body.to_string())
+        } else if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
+            let mime = r["mime"]
+                .as_str()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            Wire::Bytes(self.blob_bytes(r)?, mime)
+        } else {
+            Wire::None
+        };
+        let guest_headers = payload.get("headers").and_then(|h| h.as_object());
+        // ADR-034: a managed ref whose provider carries `guest_writes`;
+        // every redirect hop is re-checked against it
+        let mut write_policy: Option<(String, Vec<crate::oauth_writes::WriteRule>)> = None;
         // named-credential injection: value resolved AFTER recording.
         // Static refs read the per-run map; managed oauth refs resolve
         // through the token lifecycle (ADR-011 §6) — same guest shape,
@@ -1518,6 +1554,20 @@ impl Broker {
                     .unwrap_or("")
                     .to_string();
                 let value = if r.starts_with(OAUTH_REF_PREFIX) {
+                    // ADR-034 §3: the write allowlist decides before the
+                    // token resolves — a refusal costs no refresh
+                    let rules = self.write_rules(&r);
+                    let preflight = match &rules {
+                        Some(rules) => crate::oauth_writes::check(
+                            rules,
+                            &verb,
+                            &url,
+                            guest_headers,
+                            body_of(expanded_json.as_ref(), &wire),
+                        )
+                        .map_err(|reason| write_refused(&r, &reason))?,
+                        None => None,
+                    };
                     let value = self.resolve_managed(&r)?;
                     // a managed ref is bound when its connector declares
                     // the API hosts (ADR-021 §8.1, googleAuth); the token
@@ -1541,6 +1591,18 @@ impl Broker {
                             });
                         }
                     }
+                    // ADR-034 §4/§5: the ownership read, a host-emitted
+                    // record ahead of this one (replay drains it, ADR-011 §6)
+                    if let Some(pf) = preflight {
+                        let out = self.call_hosted(
+                            "http.get",
+                            json!({"url": pf.url, "credential": Value::Object(cred.clone()),
+                                   "timeout": PREFLIGHT_TIMEOUT_S}),
+                        )?;
+                        crate::oauth_writes::verify_preflight(pf.kind, &out)
+                            .map_err(|reason| write_refused(&r, &reason))?;
+                    }
+                    write_policy = rules.map(|rules| (r.clone(), rules));
                     value
                 } else {
                     let (value, descriptor) = self.resolve_static(&r, cred.get("about"), &url)?;
@@ -1578,27 +1640,6 @@ impl Broker {
             };
             (agent, 0) // uncredentialed: the client follows internally
         };
-        // the wire body (ADR-026 §3): `json` with refs expanded to base64,
-        // a text `body`, or a raw ref as raw bytes + its mime
-        enum Wire {
-            None,
-            Json(String),
-            Text(String),
-            Bytes(Vec<u8>, String),
-        }
-        let wire = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
-            Wire::Json(crate::trace::canonical_json(&self.expand_refs(body)?))
-        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
-            Wire::Text(body.to_string())
-        } else if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
-            let mime = r["mime"]
-                .as_str()
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            Wire::Bytes(self.blob_bytes(r)?, mime)
-        } else {
-            Wire::None
-        };
         let has_content_type = payload
             .get("headers")
             .and_then(|h| h.as_object())
@@ -1632,7 +1673,7 @@ impl Broker {
                 req = req.timeout(timeout_total);
             }
             let mut has_accept = false;
-            if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
+            if let Some(headers) = guest_headers {
                 for (k, v) in headers {
                     has_accept |= k.eq_ignore_ascii_case("accept");
                     if let Some(s) = v.as_str() {
@@ -1682,6 +1723,25 @@ impl Broker {
             if matches!(resp.status(), 301..=303) && cur_verb != "GET" && cur_verb != "HEAD" {
                 cur_verb = "GET".to_string();
                 with_body = false;
+            }
+            // ADR-034 §3: a 307/308 re-sends the body — every hop is
+            // re-checked, and a hop that needs an ownership read refuses
+            if let Some((r, rules)) = &write_policy {
+                let body = if with_body {
+                    body_of(expanded_json.as_ref(), &wire)
+                } else {
+                    crate::oauth_writes::Body::None
+                };
+                match crate::oauth_writes::check(rules, &cur_verb, &next, guest_headers, body) {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        return Err(write_refused(
+                            r,
+                            "a redirect to a write that needs an ownership read",
+                        ))
+                    }
+                    Err(reason) => return Err(write_refused(r, &reason)),
+                }
             }
             cur_url = next;
         };
@@ -2422,6 +2482,36 @@ fn host_allowed(url: &str, hosts: &[String]) -> bool {
 /// §1): past this it is a URLError, not memory.
 pub const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
 
+/// The whole-request cap of an ADR-034 ownership read.
+const PREFLIGHT_TIMEOUT_S: u64 = 60;
+
+/// An http request's wire body (ADR-026 §3).
+enum Wire {
+    None,
+    Json(String),
+    Text(String),
+    Bytes(Vec<u8>, String),
+}
+
+/// The body as the write policy reads it (ADR-034 §3): `json=` as the
+/// value whose canonical text is on the wire.
+fn body_of<'a>(json: Option<&'a Value>, wire: &'a Wire) -> crate::oauth_writes::Body<'a> {
+    use crate::oauth_writes::Body;
+    match (json, wire) {
+        (Some(v), Wire::Json(_)) => Body::Json(v),
+        (_, Wire::Text(t)) => Body::Text(t),
+        (_, Wire::Bytes(b, _)) => Body::Bytes(b),
+        _ => Body::None,
+    }
+}
+
+fn write_refused(r: &str, reason: &str) -> EffectFailure {
+    EffectFailure {
+        type_: crate::oauth_writes::WRITE_REFUSED.into(),
+        message: format!("credential ref {r:?} refuses this request: {reason} (ADR-034)"),
+    }
+}
+
 /// The `timeout` of an http verb (ADR-002 §1) as `(total, idle)`: a
 /// number is the whole-request cap, `{idle, total}` overrides key by
 /// key; absent = 180 s plain / 900 s streamed, idle 60. Guest-supplied,
@@ -3060,6 +3150,14 @@ mod tests {
     }
 
     fn oauth_state(token_url: &str, with_grant: bool) -> Arc<OauthState> {
+        oauth_state_with(token_url, with_grant, None)
+    }
+
+    fn oauth_state_with(
+        token_url: &str,
+        with_grant: bool,
+        guest_writes: Option<Vec<crate::oauth_writes::WriteRule>>,
+    ) -> Arc<OauthState> {
         let mut providers = BTreeMap::new();
         providers.insert(
             "testprov".to_string(),
@@ -3071,6 +3169,7 @@ mod tests {
                 default_scopes: vec![],
                 rotates_refresh_token: false,
                 client_auth: "post_body".into(),
+                guest_writes,
             },
         );
         let state = OauthState::new(providers, None);
@@ -3092,6 +3191,264 @@ mod tests {
         json!({"url": format!("{api_url}/v1/x"), "credential":
             {"ref": "connector.oauth.testprov", "header": "Authorization",
              "prefix": "Bearer "}})
+    }
+
+    // --- the write allowlist (ADR-034) -----------------------------------
+
+    /// The built-in Google table, mounted on the test provider.
+    fn google_writes() -> Option<Vec<crate::oauth_writes::WriteRule>> {
+        crate::oauth::builtin_providers()["google"]
+            .guest_writes
+            .clone()
+    }
+
+    type Scripted = (u16, Vec<(&'static str, String)>, String);
+
+    /// A Google stand-in: records `METHOD path?query` of every request,
+    /// answers from `script` in order, and stops listening after it.
+    fn google_endpoint(seen: Arc<Mutex<Vec<String>>>, script: Vec<Scripted>) -> String {
+        let n = script.len();
+        let script = Mutex::new(script.into_iter());
+        fake_server(n, move |req| {
+            seen.lock()
+                .unwrap()
+                .push(format!("{} {}", req.method(), req.url()));
+            let (status, headers, body) = script.lock().unwrap().next().expect("scripted");
+            let mut resp = tiny_http::Response::from_string(body).with_status_code(status);
+            for (k, v) in headers {
+                resp = resp.with_header(
+                    tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap(),
+                );
+            }
+            let _ = req.respond(resp);
+        })
+    }
+
+    fn write_payload(api: &str, path: &str) -> Value {
+        json!({"url": format!("{api}{path}"), "credential":
+            {"ref": "connector.oauth.testprov", "header": "Authorization",
+             "prefix": "Bearer "}})
+    }
+
+    fn marked_draft() -> Value {
+        use base64::Engine as _;
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode("To: a@x.io\r\nX-Anybao-Draft: 1\r\n\r\nHi\r\n");
+        json!({"message": {"raw": raw}})
+    }
+
+    fn owned_draft_meta(marked: bool) -> String {
+        let headers = if marked {
+            json!([{"name": "X-Anybao-Draft", "value": "1"}])
+        } else {
+            json!([])
+        };
+        json!({"id": "r-1", "message": {"id": "m1", "payload": {"headers": headers}}}).to_string()
+    }
+
+    #[test]
+    fn a_send_is_refused_before_any_token_or_request() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(seen.clone(), vec![]);
+        let mut b = make_broker("run_w_send");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+
+        for path in [
+            "/gmail/v1/users/me/messages/send",
+            "/gmail/v1/users/me/drafts/send",
+        ] {
+            let mut p = write_payload(&api, path);
+            p["json"] = marked_draft();
+            let err = b.call("http.post", p).unwrap_err();
+            assert_eq!(err.type_, crate::oauth_writes::WRITE_REFUSED);
+            assert!(err.message.contains(path), "{}", err.message);
+        }
+        // a method tunnel on a read is refused too
+        let mut p = write_payload(&api, "/gmail/v1/users/me/labels");
+        p["headers"] = json!({"X-HTTP-Method-Override": "POST"});
+        assert_eq!(
+            b.call("http.get", p).unwrap_err().type_,
+            crate::oauth_writes::WRITE_REFUSED
+        );
+        // no refresh, no request — and every refusal is a recorded fact
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(effect_names(&b), ["http.post", "http.post", "http.get"]);
+        for rec in b.writer.records.iter().filter(|r| r["kind"] == "effect") {
+            assert_eq!(rec["error"]["type"], json!("credential_write_refused"));
+        }
+    }
+
+    #[test]
+    fn an_allowed_draft_is_sent_and_reads_stay_open() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(
+            seen.clone(),
+            vec![
+                (200, vec![], json!({"id": "r-1"}).to_string()),
+                (200, vec![], "{}".into()),
+            ],
+        );
+        let mut b = make_broker("run_w_draft");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+
+        let mut p = write_payload(&api, "/gmail/v1/users/me/drafts");
+        p["json"] = marked_draft();
+        assert_eq!(b.call("http.post", p).unwrap()["status"], json!(200));
+        let p = write_payload(&api, "/gmail/v1/users/me/messages?q=x");
+        assert_eq!(b.call("http.get", p).unwrap()["status"], json!(200));
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [
+                "POST /gmail/v1/users/me/drafts",
+                "GET /gmail/v1/users/me/messages?q=x"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_draft_delete_reads_ownership_first_and_replays() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(
+            seen.clone(),
+            vec![
+                (200, vec![], owned_draft_meta(true)),
+                (204, vec![], String::new()),
+            ],
+        );
+        let mut b = make_broker("run_w_del");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+        let p = write_payload(&api, "/gmail/v1/users/me/drafts/r-1");
+        assert_eq!(
+            b.call("http.delete", p.clone()).unwrap()["status"],
+            json!(204)
+        );
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [
+                "GET /gmail/v1/users/me/drafts/r-1?format=metadata&metadataHeaders=X-Anybao-Draft",
+                "DELETE /gmail/v1/users/me/drafts/r-1"
+            ]
+        );
+        // the ownership read is its own hosted record, ahead of the write
+        assert_eq!(
+            effect_names(&b),
+            ["oauth.refresh", "http.get", "http.delete"]
+        );
+        let read = b
+            .writer
+            .records
+            .iter()
+            .find(|r| r["effect"] == "http.get")
+            .unwrap();
+        assert_eq!(read["meta"]["hosted"], json!(true));
+
+        // replay serves both from the trace: no server, no oauth state
+        let mut rb = make_broker("run_w_del_rep");
+        rb.mode = Mode::Replay;
+        rb.cursor = Some(ReplayCursor::new(&b.writer.records));
+        assert_eq!(rb.call("http.delete", p).unwrap()["status"], json!(204));
+        assert_eq!(
+            effect_names(&rb),
+            ["oauth.refresh", "http.get", "http.delete"]
+        );
+    }
+
+    #[test]
+    fn a_draft_the_user_wrote_is_never_touched() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(
+            seen.clone(),
+            vec![
+                (200, vec![], owned_draft_meta(false)),
+                (200, vec![], owned_draft_meta(false)),
+            ],
+        );
+        let mut b = make_broker("run_w_theirs");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+        let p = write_payload(&api, "/gmail/v1/users/me/drafts/r-1");
+        let err = b.call("http.delete", p.clone()).unwrap_err();
+        assert_eq!(err.type_, crate::oauth_writes::WRITE_REFUSED);
+        assert!(err.message.contains("user's draft"), "{}", err.message);
+        let mut put = p;
+        put["json"] = marked_draft();
+        let err = b.call("http.put", put).unwrap_err();
+        assert_eq!(err.type_, crate::oauth_writes::WRITE_REFUSED);
+        // only the two ownership reads reached the server
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|s| s.starts_with("GET ")));
+    }
+
+    #[test]
+    fn a_redirect_into_a_send_is_refused() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(
+            seen.clone(),
+            vec![(
+                307,
+                vec![("Location", "/gmail/v1/users/me/messages/send".into())],
+                String::new(),
+            )],
+        );
+        let mut b = make_broker("run_w_redirect");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+        let mut p = write_payload(&api, "/gmail/v1/users/me/drafts");
+        p["json"] = marked_draft();
+        p["redirects"] = json!(1);
+        let err = b.call("http.post", p).unwrap_err();
+        assert_eq!(err.type_, crate::oauth_writes::WRITE_REFUSED);
+        assert!(err.message.contains("messages/send"), "{}", err.message);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["POST /gmail/v1/users/me/drafts"]
+        );
+    }
+
+    #[test]
+    fn a_hold_on_a_meeting_is_refused() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let meeting = json!({"id": "baoagent01", "organizer": {"self": true},
+            "attendees": [{"email": "me@x.io", "self": true}, {"email": "a@x.io"}]});
+        let api = google_endpoint(seen.clone(), vec![(200, vec![], meeting.to_string())]);
+        let mut b = make_broker("run_w_meeting");
+        b.oauth = Some(oauth_state_with(&token_url, true, google_writes()));
+        let mut p = write_payload(
+            &api,
+            "/calendar/v3/calendars/primary/events/baoagent01?sendUpdates=none",
+        );
+        p["json"] = json!({"summary": "moved"});
+        let err = b.call("http.patch", p).unwrap_err();
+        assert!(err.message.contains("guests"), "{}", err.message);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["GET /calendar/v3/calendars/primary/events/baoagent01"]
+        );
+    }
+
+    #[test]
+    fn providers_without_a_table_keep_every_method() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let token_url = token_endpoint(hits.clone(), 0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let api = google_endpoint(seen.clone(), vec![(200, vec![], "{}".into())]);
+        let mut b = make_broker("run_w_none");
+        b.oauth = Some(oauth_state_with(&token_url, true, None));
+        let mut p = write_payload(&api, "/gmail/v1/users/me/messages/send");
+        p["json"] = json!({"raw": "x"});
+        assert_eq!(b.call("http.post", p).unwrap()["status"], json!(200));
     }
 
     fn effect_names(b: &Broker) -> Vec<String> {
