@@ -118,9 +118,9 @@ header — constant for every id the server mints); any other id is
 sliced from its start. The key is the next four characters, so
 `bafyreigyuur4hq…` keys as `gyuu`, the file `3V2A2AJ6J8j` as `3V2A`,
 the space `bafyreia3nqgj…` as `a3nq`. Four base32 characters give
-one million values; two keys of the same kind that collide inside
-one table are lengthened until distinct (§2). The kind keeps the
-three id spaces apart.
+one million values; when two entries of one kind share them, the
+newer entry's key is longer (§2). The kind keeps the three id spaces
+apart.
 
 The **type** rides as a `#` fragment, the way a fragment rides a
 URL: a label, not part of the identity. The resolver reads kind +
@@ -181,10 +181,16 @@ from the read and drops out, so a stale name never reaches the
 line. The read is an effect, so a replay sees the same table.
 
 The handle is computed per entry from the id (§1). When two entries
-of one kind share a key, both keys grow one character at a time
-until they differ; the odds of that among 60 entries are about one
-in five hundred. A lengthened key stays resolvable by its shorter
-prefix as long as the prefix is unique (§4). Names are labels, never
+of one kind share a four-character key, the **older keeps it** and
+the newer one grows, one character at a time, until it differs. The
+trace orders them: the entry whose minting span has the lower `seq`
+(the earlier run) is the older, so the choice is the same on every
+start and a key the model has already seen is never reshaped under
+it. The odds of a collision among 60 entries are about one in five
+hundred. The newer key depends on the table only in its length: when
+the older entry leaves the window, the newer key shrinks to four
+characters on the next start, and the longer form still resolves,
+because resolution is by prefix of the id slice (§4). Names are labels, never
 keys: two entries may share one, and `getRef` by name then raises
 (§4). The table is capped at ~15 entries for the line (§3) and ~60
 for the resolver.
@@ -226,11 +232,17 @@ inject with a view gets the same line, rebuilt.
 
 `getRef(x)` returns the dict of §1 for one entry. `x` is a handle
 with or without the `ref:` prefix (`"object/gyuu#book"`,
-`"ref:file/3V2A"`),
-a bare key or a unique prefix of one (`"gyuu"`), a full `any://`
-uri, or a name (`"Dune"`). A bare key or a name searches every kind
-and raises when more than one entry matches, naming the candidates;
-a miss raises naming the nearest handles. No silent fallback.
+`"ref:file/3V2A"`), a bare key (`"gyuu"`), a full `any://` uri, or a
+name (`"Dune"`). A key resolves by **prefix of the id slice**: the
+candidates are the entries of that kind whose id slice starts with
+the given key, so a key longer than the one on the line resolves
+too, and a shorter one as long as it is unique. When several match,
+the entry whose line key equals the given key wins — that is the
+older entry of a collision, which kept the short key (§2); if none
+does, `getRef` raises naming the candidates. A bare key or a name
+searches every kind and raises on more than one match the same way;
+a miss raises naming the nearest handles. No silent fallback: a key
+resolves to the right entry or not at all, never to another.
 Calls stay exactly as today:
 
 ```python
@@ -241,9 +253,10 @@ llm.read(getRef("demo.png")["uri"], "describe the image")
 
 `toRef(uri)` is the inverse for a link the model holds — one from a
 past reply in the window, or one a call just returned: it slices the
-id by the rule of §1 (lengthened only if the table says that key is
-taken) and returns the handle. It is pure over the uri and needs no
-table entry, so it also names things the table does not hold.
+id by the rule of §1 (longer only if the table holds an older entry
+with that key) and returns the handle. It is pure over the uri and
+needs no table entry, so it also names things the table does not
+hold.
 
 `_core` (ADR-005 §5) gains two sentences: *the `[refs: …]` line on a
 message names the things this conversation recently touched;
@@ -350,7 +363,8 @@ same handle.
     resolves silently to the wrong thing next run. A sliced key
     needs none of that: it fails loudly or resolves right.
   - The price is two or three tokens per handle over an integer, and
-    a rare lengthening on collision, which prefix resolution absorbs.
+    a rare longer key for the newer side of a collision, which prefix
+    resolution absorbs.
 - The cache point cuts the other way too: because the handle needs no
   table, the window renderer may later replace the full links of
   past replies with handles and stay byte-stable across runs — the
@@ -447,8 +461,10 @@ where lookups and lost links showed) on sonnet-5 AND one weaker model
 turns and cost against round 2. Add a replay check: a run with the
 refs query and read replays strict (ADR-028) with the same table.
 Unit-test the key rule: the `bafy` prefix drop, a forced collision
-that lengthens both keys, `getRef` by handle, prefix, uri and name
-(unique and ambiguous), `toRef` round-trip. Test the programs@v1
+where the older entry keeps the short key and the newer grows, the
+newer key shrinking once the older leaves the window while its long
+form still resolves, `getRef` by handle, prefix (unique, ambiguous,
+and the older-wins case), uri and name, `toRef` round-trip. Test the programs@v1
 gate: a source that calls `getRef` or aliases `toRef` is refused with
 the fix named; a source that only mentions the word in a docstring
 is saved.
