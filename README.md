@@ -1,74 +1,72 @@
-# anybao
+# Anybao
 
-A personal AI agent that lives inside your  [`any`](https://github.com/anyproto/any) spaces,
-and [`anyrt`](./runtime), the runtime that runs it.
+**Anybao is a malleable agent harness that can rewrite its own programs while it
+runs.** Like Emacs, Bao lets you change how it works while you’re using it. With
+Bao, you can describe the change you want and ask the agent to write it.
 
-- local-first: chat, memory, config, triggers and the agent's own code
-  are objects in an end-to-end encrypted space that syncs between your
-  devices; the agent process holds no state of its own
-- sandboxed: agent code runs as CPython compiled to wasm inside
-  [wasmtime](https://wasmtime.dev), with no sockets, no filesystem, a
-  virtual clock and a fuel budget per cell; every side effect goes out
-  through one host boundary that checks, executes and records it
-- traceable: every run is an append-only effect log that replays
-  bit-exact, drives mock runs, and answers "why did bao do that?"
-- one tool: the model writes Python cells in a persistent kernel against
-  the database, memory and connectors; docstrings are the documentation
-- space-resident: programs and skills are deployed to a space and
-  resolved live, so editing the agent is a deploy, never a restart; the
-  agent can write programs for itself
-- memory that does not depend on model initiative: background jobs
-  extract, roll up, decay and link facts; recall is injected into every
-  conversation
-- runs on its own schedule: cron and event triggers are objects in the
-  space; with several devices online an election picks the one that
-  answers
-- model-agnostic: Anthropic and any OpenAI-compatible backend
-  (OpenRouter, DeepSeek, Ollama, vLLM, ...) through per-model profiles;
-  switching is a config row
-- credentials never reach the model: the host injects keys after the
-  trace record is written; OAuth tokens are host-held
-- connectors for GitHub, Linear, Gmail, Google Calendar/Drive/Sheets,
-  Granola, Attio, Figma and Intercom, written as guest programs
-- embeddable: `anyrt` is a Rust library with a thin CLI; the
-  [any-ui](https://github.com/anyproto/any-ui) desktop app runs it
-  in-process
+Ask Bao to collect your open GitHub issues every Monday. Later, tell it to group
+them by project and flag the ones that need a reply. Bao can update the same
+program, save it in your space, and use it on the next run.
 
-`any` runs a local database server on each of your devices. `anyrt
-serve` connects to it as a client, watches the chat in your `bao` space,
-answers, and runs scheduled and event-driven jobs. Everything the agent
-knows and everything it is made of lives in the database next to your
-data, so stopping the process on one device and starting it on another
-picks up the same conversation, memory and schedule.
+That makes your context programmable. The program can fetch, filter, and group
+your data before the model sees it. The same rules run each week, and only the
+details that need the model’s attention enter its context. That makes recurring
+work more predictable and can reduce token use.
 
-The agent's code is not trusted with the machine. It runs inside a wasm
-cage whose only exit is one host function that hands a named effect
-(`http.get`, `llm.chat`, `any.query`, ...) to a broker. The broker
-checks the effect, executes it, and appends it to the run's trace with
-its inputs, outputs, timing and read/mutate class. A trace replays a
-run bit-exact, feeds a mock run ("same effects, edited code", or "mock
-the third-party API, keep everything else live"), and carries the
-per-turn token and cost stats:
+Bao uses [`any`](https://github.com/anyproto/any) as its local-first database.
+Your space is the workspace you share with Bao. Conversations, memory,
+configuration, triggers, and the agent’s own code are objects in an end-to-end
+encrypted space that syncs across your devices. The agent process holds no
+durable state of its own. You can stop it on one device and pick up the same
+conversation, code, and schedule on another.
 
-```sh
-anyrt trace ls --program toolcaller      # conversations, newest first
-anyrt trace show run_<id>                # turns, cells, effects, results
-anyrt trace show run_<id> --stats        # tokens, cache hits, cost per turn
-anyrt replay run_<id>                    # strict replay; a divergence is the finding
-```
+## How it works
 
-The model gets a single tool, `run_cell`, and writes Python against
-facades it pulls in with `use("any@v1")`, `use("memory@v1")` or a
-connector, in a kernel that keeps variables, helpers and imports alive
-across cells. Large results come back as short stubs the model can
-drill into, so context stays small. `help(http.get)` prints the real
-docstring: the code is the documentation.
+**Embeddable runtime.** [`anyrt`](./runtime) is a Rust library with a thin CLI.
+The [`any-ui`](https://github.com/anyproto/any-ui) desktop app runs it
+in-process. From the CLI, `anyrt serve` connects to the local `any` database,
+watches conversations, and runs scheduled and event-driven jobs.
 
-The shipped agent is one repo of programs and skills, published to a
-space your account joins read-only. Your own space can shadow any unit
-by name, and bao can author programs into it. Every contract behind
-this is an accepted ADR in [`docs/adr/`](docs/adr/README.md); no code
-lands ahead of its ADR.
+**Programs and skills live in your space.** Bao loads its defaults from a
+read-only space. Your own space can override any program or skill by name, and
+Bao can write those overrides itself. The running agent picks up deployed
+changes without a restart.
+
+**One tool for the model.** The model calls `run_cell` to write Python in a
+persistent kernel. Variables, helpers, and imports carry across cells. Calls
+such as `use("any@v1")` and `use("memory@v1")` load programs that give it
+access to the database and memory. Large results come back as compact
+references the model can explore. Docstrings are the documentation, so
+`help(http.get)` describes the function the model actually calls.
+
+**Sandboxed execution.** Agent code runs as CPython compiled to WebAssembly
+inside [Wasmtime](https://wasmtime.dev/). It has no direct access to sockets
+or the host filesystem, uses a virtual clock, and gets a fuel budget per cell.
+Every external action passes through one host boundary that checks, executes,
+and records it. The host injects API keys after writing the trace record and
+retains OAuth tokens. Neither enters the model’s context.
+
+**Traceable runs.** Bao records each run as an append-only log of effects in
+`any`. Run summaries sync across devices. Detailed traces stay on the device
+that ran the job. You can ask “Why did Bao do that?”, replay recorded execution
+bit for bit, or test edited code against recorded or mock responses.
+`anyrt trace show run_<id> --stats` shows token use and cost per turn.
+[Guide to inspecting runs](docs/debugging.md)
+
+**Built-in memory.** Background jobs extract and link facts, consolidate related
+memories, and age out stale ones. Bao recalls relevant context automatically
+for every conversation.
+
+**Schedules and events.** Cron schedules and event triggers are objects in your
+space. When several devices are online, they elect one to handle the job.
+
+**Composable connectors.** Connectors are guest programs Bao can combine with
+its own code. They cover GitHub, Linear, Gmail, Google Calendar, Drive, Sheets,
+Granola, Attio, Figma, and Intercom.
+
+**Model choice.** Bao supports Anthropic and OpenAI-compatible backends,
+including OpenRouter, DeepSeek, Ollama, and vLLM. Each model has a profile,
+and you switch models by changing a configuration row.
 
 > [!WARNING]
 > **Alpha software.** Data shapes change without migration, and the
