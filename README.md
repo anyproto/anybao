@@ -68,11 +68,6 @@ Granola, Attio, Figma, and Intercom.
 including OpenRouter, DeepSeek, Ollama, and vLLM. Each model has a profile,
 and you switch models by changing a configuration row.
 
-> [!WARNING]
-> **Alpha software.** Data shapes change without migration, and the
-> local `any` server trusts every process on your machine. Use a
-> dedicated account for experiments.
-
 ## Getting started
 
 You need two processes: an `any` server (your account and spaces) and
