@@ -180,10 +180,10 @@ The handle is computed per entry from the id (§1). When two entries
 of one kind share a key, both keys grow one character at a time
 until they differ; the odds of that among 60 entries are about one
 in five hundred. A lengthened key stays resolvable by its shorter
-prefix as long as the prefix is unique (§4). Names are labels only:
-the same name in two spaces reads `Dune (Garden)` / `Dune (Books)`
-on the line, and the handles tell them apart. The table is capped at
-~15 entries for the line (§3) and ~60 for the resolver.
+prefix as long as the prefix is unique (§4). Names are labels, never
+keys: two entries may share one, and `getRef` by name then raises
+(§4). The table is capped at ~15 entries for the line (§3) and ~60
+for the resolver.
 
 The query is an effect: it is in the trace, so a replay (ADR-001)
 sees the same rows. A run whose records retention has dropped
