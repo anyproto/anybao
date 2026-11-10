@@ -1,18 +1,20 @@
 # ADR-035: Semantic refs — names for the ids a conversation touched
 
 Status: **Proposed** (2026-09-25, revised 2026-10-16, 2026-11-03 and
-2026-11-04 after the community review), experiment on `exp/semantic-ids`
+2026-11-04 after the community review, 2026-11-10 after the PR
+review), experiment on `exp/semantic-ids`
 Date: 2026-09-25
 Builds on: ADR-001 §4 (span records: `input` on begin, `output` on
 end), ADR-005 §1.4/§4/§5 (the boot-end cache breakpoint, digest, boot
 window, message suffix), ADR-006 §2 (the anchored boot window),
-ADR-010 §8 (bound cell globals), ADR-013 §3 (the programs@v1 write
-gate), ADR-023 §3 (`effects.query` over the trace records), ADR-023 §6
-(retention)
+ADR-010 §8 (bound cell globals), ADR-023 §3 (`effects.query` over
+the trace records), ADR-023 §6 (retention)
 Amends (if accepted): ADR-005 §5 (the message suffix gains a refs
-line; the final reply gains chips for what the run changed), ADR-010
-§8 (`getRef` and `toRef` globals beside `baoSpaceConfig`), ADR-013 §3
-(the write gate refuses a program that names them)
+line; every `any://` link the model reads is rendered as a handle and
+every handle it writes is expanded back — the wall of §5; the final
+reply gains chips for what the run changed), ADR-006 §2 (the boot
+window renders handles, not ids), ADR-010 §8 (a `getRef` global
+beside `baoSpaceConfig`)
 Tracks: Linear BOB-179 (from BOB-160 bullet 3, "automap ids to
 semantic meanings"); evidence in `docs/bob-160-probe-results.md`
 (rounds 1 and 2) and the boot-window calibration of 2026-10-16
@@ -69,7 +71,12 @@ typed, link-shaped handle is what a model copies without error and
 what a tokenizer encodes in a handful of tokens (`any://task/132` is
 5 tokens for 14 characters, against ~40 for a bare object id). The
 review proposed integers from 1; the Consequences explain why the
-handle is a slice of the id instead.
+handle is a slice of the id instead. The 2026-11-04 PR review added
+two points this revision adopts: a handle and a uri are two spellings
+of one thing, so what keeps the short one out of the chat is a
+conversion at the wall, not the scheme; and a key the model has seen
+must never be reshaped under it, which rules out any table-dependent
+lengthening.
 
 What the model did is already on record. Every write a run made is a
 span in its trace: the begin record carries the call's `input`
@@ -87,46 +94,55 @@ touched — the ids from the trace records of the window's runs, the
 names from one read of those ids — and binds it in the kernel behind
 one resolver. Each entry has a **handle**: a short, typed, link-shaped
 token that is a pure function of the id, so it is the same on every
-run and every device and nothing is stored to mint it. The model
-refers to things by handle or by name inside a cell; the long ids
-stay under the hood. A ref is a view over the trace, lives for one
-run, and expires with it. any@v1 does not change.
+run, every device and every message, and nothing is stored to mint
+it. The model lives in a world of handles: every `any://` link it
+reads is rendered as a handle at the wall, and every handle it writes
+is expanded back to the link at the same wall (§5). Inside a cell it
+refers to things by handle or by name; the long ids stay under the
+hood. A ref is a view over the trace, lives for one run, and expires
+with it. any@v1 does not change.
 
 ### 1. A ref and its handle
 
 ```
-ref:object/gyuu#book  {"kind": "object", "type": "book", "name": "Dune", "spaceId": "...",
-                       "objectId": "...", "uri": "any://o/<spaceId>/<objectId>"}
-ref:file/3V2A         {"kind": "file", "name": "demo.png", "spaceId": "...", "fileId": "...",
-                       "on": "<objectId>", "uri": "any://f/<spaceId>/<fileId>"}
-ref:space/a3nq        {"kind": "space", "name": "Garden", "spaceId": "..."}
+ref:object/gyuur4#book  {"kind": "object", "type": "book", "name": "Dune", "spaceId": "...",
+                         "objectId": "...", "uri": "any://o/<spaceId>/<objectId>"}
+ref:file/3V2A2A         {"kind": "file", "name": "demo.png", "spaceId": "...", "fileId": "...",
+                         "on": "<objectId>", "uri": "any://f/<spaceId>/<fileId>"}
+ref:space/a3nqgj        {"kind": "space", "name": "Garden", "spaceId": "..."}
 ```
 
 A handle is `ref:<kind>/<key>`, one shape for every kind — `object`,
 `file`, `space` — with an optional `#<type>` fragment on an object.
 The kind is a word, not a letter: `object`, `file` and `space` are
 one token each, the same cost as `o`, `f`, `s`, and they carry the
-meaning. The scheme is `ref:`, not `any://`: the model already reads
-real `any://o/…` and `any://f/…` links in the window and in `_core`,
-and a look-alike invites it to pass the short form where a real uri
-is expected. A `ref:` handle is never a link and never reaches the
-chat as one.
+meaning. The scheme is `ref:`, not `any://`, so that the wall (§5)
+can tell the two apart mechanically: one regex finds every handle the
+model wrote and one finds every uri it is about to read. A handle and
+a uri are two spellings of one thing; the scheme is not what keeps
+the short spelling out of the chat — the wall is.
 
 The **key** is a slice of the id itself. An id that starts with
 `bafy` drops its first seven characters (multibase, codec and hash
 header — constant for every id the server mints); any other id is
-sliced from its start. The key is the next four characters, so
-`bafyreigyuur4hq…` keys as `gyuu`, the file `3V2A2AJ6J8j` as `3V2A`,
-the space `bafyreia3nqgj…` as `a3nq`. Four base32 characters give
-one million values; when two entries of one kind share them, the
-newer entry's key is longer (§2). The kind keeps the three id spaces
+sliced from its start. The key is the next **six** characters, so
+`bafyreigyuur4hq…` keys as `gyuur4`, the file `3V2A2AJ6J8j` as
+`3V2A2A`, the space `bafyreia3nqgj…` as `a3nqgj`. Six base32
+characters give a billion values: two ids of one kind collide with
+odds near one in a billion per pair, so a table of sixty entries sees
+one about once in a million chats, and one that happens raises on
+resolution (§4). There is **no lengthening** and no table in the
+rule: the same id keys the same six characters in every message,
+every run and every device, which is what lets the window render
+handles and stay cacheable (§5). The kind keeps the three id spaces
 apart.
 
 The **type** rides as a `#` fragment, the way a fragment rides a
 URL: a label, not part of the identity. The resolver reads kind +
-key and ignores the fragment, so `ref:object/gyuu#novel` and a bare
-`ref:object/gyuu` both resolve after a `set_type`. Files and spaces
-carry no fragment.
+key and ignores the fragment, so `ref:object/gyuur4#novel` and a
+bare `ref:object/gyuur4` both resolve after a `set_type`. Files and
+spaces carry no fragment. The wall renders a bare handle (it knows no
+type); the refs line adds the fragment from its read (§2).
 
 A ref carries its space, so `spaceId` + `objectId` go wherever a
 call takes them. It holds no content — reading the body is still
@@ -161,7 +177,9 @@ place in the loop:
 - files it **attached** (`any.attach_file` → the returned uri, `on`
   the target object, the filename from `input.name`);
 - the spaces those calls addressed (their `space` argument; space
-  name resolution is a private helper, not a span).
+  name resolution is a private helper, not a span), and the space of
+  the user's view on the current message and on the window's stamps,
+  so the handle the stamp shows (§5) always resolves.
 
 One source is not a span and comes from the window the loop already
 holds in memory: the links of each turn's **replies** (the same
@@ -180,20 +198,12 @@ shows its new name on the next message; a deleted one is missing
 from the read and drops out, so a stale name never reaches the
 line. The read is an effect, so a replay sees the same table.
 
-The handle is computed per entry from the id (§1). When two entries
-of one kind share a four-character key, the **older keeps it** and
-the newer one grows, one character at a time, until it differs. The
-trace orders them: the entry whose minting span has the lower `seq`
-(the earlier run) is the older, so the choice is the same on every
-start and a key the model has already seen is never reshaped under
-it. The odds of a collision among 60 entries are about one in five
-hundred. The newer key depends on the table only in its length: when
-the older entry leaves the window, the newer key shrinks to four
-characters on the next start, and the longer form still resolves,
-because resolution is by prefix of the id slice (§4). Names are labels, never
-keys: two entries may share one, and `getRef` by name then raises
-(§4). The table is capped at ~15 entries for the line (§3) and ~60
-for the resolver.
+The handle is computed per entry from the id (§1) and nothing else.
+Two entries of one kind that share six characters are both kept, and
+`getRef` on that key raises naming both (§4): loud, not wrong. Names
+are labels, never keys: two entries may share one, and `getRef` by
+name then raises the same way. The table is capped at ~15 entries
+for the line (§3) and ~60 for the resolver.
 
 The query is an effect: it is in the trace, so a replay (ADR-001)
 sees the same rows. A run whose records retention has dropped
@@ -202,20 +212,19 @@ and the model is where it is today for that turn. The trace store is
 local to the device, so a second device's bao sees refs only for the
 turns it ran itself — the same degradation, never a wrong ref.
 
-### 3. Bind — two globals, handles and names in the message
+### 3. Bind — one global, handles and names in the message
 
 The loop:
 
-- binds `getRef` and `toRef` in the `_ctx` prelude cell next to
-  `baoSpaceConfig` (§4) — two functions over the table of §2, no
-  class, no query sugar;
+- binds `getRef` in the `_ctx` prelude cell next to `baoSpaceConfig`
+  (§4) — one function over the table of §2, no class, no query sugar;
 - adds one line to the user message suffix, each entry a markdown
   link whose text is name + where and whose target is the handle:
-  `[refs: [Dune (Garden)](ref:object/gyuu#book) · [Books
-  (Garden)](ref:object/k7mp#folder) · [demo.png (on
-  Dune)](ref:file/3V2A) · [Garden](ref:space/a3nq)]`. The link shape
-  is the one the model reads and writes everywhere else; only the
-  scheme differs. No long ids in the prompt.
+  `[refs: [Dune (Garden)](ref:object/gyuur4#book) · [Books
+  (Garden)](ref:object/k7mpx2#folder) · [demo.png (on
+  Dune)](ref:file/3V2A2A) · [Garden](ref:space/a3nqgj)]`. The link
+  shape is the one the model reads and writes everywhere else; only
+  the scheme differs. No long ids in the prompt.
 
 **Placement is load-bearing.** The line rides the current user
 message, after the `[now: …]` stamp, and nowhere earlier: the system
@@ -224,53 +233,86 @@ tail and the boot window sit ahead of the boot-end cache breakpoint
 window's cache on every start — the lesson of the user's-space apps
 line (ADR-005 §5, 2026-10-16). Like that line, the refs line is
 llm-only: the persisted turn keeps the raw `[now: …]` stamp as
-`context` and nothing else of this. Past turns render as they do
-today; the line appears on the current message only. A mid-run
-inject with a view gets the same line, rebuilt.
+`context` and nothing else of this. Past turns render as today, with
+their links as handles (§5); the line appears on the current message
+only. A mid-run inject with a view gets the same line, rebuilt.
 
-### 4. Use — `getRef`, `toRef`, and two sentences in `_core`
+### 4. Use — `getRef` and two sentences in `_core`
 
 `getRef(x)` returns the dict of §1 for one entry. `x` is a handle
-with or without the `ref:` prefix (`"object/gyuu#book"`,
-`"ref:file/3V2A"`), a bare key (`"gyuu"`), a full `any://` uri, or a
-name (`"Dune"`). A key resolves by **prefix of the id slice**: the
-candidates are the entries of that kind whose id slice starts with
-the given key, so a key longer than the one on the line resolves
-too, and a shorter one as long as it is unique. When several match,
-the entry whose line key equals the given key wins — that is the
-older entry of a collision, which kept the short key (§2); if none
-does, `getRef` raises naming the candidates. A bare key or a name
-searches every kind and raises on more than one match the same way;
-a miss raises naming the nearest handles. No silent fallback: a key
-resolves to the right entry or not at all, never to another.
-Calls stay exactly as today:
+with or without the `ref:` prefix (`"object/gyuur4#book"`,
+`"ref:file/3V2A2A"`), a bare key (`"gyuur4"`), a full `any://` uri,
+or a name (`"Dune"`). A handle resolves by exact match on kind + key;
+a bare key or a name searches every kind. More than one match — a
+six-character collision, or two entries with one name — raises
+naming the candidates; a miss raises naming the nearest handles. No
+silent fallback: a key resolves to the right entry or not at all,
+never to another. A uri resolves without the table: kind, `spaceId`
+and `objectId` are in the uri, and the table only adds `name` and
+`type` when it has them. Calls stay exactly as today:
 
 ```python
-d = getRef("object/gyuu")
+d = getRef("object/gyuur4")
 c.update_object(d["spaceId"], d["objectId"], {"book": {"rating": 9}})
 llm.read(getRef("demo.png")["uri"], "describe the image")
 ```
 
-`toRef(uri)` is the inverse for a link the model holds — one from a
-past reply in the window, or one a call just returned: it slices the
-id by the rule of §1 (longer only if the table holds an older entry
-with that key) and returns the handle. It is pure over the uri and
-needs no table entry, so it also names things the table does not
-hold.
+There is no inverse. The model never holds a uri to turn into a
+handle: every link it reads arrived as a handle through the wall
+(§5), and a call's result is rendered the same way.
 
 `_core` (ADR-005 §5) gains two sentences: *the `[refs: …]` line on a
 message names the things this conversation recently touched;
 `getRef(handle or name)` gives a ref's `spaceId`, `objectId` and
-`uri`, which go where a call takes them.* And: *refs live inside
-`run_cell` only — write a real `any://` link (the ref's `uri`) into a
-reply, a page, a memory or a program, never a `ref:` handle.*
-Nothing else is taught: no query recipe, no resolution inside
-any@v1. A ref whose object is gone was dropped by the read (§2)
-before the run started. Anything beyond the resolver — "which books
-did we create this week", "how was Dune made" — is `effects.query`
-over the same records (ADR-023 §3), already taught.
+`uri`, which go where a call takes them.* And: *link a thing in a
+reply as `[name](ref:…)`, the way the window shows it.* Nothing else
+is taught: no query recipe, no resolution inside any@v1, no rule
+about which spelling goes where — the wall owns that. A ref whose
+object is gone was dropped by the read (§2) before the run started.
+Anything beyond the resolver — "which books did we create this
+week", "how was Dune made" — is `effects.query` over the same
+records (ADR-023 §3), already taught.
 
-### 5. Reply chips for what the run changed
+### 5. The wall — handles on the way in, links on the way out
+
+The model call is one place in the loop: one spot builds the message
+list, one spot reads the reply and the cell source back. The wall is
+two text rewrites at that spot and one run-local **map** from handle
+to uri, seeded from the table of §2.
+
+**Inward**, on every text the model reads — the boot window, the
+user message and its stamp, a mid-run inject, every cell digest:
+`any://o/<s>/<o>` becomes `ref:object/<key>`, `any://f/<s>/<f>`
+becomes `ref:file/<key>`, the stamp's `space: <id>` becomes `space:
+ref:space/<key>`, and a bare id the map already knows becomes its
+handle. Each uri rewritten is added to the map. The rewrite is a
+pure function of the text (fixed key, no table in the rule, §1), so
+the window renders byte-identical across runs and the boot-end
+breakpoint (ADR-005 §1.4) holds: shipping the rewrite costs one
+cache miss per chat, then the window is stable — and shorter, since
+every 45-token link in a past reply is now a 9-token handle. An
+object created this run is covered the same way: its uri lands in a
+digest, the wall renders it as a handle and the map learns it.
+
+**Outward**, on every text the model writes — the reply and the cell
+source: `ref:<kind>/<key>` becomes the uri from the map, fragment
+dropped. The reply reaches the chat with real links; the existing
+link parser (`_auto_attachments`) chips them as today. The cell
+source is rewritten before the kernel executes it, so a handle
+inside a string literal — a page body for `put_markdown`, a memory,
+a program source — is a real link by the time any@v1 sees it, and
+`getRef("ref:…")` keeps working because `getRef` takes a uri. A
+handle the map does not know (one the model built by hand, or for a
+thing no text named) stays as inert text, and the digest of that
+cell, or the run's result, names it as unresolved.
+
+What the wall does not cover, and why that is fine: a bare
+60-character id in a digest that the map has never seen stays long
+(it degrades to today, it is never wrong); a handle assembled from
+fragments inside code escapes the source rewrite and misses at the
+first call, loudly. Neither earns a guard.
+
+### 5a. Reply chips for what the run changed
 
 The final reply gets attachment chips (the existing ≤32 attachments
 map) for objects and files the run created or changed and the reply
@@ -278,27 +320,17 @@ did not link — read from the run's own effect records, the same read
 the digest makes. The user sees what changed; the next turn's
 history carries the links whether or not the model wrote them.
 
-Replies carry real links, as `_core` already asks. The loop does
-**not** expand `ref:` handles in a reply: an expansion step would be
-a second machinery, and it would teach the model that a handle is
-something to write down. A handle that does leak into a reply is
-inert text, and because it is a function of the id it is never
-wrong — only unclickable.
+### 5b. Lifetime — a ref lives for one run, a uri lives forever
 
-### 5a. Lifetime — a ref lives in `run_cell` and nowhere else
-
-A ref is a per-run view. The one place the model writes code that
-outlives the run is a program (ADR-013), and a program that calls
-`getRef` would resolve against whatever table the run that executes
-it happens to hold — a miss at best. So the programs@v1 write gate
-(`_validate_source`, ADR-013 §3) refuses a source whose AST names
-`getRef` or `toRef` — an `ast.Name` walk beside the existing import
-check, not a text match, so a comment or a string that mentions the
-word passes and a call or an alias does not. The refusal names the
-fix: resolve the ref in the cell and pass the ids, or the uri, into
-the program. Pages and memories are prose and get guidance only
-(§4): a leaked handle there is stable and harmless, and checking
-every markdown body would cost more than it saves.
+A ref is a per-run view; what persists is always the uri. Because
+the cell source crosses the wall expanded, nothing the model saves
+from a cell holds a handle: a program (ADR-013) saved with
+`getRef("ref:object/gyuur4")` in it is stored as `getRef("any://o/…")`,
+which resolves on any run without a table (§4). No write gate is
+needed. Pages and memories are prose and arrive expanded the same
+way. The one path that can persist a handle is the inert-text case
+of §5, which is stable and harmless: a function of the id, never
+another object.
 
 ### 6. Worked example
 
@@ -306,24 +338,28 @@ Exchange 1, "Add Dune to my books", view Garden. The message carries
 the stamp only — there are no refs yet. The cell
 `c.create_object(currentUserSpace, {"name": "Dune", "type": "book"})`
 leaves a span whose begin record holds the name and space and whose
-end record holds the id and link; the reply is `Added [Dune](…)`.
+end record holds the id and link. The digest shows the new object as
+`ref:object/gyuur4` — the wall rendered it and the map learned it —
+and the model replies `Added [Dune](ref:object/gyuur4)`, which the
+wall expands: the chat sees `[Dune](any://o/…)` and a chip.
 
 Exchange 2, the user sends demo.png, "this is the cover". At start
 the query over run 1 yields two ids, the read names them `Dune`
 (book) and `Garden`; `_ctx` binds the resolver, the message ends
-with the stamp and `[refs: [Dune (Garden)](ref:object/gyuu#book) ·
-[Garden](ref:space/a3nq)]`. The cell `d = getRef("object/gyuu");
+with the stamp and `[refs: [Dune (Garden)](ref:object/gyuur4#book) ·
+[Garden](ref:space/a3nqgj)]`; the window shows exchange 1's reply as
+`Added [Dune](ref:object/gyuur4)`. The cell `d = getRef("object/gyuur4");
 c.attach_file(
 d["spaceId"], d["objectId"], "demo.png", data)` copies no id. The
-reply `Attached the cover to Dune.` carries no link; §5 chips Dune
+reply `Attached the cover to Dune.` carries no link; §5a chips Dune
 anyway, because the run changed it.
 
 Exchange 3, "what's in that image?". The window shows the two past
 turns exactly as today (stamp, `[ran: any.attach_file×1 · run_…]`,
 replies); the current message ends with `[refs: [demo.png (on
-Dune)](ref:file/3V2A) · [Dune (Garden)](ref:object/gyuu#book) ·
-[Garden](ref:space/a3nq)]`. The cell
-`llm.read(getRef("file/3V2A")["uri"], "describe the image")` is
+Dune)](ref:file/3V2A2A) · [Dune (Garden)](ref:object/gyuur4#book) ·
+[Garden](ref:space/a3nqgj)]`. The cell
+`llm.read(getRef("file/3V2A2A")["uri"], "describe the image")` is
 where round 2 failed: the file link was in no reply, the model built
 a wrong one. Had the user renamed the book to "Dune: Part One"
 between the exchanges, the line would carry the new name and the
@@ -344,10 +380,11 @@ same handle.
 - Nothing new to learn: one resolver, and the calls the model makes
   today.
 - The handle is a slice of the id, so it is **stable without a
-  store**: the same object keys the same on every run and every
-  device, a leaked handle can never point at another object, and a
-  rename changes the label but not the key. This is why the handle is
-  not an incrementing number, which the review proposed:
+  store**: the same object keys the same on every run, every device
+  and every message, a leaked handle can never point at another
+  object, and a rename changes the label but not the key. This is why
+  the handle is not an incrementing number, which the review
+  proposed:
   - an incrementing counter needs a store, and the trace cannot be
     one — it is device-local and retention drops its head, so a
     second device or a swept store mints the same number again for
@@ -362,24 +399,29 @@ same handle.
     would need expansion or a check, and a number that slips through
     resolves silently to the wrong thing next run. A sliced key
     needs none of that: it fails loudly or resolves right.
-  - The price is two or three tokens per handle over an integer, and
-    a rare longer key for the newer side of a collision, which prefix
-    resolution absorbs.
+  - The price is three or four tokens per handle over an integer, and
+    one more than a four-character key would cost; the six characters
+    buy a rule with no table and no lengthening.
 - The cache point cuts the other way too: because the handle needs no
-  table, the window renderer may later replace the full links of
-  past replies with handles and stay byte-stable across runs — the
-  follow-up under open question 4.
+  table, the window renders handles in place of every link and stamp
+  id and stays byte-stable across runs (§5). The 2026-10-16 replay
+  put the window's stamps and footers at ~2k tokens with ids in them;
+  handles cut that by more than half, and every linked reply shrinks
+  with them.
+- The two spellings never meet: the model reads and writes handles,
+  the chat and the store hold uris, and one place converts. No prompt
+  rule about which goes where, and nothing for a weaker model to
+  drop.
 - Cost: one local aggregate plus one batched read per run start
   (milliseconds), and a refs line of ~100–250 tokens per message
-  (about 16 per entry: an 8-token handle, the name, the type and
+  (about 17 per entry: a 9-token handle, the name, the type and
   space, the link brackets) that rides the message suffix, outside
-  the cached prefix
-  (system blocks and boot window), so it never costs a cache write.
-  The saving is on the other side: cells that pass an 8-token handle
-  instead of a 40-token id, and lookups that do not happen — the
-  2026-10-16 replay put the window's stamps and footers at ~2k
-  tokens with ids in them; handles would cut that by more than half
-  once open question 4 lands.
+  the cached prefix (system blocks and boot window), so it never
+  costs a cache write; plus one cache miss per chat when the window
+  rewrite ships. The saving is on the other side: cells that pass a
+  9-token handle instead of a 40-token id, replies and a window that
+  carry handles instead of 45-token links, and lookups that do not
+  happen.
 - Device-local: refs for turns run on another device are absent, not
   wrong. The window text for those turns is unchanged from today.
 - Chips on every write may be noisy for bulk jobs (40 Sprouts): chips
@@ -413,9 +455,20 @@ same handle.
   draft) — put the label where identity lives; one shape per kind.
   The `#` fragment says what the type is: a hint that does not change
   the identity.
-- **Expanding `ref:` in replies** — would let the model write the
-  handle instead of the link; it is a second machinery and teaches
-  the wrong lesson (§5). Replies carry real links.
+- **A table-dependent key** — the 11-04 draft lengthened colliding
+  keys (first both, then the newer only, the older keeping the short
+  one by trace order). Either way the key depended on the table, so
+  the window could not render handles and stay cacheable, and the
+  older-wins rule resolved the newer entry's handle to the older
+  object silently when both showed the same short key. A fixed
+  six-character key has no table in it; a collision raises.
+- **No wall: a prompt rule keeps `ref:` out of the chat** (the 11-04
+  draft: "write a real link into a reply, never a handle", with a
+  programs@v1 write gate that refused a source naming `getRef`) —
+  the rule is the kind weaker models drop first, the gate covered one
+  of several leak paths, and both spellings had to live in the
+  model's head at once. One conversion at the wall covers every path
+  and nothing is taught.
 - **A ref where any@v1 takes an object**, or a `Refs` class with
   `where()` filters — sugar; each adds a surface to learn (a
   resolution step in every object-taking method, or a reserved
@@ -430,7 +483,7 @@ same handle.
   survive, but a long-lived kernel breaks replay (ADR-001: a run is
   self-contained) and grows without bound.
 - **Print ids into replies automatically** — clutters what the user
-  reads; chips (§5) carry the same link without the text.
+  reads; chips (§5a) carry the same link without the text.
 - **Let the model write a scratch note of ids** — the model has to
   remember to do it, the same failure as the prompt rules.
 
@@ -443,15 +496,9 @@ same handle.
    user named?
 3. Scope: this chat's runs only (the window's `traceRef`s), or every
    run of this bao within retention? A `runId` filter either way.
-4. Follow-up, not blocking: the view stamp and the links in past
-   replies carry long ids at 1.6 chars/token. Because a handle needs
-   no table, the renderer could rewrite them to handles
-   (`space: [Garden](ref:space/a3nq)`, `[Dune](ref:object/gyuu)`) and
-   the
-   window would stay byte-stable across runs. The stamp is persisted
-   as `context`, so this is a render-time rewrite, and the rewrite
-   must pick a fixed key length (no table-dependent lengthening) to
-   keep that stability.
+4. Bare ids in digests that the map has never seen: leave them long
+   (today's behaviour), or classify them with a read so the wall can
+   render them too?
 
 ## Verification
 
@@ -460,11 +507,12 @@ where lookups and lost links showed) on sonnet-5 AND one weaker model
 (GLM or Kimi via OpenRouter), measuring re-lookup cells, missing-link
 turns and cost against round 2. Add a replay check: a run with the
 refs query and read replays strict (ADR-028) with the same table.
-Unit-test the key rule: the `bafy` prefix drop, a forced collision
-where the older entry keeps the short key and the newer grows, the
-newer key shrinking once the older leaves the window while its long
-form still resolves, `getRef` by handle, prefix (unique, ambiguous,
-and the older-wins case), uri and name, `toRef` round-trip. Test the programs@v1
-gate: a source that calls `getRef` or aliases `toRef` is refused with
-the fix named; a source that only mentions the word in a docstring
-is saved.
+Unit-test the key rule: the `bafy` prefix drop, the six-character
+slice, a forced collision that raises naming both, `getRef` by
+handle, bare key, uri (in and out of the table) and name (unique and
+ambiguous). Test the wall: the inward rewrite of a window renders
+byte-identical on two runs; an outward round-trip on a reply and on
+a cell source (a handle in a string literal reaches `put_markdown`
+as a uri; a program saved from a cell holds no handle); an unknown
+handle stays inert and is named; the map learns a uri from a digest
+and expands it in the same run's reply.
