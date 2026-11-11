@@ -137,9 +137,12 @@ space (or a deleted-and-recreated one) has an empty store.
 
 ## Guest read-guard
 
-The runtime refuses guest http requests that reference the
-`agent_secrets` dataset (exact `dataset` field match — any space) or
-the guarded object id — a `forbidden` EffectFailure carrying the
+The runtime refuses guest http requests that carry an identifier of
+the secrets store — the secrets object id, the collection name
+`<typeId>_agent_secrets`, or (on anything but a GET/HEAD) the secrets
+type id — anywhere in the url or the body, `json` and text `body`
+alike, plus a `dataset` key naming any space's `…_agent_secrets`
+collection (ADR-021 §7.1) — a `forbidden` EffectFailure carrying the
 import instructions, raised **before** execution so the refusal is the
 recorded fact and no secret ever reaches a trace or the model context.
 Guest code never needs the values: the host injects `credential:
