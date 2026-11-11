@@ -401,8 +401,10 @@ that only mentions the words `agent_secrets` passes.
 
 - A route that returns a space's data without naming an identifier
   (a whole-space export). None is known to return a secret value.
-- A request the guard never sees: a second request smuggled inside
-  one body.
+- A request the guard never sees. The host sends one request per
+  http effect and follows no redirect (ADR-008 §2), so there is no
+  hidden hop; a second request smuggled inside one body is still
+  open.
 - A serve built with the `shell` feature: ADR-024 has no sandbox, and
   a child process reaches loopback without the broker.
 

@@ -26,7 +26,7 @@ toml = "1"                # anybao.toml host config (ADR-009 §1)
 sha2 = "0.10"
 hex = "0.4"
 ureq = { version = "2", features = ["tls", "json"] }
-url = "2"                # redirect Location resolution (ADR-011 §4; already in-tree via ureq)
+url = "2"                # the url as the client sends it, for the request guard (ADR-021 §7.1; already in-tree via ureq)
 base64 = "0.22"          # http `response: "base64"` bodies (ADR-020 §1; already in-tree)
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

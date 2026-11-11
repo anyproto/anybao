@@ -423,7 +423,7 @@ blob = _BlobNs()
 # ---- http facade (ADR-002 §1 Pythonic surface) -----------------------------
 
 class Response:
-    """`.status`, `.headers`, `.url` (final, post-redirect), and the body
+    """`.status`, `.headers`, `.url` (of the last hop), and the body
     as the host classified it (ADR-026 §3): `.text` / `.json()` for a
     text body, `.blob` (a Blob) for bytes — an image, a PDF, a zip.
     `.text` on a bytes body raises BinaryBody; `.blob` is None on a
@@ -432,7 +432,7 @@ class Response:
     def __init__(self, raw):
         self.status = raw.get("status")
         self.headers = raw.get("headers") or {}
-        self.url = raw.get("url")  # final url, post-redirect (ADR-008 §2)
+        self.url = raw.get("url")  # the url this response came from (ADR-008 §2)
         body = raw.get("body")
         self.blob = Blob.from_ref(body) if Blob.is_ref(body) else None
         self._text = "" if self.blob is not None else (body or "")
@@ -477,12 +477,94 @@ _HTTP_WIRE_DOC = """
     the raw event text, still ONE record of the same shape. `timeout`
     is a whole-request cap in seconds (default 180), or for a stream
     `{{"idle": 60, "total": 900}}` — no chunk for `idle` s, or `total` s
-    overall, each an EffectError (URLError) (ADR-002 §1)."""
+    overall, each an EffectError (URLError) (ADR-002 §1).
+
+    A redirect is followed HERE, hop by hop: each hop is its own
+    recorded `http.<verb>` effect, and `.url` is the last one's
+    (ADR-008 §2). Default 5 hops; `redirects=N` sets the count,
+    `redirects=0` hands back the 3xx with its `location` header. With
+    `credential=` the default is 0 and a hop never leaves the origin."""
+
+
+# ---- redirects (ADR-008 §2): the host sends ONE request per effect; the
+# follow policy lives here, so every hop crosses the effect boundary ------
+
+_REDIRECT_STATUS = (301, 302, 303, 307, 308)
+_REDIRECT_HOPS = 5
+# guest headers that never travel to another origin
+_ORIGIN_BOUND_HEADERS = ("authorization", "cookie", "proxy-authorization")
+_BODY_HEADERS = ("content-type", "content-length")
+
+
+def _origin(url):
+    u = urllib.parse.urlsplit(url)
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    return (u.scheme.lower(), (u.hostname or "").lower(),
+            port or {"http": 80, "https": 443}.get(u.scheme.lower()))
+
+
+def _redirect_hops(payload):
+    """Pop `redirects` off a payload → the follow count for it. The
+    effect itself never follows, so the field does not cross."""
+    n = payload.pop("redirects", None)
+    if n is None:
+        return 0 if payload.get("credential") else _REDIRECT_HOPS
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise TypeError(f"redirects wants a count >= 0, got {n!r}")
+    return n
+
+
+def _next_hop(verb, payload, raw):
+    """The `(verb, payload)` that follows the 3xx in `raw`, or None when
+    it is the answer: not a redirect, no usable `location`, or a hop the
+    policy refuses — a credential or a request body never leaves the
+    origin."""
+    if raw.get("status") not in _REDIRECT_STATUS:
+        return None
+    headers = raw.get("headers") or {}
+    location = next((v for k, v in headers.items() if k.lower() == "location"), None)
+    if not location or not isinstance(location, str):
+        return None
+    here = raw.get("url") or payload["url"]
+    there = urllib.parse.urldefrag(urllib.parse.urljoin(here, location)).url
+    if urllib.parse.urlsplit(there).scheme.lower() not in ("http", "https"):
+        return None
+    same = _origin(there) == _origin(here)
+    if payload.get("credential") and not same:
+        return None
+    nxt = {k: v for k, v in payload.items() if k != "params"}  # already in `here`
+    nxt["url"] = there
+    drop = ()
+    if raw["status"] in (301, 302, 303) and verb not in ("get", "head"):
+        verb = "get"  # the classic downgrade: a bare GET of the new place
+        nxt.pop("json", None)
+        nxt.pop("body", None)
+        drop += _BODY_HEADERS
+    elif not same and (nxt.get("json") is not None or nxt.get("body") is not None):
+        return None
+    if not same:
+        drop += _ORIGIN_BOUND_HEADERS
+    if drop and isinstance(nxt.get("headers"), dict):
+        nxt["headers"] = {k: v for k, v in nxt["headers"].items() if k.lower() not in drop}
+    return verb, nxt
 
 
 class _Http:
     def _call(self, verb, url, **kw):
-        return Response(_effect(f"http.{verb}", {"url": url, **kw}))
+        payload = {"url": url, **kw}
+        hops = _redirect_hops(payload)
+        raw = _effect(f"http.{verb}", payload)
+        while hops > 0:
+            hop = _next_hop(verb, payload, raw)
+            if hop is None:
+                break
+            verb, payload = hop
+            raw = _effect(f"http.{verb}", payload)
+            hops -= 1
+        return Response(raw)
 
     def get_many(self, items, **common):
         """items: list of urls or {url, ...} dicts. One crossing, host
@@ -492,8 +574,22 @@ class _Http:
             {"url": it, **common} if isinstance(it, str) else {**common, **it}
             for it in items
         ]
-        return [r if isinstance(r, EffectError) else Response(r)
-                for r in _batch("http.get", payloads)]
+        hops = [_redirect_hops(p) for p in payloads]
+        out = _batch("http.get", payloads)
+        while True:  # one more crossing per round of redirects
+            todo = []
+            for i, r in enumerate(out):
+                hop = None if isinstance(r, EffectError) or hops[i] <= 0 \
+                    else _next_hop("get", payloads[i], r)
+                if hop is not None:
+                    todo.append((i, hop[1]))
+            if not todo:
+                break
+            answers = _batch("http.get", [p for _, p in todo])
+            for (i, p), r in zip(todo, answers, strict=True):
+                payloads[i], out[i] = p, r
+                hops[i] -= 1
+        return [r if isinstance(r, EffectError) else Response(r) for r in out]
 
     def get(self, url, **kw):
         """GET `url` → Response (`.status`, `.headers`, `.text` / `.json()`,

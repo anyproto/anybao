@@ -34,7 +34,8 @@ def http_get(ctx, url, *, params=None, headers=None, timeout=None): ...
 (`fetch`, `console.log`); anybao's effect catalog mimics Python idioms —
 the model has seen far more requests-style Python than JS-in-Python:
 `http.get/head/post/put/patch/delete(...)` with `params=/headers=/json=`
-(plus `redirects=` — max follows for the request, `0` = manual; and
+(plus `redirects=` — max follows for the request, `0` = manual; the
+facade follows, one effect per hop — ADR-008 §2; and
 `response="base64"` — the body comes back as base64 of the raw bytes,
 ADR-020 §1; `stream=True` reads the response as it arrives, the
 recorded `body` is the raw SSE text, still ONE record, capped at 32 MiB;
@@ -52,7 +53,7 @@ tells from a stall worth retrying (llm@v1, ADR-005 §1.6); a timeout that is not
 number of seconds in `(0, 86400]` is a `ValueError` before any request
 — BOB-149)
 returning a `Response` (`.status`, `.json()`, `.text`, and `.url` — the
-final post-redirect url; both added by ADR-008 §2; `head` classifies as
+last hop's url; both added by ADR-008 §2; `head` classifies as
 `read` like `get`, `patch` as `mutate` — added 2026-07-28 for the REST
 connectors); **`print()` is the
 model-facing output channel** (the console.log role — traced as a

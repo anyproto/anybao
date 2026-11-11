@@ -197,6 +197,14 @@ broker now owns the follow decision for credentialed requests
 - Uncredentialed requests keep the client's own policy (default
   follow, limit 5) — unchanged.
 
+**Amended 2026-11-11 (ADR-008 §2): the follow moved into the kernel.**
+The host sends one request per http effect and never follows, with or
+without a credential. The rules above hold unchanged — manual by
+default, an explicit count, same-origin only — and the kernel's `http`
+facade applies them: each hop is a new credentialed effect, so the
+host injects the header and checks the ref's binding per hop.
+Uncredentialed requests follow the same way (default 5).
+
 Host *binding* — which hosts a ref may be named for at hop zero —
 stays deferred to the secret-entry-flow design above (E7).
 
