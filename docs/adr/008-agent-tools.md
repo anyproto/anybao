@@ -48,15 +48,36 @@ secret (`llm.key.anthropic` from `ANTHROPIC_API_KEY`).
 
 Two additions, both recorded so replay stays pure:
 
-- The http result (`{status, headers, body}`) gains `url` — the FINAL
-  url after the client followed redirects.
+- The http result (`{status, headers, body}`) gains `url` — the url
+  the request went to.
 - With `response: "base64"` the result gains `encoding: "base64"` and
   `body` is the base64 of the raw bytes (ADR-020 §1).
-- Requests accept `redirects` — the max follow count for that request;
-  `0` = manual, the 3xx and its `location` header come back as data.
-- Credentialed requests: the host owns the follow decision — default
-  manual, an explicit count follows same-origin only (ADR-011 §4,
-  amended 2026-08-02).
+- **One effect is one request (amended 2026-11-11).** The host never
+  follows a 3xx: it and its `location` header come back as data, and
+  `url` is the url the request was sent to. A hop the host followed
+  alone would pass no guard (ADR-021 §7.1) and leave no record; a hop
+  that is its own effect has both.
+- **The kernel's `http` facade follows.** `http.get(...)` and its
+  siblings (and `http.get_many`, one batch crossing per round) issue
+  one `http.<verb>` effect per hop, so `Response.url` is the last
+  hop's url. The policy is guest code:
+  - default 5 hops; `redirects=N` sets the count, `redirects=0` is
+    manual. The count is the facade's — it does not cross, and a
+    `redirects` field in a raw effect payload is ignored;
+  - 301/302/303 turn a non-GET/HEAD request into a bare GET; 307/308
+    repeat the request;
+  - a request body never leaves the origin (scheme + host + port):
+    a cross-origin 307/308 of a request with a body is returned as
+    data;
+  - a cross-origin hop drops the guest's `Authorization`, `Cookie`
+    and `Proxy-Authorization` headers;
+  - a `location` that is not http(s) is returned as data.
+- Credentialed requests: default manual; an explicit count follows
+  same-origin only, and each hop names the credential again, so the
+  host checks the ref's host binding on every hop (ADR-011 §4,
+  ADR-021 §7).
+- A program that calls the raw `effect("http.…")` gets the one
+  request and follows by hand.
 
 Grounded search returns
 `vertexaisearch.cloud.google.com/grounding-api-redirect/…` source

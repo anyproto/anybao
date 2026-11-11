@@ -1471,7 +1471,6 @@ impl Broker {
                 message: "http call without url".into(),
             })?
             .to_string();
-        self.secrets_read_guard(&url, payload)?;
         if let Some(params) = payload.get("params").and_then(|p| p.as_object()) {
             let qs: Vec<String> = params
                 .iter()
@@ -1486,15 +1485,52 @@ impl Broker {
             url.push(if url.contains('?') { '&' } else { '?' });
             url.push_str(&qs.join("&"));
         }
+        // the wire body (ADR-026 §3): `json` with refs expanded to base64,
+        // a text `body`, or a raw ref as raw bytes + its mime
+        enum Wire {
+            None,
+            Json(String),
+            Text(String),
+            Bytes(Vec<u8>, String),
+        }
+        let wire = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
+            Wire::Json(crate::trace::canonical_json(&self.expand_refs(body)?))
+        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
+            Wire::Text(body.to_string())
+        } else if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
+            let mime = r["mime"]
+                .as_str()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            Wire::Bytes(self.blob_bytes(r)?, mime)
+        } else {
+            Wire::None
+        };
+        // The guard reads the request as it leaves: the url with `params`
+        // appended, and the body text that goes on the wire — whichever of
+        // `json` / `body` text / a raw ref carries it (ADR-021 §7.1).
+        let wire_text = match &wire {
+            Wire::Json(text) | Wire::Text(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
+            // bytes are scanned when they could be a JSON document; the
+            // server decodes invalid UTF-8 leniently, so the scan does too
+            Wire::Bytes(bytes, _)
+                if matches!(
+                    bytes.iter().find(|b| !b.is_ascii_whitespace()),
+                    Some(b'{' | b'[' | b'"')
+                ) =>
+            {
+                Some(String::from_utf8_lossy(bytes))
+            }
+            _ => None,
+        };
+        self.secrets_read_guard(&verb, &url, wire_text.as_deref())?;
+        drop(wire_text);
         // `stream` + `timeout` — ADR-002 §1 (BOB-149)
         let stream = payload
             .get("stream")
             .and_then(|s| s.as_bool())
             .unwrap_or(false);
         let (timeout_total, timeout_idle) = http_timeouts(payload, stream)?;
-        // redirects: max follows for THIS request; 0 = manual (the 3xx
-        // and its location header come back as data — ADR-008 §2)
-        let explicit_redirects = payload.get("redirects").and_then(|r| r.as_u64());
         // named-credential injection: value resolved AFTER recording.
         // Static refs read the per-run map; managed oauth refs resolve
         // through the token lifecycle (ADR-011 §6) — same guest shape,
@@ -1551,12 +1587,11 @@ impl Broker {
             }
             None => None,
         };
-        // The client never follows a credentialed request: ureq strips by
-        // header NAME, so any custom credential header would replay at
-        // whatever host answers 3xx (and Authorization is dropped even
-        // same-host). The host owns the follow decision — default manual,
-        // an explicit count follows same-origin only with the header
-        // re-attached per hop — ADR-011 §4.
+        // One effect is one request: the client never follows a 3xx — it
+        // and its `location` header go back as data, and the kernel's
+        // http facade follows hop by hop, each hop its own effect through
+        // this boundary (ADR-008 §2). A hop the host followed alone would
+        // pass no guard and leave no record.
         let mut builder = ureq::AgentBuilder::new();
         if stream {
             // socket timeouts stand in for the whole-request cap a
@@ -1568,44 +1603,11 @@ impl Broker {
                 .timeout_write(timeout_idle)
                 .timeout_connect(timeout_total.min(std::time::Duration::from_secs(30)));
         }
-        let (agent, mut hops_left) = if cred.is_some() {
-            let agent = builder.redirects(0).build();
-            (agent, explicit_redirects.unwrap_or(0))
-        } else {
-            let agent = match explicit_redirects {
-                Some(max) => builder.redirects(max as u32).build(),
-                None => builder.build(),
-            };
-            (agent, 0) // uncredentialed: the client follows internally
-        };
-        // the wire body (ADR-026 §3): `json` with refs expanded to base64,
-        // a text `body`, or a raw ref as raw bytes + its mime
-        enum Wire {
-            None,
-            Json(String),
-            Text(String),
-            Bytes(Vec<u8>, String),
-        }
-        let wire = if let Some(body) = payload.get("json").filter(|v| !v.is_null()) {
-            Wire::Json(crate::trace::canonical_json(&self.expand_refs(body)?))
-        } else if let Some(body) = payload.get("body").and_then(|b| b.as_str()) {
-            Wire::Text(body.to_string())
-        } else if let Some(r) = payload.get("body").filter(|b| crate::blob::is_raw_ref(b)) {
-            let mime = r["mime"]
-                .as_str()
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            Wire::Bytes(self.blob_bytes(r)?, mime)
-        } else {
-            Wire::None
-        };
+        let agent = builder.redirects(0).build();
         let has_content_type = payload
             .get("headers")
             .and_then(|h| h.as_object())
             .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type")));
-        let mut cur_url = url;
-        let mut cur_verb = verb;
-        let mut with_body = true;
         // a plain request's cap is ureq's whole-request timeout; a timeout
         // that ends it there is the total deadline, worded like a stream's
         // so a caller can tell it from a stall worth retrying (ADR-002 §1)
@@ -1626,67 +1628,45 @@ impl Broker {
                 },
             }
         };
-        let resp = loop {
-            let mut req = agent.request(&cur_verb, &cur_url);
-            if !stream {
-                req = req.timeout(timeout_total);
-            }
-            let mut has_accept = false;
-            if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
-                for (k, v) in headers {
-                    has_accept |= k.eq_ignore_ascii_case("accept");
-                    if let Some(s) = v.as_str() {
-                        req = req.set(k, s);
-                    }
+        let mut req = agent.request(&verb, &url);
+        if !stream {
+            req = req.timeout(timeout_total);
+        }
+        let mut has_accept = false;
+        if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
+            for (k, v) in headers {
+                has_accept |= k.eq_ignore_ascii_case("accept");
+                if let Some(s) = v.as_str() {
+                    req = req.set(k, s);
                 }
             }
-            if stream && !has_accept {
-                req = req.set("Accept", "text/event-stream");
-            }
-            if let Some((header, value)) = &cred {
-                req = req.set(header, value);
-            }
-            let sent = if !with_body {
-                req.call() // 301/302/303 hop downgraded to a bare GET
-            } else {
-                match &wire {
-                    Wire::Json(text) => req
-                        .set("Content-Type", "application/json")
-                        .send_string(text),
-                    Wire::Text(text) => req.send_string(text),
-                    Wire::Bytes(bytes, mime) => {
-                        if !has_content_type {
-                            req = req.set("Content-Type", mime);
-                        }
-                        req.send_bytes(bytes)
-                    }
-                    Wire::None => req.call(),
+        }
+        if stream && !has_accept {
+            req = req.set("Accept", "text/event-stream");
+        }
+        if let Some((header, value)) = &cred {
+            req = req.set(header, value);
+        }
+        let sent = match &wire {
+            Wire::Json(text) => req
+                .set("Content-Type", "application/json")
+                .send_string(text),
+            Wire::Text(text) => req.send_string(text),
+            Wire::Bytes(bytes, mime) => {
+                if !has_content_type {
+                    req = req.set("Content-Type", mime);
                 }
-            };
-            let resp = match sent {
-                Ok(r) => r,
-                Err(ureq::Error::Status(_, r)) => r, // non-2xx is data, not error
-                Err(e) => return Err(plain_failure(e.to_string())),
-            };
-            if hops_left == 0 || !matches!(resp.status(), 301 | 302 | 303 | 307 | 308) {
-                break resp;
+                req.send_bytes(bytes)
             }
-            let next = resp
-                .header("location")
-                .and_then(|loc| same_origin_target(&cur_url, loc));
-            let Some(next) = next else {
-                break resp; // cross-origin (or unparsable): the 3xx is data
-            };
-            self.secrets_read_guard(&next, payload)?; // guard every hop
-            hops_left -= 1;
-            if matches!(resp.status(), 301..=303) && cur_verb != "GET" && cur_verb != "HEAD" {
-                cur_verb = "GET".to_string();
-                with_body = false;
-            }
-            cur_url = next;
+            Wire::None => req.call(),
+        };
+        let resp = match sent {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r, // non-2xx is data, not error
+            Err(e) => return Err(plain_failure(e.to_string())),
         };
         let status = resp.status();
-        let final_url = resp.get_url().to_string(); // post-redirect (ADR-008 §2)
+        let final_url = resp.get_url().to_string(); // as sent (ADR-008 §2)
         let headers: Map<String, Value> = resp
             .headers_names()
             .iter()
@@ -1803,43 +1783,57 @@ impl Broker {
         Ok(out)
     }
 
-    /// Refuse guest http requests that would touch stored secrets: a
-    /// body whose `dataset` is the secrets store's collection — every
-    /// space's is `<typeId>_agent_secrets` (ADR-027 §2), so the
-    /// `_agent_secrets` suffix is the invariant (ADR-011 §4); covers
-    /// query/subscribe/modify/aggregate/delete-records on ANY space,
-    /// since the server only acts on a literal collection name — or a
-    /// url/body referencing the guarded object id (object-scoped
-    /// routes on the home space's secrets object). Fired BEFORE
-    /// execution, so the refusal is the recorded fact — deterministic
-    /// on replay, and no secret ever reaches the trace. Content-based
-    /// on purpose: host aliasing (localhost vs 127.0.0.1) can't dodge
-    /// it, and a benign body that merely MENTIONS the words in text
-    /// fields passes.
-    fn secrets_read_guard(&self, url: &str, payload: &Value) -> Result<(), EffectFailure> {
+    /// Refuse guest http requests that would touch stored secrets
+    /// (ADR-021 §7.1). The guard knows the identifiers of the secrets
+    /// store — the secrets object id, the collection name
+    /// `<typeId>_agent_secrets`, the secrets type id — and looks for them
+    /// in the WHOLE request as it leaves: every form of the url (as
+    /// given, as the client normalises it, percent-decoded) and every
+    /// string of the body text that goes on the wire, whichever of
+    /// `json` / `body` carries it. It never depends on which key or
+    /// route names the identifier, so it does not have to parse a
+    /// request the way the server does. On top of the identifiers: a
+    /// `dataset` key naming any space's `…_agent_secrets` collection
+    /// (ADR-027 §2 — the suffix is the invariant, ADR-011 §4), and a
+    /// non-read request naming the secrets type (its dataset definition
+    /// decides what search indexes). Fired BEFORE execution, so the
+    /// refusal is the recorded fact — deterministic on replay, and no
+    /// secret ever reaches the trace. A benign body that merely MENTIONS
+    /// the words in a text field passes; one that carries an identifier
+    /// does not.
+    fn secrets_read_guard(
+        &self,
+        verb: &str,
+        url: &str,
+        body: Option<&str>,
+    ) -> Result<(), EffectFailure> {
+        let urls = url_forms(url);
+        let in_url = |needle: &str| urls.iter().any(|u| contains_ci(u, needle));
+        let mut strings: Vec<(String, String)> = Vec::new();
+        if let Some(text) = body {
+            json_strings(text, &mut |key, value| {
+                strings.push((fold_key(key), value.to_string()))
+            });
+        }
         // ADR-021 §8.6: a credential card is the host's statement — a guest
         // chat write (any verb, any path under chat/messages, batch items
         // included since they re-enter `call`) carrying a host-only
         // attachment type is refused before it leaves
-        if url.contains("/chat/messages") {
-            let types = payload
-                .get("json")
-                .and_then(|b| b.get("attachments"))
-                .and_then(Value::as_object)
-                .into_iter()
-                .flat_map(|atts| atts.values())
-                .filter_map(|a| a.get("type").and_then(Value::as_str));
-            for ty in types {
-                if HOST_ONLY_ATTACHMENTS.contains(&ty) {
-                    return Err(EffectFailure {
-                        type_: "host_only".into(),
-                        message: format!(
-                            "credential cards are posted by the host — a `{ty}` attachment \
-                             never comes from guest code (ADR-021 §8.6); a missing key posts \
-                             its own card when a credentialed request misses it"
-                        ),
-                    });
-                }
+        if in_url("/chat/messages") {
+            let host_only = strings.iter().find_map(|(key, value)| {
+                (key == "type")
+                    .then(|| HOST_ONLY_ATTACHMENTS.iter().find(|t| **t == value))
+                    .flatten()
+            });
+            if let Some(ty) = host_only {
+                return Err(EffectFailure {
+                    type_: "host_only".into(),
+                    message: format!(
+                        "credential cards are posted by the host — a `{ty}` attachment \
+                         never comes from guest code (ADR-021 §8.6); a missing key posts \
+                         its own card when a credentialed request misses it"
+                    ),
+                });
             }
         }
         let forbidden = |what: &str| EffectFailure {
@@ -1851,39 +1845,58 @@ impl Broker {
                  anybao.toml)"
             ),
         };
-        let body = payload.get("json");
-        let body_dataset = body.and_then(|b| b.get("dataset")).and_then(|d| d.as_str());
-        if body_dataset.is_some_and(|d| {
-            d.ends_with("_agent_secrets")
-                || d == "agent_secrets"
-                || self.secrets_collection.as_deref() == Some(d)
-        }) {
+        // the request names an identifier anywhere: the url, the body
+        // text as written, or a body string once its escapes are decoded
+        let names = |needle: &str| {
+            in_url(needle)
+                || body.is_some_and(|text| contains_ci(text, needle))
+                || strings.iter().any(|(_, value)| contains_ci(value, needle))
+        };
+        let dataset_named = strings.iter().any(|(key, value)| {
+            key == "dataset" && {
+                let d = value.to_ascii_lowercase();
+                d.ends_with("_agent_secrets") || d == "agent_secrets"
+            }
+        });
+        let collection = self.secrets_collection.as_deref().filter(|c| !c.is_empty());
+        if dataset_named || collection.is_some_and(names) {
             return Err(forbidden("the agent_secrets dataset"));
         }
-        if let Some(id) = &self.secrets_guard {
-            let body_object = body
-                .and_then(|b| b.get("objectId"))
-                .and_then(|o| o.as_str());
-            if url.contains(id.as_str()) || body_object == Some(id.as_str()) {
-                return Err(forbidden("the secrets object"));
-            }
+        if self
+            .secrets_guard
+            .as_deref()
+            .is_some_and(|id| !id.is_empty() && names(id))
+        {
+            return Err(forbidden("the secrets object"));
+        }
+        // the secrets type: reading it is harmless (a type listing names
+        // it); changing it or its dataset definition is not
+        let type_id = collection
+            .and_then(|c| c.strip_suffix("_agent_secrets"))
+            .filter(|t| t.len() >= 8);
+        if !matches!(verb, "GET" | "HEAD") && type_id.is_some_and(names) {
+            return Err(forbidden("the agent_secrets type"));
         }
         // ADR-023 §9: the trace collections are host-written. A guest may
         // read them (query / aggregate / get) and never write — insert,
         // upsert, update, delete, index or collection changes, and
         // aggregate sinks ($out/$merge) that name a trace collection.
-        if let Some(rest) = url.split("/v1/local/").nth(1) {
-            let op = rest.split('?').next().unwrap_or("");
-            let coll = body
-                .and_then(|b| b.get("coll"))
-                .and_then(|c| c.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            let names_trace = coll.starts_with("trace_") || url.contains("name=trace_");
-            let write_op = matches!(
-                op,
-                "insert" | "upsert" | "update" | "delete" | "indexes" | "collections"
-            );
+        let local_ops: Vec<&str> = urls
+            .iter()
+            .filter_map(|u| u.split("/v1/local/").nth(1))
+            .map(|rest| rest.split('?').next().unwrap_or(""))
+            .collect();
+        if !local_ops.is_empty() {
+            let names_trace = in_url("name=trace_")
+                || strings
+                    .iter()
+                    .any(|(key, value)| key == "name" && value.starts_with("trace_"));
+            let write_op = local_ops.iter().any(|op| {
+                matches!(
+                    op.trim_end_matches('/'),
+                    "insert" | "upsert" | "update" | "delete" | "indexes" | "collections"
+                )
+            });
             if names_trace && write_op {
                 return Err(EffectFailure {
                     type_: "forbidden".into(),
@@ -1892,9 +1905,15 @@ impl Broker {
                         .into(),
                 });
             }
-            if op == "aggregate" {
-                if let Some(pipeline) = body.and_then(|b| b.get("pipeline")) {
-                    if crate::tracestore::find_sink_stage(pipeline).is_some()
+            if local_ops
+                .iter()
+                .any(|op| op.trim_end_matches('/') == "aggregate")
+            {
+                let pipeline = body
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                    .and_then(|b| b.get("pipeline").cloned());
+                if let Some(pipeline) = pipeline {
+                    if crate::tracestore::find_sink_stage(&pipeline).is_some()
                         && pipeline.to_string().contains("_trace_")
                     {
                         return Err(EffectFailure {
@@ -2363,10 +2382,6 @@ fn immediate_children(records: &[Value], cell: Option<&str>, span: Option<&str>)
         .collect()
 }
 
-/// Resolve a redirect `location` against the current url, keeping it only
-/// when the target stays on the SAME ORIGIN (scheme + host + port). A
-/// credentialed request must never carry its header to another origin —
-/// a cross-origin 3xx goes back to the guest as data (ADR-011 §4).
 /// Chat attachment types only the host may author (ADR-021 §8.6).
 const HOST_ONLY_ATTACHMENTS: [&str; 2] = ["credential_request", "credential_set"];
 
@@ -2465,13 +2480,145 @@ fn http_timeouts(
     ))
 }
 
-fn same_origin_target(current: &str, location: &str) -> Option<String> {
-    let base = url::Url::parse(current).ok()?;
-    let next = base.join(location).ok()?;
-    (next.scheme() == base.scheme()
-        && next.host_str() == base.host_str()
-        && next.port_or_known_default() == base.port_or_known_default())
-    .then(|| next.to_string())
+/// The forms of a request url the guard reads (ADR-021 §7.1): as the
+/// guest gave it, as the http client sends it (the `url` crate drops
+/// TAB/CR/LF, folds `\` and resolves dot segments), and each of those
+/// percent-decoded.
+fn url_forms(url: &str) -> Vec<String> {
+    let mut forms = vec![url.to_string()];
+    if let Ok(parsed) = url::Url::parse(url) {
+        forms.push(parsed.as_str().to_string());
+    }
+    let decoded: Vec<String> = forms.iter().map(|f| percent_decode(f)).collect();
+    forms.extend(decoded);
+    forms.dedup();
+    forms
+}
+
+/// `%XX` → the byte, lossily as UTF-8; anything else is kept.
+fn percent_decode(s: &str) -> String {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let pair = (bytes[i] == b'%' && i + 2 < bytes.len())
+            .then(|| hex(bytes[i + 1]).zip(hex(bytes[i + 2])))
+            .flatten();
+        match pair {
+            Some((hi, lo)) => {
+                out.push(hi * 16 + lo);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// ASCII case-insensitive `haystack.contains(needle)`, no allocation.
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    !n.is_empty() && h.len() >= n.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// A JSON key as the server's decoder matches it against a field name:
+/// case-insensitively, with the two non-ASCII letters that fold to
+/// ASCII (`ſ` → s, the Kelvin sign → k).
+fn fold_key(key: &str) -> String {
+    key.chars()
+        .map(|c| match c {
+            '\u{17f}' => 's',
+            '\u{212a}' => 'k',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+/// Every string token of a JSON-like text, escapes decoded, handed to
+/// `f(key, value)`: a value string comes with the key it follows (`""`
+/// for an array item or a bare string), a key comes as `("", key)`.
+/// A flat tokenizer on purpose (ADR-021 §7.1) — no tree, no depth
+/// limit, no stop at the first error: duplicate keys, a second document
+/// after the first, and nesting deeper than a parser allows are all
+/// read, so the guard sees every string any decoder could.
+fn json_strings(text: &str, f: &mut dyn FnMut(&str, &str)) {
+    let mut chars = text.chars().peekable();
+    let mut key: Option<String> = None; // the key of the pair being read
+    let mut pending: Option<String> = None; // a string not yet known as key or value
+    let hex4 = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+        let mut n = 0u32;
+        for _ in 0..4 {
+            n = n * 16 + chars.peek().and_then(|c| c.to_digit(16))?;
+            chars.next();
+        }
+        Some(n)
+    };
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if c == ':' {
+            if let Some(k) = pending.take() {
+                f("", &k);
+                key = Some(k);
+            }
+            continue;
+        }
+        // any other token ends a pending string: it was a value
+        if let Some(v) = pending.take() {
+            f(key.take().as_deref().unwrap_or(""), &v);
+        }
+        if c != '"' {
+            if !matches!(c, '{' | '[') {
+                key = None; // a non-string value consumed the key
+            }
+            continue;
+        }
+        let mut s = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => match chars.next() {
+                    Some('n') => s.push('\n'),
+                    Some('t') => s.push('\t'),
+                    Some('r') => s.push('\r'),
+                    Some('b') => s.push('\u{8}'),
+                    Some('f') => s.push('\u{c}'),
+                    Some('u') => {
+                        let hi = hex4(&mut chars);
+                        let ch = match hi {
+                            Some(hi @ 0xD800..=0xDBFF) => {
+                                // a surrogate pair: `😀`
+                                let mut ahead = chars.clone();
+                                let lo = (ahead.next() == Some('\\') && ahead.next() == Some('u'))
+                                    .then(|| hex4(&mut ahead))
+                                    .flatten()
+                                    .filter(|lo| (0xDC00..=0xDFFF).contains(lo));
+                                lo.and_then(|lo| {
+                                    chars = ahead;
+                                    char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
+                                })
+                            }
+                            Some(n) => char::from_u32(n),
+                            None => None,
+                        };
+                        s.push(ch.unwrap_or('\u{fffd}'));
+                    }
+                    Some(other) => s.push(other), // `\"` `\\` `\/`, or kept as written
+                    None => break,
+                },
+                c => s.push(c),
+            }
+        }
+        pending = Some(s);
+    }
+    if let Some(v) = pending {
+        f(key.as_deref().unwrap_or(""), &v);
+    }
 }
 
 pub(crate) fn urlencode(s: &str) -> String {
@@ -2997,6 +3144,250 @@ mod tests {
             )
             .unwrap_err();
         assert_ne!(err.type_, "forbidden");
+    }
+
+    /// A broker guarding a store with realistic identifiers.
+    fn guarded_broker(run: &str) -> Broker {
+        let mut b = make_broker(run);
+        b.secrets_guard = Some("bafysecretsobj".into());
+        b.secrets_collection = Some("bafysecrettype_agent_secrets".into());
+        b
+    }
+
+    /// The guard's verdict on one request: the refusal type, or `None`
+    /// when the request passed it (and died on the unreachable port).
+    fn guard_verdict(b: &mut Broker, effect: &str, mut payload: Value) -> Option<String> {
+        payload["timeout"] = json!(0.05);
+        let err = b.call(effect, payload).unwrap_err();
+        matches!(err.type_.as_str(), "forbidden" | "host_only").then_some(err.type_)
+    }
+
+    #[test]
+    fn secrets_guard_reads_a_text_body_like_a_json_one() {
+        // ADR-021 §7.1: `body=` is the same bytes on the wire as `json=`
+        let mut b = guarded_broker("run_guard_text");
+        let query = "http://127.0.0.1:1/v1/spaces/s/query";
+        for body in [
+            // the plain shape
+            r#"{"dataset": "bafysecrettype_agent_secrets"}"#,
+            // another space's collection: the suffix rule
+            r#"{"dataset": "bafyother_agent_secrets"}"#,
+            // escapes decode to the name
+            r#"{"dataset": "bafysecrettype_agent_secrets"}"#,
+            r#"{"dataset": "bafyother_agent_secrets"}"#,
+            // keys the server folds onto the field
+            r#"{"Dataset": "bafyother_agent_secrets"}"#,
+            r#"{"DATASET": "agent_secrets"}"#,
+            "{\"data\u{17f}et\": \"bafyother_agent_secrets\"}",
+            r#"{"dataset": "bafyother_agent_secrets"}"#,
+            // duplicate keys: first-wins and last-wins decoders both lose
+            r#"{"dataset": "bafyother_agent_secrets", "dataset": "pages"}"#,
+            r#"{"dataset": "pages", "dataset": "bafyother_agent_secrets"}"#,
+            // a second document after the first
+            r#"{"dataset": "pages"} {"dataset": "bafyother_agent_secrets"}"#,
+            // the object id under any key, at any depth
+            r#"{"objectID": "bafysecretsobj"}"#,
+            r#"{"filter": {"ids": ["x", "bafysecretsobj"]}}"#,
+        ] {
+            assert_eq!(
+                guard_verdict(&mut b, "http.post", json!({"url": query, "body": body})),
+                Some("forbidden".into()),
+                "{body}"
+            );
+        }
+        // nesting deeper than a tree parser allows hides nothing
+        let deep = format!(
+            r#"{{"x": {}1{}, "dataset": "bafyother_agent_secrets"}}"#,
+            "[".repeat(5000),
+            "]".repeat(5000)
+        );
+        assert_eq!(
+            guard_verdict(&mut b, "http.post", json!({"url": query, "body": deep})),
+            Some("forbidden".into())
+        );
+        // a `json` body: the identifier under a key the guard never named
+        assert_eq!(
+            guard_verdict(
+                &mut b,
+                "http.post",
+                json!({"url": query, "json": {"ObjectId": "bafysecretsobj"}})
+            ),
+            Some("forbidden".into())
+        );
+    }
+
+    #[test]
+    fn secrets_guard_reads_a_blob_body() {
+        // a raw ref goes on the wire as its bytes: JSON bytes are a JSON body
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = guarded_broker("run_guard_blob");
+        b.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD
+            .encode(br#" {"dataset": "bafyother_agent_secrets"}"#);
+        let r = b
+            .call(
+                "blob.put",
+                json!({"data": data,
+                       "mime": "application/json"}),
+            )
+            .unwrap();
+        assert_eq!(
+            guard_verdict(
+                &mut b,
+                "http.post",
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/query", "body": r})
+            ),
+            Some("forbidden".into())
+        );
+    }
+
+    #[test]
+    fn secrets_guard_reads_the_url_the_client_sends() {
+        let mut b = guarded_broker("run_guard_url");
+        let base = "http://127.0.0.1:1/v1/spaces/s/objects";
+        for url in [
+            format!("{base}/bafysecretsobj/history"),
+            // the client drops TAB / CR / LF before it sends
+            format!("{base}/bafysec\tretsobj/history"),
+            format!("{base}/bafysec\nretsobj/history"),
+            // percent-encoded, and through a dot segment
+            format!("{base}/%62afysecretsobj/history"),
+            format!("{base}/x/../bafysecrets%6Fbj"),
+            // the server compares ids as given; the guard does not care
+            format!("{base}/BAFYSECRETSOBJ"),
+            // the collection in the query string
+            "http://127.0.0.1:1/v1/spaces/s/rows?dataset=bafysecrettype_agent_secrets".to_string(),
+        ] {
+            assert_eq!(
+                guard_verdict(&mut b, "http.get", json!({"url": url})),
+                Some("forbidden".into()),
+                "{url:?}"
+            );
+        }
+        // `params` are part of the url that leaves
+        assert_eq!(
+            guard_verdict(
+                &mut b,
+                "http.get",
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/rows",
+                       "params": {"objectId": "bafysecretsobj"}})
+            ),
+            Some("forbidden".into())
+        );
+    }
+
+    #[test]
+    fn secrets_type_is_readable_and_never_changed() {
+        // the dataset definition decides what search indexes: a guest
+        // reads the type, and never patches it or its definitions
+        let mut b = guarded_broker("run_guard_type");
+        let ty = "http://127.0.0.1:1/v1/spaces/s/types/bafysecrettype";
+        assert_eq!(guard_verdict(&mut b, "http.get", json!({"url": ty})), None);
+        for (effect, payload) in [
+            (
+                "http.patch",
+                json!({"url": format!("{ty}/datasets/def1"),
+                       "json": {"search": {"text": ["value"]}}}),
+            ),
+            ("http.delete", json!({"url": ty})),
+            (
+                "http.post",
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/types/patch",
+                       "body": r#"{"typeId": "bafysecrettype"}"#}),
+            ),
+        ] {
+            assert_eq!(
+                guard_verdict(&mut b, effect, payload.clone()),
+                Some("forbidden".into()),
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_only_rules_read_a_text_body_too() {
+        let mut b = guarded_broker("run_guard_hostonly_text");
+        // ADR-021 §8.6: a credential card in a text body
+        assert_eq!(
+            guard_verdict(
+                &mut b,
+                "http.post",
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/c/chat/messages",
+                       "body": r#"{"attachments": {"a": {"Type": "credential_request"}}}"#})
+            ),
+            Some("host_only".into())
+        );
+        // ADR-023 §9: a trace write in a text body, through a dot segment
+        for url in [
+            "http://127.0.0.1:1/v1/local/insert",
+            "http://127.0.0.1:1/v1/./local/insert",
+            "http://127.0.0.1:1/v1/local/%69nsert",
+        ] {
+            assert_eq!(
+                guard_verdict(
+                    &mut b,
+                    "http.post",
+                    json!({"url": url,
+                           "body": r#"{"coll": {"name": "trace_records"}, "docs": []}"#})
+                ),
+                Some("forbidden".into()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn secrets_guard_passes_requests_that_only_mention_the_words() {
+        let mut b = guarded_broker("run_guard_benign");
+        for payload in [
+            // text that talks about the store, in either body form
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/o/chat/messages",
+                   "body": r#"{"text": "the agent_secrets dataset is guarded"}"#}),
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/query",
+                   "json": {"dataset": "pages", "filter": {"name": "my_agent_secrets"}}}),
+            // a body that is not JSON at all
+            json!({"url": "http://127.0.0.1:1/form", "body": "a=1&dataset=agent_secrets"}),
+            json!({"url": "http://127.0.0.1:1/note", "body": "[x] rotate the \"key\": soon"}),
+        ] {
+            assert_eq!(
+                guard_verdict(&mut b, "http.post", payload.clone()),
+                None,
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_strings_reads_every_string_token() {
+        let read = |text: &str| {
+            let mut out = Vec::new();
+            json_strings(text, &mut |k, v| out.push((k.to_string(), v.to_string())));
+            out
+        };
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(
+            read(r#"{"a": "x", "b": [1, "y", {"c": "z"}], "d": 2, "e": "w"}"#),
+            [
+                pair("", "a"),
+                pair("a", "x"),
+                pair("", "b"),
+                pair("", "y"),
+                pair("", "c"),
+                pair("c", "z"),
+                pair("", "d"),
+                pair("", "e"),
+                pair("e", "w"),
+            ]
+        );
+        // escapes, a surrogate pair, a quote inside a string
+        assert_eq!(
+            read(r#"{"k": "ab\n\"c\"😀"}"#),
+            [pair("", "k"), pair("k", "ab\n\"c\"\u{1f600}")]
+        );
+        // a bare string, and text cut off inside one
+        assert_eq!(read(r#""solo""#), [pair("", "solo")]);
+        assert_eq!(read(r#"{"k": "cut"#), [pair("", "k"), pair("k", "cut")]);
     }
 
     #[test]
@@ -3783,7 +4174,7 @@ mod tests {
         assert!(b.span_stack.is_empty());
     }
 
-    // --- credentialed redirects (ADR-011 §4, E8) -------------------------
+    // --- redirects (ADR-008 §2) -----------------------------------------
 
     /// A server whose every request bumps `hits`; used as the redirect
     /// TARGET — the assertion is that it is never contacted.
@@ -3796,7 +4187,7 @@ mod tests {
 
     /// A server answering every request with a 302 to `location`.
     fn redirecting_origin(location: String) -> String {
-        fake_server(2, move |req| {
+        fake_server(4, move |req| {
             let resp = tiny_http::Response::from_string("")
                 .with_status_code(302)
                 .with_header(tiny_http::Header::from_bytes("Location", location.as_str()).unwrap());
@@ -4449,81 +4840,34 @@ mod tests {
     }
 
     #[test]
-    fn credentialed_redirect_defaults_to_manual() {
-        // the leak half: without an explicit count the 302 is DATA —
-        // nothing follows, the credential header travels nowhere
+    fn a_redirect_is_data_and_the_host_never_follows() {
+        // ADR-008 §2: one effect is one request. The 3xx and its
+        // `location` come back as data — with or without a credential,
+        // whatever `redirects` a payload still carries — and the target
+        // sees no request the guard did not pass
         let hits = Arc::new(AtomicUsize::new(0));
         let target = counting_target(hits.clone());
         let origin = redirecting_origin(format!("{target}/steal"));
-        let mut b = make_broker("run_e8_manual");
+        let mut b = make_broker("run_redirect_data");
         b.secrets.insert("connector.key.x".into(), "sk-live".into());
 
-        let out = b
-            .call("http.get", cred_payload(format!("{origin}/a")))
-            .unwrap();
-        assert_eq!(out["status"], json!(302));
-        assert_eq!(out["headers"]["location"], json!(format!("{target}/steal")));
+        let plain = json!({"url": format!("{origin}/a")});
+        let mut counted = plain.clone();
+        counted["redirects"] = json!(3);
+        let mut cred_counted = cred_payload(format!("{origin}/a"));
+        cred_counted["redirects"] = json!(3);
+        for payload in [
+            plain,
+            counted,
+            cred_payload(format!("{origin}/a")),
+            cred_counted,
+        ] {
+            let out = b.call("http.get", payload).unwrap();
+            assert_eq!(out["status"], json!(302));
+            assert_eq!(out["headers"]["location"], json!(format!("{target}/steal")));
+            assert_eq!(out["url"], json!(format!("{origin}/a")));
+        }
         assert_eq!(hits.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn credentialed_redirect_never_crosses_origin() {
-        // even an explicit count refuses a cross-origin hop: the 3xx
-        // comes back as data and the foreign host sees no request
-        let hits = Arc::new(AtomicUsize::new(0));
-        let target = counting_target(hits.clone());
-        let origin = redirecting_origin(format!("{target}/steal"));
-        let mut b = make_broker("run_e8_cross");
-        b.secrets.insert("connector.key.x".into(), "sk-live".into());
-
-        let mut payload = cred_payload(format!("{origin}/a"));
-        payload["redirects"] = json!(3);
-        let out = b.call("http.get", payload).unwrap();
-        assert_eq!(out["status"], json!(302));
-        assert_eq!(hits.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn credentialed_redirect_follows_same_origin_reattaching_header() {
-        // the breakage half: an explicit count follows same-origin hops
-        // with the credential re-attached on every one (ureq's default
-        // would strip Authorization; a custom header must not leak past
-        // the origin — both replaced by the host-side loop)
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let seen2 = seen.clone();
-        let base = fake_server(2, move |req| {
-            let tok = req
-                .headers()
-                .iter()
-                .find(|h| h.field.equiv("x-api-token"))
-                .map(|h| h.value.as_str().to_string())
-                .unwrap_or_default();
-            seen2.lock().unwrap().push(format!("{} {tok}", req.url()));
-            if req.url() == "/hop" {
-                let resp = tiny_http::Response::from_string("")
-                    .with_status_code(302)
-                    .with_header(tiny_http::Header::from_bytes("Location", "/real").unwrap());
-                let _ = req.respond(resp);
-            } else {
-                let _ = req.respond(tiny_http::Response::from_string("ok"));
-            }
-        });
-        let mut b = make_broker("run_e8_follow");
-        b.secrets.insert("connector.key.x".into(), "sk-live".into());
-
-        let mut payload = cred_payload(format!("{base}/hop"));
-        payload["redirects"] = json!(3);
-        let out = b.call("http.get", payload).unwrap();
-        assert_eq!(out["status"], json!(200));
-        assert_eq!(out["body"], json!("ok"));
-        assert!(out["url"].as_str().unwrap().ends_with("/real"));
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            ["/hop sk-live", "/real sk-live"]
-        );
-        // the secret still never reaches the trace
-        let dump = serde_json::to_string(&b.writer.records).unwrap();
-        assert!(!dump.contains("sk-live"));
     }
 
     /// ADR-026 §3: a binary body comes back as a raw ref, the bytes in

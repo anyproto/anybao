@@ -143,6 +143,8 @@ corrected in place.
 
 **Amended 2026-09-08 (ADR-027 §2):** the broker's guest-read guard keys on the secrets store's COLLECTION — every space's is `<typeId>_agent_secrets`, so the `_agent_secrets` suffix is the invariant — plus the secrets object id as before.
 
+**Amended 2026-11-11 (ADR-021 §7.1):** the guard looks for the store's identifiers — object id, collection name, type id — in the whole request (every url form, every body string, `json` and text `body` alike), not in named keys.
+
 **Amended 2026-09-14 (ADR-021 §7/§8):** the deferral ends — host binding is enforced at hop zero from the row's `hosts`, whose source is the deployed module's `__any_credentials__` (declared refs) or the first creation of a `local.key.*` row (open refs). "Raw secrets, no host checks" below describes the interim, not the contract.
 
 Today a guest payload carries `{ref, header, prefix}` and the broker
@@ -194,6 +196,14 @@ broker now owns the follow decision for credentialed requests
   followed, and every hop passes the secrets read-guard.
 - Uncredentialed requests keep the client's own policy (default
   follow, limit 5) — unchanged.
+
+**Amended 2026-11-11 (ADR-008 §2): the follow moved into the kernel.**
+The host sends one request per http effect and never follows, with or
+without a credential. The rules above hold unchanged — manual by
+default, an explicit count, same-origin only — and the kernel's `http`
+facade applies them: each hop is a new credentialed effect, so the
+host injects the header and checks the ref's binding per hop.
+Uncredentialed requests follow the same way (default 5).
 
 Host *binding* — which hosts a ref may be named for at hop zero —
 stays deferred to the secret-entry-flow design above (E7).

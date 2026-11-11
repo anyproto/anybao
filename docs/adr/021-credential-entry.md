@@ -6,7 +6,8 @@ source of truth, no runtime write surface; amended the same day: the
 value is **account-scoped**, not device-local). **§7 + §8 accepted
 2026-09-14** (BOB-94: host binding shipped, declared refs, the open
 `local.key.*` namespace for agent-authored programs, host-only card
-types).
+types). **§7.1 proposed 2026-11-11** (the read-guard scans the whole
+request for the store's identifiers).
 Builds on: ADR-006 §3 (secrets on the derived object — the device-local
 scope of that section is superseded by §4 here),
 ADR-008 §1 (credential refs), ADR-011 §4 (host binding deferred to
@@ -338,6 +339,74 @@ implicitly and nothing else, so a new carrier injects nothing until
 the manifest (declared refs) or the human (open refs) grants it. The
 invariant is the one this section states: a secret leaves the host
 only toward a destination the human saw on the card.
+
+#### 7.1 The read-guard looks for the store's identifiers in the whole request (proposed 2026-11-11)
+
+§7 binds where a secret goes. It holds only while guest code cannot
+read or rewrite the `agent_secrets` rows through the any server, which
+serves every loopback caller. The broker's read-guard (ADR-011 §4) is
+that fence, and it stands on one fact: the host knows the identifiers
+of the secrets store, and no guest request has a reason to carry them.
+
+**The identifiers.** Resolved at boot, held by every run's broker:
+
+| identifier | what it is |
+|---|---|
+| the secrets object id | the derived child `bao/secrets/v1` of the home space |
+| the secrets collection | `<typeId>_agent_secrets` (ADR-027 §2) |
+| the secrets type id | the collection name without its suffix |
+
+**The rule.** A guest http request that carries an identifier is
+refused `forbidden` before it leaves, wherever the identifier sits:
+
+- **the url** — as the guest gave it (with `params` appended), as the
+  http client sends it (the `url` crate drops TAB/CR/LF, folds `\`,
+  resolves dot segments), and each of those percent-decoded;
+- **the body** — the text that goes on the wire, whichever field
+  carries it: `json` (refs expanded), a text `body`, or a raw-ref
+  `body` whose bytes start like a JSON document. The guard reads the
+  text as written and every string token with its escapes decoded.
+
+The comparison ignores ASCII case. The object id and the collection
+name refuse every verb. The type id refuses every verb except GET and
+HEAD: a type listing names the type and reading it is harmless, while
+its dataset definition decides what search indexes.
+
+Two rules stay keyed on a JSON key, because their value is not one of
+the host's identifiers:
+
+- a `dataset` key whose value is `agent_secrets` or ends in
+  `_agent_secrets` — any space's secrets collection (ADR-027 §2);
+- on a chat-message url, a `type` key whose value is a host-only
+  attachment type (§8.6).
+
+The trace-collection write rule (ADR-023 §9) reads the same url forms
+and body strings.
+
+**Why a scan and not a parse.** The guard runs before the server
+parses the request, and it must not depend on parsing it the same
+way. So it does not build a tree. A flat tokenizer hands it every
+string token of the body: both of two duplicate keys, a document that
+follows the first, strings below any nesting depth. A key is matched
+the way the server's decoder folds it onto a field name:
+case-insensitively, with `ſ` and the Kelvin sign folded to `s` and
+`k`. Which route or which key names the identifier never matters.
+
+**What it costs.** A request that carries the secrets object id or
+collection name as data — a chat message quoting the id — is refused.
+The identifiers are opaque and the guest is never given them. Text
+that only mentions the words `agent_secrets` passes.
+
+**What it does not cover.**
+
+- A route that returns a space's data without naming an identifier
+  (a whole-space export). None is known to return a secret value.
+- A request the guard never sees. The host sends one request per
+  http effect and follows no redirect (ADR-008 §2), so there is no
+  hidden hop; a second request smuggled inside one body is still
+  open.
+- A serve built with the `shell` feature: ADR-024 has no sandbox, and
+  a child process reaches loopback without the broker.
 
 ### 8. Trust model for agent-requested credentials — `local.key.*` (accepted 2026-09-14, BOB-94)
 
