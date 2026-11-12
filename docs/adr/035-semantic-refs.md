@@ -4,7 +4,8 @@ Status: **Proposed** (2026-09-25, revised 2026-10-16, 2026-11-03 and
 2026-11-04 after the community review, 2026-11-10 after the PR
 review, 2026-11-11 after the community chat review and a replay on
 real windows, 2026-11-12 the collision rule stated as a set lookup,
-with its measured cost), experiment on `exp/semantic-ids`
+with its measured cost, and the link kinds of the server's registry),
+experiment on `exp/semantic-ids`
 Date: 2026-09-25
 Builds on: ADR-001 §4 (span records: `input` on begin, `output` on
 end), ADR-002 (the effect boundary: `http.post` is the one effect
@@ -158,10 +159,33 @@ the ref, the dict `getRef` returns (§4). The dict holds no handle: a
 handle exists only on the wire.
 
 A handle is `ref:<kind>/<key>`, one shape for every kind — `object`,
-`file`, `space` — with an optional `#<type>` fragment on an object.
+`file`, `space`, and `user` and `prop` (below) — with an optional
+`#<type>` fragment on an object.
 The kind is a word, not a letter: `object`, `file` and `space` are
 one token each, the same cost as `o`, `f`, `s`, and they carry the
-meaning. The scheme is `ref:`, not `any://`, so that the wall (§5)
+meaning.
+
+The kinds follow the link registry of the server (any
+`docs/19-links.md`), one handle kind for each link kind that names a
+thing with a long id:
+
+| Link | Handle | The key names |
+|---|---|---|
+| `any://o/<space>/<object>` | `ref:object/<key>` | the object |
+| `any://o/<space>/<object>/<dataset>/<recordId>` | `ref:object/<key>/<dataset>/<recordId>` | the object; the tail is not changed |
+| `any://f/<space>/<file>` | `ref:file/<key>` | the file |
+| `any://s/<space>` | `ref:space/<key>` | the space |
+| `any://u/<identity>` | `ref:user/<key>` | the identity |
+| `any://p/<space>/<object>/<propId>` | `ref:prop/<key>/<propId>` | the object, with the key it has as `ref:object`; the tail is not changed |
+
+A record link (a chat message, an editor block) and a property link
+are the handle of their object with the rest of the path after it.
+The record id and the property id are short and stay as they are; the
+table gains no entry for them. The registry is open, so the wall
+holds this table and nothing more general: a kind that is not in it
+is not rewritten (§5). `ref:object`, `ref:file` and `ref:space` are
+the refs of §2 to §4; `ref:user` and `ref:prop` are spellings only —
+the wall shortens and expands them, the index does not list them. The scheme is `ref:`, not `any://`, so that the wall (§5)
 can tell the two apart mechanically: one regex finds every handle the
 model wrote and one finds every uri it is about to read. A handle and
 a uri are two spellings of one thing; the scheme is not what keeps
@@ -170,7 +194,9 @@ the short spelling out of the chat — the wall is.
 The **key** is **three** characters sliced from the id. An id that
 starts with `bafy` drops its first seven characters (multibase, codec
 and hash header — constant for every id the server mints); any other
-id is sliced from its start. The slice runs over the letters and
+id is sliced from its start, except an identity, which drops its
+first two characters (they take few values, so a slice from the start
+would collide often). The slice runs over the letters and
 digits of the id; the dot in a space id is skipped. So
 `bafyreigyuur4hq…` keys as `gyu`, the file `3V2A2AJ6J8j` as `3V2`,
 the space `bafyreia3nqgj…` as `a3n`.
@@ -182,7 +208,8 @@ of the same kind in this call, the new id **shifts** its slice one
 character along the id (characters 2–4, then 3–5, …) until the slice
 is free. The length never changes and a key already given never
 changes. A collision is therefore not an error: it raises nothing.
-The kind keeps the three id spaces apart.
+The kind keeps the id spaces apart; a `ref:prop` handle has no key of
+its own, it carries the key of its object.
 
 "Free" is one question to one set: the keys already given in this
 call, one key per id. The wall never compares an id with another id,
@@ -194,7 +221,11 @@ not matter. No reader matches a key against an id either: a handle
 resolves by a lookup in the table of its call, in both directions.
 An id of 59 characters has about 50 slices. If every one of them is
 taken, the id takes its first slice with one more character (and one
-more again, if needed); no measured call comes near this.
+more again, if needed), so the rule always ends. Only well-formed ids
+get a key (§5), and for those the case is out of reach: with 120 keys
+in the call the chance is about 10⁻²² for a file id (9 slices) and
+about 10⁻¹²² for an object id (50 slices). A call with thousands of
+ids needs a four-character key, not a better last resort.
 
 The cost is linear in the number of ids in the call:
 
@@ -318,7 +349,7 @@ The loop:
 - adds one line to the user message suffix, each entry a markdown
   link whose text is name + where and whose target is the **uri**,
   with the type as a fragment on an object: `[refs: [Dune
-  (Garden)](any://o/<s>/<o>#book) · … · [Garden](<spaceId>)]`.
+  (Garden)](any://o/<s>/<o>#book) · … · [Garden](any://s/<spaceId>)]`.
 
 The loop writes uris; the model never reads them. The wall renders
 the line with the rest of the message (§5), and the model reads:
@@ -352,7 +383,8 @@ That is why `getRef` needs no key table, and why a handle is always
 written whole, with its `ref:` prefix: the wall finds the full shape
 and nothing shorter. There is no bare-key form.
 
-A uri or a space id resolves without the table: kind, `spaceId` and
+A uri or a space id resolves without the table (a space link
+`any://s/<spaceId>` resolves as its space id): kind, `spaceId` and
 `objectId` are in it, and the table only adds `name` and `type` when
 it has them. A name searches the table: more than one match raises
 naming the candidates, a miss raises naming the nearest names. A
@@ -396,12 +428,15 @@ cron program; none of them knows it is there.
 
 **Inward**, in text order over the system text and then the messages
 — every text part, every `tool_call` input and every `tool_result`
-content: `any://o/<s>/<o>` becomes `ref:object/<key>`,
-`any://f/<s>/<f>` becomes `ref:file/<key>`, and the stamp's `object:
-<id>` becomes `object: ref:object/<key>`. A space has no uri, and its
-id has a shape of its own (a hash, a dot, a suffix), so a space id
-that stands outside a link becomes `ref:space/<key>` wherever it is —
-in the stamp, on the refs line, in a result. A bare object id that
+content: each link of the table in §1 becomes its handle
+(`any://o/<s>/<o>` becomes `ref:object/<key>`, `any://f/<s>/<f>`
+becomes `ref:file/<key>`, `any://s/<s>` becomes `ref:space/<key>`,
+`any://u/<identity>` becomes `ref:user/<key>`; a record or property
+tail stays after the handle), and the stamp's `object: <id>` becomes
+`object: ref:object/<key>`. A space id has a shape of its own (a
+hash, a dot, a suffix), so a space id that stands outside a link
+becomes `ref:space/<key>` too, wherever it is — in the stamp, in a
+result. A bare object id that
 this call's text has already shown as a link or in a stamp becomes
 its handle too. A `#type` fragment after a link stays where it is,
 after the handle. Each id takes its key by the rule of §1, and the
@@ -409,10 +444,47 @@ table records it. So an
 object created this run is covered with no extra step: its uri is in
 a `tool_result`, and the next call renders it as a handle.
 
+**Only a well-formed link is rewritten.** The wall reads text, and
+text holds link-shaped things that are not objects: a placeholder in
+a skill (`any://o/<spaceId>/<id>`, `any://f/{sid}/{k}`), an id that a
+tool result cut short, a link from a page or an email. The recorded
+prompts hold all of these (2026-11-12). The wall takes a link only
+when all of this holds:
+
+- the kind is in the table of §1 (`o`, `f`, `s`, `u`, `p`);
+- the space id is `bafy`, 55 base32 characters, a dot and a suffix of
+  letters and digits;
+- the object id is `bafy` and 55 base32 characters; the file id is
+  letters and digits, eight or more (the server mints 9 to 11); the
+  identity is letters and digits, forty or more;
+- the path is one that the registry defines for the kind: nothing
+  after the id, or `/<dataset>/<recordId>` on an object, or the
+  `/<propId>` of a property link;
+- the link ends there: what follows is the end of the text, a `#type`
+  fragment, or a character that cannot be part of a link.
+
+Everything else stays as it is written, and the model reads it as it
+does today: a placeholder, a cut id, a link with a query or a longer
+path (`…/<f>?variant=thumb`), the legacy member link
+(`any://m/<space>/<identity>`: the server reads it and never writes
+it, and a handle for it would come back in the `u` form, which is a
+change of the text and not a shorter spelling of it), and a kind that
+the table does not hold (the recorded prompts have `any://r/`).
+A bare space id or object id is held to the same shape. A thing that
+is not an object gets no handle, so the table holds only ids that the
+server can resolve, and a text cannot fill the table with short fake
+ids to push a real id off its slice (§1).
+
 **Outward**, on the text parts and the `tool_call` inputs of the
-reply: `ref:object/<key>` and `ref:file/<key>` become the uri from
-the table, fragment dropped; `ref:space/<key>` becomes the space id,
-which is what every call takes for a space. The loop receives real
+reply: `ref:object/<key>`, `ref:file/<key>` and `ref:user/<key>`
+become the uri from the table, fragment dropped; a tail after an
+object handle stays after the uri, and `ref:prop/<key>/<propId>`
+becomes the property link of that object. A space has two spellings,
+and the place of the handle selects one: `ref:space/<key>` as the
+target of a markdown link (`](ref:space/a3n)`) becomes
+`any://s/<spaceId>`, a link that the chat can open; anywhere else it
+becomes the space id, which is what every call takes for a space. The
+loop receives real
 links: the reply reaches the chat with them and the existing link
 parser (`_auto_attachments`) chips them as today; the cell source
 reaches the kernel with them, so a handle inside a string literal — a
@@ -771,7 +843,14 @@ forced collision shifts again, two space ids with one hash and two
 suffixes get two keys after one step, an id whose every slice is
 taken extends its first slice by one character, the number of set
 lookups for a window equals its ids plus its shift steps, kinds do
-not collide with each other.
+not collide with each other. Unit-test the link shape: a placeholder,
+a cut id, a short id, a link with a query, a legacy `any://m/` link
+and a link of an unknown kind all pass through unchanged and take no
+key. Unit-test the kinds: a record link and a property link carry the
+key of their object and keep their tail in both directions; an
+identity keys after its first two characters; a space handle expands
+to `any://s/…` as a markdown link target and to the bare id anywhere
+else.
 
 Test the wall in `llm@v1`: the inward rewrite of a window renders
 byte-identical on two runs, and a window that extends another renders
