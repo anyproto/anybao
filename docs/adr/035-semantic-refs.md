@@ -1,11 +1,11 @@
 # ADR-035: Semantic refs — names for the ids a conversation touched
 
-Status: **Proposed** (2026-09-25, revised 2026-10-16, 2026-11-03 and
-2026-11-04 after the community review, 2026-11-10 after the PR
-review, 2026-11-11 after the community chat review and a replay on
-real windows, 2026-11-12 the collision rule stated as a set lookup,
-with its measured cost, and the link kinds of the server's registry),
-experiment on `exp/semantic-ids`
+Status: **Accepted** (2026-11-12; proposed 2026-09-25, revised
+2026-10-16, 2026-11-03 and 2026-11-04 after the community review,
+2026-11-10 after the PR review, 2026-11-11 after the community chat
+review and a replay on real windows, 2026-11-12 the collision rule
+stated as a set lookup, with its measured cost, and the link kinds of
+the server's registry)
 Date: 2026-09-25
 Builds on: ADR-001 §4 (span records: `input` on begin, `output` on
 end), ADR-002 (the effect boundary: `http.post` is the one effect
@@ -15,7 +15,7 @@ boot window, message suffix), ADR-006 §2 (the anchored boot window),
 ADR-010 §8 (bound cell globals), ADR-023 §3 (`effects.query` over
 the trace records), ADR-023 §6 (retention), ADR-028 (a mock matches
 an effect by name and input key)
-Amends (if accepted): ADR-005 §1 (`llm@v1 chat` gains the wall of §5:
+Amends: ADR-005 §1 (`llm@v1 chat` gains the wall of §5:
 every `any://` link in the text it sends is rendered as a handle, and
 every handle in the reply is expanded back), ADR-005 §5 (the message
 suffix gains a refs line; the final reply gains chips for what the
@@ -829,7 +829,7 @@ call, and nothing else would change.
 
 ## Verification
 
-Before accepting: re-run S1–S6 and S10 of the probe suite (the series
+On the staging rig, with the wall in place: re-run S1–S6 and S10 of the probe suite (the series
 where lookups and lost links showed) on sonnet-5 AND one weaker model
 (GLM or Kimi via OpenRouter), measuring re-lookup cells, missing-link
 turns and cost against round 2, and counting `unresolvedRefs` and
