@@ -113,7 +113,8 @@ _ISSUE_FIELDS = ("id identifier title priority url createdAt updatedAt "
 _ISSUE_FIELDS_FULL = _ISSUE_FIELDS + " description"
 
 
-@span("linear.whoami", kind="getter")  # noqa: F821 - guest global
+@span("linear.whoami", kind="getter",  # noqa: F821 - guest global
+      label="Checking the Linear account")
 def whoami():
     """Current Linear user; doubles as the key validator."""
     r = _gql("query Whoami { viewer { id name email } }", {})
@@ -125,7 +126,8 @@ def whoami():
     return {"ok": True, "user": {"id": v["id"], "name": v.get("name"), "email": v.get("email")}}
 
 
-@span("linear.my_issues", kind="getter")  # noqa: F821 - guest global
+@span("linear.my_issues", kind="getter",  # noqa: F821 - guest global
+      label="Reading my Linear issues")
 def my_issues(first=None, after=None):
     """Issues assigned to the current user, newest-first.
 
@@ -144,7 +146,8 @@ def my_issues(first=None, after=None):
     return {"ok": True, "issues": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.list_issues", kind="getter")  # noqa: F821 - guest global
+@span("linear.list_issues", kind="getter",  # noqa: F821 - guest global
+      label="Listing Linear issues")
 def list_issues(first=None, after=None, updated_after=None):
     """Issues across the workspace, newest-first.
 
@@ -170,7 +173,8 @@ def list_issues(first=None, after=None, updated_after=None):
     return {"ok": True, "issues": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.list_teams", kind="getter")  # noqa: F821 - guest global
+@span("linear.list_teams", kind="getter",  # noqa: F821 - guest global
+      label="Reading the Linear teams")
 def list_teams():
     """Teams {id, name, key}. One page (the structural map is small)."""
     q = ("query ListTeams($first: Int!) { teams(first: $first) {"
@@ -182,7 +186,8 @@ def list_teams():
     return {"ok": True, "teams": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.search_issues", kind="getter")  # noqa: F821 - guest global
+@span("linear.search_issues", kind="getter",  # noqa: F821 - guest global
+      label="Searching Linear for “{term}”")
 def search_issues(term, first=None, after=None):
     """Full-text issue search (Linear `searchIssues`).
 
@@ -201,7 +206,8 @@ def search_issues(term, first=None, after=None):
     return {"ok": True, "issues": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.list_states", kind="getter")  # noqa: F821 - guest global
+@span("linear.list_states", kind="getter",  # noqa: F821 - guest global
+      label="Reading the Linear workflow states")
 def list_states(team_id=None):
     """Workflow states — the `state_id` source for create/update_issue.
 
@@ -227,7 +233,8 @@ def list_states(team_id=None):
     return {"ok": True, "states": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.list_users", kind="getter")  # noqa: F821 - guest global
+@span("linear.list_users", kind="getter",  # noqa: F821 - guest global
+      label="Reading the Linear members")
 def list_users():
     """Workspace members — the `assignee_id` source for create/update_issue.
 
@@ -243,7 +250,8 @@ def list_users():
     return {"ok": True, "users": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.get_issue", kind="getter")  # noqa: F821 - guest global
+@span("linear.get_issue", kind="getter",  # noqa: F821 - guest global
+      label="Reading a Linear issue")
 def get_issue(id):
     """One issue with full detail (includes description Markdown).
 
@@ -286,7 +294,8 @@ def list_comments(issue_id, first=None, after=None):
             "comments": nodes, "hasNextPage": more, "endCursor": cursor}
 
 
-@span("linear.create_issue", kind="mutator")  # noqa: F821 - guest global
+@span("linear.create_issue", kind="mutator",  # noqa: F821 - guest global
+      label="Creating the Linear issue “{title}”")
 def create_issue(team_id, title, description=None, state_id=None,
                  assignee_id=None, priority=None):
     """Create an issue (Linear `issueCreate`).
@@ -322,7 +331,8 @@ def create_issue(team_id, title, description=None, state_id=None,
     return {"ok": True, "issue": res.get("issue")}
 
 
-@span("linear.update_issue", kind="mutator")  # noqa: F821 - guest global
+@span("linear.update_issue", kind="mutator",  # noqa: F821 - guest global
+      label="Updating the Linear issue “{title}”")
 def update_issue(id, title=None, description=None, state_id=None,
                  assignee_id=None, priority=None):
     """Update fields on one issue (Linear `issueUpdate`); id = UUID.
@@ -363,7 +373,8 @@ def update_issue(id, title=None, description=None, state_id=None,
     return {"ok": True, "issue": res.get("issue")}
 
 
-@span("linear.create_comment", kind="mutator")  # noqa: F821 - guest global
+@span("linear.create_comment", kind="mutator",  # noqa: F821 - guest global
+      label="Commenting on a Linear issue")
 def create_comment(issue_id, body):
     """Post a comment on an issue (Linear `commentCreate`).
 
