@@ -288,20 +288,27 @@ one `effects.query` over `records`:
 [{"$match": {"runId": {"$in": <window runs>}, "kind": "span",
              "name": {"$in": <the minting set>}}},
  {"$project": {"runId": 1, "span": 1, "phase": 1, "name": 1, "ok": 1,
-               "seq": 1, "input": 1, "output": 1}},
+               "seq": 1, "space": "$input.spaceConfig",
+               "objectIn": "$input.object_id", "fileName": "$input.name",
+               "objectOut": "$output.objectId", "fileId": "$output.fileId"}},
  {"$sort": {"seq": -1}}]
 ```
+
+The projection lifts the ids out as top-level fields and leaves the
+rest of `input` in the store: the body of a write can be a whole page,
+and the local store projects no dotted output field.
 
 The loop folds begin and end records by `span` id and keeps the
 spans that ended `ok`. The **minting set** is the rule, held in one
 place in the loop:
 
 - objects the run **wrote**: `any.create_object`, `update_object`,
-  `set_type`, `move_object`, `trash_object`/`restore_object`,
+  `set_type`, `move_object`, `trash`/`restore`,
   `add_to_collection`/`remove_from_collection`,
   `append_markdown`/`put_markdown`/`edit_markdown` — the space from
-  the begin record's `input`, the id from `input.object_id` or the
-  end record's `output.objectId`;
+  the begin record's `input.spaceConfig` (an id, a bound global, or a
+  name that the space list resolves), the id from `input.object_id`
+  or the end record's `output.objectId`;
 - files it **attached** (`any.attach_file` → the returned uri, `on`
   the target object, the filename from `input.name`);
 - the spaces those calls addressed (their `space` argument; space
@@ -374,7 +381,10 @@ inject with a view gets the same line, rebuilt.
 ### 4. Use — `getRef` and two sentences in `_core`
 
 `getRef(x)` returns the dict of §1 for one entry. `x` is a uri
-(`any://o/…`, `any://f/…`), a space id, or a name (`"Dune"`).
+(`any://o/…`, `any://f/…`), a space id, or a name (`"Dune"`). The
+text of a refs-line link (`"Dune (Garden)"`, `"demo.png (on Dune)"`)
+is a name too: on the staging rig the first thing a model passed was
+the link text as it read it.
 
 The model writes a handle — `getRef("ref:object/gyu")` — and the
 kernel never sees it: the wall expands the cell source before the
@@ -470,7 +480,10 @@ path (`…/<f>?variant=thumb`), the legacy member link
 it, and a handle for it would come back in the `u` form, which is a
 change of the text and not a shorter spelling of it), and a kind that
 the table does not hold (the recorded prompts have `any://r/`).
-A bare space id or object id is held to the same shape. A thing that
+A bare space id or object id is held to the same shape. A dot belongs to a
+link only when a letter or a digit follows it, so the dot that ends a
+sentence ends the link. An object keeps the space of the first link
+that showed it. The tool definitions are not rewritten. A thing that
 is not an object gets no handle, so the table holds only ids that the
 server can resolve, and a text cannot fill the table with short fake
 ids to push a real id off its slice (§1).
@@ -494,7 +507,7 @@ link by the time any@v1 sees it.
 **A handle the table does not hold** — one the model invented, or one
 it damaged — becomes `ref:unknown/<key>`, and the reply gains
 `unresolvedRefs: ["ref:object/<key>", …]` with the handles as the
-model wrote them. `unknown` is not a kind, so that text can never
+model wrote them (the field is absent when every handle resolved). `unknown` is not a kind, so that text can never
 expand later, in this call or in any other. The loop names the
 unresolved handles in the digest of the cell that carried them, or in
 the run's result. For the same reason the inward rewrite renames a
@@ -550,8 +563,10 @@ own request and has no wall.
 
 The final reply gets attachment chips (the existing ≤32 attachments
 map) for objects and files the run created or changed and the reply
-did not link — read from the run's own effect records, the same read
-the digest makes. The user sees what changed; the next turn's
+did not link — read from the run's own span records with the query of
+§2, when the reply is posted. At most five chips are added this way,
+the newest writes first; a bulk run gets five and no more (open
+question 2 stays open for a count). The user sees what changed; the next turn's
 history carries the links whether or not the model wrote them.
 
 ### 5b. Lifetime — a handle lives for one call, a uri lives forever

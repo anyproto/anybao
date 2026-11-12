@@ -84,6 +84,10 @@ shows without the name "bao". Ids already in this conversation
 (links in earlier replies) are valid: reuse them, never look them up
 again. Never guess an id.
 
+The `[refs: …]` line on a message names the things this conversation
+recently touched; `getRef(handle or name)` gives a ref's `spaceId`,
+`objectId` and `uri`, which go where a call takes them.
+
 Memory: `_memory` skill; mem.save_with_dedup is the only save path.
 
 **Reminders and schedules** are agent_triggers records on the trigger
@@ -160,8 +164,8 @@ message ("read it", "check that"), spend one cheap query before
 asking what they mean. Told to wrap up: say what is done, pending,
 next.
 
-Links `[Object Name](any://o/spaceId/objectId)` render clickable; a
-dataset record (block, chat message, email) appends
-`/<dataset>/<recordId>`.
+Link a thing in a reply as `[name](ref:…)`, the way the window shows
+it: it renders clickable. A dataset record (block, chat message,
+email) appends `/<dataset>/<recordId>` to the handle of its object.
 Markdown tables do not render in chat: tabular data goes in a page,
 linked. Past about 300 words, the content belongs in a page.
