@@ -137,14 +137,13 @@ space (or a deleted-and-recreated one) has an empty store.
 
 ## Guest read-guard
 
-The runtime refuses guest http requests that carry an identifier of
-the secrets store — the secrets object id, the collection name
-`<typeId>_agent_secrets`, or (on anything but a GET/HEAD) the secrets
-type id — anywhere in the url or the body, `json` and text `body`
-alike, plus a `dataset` key naming any space's `…_agent_secrets`
-collection (ADR-021 §7.1) — a `forbidden` EffectFailure carrying the
-import instructions, raised **before** execution so the refusal is the
-recorded fact and no secret ever reaches a trace or the model context.
+The runtime refuses a guest http request that addresses the secrets
+object (ADR-021 §7.1): its id in the url, or as the body `objectId`,
+`json` and text `body` alike — a `forbidden` EffectFailure carrying
+the import instructions, raised **before** execution so the refusal is
+the recorded fact and no secret ever reaches a trace or the model
+context. A request that only carries the id as data — a chat message
+that quotes it, a listing filter, a link — passes.
 Guest code never needs the values: the host injects `credential:
 {ref}` headers after recording (ADR-008), and a missing key surfaces
 as a typed `SecretMissing` failure (message `no secret for credential

@@ -339,17 +339,11 @@ pub struct Broker {
     pub blobs: BTreeMap<String, String>,
     /// None = permissive default profile (ADR-002 §2).
     pub grants: Option<GrantSet>,
-    /// Guest http requests that reference the `agent_secrets` dataset —
-    /// or this object id (the per-space secrets object; on a pre-split
-    /// any server, the config object secrets still live on) — are
-    /// refused before execution (ADR-008: secrets never enter guest
-    /// code or traces; connectors authenticate via `credential: {ref}`).
+    /// The secrets object id. A guest http request that addresses it —
+    /// in the url, or as the body `objectId` — is refused before
+    /// execution (ADR-021 §7.1; ADR-008: secrets never enter guest code
+    /// or traces; connectors authenticate via `credential: {ref}`).
     pub secrets_guard: Option<String>,
-    /// The secrets store's collection as resolved at boot
-    /// (`AgentStores::secrets_ds`, ADR-027 §2) — refused in guest bodies
-    /// next to the `_agent_secrets` suffix rule, so the guard does not
-    /// rest on the server's collection naming alone.
-    pub secrets_collection: Option<String>,
     /// Managed OAuth state (ADR-011) — process-shared; None = no oauth
     /// wiring (managed refs fail typed `not_configured`).
     pub oauth: Option<Arc<OauthState>>,
@@ -545,7 +539,6 @@ impl Broker {
             blobs: BTreeMap::new(),
             grants: None,
             secrets_guard: None,
-            secrets_collection: None,
             oauth: None,
             secret_store: None,
             config_store: None,
@@ -1523,7 +1516,7 @@ impl Broker {
             }
             _ => None,
         };
-        self.secrets_read_guard(&verb, &url, wire_text.as_deref())?;
+        self.secrets_read_guard(&url, wire_text.as_deref())?;
         drop(wire_text);
         // `stream` + `timeout` — ADR-002 §1 (BOB-149)
         let stream = payload
@@ -1783,30 +1776,17 @@ impl Broker {
         Ok(out)
     }
 
-    /// Refuse guest http requests that would touch stored secrets
-    /// (ADR-021 §7.1). The guard knows the identifiers of the secrets
-    /// store — the secrets object id, the collection name
-    /// `<typeId>_agent_secrets`, the secrets type id — and looks for them
-    /// in the WHOLE request as it leaves: every form of the url (as
-    /// given, as the client normalises it, percent-decoded) and every
-    /// string of the body text that goes on the wire, whichever of
-    /// `json` / `body` carries it. It never depends on which key or
-    /// route names the identifier, so it does not have to parse a
-    /// request the way the server does. On top of the identifiers: a
-    /// `dataset` key naming any space's `…_agent_secrets` collection
-    /// (ADR-027 §2 — the suffix is the invariant, ADR-011 §4), and a
-    /// non-read request naming the secrets type (its dataset definition
-    /// decides what search indexes). Fired BEFORE execution, so the
-    /// refusal is the recorded fact — deterministic on replay, and no
-    /// secret ever reaches the trace. A benign body that merely MENTIONS
-    /// the words in a text field passes; one that carries an identifier
-    /// does not.
-    fn secrets_read_guard(
-        &self,
-        verb: &str,
-        url: &str,
-        body: Option<&str>,
-    ) -> Result<(), EffectFailure> {
+    /// Refuse guest http requests that read the stored secrets (ADR-021
+    /// §7.1). The rows are read through the secrets object, so the guard
+    /// refuses a request that addresses it: the object id in the url
+    /// (every form: as given, as the client normalises it,
+    /// percent-decoded), or a body string under the key `objectId` that
+    /// is the id — whichever of `json` / `body` carries the body. An id
+    /// carried as data (a chat message that quotes it, a filter, a link)
+    /// passes: an identifier is not a secret. Fired BEFORE execution, so
+    /// the refusal is the recorded fact — deterministic on replay, and
+    /// no secret ever reaches the trace.
+    fn secrets_read_guard(&self, url: &str, body: Option<&str>) -> Result<(), EffectFailure> {
         let urls = url_forms(url);
         let in_url = |needle: &str| urls.iter().any(|u| contains_ci(u, needle));
         let mut strings: Vec<(String, String)> = Vec::new();
@@ -1836,46 +1816,22 @@ impl Broker {
                 });
             }
         }
-        let forbidden = |what: &str| EffectFailure {
-            type_: "forbidden".into(),
-            message: format!(
-                "{what} is host-only: secrets never enter guest code — connectors \
-                 authenticate via credential: {{ref}}; keys are added/rotated via \
-                 Help > Import connector keys (CLI: .connectors.env beside \
-                 anybao.toml)"
-            ),
-        };
-        // the request names an identifier anywhere: the url, the body
-        // text as written, or a body string once its escapes are decoded
-        let names = |needle: &str| {
-            in_url(needle)
-                || body.is_some_and(|text| contains_ci(text, needle))
-                || strings.iter().any(|(_, value)| contains_ci(value, needle))
-        };
-        let dataset_named = strings.iter().any(|(key, value)| {
-            key == "dataset" && {
-                let d = value.to_ascii_lowercase();
-                d.ends_with("_agent_secrets") || d == "agent_secrets"
-            }
+        let addressed = self.secrets_guard.as_deref().is_some_and(|id| {
+            !id.is_empty()
+                && (in_url(id)
+                    || strings
+                        .iter()
+                        .any(|(key, value)| key == "objectid" && value.eq_ignore_ascii_case(id)))
         });
-        let collection = self.secrets_collection.as_deref().filter(|c| !c.is_empty());
-        if dataset_named || collection.is_some_and(names) {
-            return Err(forbidden("the agent_secrets dataset"));
-        }
-        if self
-            .secrets_guard
-            .as_deref()
-            .is_some_and(|id| !id.is_empty() && names(id))
-        {
-            return Err(forbidden("the secrets object"));
-        }
-        // the secrets type: reading it is harmless (a type listing names
-        // it); changing it or its dataset definition is not
-        let type_id = collection
-            .and_then(|c| c.strip_suffix("_agent_secrets"))
-            .filter(|t| t.len() >= 8);
-        if !matches!(verb, "GET" | "HEAD") && type_id.is_some_and(names) {
-            return Err(forbidden("the agent_secrets type"));
+        if addressed {
+            return Err(EffectFailure {
+                type_: "forbidden".into(),
+                message: "the secrets object is host-only: secrets never enter guest code — \
+                          connectors authenticate via credential: {ref}; keys are \
+                          added/rotated via Help > Import connector keys (CLI: \
+                          .connectors.env beside anybao.toml)"
+                    .into(),
+            });
         }
         // ADR-023 §9: the trace collections are host-written. A guest may
         // read them (query / aggregate / get) and never write — insert,
@@ -3031,44 +2987,26 @@ mod tests {
     }
 
     #[test]
-    fn secrets_guard_blocks_dataset_and_object() {
+    fn secrets_guard_blocks_the_object() {
         let mut b = make_broker("run_guard");
         b.secrets_guard = Some("bafysecretsobj".into());
-        b.secrets_collection = Some("resolved-at-boot".into());
-
-        // the secrets collection in the body → refused: the one resolved
-        // at boot, or any `<typeId>_agent_secrets` by the naming rule
-        for ds in [
-            "bafytype_agent_secrets",
-            "agent_secrets",
-            "resolved-at-boot",
-        ] {
-            let err = b
-                .call(
-                    "http.post",
-                    json!({"url": "http://127.0.0.1:7001/v1/spaces/s/query",
-                           "json": {"objectId": "whatever", "dataset": ds}}),
-                )
-                .unwrap_err();
-            assert_eq!(err.type_, "forbidden");
-            assert!(err.message.contains("credential"));
-        }
 
         // guarded object id in the url → refused
         let err = b
             .call(
                 "http.get",
-                json!({"url": "http://127.0.0.1:7001/v1/spaces/s/objects/bafysecretsobj/editor/markdown"}),
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/bafysecretsobj/editor/markdown"}),
             )
             .unwrap_err();
         assert_eq!(err.type_, "forbidden");
+        assert!(err.message.contains("credential"));
 
         // guarded object id as the body objectId → refused
         let err = b
             .call(
                 "http.post",
-                json!({"url": "http://127.0.0.1:7001/v1/spaces/s/query",
-                       "json": {"objectId": "bafysecretsobj", "dataset": "agent_config"}}),
+                json!({"url": "http://127.0.0.1:1/v1/spaces/s/query",
+                       "json": {"objectId": "bafysecretsobj", "dataset": "agent_secrets"}}),
             )
             .unwrap_err();
         assert_eq!(err.type_, "forbidden");
@@ -3084,7 +3022,7 @@ mod tests {
                     .unwrap_or(false)
             })
             .count();
-        assert_eq!(denials, 5);
+        assert_eq!(denials, 2);
     }
 
     #[test]
@@ -3150,7 +3088,6 @@ mod tests {
     fn guarded_broker(run: &str) -> Broker {
         let mut b = make_broker(run);
         b.secrets_guard = Some("bafysecretsobj".into());
-        b.secrets_collection = Some("bafysecrettype_agent_secrets".into());
         b
     }
 
@@ -3169,25 +3106,17 @@ mod tests {
         let query = "http://127.0.0.1:1/v1/spaces/s/query";
         for body in [
             // the plain shape
-            r#"{"dataset": "bafysecrettype_agent_secrets"}"#,
-            // another space's collection: the suffix rule
-            r#"{"dataset": "bafyother_agent_secrets"}"#,
-            // escapes decode to the name
-            r#"{"dataset": "bafysecrettype_agent_secrets"}"#,
-            r#"{"dataset": "bafyother_agent_secrets"}"#,
+            r#"{"objectId": "bafysecretsobj", "dataset": "x_agent_secrets"}"#,
+            // escapes decode to the id
+            r#"{"objectId": "bafy\u0073ecretsobj"}"#,
             // keys the server folds onto the field
-            r#"{"Dataset": "bafyother_agent_secrets"}"#,
-            r#"{"DATASET": "agent_secrets"}"#,
-            "{\"data\u{17f}et\": \"bafyother_agent_secrets\"}",
-            r#"{"dataset": "bafyother_agent_secrets"}"#,
-            // duplicate keys: first-wins and last-wins decoders both lose
-            r#"{"dataset": "bafyother_agent_secrets", "dataset": "pages"}"#,
-            r#"{"dataset": "pages", "dataset": "bafyother_agent_secrets"}"#,
-            // a second document after the first
-            r#"{"dataset": "pages"} {"dataset": "bafyother_agent_secrets"}"#,
-            // the object id under any key, at any depth
             r#"{"objectID": "bafysecretsobj"}"#,
-            r#"{"filter": {"ids": ["x", "bafysecretsobj"]}}"#,
+            r#"{"OBJECTID": "BAFYSECRETSOBJ"}"#,
+            // duplicate keys: first-wins and last-wins decoders both lose
+            r#"{"objectId": "bafysecretsobj", "objectId": "page1"}"#,
+            r#"{"objectId": "page1", "objectId": "bafysecretsobj"}"#,
+            // a second document after the first
+            r#"{"objectId": "page1"} {"objectId": "bafysecretsobj"}"#,
         ] {
             assert_eq!(
                 guard_verdict(&mut b, "http.post", json!({"url": query, "body": body})),
@@ -3197,7 +3126,7 @@ mod tests {
         }
         // nesting deeper than a tree parser allows hides nothing
         let deep = format!(
-            r#"{{"x": {}1{}, "dataset": "bafyother_agent_secrets"}}"#,
+            r#"{{"x": {}1{}, "objectId": "bafysecretsobj"}}"#,
             "[".repeat(5000),
             "]".repeat(5000)
         );
@@ -3205,7 +3134,7 @@ mod tests {
             guard_verdict(&mut b, "http.post", json!({"url": query, "body": deep})),
             Some("forbidden".into())
         );
-        // a `json` body: the identifier under a key the guard never named
+        // a `json` body
         assert_eq!(
             guard_verdict(
                 &mut b,
@@ -3223,8 +3152,8 @@ mod tests {
         let mut b = guarded_broker("run_guard_blob");
         b.writer.blob_dir = Some(crate::blob::BlobDir::new(dir.path()));
         use base64::Engine as _;
-        let data = base64::engine::general_purpose::STANDARD
-            .encode(br#" {"dataset": "bafyother_agent_secrets"}"#);
+        let data =
+            base64::engine::general_purpose::STANDARD.encode(br#" {"objectId": "bafysecretsobj"}"#);
         let r = b
             .call(
                 "blob.put",
@@ -3256,8 +3185,6 @@ mod tests {
             format!("{base}/x/../bafysecrets%6Fbj"),
             // the server compares ids as given; the guard does not care
             format!("{base}/BAFYSECRETSOBJ"),
-            // the collection in the query string
-            "http://127.0.0.1:1/v1/spaces/s/rows?dataset=bafysecrettype_agent_secrets".to_string(),
         ] {
             assert_eq!(
                 guard_verdict(&mut b, "http.get", json!({"url": url})),
@@ -3275,34 +3202,6 @@ mod tests {
             ),
             Some("forbidden".into())
         );
-    }
-
-    #[test]
-    fn secrets_type_is_readable_and_never_changed() {
-        // the dataset definition decides what search indexes: a guest
-        // reads the type, and never patches it or its definitions
-        let mut b = guarded_broker("run_guard_type");
-        let ty = "http://127.0.0.1:1/v1/spaces/s/types/bafysecrettype";
-        assert_eq!(guard_verdict(&mut b, "http.get", json!({"url": ty})), None);
-        for (effect, payload) in [
-            (
-                "http.patch",
-                json!({"url": format!("{ty}/datasets/def1"),
-                       "json": {"search": {"text": ["value"]}}}),
-            ),
-            ("http.delete", json!({"url": ty})),
-            (
-                "http.post",
-                json!({"url": "http://127.0.0.1:1/v1/spaces/s/types/patch",
-                       "body": r#"{"typeId": "bafysecrettype"}"#}),
-            ),
-        ] {
-            assert_eq!(
-                guard_verdict(&mut b, effect, payload.clone()),
-                Some("forbidden".into()),
-                "{payload}"
-            );
-        }
     }
 
     #[test]
@@ -3338,17 +3237,28 @@ mod tests {
     }
 
     #[test]
-    fn secrets_guard_passes_requests_that_only_mention_the_words() {
-        let mut b = guarded_broker("run_guard_benign");
+    fn secrets_guard_passes_an_id_carried_as_data() {
+        // ADR-021 §7.1: an identifier is not a secret — a request that
+        // carries the id without addressing the object passes
+        let mut b = guarded_broker("run_guard_data");
+        let chat = "http://127.0.0.1:1/v1/spaces/s/objects/o/chat/messages";
         for payload in [
-            // text that talks about the store, in either body form
-            json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/o/chat/messages",
-                   "body": r#"{"text": "the agent_secrets dataset is guarded"}"#}),
-            json!({"url": "http://127.0.0.1:1/v1/spaces/s/query",
-                   "json": {"dataset": "pages", "filter": {"name": "my_agent_secrets"}}}),
-            // a body that is not JSON at all
-            json!({"url": "http://127.0.0.1:1/form", "body": "a=1&dataset=agent_secrets"}),
-            json!({"url": "http://127.0.0.1:1/note", "body": "[x] rotate the \"key\": soon"}),
+            // a message that quotes the id
+            json!({"url": chat, "json": {"text": "objects: page1, bafysecretsobj"}}),
+            json!({"url": chat, "body": r#"{"text": "see bafysecretsobj"}"#}),
+            // the id as a whole value, under a key that addresses nothing
+            json!({"url": chat, "json": {"text": "see", "links": ["bafysecretsobj"]}}),
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/query",
+                   "json": {"filter": {"id": {"$in": ["x", "bafysecretsobj"]}}}}),
+            // a link to the object, written onto another object
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/modify",
+                   "json": {"objectId": "page1", "dataset": "pages", "records": [{"ops":
+                       [{"type": "$set", "path": "ref",
+                         "value": "any://o/s/bafysecretsobj"}]}]}}),
+            // the secrets dataset and type by name: no rows without the object
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/datasets/query",
+                   "json": {"dataset": "bafysecrettype_agent_secrets"}}),
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/types/bafysecrettype"}),
         ] {
             assert_eq!(
                 guard_verdict(&mut b, "http.post", payload.clone()),
