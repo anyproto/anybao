@@ -435,9 +435,8 @@ const ANTHROPIC_SECRET_REF: &str = "llm.key.anthropic";
 const CONFIG_KEY: &str = "agent_config";
 /// The secrets store's key + its value field: the dedicated home of
 /// account-scoped secrets (ADR-021 §4), split out of `agent_config` so
-/// the broker can block guest reads of the whole collection (by the
-/// `_agent_secrets` suffix, ADR-011 §4) and of the object while the
-/// config object stays guest-readable.
+/// the broker can block guest reads of the secrets object (ADR-021
+/// §7.1) while the config object stays guest-readable.
 const SECRETS_KEY: &str = "agent_secrets";
 const SECRETS_FIELD: &str = "value";
 const TRIGGERS_KEY: &str = "agent_triggers";
@@ -1152,21 +1151,6 @@ impl crate::broker::SecretSource for ServeSecretStore {
         Ok(rows
             .into_iter()
             .find(|r| r.get("key").and_then(Value::as_str) == Some(key)))
-    }
-
-    fn values(&self) -> Result<Vec<(String, String)>, String> {
-        let rows = self
-            .client
-            .query(&self.space, &self.obj, &self.dataset, &json!({}))
-            .map_err(|e| e.to_string())?;
-        Ok(rows
-            .iter()
-            .filter_map(|r| {
-                let key = r.get("key").and_then(Value::as_str)?;
-                let value = r.get(SECRETS_FIELD).and_then(Value::as_str)?;
-                (!value.is_empty()).then(|| (key.to_string(), value.to_string()))
-            })
-            .collect())
     }
 
     fn mark_used(&self, key: &str) {
@@ -2179,7 +2163,6 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         runs_anchor,
         triggers_ds: stores.triggers_ds.clone(),
         runs_ds: stores.runs_ds.clone(),
-        secrets_ds: stores.secrets_ds.clone(),
         aliases,
         code_space,
         secrets_guard,
@@ -2303,9 +2286,6 @@ pub struct RunCtx {
     /// the collections the triggers / runs records live in (ADR-027 §2)
     pub triggers_ds: String,
     pub runs_ds: String,
-    /// the secrets store's collection, resolved at boot — the broker's
-    /// exact-collection guard next to the suffix rule (ADR-027 §2)
-    pub secrets_ds: String,
     /// resolver alias namespace (ADR-009 §2) — overlays + the `agent`
     /// default
     pub aliases: BTreeMap<String, String>,
@@ -2456,7 +2436,6 @@ impl RunCtx {
             Classifier::new(Some(&self.cfg.addr)),
         );
         b.secrets_guard = self.secrets_guard.clone();
-        b.secrets_collection = Some(self.secrets_ds.clone());
         b.oauth = Some(self.oauth.clone());
         b.trace_store = Some(self.traces.clone());
         b.secret_store = self

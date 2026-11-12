@@ -137,25 +137,13 @@ space (or a deleted-and-recreated one) has an empty store.
 
 ## Guest read-guard
 
-The guard refuses the content of a secret, not its identifiers
-(ADR-021 §7.1). It has two halves, both a `forbidden` EffectFailure:
-
-- **Request.** A guest http request that addresses the secrets store
-  is refused **before** execution: the secrets object id in the url or
-  under the body key `objectId`; the collection name
-  `<typeId>_agent_secrets` in the url or as a body string, or a
-  `dataset` key naming any space's `…_agent_secrets` collection; on
-  anything but a GET/HEAD, the secrets type id in the url or as a body
-  string. `json` and text `body` are read alike.
-- **Response.** An http response whose body carries a stored secret
-  value is refused before the guest or the trace receives it,
-  whichever route or host returned it. Values shorter than 8 bytes
-  and `*.client_id` rows are not looked for.
-
-A request that only carries an identifier as data — a chat message
-that quotes the object id, a listing filter, a link — passes. The
-refusal is the recorded fact, and no secret reaches a trace or the
-model context.
+The runtime refuses a guest http request that addresses the secrets
+object (ADR-021 §7.1): its id in the url, or as the body `objectId`,
+`json` and text `body` alike — a `forbidden` EffectFailure carrying
+the import instructions, raised **before** execution so the refusal is
+the recorded fact and no secret ever reaches a trace or the model
+context. A request that only carries the id as data — a chat message
+that quotes it, a listing filter, a link — passes.
 Guest code never needs the values: the host injects `credential:
 {ref}` headers after recording (ADR-008), and a missing key surfaces
 as a typed `SecretMissing` failure (message `no secret for credential
