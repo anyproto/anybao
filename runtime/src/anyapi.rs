@@ -632,13 +632,25 @@ impl Client {
         name: &str,
         bytes: &[u8],
     ) -> Result<Value, AnyError> {
+        self.attach_file_as(space_id, object_id, name, bytes, "application/octet-stream")
+    }
+
+    /// `attach_file` with the file's media type: an explicit
+    /// `Content-Type` is what the server stores (any doc 17), and a
+    /// client renders a picture by it.
+    pub fn attach_file_as(
+        &self,
+        space_id: &str,
+        object_id: &str,
+        name: &str,
+        bytes: &[u8],
+        mime: &str,
+    ) -> Result<Value, AnyError> {
         let path = format!(
             "/v1/spaces/{space_id}/objects/{object_id}/files?name={}",
             urlencode(name)
         );
-        let (status, data) =
-            self.transport
-                .send_raw("POST", &path, bytes, "application/octet-stream")?;
+        let (status, data) = self.transport.send_raw("POST", &path, bytes, mime)?;
         unwrap_envelope(status, data)
     }
 

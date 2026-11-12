@@ -1519,6 +1519,8 @@ def _program_of(spec, resolved):
     space, oid = resolved.get("spaceId"), resolved.get("objectId")
     if space and oid and space != "local":
         prog["link"] = f"any://o/{space}/{oid}"
+    if resolved.get("icon"):
+        prog["icon"] = resolved["icon"]     # the object's picture, an any://f/ link
     return prog
 
 

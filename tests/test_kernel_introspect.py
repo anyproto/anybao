@@ -325,6 +325,10 @@ def test_a_loaded_module_knows_its_program_and_its_spans_say_it():
     assert app._program_of("connectors:linear@v1",
                            {"spaceId": "sp-conn", "objectId": "obj-linear"}) == {
         "spec": "linear@v1", "link": "any://o/sp-conn/obj-linear"}
+    # the program object's picture rides along when it has one
+    assert app._program_of("linear@v1", {
+        "spaceId": "sp-conn", "objectId": "obj-linear",
+        "icon": "any://f/sp-conn/file1"})["icon"] == "any://f/sp-conn/file1"
     # a source with no object behind it (local dir, inline) has no link
     assert app._program_of("dev@v1", {"spaceId": "local", "objectId": "dev@v1"}) == {
         "spec": "dev@v1"}

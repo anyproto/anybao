@@ -380,6 +380,61 @@ pub struct ProgramSource {
     /// optional capability manifest sidecar (CapBAC request half):
     /// {"capabilities": [...], "publisher": ..., "attestation": {...}?}
     pub manifest: Value,
+    /// the program's picture (ADR-034 §2): its own `icon.*`, else the
+    /// repo's; None = the program object carries no picture
+    pub icon: Option<ProgramIcon>,
+}
+
+/// An inline file (any doc 17) rides in the synced row itself — no
+/// file node, no backup wait. A picture must fit: under this size.
+pub const ICON_MAX_BYTES: usize = 4095;
+
+/// The extensions an icon file may have, with their media types.
+const ICON_TYPES: [(&str, &str); 3] = [
+    ("png", "image/png"),
+    ("svg", "image/svg+xml"),
+    ("webp", "image/webp"),
+];
+
+/// A program's picture: a small image attached to the program object
+/// and set as its `any.icon`, so every client shows the program the
+/// way it shows any object (ADR-034 §2 — a run's steps name their
+/// program by link).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgramIcon {
+    pub ext: String,
+    pub bytes: Vec<u8>,
+}
+
+impl ProgramIcon {
+    /// `<dir>/<stem>.{png,svg,webp}`, the first that exists.
+    fn load(dir: &Path, stem: &str) -> anyhow::Result<Option<Self>> {
+        for (ext, _) in ICON_TYPES {
+            let path = dir.join(format!("{stem}.{ext}"));
+            if path.is_file() {
+                return Ok(Some(ProgramIcon {
+                    ext: ext.to_string(),
+                    bytes: std::fs::read(&path)?,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The attached file's name carries the content hash: the name on
+    /// the object's current picture says if it is this one (a FileInfo
+    /// has no hash to compare).
+    pub fn file_name(&self) -> String {
+        let hash = hex::encode(Sha256::digest(&self.bytes));
+        format!("icon-{}.{}", &hash[..16], self.ext)
+    }
+
+    fn mime(&self) -> &'static str {
+        ICON_TYPES
+            .iter()
+            .find(|(ext, _)| *ext == self.ext)
+            .map_or("application/octet-stream", |(_, mime)| mime)
+    }
 }
 
 impl ProgramSource {
@@ -389,7 +444,16 @@ impl ProgramSource {
             version: version.to_string(),
             code: code.to_string(),
             manifest: json!({}),
+            icon: None,
         }
+    }
+
+    pub fn with_icon(mut self, ext: &str, bytes: &[u8]) -> Self {
+        self.icon = Some(ProgramIcon {
+            ext: ext.to_string(),
+            bytes: bytes.to_vec(),
+        });
+        self
     }
 
     pub fn with_manifest(mut self, manifest: Value) -> Self {
@@ -436,6 +500,16 @@ impl ProgramSource {
         // program, tool or not — a bad declaration never reaches a space
         declared_credentials(&self.code).map_err(|e| anyhow::anyhow!("{spec}: {e}"))?;
         declared_category(&self.code).map_err(|e| anyhow::anyhow!("{spec}: {e}"))?;
+        if let Some(icon) = &self.icon {
+            if icon.bytes.len() > ICON_MAX_BYTES {
+                anyhow::bail!(
+                    "{spec}: icon.{} is {} bytes — a program picture is an inline file, \
+                     at most {ICON_MAX_BYTES} bytes (48 px is enough)",
+                    icon.ext,
+                    icon.bytes.len()
+                );
+            }
+        }
         if !self.any_tool() {
             return Ok(());
         }
@@ -498,10 +572,14 @@ fn parse_name_version(stem: &str) -> Option<(&str, &str)> {
 }
 
 /// Read program sources from `src_dir`. Two layouts, mixed freely:
-///   - **flat**: `<name>@vN.py` (+ optional `<name>@vN.manifest.json`).
+///   - **flat**: `<name>@vN.py` (+ optional `<name>@vN.manifest.json`,
+///     `<name>@vN.icon.png`).
 ///   - **folder**: `<name>@vN/` holding `program.py` + optional
-///     `manifest.json`. Anything else in the folder (tests, fixtures)
-///     is ignored.
+///     `manifest.json` and `icon.png`. Anything else in the folder
+///     (tests, fixtures) is ignored.
+///
+/// A program with no picture of its own takes the repo's: `icon.png`
+/// beside the programs dir (`.svg` and `.webp` work the same).
 ///
 /// Docs are the source's docstrings (ADR-010 §1) — there are no doc
 /// sidecar files.
@@ -510,6 +588,10 @@ pub fn load_programs(src_dir: &Path) -> anyhow::Result<Vec<ProgramSource>> {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .collect();
     paths.sort();
+    let repo_icon = match src_dir.parent() {
+        Some(repo) => ProgramIcon::load(repo, "icon")?,
+        None => None,
+    };
     let mut out = Vec::new();
     for p in paths {
         let src = if p.is_dir() {
@@ -519,7 +601,10 @@ pub fn load_programs(src_dir: &Path) -> anyhow::Result<Vec<ProgramSource>> {
         } else {
             None
         };
-        if let Some(src) = src {
+        if let Some(mut src) = src {
+            if src.icon.is_none() {
+                src.icon = repo_icon.clone();
+            }
             out.push(src);
         }
     }
@@ -545,6 +630,10 @@ fn load_flat_program(py: &Path) -> anyhow::Result<Option<ProgramSource>> {
         version: version.to_string(),
         code: std::fs::read_to_string(py)?,
         manifest: load_manifest(&mf)?,
+        icon: ProgramIcon::load(
+            py.parent().unwrap_or(Path::new(".")),
+            &format!("{stem}.icon"),
+        )?,
     }))
 }
 
@@ -562,6 +651,7 @@ fn load_program_dir(dir: &Path) -> anyhow::Result<Option<ProgramSource>> {
         version: version.to_string(),
         code: std::fs::read_to_string(&code_path)?,
         manifest: load_manifest(&dir.join("manifest.json"))?,
+        icon: ProgramIcon::load(dir, "icon")?,
     }))
 }
 
@@ -669,12 +759,67 @@ impl<'a> Deployer<'a> {
     /// contract before any write.
     pub fn deploy_one(&self, p: &ProgramSource) -> anyhow::Result<&'static str> {
         p.validate()?;
+        let (oid, status) = self.deploy_source(p)?;
+        // the picture is gated on its own: a program whose code did
+        // not change still gets a new or changed picture, and a frozen
+        // version too — a picture is not the program
+        let pictured = match &p.icon {
+            Some(icon) => self.ensure_icon(&oid, icon)?,
+            None => false,
+        };
+        Ok(if status == "unchanged" && pictured {
+            "updated"
+        } else {
+            status
+        })
+    }
+
+    /// Attach `icon` to the program object and set it as the object's
+    /// `any.icon`, unless the object's picture is already this file
+    /// (its name carries the content hash). Returns true on a write.
+    /// A replaced picture's file stays attached: it is under 4 KiB and
+    /// a client on an older row still resolves it.
+    fn ensure_icon(&self, oid: &str, icon: &ProgramIcon) -> anyhow::Result<bool> {
+        let want = icon.file_name();
+        let rows = self
+            .client
+            .query_objects(&self.space, &json!({"filter": {"id": oid}, "limit": 1}))?;
+        let current = rows
+            .first()
+            .and_then(|r| r["any"]["icon"].as_str())
+            .unwrap_or("");
+        let prefix = format!("any://f/{}/", self.space);
+        if let Some(file_id) = current.strip_prefix(&prefix) {
+            if let Ok(info) = self.client.file_info(&self.space, file_id) {
+                if info["name"] == want.as_str() {
+                    return Ok(false);
+                }
+            }
+        }
+        let info = self
+            .client
+            .attach_file_as(&self.space, oid, &want, &icon.bytes, icon.mime())?;
+        let file_id = info["fileId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("attach reply has no fileId: {info}"))?;
+        self.client.set_properties(
+            &self.space,
+            oid,
+            "any",
+            &json!({"icon": format!("{prefix}{file_id}")}),
+        )?;
+        Ok(true)
+    }
+
+    /// Create-or-update the program's source, manifest and properties
+    /// → (object id, status).
+    fn deploy_source(&self, p: &ProgramSource) -> anyhow::Result<(String, &'static str)> {
         let found = self.find_program(&p.name, &p.version)?;
         if let Some((ref existing, ref props)) = found {
             if self.in_space_fingerprint(existing, props)?.as_deref()
                 == Some(p.fingerprint().as_str())
             {
-                return Ok("unchanged");
+                return Ok((existing.clone(), "unchanged"));
             }
             if self.frozen {
                 return Err(FrozenVersionError(p.spec()).into());
@@ -741,7 +886,7 @@ impl<'a> Deployer<'a> {
             // (the in-space fingerprint would never converge)
             self.clear_dataset(&oid, &s.manifest)?;
         }
-        Ok(status)
+        Ok((oid, status))
     }
 
     fn clear_dataset(&self, oid: &str, dataset: &str) -> Result<(), AnyError> {
@@ -1323,6 +1468,88 @@ mod tests {
         // the object carries the RESOLVED type id, never the xKey literal
         let rows = c.query_objects("agent", &json!({})).unwrap();
         assert_eq!(rows[0]["any"]["type"], json!(s.type_id));
+    }
+
+    // --- program pictures (ADR-034 §2) ---------------------------------------
+
+    fn icon_of(c: &Client, space: &str, oid: &str) -> String {
+        let rows = c
+            .query_objects(space, &json!({"filter": {"id": oid}, "limit": 1}))
+            .unwrap();
+        rows[0]["any"]["icon"].as_str().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn deploy_attaches_the_picture_and_gates_it_on_its_own_hash() {
+        let c = client();
+        let d = Deployer::new(&c, "agent");
+        let plain = ProgramSource::new("tool", "v1", TOOL);
+        assert_eq!(d.deploy_one(&plain).unwrap(), "created");
+        assert_eq!(icon_of(&c, "agent", "obj1"), ""); // no icon, no picture
+
+        // a picture on an unchanged program is still a deploy
+        let pictured = plain.clone().with_icon("png", b"\x89PNG one");
+        assert_eq!(d.deploy_one(&pictured).unwrap(), "updated");
+        let first = icon_of(&c, "agent", "obj1");
+        let file_id = first.strip_prefix("any://f/agent/").expect("a file link");
+        let info = c.file_info("agent", file_id).unwrap();
+        assert_eq!(info["name"], pictured.icon.as_ref().unwrap().file_name());
+        assert_eq!(c.download_file("agent", file_id).unwrap(), b"\x89PNG one");
+
+        // the same picture again: nothing is written
+        assert_eq!(d.deploy_one(&pictured).unwrap(), "unchanged");
+        assert_eq!(icon_of(&c, "agent", "obj1"), first);
+
+        // other bytes: a new file, the object points at it
+        let changed = plain.clone().with_icon("png", b"\x89PNG two");
+        assert_eq!(d.deploy_one(&changed).unwrap(), "updated");
+        assert_ne!(icon_of(&c, "agent", "obj1"), first);
+    }
+
+    #[test]
+    fn a_picture_must_fit_an_inline_file() {
+        let big = vec![0u8; ICON_MAX_BYTES + 1];
+        let p = ProgramSource::new("tool", "v1", TOOL).with_icon("png", &big);
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("inline file"), "{err}");
+        let fits = vec![0u8; ICON_MAX_BYTES];
+        assert!(ProgramSource::new("tool", "v1", TOOL)
+            .with_icon("png", &fits)
+            .validate()
+            .is_ok());
+    }
+
+    #[test]
+    fn load_programs_gives_each_program_its_own_picture_or_the_repos() {
+        let repo = tempdir().unwrap();
+        let programs = repo.path().join("programs");
+        std::fs::create_dir_all(programs.join("linear@v1")).unwrap();
+        std::fs::write(programs.join("linear@v1/program.py"), TOOL).unwrap();
+        std::fs::write(programs.join("linear@v1/icon.png"), b"linear").unwrap();
+        std::fs::write(programs.join("flat@v1.py"), PROG).unwrap();
+        std::fs::write(programs.join("flat@v1.icon.svg"), b"<svg/>").unwrap();
+        std::fs::write(programs.join("plain@v1.py"), PROG).unwrap();
+        std::fs::write(repo.path().join("icon.png"), b"repo").unwrap();
+
+        let by_name: BTreeMap<String, ProgramIcon> = load_programs(&programs)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.name.clone(), p.icon.expect("every program is pictured")))
+            .collect();
+        assert_eq!(by_name["linear"].bytes, b"linear");
+        assert_eq!(
+            (by_name["flat"].ext.as_str(), by_name["flat"].mime()),
+            ("svg", "image/svg+xml")
+        );
+        assert_eq!(by_name["plain"].bytes, b"repo"); // the repo's default
+                                                     // no repo picture, no default
+        std::fs::remove_file(repo.path().join("icon.png")).unwrap();
+        let plain = load_programs(&programs)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.name == "plain")
+            .unwrap();
+        assert!(plain.icon.is_none());
     }
 
     #[test]

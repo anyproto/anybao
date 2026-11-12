@@ -148,7 +148,8 @@ is known before it executes and rides both entries. A hidden step
  "summary": "Update an object's properties → {objectId, …}",   // the method docstring's first line (ADR-010), absent for raw effects — arrives with the kernel change (§3 layer 2)
  "service": "linear",                          // the module, on a `service` step only
  "program": {"spec": "linear@v1",              // the program the method belongs to; absent on a bare effect
-             "link": "any://o/<space>/<program object>"},   // absent for a source with no object (local, inline)
+             "link": "any://o/<space>/<program object>",   // absent for a source with no object (local, inline)
+             "icon": "any://f/<space>/<file>"},            // the program object's picture, when it has one
  "refs": {"space": "<space id>", "object": "<object id>"},      // §3 — ids the client resolves to titles
  "input": {"spaceConfig": "<space id>", "object_id": "…", "patch": {…}},   // the recorded input, clipped to 2 KiB
  "ok": true, "error": null,                    // {type, message} when ok is false
@@ -165,6 +166,18 @@ object), `@span` sends it on `span.begin` beside `kind` and `label`,
 and the broker stamps it on the end record's `meta.program`. The client
 reads the program's name and picture off the link, like any object. A
 bare effect belongs to the cell's own code and has no `program`.
+
+**Program pictures.** `anyrt deploy` attaches a picture to each program
+object and sets it as the object's `any.icon`: the program's own
+`icon.png` (folder layout; `<name>@vN.icon.png` flat), else the repo's
+`icon.png` beside `programs/` (`.svg` and `.webp` work the same). A
+picture is at most 4095 bytes, so it is an inline file (any doc 17): it
+syncs in the row itself, with no file node and no backup wait. The
+attach is gated on the picture's own hash (the file name carries it),
+apart from the code's fingerprint, and a frozen version takes a new
+picture too. `module.resolve` returns the object's `any.icon`, and the
+kernel puts it on `program.icon`, so a client shows the picture from
+the frame alone, without a read of the program's space.
 
 `class` is the one field a renderer may trust for "did this change
 anything": the broker's classification for an effect, and
