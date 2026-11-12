@@ -238,7 +238,8 @@ it: `Thinking` for the `thinking` category, `Running {command}` for
 set for every method: `spaceConfig|space → space`, `object_id|objectId
 |id → object`, `type → type`, `query|q → query`, `url → domain`,
 `command → command`. A `spaceConfig` that is a `list_spaces()` row
-stands for its `id`; a space NAME passes as given (the client resolves
+stands for its `id`, a bound space global (`{spaceId, chatId}`) for its
+`spaceId`; a space NAME passes as given (the client resolves
 either). The host never resolves a title: ids cross the
 bus and the client substitutes names from its own store (it already
 renders `any://` links as chips, ADR-022). That is the "fewer

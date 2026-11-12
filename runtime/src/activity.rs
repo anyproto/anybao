@@ -180,8 +180,11 @@ pub fn refs_of(input: &Value) -> Map<String, Value> {
     for (key, args) in RULES {
         let found = args.iter().find_map(|a| match obj.get(*a) {
             Some(Value::String(s)) if !s.is_empty() => Some(s.as_str()),
-            // a `list_spaces()` row stands for its id
-            Some(Value::Object(o)) => o.get("id").and_then(Value::as_str),
+            // a `list_spaces()` row stands for its id; the bound
+            // `baoSpace` global is `{spaceId, chatId}`
+            Some(Value::Object(o)) => ["id", "spaceId"]
+                .iter()
+                .find_map(|k| o.get(*k).and_then(Value::as_str)),
             _ => None,
         });
         let Some(text) = found else { continue };
@@ -1048,6 +1051,9 @@ mod tests {
         assert_eq!(refs["command"], "make test");
         assert_eq!(refs.len(), 6);
         assert!(refs_of(&json!("not an object")).is_empty());
+        // the bound space global the model passes most (`baoSpace`)
+        let bound = refs_of(&json!({"spaceConfig": {"spaceId": "sp-bao", "chatId": "c1"}}));
+        assert_eq!(bound["space"], "sp-bao");
     }
 
     #[test]
