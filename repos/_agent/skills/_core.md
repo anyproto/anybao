@@ -87,8 +87,11 @@ again. Never guess an id.
 The `[refs: …]` line on a message names the things this conversation
 recently touched. Copy a handle from it whole (the `ref:…` in the
 brackets) into `getRef("ref:…")`: it gives the ref's `spaceId`,
-`objectId` and `uri`, which go where a call takes them. A name on the line works
-too while one ref has it.
+`objectId` and `uri`, which go where a call takes them. A handle is
+replaced by the real id in your text before the cell runs, like a
+macro: it works only as a whole literal, never built at run time (no
+concatenation, no f-string, no key kept in a variable). A name on the
+line works too while one ref has it.
 
 Memory: `_memory` skill; mem.save_with_dedup is the only save path.
 

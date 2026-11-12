@@ -419,7 +419,14 @@ on a message names the things this conversation recently touched;
 pass a handle from it, copied whole, to `getRef`: it gives the ref's
 `spaceId`, `objectId` and `uri`, which go where a call takes them; a
 name on the line works too while one ref has it.* The handle comes
-first because it is the one argument that is never ambiguous. And: *link a thing in a
+first because it is the one argument that is never ambiguous. One more
+sentence says what a handle is: *a handle is replaced by the real id
+in your text before the cell runs, like a macro: it works only as a
+whole literal, never built at run time.* On the staging rig a model
+wrote `getRef("ref:object/" + key)` in a loop; the wall finds whole
+handles in text and nothing else, so that cell fails, and the same
+holds for a handle chosen in a branch or kept as a key in a variable.
+`getRef` raises with the same sentence. And: *link a thing in a
 reply as `[name](ref:…)`, the way the window shows it.* Nothing else
 is taught: no query recipe, no resolution inside any@v1, no rule
 about which spelling goes where — the wall owns that. A ref whose

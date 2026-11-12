@@ -256,11 +256,12 @@ def getRef(x):
         # a handle reaches the kernel only when it was not expanded: its
         # key is not one of this conversation, or the cell built the
         # string from parts, which nothing can expand (ADR-035 §5)
-        raise KeyError(f"unknown ref {x}. A handle works only when it is written "
-                       "whole, as one string literal, exactly as it is shown: do "
-                       "not build it from parts or keep keys in a list. If it was "
-                       "written whole, no ref of this conversation has that key: "
-                       "find the object with a query.")
+        raise KeyError(f"unknown ref {x}. A handle is replaced by the real id in "
+                       "your text before the cell runs, like a macro: it works only "
+                       "as a whole literal, never built at run time (no "
+                       "concatenation, no f-string, no key kept in a variable). If "
+                       "it was written whole, no ref of this conversation has that "
+                       "key: find the object with a query.")
     def known(ref):
         for r in _refs_table:
             if r["kind"] == ref["kind"] and r.get("uri") == ref.get("uri") \\
