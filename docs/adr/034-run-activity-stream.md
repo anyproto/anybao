@@ -147,12 +147,24 @@ is known before it executes and rides both entries. A hidden step
  "label": "Updating {object} in {space}",      // §3 — a template; the client fills the refs
  "summary": "Update an object's properties → {objectId, …}",   // the method docstring's first line (ADR-010), absent for raw effects — arrives with the kernel change (§3 layer 2)
  "service": "linear",                          // the module, on a `service` step only
+ "program": {"spec": "linear@v1",              // the program the method belongs to; absent on a bare effect
+             "link": "any://o/<space>/<program object>"},   // absent for a source with no object (local, inline)
  "refs": {"space": "<space id>", "object": "<object id>"},      // §3 — ids the client resolves to titles
  "input": {"spaceConfig": "<space id>", "object_id": "…", "patch": {…}},   // the recorded input, clipped to 2 KiB
  "ok": true, "error": null,                    // {type, message} when ok is false
  "durMs": 120, "effects": 3, "mutations": 1,   // span meta; effects/mutations absent on a bare effect
  "visibility": "shown"}                        // "hidden" for bookkeeping (§3)
 ```
+
+`program` (amended 2026-11-12, owner) says where a step comes from. A
+program lives in any space — the agent overlay, the connectors overlay,
+the user's own — so its identity is the `any://` link of its program
+object, space included. The kernel stamps `{spec, link}` on a module
+when `use()` loads it (`module.resolve` returns the space and the
+object), `@span` sends it on `span.begin` beside `kind` and `label`,
+and the broker stamps it on the end record's `meta.program`. The client
+reads the program's name and picture off the link, like any object. A
+bare effect belongs to the cell's own code and has no `program`.
 
 `class` is the one field a renderer may trust for "did this change
 anything": the broker's classification for an effect, and

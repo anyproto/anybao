@@ -1455,6 +1455,9 @@ def span(name=None, kind=None, label=None):
             span_name = f"{mod}.{fn.__name__}" if mod else fn.__name__
         argnames = fn.__code__.co_varnames[:fn.__code__.co_argcount]
         drop_self = bool(argnames) and argnames[0] == "self"
+        # the program that owns the def (ADR-034 §2) — None for a span
+        # declared in cell code
+        program = fn.__globals__.get("__any_program__")
         if label is not None:
             kwonly = fn.__code__.co_varnames[
                 fn.__code__.co_argcount:fn.__code__.co_argcount + fn.__code__.co_kwonlyargcount]
@@ -1469,6 +1472,8 @@ def span(name=None, kind=None, label=None):
                 payload["kind"] = kind
             if label is not None:
                 payload["label"] = label
+            if program is not None:
+                payload["program"] = program
             begun = _effect("span.begin", payload) or {}
             served = begun.get("mock")
             if served is not None:
@@ -1503,6 +1508,20 @@ def span(name=None, kind=None, label=None):
 _module_cache: dict = {}   # (objectId, marker) -> module object
 
 
+def _program_of(spec, resolved):
+    """Which program a module IS (ADR-034 §2): its `name@vN` and, when
+    it lives in a space, the `any://o/<space>/<object>` link of its
+    program object — programs live in any space (the agent overlay, the
+    connectors overlay, the user's own), so the link is the identity,
+    and a client reads the program's name and picture off it. A source
+    served inline or from a local dir has no object: spec only."""
+    prog = {"spec": spec.split(":")[-1]}
+    space, oid = resolved.get("spaceId"), resolved.get("objectId")
+    if space and oid and space != "local":
+        prog["link"] = f"any://o/{space}/{oid}"
+    return prog
+
+
 def _bound_use(owner):
     """A use() carrying its OWNER's identity (ADR-004 §2.4/§5): every
     loaded module gets its own binding, so its use() calls resolve in
@@ -1521,6 +1540,7 @@ def _bound_use(owner):
         mod.__dict__.update(_fresh_ns())
         mod.__dict__["use"] = _bound_use(r["objectId"])
         mod.__dict__["print"] = _module_print
+        mod.__dict__["__any_program__"] = _program_of(spec, r)
         exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
         _module_cache[ck] = mod
         return mod

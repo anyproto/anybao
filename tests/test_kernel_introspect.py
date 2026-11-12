@@ -306,3 +306,26 @@ def test_span_label_rides_span_begin_and_is_checked_at_load():
     load('@span(label="{body.name|title}")\ndef f(body, title=None):\n    pass\n')
     with pytest.raises(ValueError, match="names no argument"):
         load('@span(label="{body.name|titel}")\ndef f(body, title=None):\n    pass\n')
+
+
+def test_a_loaded_module_knows_its_program_and_its_spans_say_it():
+    # ADR-034 §2: use() stamps the program's identity on the module;
+    # every @span in it sends it on span.begin
+    begins = []
+    src = '@span(kind="getter")\ndef whoami():\n    return 1\n'
+    app = load_kernel(
+        module_source=lambda spec: src if spec.endswith("linear@v1") else None,
+        on_span=lambda n, p: begins.append(p) if n == "span.begin" else None)
+    mod = app.use("connectors:linear@v1")
+    assert mod.__any_program__ == {"spec": "linear@v1"}   # the fake has no space
+    mod.whoami()
+    assert begins[0]["program"] == {"spec": "linear@v1"}
+    # a program object in a space is named by its link — programs live in
+    # any space, so the link (space + object) is the identity
+    assert app._program_of("connectors:linear@v1",
+                           {"spaceId": "sp-conn", "objectId": "obj-linear"}) == {
+        "spec": "linear@v1", "link": "any://o/sp-conn/obj-linear"}
+    # a source with no object behind it (local dir, inline) has no link
+    assert app._program_of("dev@v1", {"spaceId": "local", "objectId": "dev@v1"}) == {
+        "spec": "dev@v1"}
+    assert app._program_of("x@v1", {"spaceId": "", "objectId": "inline"}) == {"spec": "x@v1"}

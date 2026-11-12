@@ -577,6 +577,7 @@ struct OpenStep {
     input: Value,
     kind: Option<String>,
     label: Option<String>,
+    program: Option<Value>,
 }
 
 /// One run's emitter, owned by the run's Broker. Every method is
@@ -693,6 +694,22 @@ impl RunEmitter {
         parent: Option<&str>,
         input: &Value,
     ) {
+        self.span_begin_from(sid, name, kind, label, None, parent, input)
+    }
+
+    /// [`Self::span_begin`] with the program the method belongs to
+    /// (`{spec, link?}`, ADR-034 §2), forwarded on the step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn span_begin_from(
+        &mut self,
+        sid: &str,
+        name: &str,
+        kind: Option<&str>,
+        label: Option<&str>,
+        program: Option<&Value>,
+        parent: Option<&str>,
+        input: &Value,
+    ) {
         if self.cell.is_none() {
             if name != "cell" && name != "bash" {
                 return;
@@ -728,6 +745,7 @@ impl RunEmitter {
             input: clip_input(input),
             kind: kind.map(String::from),
             label: label.map(String::from),
+            program: program.cloned(),
         };
         if !is_hidden(name) {
             // the class is unknown until the span ends (it counts the
@@ -742,6 +760,9 @@ impl RunEmitter {
             let mut step = running_step(&open.id, name, &d, &open.input);
             if let Some(k) = kind {
                 step["kind"] = json!(k);
+            }
+            if let Some(p) = program {
+                step["program"] = p.clone();
             }
             self.emit_step(step);
         }
@@ -810,6 +831,9 @@ impl RunEmitter {
         step["mutations"] = json!(mutations);
         if let Some(k) = meta["kind"].as_str().or(open.kind.as_deref()) {
             step["kind"] = json!(k);
+        }
+        if let Some(p) = open.program {
+            step["program"] = p;
         }
         self.count(&open.name, &d);
         self.emit_step(step);
@@ -1391,6 +1415,52 @@ mod tests {
             (ended["cells"].as_u64(), ended["turns"].as_u64()),
             (Some(1), Some(1))
         );
+    }
+
+    #[test]
+    fn a_step_names_the_program_its_method_belongs_to() {
+        let queue: Arc<ActivityQueue> = Default::default();
+        let mut em = emitter(&queue);
+        em.span_begin("c", "cell", None, None, None, &json!({"cell": "c1"}));
+        let program = json!({"spec": "linear@v1", "link": "any://o/sp-conn/obj-linear"});
+        em.span_begin_from(
+            "s1",
+            "linear.create_issue",
+            Some("mutator"),
+            None,
+            Some(&program),
+            Some("c"),
+            &json!({"title": "Crash"}),
+        );
+        em.span_end(
+            "s1",
+            "linear.create_issue",
+            4,
+            true,
+            None,
+            None,
+            &json!({"mutations": 1}),
+        );
+        // a bare effect belongs to the cell's own code: no program
+        let id = em.effect_begin(Some("c"), "http.get", "read", &json!({}), false);
+        em.effect_end(
+            id,
+            5,
+            "http.get",
+            "read",
+            &json!({}),
+            false,
+            None,
+            &json!({}),
+        );
+        let steps: Vec<Value> = drain(&queue)
+            .iter()
+            .filter(|f| f.typ == STEPS)
+            .map(|f| f.data["steps"][0].clone())
+            .collect();
+        assert_eq!(steps[0]["program"], program); // running
+        assert_eq!(steps[1]["program"], program); // done
+        assert!(steps[3].get("program").is_none());
     }
 
     #[test]

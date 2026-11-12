@@ -178,6 +178,9 @@ struct SpanFrame {
     /// Guest-declared label template (ADR-034 §3): narrative like
     /// `kind`, recorded on the end record's meta, zero authority.
     label: Option<String>,
+    /// The program the method belongs to (ADR-034 §2): `{spec, link?}`
+    /// as the kernel stamped it on the module. Narrative as well.
+    program: Option<Value>,
     t0: Instant,
     effects: u64,
     mutations: u64,
@@ -577,17 +580,19 @@ impl Broker {
         kind: Option<String>,
         input: Value,
     ) -> Result<String, EffectFailure> {
-        self.try_span_begin_labeled(name, kind, None, input)
+        self.try_span_begin_labeled(name, kind, None, None, input)
     }
 
-    /// `try_span_begin` with the method's label template (ADR-034 §3,
-    /// `@span(label=…)`): kept on the span frame, stamped on the end
-    /// record's `meta.label`, forwarded to the activity stream.
+    /// `try_span_begin` with what the kernel says about the method
+    /// (ADR-034 §2/§3): its label template (`@span(label=…)`) and the
+    /// program it belongs to. Both are kept on the span frame, stamped
+    /// on the end record's meta, and forwarded to the activity stream.
     pub fn try_span_begin_labeled(
         &mut self,
         name: &str,
         kind: Option<String>,
         label: Option<String>,
+        program: Option<Value>,
         input: Value,
     ) -> Result<String, EffectFailure> {
         self.span_n += 1;
@@ -662,11 +667,12 @@ impl Broker {
         let cell = self.current_cell.clone();
         if let Some(em) = self.emitter.as_mut() {
             // ADR-034 §2: a cell's immediate child shows as `running`
-            em.span_begin(
+            em.span_begin_from(
                 &sid,
                 name,
                 kind.as_deref(),
                 label.as_deref(),
+                program.as_ref(),
                 parent.as_deref(),
                 &input,
             );
@@ -678,6 +684,7 @@ impl Broker {
             name: name.into(),
             kind,
             label,
+            program,
             t0: Instant::now(),
             effects: 0,
             mutations: 0,
@@ -778,6 +785,9 @@ impl Broker {
         if let Some(l) = &top.label {
             // ADR-001 §4d amended (ADR-034 §3): narrative, like kind
             meta["label"] = json!(l);
+        }
+        if let Some(p) = &top.program {
+            meta["program"] = p.clone();
         }
         if let Some(em) = self.emitter.as_mut() {
             em.span_end(
