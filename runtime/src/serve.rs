@@ -1154,6 +1154,21 @@ impl crate::broker::SecretSource for ServeSecretStore {
             .find(|r| r.get("key").and_then(Value::as_str) == Some(key)))
     }
 
+    fn values(&self) -> Result<Vec<(String, String)>, String> {
+        let rows = self
+            .client
+            .query(&self.space, &self.obj, &self.dataset, &json!({}))
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                let key = r.get("key").and_then(Value::as_str)?;
+                let value = r.get(SECRETS_FIELD).and_then(Value::as_str)?;
+                (!value.is_empty()).then(|| (key.to_string(), value.to_string()))
+            })
+            .collect())
+    }
+
     fn mark_used(&self, key: &str) {
         let patch = json!({"lastUsedAt": {"$date": now_rfc3339()}});
         if let Err(e) = upsert_secret_row(

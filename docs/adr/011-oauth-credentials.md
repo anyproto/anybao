@@ -145,6 +145,8 @@ corrected in place.
 
 **Amended 2026-11-11 (ADR-021 §7.1):** the guard looks for the store's identifiers — object id, collection name, type id — in the whole request (every url form, every body string, `json` and text `body` alike), not in named keys.
 
+**Amended 2026-11-12 (ADR-021 §7.1):** an identifier is not a secret. The guard refuses a request that ADDRESSES the store (the url, the body key `objectId`, a body string that is the collection name or — on a non-read verb — the type id) and a response that carries a stored value; a request that only carries an identifier as data passes.
+
 **Amended 2026-09-14 (ADR-021 §7/§8):** the deferral ends — host binding is enforced at hop zero from the row's `hosts`, whose source is the deployed module's `__any_credentials__` (declared refs) or the first creation of a `local.key.*` row (open refs). "Raw secrets, no host checks" below describes the interim, not the contract.
 
 Today a guest payload carries `{ref, header, prefix}` and the broker

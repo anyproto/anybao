@@ -93,6 +93,9 @@ pub type SharedActivity = Arc<RunActivity>;
 
 /// Preview budget for `run.cell` — one glanceable line, not the code.
 const CELL_PREVIEW_CHARS: usize = 48;
+/// The shortest stored value the response guard looks for (ADR-021
+/// §7.1): a shorter one matches ordinary text.
+const MIN_GUARDED_SECRET: usize = 8;
 
 #[derive(Default)]
 pub struct RunActivity {
@@ -240,6 +243,12 @@ pub trait SecretSource: Send + Sync {
     /// on the row's hosts rule, and only the human edits them. Default:
     /// nothing.
     fn bind_hosts(&self, _key: &str, _about: &Value) {}
+    /// Every stored value with its ref — what the response guard looks
+    /// for (ADR-021 §7.1). Err = the store could not be reached.
+    /// Default: none, for stores that cannot list.
+    fn values(&self) -> Result<Vec<(String, String)>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// ADR-021 §8.1: the declared table — every ref a deployed overlay
@@ -350,6 +359,11 @@ pub struct Broker {
     /// next to the `_agent_secrets` suffix rule, so the guard does not
     /// rest on the server's collection naming alone.
     pub secrets_collection: Option<String>,
+    /// The stored secret values the response guard looks for (ADR-021
+    /// §7.1): the store's and the seeds', read once per run on the first
+    /// http response, plus every value this run injected.
+    secret_values: Vec<String>,
+    secret_values_loaded: bool,
     /// Managed OAuth state (ADR-011) — process-shared; None = no oauth
     /// wiring (managed refs fail typed `not_configured`).
     pub oauth: Option<Arc<OauthState>>,
@@ -546,6 +560,8 @@ impl Broker {
             grants: None,
             secrets_guard: None,
             secrets_collection: None,
+            secret_values: Vec::new(),
+            secret_values_loaded: false,
             oauth: None,
             secret_store: None,
             config_store: None,
@@ -1458,6 +1474,7 @@ impl Broker {
                 store.mark_used(r);
             }
         }
+        self.note_secret_value(&value);
         Ok((value, descriptor))
     }
 
@@ -1555,6 +1572,7 @@ impl Broker {
                     .to_string();
                 let value = if r.starts_with(OAUTH_REF_PREFIX) {
                     let value = self.resolve_managed(&r)?;
+                    self.note_secret_value(&value);
                     // a managed ref is bound when its connector declares
                     // the API hosts (ADR-021 §8.1, googleAuth); the token
                     // endpoint is host-side and never a guest destination
@@ -1741,6 +1759,7 @@ impl Broker {
                 .read_to_end(&mut bytes)
                 .map_err(|e| plain_failure(e.to_string()))?;
         }
+        self.secrets_response_guard(&final_url, &bytes)?;
         let force_text = payload.get("response").and_then(|r| r.as_str()) == Some("text");
         let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
         let declared_text = media.as_deref().is_some_and(is_text_media);
@@ -1783,24 +1802,28 @@ impl Broker {
         Ok(out)
     }
 
-    /// Refuse guest http requests that would touch stored secrets
-    /// (ADR-021 §7.1). The guard knows the identifiers of the secrets
-    /// store — the secrets object id, the collection name
-    /// `<typeId>_agent_secrets`, the secrets type id — and looks for them
-    /// in the WHOLE request as it leaves: every form of the url (as
-    /// given, as the client normalises it, percent-decoded) and every
-    /// string of the body text that goes on the wire, whichever of
-    /// `json` / `body` carries it. It never depends on which key or
-    /// route names the identifier, so it does not have to parse a
-    /// request the way the server does. On top of the identifiers: a
-    /// `dataset` key naming any space's `…_agent_secrets` collection
-    /// (ADR-027 §2 — the suffix is the invariant, ADR-011 §4), and a
-    /// non-read request naming the secrets type (its dataset definition
-    /// decides what search indexes). Fired BEFORE execution, so the
-    /// refusal is the recorded fact — deterministic on replay, and no
-    /// secret ever reaches the trace. A benign body that merely MENTIONS
-    /// the words in a text field passes; one that carries an identifier
-    /// does not.
+    /// Refuse guest http requests that ADDRESS the secrets store
+    /// (ADR-021 §7.1). An identifier of the store is not a secret: a
+    /// request may carry one as data (a chat message quoting it, a
+    /// listing filter, a link). A request addresses the store when
+    ///
+    /// - its url names the secrets object id or the secrets collection —
+    ///   in every form of the url (as given, as the client normalises
+    ///   it, percent-decoded);
+    /// - a body string under the key `objectId` IS the secrets object id;
+    /// - a body string IS the secrets collection name, or a `dataset` key
+    ///   names any space's `…_agent_secrets` collection (ADR-027 §2 — the
+    ///   suffix is the invariant, ADR-011 §4);
+    /// - on a non-read verb, the url names the secrets type id or a body
+    ///   string IS it (its dataset definition decides what search
+    ///   indexes).
+    ///
+    /// The body is the text that goes on the wire, whichever of `json` /
+    /// `body` carries it, read by the flat tokenizer: the guard does not
+    /// parse a request the way the server does. Fired BEFORE execution,
+    /// so the refusal is the recorded fact — deterministic on replay.
+    /// What a read returns is the response guard's question
+    /// (`secrets_response_guard`).
     fn secrets_read_guard(
         &self,
         verb: &str,
@@ -1845,13 +1868,14 @@ impl Broker {
                  anybao.toml)"
             ),
         };
-        // the request names an identifier anywhere: the url, the body
-        // text as written, or a body string once its escapes are decoded
-        let names = |needle: &str| {
-            in_url(needle)
-                || body.is_some_and(|text| contains_ci(text, needle))
-                || strings.iter().any(|(_, value)| contains_ci(value, needle))
+        // a body string IS the identifier (escapes decoded) — one that
+        // only contains it is data, not an address
+        let is_value = |needle: &str| {
+            strings
+                .iter()
+                .any(|(_, value)| value.eq_ignore_ascii_case(needle))
         };
+        let addresses = |needle: &str| in_url(needle) || is_value(needle);
         let dataset_named = strings.iter().any(|(key, value)| {
             key == "dataset" && {
                 let d = value.to_ascii_lowercase();
@@ -1859,14 +1883,16 @@ impl Broker {
             }
         });
         let collection = self.secrets_collection.as_deref().filter(|c| !c.is_empty());
-        if dataset_named || collection.is_some_and(names) {
+        if dataset_named || collection.is_some_and(addresses) {
             return Err(forbidden("the agent_secrets dataset"));
         }
-        if self
-            .secrets_guard
-            .as_deref()
-            .is_some_and(|id| !id.is_empty() && names(id))
-        {
+        if self.secrets_guard.as_deref().is_some_and(|id| {
+            !id.is_empty()
+                && (in_url(id)
+                    || strings
+                        .iter()
+                        .any(|(key, value)| key == "objectid" && value.eq_ignore_ascii_case(id)))
+        }) {
             return Err(forbidden("the secrets object"));
         }
         // the secrets type: reading it is harmless (a type listing names
@@ -1874,7 +1900,7 @@ impl Broker {
         let type_id = collection
             .and_then(|c| c.strip_suffix("_agent_secrets"))
             .filter(|t| t.len() >= 8);
-        if !matches!(verb, "GET" | "HEAD") && type_id.is_some_and(names) {
+        if !matches!(verb, "GET" | "HEAD") && type_id.is_some_and(addresses) {
             return Err(forbidden("the agent_secrets type"));
         }
         // ADR-023 §9: the trace collections are host-written. A guest may
@@ -1923,6 +1949,76 @@ impl Broker {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A value the response guard looks for from here on. One shorter
+    /// than `MIN_GUARDED_SECRET` matches ordinary text and is skipped.
+    fn note_secret_value(&mut self, value: &str) {
+        if value.len() >= MIN_GUARDED_SECRET && !self.secret_values.iter().any(|v| v == value) {
+            self.secret_values.push(value.to_string());
+        }
+    }
+
+    /// Refuse an http response that carries a stored secret value
+    /// (ADR-021 §7.1): the content of a secret never enters guest code,
+    /// whichever route returned it — a read of the store through a
+    /// request the request guard did not recognise, or a destination
+    /// that hands an injected key back. The host knows the values (the
+    /// store's rows, the seeds, what this run injected); it looks for
+    /// each in the body bytes and, when the body has escapes, in every
+    /// string token with its escapes decoded. Fired before the body
+    /// reaches the guest or the trace: the refusal is the recorded fact.
+    /// A `.client_id` row is public by design and is not looked for.
+    fn secrets_response_guard(&mut self, url: &str, bytes: &[u8]) -> Result<(), EffectFailure> {
+        if !self.secret_values_loaded {
+            let mut rows: Vec<(String, String)> = self
+                .secrets
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if let Some(store) = &self.secret_store {
+                rows.extend(store.values().map_err(|e| EffectFailure {
+                    type_: "RuntimeError".into(),
+                    message: format!(
+                        "secret store unreachable checking the response of {url}: {e}"
+                    ),
+                })?);
+            }
+            for (key, value) in rows {
+                if !key.ends_with(".client_id") {
+                    self.note_secret_value(&value);
+                }
+            }
+            self.secret_values_loaded = true;
+        }
+        if self.secret_values.is_empty() {
+            return Ok(());
+        }
+        let values = &self.secret_values;
+        let carries = |hay: &[u8]| {
+            values.iter().any(|v| {
+                let v = v.as_bytes();
+                hay.len() >= v.len() && hay.windows(v.len()).any(|w| w == v)
+            })
+        };
+        let mut found = carries(bytes);
+        if !found && bytes.contains(&b'\\') {
+            json_strings(&String::from_utf8_lossy(bytes), &mut |_, value| {
+                found = found || carries(value.as_bytes())
+            });
+        }
+        if found {
+            return Err(EffectFailure {
+                type_: "forbidden".into(),
+                message: format!(
+                    "the response of {} carries a stored secret value: the content of a \
+                     secret never enters guest code (ADR-021 §7.1) — connectors \
+                     authenticate via credential: {{ref}}",
+                    url_host(url).unwrap_or_else(|| url.to_string())
+                ),
+            });
         }
         Ok(())
     }
@@ -3185,9 +3281,12 @@ mod tests {
             r#"{"dataset": "pages", "dataset": "bafyother_agent_secrets"}"#,
             // a second document after the first
             r#"{"dataset": "pages"} {"dataset": "bafyother_agent_secrets"}"#,
-            // the object id under any key, at any depth
+            // the object id under the key that addresses an object,
+            // at any depth, however the server folds the key
             r#"{"objectID": "bafysecretsobj"}"#,
-            r#"{"filter": {"ids": ["x", "bafysecretsobj"]}}"#,
+            r#"{"batch": [{"objectId": "x"}, {"OBJECTID": "BAFYSECRETSOBJ"}]}"#,
+            // the collection as a whole value under any key
+            r#"{"pipeline": [{"$lookup": {"from": "bafysecrettype_agent_secrets"}}]}"#,
         ] {
             assert_eq!(
                 guard_verdict(&mut b, "http.post", json!({"url": query, "body": body})),
@@ -3356,6 +3455,131 @@ mod tests {
                 "{payload}"
             );
         }
+    }
+
+    #[test]
+    fn secrets_guard_passes_identifiers_carried_as_data() {
+        // ADR-021 §7.1: an identifier is not a secret — a request that
+        // carries one without addressing the store passes
+        let mut b = guarded_broker("run_guard_data");
+        let chat = "http://127.0.0.1:1/v1/spaces/s/objects/o/chat/messages";
+        for payload in [
+            // a message that quotes the ids
+            json!({"url": chat, "json": {"text":
+                "objects: bafysecretsobj, type bafysecrettype, \
+                 collection bafysecrettype_agent_secrets"}}),
+            // the object id as a whole value, under a key that addresses nothing
+            json!({"url": chat, "json": {"text": "see", "links": ["bafysecretsobj"]}}),
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/objects/query",
+                   "json": {"filter": {"id": {"$in": ["x", "bafysecretsobj"]}}}}),
+            // a link to the object
+            json!({"url": "http://127.0.0.1:1/v1/spaces/s/modify",
+                   "json": {"objectId": "page1", "dataset": "pages", "records": [{"ops":
+                       [{"type": "$set", "path": "ref",
+                         "value": "any://o/s/bafysecretsobj"}]}]}}),
+        ] {
+            assert_eq!(
+                guard_verdict(&mut b, "http.post", payload.clone()),
+                None,
+                "{payload}"
+            );
+        }
+    }
+
+    /// A one-connection server that answers with `body` as JSON.
+    fn json_reply_server(body: &'static str) -> String {
+        use std::io::Write;
+        one_shot_server(move |sock| {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            sock.write_all(body.as_bytes()).unwrap();
+            sock.flush().unwrap();
+        })
+        .0
+    }
+
+    fn store_with(rows: &[(&str, &str)]) -> Arc<MemStore> {
+        Arc::new(MemStore {
+            rows: rows
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            missing: Mutex::new(Vec::new()),
+            hosts: Mutex::new(None),
+            used: Mutex::new(Vec::new()),
+        })
+    }
+
+    #[test]
+    fn a_response_that_carries_a_secret_value_is_refused() {
+        // ADR-021 §7.1: whichever route returned it, the content of a
+        // secret never reaches the guest or the trace
+        for body in [
+            // the rows of the store, read through any route
+            r#"{"records": [{"key": "connector.key.x", "value": "sk-live/0123456789"}]}"#,
+            // the same value with its escapes written out
+            r#"{"records": [{"value": "sk-live\/01234\u0035\u0036789"}]}"#,
+            // a value inside longer text
+            r#"{"text": "Authorization: Bearer sk-live/0123456789 was sent"}"#,
+        ] {
+            let mut b = make_broker("run_resp_guard");
+            b.secret_store = Some(store_with(&[("connector.key.x", "sk-live/0123456789")]));
+            let err = b
+                .call("http.get", json!({"url": json_reply_server(body)}))
+                .unwrap_err();
+            assert_eq!(err.type_, "forbidden", "{body}");
+            assert!(
+                err.message.contains("stored secret value"),
+                "{}",
+                err.message
+            );
+            let trace = serde_json::to_string(&b.writer.records).unwrap();
+            assert!(!trace.contains("0123456789"), "{trace}");
+        }
+        // a seeded value (`.connectors.env`, `anyrt run`) is looked for too
+        let mut b = Broker::new(
+            TraceWriter::new(json!({"id": "run_resp_seed"})),
+            BTreeMap::new(),
+            BTreeMap::from([("connector.key.y".to_string(), "seeded-secret-1".to_string())]),
+            Some(PathBuf::from("programs")),
+            Classifier::new(None),
+        );
+        let err = b
+            .call(
+                "http.get",
+                json!({"url": json_reply_server(r#"{"echo": "seeded-secret-1"}"#)}),
+            )
+            .unwrap_err();
+        assert_eq!(err.type_, "forbidden");
+    }
+
+    #[test]
+    fn a_response_without_a_secret_value_passes() {
+        let mut b = make_broker("run_resp_ok");
+        b.secrets_guard = Some("bafysecretsobj".into());
+        b.secret_store = Some(store_with(&[
+            ("connector.key.x", "sk-live/0123456789"),
+            // too short to tell from ordinary text
+            ("local.key.pin", "1234"),
+            // public by design
+            ("connector.oauth.p.client_id", "client-id.apps.example"),
+        ]));
+        // a listing that names the secrets object, a short value and a
+        // client id: identifiers and public values are not content
+        let out = b
+            .call(
+                "http.get",
+                json!({"url": json_reply_server(
+                    r#"{"objects": [{"id": "bafysecretsobj", "pin": "1234",
+                        "aud": "client-id.apps.example"}]}"#
+                )}),
+            )
+            .unwrap();
+        assert_eq!(out["status"], 200);
     }
 
     #[test]
@@ -4237,6 +4461,13 @@ mod tests {
         }
         fn mark_used(&self, key: &str) {
             self.used.lock().unwrap().push(key.into());
+        }
+        fn values(&self) -> Result<Vec<(String, String)>, String> {
+            Ok(self
+                .rows
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
         }
         fn bind_hosts(&self, key: &str, about: &Value) {
             // the serve store writes the descriptor onto the row; here
