@@ -13,7 +13,7 @@ use crate::broker::{
 use crate::config::Config;
 use crate::resolver::{AnyModuleResolver, ModuleResolver};
 use crate::routes::Classifier;
-use crate::runner::{run_program, Cage};
+use crate::runner::{run_program, Cage, RunOutcome};
 use crate::trace::TraceWriter;
 use crate::tracestore::TraceStore;
 use crate::triggers::{
@@ -1463,6 +1463,27 @@ fn publish_status_beat(
     }
 }
 
+/// The activity thread (ADR-034 §4): the SOLE publisher of `bao.run.*`.
+/// It posts the frames the runs' emitters queued, step frames merged
+/// to one per run per 250 ms. Best-effort like the beat: a failed post
+/// is a dropped frame (the trace has the records), never a run failure.
+fn activity_thread(ctx: Arc<RunCtx>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut poster = crate::activity::Poster::default();
+        while !stop.load(Ordering::Relaxed) {
+            if let Some(frame) = poster.next(&ctx.activity, Duration::from_millis(200)) {
+                post_activity(&ctx.client, &frame);
+            }
+        }
+    })
+}
+
+fn post_activity(client: &Client, frame: &crate::activity::Frame) {
+    if let Err(e) = client.publish_event(&frame.envelope()) {
+        debug!("{} not published: {e}", frame.typ);
+    }
+}
+
 /// `401 auth.required`: the server has no account — the embedder signed
 /// out. On a desktop sign-out the host sends `DELETE /v1/auth` while
 /// this serve is still stopping (stop joins up to a heartbeat), so the
@@ -2178,6 +2199,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         pruned: election.pruned,
         live_runs: Mutex::new(BTreeMap::new()),
         status: Default::default(),
+        activity: Default::default(),
         roster: Mutex::new(None),
     });
 
@@ -2186,6 +2208,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
         trigger_ticker(shared.clone(), ctx.clone(), shutdown.clone()),
         retention_thread(ctx.clone(), shutdown.clone()),
         presence_thread(shared.clone(), ctx.clone(), shutdown.clone()),
+        activity_thread(ctx.clone(), shutdown.clone()),
     ];
     if election.enabled {
         threads.push(election_thread(
@@ -2269,6 +2292,10 @@ fn sliced_sleep(total: Duration, stop: &AtomicBool) {
     }
 }
 
+/// A run's wall budget, seconds — the runner's deadline and the
+/// stream's `budget.wall.limitS` (ADR-034 §1).
+const RUN_TIMEOUT_S: f64 = 1200.0;
+
 pub struct RunCtx {
     pub cage: Arc<Cage>,
     /// what the loop is waiting for (ADR-009 §8): unreadable overlays
@@ -2337,6 +2364,9 @@ pub struct RunCtx {
     /// serve-shared presence state (ADR-025): the `bao.status` syscall's
     /// write target + the presence thread's read; sole publisher = serve
     pub status: SharedPresence,
+    /// the run activity stream's hand-off (ADR-034 §4): every run's
+    /// emitter pushes frames here, the activity thread posts them
+    pub activity: Arc<crate::activity::ActivityQueue>,
     /// the chat space's member roster for the sender fold (BOB-192,
     /// ADR-005 §5), with the instant it was read — refreshed by
     /// `resolve_sender` on age or on an unknown creator; None until
@@ -2423,6 +2453,80 @@ impl RunCtx {
         self.traces.expire(CHAT_PROGRAM, conv, jobs, max, stop)
     }
 
+    /// The run's activity stream emitter (ADR-034 §1), built off the
+    /// same stamp the beat carries so the two agree on id, title and
+    /// start. The turn limit is known only when the caller set one:
+    /// the default lives in the program.
+    fn emitter(
+        &self,
+        broker: &Broker,
+        spec: &str,
+        args: &Value,
+        stamp: &Value,
+    ) -> crate::activity::RunEmitter {
+        let run = crate::activity::descriptor(
+            stamp["id"].as_str().unwrap_or(""),
+            stamp["title"].as_str().unwrap_or(spec),
+            stamp["startedAt"].as_f64().unwrap_or(0.0),
+            spec,
+            args["space"].as_str().zip(args["chatId"].as_str()),
+            self.self_peer.as_deref(),
+        );
+        // the runner sets the gauge when the store exists; the
+        // `started` frame leaves before that
+        broker
+            .fuel_gauge
+            .store(crate::runner::FUEL_PER_CELL, Ordering::Relaxed);
+        crate::activity::RunEmitter::new(
+            self.activity.clone(),
+            run,
+            broker.fuel_gauge.clone(),
+            crate::runner::FUEL_PER_CELL,
+            RUN_TIMEOUT_S,
+            args["maxTurns"].as_u64(),
+        )
+    }
+
+    /// Start the run's stream: the `started` frame, and the emitter
+    /// on the broker. Returns the run descriptor, for a run that fails
+    /// before it has an outcome.
+    fn start_activity(
+        &self,
+        broker: &mut Broker,
+        spec: &str,
+        args: &Value,
+        stamp: &Value,
+    ) -> Value {
+        let emitter = self.emitter(broker, spec, args, stamp);
+        emitter.started();
+        let run = emitter.run().clone();
+        broker.emitter = Some(emitter);
+        run
+    }
+
+    /// End the run's stream (`bao.run.ended`, ADR-034 §1) and hand the
+    /// outcome back. A run the cage could not start still ends.
+    fn end_activity(&self, outcome: Result<RunOutcome>, run: &Value) -> Result<RunOutcome> {
+        match outcome {
+            Ok(mut outcome) => {
+                if let Some(em) = outcome.broker.emitter.take() {
+                    em.ended(
+                        &outcome.status,
+                        outcome.value["stop"].as_str(),
+                        outcome.duration_ms,
+                        outcome.fuel_used,
+                        outcome.broker.mutations,
+                    );
+                }
+                Ok(outcome)
+            }
+            Err(e) => {
+                crate::activity::ended_without_outcome(&self.activity, run);
+                Err(e)
+            }
+        }
+    }
+
     fn broker(&self, spec: &str, run_id: String) -> Broker {
         let mut writer = TraceWriter::new(json!({"id": run_id, "program": spec,
                                              "host": "rust"}));
@@ -2485,17 +2589,28 @@ impl RunCtx {
         // source: working beats carry the freshest live run (ADR-025 §1)
         let activity: crate::broker::SharedActivity = Default::default();
         broker.activity = Some(activity.clone());
+        let stamp = run_stamp(&run_id, spec, args);
+        let described = self.start_activity(&mut broker, spec, args, &stamp);
         self.live_runs.lock().unwrap().insert(
             run_id.clone(),
             crate::triggers::LiveRun {
                 mailbox: mailbox.clone(),
                 interrupt: interrupt.clone(),
-                stamp: run_stamp(&run_id, spec, args),
+                stamp: stamp.clone(),
                 activity,
             },
         );
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
+        let outcome = run_program(
+            &self.cage,
+            broker,
+            spec,
+            args,
+            mailbox,
+            interrupt,
+            RUN_TIMEOUT_S,
+        );
         self.live_runs.lock().unwrap().remove(&run_id);
+        let outcome = self.end_activity(outcome, &described);
         let mut outcome = outcome?;
         // ADR-005 §3: a failed trailing log append leaves the run ok
         // and names itself in the result — surface it here, since the
@@ -2559,17 +2674,28 @@ impl RunCtx {
         let interrupt = Arc::new(AtomicBool::new(false));
         let activity: crate::broker::SharedActivity = Default::default();
         broker.activity = Some(activity.clone());
+        let stamp = run_stamp(&run_id, spec, args);
+        let described = self.start_activity(&mut broker, spec, args, &stamp);
         self.live_runs.lock().unwrap().insert(
             run_id.clone(),
             crate::triggers::LiveRun {
                 mailbox: mailbox.clone(),
                 interrupt: interrupt.clone(),
-                stamp: run_stamp(&run_id, spec, args),
+                stamp: stamp.clone(),
                 activity,
             },
         );
-        let outcome = run_program(&self.cage, broker, spec, args, mailbox, interrupt, 1200.0);
+        let outcome = run_program(
+            &self.cage,
+            broker,
+            spec,
+            args,
+            mailbox,
+            interrupt,
+            RUN_TIMEOUT_S,
+        );
         self.live_runs.lock().unwrap().remove(&run_id);
+        let outcome = self.end_activity(outcome, &described);
         let mut outcome = outcome?;
         let summary = outcome
             .broker
@@ -4180,6 +4306,108 @@ mod tests {
             .filter(|(m, p, _)| m == "POST" && p == "/v1/events")
             .map(|(_, _, b)| b.clone().unwrap_or_default()["data"].clone())
             .collect()
+    }
+
+    // --- bao.run.* (ADR-034 §7): a real Broker, the poster, the bus ------
+
+    #[test]
+    fn a_run_posts_its_activity_frames_on_the_account_bus() {
+        use crate::activity::{descriptor, ActivityQueue, Poster, RunEmitter};
+        let queue: Arc<ActivityQueue> = Default::default();
+        let mut b = Broker::new(
+            TraceWriter::new(json!({"id": "run_act"})),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+            Classifier::new(None),
+        );
+        let run = descriptor(
+            "run_act",
+            "tidy up",
+            100.0,
+            "agent:toolcaller@v1",
+            None,
+            None,
+        );
+        let em = RunEmitter::new(queue.clone(), run, b.fuel_gauge.clone(), 1000, 1200.0, None);
+        em.started();
+        b.emitter = Some(em);
+        b.try_span_begin(
+            "cell",
+            None,
+            json!({"cell": "c1", "turn": 2, "preview": "x", "code": "x"}),
+        )
+        .unwrap();
+        // a tool method with an inner effect, then a bare effect
+        b.try_span_begin(
+            "any.get_object",
+            Some("getter".into()),
+            json!({"spaceConfig": "sp1", "object_id": "o1"}),
+        )
+        .unwrap();
+        b.call("fuel.state", json!({})).unwrap(); // inner primitive: not a step
+        b.span_end(true, Some(json!({"id": "o1"})), None).unwrap();
+        b.call("fuel.state", json!({})).unwrap(); // the cell's own effect: a step
+        b.span_end(true, Some(json!({"digest": "ok"})), None)
+            .unwrap();
+        b.emitter
+            .take()
+            .unwrap()
+            .ended("ok", Some("done"), 10, 5, 0);
+
+        let stub = crate::testutil::StubTransport::new();
+        let log = stub.log();
+        let client = Client::with_transport(Box::new(stub));
+        let mut poster = Poster::default();
+        while let Some(frame) = poster.next(&queue, Duration::ZERO) {
+            post_activity(&client, &frame);
+        }
+        let posted: Vec<Value> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, p, _)| m == "POST" && p == "/v1/events")
+            .map(|(_, _, b)| b.clone().unwrap_or_default())
+            .collect();
+        let types: Vec<&str> = posted.iter().filter_map(|e| e["type"].as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "bao.run.started",
+                "bao.run.cell",
+                "bao.run.steps",
+                "bao.run.cell_end",
+                "bao.run.ended"
+            ]
+        );
+        for e in &posted {
+            assert_eq!(e["scope"], "account");
+            assert_eq!(e["target"], "run_act");
+            assert_eq!(e["data"]["run"]["title"], "tidy up");
+            assert!(e["data"]["run"]["chat"].is_null(), "no chat on this run");
+        }
+        // the merged steps frame: each step once, in its final state,
+        // seq = its record in the trace
+        let steps = posted[2]["data"]["steps"].as_array().unwrap();
+        let names: Vec<&str> = steps.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(names, ["any.get_object", "fuel.state"]);
+        for s in steps {
+            assert_eq!(s["state"], "done");
+            let seq = s["seq"].as_i64().unwrap();
+            let rec = b.writer.records.iter().find(|r| r["seq"] == seq).unwrap();
+            let name = rec.get("effect").unwrap_or(&rec["name"]);
+            assert_eq!(*name, s["name"], "seq is the trace handle");
+        }
+        assert_eq!(steps[0]["class"], "read");
+        assert_eq!(steps[0]["label"], "Reading in {space}");
+        assert_eq!(steps[0]["refs"]["object"], "o1");
+        assert_eq!(steps[1]["category"], "self");
+        assert_eq!(posted[1]["data"]["cell"]["turn"], 2);
+        assert_eq!(posted[3]["data"]["cell"]["digest"], "ok");
+        assert_eq!(
+            posted[3]["data"]["cell"]["counts"],
+            json!({"any.get_object": 1, "fuel.state": 1})
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 # ADR-034: Run activity stream — self-describing `bao.run.*` events for the chat UI
 
-Status: **Accepted** (2026-10-23)
+Status: **Accepted** (2026-10-23); amended 2026-11-12 with the runtime
+implementation (owner): steps are sent at begin and at end (§2), the
+cell's code, turn and digest reach the host on the cell span (§1), the
+poster does the coalescing (§4). Renumbered from 033.
 Date: 2026-10-23
 Amends (when accepted): ADR-001 §4d (`meta.label` beside `meta.kind`
 on the span end record), ADR-003 §4b (`@span(label=…)`), ADR-010 §4
@@ -51,7 +54,7 @@ with the trace.
 |---|---|---|
 | `bao.run.started` | `run_program` entered | descriptor |
 | `bao.run.cell` | a `cell` or `bash` span begins | descriptor + `cell: {id, turn, preview, code, command?}` |
-| `bao.run.steps` | the cell's immediate children end (coalesced, §4) | descriptor + `cell.id` + `steps: [step, …]` |
+| `bao.run.steps` | the cell's immediate children begin and end (coalesced, §4) | descriptor + `cell.id` + `steps: [step, …]` |
 | `bao.run.cell_end` | the cell's span ends | descriptor + `cell: {id, ok, error?, interrupted, counts, mutations, durMs, fuelUsed, digest}` |
 | `bao.run.turn` | an `llm.chat` span ends (one model call) | descriptor + `turn: {n, stop, usage}` |
 | `bao.run.ended` | `run_program` returned | descriptor + `status, stop?, durMs, fuelUsed, mutations, cells, turns` |
@@ -69,6 +72,32 @@ materializes the run on a client that missed the start):
            "turns": {"n": 3, "limit": 300},
            "tokens": {"in": 18200, "out": 1400, "cacheRead": 90000}}   // summed from llm.chat span outputs
 ```
+
+**What the guest hands over.** The host publishes only what crosses
+the boundary, and three fields of the cell frames exist only in the
+guest. The toolcaller puts them on the cell span, which it already
+opens around every cell (amended 2026-11-12):
+
+- `code` and `turn` on the span **input**, beside `cell` and `preview`
+  (a `bash` span carries `command` and `turn`);
+- `digest` on the span **output**: the toolcaller reads the cell's
+  records and renders the digest *before* it closes the span
+  (`trace.effects_of` works on an open span — every child has ended).
+  The digest is the text the model reads back. One exception: the
+  mock-filter warning (ADR-028 §5) needs the `span.end` reply, so the
+  model's digest carries it and the stream's does not.
+
+The host computes the rest of `cell_end` itself: `counts` (shown steps
+by name), `mutations` and `durMs` (span meta), `fuelUsed` (the fuel
+gauge's drop over the cell), `interrupted` (the broker force-closed
+the span, ADR-001 §4c). `budget.turns.limit` is present only when the
+caller passed `maxTurns`; the default lives in the program.
+
+A `turn` frame is a model call of the loop itself: an `llm.chat` span
+that ends outside any cell. A model call made by cell code (a
+subagent, `llm.chat` in a cell) is a step; its tokens still count in
+`budget.tokens`. The cell is the outermost `cell`/`bash` span: a
+subagent's own cells are below the step grain.
 
 Nothing is retried or stored. A client that joins mid-run reads the
 descriptor off the next frame and renders from there. The durable
@@ -88,14 +117,29 @@ primitives under a facade are not emitted: they are the trace's
 expand-on-demand level (ADR-001 §4d), and the digest shows the model
 the same grain.
 
+A step is sent **twice** (amended 2026-11-12): when the call begins,
+`state: "running"`, and when it ends, `state: "done"`, under the same
+`id`. The client keeps one entry per `id` and replaces it. A 30-second
+model call or connector call shows while it runs; "Updating…" is a
+line for work in progress. The running entry has no `seq`, `ok`,
+`error`, `durMs`, `effects` or `mutations`. A span's `class` is known
+only at its end (it counts the inner mutations), so the running entry
+of a span has no `class` and takes its `category` from the author's
+`kind` as a hint; the done entry carries the truth. An effect's class
+is known before it executes and rides both entries. A hidden step
+(§3) is sent only as `done`.
+
 ```jsonc
-{"seq": 77,                                    // the span/effect record's seq — the trace handle
+{"id": "s12",                                  // the span id, or `e<n>` for a bare effect — the upsert key
+ "state": "done",                              // "running" at begin
+ "seq": 77,                                    // the span/effect record's seq — the trace handle
  "name": "any.update_object",                  // span name = <module>.<method>; or the effect name
  "class": "mutate",                            // BOUNDARY truth: an effect's class, or mutations > 0 for a span
  "kind": "mutator",                            // the author's declared kind (ADR-001 §4d), narrative, may be absent
  "category": "change",                         // §3 — host-derived from name + class
  "label": "Updating {object} in {space}",      // §3 — a template; the client fills the refs
- "summary": "Update an object's properties → {objectId, …}",   // the method docstring's first line (ADR-010), absent for raw effects
+ "summary": "Update an object's properties → {objectId, …}",   // the method docstring's first line (ADR-010), absent for raw effects — arrives with the kernel change (§3 layer 2)
+ "service": "linear",                          // the module, on a `service` step only
  "refs": {"space": "<space id>", "object": "<object id>"},      // §3 — ids the client resolves to titles
  "input": {"spaceConfig": "<space id>", "object_id": "…", "patch": {…}},   // the recorded input, clipped to 2 KiB
  "ok": true, "error": null,                    // {type, message} when ok is false
@@ -129,14 +173,19 @@ layer that matches, so an unknown method still renders.
 | `recall.*`, `memory.*`, `history.*`, `autorecall.*` | `memory` | shown |
 | `any.*` with class `read` / `mutate` | `lookup` / `change` | shown |
 | `sh.*`, `fs.*`, `bash` | `command` | shown |
-| `progress.*`, `chain.*`, `status.*`, `config.*`, `programs.*`, `applet.*`, `bao.status`, `chat.send`, `fuel.state`, `oauth.*` | `self` | shown |
+| `progress.*`, `chain.*`, `status.*`, `config.*`, `programs.*`, `applet.*`, `blob.*`, `ui.*`, `bao.status`, `chat.send`, `fuel.state`, `mailbox.drain`, `kernel.boot`, `oauth.*` | `self` | shown |
 | `time.now`, `module.resolve`, `env.get`, `config.get`, `runtime.get`, `trace.*`, `span.*` | `self` | **hidden** |
 | `http.*` bare, URL host = the any server | `lookup` / `change` by class | shown |
 | `http.*` bare, any other host | `web` | shown |
 | `<module>.<method>`, anything else | `service` (service = `<module>`) | shown |
 
-The hidden set is exactly what the digest's `_count_effects` skips
-today ("not work done"); the two lists become one constant.
+The hidden set is what the digest's `_count_effects` skips ("not work
+done"). The two lists are one vocabulary held twice, because the
+boundary sits between them: `HIDDEN` / `HIDDEN_PREFIXES` in
+`runtime/src/activity.rs` and `_NOT_WORK` / `_NOT_WORK_PREFIXES` in
+`toolcaller@v1.py`; a test keeps them equal. (The digest skipped only
+the trace views, `module.resolve` and `time.now` before; it now skips
+the whole set.)
 
 **Layer 2 — the label on the method** (owner, 2026-10-23). The `@span`
 decorator (ADR-003 §4b) takes `label=` beside `kind=`: a template over
@@ -172,12 +221,18 @@ Creating`, `update|set|edit|patch|modify|move|upsert|mark → Updating`,
 humanized), `where` = `in {space}` when a space ref exists, else the
 service name (`in Linear`), else nothing. So `granola.get_note`
 renders "Reading in Granola" on day one, and a connector that does not
-exist yet renders the same way.
+exist yet renders the same way. A bare effect has no method to read a
+verb from and can carry no `@span` label, so three generic lines cover
+it: `Thinking` for the `thinking` category, `Running {command}` for
+`command`, and for bare `http.*` `Reading {domain}` / `Sending to
+{domain}` (the any server: `Reading` / `Updating`).
 
 **Refs** are extracted from the span input by argument NAME, one rule
 set for every method: `spaceConfig|space → space`, `object_id|objectId
 |id → object`, `type → type`, `query|q → query`, `url → domain`,
-`command → command`. The host never resolves a title: ids cross the
+`command → command`. A `spaceConfig` that is a `list_spaces()` row
+stands for its `id`; a space NAME passes as given (the client resolves
+either). The host never resolves a title: ids cross the
 bus and the client substitutes names from its own store (it already
 renders `any://` links as chips, ADR-022). That is the "fewer
 connections" rule: bao knows ids, the UI knows names, neither learns
@@ -190,18 +245,24 @@ grain it shows.
 
 ### 4. Cadence, size, coalescing
 
-- Steps are coalesced per cell: the emitter flushes a `bao.run.steps`
-  frame at most every 250 ms and always at cell end. A cell that
-  writes 40 objects in a second is one or two frames, not 40. The bus
-  allows 30 msg/s per peer (doc 21); a run stays under 10.
+- Steps are coalesced per cell, in the poster (amended 2026-11-12:
+  the run thread has no timer and must not wait). The emitter queues
+  one frame per step entry. The poster sends a run's first step frame
+  at once, then at most one per 250 ms; each frame takes with it every
+  step frame queued behind it for the same run and cell, up to the
+  cell's next non-step frame. Inside one frame a later entry replaces
+  an earlier one with the same `id`, so a fast step's `running` and
+  `done` leave as one entry. A cell that writes 40 objects in a second
+  is one or two frames, not 80. The bus allows 30 msg/s per peer
+  (doc 21); a run stays under 10.
 - `data` ≤ 64 KiB (doc 21): `code` clipped at 16 KiB, `input` per step
   at 2 KiB, `digest` at 4 KiB, a `steps` array split across frames at
   48 KiB. Every clip is marked (`…clipped`), and `seq` is the handle
   to the whole record in the trace.
 - Emission never blocks the run: the broker hands frames to a
-  bounded channel; a serve thread posts them. A full channel drops the
-  oldest `steps` frame (the trace has it) — never a `cell`,
-  `cell_end`, `started` or `ended` frame.
+  bounded queue (512 frames); one serve thread posts them. A full
+  queue drops its oldest `steps` frame (the trace has it) — never a
+  `cell`, `cell_end`, `turn`, `started` or `ended` frame.
 - Replay mode and `anyrt run` without serve have no emitter: the
   stream is a serve concern, and emitting is not an effect, so the
   trace and replay are untouched by construction.
@@ -231,7 +292,7 @@ grain it shows.
 One subscription (any-ui already holds it: `ui.*`, `process.*`,
 `bao.status`, `links.updated`) gains `bao.run.*`. A `runActivity`
 atom keyed by run id folds frames: descriptor last-write-wins, cells
-by id in order, steps appended by `seq`. Two renderers over the same
+by id in order, steps upserted by `id` in arrival order. Two renderers over the same
 atom:
 
 - plain: the status line under the user's message = §5 precedence,
@@ -259,9 +320,11 @@ same rule as every other family on the bus.
   of the end record; a label with an unknown placeholder is a deploy
   validation error; `any@v1`'s `_export` carries the label from
   `__any_public__`.
+- Guest: the cell span input carries `code` and `turn`, its output the
+  digest the model reads; `_NOT_WORK` equals the host's hidden set.
 - Serve: `StubTransport` publish sequence for one scripted run —
   `started`, `cell` (code present), coalesced `steps` (40 mutations
-  in ≤ 3 frames), `cell_end` with `mutations`, `turn` with usage,
+  in ≤ 3 frames, each step once in its final state), `cell_end` with `mutations`, `turn` with usage,
   `ended`; the descriptor on every frame; an interrupted cell marks
   `interrupted`; frame size never over 64 KiB.
 - Live: a rig run with a 10-object write and a connector call; the
