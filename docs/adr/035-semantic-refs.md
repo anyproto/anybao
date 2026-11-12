@@ -3,7 +3,8 @@
 Status: **Proposed** (2026-09-25, revised 2026-10-16, 2026-11-03 and
 2026-11-04 after the community review, 2026-11-10 after the PR
 review, 2026-11-11 after the community chat review and a replay on
-real windows), experiment on `exp/semantic-ids`
+real windows, 2026-11-12 the collision rule stated as a set lookup,
+with its measured cost), experiment on `exp/semantic-ids`
 Date: 2026-09-25
 Builds on: ADR-001 §4 (span records: `input` on begin, `output` on
 end), ADR-002 (the effect boundary: `http.post` is the one effect
@@ -176,13 +177,44 @@ the space `bafyreia3nqgj…` as `a3n`.
 
 Keys are given **in text order, and the first id seen keeps its
 key**. The wall reads the text of one call from its start; each new
-id takes its slice. If that slice is already taken by another id of
-the same kind in this call, the new id **shifts** its slice one
-character along the id (characters 2–4, then 3–5, …) until it is
-free; two different ids differ somewhere, so the shift always ends.
-The length never changes and a key already given never changes. A
-collision is therefore not an error: it costs nothing and raises
-nothing. The kind keeps the three id spaces apart.
+id takes its slice. If that slice is already the key of another id
+of the same kind in this call, the new id **shifts** its slice one
+character along the id (characters 2–4, then 3–5, …) until the slice
+is free. The length never changes and a key already given never
+changes. A collision is therefore not an error: it raises nothing.
+The kind keeps the three id spaces apart.
+
+"Free" is one question to one set: the keys already given in this
+call, one key per id. The wall never compares an id with another id,
+and never looks at the other slices of an id that has its key. Two
+ids that start with the same characters therefore part after one
+step: the first holds `gyu`, the second takes `yuu`, and `yuu` is
+free because no id holds it as a key — that both ids contain it does
+not matter. No reader matches a key against an id either: a handle
+resolves by a lookup in the table of its call, in both directions.
+An id of 59 characters has about 50 slices. If every one of them is
+taken, the id takes its first slice with one more character (and one
+more again, if needed); no measured call comes near this.
+
+The cost is linear in the number of ids in the call:
+
+| | Measured (2026-11-12, one account, 50 days, 3,554 model calls of 517 conversation runs) |
+|---|---|
+| Lookups per id | 1.0002 (56,149 lookups for 56,135 keys given) |
+| Calls with a shift | 14 of 3,554 (0.4%), all in one run |
+| Ids that shift | 14 of 56,135 (0.02%) |
+| Steps per shift | 1 in all 14 cases |
+| Largest call | 55 lookups |
+| Time per call | 0.02 ms for the keys; 1.5 ms to find the ids in the text (130,000 characters on average) |
+
+With `n` ids of one kind in a call and 32,768 three-character keys,
+the chance that a call has a collision is about `n(n−1)/65,536`: 0.4%
+at the median run (17 ids), 2.4% at 40 ids, about 20% at the largest
+run measured (120 ids). An id that collides takes `1/(1 − n/32,768)`
+steps on average, 1.004 at 120 ids. The expected work is therefore
+`n` lookups plus a fraction of one. The worst case, with ids built on
+purpose, is one step per key already given, `n²/2` lookups in all:
+7,200 at 120 ids, still less than the scan of the text.
 
 A key is a function of the id and of the text before it, and of
 nothing else — not of the process, the device, the run or the text
@@ -195,7 +227,8 @@ after it. Two consequences carry the design:
   characters 18 of 2,469 conversation runs had a collision among
   their links and stamp ids (2026-11-11, four accounts; 17 of the 18
   on one account, and one a pair of space ids with the same hash and
-  different suffixes, which share every slice up to the suffix). In
+  different suffixes: the later one takes its key after one step,
+  like any other pair). In
   two different chats an object may rarely get two different keys;
   nothing depends on them being equal, because no handle outlives
   its call (§5b).
@@ -598,15 +631,42 @@ call, and nothing else would change.
 - **Incrementing numbers as handles** (`any://task/132`, the review's
   proposal) — a counter that lasts across runs needs a store, and the
   trace cannot be one: it is device-local and retention drops its
-  head. A number by first appearance in the call needs no store and
-  is cache-stable, but it is dense: a mis-typed number is almost
-  always another live object (Consequences). On Qwen3 it is also
-  longer than a three-character slice (6.1 tokens against 5.5),
-  because digits split.
+  head.
+- **A number by first appearance in the call** (the 11-12 chat
+  proposal: the table per call of this ADR, with `ref:object/7` for
+  the seventh object in the text) — no store, cache-stable, no
+  collision rule, and the simplest to explain. Three things speak
+  against it. It is dense: every number up to the count is live, so a
+  mis-typed number, or a number cut short at the output limit (`1`
+  from `12`), is another live object and nothing reports it
+  (Consequences); a slice in the same state misses the table. Every
+  key depends on the order of the text, where a slice depends on it
+  for the ids that shift (0.02%): one object reads as `7` in one call
+  and `9` in another, and a part that the wall cannot rewrite (a
+  signed thinking part) holds a stale number as soon as the text
+  before it changes. And it saves no tokens: with one table per call
+  a handle costs 5.5 tokens on Qwen3 at 17 objects and 6.1 at 120,
+  because each digit is a token, against 5.5 for a slice; on `o200k`
+  a number is one token, 5.0 against 5.6. The dense key space is the
+  reason that decides, and it weighs only as much as models damage
+  handles — which the fluency tests measure, with the number as an
+  arm (open question 5).
 - **A key that grows from one character** (the 11-11 chat proposal) —
   the shortest handle (4.0 tokens) and cache-stable with first-seen
   order, but dense in the same way: `gy` exists only because `g` is
   taken, so a dropped character expands, silently, to another object.
+- **A key that extends on a collision** (the later id keeps its
+  first slice and takes a fourth character: `gyu`, then `gyuu`) —
+  the same set lookup and the same cost as the shift, and every key
+  stays the start of its id. It fails on three points. A dropped last
+  character turns the longer key into the shorter one, so the model
+  names the other object of the pair, silently — and the pair is the
+  two objects it is most likely to confuse; a shifted key that loses
+  a character has the wrong length and misses the table. The prefix
+  does not identify the id: `gyuu` starts both ids of the pair, and
+  for two space ids with one hash a prefix that tells them apart is
+  the whole hash, about 53 characters. And the length is no longer
+  fixed, which the rule for a damaged handle relies on (Consequences).
 - **A pure six-character slice, a collision raises** (the 11-10
   revision) — a function of the id alone, which looked necessary for
   the cache and is not. It paid two tokens per handle over three
@@ -685,12 +745,15 @@ call, and nothing else would change.
    links or stamp ids; the rest were bare. A bare id gives no kind
    except by its shape, and its handle expands to a uri where the
    model may have wanted a bare id.
-5. Key length: the draft starts at three characters (2026-11-11).
-   Four is the fallback (6.2 tokens against 5.5; a random key hits a
-   live object about once in 30,000 instead of once in 1,000; 2 runs
-   with a collision in 2,469 instead of 18). The model-fluency tests
-   (Verification) decide whether three is enough for the weak
-   models.
+5. Key length and key shape: the draft starts at a three-character
+   slice (2026-11-11). Four characters is the fallback (6.2 tokens
+   against 5.5; a random key hits a live object about once in 30,000
+   instead of once in 1,000; 2 runs with a collision in 2,469
+   instead of 18). The model-fluency tests (Verification) decide
+   whether three is enough for the weak models. The same tests
+   measure a number by first appearance (Alternatives): if models
+   copy a number with no more wrong-object errors than a slice, the
+   number is the simpler key and this question opens again.
 
 ## Verification
 
@@ -698,13 +761,17 @@ Before accepting: re-run S1–S6 and S10 of the probe suite (the series
 where lookups and lost links showed) on sonnet-5 AND one weaker model
 (GLM or Kimi via OpenRouter), measuring re-lookup cells, missing-link
 turns and cost against round 2, and counting `unresolvedRefs` and
-wrong expansions per key length (three and four characters).
+wrong expansions per key shape (a slice of three and of four
+characters, and a number by first appearance).
 
 Unit-test the key rule: the `bafy` prefix drop, the three-character
 slice, the dot of a space id skipped, first seen keeps its key, a
 forced collision shifts the later id and raises nothing, a second
 forced collision shifts again, two space ids with one hash and two
-suffixes get two keys, kinds do not collide with each other.
+suffixes get two keys after one step, an id whose every slice is
+taken extends its first slice by one character, the number of set
+lookups for a window equals its ids plus its shift steps, kinds do
+not collide with each other.
 
 Test the wall in `llm@v1`: the inward rewrite of a window renders
 byte-identical on two runs, and a window that extends another renders
