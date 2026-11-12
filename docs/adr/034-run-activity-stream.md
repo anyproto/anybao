@@ -65,7 +65,8 @@ materializes the run on a client that missed the start):
 ```jsonc
 "run": {"id": "run_…", "title": "fix the flaky test",   // the chat text, or the program spec
         "startedAt": 1761200000.0, "program": "agent:toolcaller@v1",
-        "chat": {"space": "<id>", "object": "<chat id>"} | null,    // null for trigger/control runs
+        "chat": {"space": "<id>", "object": "<chat id>"} | null,    // null for runs with no chat
+        "trigger": "<trigger id>" | null,                          // what fired a run nobody typed (ADR-023 §8)
         "device": "<peer id>"},                                    // ADR-015 identity
 "budget": {"fuel":  {"used": 12e9, "limit": 250e9},
            "wall":  {"elapsedS": 41.2, "limitS": 1200},
@@ -98,6 +99,12 @@ that ends outside any cell. A model call made by cell code (a
 subagent, `llm.chat` in a cell) is a step; its tokens still count in
 `budget.tokens`. The cell is the outermost `cell`/`bash` span: a
 subagent's own cells are below the step grain.
+
+**Routing on the client** (owner, 2026-11-12). Every run emits, the
+scheduled jobs included. The client places a run by its descriptor:
+`chat` equal to the open chat → the chat window; any other run → the
+status bar, named by `title`, with `trigger` telling a scheduled job
+from a conversation in another chat. The host does not filter.
 
 Nothing is retried or stored. A client that joins mid-run reads the
 descriptor off the next frame and renders from there. The durable

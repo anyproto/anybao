@@ -2463,6 +2463,7 @@ impl RunCtx {
         spec: &str,
         args: &Value,
         stamp: &Value,
+        trigger: Option<&str>,
     ) -> crate::activity::RunEmitter {
         let run = crate::activity::descriptor(
             stamp["id"].as_str().unwrap_or(""),
@@ -2470,6 +2471,7 @@ impl RunCtx {
             stamp["startedAt"].as_f64().unwrap_or(0.0),
             spec,
             args["space"].as_str().zip(args["chatId"].as_str()),
+            trigger,
             self.self_peer.as_deref(),
         );
         // the runner sets the gauge when the store exists; the
@@ -2496,8 +2498,9 @@ impl RunCtx {
         spec: &str,
         args: &Value,
         stamp: &Value,
+        trigger: Option<&str>,
     ) -> Value {
-        let emitter = self.emitter(broker, spec, args, stamp);
+        let emitter = self.emitter(broker, spec, args, stamp, trigger);
         emitter.started();
         let run = emitter.run().clone();
         broker.emitter = Some(emitter);
@@ -2590,7 +2593,7 @@ impl RunCtx {
         let activity: crate::broker::SharedActivity = Default::default();
         broker.activity = Some(activity.clone());
         let stamp = run_stamp(&run_id, spec, args);
-        let described = self.start_activity(&mut broker, spec, args, &stamp);
+        let described = self.start_activity(&mut broker, spec, args, &stamp, trigger);
         self.live_runs.lock().unwrap().insert(
             run_id.clone(),
             crate::triggers::LiveRun {
@@ -2675,7 +2678,7 @@ impl RunCtx {
         let activity: crate::broker::SharedActivity = Default::default();
         broker.activity = Some(activity.clone());
         let stamp = run_stamp(&run_id, spec, args);
-        let described = self.start_activity(&mut broker, spec, args, &stamp);
+        let described = self.start_activity(&mut broker, spec, args, &stamp, None);
         self.live_runs.lock().unwrap().insert(
             run_id.clone(),
             crate::triggers::LiveRun {
@@ -4327,6 +4330,7 @@ mod tests {
             100.0,
             "agent:toolcaller@v1",
             None,
+            Some("trg_1"),
             None,
         );
         let em = RunEmitter::new(queue.clone(), run, b.fuel_gauge.clone(), 1000, 1200.0, None);
@@ -4384,7 +4388,10 @@ mod tests {
             assert_eq!(e["scope"], "account");
             assert_eq!(e["target"], "run_act");
             assert_eq!(e["data"]["run"]["title"], "tidy up");
+            // the client routes on these two: no chat = not a chat
+            // window's run; the trigger says what fired it
             assert!(e["data"]["run"]["chat"].is_null(), "no chat on this run");
+            assert_eq!(e["data"]["run"]["trigger"], "trg_1");
         }
         // the merged steps frame: each step once, in its final state,
         // seq = its record in the trace

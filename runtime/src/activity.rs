@@ -490,11 +490,14 @@ pub fn descriptor(
     started_at: f64,
     program: &str,
     chat: Option<(&str, &str)>,
+    trigger: Option<&str>,
     device: Option<&str>,
 ) -> Value {
     json!({
         "id": run_id, "title": title, "startedAt": started_at, "program": program,
         "chat": chat.map(|(space, object)| json!({"space": space, "object": object})),
+        // what fired a run nobody typed: the trigger's id (ADR-023 §8)
+        "trigger": trigger,
         "device": device,
     })
 }
@@ -1077,6 +1080,7 @@ mod tests {
             1761200000.0,
             "agent:toolcaller@v1",
             Some(("sp", "chat1")),
+            None,
             Some("peer1"),
         );
         RunEmitter::new(
