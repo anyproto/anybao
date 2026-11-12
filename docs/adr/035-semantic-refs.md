@@ -354,15 +354,19 @@ The loop:
 - binds `getRef` in the `_ctx` prelude cell next to `baoSpaceConfig`
   (§4) — one function over the table of §2, no class, no query sugar;
 - adds one line to the user message suffix, each entry a markdown
-  link whose text is name + where and whose target is the **uri**,
-  with the type as a fragment on an object: `[refs: [Dune
-  (Garden)](any://o/<s>/<o>#book) · … · [Garden](any://s/<spaceId>)]`.
+  link whose text is the name and whose target is the **uri**, with
+  the type as a fragment on an object, and where the thing is as plain
+  text after the link: `[refs: [Dune](any://o/<s>/<o>#book) in Garden
+  · … · [Garden](any://s/<spaceId>)]`. The link text is the name and
+  nothing else: on the staging rig, with the place inside the link
+  text (`[Dune (Garden)]`), a model passed `"Dune (Garden)"` to
+  `getRef` as the name.
 
 The loop writes uris; the model never reads them. The wall renders
 the line with the rest of the message (§5), and the model reads:
-`[refs: [Dune (Garden)](ref:object/gyu#book) · [Books
-(Garden)](ref:object/k7m#folder) · [demo.png (on
-Dune)](ref:file/3V2) · [Garden](ref:space/a3n)]`. The link shape is
+`[refs: [Dune](ref:object/gyu#book) in Garden ·
+[Books](ref:object/k7m#folder) in Garden ·
+[demo.png](ref:file/3V2) on Dune · [Garden](ref:space/a3n)]`. The link shape is
 the one the model reads and writes everywhere else. No long ids reach
 the model.
 
@@ -381,10 +385,7 @@ inject with a view gets the same line, rebuilt.
 ### 4. Use — `getRef` and two sentences in `_core`
 
 `getRef(x)` returns the dict of §1 for one entry. `x` is a uri
-(`any://o/…`, `any://f/…`), a space id, or a name (`"Dune"`). The
-text of a refs-line link (`"Dune (Garden)"`, `"demo.png (on Dune)"`)
-is a name too: on the staging rig the first thing a model passed was
-the link text as it read it.
+(`any://o/…`, `any://f/…`), a space id, or a name (`"Dune"`).
 
 The model writes a handle — `getRef("ref:object/gyu")` — and the
 kernel never sees it: the wall expands the cell source before the
@@ -413,10 +414,12 @@ There is no inverse. The model never holds a uri to turn into a
 handle: every link it reads arrived as a handle through the wall
 (§5), and a call's result is rendered the same way.
 
-`_core` (ADR-005 §5) gains two sentences: *the `[refs: …]` line on a
-message names the things this conversation recently touched;
-`getRef(handle or name)` gives a ref's `spaceId`, `objectId` and
-`uri`, which go where a call takes them.* And: *link a thing in a
+`_core` (ADR-005 §5) gains a short paragraph: *the `[refs: …]` line
+on a message names the things this conversation recently touched;
+pass a handle from it, copied whole, to `getRef`: it gives the ref's
+`spaceId`, `objectId` and `uri`, which go where a call takes them; a
+name on the line works too while one ref has it.* The handle comes
+first because it is the one argument that is never ambiguous. And: *link a thing in a
 reply as `[name](ref:…)`, the way the window shows it.* Nothing else
 is taught: no query recipe, no resolution inside any@v1, no rule
 about which spelling goes where — the wall owns that. A ref whose
@@ -603,7 +606,7 @@ Exchange 2, the user sends demo.png, "this is the cover". At start
 the query over run 1 yields two ids, the read names them `Dune`
 (book) and `Garden`; `_ctx` binds the resolver, and the loop ends the
 message with the stamp and a refs line of two links. The model reads
-`[refs: [Dune (Garden)](ref:object/gyu#book) ·
+`[refs: [Dune](ref:object/gyu#book) in Garden ·
 [Garden](ref:space/a3n)]`, and the window shows exchange 1's reply
 as `Added [Dune](ref:object/gyu)` — the same key, because the window
 comes first in the text and Dune's id was first seen there. The model
@@ -616,8 +619,8 @@ changed it.
 Exchange 3, "what's in that image?". The window shows the two past
 turns exactly as today (stamp, `[ran: any.attach_file×1 · run_…]`,
 replies) with handles for their links; the current message ends with
-`[refs: [demo.png (on Dune)](ref:file/3V2) · [Dune
-(Garden)](ref:object/gyu#book) · [Garden](ref:space/a3n)]`. The
+`[refs: [demo.png](ref:file/3V2) on Dune ·
+[Dune](ref:object/gyu#book) in Garden · [Garden](ref:space/a3n)]`. The
 cell `llm.read(getRef("ref:file/3V2")["uri"], "describe the image")`
 is where round 2 failed: the file link was in no reply, the model
 built a wrong one. Had the user renamed the book to "Dune: Part One"

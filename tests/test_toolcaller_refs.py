@@ -77,9 +77,9 @@ def test_refs_come_from_the_window_runs_and_are_named_by_one_read():
     line = next(ln for ln in text.splitlines() if ln.startswith("[refs: "))
     assert line == (
         "[refs: "
-        f"[demo.png (on Dune: Part One)](any://f/{GARDEN}/{FILE}) · "   # newest run first
-        f"[Dune: Part One (Garden)]({DUNE_URI}#book) · "                # the name of today
-        f"[Books (Garden)](any://o/{GARDEN}/{BOOKS}#folder) · "         # a reply link
+        f"[demo.png](any://f/{GARDEN}/{FILE}) on Dune: Part One · "     # newest run first
+        f"[Dune: Part One]({DUNE_URI}#book) in Garden · "               # the name of today
+        f"[Books](any://o/{GARDEN}/{BOOKS}#folder) in Garden · "        # a reply link
         f"[Garden](any://s/{GARDEN})]")
     # the deleted object, the failed write and the other run's object are absent
     assert GONE not in text and "ffffff" not in text
@@ -165,10 +165,6 @@ def test_get_ref_by_name_unique_ambiguous_and_missing():
     g = get_ref(TABLE)
     assert g("dune") == TABLE[0]
     assert g("demo.png")["uri"] == f"any://f/{GARDEN}/{FILE}"
-    # the text of a refs-line link names the same ref, and tells two apart
-    assert g("Dune (Garden)") == TABLE[0]
-    assert g("demo.png (on Dune)")["fileId"] == FILE
-    assert g("Notes (Garden)")["objectId"] == BOOKS
     with pytest.raises(KeyError) as e:
         g("Notes")
     assert f"any://o/{GARDEN}/{BOOKS}" in str(e.value) and f"any://o/{WORK}/{GONE}" in str(e.value)

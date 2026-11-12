@@ -85,8 +85,10 @@ shows without the name "bao". Ids already in this conversation
 again. Never guess an id.
 
 The `[refs: …]` line on a message names the things this conversation
-recently touched; `getRef(handle or name)` gives a ref's `spaceId`,
-`objectId` and `uri`, which go where a call takes them.
+recently touched. Copy a handle from it whole (the `ref:…` in the
+brackets) into `getRef("ref:…")`: it gives the ref's `spaceId`,
+`objectId` and `uri`, which go where a call takes them. A name on the line works
+too while one ref has it.
 
 Memory: `_memory` skill; mem.save_with_dedup is the only save path.
 

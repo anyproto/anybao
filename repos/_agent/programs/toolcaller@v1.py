@@ -212,22 +212,24 @@ def _ref_label(text):
 
 
 def _refs_line(table):
-    """ADR-035 §3: the refs line of a message — markdown links, name +
-    where as the text and the URI as the target, the type as a fragment
-    on an object. The loop writes uris; llm@v1 renders them as handles."""
+    """ADR-035 §3: the refs line of a message — markdown links, the
+    name as the text and the URI as the target, the type as a fragment
+    on an object; where the thing is follows the link as plain text, so
+    the link text is the name and nothing else. The loop writes uris;
+    llm@v1 renders them as handles."""
     names = {r["spaceId"]: r["name"] for r in table if r["kind"] == "space"}
     objects = {r["objectId"]: r["name"] for r in table if r["kind"] == "object"}
     entries = []
     for r in [r for r in table if r["kind"] != "space"][:REFS_LINE_CAP]:
         if r["kind"] == "object":
             where = names.get(r["spaceId"])
-            text = (r["name"] or "untitled") + (f" ({where})" if where else "")
             frag = "#" + r["type"] if re.fullmatch(r"[A-Za-z0-9_-]+", r["type"] or "") else ""
-            entries.append(f"[{_ref_label(text)}]({r['uri']}{frag})")
+            entries.append(f"[{_ref_label(r['name'] or 'untitled')}]({r['uri']}{frag})"
+                           + (f" in {_ref_label(where)}" if where else ""))
         else:
             on = objects.get(r["on"])
-            text = (r["name"] or "file") + (f" (on {on})" if on else "")
-            entries.append(f"[{_ref_label(text)}]({r['uri']})")
+            entries.append(f"[{_ref_label(r['name'] or 'file')}]({r['uri']})"
+                           + (f" on {_ref_label(on)}" if on else ""))
     shown = {r["spaceId"] for r in table if r["kind"] != "space"}
     for r in table:
         if r["kind"] == "space" and (r["spaceId"] in shown or not entries) and r["name"]:
@@ -240,9 +242,9 @@ def _refs_line(table):
 _GET_REF_SRC = '''
 def getRef(x):
     """A ref of this conversation → `{kind, name, spaceId, objectId |
-    fileId, uri, type?}`. `x`: a handle from the `[refs: …]` line or
-    any link you were shown, a space id, or a name on the refs line
-    (with or without its `(where)`).
+    fileId, uri, type?}`. `x`: a handle, copied whole from the
+    `[refs: …]` line or from any link you were shown. A space id works
+    too, and so does a name on the refs line while one ref has it.
     `spaceId` + `objectId` go where a call takes them; `uri` is the
     link. An unknown or ambiguous argument raises — nothing is guessed."""
     if isinstance(x, dict):
@@ -251,9 +253,14 @@ def getRef(x):
         raise TypeError("getRef takes a handle, a link, a space id or a name")
     x = x.strip()
     if x.startswith("ref:"):
-        raise KeyError(f"unknown ref {x}: no handle of this conversation has that "
-                       "key. Copy a handle exactly as it is shown, or find the object "
-                       "with a query.")
+        # a handle reaches the kernel only when it was not expanded: its
+        # key is not one of this conversation, or the cell built the
+        # string from parts, which nothing can expand (ADR-035 §5)
+        raise KeyError(f"unknown ref {x}. A handle works only when it is written "
+                       "whole, as one string literal, exactly as it is shown: do "
+                       "not build it from parts or keep keys in a list. If it was "
+                       "written whole, no ref of this conversation has that key: "
+                       "find the object with a query.")
     def known(ref):
         for r in _refs_table:
             if r["kind"] == ref["kind"] and r.get("uri") == ref.get("uri") \\
@@ -275,17 +282,6 @@ def getRef(x):
         return known({"kind": "space", "spaceId": x})
     want = x.lower()
     hits = [r for r in _refs_table if (r.get("name") or "").lower() == want]
-    if not hits:
-        # the text of a refs-line link: the name plus where it is
-        spaces = {r["spaceId"]: r["name"] for r in _refs_table if r["kind"] == "space"}
-        objects = {r["objectId"]: r["name"] for r in _refs_table if r["kind"] == "object"}
-        def label(r):
-            if r["kind"] == "object":
-                return f"{r['name']} ({spaces.get(r['spaceId'])})"
-            if r["kind"] == "file":
-                return f"{r['name']} (on {objects.get(r.get('on'))})"
-            return None
-        hits = [r for r in _refs_table if (label(r) or "").lower() == want]
     if len(hits) == 1:
         return dict(hits[0])
     def show(r):
@@ -1566,7 +1562,7 @@ def main(args):
         + _apps_lines(c, space, None) +
         "- bound cell globals (spaceConfig args): `currentUserSpace` (the "
         "user's view), `baoSpaceConfig` (this agent space), "
-        "`getRef(handle or name)` (a ref of this conversation)\n"
+        "`getRef(handle)` (a ref of this conversation)\n"
         "- other spaces: `list_spaces()` rows"
         + _user_line(c))
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
