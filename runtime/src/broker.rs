@@ -175,6 +175,9 @@ struct SpanFrame {
     /// Guest-declared narrative kind (getter|mutator|setup|program),
     /// recorded on the end record's meta (ADR-001 §4d). None = undeclared.
     kind: Option<String>,
+    /// Guest-declared label template (ADR-034 §3): narrative like
+    /// `kind`, recorded on the end record's meta, zero authority.
+    label: Option<String>,
     t0: Instant,
     effects: u64,
     mutations: u64,
@@ -574,6 +577,19 @@ impl Broker {
         kind: Option<String>,
         input: Value,
     ) -> Result<String, EffectFailure> {
+        self.try_span_begin_labeled(name, kind, None, input)
+    }
+
+    /// `try_span_begin` with the method's label template (ADR-034 §3,
+    /// `@span(label=…)`): kept on the span frame, stamped on the end
+    /// record's `meta.label`, forwarded to the activity stream.
+    pub fn try_span_begin_labeled(
+        &mut self,
+        name: &str,
+        kind: Option<String>,
+        label: Option<String>,
+        input: Value,
+    ) -> Result<String, EffectFailure> {
         self.span_n += 1;
         let sid = format!("s{}", self.span_n); // execution order => deterministic
         let key = input_key(name, &input);
@@ -646,7 +662,14 @@ impl Broker {
         let cell = self.current_cell.clone();
         if let Some(em) = self.emitter.as_mut() {
             // ADR-034 §2: a cell's immediate child shows as `running`
-            em.span_begin(&sid, name, kind.as_deref(), None, parent.as_deref(), &input);
+            em.span_begin(
+                &sid,
+                name,
+                kind.as_deref(),
+                label.as_deref(),
+                parent.as_deref(),
+                &input,
+            );
         }
         self.writer
             .span_begin(&sid, name, cell.as_deref(), input, &key, parent.as_deref());
@@ -654,6 +677,7 @@ impl Broker {
             id: sid.clone(),
             name: name.into(),
             kind,
+            label,
             t0: Instant::now(),
             effects: 0,
             mutations: 0,
@@ -750,6 +774,10 @@ impl Broker {
             meta.as_object_mut()
                 .unwrap()
                 .insert("kind".into(), json!(k));
+        }
+        if let Some(l) = &top.label {
+            // ADR-001 §4d amended (ADR-034 §3): narrative, like kind
+            meta["label"] = json!(l);
         }
         if let Some(em) = self.emitter.as_mut() {
             em.span_end(

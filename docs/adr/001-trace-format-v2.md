@@ -222,6 +222,12 @@ may flag; the log never lets the label override the boundary fact.
 `meta.kind` is absent when undeclared, so span-free and kind-free
 traces stay byte-identical to the pre-amendment schema.
 
+**`meta.label` beside it (amendment 2026-11-12, ADR-034 §3).** A facade
+may also declare how the call reads to a person (`@span(label=…)`, a
+template over its arguments). It rides `span.begin` beside `kind`, the
+broker stamps it on the end record's `meta.label`, and it is narrative
+in the same sense: it never decides anything. Absent when undeclared.
+
 **The per-cell effects view surfaces immediate children, not just bare
 effects.** `trace.effects_of` (ADR-003 §4) returned only `kind:"effect"`
 records under the *exact* queried span — so an effect nested in a child

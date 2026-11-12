@@ -72,7 +72,7 @@ def load(hits, recs=None, fail=False):
         "memory@v1": SimpleNamespace(memory=lambda client: mem),
     }
     g = {**kernel_globals(), "use": lambda spec: modules[spec],
-         "span": lambda name=None, kind=None: (lambda fn: fn)}
+         "span": lambda name=None, kind=None, label=None: (lambda fn: fn)}
     exec(compile(SRC, "autorecall@v1.py", "exec"), g)
     return g, rec, mem
 

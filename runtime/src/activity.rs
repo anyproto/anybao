@@ -114,7 +114,10 @@ pub fn describe(
     http_any: bool,
     label: Option<&str>,
 ) -> Described {
-    let refs = refs_of(input);
+    let mut refs = refs_of(input);
+    if let Some(l) = label {
+        label_refs(l, input, &mut refs);
+    }
     let hidden = is_hidden(name);
     let by_class = if class == "mutate" {
         "change"
@@ -198,6 +201,52 @@ pub fn refs_of(input: &Value) -> Map<String, Value> {
         }
     }
     refs
+}
+
+/// The values a label's placeholders name (ADR-034 §3 layer 2): a
+/// placeholder is an argument of the method, a dotted path into one
+/// (`{body.name}`), or alternatives (`{body.name|title}`). Each found scalar becomes a ref under the
+/// placeholder's own text, so the client fills the template from the
+/// refs alone. The derived refs (`space`, `object`, …) keep their rule.
+pub fn label_refs(label: &str, input: &Value, refs: &mut Map<String, Value>) {
+    let mut rest = label;
+    while let Some(open) = rest.find('{') {
+        let Some(len) = rest[open..].find('}') else {
+            break;
+        };
+        let key = &rest[open + 1..open + len];
+        rest = &rest[open + len + 1..];
+        if key.is_empty() || key == "n" || refs.contains_key(key) {
+            continue;
+        }
+        // alternatives (`{body.name|title}`): the first path with a value
+        let found = key.split('|').find_map(|path| match lookup(input, path) {
+            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            Some(v @ (Value::Number(_) | Value::Bool(_))) => Some(v.to_string()),
+            _ => None,
+        });
+        let Some(text) = found else { continue };
+        refs.insert(key.into(), json!(clip_text(&text, VALUE_MAX)));
+    }
+}
+
+/// `path` inside `value`, dots as steps. A key may itself hold a dot
+/// (`any.type`), so each step takes the longest key that exists.
+fn lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    if path.is_empty() {
+        return Some(value);
+    }
+    let obj = value.as_object()?;
+    let mut end = path.len();
+    loop {
+        if let Some(child) = obj.get(&path[..end]) {
+            let rest = path[end..].strip_prefix('.').unwrap_or("");
+            if let Some(found) = lookup(child, rest) {
+                return Some(found);
+            }
+        }
+        end = path[..end].rfind('.')?;
+    }
 }
 
 fn domain_of(url: &str) -> &str {
@@ -290,6 +339,14 @@ fn fallback_label(
     }
     let method = name.rsplit_once('.').map_or(name, |(_, m)| m);
     let verb = verb_of(method).map_or_else(|| humanize(method), String::from);
+    // say what exactly, when the arguments name it
+    let verb = if first_word(method) == "search" && refs.contains_key("query") {
+        "Searching for {query}".to_string()
+    } else if refs.contains_key("object") {
+        format!("{verb} {{object}}")
+    } else {
+        verb
+    };
     if refs.contains_key("space") {
         format!("{verb} in {{space}}")
     } else if let Some(s) = service {
@@ -1009,7 +1066,20 @@ mod tests {
             "mutate",
             json!({"spaceConfig": "sp1", "object_id": "o1", "patch": {}}),
         );
-        assert_eq!(upd.label, "Updating in {space}");
+        assert_eq!(upd.label, "Updating {object} in {space}");
+        assert_eq!(
+            d(
+                "any.search",
+                "read",
+                json!({"space": "sp1", "query": "flaky"})
+            )
+            .label,
+            "Searching for {query} in {space}"
+        );
+        assert_eq!(
+            d("linear.search_issues", "read", json!({"q": "crash"})).label,
+            "Searching for {query} in Linear"
+        );
         assert_eq!(upd.refs["space"], "sp1");
         assert_eq!(upd.refs["object"], "o1");
         assert_eq!(
@@ -1033,6 +1103,50 @@ mod tests {
             Some("Updating {object} in {space}"),
         );
         assert_eq!(got.label, "Updating {object} in {space}");
+    }
+
+    #[test]
+    fn a_label_names_the_methods_own_arguments() {
+        // a connector says what exactly: its placeholders are its arguments
+        let got = describe(
+            "linear.create_issue",
+            "mutate",
+            &json!({"team_id": "t1", "title": "Crash on start", "priority": 2}),
+            false,
+            Some("Creating Linear issue “{title}” (P{priority}) {missing} {n}"),
+        );
+        assert_eq!(got.refs["title"], "Crash on start");
+        assert_eq!(got.refs["priority"], "2");
+        assert!(!got.refs.contains_key("missing") && !got.refs.contains_key("n"));
+        // a dotted path reaches into an argument; a key may hold a dot
+        let input = json!({
+            "spaceConfig": "sp1",
+            "body": {"type": "task", "initialProperties": {"any": {"name": "Buy milk"}}},
+            "filter": {"any.type": "task"},
+        });
+        let got = describe(
+            "any.create_object",
+            "mutate",
+            &input,
+            false,
+            Some("Creating {body.type} “{body.initialProperties.any.name}” in {space} {filter.any.type}"),
+        );
+        assert_eq!(got.refs["body.type"], "task");
+        assert_eq!(got.refs["body.initialProperties.any.name"], "Buy milk");
+        assert_eq!(got.refs["filter.any.type"], "task");
+        let alt = describe("x.y", "read", &input, false, Some("{body.name|body.type}"));
+        assert_eq!(alt.refs["body.name|body.type"], "task");
+        assert_eq!(got.refs["space"], "sp1");
+        // a long value is clipped, a structure is not a ref
+        let got = describe(
+            "x.y",
+            "read",
+            &json!({"a": "v".repeat(5000), "b": [1, 2]}),
+            false,
+            Some("{a} {b}"),
+        );
+        assert!(got.refs["a"].as_str().unwrap().len() <= 256);
+        assert!(!got.refs.contains_key("b"));
     }
 
     #[test]
@@ -1243,7 +1357,7 @@ mod tests {
             (Some("done"), Some(9))
         );
         assert_eq!(done["class"], "mutate"); // boundary truth: inner mutations
-        assert_eq!(done["label"], "Updating in {space}");
+        assert_eq!(done["label"], "Updating {object} in {space}");
         assert_eq!(done["refs"], json!({"space": "sp1", "object": "o1"}));
         assert_eq!(
             (done["ok"].as_bool(), done["mutations"].as_u64()),

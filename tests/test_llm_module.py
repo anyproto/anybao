@@ -43,7 +43,7 @@ def load(effect=None):
     k = load_kernel(effect=_kernel_effect)
     g = {
         "effect": effect or (lambda name, payload: pytest.fail(f"unexpected effect {name!r}")),
-        "span": lambda name=None, kind=None: (lambda f: f),
+        "span": lambda name=None, kind=None, label=None: (lambda f: f),
         "use": lambda spec: pytest.fail(f"unexpected use({spec!r})"),
         "Blob": k.Blob, "blob": k.blob, "EffectError": EffectError,
     }

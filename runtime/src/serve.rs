@@ -4406,7 +4406,7 @@ mod tests {
             assert_eq!(*name, s["name"], "seq is the trace handle");
         }
         assert_eq!(steps[0]["class"], "read");
-        assert_eq!(steps[0]["label"], "Reading in {space}");
+        assert_eq!(steps[0]["label"], "Reading {object} in {space}");
         assert_eq!(steps[0]["refs"]["object"], "o1");
         assert_eq!(steps[1]["category"], "self");
         assert_eq!(posted[1]["data"]["cell"]["turn"], 2);

@@ -7,6 +7,7 @@ boundary."""
 import inspect as host_inspect
 import types
 
+import pytest
 from kernelenv import load_kernel
 
 SRC = '''\
@@ -255,3 +256,53 @@ def test_help_on_http_verbs_and_env_teaches_credential_injection():
     env_doc = app.describe(app.env)
     assert "secrets never enter guest code" in env_doc, env_doc
     assert "credential=" in env_doc, env_doc
+
+
+def test_span_label_rides_span_begin_and_is_checked_at_load():
+    # ADR-034 §3 layer 2: the label is a template over the method's own
+    # arguments; the kernel sends it beside `kind`
+    app = load_kernel()
+    recorded = []
+    app._effect = lambda name, payload=None: recorded.append((name, payload)) or {}
+    mod = types.ModuleType("linear")
+    mod.span = app.span
+    exec(compile(
+        '@span(kind="mutator", label="Creating the issue “{title}” in {team.key}")\n'
+        "def create_issue(team, title, *, draft=False):\n"
+        "    return 1\n"
+        "\n"
+        "\n"
+        '@span(kind="getter")\n'
+        "def plain(x):\n"
+        "    return x\n",
+        "<m>", "exec"), mod.__dict__)
+    mod.create_issue({"key": "BAO"}, "Crash")
+    assert recorded[0] == ("span.begin", {
+        "name": "linear.create_issue", "kind": "mutator",
+        "input": {"team": {"key": "BAO"}, "title": "Crash"},
+        "label": "Creating the issue “{title}” in {team.key}"})
+    assert mod.create_issue.__span_label__.startswith("Creating")
+    recorded.clear()
+    mod.plain(1)
+    assert "label" not in recorded[0][1]      # no label, no field
+    assert mod.plain.__span_label__ is None
+
+    def load(src):
+        m = types.ModuleType("bad")
+        m.span = app.span
+        exec(compile(src, "<m>", "exec"), m.__dict__)
+        return m
+
+    # a placeholder that names no argument fails when the module loads
+    with pytest.raises(ValueError, match="names no argument"):
+        load('@span(label="Updating {titel}")\ndef f(title):\n    pass\n')
+    with pytest.raises(ValueError, match="non-empty"):
+        load('@span(label=" ")\ndef f(title):\n    pass\n')
+    # host-derived refs, keyword-only arguments and **kwargs methods pass
+    load('@span(label="Updating {object} in {space} ×{n}")\ndef f(space, object_id):\n    pass\n')
+    load('@span(label="{draft}")\ndef f(*, draft=False):\n    pass\n')
+    load('@span(label="{anything.at.all}")\ndef f(**named):\n    pass\n')
+    # alternatives: the first argument path that holds a value fills the slot
+    load('@span(label="{body.name|title}")\ndef f(body, title=None):\n    pass\n')
+    with pytest.raises(ValueError, match="names no argument"):
+        load('@span(label="{body.name|titel}")\ndef f(body, title=None):\n    pass\n')

@@ -310,6 +310,13 @@ at best fail its first inner effect. The loop's structural spans
 (ADR-028 §4) does not substitute spans at all — there the program's
 structure is what is under test.
 
+**`label=` (amendment 2026-11-12, ADR-034 §3).** `span(name=None,
+kind=None, label=None)`: `label` is a template over the method's own
+arguments (`"Creating the issue “{title}”"`, dotted paths and `a|b`
+alternatives allowed) that the run activity stream shows while the
+call runs. The decorator checks every placeholder against the
+signature at decoration time and raises on one that names nothing.
+
 **Name defaults to the anchor (amendment 2026-08-14, with ADR-013).**
 `span(name=None, kind=None)`: when `name` is omitted, the recorded
 name is `<module>.<function>` read off the decorated def at decoration

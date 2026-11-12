@@ -146,7 +146,9 @@ impl crate::bindings::KernelImports for &mut Host {
                     let n = p["name"].as_str().unwrap_or("").to_string();
                     let input = p.get("input").cloned().unwrap_or(json!({}));
                     let kind = p.get("kind").and_then(|k| k.as_str()).map(String::from);
-                    let sid = self.broker.try_span_begin(&n, kind, input)?;
+                    // ADR-034 §3: how the call reads to a person
+                    let label = p.get("label").and_then(|k| k.as_str()).map(String::from);
+                    let sid = self.broker.try_span_begin_labeled(&n, kind, label, input)?;
                     // ADR-028 §3a: a served facade — the guest skips the body
                     let mut reply = json!({"span": sid});
                     if let Some(m) = self.broker.span_served() {

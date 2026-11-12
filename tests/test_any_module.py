@@ -59,7 +59,7 @@ def load(fx, now=1_787_673_600.0, offset_s=0):
     # the real implementations, loaded from the guest kernel source
     from kernelenv import load_kernel
     k = load_kernel(effect=lambda n, p: _kernel_effect(n, p, now, offset_s))
-    g = {"effect": fx, "span": lambda name=None, kind=None: (lambda f: f),
+    g = {"effect": fx, "span": lambda name=None, kind=None, label=None: (lambda f: f),
          "use": None, "ts_s": k.ts_s, "instant": k.instant, "now": k.now,
          "tz_offset": k.tz_offset,
          "Blob": k.Blob, "blob": k.blob}

@@ -290,7 +290,7 @@ def guest_use(any_server, runtime_values):
 
     def use(spec):
         if spec not in cache:
-            g = {"effect": eff, "span": lambda n=None, kind=None: (lambda f: f), "use": use,
+            g = {"effect": eff, "span": lambda *a, **k: (lambda f: f), "use": use,
                  **kernel_globals(now=int(_time.time()), offset_s=0)}
             # flat <spec>.py or the tool-authoring folder <spec>/program.py
             # — same order as the runtime's local_source_path

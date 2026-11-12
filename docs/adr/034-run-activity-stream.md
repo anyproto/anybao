@@ -195,17 +195,29 @@ the trace views, `module.resolve` and `time.now` before; it now skips
 the whole set.)
 
 **Layer 2 — the label on the method** (owner, 2026-10-23). The `@span`
-decorator (ADR-003 §4b) takes `label=` beside `kind=`: a template over
-`{space}`, `{object}`, `{type}`, `{n}`, `{service}`, `{query}`,
-`{domain}`, `{command}`, the refs of §3.
+decorator (ADR-003 §4b) takes `label=` beside `kind=`: a template that
+says **what exactly** the call does, over (amended 2026-11-12):
+
+- the method's own arguments by name: `{title}`, `{term}`;
+- a dotted path into one: `{body.name}` (a key may hold a dot, the
+  longest existing key wins: `{filter.any.type}`);
+- alternatives, the first that holds a value: `{body.name|title}`;
+- the derived refs below (`{space}`, `{object}`, `{type}`, `{query}`,
+  `{domain}`, `{command}`) and `{n}`, the client's fold count.
 
 ```python
 @span(kind="mutator", label="Updating {object} in {space}")
 def update_object(self, space, object_id, patch): ...
 
-@span(kind="mutator", label="Creating an issue in Linear")
-def create_issue(self, title, team, ...): ...
+@span(kind="mutator", label="Creating the Linear issue “{title}”")
+def create_issue(self, team_id, title, ...): ...
 ```
+
+The host copies each placeholder's value from the span input into the
+step's `refs` under the placeholder's own text (scalars only, clipped
+to 256 bytes), so the client fills the template from `refs` alone. A
+placeholder with no value (an optional argument not passed) has no
+ref; the client drops it from the line with its quotes.
 
 The guest records it on the `span.begin` payload like `kind`; the
 broker keeps it on the span frame and stamps it on the end record's
@@ -214,19 +226,26 @@ and `name`, and carries zero authority — `class` stays the oracle).
 The host forwards it on the step verbatim. The words live next to the
 method, deploy with the program (hash-gated, no `anyrt` rebuild), and
 cannot go stale on a rename. Adding a function and writing how it
-reads to a person is one edit in one place. `label` is optional:
-deploy validation (ADR-010 §4) keeps requiring `kind` and only checks
-that a given `label` uses known placeholders. For the `any@v1` flat
-surface the label rides `__any_public__` next to `kind` and `_export`
-passes it to the facade span.
+reads to a person is one edit in one place. `label` is optional. A
+placeholder that names no argument of the method is an authoring
+error: the kernel raises it when the module loads (amended 2026-11-12
+— the decorator knows the signature, the deploy scan does not), so
+the program's tests and its first run report it. A method that takes
+`**kwargs` accepts any name. For the `any@v1` flat surface the label
+rides `__any_public__` next to `kind`, `_export` checks it against the
+public signature and passes it to the facade span. A program with a
+label needs a kernel that knows `label=`: it deploys after the `anyrt`
+that carries this change, the order the release channels already keep.
 
 **Layer 3 — the fallback label**, for every name with no template:
 `"{verb} {where}"`, verb from the method prefix (`list|get|search|
 query|read|find|one|whoami|me → Reading`, `create|add|put|append →
 Creating`, `update|set|edit|patch|modify|move|upsert|mark → Updating`,
 `delete|remove|trash|cancel → Deleting`, else the method name
-humanized), `where` = `in {space}` when a space ref exists, else the
-service name (`in Linear`), else nothing. So `granola.get_note`
+humanized), followed by `{object}` when an object ref exists
+(`Updating {object} in {space}`) — a `search…` method with a query ref
+reads `Searching for {query}` — and `where` = `in {space}` when a space
+ref exists, else the service name (`in Linear`), else nothing. So `granola.get_note`
 renders "Reading in Granola" on day one, and a connector that does not
 exist yet renders the same way. A bare effect has no method to read a
 verb from and can carry no `@span` label, so three generic lines cover
