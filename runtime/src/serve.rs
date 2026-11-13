@@ -93,6 +93,10 @@ pub fn find_space(c: &Client, name_or_id: &str) -> Result<String> {
 /// so a fork must be impossible rather than resolvable). The server
 /// runs the registry-convergence wait itself; `409 bundle.not_ready`
 /// (a winner's tree still syncing to this device) is retried briefly.
+/// `503 catalog.setup_timeout` (the call ran past a server bound, up
+/// to ~3.5 min) is NOT retried here: it fails the start, and whoever
+/// runs serve restarts it — the miss is logged and shown at once
+/// instead of waited out in silence.
 /// A non-derived root is a server this runtime does not support:
 /// serve stops naming the object. The catalog route is REQUIRED — a
 /// server without it is unsupported (no-backcompat).
@@ -4638,6 +4642,27 @@ mod tests {
         ]);
         assert_eq!(general_chat(&c, "sp").unwrap(), "chat-root");
         assert_eq!(log.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn general_chat_fails_the_start_on_a_setup_timeout() {
+        // the call already ran past a server bound: one call, the
+        // error names the step's code, the caller restarts serve
+        let (c, log) = scripted(&[
+            (
+                503,
+                json!({"error": {"code": "catalog.setup_timeout",
+                    "message": "the setup did not finish in time; retry",
+                    "details": {"spaceId": "sp", "usecaseId": "general-chat", "step": "space"}}}),
+            ),
+            chat_setup_reply(false),
+        ]);
+        let err = format!("{:#}", general_chat(&c, "sp").unwrap_err());
+        assert!(
+            err.starts_with("general-chat catalog setup: 503 catalog.setup_timeout"),
+            "{err}"
+        );
+        assert_eq!(log.lock().unwrap().len(), 1);
     }
 
     #[test]
