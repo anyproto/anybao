@@ -46,6 +46,338 @@ def _auto_attachments(text):
     return out
 
 
+# --- refs (ADR-035 §2–§4): what the conversation touched ----------------------
+# Derived at run start from the trace records of the window's runs and
+# one read for the names. The table holds ids, names and types; it
+# holds no handle — llm@v1 makes those, per call (ADR-035 §5).
+
+REFS_LINE_CAP = 15      # entries on the message's refs line
+REFS_TABLE_CAP = 60     # entries behind getRef
+REFS_CHIP_CAP = 5       # chips for what the run changed and did not link
+
+# the minting set (ADR-035 §2): the writes that make a ref
+_MINTING = ("any.create_object", "any.update_object", "any.set_type",
+            "any.move_object", "any.trash", "any.restore",
+            "any.add_to_collection", "any.remove_from_collection",
+            "any.append_markdown", "any.put_markdown", "any.edit_markdown",
+            "any.attach_file")
+
+_REF_SPACE = r"bafy[a-z2-7]{55}\.[A-Za-z0-9]+"
+_SPACE_ID = re.compile(_REF_SPACE)
+_VIEW_SPACE = re.compile(rf"space: ({_REF_SPACE})")
+# a well-formed object or file link as a markdown target, with its text
+_NAMED_LINK = re.compile(
+    rf"\[([^\]]*)\]\(\s*any://(?:o/({_REF_SPACE})/(bafy[a-z2-7]{{55}})"
+    rf"|f/({_REF_SPACE})/([A-Za-z0-9]{{8,}}))\s*\)")
+
+
+# the minting-set spans of some runs, as flat rows: any-store projects
+# no dotted output field, and a write's body can be a whole page, so
+# the ids are lifted out and the rest is left in the store
+def _minting_pipeline(run_match):
+    return [
+        {"$match": {"runId": run_match, "kind": "span", "name": {"$in": list(_MINTING)}}},
+        {"$project": {"runId": 1, "span": 1, "phase": 1, "name": 1, "ok": 1, "seq": 1,
+                      "space": "$input.spaceConfig", "objectIn": "$input.object_id",
+                      "fileName": "$input.name", "objectOut": "$output.objectId",
+                      "fileId": "$output.fileId"}},
+        {"$sort": {"seq": -1}}]
+
+
+def _span_space(value, by_name):
+    """A span's spaceConfig argument → a space id, or None: a row or a
+    bound global carries it, an id is itself, a name resolves through
+    the space list."""
+    if isinstance(value, dict):
+        value = value.get("spaceId") or value.get("id")
+    if not isinstance(value, str):
+        return None
+    if _SPACE_ID.fullmatch(value):
+        return value
+    return by_name.get(value.strip().lower())
+
+
+def _refs_touched(runs, records, replies_by_run, by_name):
+    """The window's runs → what they touched, newest first, no names
+    yet: `[{"kind": "object", "spaceId", "objectId"} | {"kind": "file",
+    "spaceId", "fileId", "on", "name"}]` and the spaces they addressed.
+    `records` are the rows of `_minting_pipeline` for those runs; a span
+    counts when it ended ok. `replies_by_run`: the links each turn's
+    replies carry — the one source that is not a span."""
+    spans = {}
+    for r in records:
+        s = spans.setdefault((r.get("runId"), r.get("span")), {"seq": r.get("seq") or 0})
+        if r.get("phase") == "begin":
+            s.update(name=r.get("name"), space=r.get("space"),
+                     objectIn=r.get("objectIn"), fileName=r.get("fileName"))
+        else:
+            s.update(ok=r.get("ok"), objectOut=r.get("objectOut"),
+                     fileId=r.get("fileId"), seq=r.get("seq") or s["seq"])
+    by_run = {}
+    for (run, _span), s in spans.items():
+        if s.get("ok") and s.get("name"):
+            by_run.setdefault(run, []).append(s)
+    things, spaces, seen = [], [], set()
+
+    def add(thing):
+        ident = (thing["kind"], thing.get("objectId") or thing.get("fileId"))
+        if ident not in seen:
+            seen.add(ident)
+            things.append(thing)
+        if thing["spaceId"] not in spaces:
+            spaces.append(thing["spaceId"])
+
+    for run in reversed(runs):
+        for s in sorted(by_run.get(run, []), key=lambda s: -s["seq"]):
+            space = _span_space(s.get("space"), by_name)
+            oid = s.get("objectIn") or s.get("objectOut")
+            if not space or not isinstance(oid, str):
+                continue
+            if s["name"] == "any.attach_file" and s.get("fileId"):
+                add({"kind": "file", "spaceId": space, "fileId": s["fileId"],
+                     "on": oid, "name": s.get("fileName") or ""})
+            add({"kind": "object", "spaceId": space, "objectId": oid})
+        for text, o_space, o_id, f_space, f_id in replies_by_run.get(run, []):
+            if o_id:
+                add({"kind": "object", "spaceId": o_space, "objectId": o_id})
+            else:
+                add({"kind": "file", "spaceId": f_space, "fileId": f_id,
+                     "on": None, "name": text})
+    return things, spaces
+
+
+def _derive_refs(c, turns, ui_ctx):
+    """ADR-035 §2: the refs table of this run → `([ref], space ids by
+    lowercased name)`, the refs newest first, at most REFS_TABLE_CAP.
+    Ids from one `trace.query` over the runs of the window's raw turns
+    plus the links of their replies; names and
+    types from one read per space, so a renamed object shows its new
+    name and a deleted one drops out. Both are effects: a replay sees
+    the same table."""
+    runs = [t["traceRef"] for t in turns if t.get("traceRef")]
+    replies = {}
+    view_spaces = [(ui_ctx or {}).get("spaceId")]
+    for t in turns:
+        text = "\n".join(t.get("replies") or [])
+        if t.get("traceRef"):
+            replies[t["traceRef"]] = _NAMED_LINK.findall(text)
+        view_spaces += _VIEW_SPACE.findall(t.get("context") or "")
+    records = effect("trace.query", {  # noqa: F821 - guest global
+        "coll": "records", "pipeline": _minting_pipeline({"$in": runs})})["records"] \
+        if runs else []
+    space_rows = c.list_spaces()
+    names = {s["id"]: s.get("name") or "" for s in space_rows}
+    by_name = {}
+    for s in space_rows:
+        if s.get("name"):
+            by_name.setdefault(s["name"].strip().lower(), s["id"])
+    things, spaces = _refs_touched(runs, records, replies, by_name)
+    things = things[:REFS_TABLE_CAP]
+    # one read per space names the objects; a missing row = a deleted object
+    found = {}
+    by_space = {}
+    for t in things:
+        if t["kind"] == "object":
+            by_space.setdefault(t["spaceId"], []).append(t["objectId"])
+    for space, ids in by_space.items():
+        if space not in names:
+            continue   # a space this account left
+        for row in c.query_objects(space, filter={"id": {"$in": ids}}, limit=len(ids)):
+            found[row.get("id")] = row.get("any") or {}
+    table = []
+    for t in things:
+        where = t["spaceId"]
+        if t["kind"] == "object":
+            row = found.get(t["objectId"])
+            if row is None:
+                continue
+            table.append({"kind": "object", "type": row.get("type") or "",
+                          "name": row.get("name") or "", "spaceId": where,
+                          "objectId": t["objectId"],
+                          "uri": f"any://o/{where}/{t['objectId']}"})
+        elif where in names:
+            table.append({"kind": "file", "name": t["name"], "spaceId": where,
+                          "fileId": t["fileId"], "on": t["on"],
+                          "uri": f"any://f/{where}/{t['fileId']}"})
+    for sid in spaces + [v for v in view_spaces if v]:
+        if sid in names and not any(r["kind"] == "space" and r["spaceId"] == sid
+                                    for r in table):
+            table.append({"kind": "space", "name": names[sid], "spaceId": sid})
+    return table, by_name
+
+
+def _ref_label(text):
+    """A name as markdown link text: one line, no brackets."""
+    return " ".join((text or "").replace("[", "(").replace("]", ")").split())[:60]
+
+
+def _refs_line(table):
+    """ADR-035 §3: the refs line of a message — markdown links, the
+    name as the text and the URI as the target, the type as a fragment
+    on an object; where the thing is follows the link as plain text, so
+    the link text is the name and nothing else. The loop writes uris;
+    llm@v1 renders them as handles."""
+    names = {r["spaceId"]: r["name"] for r in table if r["kind"] == "space"}
+    objects = {r["objectId"]: r["name"] for r in table if r["kind"] == "object"}
+    entries = []
+    for r in [r for r in table if r["kind"] != "space"][:REFS_LINE_CAP]:
+        if r["kind"] == "object":
+            where = names.get(r["spaceId"])
+            # a definition marker (`__type__`, `__collection__`) is not
+            # a type name: the object is a type itself, no fragment
+            frag = ("#" + r["type"]
+                    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", r["type"] or "") else "")
+            entries.append(f"[{_ref_label(r['name'] or 'untitled')}]({r['uri']}{frag})"
+                           + (f" in {_ref_label(where)}" if where else ""))
+        else:
+            on = objects.get(r["on"])
+            entries.append(f"[{_ref_label(r['name'] or 'file')}]({r['uri']})"
+                           + (f" on {_ref_label(on)}" if on else ""))
+    shown = {r["spaceId"] for r in table if r["kind"] != "space"}
+    for r in table:
+        if r["kind"] == "space" and (r["spaceId"] in shown or not entries) and r["name"]:
+            entries.append(f"[{_ref_label(r['name'])}](any://s/{r['spaceId']})")
+    return "\n[refs: " + " · ".join(entries) + "]" if entries else ""
+
+
+# the resolver bound in the `_ctx` cell (ADR-035 §4). Cell source: it
+# runs in the kernel, over the table the loop derived.
+_GET_REF_SRC = '''
+def getRef(x):
+    """A ref of this conversation → `{kind, name, spaceId, objectId |
+    fileId, uri, type?}`. `x`: a handle, copied whole from the
+    `[refs: …]` line or from any link you were shown. A space id works
+    too, and so does a name on the refs line while one ref has it.
+    `spaceId` + `objectId` go where a call takes them; `uri` is the
+    link. An unknown or ambiguous argument raises — nothing is guessed."""
+    if isinstance(x, dict):
+        x = x.get("uri") or x.get("spaceId")
+    if not isinstance(x, str) or not x.strip():
+        raise TypeError("getRef takes a handle, a link, a space id or a name")
+    x = x.strip()
+    if x.startswith("ref:"):
+        # a handle reaches the kernel only when it was not expanded: its
+        # key is not one of this conversation, or the cell built the
+        # string from parts, which nothing can expand (ADR-035 §5)
+        raise KeyError(f"unknown ref {x}. A handle is replaced by the real id in "
+                       "your text before the cell runs, like a macro: it works only "
+                       "as a whole literal, never built at run time (no "
+                       "concatenation, no f-string, no key kept in a variable). If "
+                       "it was written whole, no ref of this conversation has that "
+                       "key: find the object with a query.")
+    def known(ref):
+        for r in _refs_table:
+            if r["kind"] == ref["kind"] and r.get("uri") == ref.get("uri") \\
+                    and r["spaceId"] == ref["spaceId"]:
+                return dict(r)
+        return ref
+    if x.startswith("any://"):
+        seg = x[6:].split("#", 1)[0].split("?", 1)[0].split("/")
+        if seg[0] == "o" and len(seg) >= 3:
+            return known({"kind": "object", "spaceId": seg[1], "objectId": seg[2],
+                          "uri": f"any://o/{seg[1]}/{seg[2]}"})
+        if seg[0] == "f" and len(seg) == 3:
+            return known({"kind": "file", "spaceId": seg[1], "fileId": seg[2],
+                          "uri": f"any://f/{seg[1]}/{seg[2]}"})
+        if seg[0] == "s" and len(seg) == 2:
+            return known({"kind": "space", "spaceId": seg[1]})
+        raise ValueError(f"getRef: not an object, file or space link: {x}")
+    if x.startswith("bafy") and "." in x and " " not in x:
+        return known({"kind": "space", "spaceId": x})
+    want = x.lower()
+    hits = [r for r in _refs_table if (r.get("name") or "").lower() == want]
+    if len(hits) == 1:
+        return dict(hits[0])
+    def show(r):
+        return r.get("uri") or f"any://s/{r['spaceId']}"
+    if hits:
+        raise KeyError(f"getRef: {len(hits)} refs are named {x!r}: "
+                       + ", ".join(f"{r['kind']} {show(r)}" for r in hits)
+                       + ". Pass the handle of the one you mean.")
+    near = [r for r in _refs_table if want in (r.get("name") or "").lower()
+            or (r.get("name") or "").lower() in want and r.get("name")]
+    names = ", ".join(repr(r["name"]) for r in (near or _refs_table)[:8] if r.get("name"))
+    raise KeyError(f"getRef: no ref is named {x!r}"
+                   + (f"; the refs are: {names}" if names else "; this conversation has no refs")
+                   + ". Find the object with a query.")
+'''
+
+
+def _refs_ctx(table):
+    """The `_ctx` cell source that binds `getRef` over the table."""
+    return f"_refs_table = {table!r}\n{_GET_REF_SRC}"
+
+
+def _run_touched(run, by_name):
+    """What THIS run wrote, for the reply chips (ADR-035 §5a): the same
+    records the next run's refs come from, read at the end of the run."""
+    if not run:
+        return []
+    records = effect("trace.query", {  # noqa: F821 - guest global
+        "coll": "records", "pipeline": _minting_pipeline(run)})["records"]
+    things, _spaces = _refs_touched([run], records, {}, by_name)
+    return [f"any://o/{t['spaceId']}/{t['objectId']}" if t["kind"] == "object"
+            else f"any://f/{t['spaceId']}/{t['fileId']}" for t in things]
+
+
+def _changed_chips(atts, touched):
+    """The reply's attachment map plus chips for what the run changed
+    and the reply did not link (ADR-035 §5a) — at most REFS_CHIP_CAP
+    more, inside the wire cap of 32."""
+    linked = {a["link"].split("#", 1)[0] for a in atts.values()}
+    out = dict(atts)
+    added = 0
+    for uri in touched:
+        if uri in linked or added >= REFS_CHIP_CAP or len(out) >= 32:
+            continue
+        out[f"a{len(out)}"] = {"type": "link", "link": uri}
+        linked.add(uri)
+        added += 1
+    return out
+
+
+_UNKNOWN_LINK = re.compile(r"\[([^\]]*)\]\(\s*ref:unknown/[A-Za-z0-9]+\s*\)")
+_UNKNOWN_BARE = re.compile(r"`?ref:unknown/[A-Za-z0-9]+`?")
+
+
+def _unsent_note(bad):
+    """ADR-035 §5: the one message a final reply with an unknown ref
+    gets back, in place of being posted."""
+    return ("[runtime: your reply was NOT sent. It links " + ", ".join(bad)
+            + ", and no handle of this conversation has that key. Write the "
+            "reply again. Link a thing only with a handle that is shown to "
+            "you: the `uri` or `link` of a result, the refs line. For an "
+            "object you hold only as an id, read it once more "
+            "(`query_objects` gives each row its `uri`). If you cannot get "
+            "its handle, name the thing without a link.]")
+
+
+def _plain_unknown(text):
+    """A reply that still holds an unknown ref goes out without it: the
+    link text stays, the dead target does not reach the chat."""
+    if "ref:unknown/" not in (text or ""):
+        return text
+    return _UNKNOWN_BARE.sub("(unknown link)", _UNKNOWN_LINK.sub(r"\1", text))
+
+
+def _name_unresolved(reply, results):
+    """ADR-035 §5: a handle the wall could not expand reached a cell as
+    `ref:unknown/<key>`; the result of that cell says so, with the
+    handles as the model wrote them."""
+    bad = reply.get("unresolvedRefs") or []
+    if not bad:
+        return
+    note = ("Unknown ref" + ("s" if len(bad) > 1 else "") + ": " + ", ".join(bad)
+            + " — no handle of this conversation has that key; it was not "
+            "expanded. Copy a handle exactly as it is shown, or find the "
+            "object with a query.")
+    carried = {p["id"] for p in reply["parts"] if p["type"] == "tool_call"
+               and "ref:unknown/" in json.dumps(p.get("args"))}
+    for r in results:
+        if r.get("call_id") in carried:
+            r["content"] = note + "\n\n" + r["content"]
+
+
 RUN_CELL_TOOL = {
     "name": "run_cell",
     "description": (
@@ -165,7 +497,7 @@ IDENTITY_TOKEN_CAP = 2000
 # The bash tool's `as=` pre-check only; the kernel is the authority
 # (`_KERNEL_NAMES`, ADR-003 §3) and refuses any cell that rebinds one.
 _RESERVED_NAMES = {"sh", "fs", "values", "effects", "use", "http", "print",
-                   "effect", "subcell", "span", "help"}
+                   "effect", "subcell", "span", "help", "getRef"}
 
 
 def _shell_info():
@@ -1280,11 +1612,14 @@ def main(args):
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
-        f"- chat object: `{chat_id}`\n"
+        # the chat by the code that holds it, not by its id: an id in
+        # this text is 60 characters no handle can replace (ADR-035 §5)
+        '- chat object: `baoSpaceConfig["chatId"]` (bound in cells)\n'
         f"- agent name: {agent_name}\n"
         + _apps_lines(c, space, None) +
         "- bound cell globals (spaceConfig args): `currentUserSpace` (the "
-        "user's view), `baoSpaceConfig` (this agent space)\n"
+        "user's view), `baoSpaceConfig` (this agent space), "
+        "`getRef(handle)` (a ref of this conversation)\n"
         "- other spaces: `list_spaces()` rows"
         + _user_line(c))
     # `instructions_at: "last_user"` (§1.3): the ids ride the tail of the
@@ -1320,6 +1655,7 @@ def main(args):
     # boot window (recency channel) + auto-recall (topical channel);
     # a quiet run starts fresh — only the task text (ADR-008 §5)
     anchor = None
+    refs, space_names = [], {}   # ADR-035 §2: what the conversation touched
     situation = ""   # llm-only: first conversation / credential nudge (ADR-005 §5)
     if quiet:
         boot, plan = [], {"messages": [], "injected": []}
@@ -1347,6 +1683,7 @@ def main(args):
         if boot:
             boot[-1]["parts"][-1]["cache"] = True   # the boot-end breakpoint
         plan = ar.plan(c, space, user_text, anchor)
+        refs, space_names = _derive_refs(c, hist.raw_tail(turns, anchor), ui_ctx)
     # the window's estimated size, recorded beside turn 1's real usage
     # so the estimator's drift is visible in traces (ADR-006 §2)
     boot_est = sum(hist.approx_tokens(p.get("text", ""))
@@ -1357,7 +1694,8 @@ def main(args):
     ctx_code = (f"currentUserSpace = {ui_ctx!r}\n"
                 f"baoSpaceConfig = {{'spaceId': {space!r}, 'chatId': {chat_id!r}}}\n"
                 'c = use("agent:any@v1")\n'
-                f"c._answering_in({space!r}, {chat_id!r})")
+                f"c._answering_in({space!r}, {chat_id!r})\n"
+                + _refs_ctx(refs))
     if plan["messages"]:
         # the auto-recall injection is framed as a run_cell that bound
         # `rec` (kernel state persists across cells) — make that true,
@@ -1370,6 +1708,7 @@ def main(args):
                 {"role": "user",
                  "parts": [{"type": "text",
                             "text": user_text + situation + context_line
+                            + _refs_line(refs)
                             + _view_apps(c, space, ui_ctx) + user_suffix}]},
                 *plan["messages"]]
 
@@ -1378,6 +1717,11 @@ def main(args):
             body = {"text": text,
                     "agent": {"name": agent_name, "done": done}}
             atts = _auto_attachments(text)
+            if done:
+                # ADR-035 §5a: what the run changed and the reply did
+                # not link still gets a chip
+                atts = _changed_chips(atts, _run_touched(args.get("traceRef"),
+                                                        space_names))
             if atts:
                 body["attachments"] = atts
             c._post_reply(space, chat_id, body)
@@ -1391,6 +1735,8 @@ def main(args):
     replies = []
     last_in = 0        # prompt tokens of the latest call — the context in use
     malformed = 0      # unparseable tool calls so far (traits.malformed_retries)
+    unresolved = []    # handles the wall could not expand (ADR-035 §5)
+    ref_retried = False  # the one retry of a final reply with an unknown ref
     while True:
         wrapup_reason = None
         # a quiet run must not consume the parent's inject/break stream
@@ -1406,6 +1752,7 @@ def main(args):
                                  "parts": [{"type": "text",
                                             "text": msg["text"] + _credential_nudge(msg["text"])
                                             + _context_suffix(inj_ctx)
+                                            + (_refs_line(refs) if inj_ctx else "")
                                             + _view_apps(c, space, inj_ctx)}]})
             elif msg["kind"] == "break":
                 wrapup_reason = "user asked to wrap up"
@@ -1441,7 +1788,16 @@ def main(args):
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":
-            replies = _texts(reply["parts"])
+            bad = reply.get("unresolvedRefs") or []
+            unresolved += bad
+            if bad and not ref_retried:
+                # ADR-035 §5: a reply that links an unknown ref is not
+                # posted; the model gets one more call to write it
+                ref_retried = True
+                messages.append({"role": "user", "parts": [
+                    {"type": "text", "text": _unsent_note(bad)}]})
+                continue
+            replies = [_plain_unknown(t) for t in _texts(reply["parts"])]
             bubble("\n".join(replies), True)
             break
         if reply["stop"] == "length":
@@ -1459,10 +1815,14 @@ def main(args):
         malformed += _run_model_cells(reply["parts"], results,
                                       [t["name"] for t in tools], effect_counts, turn)
         stats["cells"] += len(results)
+        _name_unresolved(reply, results)
+        unresolved += reply.get("unresolvedRefs") or []
         messages.append({"role": "user", "parts": results})
 
     out = {"stop": stop, "turns": turn, "tokens": tokens,
            "replies": replies, "injected": len(plan["injected"])}
+    if unresolved:
+        out["unresolvedRefs"] = unresolved
     if not quiet:
         # ADR-005 §3: the log append is bookkeeping AFTER the reply
         # landed — its failure (a tombstoned seq, an unreachable store)
