@@ -12,8 +12,8 @@ discount as stale, never prompt truth. Memory hits render as distilled facts (pr
 confidence); history hits as *related past discussion* pointers (chunk
 drill-down handles, bodies on demand). Guards: deep-history only (hits
 inside the boot window's raw tail are skipped — auto-recall is the
-TOPICAL channel, the window owns RECENCY), relevance threshold (generic
-messages inject nothing), token budget. accessCount bumps on every
+TOPICAL channel, the window owns RECENCY), relevance gate (generic
+messages inject nothing; only a hybrid reply injects), token budget. accessCount bumps on every
 injected memory item (§4.3, ON from day one); `log_roi` writes the
 per-injection ROI records the §1b metrics read.
 """
@@ -25,15 +25,30 @@ _HISTORY_DATASETS = ("agent_turns", "agent_chunks")
 ROI_DATASET = "agent_roi_injections"
 _WORD = re.compile(r"[a-zA-Z0-9]{5,}")
 
-# min_score is the relevance gate — below it, inject nothing. The
-# server's hybrid search scores are RRF (k=60): rank-1 in ONE leg
-# ≈ 0.0164, rank-1 in both ≈ 0.033 (live-calibrated 2026-07-08). 0.015
-# admits near-top hits from either leg and drops deep-rank noise; a 0-1
-# similarity scale would need a very different constant (ADR-007 §7:
-# scale normalization is an upstream question). max_memory: §5 "top 3–5
-# hits"; max_history: §5 "capped at 2–3".
-POLICY = {"min_score": 0.015, "max_memory": 5, "max_history": 3,
-          "token_budget": 1500}
+# The relevance gate (ADR-007 §5): a hit injects only when its score
+# clears the floor of the scale the reply is on — below it, inject
+# nothing. `min_score` is the floor on the unit scale (`scoreScale:
+# "unit"`, 0–1, 1 = first on every fused leg; swept on Qwen3 at 768
+# dimensions and on EmbeddingGemma 2). `min_score_raw` is the floor on
+# a raw RRF sum at k 60 (a hybrid reply with no `scoreScale`: rank 1 in
+# one leg ≈ 0.0164, in both ≈ 0.033). The caps are upper bounds.
+POLICY = {"min_score": 0.90, "min_score_raw": 0.015, "max_memory": 5,
+          "max_history": 3, "token_budget": 1500}
+
+
+def score_floor(reply, policy):
+    """The floor a hit's score must clear, read off the search reply;
+    None = this reply injects nothing. Only a hybrid reply has a fixed
+    scale: BM25 and cosine (the embedder is absent, loading or failing)
+    have no floor that holds across queries."""
+    if reply.get("mode") != "hybrid":
+        return None
+    scale = reply.get("scoreScale")
+    if scale == "unit":
+        return policy["min_score"]
+    if scale is None:
+        return policy["min_score_raw"]
+    return None   # a scale this gate was not calibrated on
 
 
 def approx_tokens(text):
@@ -135,9 +150,14 @@ def _plan(client, space, user_text, boot_min_seq, policy):
     p = dict(POLICY)
     p.update(policy or {})
     rec = use("recall@v1").recall(client, space)  # noqa: F821 - guest global
-    hits = rec.search(user_text, scopes=list(INJECT_SCOPES),
-                      limit=(p["max_memory"] + p["max_history"]) * 2)
-    relevant = [h for h in hits if h.get("score", 0) >= p["min_score"]]
+    reply = rec.search_reply(user_text, scopes=list(INJECT_SCOPES),
+                             limit=(p["max_memory"] + p["max_history"]) * 2)
+    floor = score_floor(reply, p)
+    if floor is None:
+        return {"messages": [], "injected": []}
+    # a title hit (`match` set) scores BM25 in every mode — never gated in
+    relevant = [h for h in reply["hits"]
+                if not h.get("match") and h.get("score", 0) >= floor]
     mem_hits = [h for h in relevant if h.get("key") == "agent_memory_items"]
     hist_hits = [h for h in relevant if h.get("key") in _HISTORY_DATASETS]
     if not mem_hits and not hist_hits:

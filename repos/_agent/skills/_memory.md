@@ -39,6 +39,8 @@ categories before inventing one (vocabulary drift kills recall).
   limit=...)` — memories, turns/chunks, and content in one call.
   Returns a bare LIST of hit pointers (unlike c.search, which wraps
   them in `{hits, mode, vectorStatus}`); hydrate via r.hydrate(hits).
+  `r.search_reply(...)` keeps the envelope, for when the scale of
+  `score` matters (`mode`, `scoreScale`).
 - **Temporal**: r.by_period(from, to) — seconds or ISO strings;
   one instant range scan each over memory items (validFrom), turns
   (createdAt) and chunks (period overlap), merged by time. Per-day/

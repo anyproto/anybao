@@ -55,7 +55,25 @@ class Recall:
         recordId, score, …}` — already unwrapped from the `{hits,
         mode, vectorStatus}` envelope that any@v1 `search` returns, so
         `hits[0]` works and `hits["hits"]` does not. Default scopes
-        ("agent", "history", "basic", "email"), limit 10."""
+        ("agent", "history", "basic", "email"), limit 10. To read what
+        scale `score` is on, use `search_reply`."""
+        return self._search(query, scopes, limit).get("hits") or []
+
+    @span(kind="getter")  # noqa: F821 - guest global
+    def search_reply(self, query, scopes=DEFAULT_SCOPES, limit=10):
+        """`search` with the reply envelope kept: `{hits, mode,
+        scoreScale, vectorStatus}`.
+
+        For a caller that gates on `score` (ADR-007 §5): a score has a
+        fixed scale only when `mode` is "hybrid". `scoreScale: "unit"`
+        = 0–1, 1 = first on every fused leg; hybrid with no
+        `scoreScale` = a raw RRF sum (about 0.016–0.033); any other
+        mode (the embedder is absent, loading or failing) = BM25 or
+        cosine, no fixed floor. `hits` is the list `search` returns."""
+        reply = self._search(query, scopes, limit)
+        return {**reply, "hits": reply.get("hits") or []}
+
+    def _search(self, query, scopes, limit):
         if not (query or "").strip():
             raise ValueError(
                 "search needs a non-empty query — the index has no "
@@ -63,8 +81,7 @@ class Recall:
                 'a.query(a.bao_space(), a.get_brain()["objectId"], '
                 '"agent_memory_items"); for history use '
                 "history@v1 or by_period().")
-        reply = self._c.search(self._space, query, scopes=list(scopes), limit=limit)
-        return reply.get("hits") or []
+        return self._c.search(self._space, query, scopes=list(scopes), limit=limit)
 
     @span(kind="getter")  # noqa: F821 - guest global
     def hydrate(self, hits):
