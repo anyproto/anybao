@@ -624,6 +624,23 @@ def test_query_objects_rows_start_with_their_link():
     assert client(fx).query_objects(sid, filter={}, normalize=False) == rows
 
 
+def test_an_object_link_in_an_id_filter_is_the_object_id():
+    # the model filters by the handle of a row; the cell gets the link
+    sid = "bafyreispace0000000000000.abc"
+    fx = wire(replies={**_CAT, "/objects/query": {"records": []}})
+    c = client(fx)
+    sent = lambda: [b for v, p, b in fx.calls if p.endswith("/objects/query")][-1]["filter"]  # noqa: E731
+    c.query_objects(sid, filter={"id": f"any://o/{sid}/o1"})
+    assert sent() == {"id": "o1"}
+    c.query_objects(sid, filter={"id": {"$in": [f"any://o/{sid}/o1", "o2"]}})
+    assert sent() == {"id": {"$in": ["o1", "o2"]}}
+    c.query_objects(sid, filter={"$or": [{"id": {"$ne": f"any://o/{sid}/o1"}}]})
+    assert sent() == {"$or": [{"id": {"$ne": "o1"}}]}
+    # a record link names a record, not the object: as written
+    c.query_objects(sid, filter={"id": f"any://o/{sid}/o1/editor_blocks/b1"})
+    assert sent() == {"id": f"any://o/{sid}/o1/editor_blocks/b1"}
+
+
 def test_search_hits_start_with_the_link_of_their_object():
     sid = "bafyreispace0000000000000.abc"
     fx = wire(replies={"/search": {"hits": [

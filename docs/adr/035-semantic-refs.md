@@ -497,7 +497,11 @@ handle, and a model that had to link the object made a handle up
 (staging rig, 2026-11-14). A model also passes a handle where a call
 takes an object id (`get_markdown(space, "ref:object/bcj")`); the
 handle reaches the cell as the link of the object, so every any@v1
-function reads an object link in `object_id` as that object.
+function reads an object link in `object_id` as that object. The
+same holds for the `id` condition of a filter
+(`filter={"id": "ref:object/bcj"}`, `{"id": {"$in": [...]}}`): the
+server matches `id` on the id alone, so a link there matched nothing
+and raised no error.
 
 **Only a well-formed link is rewritten.** The wall reads text, and
 text holds link-shaped things that are not objects: a placeholder in
