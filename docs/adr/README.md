@@ -47,6 +47,7 @@ line a future reader would "fix" (e.g. the NUL separator note).
 | 031 | toMarkdown — one conversion program for HTML and PDF, pypdf in the kernel, fuel budget 250 G | Accepted |
 | 032 | MCP client — `mcp@v1` over streamable HTTP, `mcp.server.*` rows, `mcp.key.*` refs | Accepted |
 | 033 | The AI brain — a plugin in the connectors overlay: setup, people, promises, facts, cards and drafts, the reply hand-off, the caretaker, chats (Parts 1–7; code points at `§<part>.<section>`) | Accepted |
+| 034 | Run activity stream — self-describing `bao.run.*` events for the chat UI (plain line + extended mode) | Accepted |
 
 **Design phase complete (2026-07-07): ADRs 001–007 accepted; 008
 accepted 2026-07-17.** Implementation followed the

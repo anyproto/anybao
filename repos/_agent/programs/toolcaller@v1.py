@@ -358,6 +358,13 @@ def _op_name(e):
 _TRACE_VIEWS = ("trace.effects_of", "trace.effect_get", "trace.runs", "trace.stats",
                 "trace.query")
 
+# Bookkeeping, not work done (ADR-034 §3): the effect summary skips these
+# names and the run activity stream hides them. The host holds the same
+# set (`HIDDEN` / `HIDDEN_PREFIXES` in runtime/src/activity.rs); a test
+# keeps the two equal.
+_NOT_WORK = ("time.now", "module.resolve", "env.get", "config.get", "runtime.get")
+_NOT_WORK_PREFIXES = ("trace.", "span.")
+
 
 def _mock_state(e):
     """A digest row's mock state (ADR-028 §5): an effect row is `mocked`
@@ -387,8 +394,9 @@ def _count_effects(entries, counts):
     """A cell's immediate effects/spans → name counts (the turn's effect
     summary; trace reads of its own history are not work done)."""
     for e in entries:
-        if e.get("effect") in _TRACE_VIEWS or e.get("effect") in ("module.resolve", "time.now"):
-            continue   # history reads, use() loading and the clock are not work done
+        eff = e.get("effect") or ""
+        if eff in _NOT_WORK or eff.startswith(_NOT_WORK_PREFIXES):
+            continue   # history reads, use() loading, config and the clock are not work done
         name = _op_name(e)
         if name:
             counts[name] = counts.get(name, 0) + 1
@@ -755,13 +763,14 @@ def _wrapup(messages, llm, system, tier, reason, stats, tools):
     return texts
 
 
-def _run_model_cells(parts, results, offered, effect_counts=None):
+def _run_model_cells(parts, results, offered, effect_counts=None, turn=None):
     """Run each tool_call part as a cell; a call llm@v1 flagged as
     malformed (`error`: unparseable arguments) or naming a tool not in
     `offered` is answered with an is_error result instead of a cell —
     the model gets to retry. Returns the number of malformed calls.
     `effect_counts` (name → times) accumulates what the cells ran, for
-    the turn record's effect summary."""
+    the turn record's effect summary. `turn` is the loop's turn number;
+    it rides the cell span to the run activity stream (ADR-034 §1)."""
     malformed = 0
     for part in parts:
         if part["type"] != "tool_call":
@@ -790,23 +799,33 @@ def _run_model_cells(parts, results, offered, effect_counts=None):
             # result lands in the namespace as sh.last / `as`; rendered
             # raw from the stored object, not as a value digest
             code, bound = _bash_code(part["args"])
+            bash_input = {"cell": cid, "command": part["args"].get("command", "")}
+            if turn is not None:
+                bash_input["turn"] = turn
             effect("span.begin",  # noqa: F821 - guest global
-                   {"name": "bash", "input": {"cell": cid,
-                                              "command": part["args"].get("command", "")}})
+                   {"name": "bash", "input": bash_input})
             cr = subcell(code, cid)  # noqa: F821
             err = cr["error"]
+            res = values.get(cid, "last") if cr["ok"] and cr["last"] is not None else None  # noqa: F821
+            content = render_bash(cr, res, bound)
+            # the span's output is what the model reads back — the run
+            # activity stream shows it as the cell's result (ADR-034 §1)
             effect("span.end", {"ok": cr["ok"],  # noqa: F821
+                                "output": {"digest": content},
                                 "error": ({"type": err["type"], "message": err["message"]}
                                           if err else None)})
-            res = values.get(cid, "last") if cr["ok"] and cr["last"] is not None else None  # noqa: F821
             results.append({"type": "tool_result", "call_id": cid,
-                            "content": render_bash(cr, res, bound),
+                            "content": content,
                             "is_error": not cr["ok"]})
             continue
         code = part["args"].get("code", "")
         # `preview` rides into presence beats (ADR-025 §1 run.cell): the
         # status surfaces show what the cell is doing, one collapsed line
-        span_input = {"cell": cid, "preview": " ".join(code.split())[:48]}
+        # `code` and `turn` ride to the run activity stream (ADR-034 §1): the
+        # host publishes the cell frame from what crosses the boundary here
+        span_input = {"cell": cid, "preview": " ".join(code.split())[:48], "code": code}
+        if turn is not None:
+            span_input["turn"] = turn
         # a mock spec rides the cell span (ADR-028 §3): the host installs
         # the index for the span's lifetime; a bad spec fails the begin
         # itself — the model gets the error, no cell runs
@@ -834,18 +853,26 @@ def _run_model_cells(parts, results, offered, effect_counts=None):
         # the cell's failure rides its span-end record (ADR-003 §4b) —
         # type + message like @span; the traceback stays digest text
         err = cr["error"]
-        # the end record's meta comes back: `mockFilter` = only/except hit
-        # counts for the zero-match warning (ADR-028 §5)
-        end = effect("span.end", {"ok": cr["ok"],  # noqa: F821
-                                  "error": ({"type": err["type"], "message": err["message"]}
-                                            if err else None)}) or {}
+        # the digest is rendered BEFORE the span closes and rides out as
+        # the span's output (ADR-034 §1: the stream's `cell_end.digest`).
+        # The read works on an open span: every child has ended by now.
         entries = effect("trace.effects_of",  # noqa: F821
                          {"span": sid})["records"]
         if effect_counts is not None:
             _count_effects(entries, effect_counts)
+        digest = render_digest(cid, cr, entries, mock, None, full)
+        # the end record's meta comes back: `mockFilter` = only/except hit
+        # counts for the zero-match warning (ADR-028 §5)
+        end = effect("span.end", {"ok": cr["ok"],  # noqa: F821
+                                  "output": {"digest": digest},
+                                  "error": ({"type": err["type"], "message": err["message"]}
+                                            if err else None)}) or {}
+        if end.get("mockFilter"):
+            # the warning needs the end reply: the model's digest carries
+            # it, the stream's does not
+            digest = render_digest(cid, cr, entries, mock, end["mockFilter"], full)
         results.append({"type": "tool_result", "call_id": cid,
-                        "content": render_digest(cid, cr, entries, mock,
-                                                 end.get("mockFilter"), full),
+                        "content": digest,
                         "is_error": not cr["ok"]})
     return malformed
 
@@ -1430,7 +1457,7 @@ def main(args):
             bubble(t, False)
         results = []
         malformed += _run_model_cells(reply["parts"], results,
-                                      [t["name"] for t in tools], effect_counts)
+                                      [t["name"] for t in tools], effect_counts, turn)
         stats["cells"] += len(results)
         messages.append({"role": "user", "parts": results})
 

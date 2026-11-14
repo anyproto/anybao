@@ -30,7 +30,7 @@ impl Classifier {
         }
     }
 
-    fn is_any(&self, url: &str) -> bool {
+    pub fn is_any(&self, url: &str) -> bool {
         let (netloc, path) = split_url(url);
         match &self.any_netloc {
             Some(n) => netloc == n,

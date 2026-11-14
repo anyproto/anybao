@@ -269,7 +269,7 @@ def _load(host):
     # parts only, so no blob.* effect is expected
     from kernelenv import load_kernel
     k = load_kernel(effect=lambda name, payload: pytest.fail(f"unexpected kernel effect {name!r}"))
-    g = {"effect": host, "span": lambda name=None, kind=None: (lambda f: f),
+    g = {"effect": host, "span": lambda name=None, kind=None, label=None: (lambda f: f),
          "use": lambda spec: pytest.fail(spec), "Blob": k.Blob, "blob": k.blob,
          "EffectError": type("EffectError", (Exception,), {})}   # the kernel's guest global
     exec(compile(SRC, "llm@v1.py", "exec"), g)

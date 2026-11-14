@@ -166,6 +166,12 @@ impl TraceWriter {
             .to_string()
     }
 
+    /// The seq the next record gets — the run activity stream names a
+    /// span's end record by it before the record is written (ADR-034 §2).
+    pub fn peek_seq(&self) -> i64 {
+        self.seq + 1
+    }
+
     fn next_seq(&mut self) -> i64 {
         self.seq += 1;
         self.seq

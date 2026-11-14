@@ -83,3 +83,21 @@ def test_a_bad_call_names_the_function():
         mod.create_object(SID)
     with pytest.raises(TypeError, match=r"^get_markdown\(\)"):
         mod.get_markdown(SID, "o1", "extra")
+
+
+def test_labels_ride_the_facade_span_and_name_public_arguments():
+    # ADR-034 §3: the label on `_public` reaches span.begin; its
+    # placeholders are the PUBLIC arguments (checked at export)
+    _, mod, spans = _kernel()
+    b = _begin(mod, spans, "update_object", SID, "o1", {"any": {"name": "x"}})
+    assert b["label"] == "Updating {object} in {space}"
+    b = _begin(mod, spans, "search", SID, "flaky test")
+    assert b["label"] == "Searching for “{query}” in {space}"
+    b = _begin(mod, spans, "list_members", SID)
+    assert "label" not in b                 # unlabeled methods keep the old shape
+
+    def method(self, space, object_id):
+        """doc"""
+    method.__any_public__ = ("getter", True, True, "Reading {objekt}")
+    with pytest.raises(ValueError, match="names no argument"):
+        mod._export("method", method)

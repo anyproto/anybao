@@ -207,11 +207,17 @@ impl AnyModuleResolver {
         // remember where this module lives — its own use() calls
         // resolve here via the frame chain (ADR-004 §2.4)
         self.origins.insert(oid.to_string(), space.to_string());
-        Ok(json!({
+        let mut out = json!({
             "spaceId": space, "objectId": oid, "marker": marker,
             "sourceHash": format!("sha256:{}", hex::encode(Sha256::digest(code.as_bytes()))),
             "source": code, "cache": cache,
-        }))
+        });
+        // the program object's picture (ADR-034 §2): the kernel puts it
+        // on the module's program identity, a run's steps carry it
+        if let Some(icon) = recs[0]["any"]["icon"].as_str().filter(|i| !i.is_empty()) {
+            out["icon"] = json!(icon);
+        }
+        Ok(out)
     }
 }
 
@@ -386,6 +392,19 @@ mod tests {
         );
         // same (objectId, marker) → probe-cache hit
         assert_eq!(r.resolve("tool@v1", None).unwrap()["cache"], json!("hit"));
+    }
+
+    #[test]
+    fn a_pictured_program_resolves_with_its_icon() {
+        // ADR-034 §2: the program object's `any.icon` rides the reply
+        let c = space_with_program("cur", "tool", "v1", CODE);
+        c.set_properties("cur", "obj1", "any", &json!({"icon": "any://f/cur/file1"}))
+            .unwrap();
+        let mut r = AnyModuleResolver::new(std::sync::Arc::new(c), "cur", None, BTreeMap::new());
+        assert_eq!(
+            r.resolve("tool@v1", None).unwrap()["icon"],
+            json!("any://f/cur/file1")
+        );
     }
 
     #[test]
