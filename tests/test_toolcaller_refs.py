@@ -102,6 +102,16 @@ def test_refs_line_rides_the_message_after_the_stamp_and_nowhere_earlier():
     assert "[refs: " not in w.turns[0]["context"]
 
 
+def test_a_definition_marker_is_not_a_type_fragment():
+    table = [{"kind": "object", "spaceId": GARDEN, "objectId": BOOKS, "name": "General",
+              "type": "__type__", "uri": f"any://o/{GARDEN}/{BOOKS}"},
+             {"kind": "object", "spaceId": GARDEN, "objectId": DUNE, "name": "Dune",
+              "type": "book", "uri": DUNE_URI}]
+    line = G["_refs_line"](table)
+    assert f"[General](any://o/{GARDEN}/{BOOKS})" in line and "__type__" not in line
+    assert f"[Dune]({DUNE_URI}#book)" in line
+
+
 def test_a_conversation_that_touched_nothing_has_no_refs_line():
     w = World([done_reply("ok")])
     _out, text, prelude = refs_of(w)

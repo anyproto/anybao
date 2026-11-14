@@ -223,7 +223,10 @@ def _refs_line(table):
     for r in [r for r in table if r["kind"] != "space"][:REFS_LINE_CAP]:
         if r["kind"] == "object":
             where = names.get(r["spaceId"])
-            frag = "#" + r["type"] if re.fullmatch(r"[A-Za-z0-9_-]+", r["type"] or "") else ""
+            # a definition marker (`__type__`, `__collection__`) is not
+            # a type name: the object is a type itself, no fragment
+            frag = ("#" + r["type"]
+                    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", r["type"] or "") else "")
             entries.append(f"[{_ref_label(r['name'] or 'untitled')}]({r['uri']}{frag})"
                            + (f" in {_ref_label(where)}" if where else ""))
         else:

@@ -268,9 +268,22 @@ The **type** rides as a `#` fragment, the way a fragment rides a
 URL: a label, not part of the identity. The wall reads kind + key and
 drops the fragment on the way out, so `ref:object/gyu#novel` and a
 bare `ref:object/gyu` both expand to the same link after a
-`set_type`. Files and spaces carry no fragment. Only the refs line
-carries a fragment, from its read (§2, §3); everywhere else the wall
-renders a bare handle.
+`set_type`. Files and spaces carry no fragment.
+
+**One object, two spellings.** Only the refs line carries a fragment.
+The loop reads the type of each ref at run start (§2) and writes it
+after the link (§3); the wall keeps a fragment that follows a link.
+Every other text reaches the wall as a plain link — a result, an
+earlier reply, the stamp — and the wall renders a bare handle there.
+So one call can show `ref:object/gyu#book` on the refs line and
+`ref:object/gyu` in a result: the same object, and the model may
+write either. A reply written with a fragment is stored without it,
+and comes back bare in the window of the next run. The wall does not
+add the type everywhere because the window must render the same
+bytes in every run (§5b): a type that is renamed, or an object that
+is retyped, would change text the provider has cached. An object that
+is a type or a collection itself (the definition markers `__type__`,
+`__collection__`) has no type name and gets no fragment.
 
 A ref carries its space, so `spaceId` + `objectId` go wherever a
 call takes them. It holds no content — reading the body is still
