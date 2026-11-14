@@ -1949,8 +1949,9 @@ class _Client:
         # in `normalize` and silently drop the caller's filter — a query
         # for everything where a filtered query was intended.
         # ADR-006 §6, ADR-019
-        """Cross-object query over a space's objects → xKey-nested rows,
-        each starting with `uri`, the link of the object (link it in a
+        """Cross-object query over a space's objects → xKey-nested rows.
+
+        Each row starts with `uri`, the link of the object (link it in a
         reply as it is shown; `id` is the same object for a call).
 
         `filter` / `sort` accept readable dotted xKey paths (`task.status`,
