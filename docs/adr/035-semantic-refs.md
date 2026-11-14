@@ -469,9 +469,18 @@ tail stays after the handle), and the stamp's `object: <id>` becomes
 `object: ref:object/<key>`. A space id has a shape of its own (a
 hash, a dot, a suffix), so a space id that stands outside a link
 becomes `ref:space/<key>` too, wherever it is — in the stamp, in a
-result. A bare object id that
-this call's text has already shown as a link or in a stamp becomes
-its handle too. A `#type` fragment after a link stays where it is,
+result. A bare object id becomes a handle too, by the same key rule
+(amended 2026-11-14, open question 4). When a link or a stamp of the
+call names the id, in any place of the text, the handle is that
+object's and expands to its link. When no link of the call names it
+(a printed `id`, a type id in a `list_types` row, a `rootCid`), the
+handle has no space: outward it is the bare id again, so it works as
+an argument, a filter value and a dict key, exactly as the long id
+did. Such a handle has no link to become. As the target of a markdown
+link, or as a `ref:prop/` handle, it is an unknown ref (below); a
+typed link that names a space (`any://o/<space key>/<key>`) gives it
+that space. An id inside a longer name (a path, a dataset name) is
+not an id of its own and stays. A `#type` fragment after a link stays where it is,
 after the handle. Each id takes its key by the rule of §1, and the
 table records it. So an
 object created this run is covered with no extra step: its uri is in
@@ -607,9 +616,8 @@ Inside a run the message list only grows (the loop appends the reply
 and the results; it never edits an earlier message), so each call
 extends the one before it.
 
-What the wall does not cover, and why that is fine: a bare
-60-character id in a digest that no earlier text of the call showed
-as a link stays long (it degrades to today, it is never wrong); a
+What the wall does not cover, and why that is fine: a link that a
+slice cut in the middle is not well-formed and stays long; a
 handle assembled from fragments inside code escapes the rewrite and
 misses at the first call, loudly; a key the model damaged into the
 key of another object in the same call expands to that object, as a
@@ -885,7 +893,16 @@ call, and nothing else would change.
    user named?
 3. Scope: this chat's runs only (the window's `traceRef`s), or every
    run of this bao within retention? A `runId` filter either way.
-4. Bare ids that no earlier text of the call showed as a link: leave
+4. **Closed 2026-11-14: render every id-shaped text; a handle with
+   no link of the call behind it expands to the bare id (§5).** The
+   first prod-network runs on the merged wall showed the cost of the
+   other answer: the model printed `o.get("id")` of three new objects
+   and four long ids stayed in five requests; a `list_types` row put
+   a type id on the wire. The objection below is answered by the
+   expansion rule: the model gets back what the cell printed. A link
+   later in the text changes what an earlier handle expands to, never
+   its key, so the cache rule of §1 holds. The question as it stood:
+   Bare ids that no earlier text of the call showed as a link: leave
    them long (today's behaviour), or render every id-shaped text?
    Over 50 days the model saw 1,006 distinct ids of which 373 were
    links or stamp ids; the rest were bare. A bare id gives no kind

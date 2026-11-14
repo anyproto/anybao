@@ -344,7 +344,8 @@ def _unsent_note(bad):
     """ADR-035 §5: the one message a final reply with an unknown ref
     gets back, in place of being posted."""
     return ("[runtime: your reply was NOT sent. It links " + ", ".join(bad)
-            + ", and no handle of this conversation has that key. Write the "
+            + ". No handle of this conversation has that key, or the "
+            "thing was shown to you only as an id, with no link. Write the "
             "reply again. Link a thing only with a handle that is shown to "
             "you: the `uri` or `link` of a result, the refs line. For an "
             "object you hold only as an id, read it once more "
@@ -368,9 +369,11 @@ def _name_unresolved(reply, results):
     if not bad:
         return
     note = ("Unknown ref" + ("s" if len(bad) > 1 else "") + ": " + ", ".join(bad)
-            + " — no handle of this conversation has that key; it was not "
-            "expanded. Copy a handle exactly as it is shown, or find the "
-            "object with a query.")
+            + " — no handle of this conversation has that key, or the "
+            "thing was shown only as an id and has no link to become; it "
+            "was not expanded. Copy a handle exactly as it is shown; link "
+            "an object by the `uri` or `link` of a result, or find it with "
+            "a query.")
     carried = {p["id"] for p in reply["parts"] if p["type"] == "tool_call"
                and "ref:unknown/" in json.dumps(p.get("args"))}
     for r in results:
