@@ -1244,6 +1244,241 @@ _RETRY_AFTER_CAP_S = 60
 _EXCERPT = 400
 
 
+# --- The wall (ADR-035 §1, §5): handles on the way in, links on the way out --
+# The model reads and writes `ref:<kind>/<key>`; every caller of `chat`
+# holds `any://` links. One table per call, made from the call's own
+# text in text order, dropped when the call returns.
+
+_KEY_LEN = 3
+
+_SPACE_ID = r"bafy[a-z2-7]{55}\.[A-Za-z0-9]+"
+_OBJECT_ID = r"bafy[a-z2-7]{55}"
+_SEG = r"[A-Za-z0-9_-]+"
+# an id starts here: not inside a word, a path or a longer id
+_ID_START = r"(?<![A-Za-z0-9_/.:-])"
+# a link ends here: the end of the text, a `#type` fragment, or a
+# character that cannot be part of a link (a dot counts as part of the
+# link only when a letter or a digit follows it)
+_LINK_END = r"(?![A-Za-z0-9_/?&=%-]|\.[A-Za-z0-9])"
+
+# one pass, so the keys are given in text order across every kind:
+# a well-formed link of the server's registry | the stamp's
+# `space: <id>, object: <id>` | a bare space id | a bare object id (a
+# handle only when the call already showed it) | a handle-shaped text
+_WALL_IN = re.compile(
+    r"any://(?:(?:"
+    rf"o/(?P<o_s>{_SPACE_ID})/(?P<o_o>{_OBJECT_ID})(?:/{_SEG}/{_SEG})?"
+    rf"|f/(?P<f_s>{_SPACE_ID})/(?P<f_f>[A-Za-z0-9]{{8,}})"
+    rf"|s/(?P<s_s>{_SPACE_ID})"
+    r"|u/(?P<u_i>[A-Za-z0-9]{40,})"
+    rf"){_LINK_END}"
+    # a property link: the match stops after the object, the
+    # `/<propId>` tail stays in the text as it is
+    rf"|p/(?P<p_s>{_SPACE_ID})/(?P<p_o>{_OBJECT_ID})(?=/{_SEG}{_LINK_END}))"
+    rf"|{_ID_START}(?P<v_s>{_SPACE_ID}), object: (?P<v_o>{_OBJECT_ID}){_LINK_END}"
+    rf"|{_ID_START}(?P<b_s>{_SPACE_ID}){_LINK_END}"
+    rf"|{_ID_START}(?P<b_o>{_OBJECT_ID}){_LINK_END}"
+    rf"|{_ID_START}ref:(?:object|file|space|user|prop)/(?P<h_key>[A-Za-z0-9]+)")
+
+# a typed link as a text may spell it, well-formed or not: the kind and
+# one or two segments. The model fills the link form it knows with the
+# keys it holds (`any://f/bow/WKo`); the outward rule reads those keys.
+_LINK_SEG = r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*"
+_WALL_LINK = (rf"any://(?:(?P<l_kind>[ofpm])/(?P<l_space>{_LINK_SEG})/(?P<l_id>{_LINK_SEG})"
+              rf"|(?P<l_one>[su])/(?P<l_only>{_LINK_SEG}))")
+_WALL_TYPED = re.compile(_WALL_LINK)
+_WELL_FORMED = {"space": re.compile(_SPACE_ID), "object": re.compile(_OBJECT_ID),
+                "file": re.compile(r"[A-Za-z0-9]{8,}"),
+                "user": re.compile(r"[A-Za-z0-9]{40,}")}
+
+_WALL_OUT = re.compile(
+    rf"{_ID_START}ref:(?P<kind>object|file|space|user|prop)/(?P<key>[A-Za-z0-9]+)"
+    r"(?:#[A-Za-z0-9_-]+)?"
+    rf"|{_WALL_LINK}")
+
+
+def _wall_table():
+    """The table of one call: `keys` (kind, key) → entry, `ids`
+    (kind, id) → key, and `lookups`, the count of questions asked to
+    the key set (ADR-035 §1: one per id plus one per shift step).
+    `foreign` holds the typed links the call's own text carried: the
+    outward rule never reads a key out of those."""
+    return {"keys": {}, "ids": {}, "lookups": 0, "foreign": set()}
+
+
+def _wall_key(table, kind, ident, entry):
+    """The key of an id (ADR-035 §1). The first id seen keeps its key;
+    a later id whose slice is taken slides one character along the id
+    until a slice is free; with every slice taken it takes its first
+    slice plus one more character. A key already given never changes.
+    None only when the id has no free key at all (two ids with the same
+    letters and digits) — the caller then leaves the text as it is."""
+    known = table["ids"].get((kind, ident))
+    if known is not None:
+        return known
+    chars = "".join(c for c in ident if c.isalnum())
+    if ident.startswith("bafy"):
+        chars = chars[7:]       # multibase, codec and hash header
+    elif kind == "user":
+        chars = chars[2:]       # the first two take few values
+    n = _KEY_LEN
+    slides = (chars[i:i + n] for i in range(len(chars) - n + 1))
+    longer = (chars[:j] for j in range(n + 1, len(chars) + 1))
+    for group in (slides, longer):
+        for key in group:
+            table["lookups"] += 1
+            if (kind, key) not in table["keys"]:
+                table["keys"][(kind, key)] = entry
+                table["ids"][(kind, ident)] = key
+                return key
+    return None
+
+
+def _wall_handle(table, m):
+    """One inward match → its replacement."""
+    whole = m.group(0)
+    if m["h_key"] is not None:
+        # a handle the call did not make: it must never expand
+        return f"ref:unknown/{m['h_key']}"
+    if m["o_o"] is not None:
+        key = _wall_key(table, "object", m["o_o"], {"space": m["o_s"], "id": m["o_o"]})
+        return whole if key is None else f"ref:object/{key}{whole[m.end('o_o') - m.start():]}"
+    if m["p_o"] is not None:
+        key = _wall_key(table, "object", m["p_o"], {"space": m["p_s"], "id": m["p_o"]})
+        return whole if key is None else f"ref:prop/{key}"
+    if m["f_f"] is not None:
+        key = _wall_key(table, "file", m["f_f"], {"space": m["f_s"], "id": m["f_f"]})
+        return whole if key is None else f"ref:file/{key}"
+    if m["s_s"] is not None or m["b_s"] is not None:
+        sid = m["s_s"] or m["b_s"]
+        key = _wall_key(table, "space", sid, {"id": sid})
+        return whole if key is None else f"ref:space/{key}"
+    if m["u_i"] is not None:
+        key = _wall_key(table, "user", m["u_i"], {"id": m["u_i"]})
+        return whole if key is None else f"ref:user/{key}"
+    if m["v_o"] is not None:
+        skey = _wall_key(table, "space", m["v_s"], {"id": m["v_s"]})
+        okey = _wall_key(table, "object", m["v_o"], {"space": m["v_s"], "id": m["v_o"]})
+        if skey is None or okey is None:
+            return whole
+        return f"ref:space/{skey}, object: ref:object/{okey}"
+    # a bare object id: a handle only when this call already showed it
+    key = table["ids"].get(("object", m["b_o"]))
+    return whole if key is None else f"ref:object/{key}"
+
+
+def _wall_map(value, f):
+    """`f` over every string of a JSON value; keys and other values stay."""
+    if isinstance(value, str):
+        return f(value)
+    if isinstance(value, list):
+        return [_wall_map(v, f) for v in value]
+    if isinstance(value, dict):
+        return {k: _wall_map(v, f) for k, v in value.items()}
+    return value
+
+
+def _wall_parts(parts, f):
+    """`f` over the text of text parts, tool_call args and tool_result
+    content. Thinking parts are signed by their provider and file parts
+    are bytes: both pass through as they are."""
+    out = []
+    for p in parts:
+        t = p["type"]
+        if t == "text":
+            p = {**p, "text": f(p["text"])}
+        elif t == "tool_call":
+            p = {**p, "args": _wall_map(p.get("args"), f)}
+        elif t == "tool_result":
+            p = {**p, "content": _wall_map(p.get("content"), f)}
+        out.append(p)
+    return out
+
+
+def _wall_in(table, messages, system):
+    """The inward rewrite, in text order: the system text, then the
+    messages. Returns (messages, system) for the adapter; the caller's
+    values are not changed."""
+    def f(text):
+        if "any://" in text:
+            table["foreign"].update(m.group(0) for m in _WALL_TYPED.finditer(text))
+        if "bafy" not in text and "ref:" not in text and "any://u/" not in text:
+            return text
+        return _WALL_IN.sub(lambda m: _wall_handle(table, m), text)
+    if isinstance(system, list):
+        system = [f(s) if s else s for s in system]
+    elif system:
+        system = f(system)
+    messages = [{**m, "parts": _wall_parts(m["parts"], f)} for m in messages]
+    return messages, system
+
+
+def _wall_out(table, reply):
+    """The outward rewrite of a neutral Reply: each handle of this
+    call's table becomes its link, a `#type` fragment dropped. A space
+    handle becomes `any://s/<id>` as the target of a markdown link and
+    the bare space id anywhere else. A handle the table does not hold
+    becomes `ref:unknown/<key>` and is listed, as the model wrote it,
+    in `unresolvedRefs`. A typed link written with keys where ids
+    belong (`any://f/bow/WKo`) becomes the link of those keys."""
+    unresolved = []
+
+    def well(kind, seg):
+        return _WELL_FORMED[kind].fullmatch(seg) is not None
+
+    def typed(m):
+        """A typed link of the reply. It changes only when the call's
+        text did not carry it and a segment is a key of the table."""
+        whole = m.group(0)
+        if whole in table["foreign"]:
+            return whole
+        if m["l_one"] is not None:
+            kind = "space" if m["l_one"] == "s" else "user"
+            entry = None if well(kind, m["l_only"]) else table["keys"].get((kind, m["l_only"]))
+            return whole if entry is None else f"any://{m['l_one']}/{entry['id']}"
+        letter, seg, ident = m["l_kind"], m["l_space"], m["l_id"]
+        space = None if well("space", seg) else table["keys"].get(("space", seg))
+        if letter == "m":
+            return whole if space is None else f"any://m/{space['id']}/{ident}"
+        kind = "file" if letter == "f" else "object"
+        if well(kind, ident):
+            return whole if space is None else f"any://{letter}/{space['id']}/{ident}"
+        entry = table["keys"].get((kind, ident))
+        if entry is not None:
+            # the key names the thing, and the thing knows its space
+            return f"any://{letter}/{entry['space']}/{entry['id']}"
+        if space is None:
+            return whole    # no key in it: a name or a sample, as written
+        if whole not in unresolved:
+            unresolved.append(whole)
+        return f"ref:unknown/{ident}"
+
+    def expand(m):
+        if m["kind"] is None:
+            return typed(m)
+        kind, key = m["kind"], m["key"]
+        entry = table["keys"].get(("object" if kind == "prop" else kind, key))
+        if entry is None:
+            written = f"ref:{kind}/{key}"
+            if written not in unresolved:
+                unresolved.append(written)
+            return f"ref:unknown/{key}"
+        if kind == "space":
+            linked = m.string[max(0, m.start() - 2):m.start()] == "]("
+            return f"any://s/{entry['id']}" if linked else entry["id"]
+        if kind == "user":
+            return f"any://u/{entry['id']}"
+        letter = {"object": "o", "prop": "p", "file": "f"}[kind]
+        return f"any://{letter}/{entry['space']}/{entry['id']}"
+
+    def f(text):
+        return _WALL_OUT.sub(expand, text) if "ref:" in text or "any://" in text else text
+    reply = {**reply, "parts": _wall_parts(reply["parts"], f)}
+    if unresolved:
+        reply["unresolvedRefs"] = unresolved
+    return reply
+
+
 @span(kind="getter")  # noqa: F821 - guest global
 def profile(tier="codegen"):
     # ADR-005 §1.3
@@ -1288,6 +1523,10 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     if max_tokens:
         traits = {**traits, "max_output": max_tokens}
     adapter = ADAPTERS[prov["provider"]]()
+    # ADR-035 §5: the wall. From here to `_wall_out` the text holds
+    # handles; the span around this call records links only
+    table = _wall_table()
+    messages, system = _wall_in(table, messages, system)
     if isinstance(system, list):
         # system blocks survive only where they buy something: native
         # Anthropic with cache markers; everywhere else one joined text
@@ -1318,7 +1557,7 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
         payload["credential"] = cred
     raw = _post(payload, lambda body: _fold(adapter, body, stream))
     raw = be.get("normalize", lambda r: r)(raw)
-    return _lift(adapter.parse_response(raw), traits)
+    return _wall_out(table, _lift(adapter.parse_response(raw), traits))
 
 
 def _fold(adapter, body, stream):

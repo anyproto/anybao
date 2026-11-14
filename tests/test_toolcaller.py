@@ -48,6 +48,7 @@ class World:
         self.span_ends = []
         self.span_inputs = []
         self.preludes = []
+        self.trace_queries = []
         self.plan_hits = hits or {"messages": [], "injected": []}
 
     # --- guest globals -----------------------------------------------------
@@ -75,6 +76,14 @@ class World:
                 return {"records": list(self.effect_rows)}
             return {"records": [{"seq": 9, "effect": "http.post",
                                  "class": "mutate", "mocked": False, "error": None}]}
+        if name == "trace.query":
+            # ADR-035 §2/§5a: the refs query over the window's runs and
+            # the chips query over this run
+            self.trace_queries.append(payload)
+            runs = payload["pipeline"][0]["$match"]["runId"]
+            runs = runs["$in"] if isinstance(runs, dict) else [runs]
+            return {"records": [r for r in getattr(self, "trace_records", [])
+                                if r["runId"] in runs]}
         raise AssertionError(f"unexpected effect {name}")
 
     def subcell(self, code, cell_id):
@@ -105,7 +114,14 @@ class World:
                 return []
 
             def query_objects(self, space, filter=None, **kw):
-                return []
+                ids = ((filter or {}).get("id") or {}).get("$in")
+                if ids is None:
+                    return []
+                return [o for o in getattr(w, "objects", [])
+                        if o["id"] in ids and o["spaceId"] == space]
+
+            def list_spaces(self):
+                return list(getattr(w, "spaces", []))
 
             def query(self, space, oid, dataset, **kw):
                 return []
@@ -151,7 +167,7 @@ class World:
         class Hist:
             @staticmethod
             def recent_turns(c, s, ch, n):
-                return []
+                return list(reversed(getattr(w, "past_turns", [])))   # newest first
 
             @staticmethod
             def chunks_at_level(c, s, ch, lvl, n):
@@ -163,6 +179,10 @@ class World:
                 return [{"role": "user", "parts": [{"type": "text",
                                                     "text": "[earlier context]"}]}] \
                     if turns else []
+
+            @staticmethod
+            def raw_tail(turns, anchor):
+                return [t for t in turns if anchor is None or t.get("seq", 0) >= anchor]
 
             @staticmethod
             def water_marks(total_tokens):
@@ -552,7 +572,9 @@ def test_user_message_carries_timestamp_and_view_context():
     assert "user's view — space: sp9, object: ob3, view: object]\n" in user
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
-    assert "`s1`" in call["system"] and "`c1`" in call["system"]
+    assert "`s1`" in call["system"]
+    # the chat is named by the bound value that holds it, never by its id
+    assert '`baoSpaceConfig["chatId"]`' in call["system"] and "c1" not in call["system"]
     # the installed apps (ADR-027 §5), hidden entries out: the agent
     # space's ride the system tail; the user's space's ride the message
     # with its view, so a view change leaves the tail cached (ADR-005 §5)
@@ -1109,7 +1131,7 @@ def test_compact_style_and_last_user_instructions():
     assert "## Runtime context" not in call["system"]
     user = call["messages"][-1]["parts"][0]["text"]
     assert user.startswith("go") and "## Runtime context" in user
-    assert "chat object: `c1`" in user
+    assert 'chat object: `baoSpaceConfig["chatId"]`' in user
 
 
 def test_full_style_keeps_instructions_in_system():

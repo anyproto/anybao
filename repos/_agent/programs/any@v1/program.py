@@ -1637,7 +1637,7 @@ class _Client:
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
         # ADR-006 §6, ADR-022 §2
-        """Create an object → {objectId, link, resolved?, createdOptions?, warnings?}.
+        """Create an object → {link, objectId, resolved?, createdOptions?, warnings?}.
 
         body: {"type"?, "collections"?, "initialProperties"?, "name"?,
         "description"?, "icon"?, "markdown"?}. An object IS exactly one
@@ -1765,7 +1765,9 @@ class _Client:
         if object_id and self._is_space_id(space):
             # the link to paste — the space segment is the ID; building it
             # cost a turn or came out with the space NAME (BOB-160 bench)
-            out["link"] = f"any://o/{space}/{object_id}"
+            # first in the result: the wall gives a bare id a handle
+            # only after a link showed it (ADR-035 §5)
+            out = {"link": f"any://o/{space}/{object_id}", **out}
         return out
 
     def _declares_body(self, space, type_ids):
@@ -1946,7 +1948,9 @@ class _Client:
         # in `normalize` and silently drop the caller's filter — a query
         # for everything where a filtered query was intended.
         # ADR-006 §6, ADR-019
-        """Cross-object query over a space's objects → xKey-nested rows.
+        """Cross-object query over a space's objects → xKey-nested rows,
+        each starting with `uri`, the link of the object (link it in a
+        reply as it is shown; `id` is the same object for a call).
 
         `filter` / `sort` accept readable dotted xKey paths (`task.status`,
         `reading_list.order` — the owner is a type or a collection),
@@ -1999,6 +2003,12 @@ class _Client:
         out = [self._normalize_record(space, r) for r in recs
                if "spaceIndex" not in r]
         self._hydrate_links(space, out)   # ADR-022 §3
+        if self._is_space_id(space):
+            # the link of the row, first: what a reply links, and what
+            # gives the row's id a handle on the wire (ADR-035 §5)
+            out = [{"uri": f"any://o/{space}/{r['id']}", **r}
+                   if isinstance(r, dict) and isinstance(r.get("id"), str) else r
+                   for r in out]
         return out
 
     @_public('getter')
@@ -4912,6 +4922,18 @@ def _named(bound):
 _LABEL_DERIVED = {"space", "object", "type", "query", "domain", "command", "n"}
 
 
+_OBJECT_LINK = re.compile(r"any://o/[^/\s]+/([^/\s?#]+)")
+
+
+def _object_id_of(value):
+    """An object link where an object id belongs is that object: the
+    model holds a handle, and a handle reaches a cell as the link
+    (ADR-035 §5). A record or block link, and any other text, pass as
+    they are."""
+    m = _OBJECT_LINK.fullmatch(value)
+    return m.group(1) if m else value
+
+
 def _export(name, method):
     kind, scoped, listed, label = method.__any_public__
     sig = inspect.signature(method)
@@ -4943,7 +4965,10 @@ def _export(name, method):
             bound = public.bind(*args, **kwargs)
         except TypeError as e:
             raise TypeError(f"{name}() {e}") from None
-        return facade(**_named(bound))
+        named = _named(bound)
+        if isinstance(named.get("object_id"), str):
+            named["object_id"] = _object_id_of(named["object_id"])
+        return facade(**named)
 
     fn.__name__ = fn.__qualname__ = name
     fn.__doc__ = method.__doc__

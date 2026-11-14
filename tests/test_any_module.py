@@ -598,6 +598,30 @@ def test_create_object_returns_the_link_to_paste():
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
     r = client(fx).create_object(sid, {"type": "task"})
     assert r == {"objectId": "o9", "link": f"any://o/{sid}/o9"}
+    # the link is first: a text that shows the result shows it before
+    # the bare id (ADR-035 §5)
+    assert list(r) == ["link", "objectId"]
+
+
+def test_an_object_link_is_an_object_id_argument():
+    # a handle reaches a cell as the link of the object (ADR-035 §5)
+    g = load(wire(replies={**_CAT, "/editor/editor_blocks/markdown": {"markdown": "hi"}}))
+    f = g["_object_id_of"]
+    assert f("any://o/bafyspace.abc/bafyobj") == "bafyobj"
+    assert f("bafyobj") == "bafyobj"
+    # a record link names a record, not the object: as written
+    assert f("any://o/bafyspace.abc/bafyobj/editor_blocks/b1") == \
+        "any://o/bafyspace.abc/bafyobj/editor_blocks/b1"
+
+
+def test_query_objects_rows_start_with_their_link():
+    sid = "bafyreispace0000000000000.abc"
+    rows = [{"id": "o1", "any": {"name": "Ship", "type": "bafyTASK"}}]
+    fx = wire(replies={**_CAT, "/objects/query": {"records": rows}})
+    [row] = client(fx).query_objects(sid, filter={})
+    assert list(row)[:2] == ["uri", "id"] and row["uri"] == f"any://o/{sid}/o1"
+    # the raw passthrough keeps the wire shape
+    assert client(fx).query_objects(sid, filter={}, normalize=False) == rows
 
 
 def test_create_object_unknown_property_raises_never_drops():
