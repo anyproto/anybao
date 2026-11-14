@@ -514,6 +514,23 @@ reaches the kernel with them, so a handle inside a string literal — a
 page body for `put_markdown`, a memory, a program source — is a real
 link by the time any@v1 sees it.
 
+A model also fills the link form it knows with the keys it holds:
+`any://f/bow/WKo`, from `ref:space/bow` and `ref:file/WKo` (seen in a
+chat on 2026-11-13; the link was dead for every reader). The outward
+rule reads such a link too. In `any://<o|f|p>/<space>/<id>` a key of
+the table in the `<id>` place names the thing, and the link becomes
+the link of that thing, with the space of the thing; a tail stays. A
+real id beside a space key gets the space id, and so do
+`any://s/<key>`, `any://u/<key>` and the space of an `any://m/` link.
+A key the table does not hold beside a space key becomes
+`ref:unknown/<key>`, and the link is listed, as written, in
+`unresolvedRefs`. A link with no key of the table in it — a space
+name, a sample in a text about links — stays as written; any@v1
+reports it (ADR-010 §8). A typed link that the text of the call
+already carried is never read this way: the table records those on the
+way in, so a dead link of an earlier message does not expand to
+whatever holds the same keys in this call.
+
 **A handle the table does not hold** — one the model invented, or one
 it damaged — becomes `ref:unknown/<key>`, and the reply gains
 `unresolvedRefs: ["ref:object/<key>", …]` with the handles as the

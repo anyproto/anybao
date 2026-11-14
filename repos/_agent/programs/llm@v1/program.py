@@ -1280,16 +1280,30 @@ _WALL_IN = re.compile(
     rf"|{_ID_START}(?P<b_o>{_OBJECT_ID}){_LINK_END}"
     rf"|{_ID_START}ref:(?:object|file|space|user|prop)/(?P<h_key>[A-Za-z0-9]+)")
 
+# a typed link as a text may spell it, well-formed or not: the kind and
+# one or two segments. The model fills the link form it knows with the
+# keys it holds (`any://f/bow/WKo`); the outward rule reads those keys.
+_LINK_SEG = r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*"
+_WALL_LINK = (rf"any://(?:(?P<l_kind>[ofpm])/(?P<l_space>{_LINK_SEG})/(?P<l_id>{_LINK_SEG})"
+              rf"|(?P<l_one>[su])/(?P<l_only>{_LINK_SEG}))")
+_WALL_TYPED = re.compile(_WALL_LINK)
+_WELL_FORMED = {"space": re.compile(_SPACE_ID), "object": re.compile(_OBJECT_ID),
+                "file": re.compile(r"[A-Za-z0-9]{8,}"),
+                "user": re.compile(r"[A-Za-z0-9]{40,}")}
+
 _WALL_OUT = re.compile(
     rf"{_ID_START}ref:(?P<kind>object|file|space|user|prop)/(?P<key>[A-Za-z0-9]+)"
-    r"(?:#[A-Za-z0-9_-]+)?")
+    r"(?:#[A-Za-z0-9_-]+)?"
+    rf"|{_WALL_LINK}")
 
 
 def _wall_table():
     """The table of one call: `keys` (kind, key) → entry, `ids`
     (kind, id) → key, and `lookups`, the count of questions asked to
-    the key set (ADR-035 §1: one per id plus one per shift step)."""
-    return {"keys": {}, "ids": {}, "lookups": 0}
+    the key set (ADR-035 §1: one per id plus one per shift step).
+    `foreign` holds the typed links the call's own text carried: the
+    outward rule never reads a key out of those."""
+    return {"keys": {}, "ids": {}, "lookups": 0, "foreign": set()}
 
 
 def _wall_key(table, kind, ident, entry):
@@ -1386,6 +1400,8 @@ def _wall_in(table, messages, system):
     messages. Returns (messages, system) for the adapter; the caller's
     values are not changed."""
     def f(text):
+        if "any://" in text:
+            table["foreign"].update(m.group(0) for m in _WALL_TYPED.finditer(text))
         if "bafy" not in text and "ref:" not in text and "any://u/" not in text:
             return text
         return _WALL_IN.sub(lambda m: _wall_handle(table, m), text)
@@ -1403,10 +1419,43 @@ def _wall_out(table, reply):
     handle becomes `any://s/<id>` as the target of a markdown link and
     the bare space id anywhere else. A handle the table does not hold
     becomes `ref:unknown/<key>` and is listed, as the model wrote it,
-    in `unresolvedRefs`."""
+    in `unresolvedRefs`. A typed link written with keys where ids
+    belong (`any://f/bow/WKo`) becomes the link of those keys."""
     unresolved = []
 
+    def well(kind, seg):
+        return _WELL_FORMED[kind].fullmatch(seg) is not None
+
+    def typed(m):
+        """A typed link of the reply. It changes only when the call's
+        text did not carry it and a segment is a key of the table."""
+        whole = m.group(0)
+        if whole in table["foreign"]:
+            return whole
+        if m["l_one"] is not None:
+            kind = "space" if m["l_one"] == "s" else "user"
+            entry = None if well(kind, m["l_only"]) else table["keys"].get((kind, m["l_only"]))
+            return whole if entry is None else f"any://{m['l_one']}/{entry['id']}"
+        letter, seg, ident = m["l_kind"], m["l_space"], m["l_id"]
+        space = None if well("space", seg) else table["keys"].get(("space", seg))
+        if letter == "m":
+            return whole if space is None else f"any://m/{space['id']}/{ident}"
+        kind = "file" if letter == "f" else "object"
+        if well(kind, ident):
+            return whole if space is None else f"any://{letter}/{space['id']}/{ident}"
+        entry = table["keys"].get((kind, ident))
+        if entry is not None:
+            # the key names the thing, and the thing knows its space
+            return f"any://{letter}/{entry['space']}/{entry['id']}"
+        if space is None:
+            return whole    # no key in it: a name or a sample, as written
+        if whole not in unresolved:
+            unresolved.append(whole)
+        return f"ref:unknown/{ident}"
+
     def expand(m):
+        if m["kind"] is None:
+            return typed(m)
         kind, key = m["kind"], m["key"]
         entry = table["keys"].get(("object" if kind == "prop" else kind, key))
         if entry is None:
@@ -1423,7 +1472,7 @@ def _wall_out(table, reply):
         return f"any://{letter}/{entry['space']}/{entry['id']}"
 
     def f(text):
-        return _WALL_OUT.sub(expand, text) if "ref:" in text else text
+        return _WALL_OUT.sub(expand, text) if "ref:" in text or "any://" in text else text
     reply = {**reply, "parts": _wall_parts(reply["parts"], f)}
     if unresolved:
         reply["unresolvedRefs"] = unresolved

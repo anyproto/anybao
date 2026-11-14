@@ -217,6 +217,56 @@ def test_handle_shaped_text_in_the_input_never_expands():
     assert outward(table, "ref:unknown/gyu") == ("ref:unknown/gyu", None)
 
 
+# --- a typed link written with keys (§5) ---------------------------------------
+
+def keyed_table():
+    _, table = inward(f"{link(DUNE)} any://f/{S}/{FILE} any://u/{IDENT} any://s/{S}")
+    return table
+
+
+def test_a_link_filled_with_keys_becomes_the_link_of_those_keys():
+    table = keyed_table()
+    text, unresolved = outward(
+        table, "[trace](any://f/a3n/3V2) any://o/a3n/gyu/editor_blocks/b1 "
+               "any://p/a3n/gyu/rating [Garden](any://s/a3n) any://u/hQ6")
+    assert text == (f"[trace](any://f/{S}/{FILE}) {link(DUNE)}/editor_blocks/b1 "
+                    f"any://p/{S}/{DUNE}/rating [Garden](any://s/{S}) any://u/{IDENT}")
+    assert unresolved is None
+
+
+def test_the_key_of_the_thing_decides_and_a_space_name_is_ignored():
+    table = keyed_table()
+    assert outward(table, "any://o/Garden/gyu")[0] == link(DUNE)
+    # a key in the space segment of a link that holds a real id
+    assert outward(table, f"any://o/a3n/{EMMA} any://m/a3n/{IDENT}")[0] == \
+        f"{link(EMMA)} any://m/{S}/{IDENT}"
+
+
+def test_a_key_the_table_does_not_hold_beside_a_space_key_is_unknown():
+    table = keyed_table()
+    text, unresolved = outward(table, "see [x](any://f/a3n/WKo). any://f/a3n/WKo")
+    assert text == "see [x](ref:unknown/WKo). ref:unknown/WKo"
+    assert unresolved == ["any://f/a3n/WKo"]
+
+
+def test_a_link_without_a_key_stays_as_written():
+    table = keyed_table()
+    for text in (f"{link(DUNE)} any://f/{S}/{FILE}",      # well-formed
+                 "any://o/spaceId/objectId any://s/Garden",  # a sample, a name
+                 "any://o/<spaceId>/<id> any://f/{space}/{fid} any://o/…",
+                 f"any://{DUNE}"):                         # the legacy bare form
+        assert outward(table, text) == (text, None)
+
+
+def test_a_dead_link_of_the_input_never_expands():
+    # the chat already holds `any://f/a3n/3V2`: those are not keys of
+    # this call, though this call gives the same keys to other things
+    text, table = inward(f"any://f/a3n/3V2 and {link(DUNE)} any://f/{S}/{FILE}")
+    assert text == "any://f/a3n/3V2 and ref:object/gyu ref:file/3V2"
+    assert outward(table, "any://f/a3n/3V2 ref:file/3V2") == \
+        (f"any://f/a3n/3V2 any://f/{S}/{FILE}", None)
+
+
 def test_every_part_kind_is_covered_and_thinking_is_not_touched():
     table = LLM["_wall_table"]()
     signed = {"type": "thinking", "thinking": f"saw {link(DUNE)}", "signature": "sig"}
