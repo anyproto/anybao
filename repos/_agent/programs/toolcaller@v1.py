@@ -1558,7 +1558,9 @@ def main(args):
     runtime_ctx = (
         "\n\n## Runtime context\n\n"
         f"- agent space: `{space}` (your chat, history, and brain live here)\n"
-        f"- chat object: `{chat_id}`\n"
+        # the chat by the code that holds it, not by its id: an id in
+        # this text is 60 characters no handle can replace (ADR-035 §5)
+        '- chat object: `baoSpaceConfig["chatId"]` (bound in cells)\n'
         f"- agent name: {agent_name}\n"
         + _apps_lines(c, space, None) +
         "- bound cell globals (spaceConfig args): `currentUserSpace` (the "

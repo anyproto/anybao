@@ -569,7 +569,9 @@ def test_user_message_carries_timestamp_and_view_context():
     assert "user's view — space: sp9, object: ob3, view: object]\n" in user
     # runtime context is appended to the system arg, guest-side
     assert "## Runtime context" in call["system"]
-    assert "`s1`" in call["system"] and "`c1`" in call["system"]
+    assert "`s1`" in call["system"]
+    # the chat is named by the bound value that holds it, never by its id
+    assert '`baoSpaceConfig["chatId"]`' in call["system"] and "c1" not in call["system"]
     # the installed apps (ADR-027 §5), hidden entries out: the agent
     # space's ride the system tail; the user's space's ride the message
     # with its view, so a view change leaves the tail cached (ADR-005 §5)
@@ -1126,7 +1128,7 @@ def test_compact_style_and_last_user_instructions():
     assert "## Runtime context" not in call["system"]
     user = call["messages"][-1]["parts"][0]["text"]
     assert user.startswith("go") and "## Runtime context" in user
-    assert "chat object: `c1`" in user
+    assert 'chat object: `baoSpaceConfig["chatId"]`' in user
 
 
 def test_full_style_keeps_instructions_in_system():
