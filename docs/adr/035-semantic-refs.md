@@ -475,7 +475,16 @@ its handle too. A `#type` fragment after a link stays where it is,
 after the handle. Each id takes its key by the rule of §1, and the
 table records it. So an
 object created this run is covered with no extra step: its uri is in
-a `tool_result`, and the next call renders it as a handle.
+a `tool_result`, and the next call renders it as a handle. That holds
+only when the result shows a link, and shows it before the bare id:
+`create_object` returns `link` first, `attach_file` returns `uri`,
+and each row of `query_objects` starts with `uri`. A result that
+showed only `'id': 'bafy…'` left the model with a long id and no
+handle, and a model that had to link the object made a handle up
+(staging rig, 2026-11-14). A model also passes a handle where a call
+takes an object id (`get_markdown(space, "ref:object/bcj")`); the
+handle reaches the cell as the link of the object, so every any@v1
+function reads an object link in `object_id` as that object.
 
 **Only a well-formed link is rewritten.** The wall reads text, and
 text holds link-shaped things that are not objects: a placeholder in
