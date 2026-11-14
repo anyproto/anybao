@@ -1443,7 +1443,9 @@ class _Client:
                 out[k] = [self._resolve_filter(space, sub) for sub in v]
                 continue
             rk = self._resolve_path(space, k)
-            if k == "any.type":
+            if k == "id":
+                v = _id_filter_value(v)
+            elif k == "any.type":
                 v = self._resolve_type_value(space, v)
             elif k == "any.collections":
                 v = self._resolve_collection_value(space, v)
@@ -4945,6 +4947,22 @@ def _object_id_of(value):
     they are."""
     m = _OBJECT_LINK.fullmatch(value)
     return m.group(1) if m else value
+
+
+def _id_filter_value(cond):
+    """The `id` condition of a filter with each object link read as its
+    object id: the model writes the handle of a row there, and the
+    handle reaches the cell as the link (ADR-035 §5). The server
+    matches `id` on the id alone, so a link there matched nothing,
+    with no error."""
+    def one(x):
+        return _object_id_of(x) if isinstance(x, str) else x
+    if isinstance(cond, list):
+        return [one(x) for x in cond]
+    if isinstance(cond, dict):
+        return {op: [one(x) for x in v] if isinstance(v, list) else one(v)
+                for op, v in cond.items()}
+    return one(cond)
 
 
 def _export(name, method):

@@ -174,9 +174,39 @@ def test_stamp_ids_become_handles():
     assert outward(table, "ref:object/gyu")[0] == link(DUNE)
 
 
-def test_bare_object_id_is_a_handle_only_after_the_call_showed_it():
-    text, _ = inward(f"{EMMA} then {link(DUNE)} then {DUNE} and {EMMA}")
-    assert text == f"{EMMA} then ref:object/gyu then ref:object/gyu and {EMMA}"
+def test_bare_object_id_is_a_handle_and_comes_back_as_the_id():
+    # no link of the call names EMMA: its handle has no space, and it
+    # is the bare id again wherever the model writes it (ADR-035 §5)
+    text, table = inward(f"{EMMA} then {link(DUNE)} then {DUNE} and {EMMA}")
+    assert text == "ref:object/k7m then ref:object/gyu then ref:object/gyu and ref:object/k7m"
+    out, bad = outward(table, 'get(s, "ref:object/k7m"); {"ref:object/k7m": 1}')
+    assert out == f'get(s, "{EMMA}"); {{"{EMMA}": 1}}' and not bad
+    # DUNE has a link, so it is the link as before
+    assert outward(table, "ref:object/gyu")[0] == link(DUNE)
+
+
+def test_a_later_link_gives_a_bare_id_its_space():
+    # the id stands bare first (a printed `id`), a link follows (a row's
+    # `uri`): one key, and it expands to the link
+    text, table = inward(f"made {EMMA}; row {link(EMMA)}")
+    assert text == "made ref:object/k7m; row ref:object/k7m"
+    assert outward(table, "[Emma](ref:object/k7m)") == (f"[Emma]({link(EMMA)})", None)
+
+
+def test_a_bare_id_handle_has_no_link_to_become():
+    _, table = inward(f"made {EMMA} in {S}")
+    # as a link target, and as a property handle: unresolved, listed
+    assert outward(table, "[Emma](ref:object/k7m)") == (
+        "[Emma](ref:unknown/k7m)", ["ref:object/k7m"])
+    assert outward(table, "ref:prop/k7m/status")[1] == ["ref:prop/k7m"]
+    # a typed link that names the space gives it one
+    assert outward(table, "any://o/a3n/k7m")[0] == link(EMMA)
+    assert outward(table, f"any://o/{S}/k7m")[0] == link(EMMA)
+
+
+def test_a_bare_id_inside_a_longer_name_stays():
+    for text in (f"/objects/{EMMA}", f"{EMMA}_agent_memory_items"):
+        assert inward(text)[0] == text
 
 
 # --- in and out (§5) ----------------------------------------------------------

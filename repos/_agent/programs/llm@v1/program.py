@@ -1264,7 +1264,7 @@ _LINK_END = r"(?![A-Za-z0-9_/?&=%-]|\.[A-Za-z0-9])"
 # one pass, so the keys are given in text order across every kind:
 # a well-formed link of the server's registry | the stamp's
 # `space: <id>, object: <id>` | a bare space id | a bare object id (a
-# handle only when the call already showed it) | a handle-shaped text
+# handle whose space the call may never show) | a handle-shaped text
 _WALL_IN = re.compile(
     r"any://(?:(?:"
     rf"o/(?P<o_s>{_SPACE_ID})/(?P<o_o>{_OBJECT_ID})(?:/{_SEG}/{_SEG})?"
@@ -1315,6 +1315,10 @@ def _wall_key(table, kind, ident, entry):
     letters and digits) — the caller then leaves the text as it is."""
     known = table["ids"].get((kind, ident))
     if known is not None:
+        held = table["keys"][(kind, known)]
+        if held.get("space") is None and entry.get("space") is not None:
+            # the id stood bare first; a link now names its space
+            held["space"] = entry["space"]
         return known
     chars = "".join(c for c in ident if c.isalnum())
     if ident.startswith("bafy"):
@@ -1362,8 +1366,9 @@ def _wall_handle(table, m):
         if skey is None or okey is None:
             return whole
         return f"ref:space/{skey}, object: ref:object/{okey}"
-    # a bare object id: a handle only when this call already showed it
-    key = table["ids"].get(("object", m["b_o"]))
+    # a bare object id: a handle with no space, until a link of the
+    # call names one. Outward it is the bare id again (ADR-035 §5)
+    key = _wall_key(table, "object", m["b_o"], {"space": None, "id": m["b_o"]})
     return whole if key is None else f"ref:object/{key}"
 
 
@@ -1420,7 +1425,11 @@ def _wall_out(table, reply):
     the bare space id anywhere else. A handle the table does not hold
     becomes `ref:unknown/<key>` and is listed, as the model wrote it,
     in `unresolvedRefs`. A typed link written with keys where ids
-    belong (`any://f/bow/WKo`) becomes the link of those keys."""
+    belong (`any://f/bow/WKo`) becomes the link of those keys. An
+    object handle whose id the call showed only bare, in no link, is
+    that bare id again; as the target of a markdown link or as a
+    property handle it has no link to become, so it is listed as
+    unresolved too."""
     unresolved = []
 
     def well(kind, seg):
@@ -1445,8 +1454,13 @@ def _wall_out(table, reply):
             return whole if space is None else f"any://{letter}/{space['id']}/{ident}"
         entry = table["keys"].get((kind, ident))
         if entry is not None:
-            # the key names the thing, and the thing knows its space
-            return f"any://{letter}/{entry['space']}/{entry['id']}"
+            # the key names the thing, and the thing knows its space; a
+            # thing the call showed only as a bare id takes the space
+            # the link names
+            home = (entry["space"] or (space or {}).get("id")
+                    or (seg if well("space", seg) else None))
+            if home is not None:
+                return f"any://{letter}/{home}/{entry['id']}"
         if space is None:
             return whole    # no key in it: a name or a sample, as written
         if whole not in unresolved:
@@ -1468,6 +1482,15 @@ def _wall_out(table, reply):
             return f"any://s/{entry['id']}" if linked else entry["id"]
         if kind == "user":
             return f"any://u/{entry['id']}"
+        if entry["space"] is None:
+            # the call showed this id bare and in no link
+            linked = m.string[max(0, m.start() - 2):m.start()] == "]("
+            if kind == "object" and not linked:
+                return entry["id"]
+            written = f"ref:{kind}/{key}"
+            if written not in unresolved:
+                unresolved.append(written)
+            return f"ref:unknown/{key}"
         letter = {"object": "o", "prop": "p", "file": "f"}[kind]
         return f"any://{letter}/{entry['space']}/{entry['id']}"
 
