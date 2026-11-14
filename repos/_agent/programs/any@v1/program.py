@@ -1858,7 +1858,8 @@ class _Client:
     def list_children(self, space, parent=""):
         """The page tree under `parent` ("" = top) → rows in sidebar order.
 
-        Rows are query_objects-shaped. A space whose tree (Folders in the UI)
+        Rows are query_objects-shaped: each starts with `uri`, the link of
+        the page. A space whose tree (Folders in the UI)
         was never set up has none: returns []."""
         if not any(b.get("id") == _WIKI_BUNDLE for b in self.list_bundles(space)):
             return []
@@ -2003,13 +2004,18 @@ class _Client:
         out = [self._normalize_record(space, r) for r in recs
                if "spaceIndex" not in r]
         self._hydrate_links(space, out)   # ADR-022 §3
-        if self._is_space_id(space):
-            # the link of the row, first: what a reply links, and what
-            # gives the row's id a handle on the wire (ADR-035 §5)
-            out = [{"uri": f"any://o/{space}/{r['id']}", **r}
-                   if isinstance(r, dict) and isinstance(r.get("id"), str) else r
-                   for r in out]
-        return out
+        return [self._linked(space, r, "id") for r in out]
+
+    def _linked(self, space, row, key):
+        """`row` with the link of its object first: what a reply links,
+        and what gives the id under `key` a handle on the wire
+        (ADR-035 §5). A row with no id, or a space that is not an id,
+        passes as it is."""
+        if not (isinstance(row, dict) and isinstance(row.get(key), str)
+                and row[key] and isinstance(space, str)
+                and self._is_space_id(space)):
+            return row
+        return {"uri": f"any://o/{space}/{row[key]}", **row}
 
     @_public('getter')
     def list_programs(self, space, tools_only=False):
@@ -3806,9 +3812,11 @@ class _Client:
         """Index search; returns the `{hits, mode, vectorStatus}` envelope.
 
         Each hit is a matched RECORD, not a resolved object:
-        `{data (the matched text), dataset (the collection), key (the
-        store key inside it — `agent_memory_items`, `chat_messages`,
-        …), objectId, recordId, scope, score}`. With enrich=True
+        `{uri (the link of the object that holds the record — what a
+        reply links), data (the matched text), dataset (the
+        collection), key (the store key inside it —
+        `agent_memory_items`, `chat_messages`, …), objectId, recordId,
+        scope, score}`. With enrich=True
         (default) every hit also gets `title`
         (the object's any.name) and `type` (its type's display name) —
         and prop-dataset hits gain `prop` ("book.author": which
@@ -3835,6 +3843,9 @@ class _Client:
                 h["key"] = self._collection_key(h["dataset"])
         if enrich:
             self._enrich_hits(space, result.get("hits") or [])
+        if isinstance(result.get("hits"), list):
+            result["hits"] = [self._linked(space, h, "objectId")
+                              for h in result["hits"]]
         return result
 
     # established scopes every space has (docs/13-index.md); dataset
@@ -3909,11 +3920,11 @@ class _Client:
                         break
 
     def _edge(self, space, e):
-        """One link-index edge → `{objectId, dataset?, key?, recordId?,
-        kind, type?, prop?, spaceId?, target}`: the referencing object,
-        where the reference sits (a block, a message, a record, or a
-        property value: `prop` as "typeXKey.propXKey"), and the target
-        URI. Ids read as xKeys where the catalog knows them."""
+        """One link-index edge → `{uri, objectId, dataset?, key?,
+        recordId?, kind, type?, prop?, spaceId?, target}`: the link of
+        the referencing object and its id, where the reference sits (a
+        block, a message, a record, or a property value: `prop` as
+        "typeXKey.propXKey"), and the target URI. Ids read as xKeys where the catalog knows them."""
         src = e.get("source") or {}
         out = {"objectId": src.get("objectId"), "kind": e.get("kind"),
                "target": (e.get("target") or {}).get("uri")}
@@ -3936,7 +3947,7 @@ class _Client:
                         prop = p.get("xKey") or p.get("name") or pid
                         break
             out["prop"] = f'{(row or {}).get("xKey") or tid}.{prop}'
-        return out
+        return self._linked(src.get("spaceId") or space, out, "objectId")
 
     @_public('getter', label="Reading what links to {object} in {space}")
     def backlinks(self, space, object_id):
@@ -3944,7 +3955,8 @@ class _Client:
 
         The link index's edges pointing at the object (`object`) and at its
         records or property values (`parts`) → {"object": [edge], "parts":
-        [edge], "truncated"?}. An edge: `{objectId, kind, target,
+        [edge], "truncated"?}. An edge: `{uri (the link of the referencing
+        object), objectId, kind, target,
         dataset?/key?/recordId? (a block, message or record), prop? ("type.prop"
         for a relation value), spaceId? (when foreign)}`. Edges come from editor
         blocks, chat messages, and relation / markdown properties; the index

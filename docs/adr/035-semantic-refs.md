@@ -478,7 +478,11 @@ object created this run is covered with no extra step: its uri is in
 a `tool_result`, and the next call renders it as a handle. That holds
 only when the result shows a link, and shows it before the bare id:
 `create_object` returns `link` first, `attach_file` returns `uri`,
-and each row of `query_objects` starts with `uri`. A result that
+and each row that names an object starts with `uri`: a row of
+`query_objects` and of `list_children`, a hit of `search` (the link
+of the object that holds the matched record), and an edge of
+`backlinks`, `links` and `backlinks_everywhere` (the link of the
+referencing object, in its own space). A result that
 showed only `'id': 'bafy…'` left the model with a long id and no
 handle, and a model that had to link the object made a handle up
 (staging rig, 2026-11-14). A model also passes a handle where a call

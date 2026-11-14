@@ -624,6 +624,37 @@ def test_query_objects_rows_start_with_their_link():
     assert client(fx).query_objects(sid, filter={}, normalize=False) == rows
 
 
+def test_search_hits_start_with_the_link_of_their_object():
+    sid = "bafyreispace0000000000000.abc"
+    fx = wire(replies={"/search": {"hits": [
+        {"objectId": "o1", "dataset": "editor_blocks", "recordId": "b1"},
+        {"dataset": "editor_blocks"}], "mode": "fts"}})
+    hits = client(fx).search(sid, "q", enrich=False)["hits"]
+    assert list(hits[0])[:2] == ["uri", "objectId"]
+    assert hits[0]["uri"] == f"any://o/{sid}/o1"
+    assert "uri" not in hits[1]               # no object id: nothing to link
+
+
+def test_link_edges_start_with_the_link_of_the_referencing_object():
+    sid, other = "bafyreispace0000000000000.abc", "bafyreiother0000000000000.xyz"
+    edges = [
+        {"source": {"spaceId": sid, "objectId": "pg", "dataset": "editor_blocks",
+                    "recordId": "blk1"},
+         "kind": "link", "target": {"uri": f"any://o/{sid}/o1"}},
+        # an edge from another space links into ITS space
+        {"source": {"spaceId": other, "objectId": "far", "dataset": "chat_messages",
+                    "recordId": "m1"},
+         "kind": "link", "target": {"uri": f"any://o/{sid}/o1"}}]
+    fx = wire(replies={**_CAT, "/objects/o1/backlinks": {"object": edges, "parts": []},
+                       "/objects/o1/links": {"links": edges[:1]}})
+    c = client(fx)
+    near, far = c.backlinks(sid, "o1")["object"]
+    assert list(near)[:2] == ["uri", "objectId"]
+    assert near["uri"] == f"any://o/{sid}/pg"
+    assert far["uri"] == f"any://o/{other}/far" and far["spaceId"] == other
+    assert c.links(sid, "o1")[0]["uri"] == f"any://o/{sid}/pg"
+
+
 def test_create_object_unknown_property_raises_never_drops():
     fx = wire(replies={**_CAT, "/objects": {"objectId": "o9"}})
     with pytest.raises(ValueError, match='unknown property "nope" on "task"'):
