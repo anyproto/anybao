@@ -336,6 +336,30 @@ def _changed_chips(atts, touched):
     return out
 
 
+_UNKNOWN_LINK = re.compile(r"\[([^\]]*)\]\(\s*ref:unknown/[A-Za-z0-9]+\s*\)")
+_UNKNOWN_BARE = re.compile(r"`?ref:unknown/[A-Za-z0-9]+`?")
+
+
+def _unsent_note(bad):
+    """ADR-035 §5: the one message a final reply with an unknown ref
+    gets back, in place of being posted."""
+    return ("[runtime: your reply was NOT sent. It links " + ", ".join(bad)
+            + ", and no handle of this conversation has that key. Write the "
+            "reply again. Link a thing only with a handle that is shown to "
+            "you: the `uri` or `link` of a result, the refs line. For an "
+            "object you hold only as an id, read it once more "
+            "(`query_objects` gives each row its `uri`). If you cannot get "
+            "its handle, name the thing without a link.]")
+
+
+def _plain_unknown(text):
+    """A reply that still holds an unknown ref goes out without it: the
+    link text stays, the dead target does not reach the chat."""
+    if "ref:unknown/" not in (text or ""):
+        return text
+    return _UNKNOWN_BARE.sub("(unknown link)", _UNKNOWN_LINK.sub(r"\1", text))
+
+
 def _name_unresolved(reply, results):
     """ADR-035 §5: a handle the wall could not expand reached a cell as
     `ref:unknown/<key>`; the result of that cell says so, with the
@@ -1712,6 +1736,7 @@ def main(args):
     last_in = 0        # prompt tokens of the latest call — the context in use
     malformed = 0      # unparseable tool calls so far (traits.malformed_retries)
     unresolved = []    # handles the wall could not expand (ADR-035 §5)
+    ref_retried = False  # the one retry of a final reply with an unknown ref
     while True:
         wrapup_reason = None
         # a quiet run must not consume the parent's inject/break stream
@@ -1763,8 +1788,16 @@ def main(args):
         messages.append({"role": "assistant", "parts": reply["parts"]})
 
         if reply["stop"] == "done":
-            unresolved += reply.get("unresolvedRefs") or []
-            replies = _texts(reply["parts"])
+            bad = reply.get("unresolvedRefs") or []
+            unresolved += bad
+            if bad and not ref_retried:
+                # ADR-035 §5: a reply that links an unknown ref is not
+                # posted; the model gets one more call to write it
+                ref_retried = True
+                messages.append({"role": "user", "parts": [
+                    {"type": "text", "text": _unsent_note(bad)}]})
+                continue
+            replies = [_plain_unknown(t) for t in _texts(reply["parts"])]
             bubble("\n".join(replies), True)
             break
         if reply["stop"] == "length":

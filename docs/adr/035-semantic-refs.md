@@ -553,6 +553,12 @@ already carried is never read this way: the table records those on the
 way in, so a dead link of an earlier message does not expand to
 whatever holds the same keys in this call.
 
+A final reply that links an unknown ref is not posted. The loop gives
+the model one message — the refs as written, and how to get a handle
+— and one more call. If that reply still holds an unknown ref, it is
+posted without it: `[name](ref:unknown/x)` goes out as `name`. No
+`ref:` text reaches the chat, and one retry cannot become a loop.
+
 **A handle the table does not hold** — one the model invented, or one
 it damaged — becomes `ref:unknown/<key>`, and the reply gains
 `unresolvedRefs: ["ref:object/<key>", …]` with the handles as the

@@ -245,6 +245,28 @@ def test_a_cell_that_carried_an_unknown_handle_says_so():
     assert out["unresolvedRefs"] == ["ref:object/gyx"]
 
 
+def test_a_final_reply_with_an_unknown_ref_is_not_sent_and_gets_one_retry():
+    bad = done_reply("Created [Probe](ref:unknown/04b).")
+    bad["unresolvedRefs"] = ["ref:object/04b"]
+    w = world([bad, done_reply(f"Created [Probe]({DUNE_URI}).")])
+    out = run(w)
+    assert len(w.llm_calls) == 2
+    note = w.llm_calls[1]["messages"][-1]["parts"][0]["text"]
+    assert "NOT sent" in note and "ref:object/04b" in note
+    assert [p["text"] for p in w.chat_posts] == [f"Created [Probe]({DUNE_URI})."]
+    assert out["unresolvedRefs"] == ["ref:object/04b"]
+
+
+def test_a_second_unknown_ref_goes_out_as_plain_text():
+    bad = done_reply("Created [Probe](ref:unknown/04b), see `ref:unknown/zz9`.")
+    bad["unresolvedRefs"] = ["ref:object/04b", "ref:object/zz9"]
+    w = world([bad, dict(bad)])
+    out = run(w)
+    assert len(w.llm_calls) == 2                     # one retry, never a loop
+    assert [p["text"] for p in w.chat_posts] == ["Created Probe, see (unknown link)."]
+    assert "ref:" not in out["replies"][0]
+
+
 def test_a_run_without_unknown_handles_has_no_such_field():
     w = world([tool_reply(), done_reply("ok")])
     out = run(w)
