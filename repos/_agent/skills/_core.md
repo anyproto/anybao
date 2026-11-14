@@ -91,7 +91,9 @@ brackets) into `getRef("ref:…")`: it gives the ref's `spaceId`,
 replaced by the real id in your text before the cell runs, like a
 macro: it works only as a whole literal, never built at run time (no
 concatenation, no f-string, no key kept in a variable). A name on the
-line works too while one ref has it.
+line works too while one ref has it. Where a doc shows an `any://…`
+link, write the handle in its place, whole: never put a key into an
+`any://` form yourself (`any://f/bow/WKo` is a dead link).
 
 Memory: `_memory` skill; mem.save_with_dedup is the only save path.
 
