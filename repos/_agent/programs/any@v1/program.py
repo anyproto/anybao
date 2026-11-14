@@ -562,16 +562,19 @@ def _pick_color(key):
     return _OPTION_COLORS[sum(ord(ch) for ch in key) % len(_OPTION_COLORS)]
 
 
-def _public(kind, scoped=True, listed=True):
+def _public(kind, scoped=True, listed=True, label=None):
     """Mark a _Client method as part of the flat module surface (ADR-010
     §8): the export loop at the end of this module turns every marked
     method into a module function with the method's doc and signature —
     `self` dropped, the first parameter renamed `spaceConfig` when
     `scoped` (resolved to a space id per call). `kind` is the span kind;
     `listed=False` keeps the function callable but out of listings
-    (ADR-010 §1): harness plumbing other programs call, not the model."""
+    (ADR-010 §1): harness plumbing other programs call, not the model.
+    `label` is how the call reads to a person while it runs (ADR-034 §3):
+    a template over the PUBLIC arguments (`{object_id}` is `{object}`,
+    `{spaceConfig}` is `{space}`; a dotted path reaches into one)."""
     def mark(method):
-        method.__any_public__ = (kind, scoped, listed)
+        method.__any_public__ = (kind, scoped, listed, label)
         return method
     return mark
 
@@ -1629,7 +1632,8 @@ class _Client:
         return v
 
     # --- objects -------------------------------------------------------------
-    @_public('mutator')
+    @_public('mutator',
+             label="Creating {body.type} “{body.name|body.initialProperties.any.name}” in {space}")
     def create_object(self, space, body, create_options=True, parent=None,
                       folder=None):
         # ADR-006 §6, ADR-022 §2
@@ -1823,7 +1827,7 @@ class _Client:
             last = ((rows[0].get(wcid) or {}).get(wiki["pos"]) or "")
         return _lexid_after(last)
 
-    @_public('mutator')
+    @_public('mutator', label="Moving {object} in {space}")
     def move_object(self, space, object_id, parent, folder=None):
         """Place an object in the page tree (Folders in the UI), or move it.
 
@@ -1863,7 +1867,7 @@ class _Client:
             filter={f'{wcid}.{wiki["parentId"]}': parent},
             sort=[f'{wcid}.{wiki["pos"]}'])
 
-    @_public('mutator')
+    @_public('mutator', label="Updating {object} in {space}")
     def update_object(self, space, object_id, body, create_options=True):
         """Update an object's name / editor body / properties by handle.
 
@@ -1927,7 +1931,7 @@ class _Client:
             by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
         return list(by_scope.values())
 
-    @_public('mutator')
+    @_public('mutator', label="Deleting {object} in {space}")
     def delete_object(self, space, object_id):
         """Delete an object permanently; returns {} (wire: 204).
 
@@ -1936,7 +1940,7 @@ class _Client:
         the id (query/search) before deleting."""
         return self._call("delete", f"/v1/spaces/{space}/objects/{object_id}")
 
-    @_public('getter')
+    @_public('getter', label="Listing {filter.any.type} objects in {space}")
     def query_objects(self, space, *, normalize=True, **opts):
         # normalize is keyword-only: a positional dict here used to land
         # in `normalize` and silently drop the caller's filter — a query
@@ -2404,13 +2408,13 @@ class _Client:
     def _md_path(self, space, object_id, tail=""):
         return f"/v1/spaces/{space}/objects/{object_id}/editor/editor_blocks/markdown{tail}"
 
-    @_public('getter')
+    @_public('getter', label="Reading {object} in {space}")
     def get_markdown(self, space, object_id):
         """The object's editor body as markdown TEXT (a string, not a dict)."""
         r = self._call("get", self._md_path(space, object_id))
         return r.get("content", "")
 
-    @_public('mutator')
+    @_public('mutator', label="Writing {object} in {space}")
     def put_markdown(self, space, object_id, content):
         """Replace the object's editor body with `content` (markdown).
 
@@ -2450,7 +2454,7 @@ class _Client:
             r["strippedTitle"] = True
         return self._warned(r, self._link_warnings(content))
 
-    @_public('mutator')
+    @_public('mutator', label="Editing {object} in {space}")
     def edit_markdown(self, space, object_id, edits):
         """Surgical text edits on the editor body — THE point-edit path.
 
@@ -2471,7 +2475,7 @@ class _Client:
         texts = [e.get("newText") for e in (edits or []) if isinstance(e, dict)]
         return self._warned(r, self._link_warnings(*texts))
 
-    @_public('mutator')
+    @_public('mutator', label="Adding to {object} in {space}")
     def append_markdown(self, space, object_id, content):
         """Append to the editor body (server-side append-only fast path).
 
@@ -2485,7 +2489,7 @@ class _Client:
         return self._warned(r, self._link_warnings(content))
 
     # --- spaces & ui context ---------------------------------------------------
-    @_public('getter', scoped=False)
+    @_public('getter', scoped=False, label="Reading the list of spaces")
     def list_spaces(self, raw=False):
         """Every space on the account → trimmed space rows.
 
@@ -2545,7 +2549,7 @@ class _Client:
                            f"non-derived object {root} — unsupported server")
         return root
 
-    @_public('mutator', scoped=False)
+    @_public('mutator', scoped=False, label="Creating the space “{name}”")
     def create_space(self, name, description=None):
         """Create a top-level space with its general chat.
 
@@ -2596,7 +2600,7 @@ class _Client:
                           {"type": etype, "scope": "device", "data": data})
 
     # --- types, collections & properties (catalog source) ---------------------
-    @_public('getter')
+    @_public('getter', label="Reading the types of {space}")
     def list_types(self, space):
         """Every type in the space — what an object can BE — hidden ones included.
 
@@ -2623,7 +2627,7 @@ class _Client:
                 if c.get("id") not in _SYNTHETIC_TYPES
                 and c.get("id") not in _BUILTIN_COLLECTION_IDS]
 
-    @_public('getter')
+    @_public('getter', label="Reading the properties of {type_key} in {space}")
     def list_properties(self, space, type_key):
         """A type's or collection's property definitions, in display order.
 
@@ -2731,7 +2735,7 @@ class _Client:
                 added[pxkey] = self._post_property(space, owner_id, extra)["propId"]
         return added
 
-    @_public('mutator')
+    @_public('mutator', label="Creating the type “{body.name}” in {space}")
     def create_type(self, space, body):
         # ADR-029 §3
         """Create a type — what an object IS — with its icon and properties (composite ensure).
@@ -3071,7 +3075,7 @@ class _Client:
             "delete",
             f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
 
-    @_public('mutator')
+    @_public('mutator', label="Adding the property “{body.name}” to {type_key} in {space}")
     def add_property(self, space, type_key, body):
         """Add one property to a type or a collection (named by xKey).
 
@@ -3299,7 +3303,7 @@ class _Client:
         return {}
 
     # --- membership: the one type, the collections (ADR-029 §4) ---------------
-    @_public('mutator')
+    @_public('mutator', label="Changing the type of {object} to {type_key} in {space}")
     def set_type(self, space, object_id, type_key):
         """Change what an object IS: replace its one type.
 
@@ -3313,7 +3317,7 @@ class _Client:
         self._ds_invalidate(space, object_id=object_id)
         return {}
 
-    @_public('mutator')
+    @_public('mutator', label="Adding {object} to {collection_key} in {space}")
     def add_to_collection(self, space, object_id, collection_key):
         """File an object under a collection (a tag); idempotent.
 
@@ -3339,7 +3343,7 @@ class _Client:
         self._ds_invalidate(space, object_id=object_id)
         return {}
 
-    @_public('mutator')
+    @_public('mutator', label="Moving {object} to the bin in {space}")
     def trash(self, space, object_id):
         """Move an object to the bin — reversible with restore(); prefer it to deleting.
 
@@ -3350,7 +3354,7 @@ class _Client:
         {}."""
         return self.add_to_collection(space, object_id, _BIN)
 
-    @_public('mutator')
+    @_public('mutator', label="Restoring {object} in {space}")
     def restore(self, space, object_id):
         """Bring an object back from the bin, as it was. Returns {}."""
         return self.remove_from_collection(space, object_id, _BIN)
@@ -3786,7 +3790,7 @@ class _Client:
         return r
 
     # --- search & graph ----------------------------------------------------------
-    @_public('getter')
+    @_public('getter', label="Searching for “{query}” in {space}")
     def search(self, space, query, scopes=None, limit=None, mode=None,
                enrich=True, **kw):
         """Index search; returns the `{hits, mode, vectorStatus}` envelope.
@@ -3924,7 +3928,7 @@ class _Client:
             out["prop"] = f'{(row or {}).get("xKey") or tid}.{prop}'
         return out
 
-    @_public('getter')
+    @_public('getter', label="Reading what links to {object} in {space}")
     def backlinks(self, space, object_id):
         """What links HERE → {object: [edge], parts: [edge], truncated?}.
 
@@ -4467,7 +4471,7 @@ class _Client:
         return next((d.get("collection") for d in self._datasets_of(space, tid)
                      if d.get("key") == dataset_key), None)
 
-    @_public('mutator', scoped=False, listed=False)
+    @_public('mutator', scoped=False, listed=False, label="Saving a memory")
     def create_memory(self, fields):
         """Create a memory item (category + context required) in the brain.
 
@@ -4612,7 +4616,7 @@ class _Client:
             raise TypeError(f"{fn}: {second!r} is not a fileId; forms: {forms}")
         return self._resolve_space(_sid(first)), fid, query
 
-    @_public('getter')
+    @_public('getter', label="Reading the files of {object} in {space}")
     def list_files(self, space, object_id=None):
         """Files in the space → [{fileId, objectId, name, mime, size, …}].
 
@@ -4655,7 +4659,7 @@ class _Client:
              else blob.from_bytes(body or "", mime))  # noqa: F821
         return {"fileId": file_id, "mime": b.mime, "size": b.size, "blob": b}
 
-    @_public('mutator')
+    @_public('mutator', label="Attaching “{name}” to {object} in {space}")
     def attach_file(self, space, object_id, name, data, mime=None):
         # ADR-026 §5
         """Attach a file to an object → FileInfo + `uri` (any://f/…).
@@ -4904,8 +4908,12 @@ def _named(bound):
     return out
 
 
+# label placeholders the host derives by argument-name rule (ADR-034 §3)
+_LABEL_DERIVED = {"space", "object", "type", "query", "domain", "command", "n"}
+
+
 def _export(name, method):
-    kind, scoped, listed = method.__any_public__
+    kind, scoped, listed, label = method.__any_public__
     sig = inspect.signature(method)
     params = list(sig.parameters.values())[1:]            # drop self
     target = params[0].name if scoped else None           # the method's `space`
@@ -4913,7 +4921,18 @@ def _export(name, method):
         params[0] = params[0].replace(name="spaceConfig")
     public = sig.replace(parameters=params)
 
-    @span(name=f"{__name__}.{name}", kind=kind)  # noqa: F821 - guest global
+    # the label rides only when one is set: a span without it stays the
+    # shape every kernel takes
+    labeled = {"label": label} if label else {}
+    known = {p.name for p in params} | _LABEL_DERIVED
+    open_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+    for ph in re.findall(r"\{([^{}]*)\}", label or ""):
+        if open_kw:     # **opts: any name may arrive
+            break
+        if any(path.split(".", 1)[0] not in known for path in ph.split("|")):
+            raise ValueError(f"{name}: label placeholder {{{ph}}} names no argument")
+
+    @span(name=f"{__name__}.{name}", kind=kind, **labeled)  # noqa: F821 - guest global
     def facade(**named):
         if scoped:
             named[target] = _space(named.pop("spaceConfig"))

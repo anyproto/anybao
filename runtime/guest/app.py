@@ -1399,7 +1399,35 @@ def _span_input(argnames, drop_self, args, kwargs):
     return inp
 
 
-def span(name=None, kind=None):
+# Label placeholders the host derives from argument names by rule
+# (ADR-034 §3 refs) — valid in any label, whatever the method's own
+# parameters are called. `n` is the client's fold count.
+_LABEL_DERIVED = ("space", "object", "type", "query", "domain", "command", "n")
+_LABEL_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+
+
+def _check_label(label, span_name, argnames, open_kwargs):
+    """A label is a template over the method's own arguments (ADR-034
+    §3 layer 2): `{title}`, a dotted path into one (`{body.name}`),
+    alternatives (`{body.name|title}` — the first that holds a value),
+    or a host-derived ref. A placeholder that names nothing the method
+    takes is an authoring error — raised when the module loads, so a
+    deploy's first run reports it instead of a line that never fills."""
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError(f"@span {span_name}: label must be a non-empty string")
+    for ph in _LABEL_PLACEHOLDER.findall(label):
+        for path in ph.split("|"):
+            root = path.split(".", 1)[0]
+            if not root.isidentifier():
+                raise ValueError(f"@span {span_name}: bad label placeholder {{{ph}}}")
+            if open_kwargs or root in argnames or root in _LABEL_DERIVED:
+                continue
+            known = ", ".join(sorted(set(argnames) | set(_LABEL_DERIVED)))
+            raise ValueError(f"@span {span_name}: label placeholder {{{ph}}} names no "
+                             f"argument of the method (known: {known})")
+
+
+def span(name=None, kind=None, label=None):
     """Decorator: group one facade call's effects under a single trace
     input/output pair, so views show `name(args) -> out` like a host
     effect (ADR-001 §4c); the inner effect records stay underneath
@@ -1413,8 +1441,13 @@ def span(name=None, kind=None):
     (getter|mutator|setup|program) is the guest-DECLARED narrative
     classification recorded on the span (ADR-001 §4d) — it is NOT the
     mutation oracle: `meta.mutations` (count of inner mutate effects,
-    boundary-owned) is. A raised exception ends the span ok:false with a
-    clean {type, message} (no traceback) and re-raises."""
+    boundary-owned) is. `label` is how the call reads to a person while
+    it runs (ADR-034 §3): a template over the method's arguments —
+    `"Creating issue “{title}”"`, `"Updating {object} in {space}"` — sent
+    on span.begin and shown in the chat's activity line; like `kind` it
+    is narrative and carries no authority. A raised exception ends the
+    span ok:false with a clean {type, message} (no traceback) and
+    re-raises."""
     def deco(fn):
         span_name = name
         if span_name is None:
@@ -1422,6 +1455,14 @@ def span(name=None, kind=None):
             span_name = f"{mod}.{fn.__name__}" if mod else fn.__name__
         argnames = fn.__code__.co_varnames[:fn.__code__.co_argcount]
         drop_self = bool(argnames) and argnames[0] == "self"
+        # the program that owns the def (ADR-034 §2) — None for a span
+        # declared in cell code
+        program = fn.__globals__.get("__any_program__")
+        if label is not None:
+            kwonly = fn.__code__.co_varnames[
+                fn.__code__.co_argcount:fn.__code__.co_argcount + fn.__code__.co_kwonlyargcount]
+            _check_label(label, span_name, argnames + kwonly,
+                         bool(fn.__code__.co_flags & 0x08))   # CO_VARKEYWORDS
 
         @functools.wraps(fn)
         def wrapped(*args, **kwargs):
@@ -1429,6 +1470,10 @@ def span(name=None, kind=None):
                        "input": _span_input(argnames, drop_self, args, kwargs)}
             if kind is not None:
                 payload["kind"] = kind
+            if label is not None:
+                payload["label"] = label
+            if program is not None:
+                payload["program"] = program
             begun = _effect("span.begin", payload) or {}
             served = begun.get("mock")
             if served is not None:
@@ -1453,6 +1498,7 @@ def span(name=None, kind=None):
         # readable off the function (ADR-010 §1) — describe()/help()
         # render it as the `[kind]` tag; signature/doc survive wraps()
         wrapped.__span_kind__ = kind
+        wrapped.__span_label__ = label
         return wrapped
     return deco
 
@@ -1460,6 +1506,22 @@ def span(name=None, kind=None):
 # ---- use() module loading (ADR-004) ----------------------------------------
 
 _module_cache: dict = {}   # (objectId, marker) -> module object
+
+
+def _program_of(spec, resolved):
+    """Which program a module IS (ADR-034 §2): its `name@vN` and, when
+    it lives in a space, the `any://o/<space>/<object>` link of its
+    program object — programs live in any space (the agent overlay, the
+    connectors overlay, the user's own), so the link is the identity,
+    and a client reads the program's name and picture off it. A source
+    served inline or from a local dir has no object: spec only."""
+    prog = {"spec": spec.split(":")[-1]}
+    space, oid = resolved.get("spaceId"), resolved.get("objectId")
+    if space and oid and space != "local":
+        prog["link"] = f"any://o/{space}/{oid}"
+    if resolved.get("icon"):
+        prog["icon"] = resolved["icon"]     # the object's picture, an any://f/ link
+    return prog
 
 
 def _bound_use(owner):
@@ -1480,6 +1542,7 @@ def _bound_use(owner):
         mod.__dict__.update(_fresh_ns())
         mod.__dict__["use"] = _bound_use(r["objectId"])
         mod.__dict__["print"] = _module_print
+        mod.__dict__["__any_program__"] = _program_of(spec, r)
         exec(compile(r["source"], f"<{spec}>", "exec"), mod.__dict__)
         _module_cache[ck] = mod
         return mod

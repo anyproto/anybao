@@ -316,7 +316,10 @@ def test_cell_error_marks_tool_result_is_error():
     # the failure rides the cell span-end record itself (ADR-003 §3):
     # type + message, no traceback — a past-run reader sees WHY
     failed = [e for e in w.span_ends if e["ok"] is False]
-    assert failed == [{"ok": False, "error": {"type": "ValueError", "message": "boom"}}]
+    assert [{k: e[k] for k in ("ok", "error")} for e in failed] == [
+        {"ok": False, "error": {"type": "ValueError", "message": "boom"}}]
+    # the digest the model reads rides the same record (ADR-034 §1)
+    assert "Error: ValueError: boom" in failed[0]["output"]["digest"]
 
 
 def test_turn_ceiling_wraps_up_not_cuts():
@@ -1304,6 +1307,7 @@ def test_mockref_rides_the_cell_span_and_the_digest_says_mocked():
     # the spec crossed on the cell span input, sugar expanded
     cell_inputs = [i for i in w.span_inputs if i.get("cell") == "cell_m"]
     assert cell_inputs == [{"cell": "cell_m", "preview": "r = http.get(u)",
+                            "code": "r = http.get(u)", "turn": 1,
                             "mock": {"from": "run_abc"}}]
     part = w.llm_calls[1]["messages"][-1]["parts"][0]
     assert part["is_error"] is False
@@ -1619,3 +1623,35 @@ def test_the_boot_window_end_is_flagged_as_a_cache_breakpoint():
     w = World([done_reply("ok")])
     run(w)
     assert all("cache" not in p for m in w.llm_calls[0]["messages"] for p in m["parts"])
+
+
+# --- run activity stream (ADR-034): what the cell span carries to the host ---
+
+def test_cell_span_carries_code_turn_and_the_digest():
+    # the host publishes the cell frames from what crosses the boundary
+    # (ADR-034 §1): code + turn on the span input, the digest on its output
+    w = World([tool_reply("x = 1\nx", cid="c1"), tool_reply("x + 1", cid="c2"),
+               done_reply("ok")])
+    run(w)
+    cells = [i for i in w.span_inputs if i.get("cell") in ("c1", "c2")]
+    assert [(i["cell"], i["turn"], i["code"]) for i in cells] == [
+        ("c1", 1, "x = 1\nx"), ("c2", 2, "x + 1")]
+    digests = [e["output"]["digest"] for e in w.span_ends if "output" in e]
+    results = [p["content"] for m in w.llm_calls[-1]["messages"] if m["role"] == "user"
+               for p in m["parts"] if p.get("type") == "tool_result"]
+    assert digests == results   # the stream shows what the model read
+
+
+def test_not_work_set_equals_the_hosts_hidden_set():
+    # one vocabulary on both sides of the boundary (ADR-034 §3): the names
+    # the effect summary skips are the names the stream hides
+    import re
+    rs = (Path(__file__).resolve().parents[1] / "runtime/src/activity.rs").read_text()
+
+    def const(name, source, pattern):
+        body = re.search(pattern.format(name=name), source, re.S | re.M).group(1)
+        return re.findall(r'"([^"]+)"', body)
+
+    for host, guest in (("HIDDEN", "_NOT_WORK"), ("HIDDEN_PREFIXES", "_NOT_WORK_PREFIXES")):
+        assert (const(host, rs, r"pub const {name}: \[&str; \d+\] = \[(.*?)\];")
+                == const(guest, SRC, r"^{name} = \((.*?)\)$")), host

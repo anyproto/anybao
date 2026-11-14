@@ -175,6 +175,12 @@ struct SpanFrame {
     /// Guest-declared narrative kind (getter|mutator|setup|program),
     /// recorded on the end record's meta (ADR-001 §4d). None = undeclared.
     kind: Option<String>,
+    /// Guest-declared label template (ADR-034 §3): narrative like
+    /// `kind`, recorded on the end record's meta, zero authority.
+    label: Option<String>,
+    /// The program the method belongs to (ADR-034 §2): `{spec, link?}`
+    /// as the kernel stamped it on the module. Narrative as well.
+    program: Option<Value>,
     t0: Instant,
     effects: u64,
     mutations: u64,
@@ -305,6 +311,10 @@ pub struct Broker {
     /// tool-call spans note themselves here; the presence thread reads
     /// the same Arc off the run's `LiveRun`. None outside serve.
     pub activity: Option<SharedActivity>,
+    /// THIS run's activity stream emitter (ADR-034 §1): a second reader
+    /// of the spans and effects the trace writer gets. None outside
+    /// serve and in replay — emitting is not an effect.
+    pub emitter: Option<crate::activity::RunEmitter>,
     /// Remaining fuel, refreshed by the runner's epoch callback every
     /// tick (host fns can't reach the store). Read by `fuel.state`;
     /// ≤EPOCH_TICK_MS stale — a checkpoint signal, not an exact meter.
@@ -526,6 +536,7 @@ impl Broker {
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
             presence: None,
             activity: None,
+            emitter: None,
             fuel_gauge: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             interrupt: Arc::new(AtomicBool::new(false)),
             deadline: None,
@@ -560,6 +571,21 @@ impl Broker {
         &mut self,
         name: &str,
         kind: Option<String>,
+        input: Value,
+    ) -> Result<String, EffectFailure> {
+        self.try_span_begin_labeled(name, kind, None, None, input)
+    }
+
+    /// `try_span_begin` with what the kernel says about the method
+    /// (ADR-034 §2/§3): its label template (`@span(label=…)`) and the
+    /// program it belongs to. Both are kept on the span frame, stamped
+    /// on the end record's meta, and forwarded to the activity stream.
+    pub fn try_span_begin_labeled(
+        &mut self,
+        name: &str,
+        kind: Option<String>,
+        label: Option<String>,
+        program: Option<Value>,
         input: Value,
     ) -> Result<String, EffectFailure> {
         self.span_n += 1;
@@ -632,12 +658,26 @@ impl Broker {
         };
         let parent = self.span_stack.last().map(|s| s.id.clone());
         let cell = self.current_cell.clone();
+        if let Some(em) = self.emitter.as_mut() {
+            // ADR-034 §2: a cell's immediate child shows as `running`
+            em.span_begin_from(
+                &sid,
+                name,
+                kind.as_deref(),
+                label.as_deref(),
+                program.as_ref(),
+                parent.as_deref(),
+                &input,
+            );
+        }
         self.writer
             .span_begin(&sid, name, cell.as_deref(), input, &key, parent.as_deref());
         self.span_stack.push(SpanFrame {
             id: sid.clone(),
             name: name.into(),
             kind,
+            label,
+            program,
             t0: Instant::now(),
             effects: 0,
             mutations: 0,
@@ -735,6 +775,24 @@ impl Broker {
                 .unwrap()
                 .insert("kind".into(), json!(k));
         }
+        if let Some(l) = &top.label {
+            // ADR-001 §4d amended (ADR-034 §3): narrative, like kind
+            meta["label"] = json!(l);
+        }
+        if let Some(p) = &top.program {
+            meta["program"] = p.clone();
+        }
+        if let Some(em) = self.emitter.as_mut() {
+            em.span_end(
+                &top.id,
+                &top.name,
+                self.writer.peek_seq(),
+                ok,
+                output.as_ref(),
+                error.as_ref(),
+                &meta,
+            );
+        }
         self.writer.span_end(
             &top.id,
             &top.name,
@@ -788,6 +846,63 @@ impl Broker {
             .expect("cell checkpoint diverged — replay wiring must use try_cell_done")
     }
 
+    /// Does a bare `http.*` call target the any server? (ADR-034 §3:
+    /// such a call is a lookup/change, any other host is the web.)
+    fn http_any(&self, name: &str, input: &Value) -> bool {
+        name.starts_with("http.")
+            && input["url"]
+                .as_str()
+                .is_some_and(|u| self.classifier.is_any(u))
+    }
+
+    fn step_begin(
+        &mut self,
+        name: &str,
+        class: &str,
+        input: &Value,
+        span: Option<&str>,
+    ) -> Option<String> {
+        let http_any = self.http_any(name, input);
+        self.emitter
+            .as_mut()?
+            .effect_begin(span, name, class, input, http_any)
+    }
+
+    /// Write one effect record, and hand it to the activity stream
+    /// when the call is an immediate child of the cell (ADR-034 §2).
+    /// `step` is the id `step_begin` gave a call that executed live.
+    #[allow(clippy::too_many_arguments)]
+    fn record_effect(
+        &mut self,
+        step: Option<String>,
+        effect: &str,
+        cell: Option<&str>,
+        input: Value,
+        key: &str,
+        output: Option<Value>,
+        error: Option<Value>,
+        meta: Value,
+        span: Option<&str>,
+    ) -> i64 {
+        let http_any = self.http_any(effect, &input);
+        let seq = self.writer.peek_seq();
+        if let Some(em) = self.emitter.as_mut().filter(|em| em.in_cell(span)) {
+            let class = meta["class"].as_str().unwrap_or("read").to_string();
+            em.effect_end(
+                step,
+                seq,
+                effect,
+                &class,
+                &input,
+                http_any,
+                error.as_ref(),
+                &meta,
+            );
+        }
+        self.writer
+            .effect(effect, cell, input, key, output, error, meta, span)
+    }
+
     // span meta counters: one bump per record written
     fn bump(&mut self, class: &str) {
         self.bump_mocked(class, false)
@@ -822,7 +937,8 @@ impl Broker {
         let cell = self.current_cell.clone();
         let output = rec.get("output").cloned().unwrap_or(Value::Null);
         let error = rec.get("error").cloned().unwrap_or(Value::Null);
-        self.writer.effect(
+        self.record_effect(
+            None,
             name,
             cell.as_deref(),
             canonical,
@@ -888,7 +1004,8 @@ impl Broker {
                 let message = format!("capability not granted: {cap} (effect {name})");
                 self.bump(class);
                 let cell = self.current_cell.clone();
-                self.writer.effect(
+                self.record_effect(
+                    None,
                     name,
                     cell.as_deref(),
                     canonical,
@@ -994,7 +1111,8 @@ impl Broker {
                                 let message = format!("no mock for {name} (key {key})");
                                 self.bump(class);
                                 let cell = self.current_cell.clone();
-                                self.writer.effect(
+                                self.record_effect(
+                                    None,
                                     name,
                                     cell.as_deref(),
                                     canonical,
@@ -1019,6 +1137,9 @@ impl Broker {
         }
 
         self.bump(class);
+        // ADR-034 §2: a bare effect of the cell shows as `running`
+        // while it executes
+        let step = self.step_begin(name, class, &canonical, span.as_deref());
         let t0 = Instant::now();
         let result = self.execute(name, &payload);
         let dur_ms = t0.elapsed().as_millis() as i64;
@@ -1050,7 +1171,8 @@ impl Broker {
                 } else {
                     output.clone()
                 };
-                self.writer.effect(
+                self.record_effect(
+                    step.clone(),
                     name,
                     cell.as_deref(),
                     canonical,
@@ -1064,7 +1186,8 @@ impl Broker {
             }
             Err(e) => {
                 let err = json!({"type": e.type_, "message": e.message});
-                self.writer.effect(
+                self.record_effect(
+                    step.clone(),
                     name,
                     cell.as_deref(),
                     canonical,

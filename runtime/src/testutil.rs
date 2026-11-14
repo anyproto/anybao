@@ -419,8 +419,16 @@ impl State {
             .objects
             .iter()
             .filter(|((sp, _), _)| sp == space)
-            .filter(|(_, props)| {
-                filter.is_none_or(|f| f.iter().all(|(k, want)| matches(group_get(props, k), want)))
+            .filter(|((_, oid), props)| {
+                filter.is_none_or(|f| {
+                    f.iter().all(|(k, want)| {
+                        if k == "id" {
+                            // the record root's own id, like the server
+                            return want == oid;
+                        }
+                        matches(group_get(props, k), want)
+                    })
+                })
             })
             .take(limit)
             .map(|((_, oid), props)| {
