@@ -83,8 +83,9 @@ removes a field or a route:
 
 - markdown versions: `GET/PUT/PATCH …/markdown` and `…/markdown/append`
   answer `version`; `PUT` takes the version it edited from and answers
-  `409 markdown.conflict`. `get_markdown` reads `content` as before;
-  the version is not on the guest surface yet;
+  `409 markdown.conflict`. The version is for human editors. The
+  guest surface writes without it by design: a page is a CRDT, so
+  writes merge, and the version history keeps every state;
 - declared indexes on every dataset listing and draft (`GET /datasets`,
   `GET …/datasets`, `GET …/types/:t/datasets`, `GET/POST …/parts`,
   `POST …/parts/:p/datasets`, `POST …/bundles`, `GET /catalog[/:u]`);
