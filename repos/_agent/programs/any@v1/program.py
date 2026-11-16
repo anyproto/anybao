@@ -3586,6 +3586,92 @@ class _Client:
             "delete",
             f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
 
+    def patch_dataset_field(self, space, type_key, dataset_def_id, field_def_id,
+                            set=None, unset=None):
+        tid = self._resolve_type_or_raise(space, type_key)
+        body = {}
+        if set:
+            body["set"] = dict(set)
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("patch_dataset_field needs `set` and/or `unset`")
+        r = self._call(
+            "patch",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}",
+            body)
+        self._ds_invalidate(space, type_id=tid)
+        return r
+
+    def add_dataset_index(self, space, type_key, dataset_def_id, index):
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call(
+            "post",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/indexes", index)
+        self._ds_invalidate(space, type_id=tid)
+        return {"indexDefId": r.get("indexDefId")}
+
+    def remove_dataset_index(self, space, type_key, dataset_def_id, index_def_id):
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call(
+            "delete",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/indexes/{index_def_id}")
+        self._ds_invalidate(space, type_id=tid)
+        return r
+
+    # --- a shared dataset, read across its objects (parity §C10) --------------
+    def _shared_collection(self, space, type_key, dataset):
+        """The storage collection of a type's SHARED dataset, by store key."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        rows = self._datasets_of(space, tid)
+        for d in rows:
+            if dataset in (d.get("key"), d.get("collection")) and d.get("collection"):
+                if not d.get("shared"):
+                    raise ValueError(
+                        f'dataset "{dataset}" of type "{type_key}" is not shared: '
+                        "its records are read one object at a time, with "
+                        "query(space, object_id, dataset). A dataset is shared "
+                        'only when its declaration says "shared": true.')
+                return d["collection"]
+        keys = sorted(d.get("key") for d in rows if d.get("key"))
+        raise ValueError(f'type "{type_key}" declares no dataset "{dataset}" — '
+                         f"its datasets: {keys or 'none'}")
+
+    @_public('getter', label="Reading {dataset} records across {space}")
+    def query_dataset(self, space, type_key, dataset, **opts):
+        """The records of a SHARED dataset across every object of its type → records.
+
+        One read where query() needs one call for each object.
+        `type_key` is the type that declares the store, `dataset` the
+        store key. `opts`: filter / sort / limit / offset /
+        projection, with the dataset's plain field keys. Each record
+        has `id` = "<objectId>/<recordId>" and `_objectId`. Records of
+        different objects share no version order: sort on a declared
+        field. Time fields are instants (see query). Only a dataset
+        declared `shared` reads this way (list_datasets shows it);
+        the read covers what this device has synced."""
+        coll = self._shared_collection(space, type_key, dataset)
+        _guard_filter(opts.get("filter"),
+                      _STAMP_KEYS | self._dataset_time_keys.get(
+                          self._collection_key(coll), set()))
+        body = {"dataset": coll}
+        body.update({k: v for k, v in opts.items() if v is not None})
+        return self._call("post", f"/v1/spaces/{space}/datasets/query",
+                          body).get("records", [])
+
+    @_public('getter', label="Aggregating {dataset} records across {space}")
+    def aggregate_dataset(self, space, type_key, dataset, pipeline):
+        """A pipeline over a SHARED dataset across every object of its type → {"records": [...]}.
+
+        The stages of aggregate(), with the dataset's plain field
+        keys ("$start"); `_objectId` groups by object. Count the
+        events of every calendar in one call: [{"$group": {"_id":
+        "$_objectId", "n": {"$count": {}}}}]. Shared datasets only
+        (see query_dataset)."""
+        coll = self._shared_collection(space, type_key, dataset)
+        return self._call("post", f"/v1/spaces/{space}/datasets/aggregate",
+                          {"dataset": coll, "pipeline": pipeline})
+
     @_public('mutator', label="Adding the property “{body.name}” to {type_key} in {space}")
     def add_property(self, space, type_key, body):
         """Add one property to a type or a collection (named by xKey).
@@ -5480,6 +5566,44 @@ def _remove_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id):
     the same key re-declares it."""
     return _c().remove_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
                                      field_def_id)
+
+
+def _patch_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id,
+                         set=None, unset=None):
+    """Edit the DISPLAY leaves of one dataset field (wire: 204) → {}.
+
+    `set`: {path: value}, `unset`: [path]. Mutable: `name`,
+    `description`, and the paths under `xFormat` (a set targets a
+    leaf). The behaviour — key, kind, shape, scope, required,
+    mutableBy, stamp — is pinned: 400 dataset.immutable; change it
+    by removing the field and adding another. Ids from
+    list_datasets (`id` of the def, `id` inside `fields`)."""
+    return _c().patch_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
+                                    field_def_id, set, unset)
+
+
+def _add_dataset_index(spaceConfig, type_key, dataset_def_id, index):
+    """Declare a secondary index on a records dataset → {indexDefId}.
+
+    index: {"key": "<slug>", "fields": [1 to 4 paths, "-" prefix =
+    descending], "sparse"?}. A path names a declared field of kind
+    string / number / boolean / datetime, or `_ver.id`; a shared
+    dataset also takes `_objectId`. A filter or sort on a leading
+    run of the fields becomes a range read. At most 8 for a
+    dataset, none unique, every part pinned (replace = remove and
+    add). Works on a dataset that holds records. 400
+    dataset.decl_invalid on a bad draft, 409 dataset.module_owned
+    on a module dataset."""
+    return _c().add_dataset_index(_space(spaceConfig), type_key, dataset_def_id, index)
+
+
+def _remove_dataset_index(spaceConfig, type_key, dataset_def_id, index_def_id):
+    """Remove one declared index (wire: 204) → {}.
+
+    index_def_id = the `id` inside list_datasets' `indexes`. The
+    records stay; reads that used the index scan again."""
+    return _c().remove_dataset_index(_space(spaceConfig), type_key, dataset_def_id,
+                                     index_def_id)
 
 
 # `_`-private (hidden from the tool inventory): progress@v1's transport

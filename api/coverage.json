@@ -101,9 +101,9 @@
       "helper": "helper.remove_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}/indexes/{indexId}": {
-      "excluded": "declared dataset indexes — program plumbing; pending a `_`-private helper beside create_dataset",
+      "excluded": null,
       "fingerprint": "sha256:e3f2042e4a7e15da",
-      "helper": null
+      "helper": "helper._remove_dataset_index (program plumbing — `_`-private, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/parts/{partId}": {
       "excluded": "declaration removal — stores are additive (ADR-027 §2)",
@@ -496,9 +496,9 @@
       "helper": "helper.create_dataset (in-place patch of an existing def; `_`-private on the flat surface)"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields/{fieldId}": {
-      "excluded": "field descriptor edits — pending a helper (the datetime-migration follow-up)",
+      "excluded": null,
       "fingerprint": "sha256:5e7a122b6ec27c6d",
-      "helper": null
+      "helper": "helper._patch_dataset_field (program plumbing — `_`-private, ADR-010 §1)"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/parts/{partId}": {
       "excluded": "part display slice (name/icon/pos/ui) — harness stores render nowhere",
@@ -741,17 +741,17 @@
       "helper": "helper.add_property (routed by the owner kind, ADR-029 §4)"
     },
     "POST /spaces/{spaceId}/datasets/aggregate": {
-      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "excluded": null,
       "fingerprint": "sha256:27256facf72c2a39",
-      "helper": null
+      "helper": "helper.aggregate_dataset"
     },
     "POST /spaces/{spaceId}/datasets/query": {
-      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "excluded": null,
       "fingerprint": "sha256:a08cbaa3d815a9cf",
-      "helper": null
+      "helper": "helper.query_dataset"
     },
     "POST /spaces/{spaceId}/datasets/query/subscribe": {
-      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:6f68b01f67ddb614",
       "helper": null
     },
@@ -926,9 +926,9 @@
       "helper": "helper.add_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/datasets/{defId}/indexes": {
-      "excluded": "declared dataset indexes — program plumbing; pending a `_`-private helper beside create_dataset",
+      "excluded": null,
       "fingerprint": "sha256:4f92ac008dadec1d",
-      "helper": null
+      "helper": "helper._add_dataset_index (program plumbing — `_`-private, ADR-010 §1)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/parts": {
       "excluded": null,

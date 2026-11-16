@@ -242,9 +242,58 @@ def test_patch_and_delete_block_address_one_block():
         raise AssertionError("an empty patch must raise")
 
 
+# --- datasets ------------------------------------------------------------------------
+
+_SHARED = {**_CAT, "/types/bafyTASK/datasets": {"datasets": [
+    {"id": "d1", "key": "events", "collection": "bafyTASK_events", "shared": True},
+    {"id": "d2", "key": "notes", "collection": "bafyTASK_notes"}]}}
+DEFS = "/v1/spaces/s1/types/bafyTASK/datasets/d1"
+
+
+def test_query_and_aggregate_dataset_read_a_shared_store_across_objects():
+    fx = wire(replies={**_SHARED, "/datasets/query": {"records": [{"id": "o1/r1"}]},
+                       "/datasets/aggregate": {"records": [{"id": "o1", "n": 2}]}})
+    c = client(fx)
+    assert c.query_dataset("s1", "task", "events", limit=5, sort=None) == [{"id": "o1/r1"}]
+    assert fx.calls[-1] == ("POST", "/v1/spaces/s1/datasets/query",
+                            {"dataset": "bafyTASK_events", "limit": 5})
+    pipe = [{"$group": {"_id": "$_objectId", "n": {"$count": {}}}}]
+    assert c.aggregate_dataset("s1", "task", "events", pipe)["records"][0]["n"] == 2
+    assert fx.calls[-1] == ("POST", "/v1/spaces/s1/datasets/aggregate",
+                            {"dataset": "bafyTASK_events", "pipeline": pipe})
+
+
+def test_a_dataset_that_is_not_shared_names_the_per_object_read():
+    c = client(wire(replies=_SHARED))
+    for ds, word in (("notes", "not shared"), ("nope", "declares no dataset")):
+        try:
+            c.query_dataset("s1", "task", ds)
+        except ValueError as e:
+            assert word in str(e)
+        else:
+            raise AssertionError(ds)
+
+
+def test_the_dataset_declaration_plumbing_is_private_and_hits_its_routes():
+    fx = wire(replies={**_CAT, "/indexes": {"indexDefId": "i1"}})
+    g = load(fx)
+    for name in ("_patch_dataset_field", "_add_dataset_index", "_remove_dataset_index"):
+        assert g[name].__doc__ and name[1:] not in g, name
+    c = g["_Client"]("http://any")
+    c.patch_dataset_field("s1", "task", "d1", "f1", set={"name": "Start"})
+    assert c.add_dataset_index("s1", "task", "d1", {"key": "by_start",
+                                                    "fields": ["start"]}) == {"indexDefId": "i1"}
+    c.remove_dataset_index("s1", "task", "d1", "i1")
+    writes = [x for x in fx.calls if x[0] != "GET"]
+    assert writes == [("PATCH", DEFS + "/fields/f1", {"set": {"name": "Start"}}),
+                      ("POST", DEFS + "/indexes", {"key": "by_start", "fields": ["start"]}),
+                      ("DELETE", DEFS + "/indexes/i1", None)]
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
          "local_discovery", "set_local_discovery", "list_unread", "set_space_settings",
          "chat_edit", "chat_delete", "chat_react", "chat_mark_read",
-         "create_block", "patch_block", "delete_block")
+         "create_block", "patch_block", "delete_block",
+         "query_dataset", "aggregate_dataset")
