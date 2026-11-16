@@ -379,19 +379,6 @@ def test_patch_type_properties_add_and_patch_and_never_remove():
     assert not [w for w in writes if w[0] == "DELETE"] and len(writes) == 2
 
 
-def test_patch_type_refuses_another_kind_before_any_write():
-    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"properties": [
-        {"id": "bafySTATUS", "name": "Status", "xKey": "status", "kind": "string"}]}})
-    try:
-        client(fx).patch_type("s1", "task", name="Job", properties=[
-            {"name": "Status", "kind": "number"}])
-    except ValueError as e:
-        assert 'change_property_kind(space, "task", "status", "number")' in str(e)
-    else:
-        raise AssertionError("a kind change must raise")
-    assert not [1 for v, _, _ in fx.calls if v != "GET"]      # the rename did not land
-
-
 def _kind_rig(values):
     """A fake any: one type, one string property, objects with `values`."""
     recs = [{"id": f"o{i}", "any": {"type": "bafyTASK"}, "bafyTASK": {"bafySTATUS": v}}
@@ -401,6 +388,31 @@ def _kind_rig(values):
                              {"id": "bafySTATUS", "name": "Status", "xKey": "status",
                               "kind": "string", "scope": "synced"}],
                              "propId": "pNEW"}})
+
+
+def test_patch_type_moves_a_property_whose_draft_has_another_kind():
+    fx = _kind_rig(["3", "soon"])
+    r = client(fx).patch_type("s1", "task", properties=[
+        {"name": "Score", "xKey": "status", "kind": "number"}])
+    (move,) = r["kindChanges"]
+    assert move["kind"] == "number" and move["converted"] == 1
+    assert move["failed"] == [{"objectId": "o1", "value": "soon"}]
+    assert move["old"] == "status_old"
+    posts = [b for v, p, b in fx.calls if v == "POST" and p == _TP + "/properties"]
+    assert posts[0]["name"] == "Score" and posts[0]["kind"] == "number"   # the draft's name
+    assert not [1 for v, _, _ in fx.calls if v == "DELETE"]             # a value failed
+
+
+def test_patch_type_checks_every_draft_before_any_write():
+    fx = _kind_rig([])
+    try:
+        client(fx).patch_type("s1", "task", name="Job", properties=[
+            {"name": "Status", "kind": "text"}])
+    except ValueError as e:
+        assert "kind must be one of" in str(e)
+    else:
+        raise AssertionError("an unknown kind must raise")
+    assert not [1 for v, _, _ in fx.calls if v != "GET"]      # the rename did not land
 
 
 def test_change_property_kind_runs_the_five_steps_in_order():

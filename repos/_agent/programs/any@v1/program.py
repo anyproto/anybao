@@ -3706,9 +3706,11 @@ class _Client:
         """The `properties` drafts of patch_type / patch_collection,
         checked and with no write: a missing property is to be added,
         an existing one gets its changed name / description / slug,
-        and NOTHING is removed. → (missing drafts, [(xKey, id, sets)])."""
+        one of another kind is to be moved to that kind, and NOTHING
+        is removed. → (missing drafts, [(xKey, id, sets)], [(id,
+        kind, draft)])."""
         have = {p.get("xKey"): p for p in self._fetch_props(space, owner_id)}
-        missing, patches = [], []
+        missing, patches, moves = [], [], []
         for p in props or []:
             pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
             cur = have.get(pxkey)
@@ -3718,12 +3720,11 @@ class _Client:
             slug = (p.get("xFormat") or {}).get("type")
             want = p.get("kind") or (_KIND_OF_SLUG.get(slug, "string") if slug else None)
             if want and cur.get("kind") and want != cur["kind"]:
-                raise ValueError(
-                    f'property "{pxkey}" is of kind {cur["kind"]}; a kind never '
-                    f"changes in place (every device checks values against it). "
-                    f'To make it {want}: change_property_kind(space, "{owner_key}", '
-                    f'"{pxkey}", "{want}") — it makes a new property, copies the '
-                    "values and removes the old one.")
+                if want not in _KINDS or want == "null":
+                    raise ValueError(f'property "{pxkey}": kind must be one of '
+                                     f"{[k for k in _KINDS if k != 'null']}, got {want!r}")
+                moves.append((cur["id"], want, p))
+                continue
             sets = {}
             if p.get("name") and p["name"] != cur.get("name"):
                 sets["name"] = p["name"]
@@ -3733,14 +3734,16 @@ class _Client:
                 sets["xFormat.type"] = slug
             if sets:
                 patches.append((pxkey, cur["id"], sets))
-        return missing, patches
+        return missing, patches, moves
 
     @_public('mutator', label="Changing the kind of {prop_key} on {type_key} in {space}")
     def change_property_kind(self, space, type_key, prop_key, kind, xFormat=None):
         """Give a property another kind: a NEW property takes its place and the values move.
 
-        A kind (string, number, boolean, datetime, array, object)
-        never changes in place. First check that you need this: a
+        patch_type / patch_collection do the same for a draft of
+        another kind; this is the call for one property. A kind
+        (string, number, boolean, datetime, array, object) never
+        changes in place. First check that you need this: a
         slug moves within one kind with patch_property (text ↔ url,
         number ↔ currency, date ↔ datetime). Else this call does the
         whole move, in order: the old property takes the handle
@@ -3768,6 +3771,18 @@ class _Client:
             raise ValueError(
                 f'"{prop_key}" is already of kind {kind}; a slug moves with '
                 'patch_property(…, set={"xFormat.type": <slug>})')
+        r = self._move_kind(space, tid, old, kind, {"xFormat": xFormat} if xFormat else {})
+        self._cat_invalidate(space)
+        return r
+
+    def _move_kind(self, space, tid, old, kind, draft):
+        """The move of one property to another kind (any website,
+        "Change a kind"): free the xKey, add the new property, copy
+        the values converted, remove the old property when every
+        value moved. `draft` may carry the new name, description and
+        xFormat."""
+        pid = old["id"]
+        xFormat = draft.get("xFormat")
         xkey = old.get("xKey") or _slugify_xkey(old.get("name") or "")
         taken = {p.get("xKey") for p in self._fetch_props(space, tid)}
         temp, n = f"{xkey}_old", 1
@@ -3777,13 +3792,16 @@ class _Client:
         path = self._props_path(space, tid)
         # 1. free the xKey  2. the new property, under a new id
         self._call("patch", f"{path}/{pid}", {"set": {"xKey": temp}})
-        draft = {"name": old.get("name") or xkey, "xKey": xkey, "kind": kind}
-        for k in ("scope", "description"):
-            if old.get(k):
-                draft[k] = old[k]
+        new = {"name": draft.get("name") or old.get("name") or xkey, "xKey": xkey,
+               "kind": kind}
+        if old.get("scope"):
+            new["scope"] = old["scope"]
+        desc = draft["description"] if "description" in draft else old.get("description")
+        if desc:
+            new["description"] = desc
         if xFormat:
-            draft["xFormat"] = dict(xFormat)
-        new_pid = self._post_property(space, tid, draft)["propId"]
+            new["xFormat"] = dict(xFormat)
+        new_pid = self._post_property(space, tid, new)["propId"]
         # 3. copy the values, object by object
         member = ("any.collections" if self._def_kind(space, tid) == "collection"
                   else "any.type")
@@ -3809,7 +3827,7 @@ class _Client:
         # 5. remove the old property — only when every value moved
         if not failed:
             self._call("delete", f"{path}/{pid}")
-        self._cat_invalidate(space)
+        self._props_cache.pop((space, tid), None)
         return {"propId": new_pid, "xKey": xkey, "kind": kind, "converted": converted,
                 "failed": failed, "old": "removed" if not failed else temp}
 
@@ -3819,7 +3837,8 @@ class _Client:
             raise ValueError("nothing to change: pass at least one of "
                              + ", ".join(sorted([*fields, "properties"])))
         # the drafts are checked before the first write: a bad one changes nothing
-        missing, patches = self._plan_props(space, did, owner_key, props) if props else ([], [])
+        missing, patches, moves = (self._plan_props(space, did, owner_key, props)
+                                   if props else ([], [], []))
         out = {"id": did, **body}
         if body:
             self._call("patch", f"/v1/spaces/{space}/{route}/{did}", body)
@@ -3828,6 +3847,10 @@ class _Client:
                 self._call("patch", f"{self._props_path(space, did)}/{pid}", {"set": sets})
             out["addedProps"] = self._add_missing_props(space, did, missing)
             out["patchedProps"] = [x for x, _, _ in patches]
+            if moves:
+                have = {p.get("id"): p for p in self._fetch_props(space, did)}
+                out["kindChanges"] = [self._move_kind(space, did, have[pid], kind, draft)
+                                      for pid, kind, draft in moves]
         self._cat_invalidate(space)
         return out
 
@@ -3845,12 +3868,18 @@ class _Client:
         property is ADDED, an existing one gets its changed name,
         description and slug (`xFormat.type`, within its kind).
         Nothing is ever removed: a property that the list leaves out
-        stays (delete_property removes one). A draft with another
-        kind raises and names change_property_kind; every draft is
+        stays (delete_property removes one). A draft with ANOTHER
+        KIND moves the property to that kind: a new property takes
+        the xKey, every object's value is converted and copied, and
+        the old one is removed (see change_property_kind: a value
+        that does not convert is reported under `failed`, and the
+        old property then stays as `<xKey>_old`). Every draft is
         checked before the first write. Options of a choice:
         set_option. The icon: set_type_icon. A built-in type refuses
         (400 type.registered). Returns {"id", …the changed fields,
-        "addedProps"?: {xKey: id}, "patchedProps"?: [xKey]}."""
+        "addedProps"?: {xKey: id}, "patchedProps"?: [xKey],
+        "kindChanges"?: [change_property_kind results]}. Look at
+        each `failed` list and tell the user what did not move."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._patch_def(space, "types", tid, {
             "name": name, "description": description, "hidden": hidden},
@@ -3866,10 +3895,10 @@ class _Client:
         key ({key: value}). `hidden=True` takes it out of the tag
         pickers; the members stay filed. `properties`: as in
         patch_type — missing ones are added, existing ones get their
-        changed name, description and slug, nothing is removed, and
-        another kind raises with change_property_kind. A built-in
+        changed name, description and slug, another kind moves the
+        property to that kind, and nothing is removed. A built-in
         collection refuses (400 collection.registered). Returns
-        {"id", …, "addedProps"?, "patchedProps"?}."""
+        {"id", …, "addedProps"?, "patchedProps"?, "kindChanges"?}."""
         cid = self._resolve_collection_or_raise(space, collection_key)
         return self._patch_def(space, "collections", cid, {
             "name": name, "description": description, "hidden": hidden, "meta": meta},
