@@ -1,9 +1,9 @@
 {
   "endpoints": {
     "DELETE /account/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:610b869e0d43824f",
-      "helper": null
+      "helper": "helper.set_account_icon (data=None)"
     },
     "DELETE /auth": {
       "excluded": "harness auth/boot",
@@ -121,14 +121,14 @@
       "helper": "helper.me"
     },
     "GET /account/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:921207f0e0f7c4ed",
-      "helper": null
+      "helper": "helper.account_icon"
     },
     "GET /account/limits": {
-      "excluded": "account storage pool + shared-spaces limit — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:77cb3ee4a091d793",
-      "helper": null
+      "helper": "helper.account_limits"
     },
     "GET /auth": {
       "excluded": "harness auth/boot",
@@ -196,14 +196,14 @@
       "helper": "anyclient.identity / helper.get_identity"
     },
     "GET /identities/{identity}/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:ca60fc93a03a39f9",
-      "helper": null
+      "helper": "helper.identity_icon"
     },
     "GET /local-discovery": {
-      "excluded": "device network setting — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:5225ad17448fe6e3",
-      "helper": null
+      "helper": "helper.local_discovery"
     },
     "GET /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
@@ -401,9 +401,9 @@
       "helper": "anyclient.get_properties (host only; no guest helper)"
     },
     "GET /spaces/{spaceId}/read-state/unread": {
-      "excluded": "unread counters of a space — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:49575bd9879d8eb8",
-      "helper": null
+      "helper": "helper.list_unread"
     },
     "GET /spaces/{spaceId}/sync-status": {
       "excluded": "diagnostic/sync (harness)",
@@ -483,7 +483,7 @@
     "PATCH /spaces/{spaceId}/settings": {
       "excluded": null,
       "fingerprint": "sha256:a3449a3e9774eac8",
-      "helper": null
+      "helper": "helper.set_space_settings"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
@@ -951,9 +951,9 @@
       "helper": "helper.upsert_records"
     },
     "PUT /account/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:3be6f1c8306388b3",
-      "helper": null
+      "helper": "helper.set_account_icon"
     },
     "PUT /account/metadata": {
       "excluded": "harness/account profile",
@@ -966,9 +966,9 @@
       "helper": "anyclient.upsert_self_device (ADR-015 election, harness lifecycle)"
     },
     "PUT /local-discovery": {
-      "excluded": "device network setting — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:32a885d2a1a67c12",
-      "helper": null
+      "helper": "helper.set_local_discovery"
     },
     "PUT /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",

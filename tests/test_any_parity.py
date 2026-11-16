@@ -1,7 +1,9 @@
 """The any API parity helpers of programs/any@v1 (docs/api-parity.md
 §C10): the wire shape of each call, against the fake wire."""
 
-from test_any_module import _CAT, client, load, wire
+import json
+
+from test_any_module import _CAT, REF, client, load, wire
 
 OBJ = "/v1/spaces/s1/objects/o1"
 
@@ -112,5 +114,72 @@ def test_get_member_reads_me_or_one_identity():
                                            "/v1/spaces/s1/members/A2"]
 
 
+# --- account, device, private space settings ------------------------------------
+
+def test_account_limits_and_local_discovery_are_plain_reads_and_one_write():
+    fx = wire(replies={"/account/limits": {"storage": {"limitBytes": 0}},
+                       "/local-discovery": {"enabled": False}})
+    c = client(fx)
+    assert c.account_limits() == {"storage": {"limitBytes": 0}}
+    assert c.local_discovery() == {"enabled": False}
+    c.set_local_discovery(0)
+    assert fx.calls == [("GET", "/v1/account/limits", None),
+                        ("GET", "/v1/local-discovery", None),
+                        ("PUT", "/v1/local-discovery", {"enabled": False})]
+
+
+def test_icons_come_back_as_blobs_and_none_when_absent():
+    def fx(name, payload):
+        if payload["url"].endswith("/account/icon"):
+            return {"status": 200, "headers": {"content-type": "image/png"},
+                    "body": dict(REF)}
+        return {"status": 404, "headers": {}, "body": json.dumps(
+            {"error": {"code": "identity.icon_not_found"}})}
+    g = load(fx)
+    c = g["_Client"]("http://any")
+    r = c.account_icon()
+    assert r["mime"] == "image/png" and isinstance(r["blob"], g["Blob"])
+    assert c.identity_icon("A1") is None
+
+
+def test_set_account_icon_sends_the_image_raw_and_none_removes_it():
+    seen = []
+
+    def fx(name, payload):
+        seen.append((name, payload))
+        return {"status": 200, "headers": {}, "body": json.dumps({"iconCid": "bafyI"})}
+    g = load(fx)
+    c = g["_Client"]("http://any")
+    b = g["Blob"].from_ref(REF)
+    assert c.set_account_icon(b, name="me 1.png") == {"iconCid": "bafyI"}
+    name, payload = seen[-1]
+    assert name == "http.put" and payload["body"] is b
+    assert payload["url"] == "http://any/v1/account/icon?name=me%201.png"
+    c.set_account_icon(None)
+    assert seen[-1][0] == "http.delete" and "body" not in seen[-1][1]
+
+
+def test_list_unread_pages_by_cursor():
+    fx = wire(replies={"/read-state/unread": {"changes": [], "cursor": "c9"}})
+    assert client(fx).list_unread("s1", cursor="c1", limit=5) == {"changes": [], "cursor": "c9"}
+    assert fx.urls == ["/v1/spaces/s1/read-state/unread?cursor=c1&limit=5"]
+
+
+def test_set_space_settings_patches_per_key():
+    fx = wire()
+    c = client(fx)
+    c.set_space_settings("s1", set={"notifyMode": "mentions"}, unset=["old"])
+    assert _one(fx) == ("PATCH", "/v1/spaces/s1/settings",
+                        {"set": {"notifyMode": "mentions"}, "unset": ["old"]})
+    try:
+        c.set_space_settings("s1")
+    except ValueError as e:
+        assert "needs" in str(e)
+    else:
+        raise AssertionError("an empty patch must raise")
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
-         "get_object", "get_type", "get_collection", "get_member")
+         "get_object", "get_type", "get_collection", "get_member",
+         "account_limits", "account_icon", "identity_icon", "set_account_icon",
+         "local_discovery", "set_local_discovery", "list_unread", "set_space_settings")

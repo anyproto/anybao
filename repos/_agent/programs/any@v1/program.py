@@ -2434,6 +2434,137 @@ class _Client:
         return {"identity": r.get("id"),
                 "name": (r.get("metadata") or {}).get("name")}
 
+    # --- the account, this device, a space's private settings (parity §C10) ---
+    def _raw(self, verb, path, data=None, mime=None):
+        """One call whose body or reply is raw bytes → the effect reply.
+        `data` (a Blob, bytes or str) goes up as the body."""
+        payload = {"url": self._base + path}
+        if data is not None:
+            b = data if isinstance(data, Blob) else blob.of(data)  # noqa: F821 - guest globals
+            if not isinstance(data, Blob) and mime:  # noqa: F821
+                b = blob.from_bytes(bytes(b), mime)  # noqa: F821
+            payload["body"] = b
+            payload["headers"] = {"Content-Type": mime or b.mime}
+        reply = effect("http." + verb, payload)  # noqa: F821 - guest global
+        if reply["status"] >= 400:
+            body = reply.get("body")
+            try:
+                data = json.loads(body) if isinstance(body, str) and body else {}
+            except ValueError:
+                data = {}
+            err = data.get("error", {}) if isinstance(data, dict) else {}
+            raise AnyError(reply["status"], err.get("code", "unknown"),
+                           err.get("message", ""))
+        return reply
+
+    def _icon(self, path):
+        """An avatar route → {mime, size, blob}, None when there is none."""
+        try:
+            reply = self._raw("get", path)
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        body = reply.get("body")
+        mime = (reply.get("headers") or {}).get("content-type", "application/octet-stream")
+        mime = mime.split(";", 1)[0].strip()
+        b = (Blob.from_ref(body) if Blob.is_ref(body)  # noqa: F821 - guest globals
+             else blob.from_bytes(body or "", mime))  # noqa: F821
+        return {"mime": b.mime, "size": b.size, "blob": b}
+
+    @_public('getter', scoped=False)
+    def account_limits(self):
+        """What the network grants this account → {"storage": {…}, "sharedSpaces": {…}}.
+
+        `storage`: {limitBytes, usageBytes, fetchedAt}; `sharedSpaces`:
+        {limit, fetchedAt}. `storage` is the file pool of all the account's spaces
+        (`limitBytes` 0 = the network grants no storage);
+        `sharedSpaces.limit` is how many shared spaces the account
+        may own. A part that the network has not answered yet is
+        absent. Read it before a large upload or before sharing a
+        space."""
+        return self._call("get", "/v1/account/limits")
+
+    @_public('getter', scoped=False)
+    def account_icon(self):
+        """This account's avatar → {mime, size, blob}, or None when none is set.
+
+        `blob` is a handle (see file_content). 409 file.not_available
+        = the image is not on this device yet: retry later."""
+        return self._icon("/v1/account/icon")
+
+    @_public('getter', scoped=False)
+    def identity_icon(self, identity):
+        """Another account's avatar → {mime, size, blob}, or None when it has none.
+
+        `identity` is an account id (a members row, a chat `creator`).
+        The bytes come from that account: never run or render them as
+        a document."""
+        return self._icon(f"/v1/identities/{_urlquote(identity)}/icon")
+
+    @_public('mutator', scoped=False)
+    def set_account_icon(self, data, name=None, mime=None):
+        """Set the user's avatar from an image → the profile {name, iconCid}; ask the user first.
+
+        `data`: a Blob, or bytes. A raster image (PNG, JPEG, GIF,
+        WebP, …; no SVG) of at most 1 MiB: 415 account.icon_not_image,
+        413 account.icon_too_large. Every contact sees the new image.
+        `data=None` removes the avatar and returns {}."""
+        if data is None:
+            return self._call("delete", "/v1/account/icon")
+        reply = self._raw("put", "/v1/account/icon" + self._qs(name=name), data, mime)
+        raw = reply.get("body")
+        return json.loads(raw) if isinstance(raw, str) and raw else {}
+
+    @_public('getter', scoped=False)
+    def local_discovery(self):
+        """Whether this device announces itself on the local network → {"enabled": bool}."""
+        return self._call("get", "/v1/local-discovery")
+
+    @_public('mutator', scoped=False)
+    def set_local_discovery(self, enabled):
+        """Switch local-network discovery on or off → {"enabled": bool}; ask the user first.
+
+        Off: the device stops looking for peers on the LAN within
+        seconds, so sync goes through the network nodes only. The
+        reply is the resulting state; it stays False while p2p is
+        off on the server."""
+        return self._call("put", "/v1/local-discovery", {"enabled": bool(enabled)})
+
+    @_public('getter')
+    def list_unread(self, space, cursor=None, limit=None):
+        """What became unread in the space on this device → {"changes": [...], "cursor"}.
+
+        Each change: {objectId, dataset, recordIds, tags, changeId},
+        oldest first; for chat, `tags` are message / mention /
+        reaction and `recordIds` are message ids. Without `cursor`
+        the call returns no changes and a cursor at the present: keep
+        it and pass it later to get what arrived since. Only what is
+        still unread is listed. For counts, read the `chat` group on
+        a chat's row. `limit` defaults to 100, capped at 1000."""
+        r = self._call("get", f"/v1/spaces/{space}/read-state/unread"
+                       + self._qs(cursor=cursor, limit=limit))
+        return {"changes": r.get("changes") or [], "cursor": r.get("cursor")}
+
+    @_public('mutator', label="Changing the settings of {space}")
+    def set_space_settings(self, space, set=None, unset=None):
+        """Patch the user's PRIVATE settings of a space; returns {} (wire: 204).
+
+        `set`: {key: value}, `unset`: [key]. The settings sync to the
+        user's own devices and no other member sees them. The server
+        reads `notifyMode` ("all" / "mentions" / "none") for push
+        notifications; other keys are the clients' own. Keys are
+        single-level, no dots. The name, description and icon of a
+        space are not here: see patch_space."""
+        body = {}
+        if set:
+            body["set"] = dict(set)
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("set_space_settings needs `set` and/or `unset`")
+        return self._call("patch", f"/v1/spaces/{space}/settings", body)
+
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress
         # ONLY through agent:progress@v1, never these three directly)
