@@ -453,7 +453,7 @@
     "PATCH /spaces/{spaceId}": {
       "excluded": null,
       "fingerprint": "sha256:21555df709fe01fb",
-      "helper": null
+      "helper": "helper.patch_space"
     },
     "PATCH /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
@@ -648,17 +648,17 @@
     "POST /spaces/one-to-one": {
       "excluded": null,
       "fingerprint": "sha256:a4bc101b110b1cc0",
-      "helper": null
+      "helper": "helper.open_direct_space"
     },
     "POST /spaces/one-to-one/register-incoming": {
       "excluded": null,
       "fingerprint": "sha256:3a418feab2506f4e",
-      "helper": null
+      "helper": "helper.register_incoming_direct (unlisted, ADR-010 §1)"
     },
     "POST /spaces/query": {
       "excluded": null,
       "fingerprint": "sha256:850675a4d337a2ba",
-      "helper": null
+      "helper": "helper.query_spaces"
     },
     "POST /spaces/query/subscribe": {
       "excluded": null,
@@ -873,12 +873,12 @@
     "POST /spaces/{spaceId}/one-to-one/accept": {
       "excluded": null,
       "fingerprint": "sha256:897ee56a66b5945c",
-      "helper": null
+      "helper": "helper.answer_direct_space (accept=True)"
     },
     "POST /spaces/{spaceId}/one-to-one/decline": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.answer_direct_space (accept=False)"
     },
     "POST /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
       "excluded": null,

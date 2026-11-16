@@ -365,6 +365,50 @@ def test_uninstall_bundle_is_unlisted_and_encodes_the_id():
     assert c.uninstall_bundle.__any_public__[2] is False
 
 
+# --- spaces ------------------------------------------------------------------------------------
+
+def test_query_spaces_reads_every_status_and_trims_the_key_material():
+    fx = wire(replies={"/spaces/query": {"records": [
+        {"id": SID, "name": "x", "localStatus": "one_to_one_pending",
+         "push": {"spaceKey": "secret"}, "_ver": {"id": "!"}}]}})
+    r = client(fx).query_spaces(filter={"localStatus": "one_to_one_pending"}, limit=None)
+    assert r == [{"id": SID, "name": "x", "localStatus": "one_to_one_pending"}]
+    assert _one(fx) == ("POST", "/v1/spaces/query",
+                        {"filter": {"localStatus": "one_to_one_pending"}})
+
+
+def test_patch_space_sends_only_what_changes_and_drops_the_name_cache():
+    fx = wire(replies={"/v1/spaces": {"spaces": [{"id": SID, "name": "old"}]}})
+    c = client(fx)
+    c._spaces()                                      # the name catalog is cached
+    c.patch_space("s1", name="New", description="")
+    assert fx.calls[-1] == ("PATCH", "/v1/spaces/s1", {"name": "New", "description": ""})
+    assert c._spaces_cache is None
+    try:
+        c.patch_space("s1")
+    except ValueError as e:
+        assert "needs" in str(e)
+    else:
+        raise AssertionError("an empty patch must raise")
+
+
+def test_the_direct_space_calls():
+    fx = wire(replies={"": {"id": SID, "name": "", "status": "active",
+                            "spaceType": "any.onetoone", "push": {"k": 1}}})
+    c = client(fx)
+    row = c.open_direct_space("A2")
+    assert row["spaceType"] == "any.onetoone" and "push" not in row
+    c.register_incoming_direct("A2", {"name": "Bo"})
+    assert c.answer_direct_space(SID, True)["id"] == SID
+    c.answer_direct_space(SID, False)
+    assert fx.calls == [
+        ("POST", "/v1/spaces/one-to-one", {"otherIdentity": "A2"}),
+        ("POST", "/v1/spaces/one-to-one/register-incoming",
+         {"peerIdentity": "A2", "displayHint": {"name": "Bo"}}),
+        ("POST", f"/v1/spaces/{SID}/one-to-one/accept", None),
+        ("POST", f"/v1/spaces/{SID}/one-to-one/decline", None)]
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
@@ -373,4 +417,6 @@ NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "create_block", "patch_block", "delete_block",
          "query_dataset", "aggregate_dataset",
          "query_files", "file_stats", "file_info", "pin_file", "offload_file", "retry_file",
-         "patch_type", "patch_collection", "uninstall_bundle")
+         "patch_type", "patch_collection", "uninstall_bundle",
+         "query_spaces", "patch_space", "open_direct_space",
+         "register_incoming_direct", "answer_direct_space")

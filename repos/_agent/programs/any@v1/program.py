@@ -3065,6 +3065,84 @@ class _Client:
         row["generalChatId"] = self.general_chat(row["id"])
         return row
 
+    @_public('getter', scoped=False, label="Reading the list of spaces")
+    def query_spaces(self, **opts):
+        """The account's space rows, filtered and sorted → rows; every status included.
+
+        `opts`: filter / sort / limit / offset over the row fields:
+        {id, name, spaceType, localStatus, remoteStatus, ownRole,
+        createdAt}. Unlike list_spaces (active only) this reads every
+        row: a deleted space, and a direct chat that waits for an
+        answer — filter={"localStatus": "one_to_one_pending"}. Direct
+        chats alone: filter={"spaceType": "any.onetoone"}. The key
+        material of a row is trimmed."""
+        body = {k: v for k, v in opts.items() if v is not None}
+        recs = self._call("post", "/v1/spaces/query", body).get("records", [])
+        return [{k: v for k, v in r.items()
+                 if k not in ("push", "_ver", "_addSeq", "_applySeq", "settings")}
+                for r in recs if isinstance(r, dict)]
+
+    @_public('mutator', label="Changing the space {space}")
+    def patch_space(self, space, name=None, description=None, icon_cid=None):
+        """Rename a space, or change its description or icon; returns {} (wire: 204).
+
+        EVERY member sees the change: ask the user first in a shared
+        space. `description=""` clears it. The owner or a writer
+        can; a reader gets 403. A direct (1-1) space has no name of
+        its own. The user's private settings of a space are
+        set_space_settings."""
+        body = {k: v for k, v in (("name", name), ("description", description),
+                                  ("iconCid", icon_cid)) if v is not None}
+        if not body:
+            raise ValueError("patch_space needs name, description or icon_cid")
+        r = self._call("patch", f"/v1/spaces/{space}", body)
+        self._spaces_cache = None    # the name catalog moved
+        return r
+
+    # A direct (1-1) space: two accounts, derived from both identities,
+    # no invite. "Accept" and "decline" gate what THIS device loads.
+    @_public('mutator', scoped=False, label="Opening a direct chat")
+    def open_direct_space(self, identity):
+        """Open the direct (1-1) space with another account → its space row; ask the user first.
+
+        `identity` is the other account's id (find_identities, a
+        members row). The other person gets a request to accept.
+        Idempotent: the same two accounts always give the same space;
+        it also takes back an earlier decline. 400
+        request.invalid_field for an id that does not decode, or for
+        your own."""
+        r = self._call("post", "/v1/spaces/one-to-one", {"otherIdentity": identity})
+        self._spaces_cache = None
+        return _trim_space_row(r)
+
+    @_public('mutator', scoped=False, listed=False)
+    def register_incoming_direct(self, identity, display_hint=None):
+        """Record a direct-chat request learned out of band → {} (wire: 204).
+
+        Unlisted: the server's inbox does this by itself. A pending
+        row appears (query_spaces), nothing is loaded. `display_hint`:
+        {name?, description?, iconCid?} for the UI."""
+        body = {"peerIdentity": identity}
+        if display_hint:
+            body["displayHint"] = dict(display_hint)
+        return self._call("post", "/v1/spaces/one-to-one/register-incoming", body)
+
+    @_public('mutator', scoped=False, label="Answering a direct chat request")
+    def answer_direct_space(self, space_id, accept):
+        """Accept or decline a pending direct (1-1) space; ask the user first.
+
+        `space_id` is the id of a row that query_spaces shows with
+        localStatus "one_to_one_pending". `accept=True` loads the
+        space on this device → its space row. `accept=False`
+        declines on every device of the account → {}; the request
+        does not come back, and only open_direct_space reverses
+        it."""
+        if accept:
+            r = self._call("post", f"/v1/spaces/{space_id}/one-to-one/accept")
+            self._spaces_cache = None
+            return _trim_space_row(r)
+        return self._call("post", f"/v1/spaces/{space_id}/one-to-one/decline")
+
     @_public('mutator')
     def open_in_ui(self, space, object_id=None):
         # device scope: user decision 2026-08-19

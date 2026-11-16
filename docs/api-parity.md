@@ -89,7 +89,7 @@ goes from reads to the writes that cannot be undone.
 | 6 ✓ | Datasets | space-level `…/datasets/query`, `/aggregate`; declared indexes (create, delete); `PATCH …/fields/:f` | read + write |
 | 7 ✓ | Files | `GET …/files/stats`, `…/files/:f/status`; `pin`, `offload`, `retry`; `POST …/objects/:o/files/query` | read + write |
 | 8 ✓ | Definitions | `PATCH …/collections/:c`, `DELETE …/bundles/:b` | write |
-| 9 | Spaces | `PATCH …/spaces/:s`, `POST /spaces/query`, one-to-one (create, register-incoming, accept, decline), a guest `delete_space` | write, one that cannot be undone |
+| 9 ✓ | Spaces | `PATCH …/spaces/:s`, `POST /spaces/query`, one-to-one (create, register-incoming, accept, decline), a guest `delete_space` | write, one that cannot be undone |
 | 10 | Sharing | acl (add, remove, permissions, ownership, self-remove, stop-sharing, decline, cancel-join), invites (list, get, delete one, delete all, accept, decline), guest key (create, delete) | write, ask first |
 | 11 | Streams | the seven `…/subscribe` routes (identities, spaces, members, files ×2, objects, datasets) | needs a design: a guest program has no stream primitive |
 
