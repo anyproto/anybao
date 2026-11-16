@@ -133,8 +133,10 @@ never a user type, never the any-ui feature. The Collections app
   `type: "page"` — a note, a folder, a plain document. Anything typed
   says so. The server's own statement ("page for a plain document")
   is the guest's default; nothing else is defaulted.
-- **A body needs the type to declare it.** `markdown` on create or
-  update is written only when the object's type declares an editor
+- **A body needs the type to declare it.** `markdown` on create, or a
+  body write (`put_markdown`, `edit_markdown`, `append_markdown`;
+  `update_object` writes no body, ADR-010 §8, amended 2026-11-16), is
+  written only when the object's type declares an editor
   part (`page` does; catalog types with a body do; §3 below makes
   bao's own types do). Otherwise the call raises, naming the type and
   the fix — never a silent retype to `page`, never an attached second

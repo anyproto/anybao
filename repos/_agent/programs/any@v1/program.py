@@ -1874,16 +1874,19 @@ class _Client:
 
     @_public('mutator', label="Updating {object} in {space}")
     def update_object(self, space, object_id, body, create_options=True):
-        """Update an object's name / editor body / properties by handle.
+        """Update an object's name / icon / properties by handle.
 
-        `body`: {"name"?, "description"?, "icon"?, "markdown"?/"body"?,
+        The editor body is NOT written here: edit_markdown changes a
+        part, append_markdown adds to the end, put_markdown replaces
+        the whole body. A `markdown` / `body` key raises.
+
+        `body`: {"name"?, "description"?, "icon"?,
         "<ownerXKey>": {prop: value}, …} — same nested group shape as
         create_object, a group keyed by the object's type or one of its
         collections (top-level name/description/icon route into the
         `any` group; `icon` = `{"emoji": "🌱"}` or `{"picture":
         "<any://f/… link>"}`, `None` clears it so the object wears its
-        type's glyph). A markdown write needs the object's type to declare a
-        body (see create_object). Property keys resolve to ids;
+        type's glyph). Property keys resolve to ids;
         groups are resolved and every value encoded against its
         definition BEFORE any write so a bad key or value can't land a
         partial update (value rules: see create_object — option names,
@@ -1891,10 +1894,17 @@ class _Client:
         Patches go one per (type, scope). Returns {"objectId",
         "resolved"?, "createdOptions"?, "warnings"?}."""
         body = dict(body or {})
-        markdown = body.pop("markdown", None)
-        body_md = body.pop("body", None)
-        if markdown is None:
-            markdown = body_md
+        for k in ("markdown", "body"):
+            if k in body:
+                # ADR-010 §8: one route per body write, each named for
+                # what it does to a document other clients may be editing
+                raise ValueError(
+                    f'update_object does not write the editor body ("{k}"). '
+                    'Change a part: edit_markdown(space, object_id, '
+                    '[{"oldText": …, "newText": …}]). Add to the end: '
+                    'append_markdown(space, object_id, content). Replace the '
+                    'whole body: put_markdown(space, object_id, content) — it '
+                    'overwrites what anyone wrote since you read it.')
         name = body.pop("name", None)
         description = body.pop("description", None)
         has_icon = "icon" in body
@@ -1907,10 +1917,6 @@ class _Client:
             groups.setdefault("any", {}).setdefault("description", description)
         if has_icon:
             groups.setdefault("any", {}).setdefault("icon", icon)
-        stripped = False
-        if markdown is not None:
-            put = self._put_body(space, object_id, markdown, title=name)
-            stripped = isinstance(put, dict) and put.get("strippedTitle") is True
         self._apply_option_patches(space, ctx)
         self._apply_unsets(space, object_id, ctx)
         for tid, patch in groups.items():
@@ -1918,10 +1924,7 @@ class _Client:
                 self._call("post",
                           f"/v1/spaces/{space}/properties/{object_id}/set/{tid}",
                           {"patch": scoped})
-        out = self._write_result(object_id, ctx)
-        if stripped:
-            out["strippedTitle"] = True
-        return out
+        return self._write_result(object_id, ctx)
 
     def _split_by_scope(self, space, tid, patch):
         """One patch per declared scope — the set route takes a single
@@ -2437,7 +2440,9 @@ class _Client:
     def put_markdown(self, space, object_id, content):
         """Replace the object's editor body with `content` (markdown).
 
-        Whole-body write — prefer append_markdown when adding. A typed `any://`
+        Whole-body write: it overwrites what anyone wrote since you
+        read the body. Prefer edit_markdown to change a part and
+        append_markdown to add. A typed `any://`
         link in the body whose space segment is not a space id (a NAME, or
         missing) is reported under `warnings` (and printed), never rewritten —
         fix the text and write again. The editor shows the object's name
@@ -2457,10 +2462,10 @@ class _Client:
         return self._put_body(space, object_id, content)
 
     def _put_body(self, space, object_id, content, title=None):
-        """The body write behind put_markdown / create_object /
-        update_object: body gate, then the duplicate-title strip
-        against `title` (else the object's name, free from the owner
-        lookup the gate already made), then the PUT."""
+        """The body write behind put_markdown / create_object: body
+        gate, then the duplicate-title strip against `title` (else
+        the object's name, free from the owner lookup the gate already
+        made), then the PUT."""
         self._check_body(space, object_id)
         if title is None:
             title = self._object_owners.get((space, object_id), {}).get("name")

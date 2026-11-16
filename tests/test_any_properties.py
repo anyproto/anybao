@@ -466,16 +466,14 @@ def test_strip_only_touches_the_first_line_and_only_h1_h2():
     assert _puts(fx) == ["intro\n\n# Plan\n\nbody", "### Plan\n\nbody"]
 
 
-def test_update_object_strips_against_the_objects_name():
-    # no name in the update: the owner lookup the body gate makes
-    # carries the name, so the strip costs no extra call
+def test_put_markdown_strips_against_the_objects_name():
+    # the owner lookup the body gate makes carries the name, so the
+    # strip costs no extra call
     fx = rig(by_name={}, extra=lambda v, p, b, reply: (
         {"records": [{"id": "o1", "any": {"name": "Notes", "type": "page"}}]}
         if p.endswith("/objects/query") and (b or {}).get("filter") == {"id": "o1"}
         else reply))
     c = client(fx)
-    c.update_object("s1", "o1", {"markdown": "# Notes\nline"})
-    c.update_object("s1", "o1", {"name": "Diary", "markdown": "# Diary\nline"})
     c.put_markdown("s1", "o1", "# Notes\nline")
-    assert _puts(fx) == ["line", "line", "line"]
+    assert _puts(fx) == ["line"]
     assert len([1 for v, p, b in fx.calls if p.endswith("/objects/query")]) == 1
