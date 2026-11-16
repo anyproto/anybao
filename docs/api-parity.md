@@ -54,6 +54,56 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C9. Drift refresh 2026-11-16 (pin → any 1dd612cb, v0.4.1 + 29, a running server on that build, `/v1/openapi.json`)
+
+156 paths, 10 added, none removed; 16 endpoint keys added, 30
+re-fingerprinted. `anyrt drift` is clean.
+
+**Mapped (2)** — `DELETE …/types/:t` (`delete_type`) and `DELETE
+…/collections/:c` (`delete_collection`), ADR-029 §4. Both delete the
+definition only: the objects keep the dead id in `any.type` /
+`any.collections` and their values under it.
+
+**Excluded (14)**
+
+- account avatar `GET/PUT/DELETE /account/icon` and `GET
+  /identities/:i/icon`, `GET /account/limits`, `GET/PUT
+  /local-discovery`, `GET …/read-state/unread` — client settings and
+  badges, no agent use case so far;
+- `DELETE …/bundles/:b` (uninstall) — pending a helper;
+- declared dataset indexes `POST …/datasets/:d/indexes`, `DELETE
+  …/indexes/:i` — program plumbing, pending a `_`-private helper
+  beside `create_dataset`;
+- `POST …/datasets/query[/subscribe]`, `POST …/datasets/aggregate` —
+  the space-level read of a shared dataset across its objects,
+  pending a helper.
+
+**Re-fingerprinted (30)** — every change adds to a contract, none
+removes a field or a route:
+
+- markdown versions: `GET/PUT/PATCH …/markdown` and `…/markdown/append`
+  answer `version`; `PUT` takes the version it edited from and answers
+  `409 markdown.conflict`. `get_markdown` reads `content` as before;
+  the version is not on the guest surface yet;
+- declared indexes on every dataset listing and draft (`GET /datasets`,
+  `GET …/datasets`, `GET …/types/:t/datasets`, `GET/POST …/parts`,
+  `POST …/parts/:p/datasets`, `POST …/bundles`, `GET /catalog[/:u]`);
+  the catalog bundles also gain `supersedes` / `superseded` and
+  `collection.meta`;
+- `POST …/search` hits carry `match`; `GET …/sync-status` carries
+  `globalPeers`; `GET /devices` claims carry `target`; `GET
+  /debug/p2p` carries the global (account) transport; `GET
+  /local/collections` takes `count`;
+- new documented error replies: `409` on object create, property set,
+  delete-records, guest-key and three acl routes; `410` on object
+  create, file attach and space join; `403` on invites; `404` on
+  device activate; `500` / `507` on auth.
+
+**Not in the spec.** The pin describes routes and bodies, never the
+keys of a returned row: the root `chat` group (a chat's unread
+counters) and the row-root instants are invisible to `anyrt drift`.
+`any@v1` names them by hand (`_SERVER_GROUPS`, `_ROW_ROOT_KEYS`).
+
 ## C8. Drift refresh 2026-09-17 (pin → any b5be51c, scratch server on that build, `/v1/openapi.json`)
 
 any PR #247 "types and collections" (ADR-029): an object has ONE type

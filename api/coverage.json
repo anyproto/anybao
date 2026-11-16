@@ -1,5 +1,10 @@
 {
   "endpoints": {
+    "DELETE /account/icon": {
+      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "fingerprint": "sha256:610b869e0d43824f",
+      "helper": null
+    },
     "DELETE /auth": {
       "excluded": "harness auth/boot",
       "fingerprint": "sha256:db0a1b3ea0fbd82e",
@@ -24,6 +29,16 @@
       "excluded": null,
       "fingerprint": "sha256:b6bcc7230b3e36e3",
       "helper": null
+    },
+    "DELETE /spaces/{spaceId}/bundles/{bundleId}": {
+      "excluded": "bundle uninstall — pending a helper; no agent or harness use case so far",
+      "fingerprint": "sha256:7d3fa73f70920280",
+      "helper": null
+    },
+    "DELETE /spaces/{spaceId}/collections/{collectionId}": {
+      "excluded": null,
+      "fingerprint": "sha256:247042d7cc1aa2a3",
+      "helper": "helper.delete_collection"
     },
     "DELETE /spaces/{spaceId}/collections/{collectionId}/properties/{propId}": {
       "excluded": null,
@@ -70,6 +85,11 @@
       "fingerprint": "sha256:952b68f60d928e40",
       "helper": "helper.remove_from_collection (restore = the bin)"
     },
+    "DELETE /spaces/{spaceId}/types/{typeId}": {
+      "excluded": null,
+      "fingerprint": "sha256:1ad82cdbdb12a209",
+      "helper": "helper.delete_type"
+    },
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}": {
       "excluded": null,
       "fingerprint": "sha256:213ccf9bed4b4664",
@@ -79,6 +99,11 @@
       "excluded": null,
       "fingerprint": "sha256:0022df0b248e4310",
       "helper": "helper.remove_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
+    },
+    "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}/indexes/{indexId}": {
+      "excluded": "declared dataset indexes — program plumbing; pending a `_`-private helper beside create_dataset",
+      "fingerprint": "sha256:e3f2042e4a7e15da",
+      "helper": null
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/parts/{partId}": {
       "excluded": "declaration removal — stores are additive (ADR-027 §2)",
@@ -95,6 +120,16 @@
       "fingerprint": "sha256:c801ddd86c666245",
       "helper": null
     },
+    "GET /account/icon": {
+      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "fingerprint": "sha256:921207f0e0f7c4ed",
+      "helper": null
+    },
+    "GET /account/limits": {
+      "excluded": "account storage pool + shared-spaces limit (client settings UI); no agent use case so far",
+      "fingerprint": "sha256:77cb3ee4a091d793",
+      "helper": null
+    },
     "GET /auth": {
       "excluded": "harness auth/boot",
       "fingerprint": "sha256:7b8dcd3edbb446b0",
@@ -107,27 +142,27 @@
     },
     "GET /catalog": {
       "excluded": null,
-      "fingerprint": "sha256:37ef727e942472d0",
+      "fingerprint": "sha256:3f5d64d90d57e8fb",
       "helper": "helper.list_available_apps (ADR-027 §5)"
     },
     "GET /catalog/{usecaseId}": {
       "excluded": "the list carries every usecase whole; no single-usecase consumer",
-      "fingerprint": "sha256:fc007e5d2cedc1a7",
+      "fingerprint": "sha256:2054ccd0bd7f6b04",
       "helper": null
     },
     "GET /datasets": {
       "excluded": "schema discovery (harness)",
-      "fingerprint": "sha256:b66c92888cdc85b9",
+      "fingerprint": "sha256:ff1fc6ba448c51f3",
       "helper": null
     },
     "GET /debug/p2p": {
       "excluded": "diagnostic (harness/human)",
-      "fingerprint": "sha256:3b666971a599ec85",
+      "fingerprint": "sha256:e0f82c00371ee293",
       "helper": null
     },
     "GET /devices": {
       "excluded": null,
-      "fingerprint": "sha256:80b17236f520104f",
+      "fingerprint": "sha256:f6a758ea72159e05",
       "helper": "helper.list_devices (+ the host's ADR-015 election read)"
     },
     "GET /events/subscribe": {
@@ -160,9 +195,19 @@
       "fingerprint": "sha256:7c5b693cd0f0a756",
       "helper": null
     },
+    "GET /identities/{identity}/icon": {
+      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "fingerprint": "sha256:ca60fc93a03a39f9",
+      "helper": null
+    },
+    "GET /local-discovery": {
+      "excluded": "device network setting (client settings UI / harness); no agent use case",
+      "fingerprint": "sha256:5225ad17448fe6e3",
+      "helper": null
+    },
     "GET /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
-      "fingerprint": "sha256:ecdd2e785bb8cdae",
+      "fingerprint": "sha256:6538db4ec0fd660a",
       "helper": null
     },
     "GET /local/export": {
@@ -232,7 +277,7 @@
     },
     "GET /spaces/{spaceId}/datasets": {
       "excluded": "schema discovery (harness)",
-      "fingerprint": "sha256:3051938bdc09ef19",
+      "fingerprint": "sha256:ea8cc27a50a9bc40",
       "helper": null
     },
     "GET /spaces/{spaceId}/debug": {
@@ -322,7 +367,7 @@
     },
     "GET /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown": {
       "excluded": null,
-      "fingerprint": "sha256:6ff92602298bb127",
+      "fingerprint": "sha256:7607e01232736105",
       "helper": "anyclient.get_markdown / helper.get_markdown"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history": {
@@ -355,9 +400,14 @@
       "fingerprint": "sha256:3e582fe803123c8c",
       "helper": null
     },
+    "GET /spaces/{spaceId}/read-state/unread": {
+      "excluded": "client read state (unread badges, UI); no agent use case so far",
+      "fingerprint": "sha256:49575bd9879d8eb8",
+      "helper": null
+    },
     "GET /spaces/{spaceId}/sync-status": {
       "excluded": "diagnostic/sync (harness)",
-      "fingerprint": "sha256:30af7ced835e0b96",
+      "fingerprint": "sha256:25f40f81b60bad48",
       "helper": null
     },
     "GET /spaces/{spaceId}/sync-status/objects/{objectId}": {
@@ -382,12 +432,12 @@
     },
     "GET /spaces/{spaceId}/types/{typeId}/datasets": {
       "excluded": null,
-      "fingerprint": "sha256:7a20afe5e86e377b",
+      "fingerprint": "sha256:103f416a95b142ce",
       "helper": "helper.list_datasets (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "GET /spaces/{spaceId}/types/{typeId}/parts": {
       "excluded": "the flat GET …/types/:typeId/datasets is the read anybao keys on (collection per key); the part view has no consumer",
-      "fingerprint": "sha256:67460649eb9a2292",
+      "fingerprint": "sha256:4a1e3cbe08edcec9",
       "helper": null
     },
     "GET /spaces/{spaceId}/types/{typeId}/properties": {
@@ -427,7 +477,7 @@
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown": {
       "excluded": null,
-      "fingerprint": "sha256:0f3fb4a0078a94c7",
+      "fingerprint": "sha256:91ccb581377051ec",
       "helper": "helper.edit_markdown"
     },
     "PATCH /spaces/{spaceId}/settings": {
@@ -467,7 +517,7 @@
     },
     "POST /auth": {
       "excluded": "harness auth/boot",
-      "fingerprint": "sha256:5e605158b4ea29d6",
+      "fingerprint": "sha256:9fd0c6414f994bca",
       "helper": null
     },
     "POST /catalog/{usecaseId}/setup": {
@@ -477,7 +527,7 @@
     },
     "POST /devices/activate": {
       "excluded": null,
-      "fingerprint": "sha256:91f26e536ec22f41",
+      "fingerprint": "sha256:abe8de82e74f551f",
       "helper": "anyclient.activate_device (ADR-015 election, harness lifecycle)"
     },
     "POST /devices/query": {
@@ -592,7 +642,7 @@
     },
     "POST /spaces/join": {
       "excluded": null,
-      "fingerprint": "sha256:3e233d9dd7c716ee",
+      "fingerprint": "sha256:a517f4f04d8ea2d7",
       "helper": "join_space"
     },
     "POST /spaces/one-to-one": {
@@ -617,12 +667,12 @@
     },
     "POST /spaces/{spaceId}/acl/accept": {
       "excluded": null,
-      "fingerprint": "sha256:a913a07cfd1cab8f",
+      "fingerprint": "sha256:917e963960917710",
       "helper": "acl_accept"
     },
     "POST /spaces/{spaceId}/acl/add": {
       "excluded": null,
-      "fingerprint": "sha256:5d018a2d82f22427",
+      "fingerprint": "sha256:16beafccae6e7156",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/cancel-join": {
@@ -642,7 +692,7 @@
     },
     "POST /spaces/{spaceId}/acl/permissions": {
       "excluded": null,
-      "fingerprint": "sha256:6eb4add460a54bc4",
+      "fingerprint": "sha256:c13cdc7ae4e2fe90",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/remove": {
@@ -667,7 +717,7 @@
     },
     "POST /spaces/{spaceId}/bundles": {
       "excluded": null,
-      "fingerprint": "sha256:ab5312d8c3600cd3",
+      "fingerprint": "sha256:9549c31896393e18",
       "helper": "helper.ensure_bundle"
     },
     "POST /spaces/{spaceId}/bundles/{bundleId}/children": {
@@ -690,9 +740,24 @@
       "fingerprint": "sha256:8756fa0b49089cbf",
       "helper": "helper.add_property (routed by the owner kind, ADR-029 §4)"
     },
+    "POST /spaces/{spaceId}/datasets/aggregate": {
+      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "fingerprint": "sha256:27256facf72c2a39",
+      "helper": null
+    },
+    "POST /spaces/{spaceId}/datasets/query": {
+      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "fingerprint": "sha256:a08cbaa3d815a9cf",
+      "helper": null
+    },
+    "POST /spaces/{spaceId}/datasets/query/subscribe": {
+      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "fingerprint": "sha256:6f68b01f67ddb614",
+      "helper": null
+    },
     "POST /spaces/{spaceId}/delete-records": {
       "excluded": "low-level (harness)",
-      "fingerprint": "sha256:0b6cfe04c04ff13d",
+      "fingerprint": "sha256:3c936eb3e9a9fc17",
       "helper": null
     },
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
@@ -712,7 +777,7 @@
     },
     "POST /spaces/{spaceId}/guest-key": {
       "excluded": null,
-      "fingerprint": "sha256:92d914164c45c47b",
+      "fingerprint": "sha256:770ea06b6d17d653",
       "helper": null
     },
     "POST /spaces/{spaceId}/invite/accept": {
@@ -727,7 +792,7 @@
     },
     "POST /spaces/{spaceId}/invites": {
       "excluded": null,
-      "fingerprint": "sha256:770ea06b6d17d653",
+      "fingerprint": "sha256:27579ff5701fa1d8",
       "helper": "create_invite"
     },
     "POST /spaces/{spaceId}/modify": {
@@ -737,7 +802,7 @@
     },
     "POST /spaces/{spaceId}/objects": {
       "excluded": null,
-      "fingerprint": "sha256:d09c8bc97c02dbbf",
+      "fingerprint": "sha256:a3869e689eb99899",
       "helper": "helper.create_object"
     },
     "POST /spaces/{spaceId}/objects/aggregate": {
@@ -787,12 +852,12 @@
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown/append": {
       "excluded": null,
-      "fingerprint": "sha256:a1106d809aafb65f",
+      "fingerprint": "sha256:5dfb246cdb647fa7",
       "helper": "helper.append_markdown"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files": {
       "excluded": null,
-      "fingerprint": "sha256:33b1b153cb9a0553",
+      "fingerprint": "sha256:7ea60d8f5b678616",
       "helper": "attach_file"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query": {
@@ -822,7 +887,7 @@
     },
     "POST /spaces/{spaceId}/properties/{objectId}/set/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:f5729a2473d400c0",
+      "fingerprint": "sha256:610a4b46b7abd5b4",
       "helper": "helper.update_object"
     },
     "POST /spaces/{spaceId}/properties/{objectId}/type/{typeId}": {
@@ -842,7 +907,7 @@
     },
     "POST /spaces/{spaceId}/search": {
       "excluded": null,
-      "fingerprint": "sha256:89d13b3fe7a3acf9",
+      "fingerprint": "sha256:074f5246d083edf0",
       "helper": "helper.search"
     },
     "POST /spaces/{spaceId}/sync": {
@@ -860,14 +925,19 @@
       "fingerprint": "sha256:42799411004296fe",
       "helper": "helper.add_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
+    "POST /spaces/{spaceId}/types/{typeId}/datasets/{defId}/indexes": {
+      "excluded": "declared dataset indexes — program plumbing; pending a `_`-private helper beside create_dataset",
+      "fingerprint": "sha256:4f92ac008dadec1d",
+      "helper": null
+    },
     "POST /spaces/{spaceId}/types/{typeId}/parts": {
       "excluded": null,
-      "fingerprint": "sha256:b43ea894da90d46c",
+      "fingerprint": "sha256:0444396df685b4fd",
       "helper": "anyclient.add_part / helper._create_dataset (one part per store, ADR-027 §2)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/parts/{partId}/datasets": {
       "excluded": "stores declare their dataset inline with the part (ADR-027 §2)",
-      "fingerprint": "sha256:85abf6ff8c32a055",
+      "fingerprint": "sha256:2513be3f5478c2cf",
       "helper": null
     },
     "POST /spaces/{spaceId}/types/{typeId}/properties": {
@@ -880,6 +950,11 @@
       "fingerprint": "sha256:75cb95ce90de8ebe",
       "helper": "helper.upsert_records"
     },
+    "PUT /account/icon": {
+      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "fingerprint": "sha256:3be6f1c8306388b3",
+      "helper": null
+    },
     "PUT /account/metadata": {
       "excluded": "harness/account profile",
       "fingerprint": "sha256:3d83d0ef2ac66c67",
@@ -890,6 +965,11 @@
       "fingerprint": "sha256:e65b1ffdb5157637",
       "helper": "anyclient.register_device (ADR-015 election, harness lifecycle)"
     },
+    "PUT /local-discovery": {
+      "excluded": "device network setting (client settings UI / harness); no agent use case",
+      "fingerprint": "sha256:32a885d2a1a67c12",
+      "helper": null
+    },
     "PUT /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
       "fingerprint": "sha256:78a57ca60839f48c",
@@ -897,7 +977,7 @@
     },
     "PUT /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown": {
       "excluded": null,
-      "fingerprint": "sha256:a1106d809aafb65f",
+      "fingerprint": "sha256:15f87eed2c84a160",
       "helper": "anyclient.put_markdown / helper.put_markdown"
     }
   },
