@@ -1517,10 +1517,13 @@ class _Client:
             return rec
         cat = self._catalog(space)
         # Refresh once if a group key references a type id we don't know yet
-        # (catalog stale after an out-of-band create).
+        # (catalog stale after an out-of-band create). The row-root
+        # instants (`createdAt`, `modifiedAt` — dicts, ADR-019) are the
+        # record's own fields, never a group.
         for k, v in rec.items():
             if (isinstance(v, dict) and k not in cat["by_id"]
-                    and k not in _RESERVED_GROUPS):
+                    and k not in _RESERVED_GROUPS
+                    and k not in _ROW_ROOT_KEYS):
                 self._cat_invalidate(space)
                 cat = self._catalog(space)
                 break

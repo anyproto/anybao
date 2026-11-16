@@ -948,6 +948,23 @@ def test_normalize_strips_ver_noise_raw_keeps_it():
     assert raw["_ver"] == {"id": "!!$5"}
 
 
+def test_row_root_instants_do_not_reload_the_catalog():
+    # BOB-202: every row carries createdAt / modifiedAt as instants
+    # (dicts) at its root — the record's own fields, not unknown type
+    # groups. A read of N rows loads the catalog once.
+    at = {"$date": "2026-10-18T01:29:53.267Z"}
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": f"o{i}", "createdAt": at, "modifiedAt": at,
+         "any": {"name": "Ship", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}} for i in range(5)]}})
+    rows = client(fx).query_objects("s1", filter={"any.type": "task"})
+    assert [r["task"] for r in rows] == [{"status": "open"}] * 5
+    assert rows[0]["createdAt"] == at and rows[0]["modifiedAt"] == at
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 1
+    assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
+
+
 def test_catalog_refreshes_once_on_unknown_type_miss():
     # First /types reply lacks `task`; resolution refreshes the catalog and
     # the wire (stateful) then returns it. Proves refresh-on-miss.
