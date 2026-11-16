@@ -344,6 +344,12 @@ _RESERVED_GROUPS = {"any", "_ver"}
 # slice is unioned in, this set is the floor.
 _ROW_ROOT_KEYS = {"id", "author", "createdAt", "modifiedAt", "modifiedBy",
                   "spaceId"}
+# Groups the server stamps at the record root that no definition owns:
+# `chat` holds a chat's unread counters (unreadCount, unreadMentions,
+# …). Read-only and catalog-less (`GET …/types/chat/properties` is
+# 404), so unlike `_RESERVED_GROUPS` they take no writes and no
+# filter resolution — a normalized read passes them through verbatim.
+_SERVER_GROUPS = {"chat"}
 
 # Synthetic catalog rows: the meta rows GET /types (and, for
 # `collection`, GET /collections) list in every space. No object has
@@ -1519,11 +1525,13 @@ class _Client:
         # Refresh once if a group key references a type id we don't know yet
         # (catalog stale after an out-of-band create). The row-root
         # instants (`createdAt`, `modifiedAt` — dicts, ADR-019) are the
-        # record's own fields, never a group.
+        # record's own fields, and the server's own groups (`chat`)
+        # have no definition: neither is a type group.
         for k, v in rec.items():
             if (isinstance(v, dict) and k not in cat["by_id"]
                     and k not in _RESERVED_GROUPS
-                    and k not in _ROW_ROOT_KEYS):
+                    and k not in _ROW_ROOT_KEYS
+                    and k not in _SERVER_GROUPS):
                 self._cat_invalidate(space)
                 cat = self._catalog(space)
                 break

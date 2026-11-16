@@ -965,6 +965,21 @@ def test_row_root_instants_do_not_reload_the_catalog():
     assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
 
 
+def test_the_chat_group_does_not_reload_the_catalog():
+    # BOB-202: the server stamps a chat's unread counters under a root
+    # `chat` group that no definition owns — verbatim, no reload.
+    chat = {"unreadCount": 2, "unreadMentions": 0}
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": f"o{i}", "chat": chat,
+         "any": {"name": "General", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}} for i in range(5)]}})
+    rows = client(fx).query_objects("s1", filter={"any.type": "task"})
+    assert [r["chat"] for r in rows] == [chat] * 5
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 1
+    assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
+
+
 def test_catalog_refreshes_once_on_unknown_type_miss():
     # First /types reply lacks `task`; resolution refreshes the catalog and
     # the wire (stateful) then returns it. Proves refresh-on-miss.
