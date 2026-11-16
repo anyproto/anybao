@@ -53,17 +53,17 @@
     "DELETE /spaces/{spaceId}/guest-key": {
       "excluded": null,
       "fingerprint": "sha256:f6291d7e53c931c5",
-      "helper": null
+      "helper": "helper.revoke_guest_key"
     },
     "DELETE /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.revoke_invite (no record_id)"
     },
     "DELETE /spaces/{spaceId}/invites/{recordId}": {
       "excluded": null,
       "fingerprint": "sha256:c97d57adeba5fde9",
-      "helper": null
+      "helper": "helper.revoke_invite"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}": {
       "excluded": null,
@@ -323,12 +323,12 @@
     "GET /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:194b8da107ff3179",
-      "helper": null
+      "helper": "helper.list_invites"
     },
     "GET /spaces/{spaceId}/invites/{recordId}": {
       "excluded": null,
       "fingerprint": "sha256:120f9eb9e6493efa",
-      "helper": null
+      "helper": "helper.list_invites (record_id=)"
     },
     "GET /spaces/{spaceId}/members": {
       "excluded": null,
@@ -343,7 +343,7 @@
     "GET /spaces/{spaceId}/members/requests": {
       "excluded": null,
       "fingerprint": "sha256:5895f797b0b71e62",
-      "helper": "join_requests"
+      "helper": "anyclient.join_requests / helper.list_join_requests"
     },
     "GET /spaces/{spaceId}/members/subscribe": {
       "excluded": null,
@@ -643,7 +643,7 @@
     "POST /spaces/join": {
       "excluded": null,
       "fingerprint": "sha256:a517f4f04d8ea2d7",
-      "helper": "join_space"
+      "helper": "anyclient.join_space / helper.join_space"
     },
     "POST /spaces/one-to-one": {
       "excluded": null,
@@ -668,47 +668,47 @@
     "POST /spaces/{spaceId}/acl/accept": {
       "excluded": null,
       "fingerprint": "sha256:917e963960917710",
-      "helper": "acl_accept"
+      "helper": "anyclient.acl_accept / helper.answer_join_request"
     },
     "POST /spaces/{spaceId}/acl/add": {
       "excluded": null,
       "fingerprint": "sha256:16beafccae6e7156",
-      "helper": null
+      "helper": "helper.add_members"
     },
     "POST /spaces/{spaceId}/acl/cancel-join": {
       "excluded": null,
       "fingerprint": "sha256:80a7b6ab7f42beac",
-      "helper": null
+      "helper": "helper.cancel_join"
     },
     "POST /spaces/{spaceId}/acl/decline": {
       "excluded": null,
       "fingerprint": "sha256:d198277706829809",
-      "helper": null
+      "helper": "helper.answer_join_request (permission=None)"
     },
     "POST /spaces/{spaceId}/acl/ownership": {
       "excluded": null,
       "fingerprint": "sha256:7b1b16c510eb8396",
-      "helper": null
+      "helper": "helper.transfer_ownership"
     },
     "POST /spaces/{spaceId}/acl/permissions": {
       "excluded": null,
       "fingerprint": "sha256:c13cdc7ae4e2fe90",
-      "helper": null
+      "helper": "helper.set_member_permissions"
     },
     "POST /spaces/{spaceId}/acl/remove": {
       "excluded": null,
       "fingerprint": "sha256:c8aa48322f7fc97f",
-      "helper": null
+      "helper": "helper.remove_members"
     },
     "POST /spaces/{spaceId}/acl/self-remove": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.leave_space"
     },
     "POST /spaces/{spaceId}/acl/stop-sharing": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.stop_sharing"
     },
     "POST /spaces/{spaceId}/aggregate": {
       "excluded": null,
@@ -778,22 +778,22 @@
     "POST /spaces/{spaceId}/guest-key": {
       "excluded": null,
       "fingerprint": "sha256:770ea06b6d17d653",
-      "helper": null
+      "helper": "helper.create_guest_key"
     },
     "POST /spaces/{spaceId}/invite/accept": {
       "excluded": null,
       "fingerprint": "sha256:3ed540d7831ec586",
-      "helper": null
+      "helper": "helper.answer_space_invite (accept=True)"
     },
     "POST /spaces/{spaceId}/invite/decline": {
       "excluded": null,
       "fingerprint": "sha256:80a7b6ab7f42beac",
-      "helper": null
+      "helper": "helper.answer_space_invite (accept=False)"
     },
     "POST /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:27579ff5701fa1d8",
-      "helper": "create_invite"
+      "helper": "anyclient.create_invite / helper.create_invite"
     },
     "POST /spaces/{spaceId}/modify": {
       "excluded": null,

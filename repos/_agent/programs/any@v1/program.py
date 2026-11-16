@@ -2370,6 +2370,202 @@ class _Client:
             return None
         return {k: r.get(k) for k in ("identity", "name", "permission", "status")}
 
+    # --- sharing: invites, the guest key, access control (parity §C10) --------
+    # Every write here changes who can read or write a space. The
+    # docstrings say "ask the user first": the agent proposes, the
+    # user decides. Roles: reader, writer, admin, owner.
+    def _acl(self, space, op, body=None):
+        r = self._call("post", f"/v1/spaces/{space}/acl/{op}", body)
+        self._members_cache.pop(space, None)
+        return r
+
+    @_public('getter')
+    def list_invites(self, space, record_id=None):
+        """The space's active invites → [{recordId, permission, inviteToken?}].
+
+        `inviteToken` is the code a person joins with; only the
+        account that made the invite reads it back, so it can be
+        absent. `permission` is "none": the owner picks the role
+        when they accept the join request. `record_id` narrows to
+        one invite ([] when it is gone)."""
+        if record_id:
+            try:
+                r = self._call("get", f"/v1/spaces/{space}/invites/{_urlquote(record_id)}")
+            except AnyError as e:
+                if e.status == 404:
+                    return []
+                raise
+            return [r] if r.get("recordId") else list(r.get("invites") or [])
+        return self._call("get", f"/v1/spaces/{space}/invites").get("invites") or []
+
+    @_public('mutator', label="Making an invite to {space}")
+    def create_invite(self, space):
+        """Make the space's invite → {spaceId, inviteToken}; ask the user first.
+
+        It REPLACES an earlier invite. Whoever holds the token can
+        ASK to join; the owner still accepts each request
+        (list_join_requests, answer_join_request). Owner only (403
+        acl.forbidden). It makes the space shared, which counts
+        against the plan's shared spaces (409 acl.limit_reached;
+        account_limits). Give the token to the user; do not post it
+        anywhere yourself."""
+        return self._call("post", f"/v1/spaces/{space}/invites")
+
+    @_public('mutator', label="Revoking an invite to {space}")
+    def revoke_invite(self, space, record_id=None):
+        """Revoke one invite (`record_id` from list_invites) or, without it, all; returns {}.
+
+        Ask the user first. The token stops working; members who
+        already joined stay."""
+        tail = f"/{_urlquote(record_id)}" if record_id else ""
+        return self._call("delete", f"/v1/spaces/{space}/invites{tail}")
+
+    @_public('mutator', label="Making a public read link for {space}")
+    def create_guest_key(self, space):
+        """Make the space's public READ-ONLY key → {spaceId, inviteToken}; ask the user first.
+
+        ANYONE who holds the token reads the whole space, with no
+        request and no approval. One for a space; a second call
+        returns the same token. Owner only."""
+        return self._call("post", f"/v1/spaces/{space}/guest-key")
+
+    @_public('mutator', label="Revoking the public read link of {space}")
+    def revoke_guest_key(self, space):
+        """Revoke the space's public read-only key; returns {}; ask the user first.
+
+        Every guest stops receiving new content, and the old token
+        is dead for good. 404 guest_key.not_found when there is
+        none."""
+        return self._call("delete", f"/v1/spaces/{space}/guest-key")
+
+    @_public('mutator', scoped=False, label="Joining a space")
+    def join_space(self, invite_token, name=None):
+        """Join a space with an invite token → its space row; ask the user first.
+
+        A normal invite: the row reads status "joining" until the
+        owner accepts. A guest token: the space loads read-only at
+        once. `name` is shown to the owner with the request. 400
+        invite.invalid, 410 invite.revoked, 409 space.already_member."""
+        body = {"inviteToken": invite_token}
+        if name:
+            body["metadata"] = {"name": name}
+        r = self._call("post", "/v1/spaces/join", body)
+        self._spaces_cache = None
+        return _trim_space_row(r)
+
+    @_public('mutator', scoped=False, label="Withdrawing a join request")
+    def cancel_join(self, space_id):
+        """Withdraw this account's pending request to join a space; returns {}.
+
+        `space_id` is a row with status "joining" (query_spaces).
+        409 space.join_not_pending when the owner already answered:
+        read the row again."""
+        r = self._call("post", f"/v1/spaces/{space_id}/acl/cancel-join")
+        self._spaces_cache = None
+        return r
+
+    @_public('mutator', scoped=False, label="Answering a space invite")
+    def answer_space_invite(self, space_id, accept):
+        """Accept or decline a space that another account added the user to; ask the user first.
+
+        `space_id` is a row with localStatus "invite_pending"
+        (query_spaces). `accept=True` loads the space → its row (the
+        load can continue in the background). `accept=False` hides
+        the invite on every device → {}; a later accept still
+        works."""
+        if accept:
+            r = self._call("post", f"/v1/spaces/{space_id}/invite/accept")
+            self._spaces_cache = None
+            return _trim_space_row(r)
+        return self._call("post", f"/v1/spaces/{space_id}/invite/decline")
+
+    @_public('getter')
+    def list_join_requests(self, space):
+        """Who waits to join the space → [{recordId, identity, name?, description?}]."""
+        return self._call("get", f"/v1/spaces/{space}/members/requests").get("requests") or []
+
+    @_public('mutator', label="Answering a join request for {space}")
+    def answer_join_request(self, space, identity, permission=None):
+        """Accept or decline one join request; returns {}; ask the user first.
+
+        `identity` from list_join_requests. `permission` "reader",
+        "writer" or "admin" accepts with that role; None declines.
+        409 acl.limit_reached = the plan has no free seat for that
+        role."""
+        if permission is None:
+            return self._acl(space, "decline", {"identity": identity})
+        req = next((r for r in self.list_join_requests(space)
+                    if r.get("identity") == identity), None)
+        if req is None:
+            raise ValueError(f"no pending join request from {identity} — "
+                             "list_join_requests(space) shows who waits")
+        return self._acl(space, "accept", {"requestRecordId": req.get("recordId"),
+                                           "permission": permission})
+
+    @_public('mutator', label="Adding members to {space}")
+    def add_members(self, space, accounts):
+        """Add accounts to the space by identity, with no invite; returns {}; ask the user first.
+
+        `accounts`: [{"identity", "permission": "reader" | "writer" |
+        "admin", "name"?}]. Each account gets a pending invite to
+        accept. Identities come from find_identities. It makes the
+        space shared (409 acl.limit_reached at the plan's limit)."""
+        rows = []
+        for a in accounts or []:
+            row = {"identity": a.get("identity"), "permission": a.get("permission")}
+            if a.get("name"):
+                row["metadata"] = {"name": a["name"]}
+            rows.append(row)
+        return self._acl(space, "add", {"accounts": rows})
+
+    @_public('mutator', label="Changing member roles in {space}")
+    def set_member_permissions(self, space, changes):
+        """Change members' roles → {}; ask the user first.
+
+        `changes`: {identity: "reader" | "writer" | "admin"}. One
+        batch. The owner's role moves only with
+        transfer_ownership."""
+        return self._acl(space, "permissions", {"changes": [
+            {"identity": i, "permission": p} for i, p in dict(changes or {}).items()]})
+
+    @_public('mutator', label="Removing members from {space}")
+    def remove_members(self, space, identities):
+        """Remove members from the space → {}; ask the user first; no undo.
+
+        `identities`: [account id]. They lose access to everything
+        written from now on (the read key rotates); what they
+        already hold stays on their devices."""
+        ids = [identities] if isinstance(identities, str) else list(identities or [])
+        return self._acl(space, "remove", {"identities": ids})
+
+    @_public('mutator', label="Handing over {space}")
+    def transfer_ownership(self, space, new_owner, old_owner_permission="admin"):
+        """Make another member the owner of the space → {}; ask the user first; no undo.
+
+        `new_owner` is a member's identity. The user keeps the role
+        `old_owner_permission` (admin / writer / reader). Only the
+        new owner can give it back."""
+        return self._acl(space, "ownership", {"newOwner": new_owner,
+                                              "oldOwnerPerm": old_owner_permission})
+
+    @_public('mutator', label="Leaving {space}")
+    def leave_space(self, space):
+        """Take the user out of a space that someone else owns → {}; ask the user first.
+
+        The user loses access; the owner must add them again. The
+        owner cannot leave: transfer_ownership first."""
+        r = self._acl(space, "self-remove")
+        self._spaces_cache = None
+        return r
+
+    @_public('mutator', label="Ending the sharing of {space}")
+    def stop_sharing(self, space):
+        """Remove EVERY other member and every invite from the space → {}; no undo.
+
+        Ask the user first, and name the members who lose access
+        (list_members). The space stays, private to the owner."""
+        return self._acl(space, "stop-sharing")
+
     # the account-global identities directory: every account this one
     # has met in a shared space, with the spaces shared (the server's
     # GET /v1/identities; docs/19-links.md § u — identities)

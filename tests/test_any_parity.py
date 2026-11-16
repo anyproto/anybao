@@ -409,6 +409,90 @@ def test_the_direct_space_calls():
         ("POST", f"/v1/spaces/{SID}/one-to-one/decline", None)]
 
 
+# --- sharing -----------------------------------------------------------------------------------
+
+SP = "/v1/spaces/s1"
+
+
+def test_invites_and_the_guest_key():
+    fx = wire(replies={"/invites/r1": {"recordId": "r1", "permission": "none"},
+                       "/invites": {"invites": [{"recordId": "r1"}], "inviteToken": "T"},
+                       "/guest-key": {"inviteToken": "G"}})
+    c = client(fx)
+    assert c.list_invites("s1") == [{"recordId": "r1"}]
+    assert c.list_invites("s1", "r1") == [{"recordId": "r1", "permission": "none"}]
+    assert c.create_invite("s1")["inviteToken"] == "T"
+    c.revoke_invite("s1", "r1")
+    c.revoke_invite("s1")
+    assert c.create_guest_key("s1") == {"inviteToken": "G"}
+    c.revoke_guest_key("s1")
+    assert [(v, p) for v, p, _ in fx.calls] == [
+        ("GET", SP + "/invites"), ("GET", SP + "/invites/r1"), ("POST", SP + "/invites"),
+        ("DELETE", SP + "/invites/r1"), ("DELETE", SP + "/invites"),
+        ("POST", SP + "/guest-key"), ("DELETE", SP + "/guest-key")]
+
+
+def test_join_requests_are_accepted_by_identity_or_declined():
+    fx = wire(replies={"/members/requests": {"requests": [
+        {"recordId": "q1", "identity": "A2", "name": "Bo"}]}})
+    c = client(fx)
+    c.answer_join_request("s1", "A2", "writer")
+    c.answer_join_request("s1", "A2")
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts == [(SP + "/acl/accept", {"requestRecordId": "q1", "permission": "writer"}),
+                     (SP + "/acl/decline", {"identity": "A2"})]
+    try:
+        c.answer_join_request("s1", "A9", "reader")
+    except ValueError as e:
+        assert "no pending join request" in str(e)
+    else:
+        raise AssertionError("an unknown requester must raise")
+
+
+def test_the_access_control_writes_and_the_roster_cache():
+    fx = wire(replies={"/members": {"members": [{"identity": "A1", "status": "active"}]}})
+    c = client(fx)
+    c.list_members("s1")
+    c.add_members("s1", [{"identity": "A2", "permission": "writer", "name": "Bo"}])
+    assert "s1" not in c._members_cache            # the roster is read again
+    c.set_member_permissions("s1", {"A2": "reader"})
+    c.remove_members("s1", "A2")
+    c.transfer_ownership("s1", "A3")
+    c.leave_space("s1")
+    c.stop_sharing("s1")
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts == [
+        (SP + "/acl/add", {"accounts": [{"identity": "A2", "permission": "writer",
+                                         "metadata": {"name": "Bo"}}]}),
+        (SP + "/acl/permissions", {"changes": [{"identity": "A2", "permission": "reader"}]}),
+        (SP + "/acl/remove", {"identities": ["A2"]}),
+        (SP + "/acl/ownership", {"newOwner": "A3", "oldOwnerPerm": "admin"}),
+        (SP + "/acl/self-remove", None), (SP + "/acl/stop-sharing", None)]
+
+
+def test_join_cancel_and_answering_a_space_invite():
+    fx = wire(replies={"": {"id": SID, "status": "joining", "push": {"k": 1}}})
+    c = client(fx)
+    assert c.join_space("TOKEN", name="Me") == {"id": SID, "status": "joining"}
+    c.cancel_join(SID)
+    c.answer_space_invite(SID, True)
+    c.answer_space_invite(SID, False)
+    assert fx.calls == [
+        ("POST", "/v1/spaces/join", {"inviteToken": "TOKEN", "metadata": {"name": "Me"}}),
+        ("POST", f"/v1/spaces/{SID}/acl/cancel-join", None),
+        ("POST", f"/v1/spaces/{SID}/invite/accept", None),
+        ("POST", f"/v1/spaces/{SID}/invite/decline", None)]
+
+
+def test_every_sharing_write_says_to_ask_the_user_first():
+    g = load(wire())
+    for name in ("create_invite", "revoke_invite", "create_guest_key", "revoke_guest_key",
+                 "join_space", "answer_space_invite", "answer_join_request", "add_members",
+                 "set_member_permissions", "remove_members", "transfer_ownership",
+                 "leave_space", "stop_sharing"):
+        assert "sk the user first" in " ".join(g[name].__doc__.split()), name
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
@@ -419,4 +503,9 @@ NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "query_files", "file_stats", "file_info", "pin_file", "offload_file", "retry_file",
          "patch_type", "patch_collection", "uninstall_bundle",
          "query_spaces", "patch_space", "open_direct_space",
-         "register_incoming_direct", "answer_direct_space")
+         "register_incoming_direct", "answer_direct_space",
+         "list_invites", "create_invite", "revoke_invite", "create_guest_key",
+         "revoke_guest_key", "join_space", "cancel_join", "answer_space_invite",
+         "list_join_requests", "answer_join_request", "add_members",
+         "set_member_permissions", "remove_members", "transfer_ownership",
+         "leave_space", "stop_sharing")

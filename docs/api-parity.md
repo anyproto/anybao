@@ -79,6 +79,10 @@ exclusion. This audit compared every route with the HTTP call sites of
 row is one change, each with its ADR line and a rig test. The order
 goes from reads to the writes that cannot be undone.
 
+Rows 1 to 10 are done (✓), one commit for each row; ADR-010 §8 lists
+the helpers. Row 9 has no guest call that deletes a space. After
+them every route has a helper or an exclusion: none has neither.
+
 | # | Row | Routes | Kind |
 |---|---|---|---|
 | 1 ✓ | Object history | `GET …/history`, `/history/:v`, `/history/:v/datasets/:d/records/:r`, `/history/diff` | read |
@@ -90,8 +94,8 @@ goes from reads to the writes that cannot be undone.
 | 7 ✓ | Files | `GET …/files/stats`, `…/files/:f/status`; `pin`, `offload`, `retry`; `POST …/objects/:o/files/query` | read + write |
 | 8 ✓ | Definitions | `PATCH …/collections/:c`, `DELETE …/bundles/:b` | write |
 | 9 ✓ | Spaces | `PATCH …/spaces/:s`, `POST /spaces/query`, one-to-one (create, register-incoming, accept, decline), a guest `delete_space` | write, one that cannot be undone |
-| 10 | Sharing | acl (add, remove, permissions, ownership, self-remove, stop-sharing, decline, cancel-join), invites (list, get, delete one, delete all, accept, decline), guest key (create, delete) | write, ask first |
-| 11 | Streams | the seven `…/subscribe` routes (identities, spaces, members, files ×2, objects, datasets) | needs a design: a guest program has no stream primitive |
+| 10 ✓ | Sharing | acl (add, remove, permissions, ownership, self-remove, stop-sharing, decline, cancel-join), invites (list, get, delete one, delete all, accept, decline), guest key (create, delete) | write, ask first |
+| 11 — | Streams (excluded for now) | the seven `…/subscribe` routes (identities, spaces, members, files ×2, objects, datasets) | needs a design: a guest program has no stream primitive |
 
 Not on the worklist: the 46 routes excluded as host or operator
 plumbing (the local trace store, auth, health, shutdown, debug,
