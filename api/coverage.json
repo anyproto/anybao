@@ -186,7 +186,7 @@
       "helper": "helper.find_identities"
     },
     "GET /identities/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:49c5f53bb050d0a1",
       "helper": null
     },
@@ -301,7 +301,7 @@
       "helper": "helper.file_stats"
     },
     "GET /spaces/{spaceId}/files/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:f4d34761c7d7a759",
       "helper": null
     },
@@ -346,7 +346,7 @@
       "helper": "anyclient.join_requests / helper.list_join_requests"
     },
     "GET /spaces/{spaceId}/members/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:f4d34761c7d7a759",
       "helper": null
     },
@@ -661,7 +661,7 @@
       "helper": "helper.query_spaces"
     },
     "POST /spaces/query/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:de84456795344bc3",
       "helper": null
     },
@@ -816,7 +816,7 @@
       "helper": "anyclient.query_objects / helper.query_objects"
     },
     "POST /spaces/{spaceId}/objects/query/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:20b13b00905d74c2",
       "helper": null
     },
@@ -866,7 +866,7 @@
       "helper": "helper.query_files"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:37e1cd5a91f77132",
       "helper": null
     },
