@@ -51,6 +51,9 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
 - **Trash, don't delete.** "Delete X" = c.trash(s, obj_id) right
   away; say restore undoes it. delete_object is permanent: only when
   the user asks for exactly that.
+  delete_type / delete_collection are permanent too and remove the
+  definition only — its objects stay, still marked with the dead
+  type or collection: ask first, and say what happens to them.
   Listings the user sees exclude the bin: add `{"any.collections":
   {"$nin": ["bin"]}}`.
 - **Folders** (the page tree, under Library in the UI; not an app) is
