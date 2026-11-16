@@ -3592,8 +3592,8 @@ class _Client:
         """Create a type — what an object IS — with its icon and properties (composite ensure).
 
         body: {"name", "icon", "xKey"?, "description"?, "hidden"?,
-        "layout"?, "body"?: false, "properties"?: [{"name", "xKey"?,
-        "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
+        "layout"?, "meta"?, "body"?: false, "properties"?: [{"name",
+        "xKey"?, "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
         type** — the glyph the user sees on every object of it and in
         every picker; a mint without one ERRORS. `{"glyph": "<Lucide
         icon name>"}` — a Lucide glyph, never an emoji (the client's
@@ -3609,7 +3609,11 @@ class _Client:
         "Done"]}} (see add_property for the slug table); with a slug
         the kind may be omitted. xKeys default to a slug of the name.
         Idempotent: an existing USER type (by xKey) is reused, only
-        MISSING properties are added. **Every type has a body**: the
+        MISSING properties are added. It NEVER reshapes what exists:
+        a draft that differs from the type (its name, a property's
+        name, slug or kind) changes nothing and is named in
+        `unchangedFields` / `unchangedProps` — patch_type takes the
+        same body and applies it. **Every type has a body**: the
         editor body part is declared on a new type and healed onto
         an existing one that lacks it, so a user type is "page plus
         fields" — its objects hold markdown like a page does;
@@ -3649,7 +3653,7 @@ class _Client:
                     f'a type needs an "icon" — the glyph the user sees on every '
                     f'"{body.get("name")}" object and in every picker. Pass '
                     f'"icon": {_TYPE_ICON_SHAPE} and call create_type again.')
-            req = {k: body[k] for k in ("name", "description", "hidden", "layout")
+            req = {k: body[k] for k in ("name", "description", "hidden", "layout", "meta")
                    if k in body}
             req["xKey"] = xkey
             if icon is not None:
@@ -3660,6 +3664,7 @@ class _Client:
             # heal an icon onto a row minted before the rule; a row
             # that has one keeps it (the user's pick wins)
             self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"iconCid": icon})
+        kept = {} if created else self._unchanged(space, tid, row, body, props)
         added = self._add_missing_props(space, tid, props)
         if want_body:
             self._ensure_body_part(space, tid)
@@ -3667,7 +3672,7 @@ class _Client:
         if created and not body.get("hidden"):
             self._ensure_collections_app(space)
         return {"typeId": tid, "xKey": xkey, "created": created,
-                "addedProps": added}
+                "addedProps": added, **kept}
 
     def _ensure_body_part(self, space, type_id):
         """Declare the editor body on a type that lacks it (the
@@ -3726,7 +3731,7 @@ class _Client:
                 moves.append((cur["id"], want, p))
                 continue
             sets = {}
-            if p.get("name") and p["name"] != cur.get("name"):
+            if p.get("name") and p["name"] != (cur.get("name") or pxkey):
                 sets["name"] = p["name"]
             if "description" in p and (p["description"] or "") != (cur.get("description") or ""):
                 sets["description"] = p["description"] or ""
@@ -3831,84 +3836,132 @@ class _Client:
         return {"propId": new_pid, "xKey": xkey, "kind": kind, "converted": converted,
                 "failed": failed, "old": "removed" if not failed else temp}
 
-    def _patch_def(self, space, route, did, fields, owner_key=None, props=None):
-        body = {k: v for k, v in fields.items() if v is not None}
-        if not body and not props:
-            raise ValueError("nothing to change: pass at least one of "
-                             + ", ".join(sorted([*fields, "properties"])))
-        # the drafts are checked before the first write: a bad one changes nothing
-        missing, patches, moves = (self._plan_props(space, did, owner_key, props)
-                                   if props else ([], [], []))
-        out = {"id": did, **body}
-        if body:
-            self._call("patch", f"/v1/spaces/{space}/{route}/{did}", body)
-        if props:
-            for _, pid, sets in patches:
-                self._call("patch", f"{self._props_path(space, did)}/{pid}", {"set": sets})
-            out["addedProps"] = self._add_missing_props(space, did, missing)
-            out["patchedProps"] = [x for x, _, _ in patches]
-            if moves:
-                have = {p.get("id"): p for p in self._fetch_props(space, did)}
-                out["kindChanges"] = [self._move_kind(space, did, have[pid], kind, draft)
-                                      for pid, kind, draft in moves]
-        self._cat_invalidate(space)
+    def _unchanged(self, space, did, row, body, props):
+        """What a create_* call on an EXISTING definition left as it
+        is, although the draft says otherwise → the extra result keys.
+        A create never reshapes; patch_type / patch_collection do."""
+        out = {}
+        fields = [k for k in ("name", "description", "hidden", "layout", "meta")
+                  if k in body and body[k] != row.get(k)
+                  and not (body[k] in (None, "", False) and row.get(k) in (None, "", False))]
+        if fields:
+            out["unchangedFields"] = fields
+        try:
+            _, patches, moves = self._plan_props(space, did, row.get("xKey") or did, props)
+        except ValueError:
+            patches, moves = [], []
+        by_id = {p.get("id"): p.get("xKey") for p in self._fetch_props(space, did)}
+        keys = [x for x, _, _ in patches] + [by_id.get(pid) for pid, _, _ in moves]
+        if keys:
+            out["unchangedProps"] = keys
         return out
 
-    @_public('mutator', label="Changing the type {type_key} in {space}")
-    def patch_type(self, space, type_key, name=None, description=None, hidden=None,
-                   properties=None):
-        """Change an existing type: its name, description, visibility and properties.
+    _PATCH_KEYS = {"types": ("name", "description", "hidden", "icon", "layout", "meta",
+                             "properties"),
+                   "collections": ("name", "description", "hidden", "meta", "properties")}
 
-        `type_key` is the xKey (or id); the xKey does not change, so
-        every write and filter keeps working. `description=""`
-        clears it. `hidden=True` takes the type out of the user's
-        type picker; its objects stay as they are. `properties`:
-        the drafts of create_type ([{"name", "xKey"?, "kind"?,
-        "xFormat"?, "description"?}]), matched by xKey: a missing
-        property is ADDED, an existing one gets its changed name,
-        description and slug (`xFormat.type`, within its kind).
-        Nothing is ever removed: a property that the list leaves out
-        stays (delete_property removes one). A draft with ANOTHER
-        KIND moves the property to that kind: a new property takes
-        the xKey, every object's value is converted and copied, and
-        the old one is removed (see change_property_kind: a value
-        that does not convert is reported under `failed`, and the
-        old property then stays as `<xKey>_old`). Every draft is
-        checked before the first write. Options of a choice:
-        set_option. The icon: set_type_icon. A built-in type refuses
-        (400 type.registered). Returns {"id", …the changed fields,
-        "addedProps"?: {xKey: id}, "patchedProps"?: [xKey],
-        "kindChanges"?: [change_property_kind results]}. Look at
-        each `failed` list and tell the user what did not move."""
+    def _patch_def(self, space, route, did, owner_key, body):
+        """The shared body of patch_type / patch_collection: the
+        definition's own fields in one PATCH, then the property
+        drafts. Everything is checked before the first write."""
+        fn = "patch_type" if route == "types" else "patch_collection"
+        body = dict(body or {})
+        unknown = sorted(set(body) - set(self._PATCH_KEYS[route]))
+        if unknown:
+            raise ValueError(f"{fn}: unknown key(s) {unknown}; the body takes "
+                             f"{list(self._PATCH_KEYS[route])}")
+        props = body.pop("properties", None)
+        row = self._catalog(space)["by_id"].get(did) or {}
+        wire = {}
+        for k in ("name", "description", "hidden", "meta"):
+            if body.get(k) is not None:
+                wire[k] = body[k]
+        if "layout" in body:
+            wire["layout"] = body["layout"]          # None clears it
+        if "icon" in body:
+            if not self._is_user_def(row) or row.get("xKey") in self._catalog_handles():
+                raise ValueError(
+                    f'"{owner_key}" is a builtin or catalog type — its icon is the '
+                    "client's; only a user type's icon can be set.")
+            wire["iconCid"] = _format_type_icon(body["icon"])
+        if not wire and not props:
+            raise ValueError(f"{fn}: nothing to change — the body takes "
+                             f"{list(self._PATCH_KEYS[route])}")
+        missing, patches, moves = (self._plan_props(space, did, owner_key, props)
+                                   if props else ([], [], []))
+        if wire:
+            self._call("patch", f"/v1/spaces/{space}/{route}/{did}", wire)
+        for _, pid, sets in patches:
+            self._call("patch", f"{self._props_path(space, did)}/{pid}", {"set": sets})
+        added = self._add_missing_props(space, did, missing)
+        changes = []
+        if moves:
+            have = {p.get("id"): p for p in self._fetch_props(space, did)}
+            changes = [self._move_kind(space, did, have[pid], kind, draft)
+                       for pid, kind, draft in moves]
+        self._cat_invalidate(space)
+        return {("typeId" if route == "types" else "collectionId"): did,
+                "xKey": row.get("xKey") or did,
+                "changed": ["icon" if k == "iconCid" else k for k in wire],
+                "addedProps": added, "patchedProps": [x for x, _, _ in patches],
+                "kindChanges": changes}
+
+    @_public('mutator', label="Changing the type {type_key} in {space}")
+    def patch_type(self, space, type_key, body):
+        """Change an EXISTING type: its name, description, icon, layout and properties.
+
+        The body of create_type, for a type that exists: {"name"?,
+        "description"?, "hidden"?, "icon"?, "layout"?, "meta"?,
+        "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?,
+        "description"?}]}; only the keys you pass change. `type_key`
+        is the xKey (or id); the xKey never changes, so writes and
+        filters keep working. `description: ""` clears it; `layout:
+        None` clears the layout; `icon` is {"glyph": "<Lucide
+        name>"} (a builtin or catalog type refuses); `hidden: True`
+        takes the type out of the picker, its objects stay.
+        `properties` are matched by xKey: a missing one is ADDED, an
+        existing one gets its changed name, description and slug
+        (`xFormat.type`, within its kind), and one whose draft has
+        ANOTHER KIND moves to that kind — a new property takes the
+        xKey, every object's value is converted and copied, the old
+        one is removed (change_property_kind; a value that does not
+        convert is listed under `failed`, and the old property then
+        stays as `<xKey>_old`). Nothing is ever removed: a property
+        that the list leaves out stays (delete_property). Every key
+        and draft is checked before the first write. Options of a
+        choice: set_option. Returns {"typeId", "xKey", "changed":
+        [keys], "addedProps": {xKey: id}, "patchedProps": [xKey],
+        "kindChanges": [change_property_kind results]}; read each
+        `failed` list and tell the user what did not move.
+        create_type is the other half: it makes a type or adds what
+        is missing, and never reshapes."""
         tid = self._resolve_type_or_raise(space, type_key)
-        return self._patch_def(space, "types", tid, {
-            "name": name, "description": description, "hidden": hidden},
-            owner_key=type_key, props=properties)
+        return self._patch_def(space, "types", tid, type_key, body)
 
     @_public('mutator', label="Changing the collection {collection_key} in {space}")
-    def patch_collection(self, space, collection_key, name=None, description=None,
-                         hidden=None, meta=None, properties=None):
-        """Change an existing collection: name, description, visibility, meta, properties.
+    def patch_collection(self, space, collection_key, body):
+        """Change an EXISTING collection: its name, description, meta and properties.
 
-        `collection_key` is the xKey (or id); the xKey does not
-        change. `description=""` clears it; `meta` is patched key by
-        key ({key: value}). `hidden=True` takes it out of the tag
-        pickers; the members stay filed. `properties`: as in
-        patch_type — missing ones are added, existing ones get their
-        changed name, description and slug, another kind moves the
-        property to that kind, and nothing is removed. A built-in
-        collection refuses (400 collection.registered). Returns
-        {"id", …, "addedProps"?, "patchedProps"?, "kindChanges"?}."""
+        The body of create_collection, for a collection that exists:
+        {"name"?, "description"?, "hidden"?, "meta"?, "properties"?};
+        only the keys you pass change. `collection_key` is the xKey
+        (or id); the xKey never changes. `description: ""` clears
+        it; `meta` is patched key by key; `hidden: True` takes it
+        out of the tag pickers, the members stay filed. `properties`
+        as in patch_type: missing ones are added, existing ones get
+        their changed name, description and slug, another kind
+        moves the property to that kind, nothing is removed. A
+        built-in collection refuses (400 collection.registered).
+        Returns {"collectionId", "xKey", "changed", "addedProps",
+        "patchedProps", "kindChanges"}."""
         cid = self._resolve_collection_or_raise(space, collection_key)
-        return self._patch_def(space, "collections", cid, {
-            "name": name, "description": description, "hidden": hidden, "meta": meta},
-            owner_key=collection_key, props=properties)
+        return self._patch_def(space, "collections", cid, collection_key, body)
 
     @_public('mutator')
     def create_collection(self, space, body):
         """Create a collection — a tag, what objects are FILED UNDER — with properties.
 
-        body: {"name", "xKey"?, "description"?, "hidden"?,
+        body: {"name", "xKey"?, "description"?, "hidden"?, "meta"?,
         "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?}]} (the
         property drafts of create_type). An empty collection is a
         plain tag; with properties it is a supertag: its members carry
@@ -3916,7 +3969,9 @@ class _Client:
         {"order": 1}}` in create_object / update_object) and lose them
         from view when unfiled (values stay). No layout, no body, no
         datasets — a collection has no behaviour; what an object IS is
-        its type. Idempotent by xKey; the same handle rules as
+        its type. Idempotent by xKey, and it never reshapes what
+        exists (a differing draft is named in `unchangedFields` /
+        `unchangedProps`; patch_collection applies it); the same handle rules as
         create_type (one namespace with types, builtins, the catalog's
         `wiki` / `contact` / …, record-root keys). Returns
         {"collectionId", "xKey", "created", "addedProps"}. File objects
@@ -3929,7 +3984,7 @@ class _Client:
         cid = row["id"] if row else None
         created = False
         if cid is None:
-            req = {k: body[k] for k in ("name", "description", "iconCid", "hidden")
+            req = {k: body[k] for k in ("name", "description", "iconCid", "hidden", "meta")
                    if k in body}
             req["xKey"] = xkey
             cid = self._call("post", f"/v1/spaces/{space}/collections", req)["collectionId"]
@@ -3942,10 +3997,11 @@ class _Client:
             cat["by_id"][cid] = row
             cat["by_xkey"].setdefault(xkey, cid)
             cat["crows"].append(row)
+        kept = {} if created else self._unchanged(space, cid, row, body, props)
         added = self._add_missing_props(space, cid, props)
         self._cat_invalidate(space)
         return {"collectionId": cid, "xKey": xkey, "created": created,
-                "addedProps": added}
+                "addedProps": added, **kept}
 
     def _row_root_keys(self, space):
         """The keys a record carries at its root beside the type groups:

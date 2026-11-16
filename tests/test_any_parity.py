@@ -339,8 +339,11 @@ def test_patch_type_and_patch_collection_send_only_what_changes():
         {"id": "bafyTAG", "name": "Reading list", "xKey": "reading_list"}]}}
     fx = wire(replies=cat)
     c = client(fx)
-    assert c.patch_type("s1", "task", name="Job") == {"id": "bafyTASK", "name": "Job"}
-    c.patch_collection("s1", "reading_list", description="", meta={"pinned": True})
+    assert c.patch_type("s1", "task", {"name": "Job"}) == {
+        "typeId": "bafyTASK", "xKey": "task", "changed": ["name"], "addedProps": {},
+        "patchedProps": [], "kindChanges": []}
+    r = c.patch_collection("s1", "reading_list", {"description": "", "meta": {"pinned": True}})
+    assert (r["collectionId"], r["xKey"]) == ("bafyTAG", "reading_list")
     writes = [x for x in fx.calls if x[0] == "PATCH"]
     assert writes == [("PATCH", "/v1/spaces/s1/types/bafyTASK", {"name": "Job"}),
                       ("PATCH", "/v1/spaces/s1/collections/bafyTAG",
@@ -349,12 +352,28 @@ def test_patch_type_and_patch_collection_send_only_what_changes():
     n = len([1 for v, p, _ in fx.calls if p.endswith("/types")])
     c.get_type("s1", "task")
     assert len([1 for v, p, _ in fx.calls if p.endswith("/types")]) == n + 1
+    for body, word in (({}, "nothing to change"), ({"title": "x"}, "unknown key")):
+        try:
+            c.patch_type("s1", "task", body)
+        except ValueError as e:
+            assert word in str(e)
+        else:
+            raise AssertionError(word)
+
+
+def test_patch_type_takes_the_icon_and_the_layout_of_create_type():
+    fx = wire(replies=_CAT)
+    c = client(fx)
+    r = c.patch_type("s1", "task", {"icon": {"glyph": "receipt"}, "layout": None})
+    assert r["changed"] == ["layout", "icon"]
+    (_, _, wire_body), = [x for x in fx.calls if x[0] == "PATCH"]
+    assert wire_body["layout"] is None and "receipt" in wire_body["iconCid"]
     try:
-        c.patch_type("s1", "task")
+        c.patch_type("s1", "page", {"icon": {"glyph": "receipt"}})
     except ValueError as e:
-        assert "nothing to change" in str(e)
+        assert "builtin or catalog" in str(e)
     else:
-        raise AssertionError("an empty patch must raise")
+        raise AssertionError("a builtin icon must raise")
 
 
 _TP = "/v1/spaces/s1/types/bafyTASK"
@@ -367,9 +386,9 @@ def test_patch_type_properties_add_and_patch_and_never_remove():
         {"id": "bafySTATUS", "name": "Status", "xKey": "status",
          "kind": "string", "xFormat": {"type": "text"}},
         {"id": "bafyPRIO", "name": "Priority", "xKey": "priority", "kind": "string"}]}})
-    r = client(fx).patch_type("s1", "task", properties=[
+    r = client(fx).patch_type("s1", "task", {"properties": [
         {"name": "State", "xKey": "status", "xFormat": {"type": "longtext"}},
-        {"name": "Due", "xFormat": {"type": "date"}}])
+        {"name": "Due", "xFormat": {"type": "date"}}]})
     assert r["patchedProps"] == ["status"] and list(r["addedProps"]) == ["due"]
     writes = [(v, p, b) for v, p, b in fx.calls if v != "GET"]
     assert writes[0] == ("PATCH", _TP + "/properties/bafySTATUS",
@@ -392,8 +411,8 @@ def _kind_rig(values):
 
 def test_patch_type_moves_a_property_whose_draft_has_another_kind():
     fx = _kind_rig(["3", "soon"])
-    r = client(fx).patch_type("s1", "task", properties=[
-        {"name": "Score", "xKey": "status", "kind": "number"}])
+    r = client(fx).patch_type("s1", "task", {"properties": [
+        {"name": "Score", "xKey": "status", "kind": "number"}]})
     (move,) = r["kindChanges"]
     assert move["kind"] == "number" and move["converted"] == 1
     assert move["failed"] == [{"objectId": "o1", "value": "soon"}]
@@ -406,8 +425,8 @@ def test_patch_type_moves_a_property_whose_draft_has_another_kind():
 def test_patch_type_checks_every_draft_before_any_write():
     fx = _kind_rig([])
     try:
-        client(fx).patch_type("s1", "task", name="Job", properties=[
-            {"name": "Status", "kind": "text"}])
+        client(fx).patch_type("s1", "task", {"name": "Job", "properties": [
+            {"name": "Status", "kind": "text"}]})
     except ValueError as e:
         assert "kind must be one of" in str(e)
     else:
@@ -464,6 +483,27 @@ def test_convert_value_guesses_nothing():
     assert cv(1700000000, "datetime") is no           # a bare number is not a date
     assert cv("a", "array") is no and cv(["a"], "array") == ["a"]
     assert cv(at, "object") is no and cv({"k": 1}, "object") == {"k": 1}
+
+
+def test_create_type_on_an_existing_type_reports_what_it_did_not_change():
+    # create_* makes, or adds what is missing; it never reshapes — and says so
+    fx = _kind_rig([])
+    r = client(fx).create_type("s1", {"name": "Job", "xKey": "task", "properties": [
+        {"name": "State", "xKey": "status"},                 # another name
+        {"name": "Status", "xKey": "status", "kind": "number"},   # another kind
+        {"name": "Due", "xFormat": {"type": "date"}}]})      # missing: added
+    assert r["created"] is False and list(r["addedProps"]) == ["due"]
+    assert r["unchangedFields"] == ["name"]
+    assert r["unchangedProps"] == ["status", "status"]
+    writes = [(v, p) for v, p, _ in fx.calls if v in ("PATCH", "DELETE")]
+    assert writes == []
+
+
+def test_create_type_with_a_matching_draft_reports_nothing():
+    fx = _kind_rig([])
+    r = client(fx).create_type("s1", {"name": "Task", "xKey": "task", "properties": [
+        {"name": "Status", "xKey": "status", "kind": "string"}]})
+    assert "unchangedFields" not in r and "unchangedProps" not in r
 
 
 def test_uninstall_bundle_is_unlisted_and_encodes_the_id():
