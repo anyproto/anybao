@@ -54,6 +54,14 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   delete_type / delete_collection are permanent too and remove the
   definition only — its objects stay, still marked with the dead
   type or collection: ask first, and say what happens to them.
+- **Who changed what.** c.list_changes(s, obj_id) is the object's
+  history, c.diff_versions shows one change, c.get_version reads an
+  old state. To undo an edit, read the old state and write it back.
+- **Sharing is the user's decision.** Invites, the public read key,
+  member roles, removing a member, leaving or un-sharing a space,
+  joining a space, a direct chat: say what the call will do and wait
+  for a yes. The same for the user's avatar, and for a chat message
+  the user typed (edit, delete). help(c.<name>) has each rule.
   Listings the user sees exclude the bin: add `{"any.collections":
   {"$nin": ["bin"]}}`.
 - **Folders** (the page tree, under Library in the UI; not an app) is
