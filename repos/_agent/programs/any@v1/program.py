@@ -2525,6 +2525,138 @@ class _Client:
             return [self._resolve_field_refs(space, x) for x in v]
         return v
 
+    # --- object history (any docs/03-api.md § Version history) ----------------
+    # Read-only and per object. A version is a ChangeId, the id every
+    # write returns as `changeId`. The history holds the synced values
+    # only, and no chat messages. `objects` is the dataset of the
+    # object's own row (its name and properties); `editor_blocks` is
+    # its body.
+    @staticmethod
+    def _qs(**params):
+        """`?a=1&b=2` from the set parameters (None / "" / False drop)."""
+        parts = []
+        for k, v in params.items():
+            if v is None or v == "" or v is False:
+                continue
+            if isinstance(v, (list, tuple)):
+                v = ",".join(str(x) for x in v)
+            parts.append(f"{k}={_urlquote('true' if v is True else v)}")
+        return ("?" + "&".join(parts)) if parts else ""
+
+    def _hist_dataset(self, space, object_id, dataset):
+        if dataset is None or dataset in ("objects", "editor_blocks"):
+            return dataset
+        return self._collection(space, object_id, dataset)
+
+    def _hist_rows(self, space, dataset, recs):
+        """History rows without the version noise; a row of `objects`
+        reads like a query_objects row."""
+        out = []
+        for r in recs or []:
+            if not isinstance(r, dict):
+                out.append(r)
+                continue
+            r = {k: v for k, v in r.items() if k not in ("_ver", "_addSeq", "_applySeq")}
+            out.append(self._normalize_record(space, r) if dataset == "objects" else r)
+        return out
+
+    @_public('getter', label="Reading the history of {object} in {space}")
+    def list_changes(self, space, object_id, limit=20, cursor=None, author=None,
+                     dataset=None, record_id=None, grouped=False):
+        """An object's changes, newest first → {"changes": [...], "cursor"}.
+
+        Each change: {version, author, timestamp, dataset, touched:
+        [{dataset, recordId, ops}], groupSize}. `version` names the
+        state right after the change (get_version, diff_versions);
+        `author` is an account id (get_identity names it); `timestamp`
+        is the author's clock in Unix seconds, for display only.
+        Dataset `objects` = the name and properties, `editor_blocks` =
+        the body, else a store key. Filters: `author`, `dataset`,
+        `record_id` (needs dataset). `grouped=True` folds one author's
+        consecutive changes into one entry (`groupSize` > 1). `limit`
+        is capped at 200; pass the returned `cursor` for the next
+        page, None = no more. Chat messages have no history."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history"
+                       + self._qs(limit=limit, cursor=cursor, author=author,
+                                  dataset=ds, recordId=record_id, coalesce=grouped))
+        return {"changes": r.get("changes") or [], "cursor": r.get("cursor") or None}
+
+    @_public('getter', label="Reading an old version of {object} in {space}")
+    def get_version(self, space, object_id, version, dataset=None):
+        """The object as it was at `version` → {"version", "datasets": [{dataset, records}]}.
+
+        `version` comes from list_changes. `objects` holds one row,
+        shaped like a query_objects row (name, properties);
+        `editor_blocks` holds the body as blocks, in `nav.pos` order
+        (`text`, `type`). `dataset` narrows to one. Only synced values
+        have a history. To restore an old state, read it here and
+        write it back with the normal calls: there is no revert call.
+        A view that is too large raises 413 history.view_too_large:
+        pass `dataset`, or use get_record_version."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history/"
+                       f"{version}" + self._qs(dataset=ds))
+        return {"version": r.get("version"),
+                "datasets": [{"dataset": d.get("dataset"),
+                              "records": self._hist_rows(space, d.get("dataset"),
+                                                         d.get("records"))}
+                             for d in r.get("datasets") or []]}
+
+    @_public('getter', label="Reading an old record of {object} in {space}")
+    def get_record_version(self, space, object_id, version, dataset, record_id):
+        """One record at `version` → {version, dataset, recordId, exists, deleted?, record?}.
+
+        The cheap read for one block or one store record: no whole
+        view is built. `exists: False` = the record was not there
+        yet; `deleted: True` = it was deleted by then."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history/"
+                       f"{version}/datasets/{ds}/records/{_urlquote(record_id)}")
+        if isinstance(r.get("record"), dict):
+            r["record"] = self._hist_rows(space, ds, [r["record"]])[0]
+        return r
+
+    @_public('getter', label="Comparing versions of {object} in {space}")
+    def diff_versions(self, space, object_id, version, base=None, dataset=None,
+                      record_ids=None):
+        """What changed → {"base", "version", "datasets": [{dataset, records}]}.
+
+        Without `base`: what the one change `version` did. With
+        `base`: everything between the two versions. Each record:
+        {id, kind: added / removed / changed / deleted, fields:
+        [{path, before?, after?}]}. In `objects` a path reads
+        [owner, property] with the keys writes take (["any", "name"],
+        ["task", "status"]); in `editor_blocks` it is a block field
+        (["text"]). `dataset` and `record_ids` (needs dataset) narrow
+        it."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history/diff"
+                       + self._qs(version=version, base=base, dataset=ds,
+                                  recordIds=record_ids))
+        for d in r.get("datasets") or []:
+            if d.get("dataset") != "objects":
+                continue
+            for rec in d.get("records") or []:
+                for fld in rec.get("fields") or []:
+                    fld["path"] = self._hist_path(space, fld.get("path"))
+        return r
+
+    def _hist_path(self, space, path):
+        """[ownerId, propId, …] of an `objects` diff → [ownerXKey, handle, …]."""
+        if not (isinstance(path, list) and path and isinstance(path[0], str)):
+            return path
+        row = self._catalog(space)["by_id"].get(path[0])
+        if not self._is_user_def(row):
+            return path
+        out = [row.get("xKey") or path[0], *path[1:]]
+        if len(path) > 1:
+            for p in self._type_props(space, path[0]):
+                if p.get("id") == path[1]:
+                    out[1] = p.get("handle") or path[1]
+                    break
+        return out
+
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
     # The routes name the collection: the body `editor_blocks` an
     # object holds while its ONE type declares an editor part

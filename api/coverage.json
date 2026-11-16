@@ -373,22 +373,22 @@
     "GET /spaces/{spaceId}/objects/{objectId}/history": {
       "excluded": null,
       "fingerprint": "sha256:d6a870689deade06",
-      "helper": null
+      "helper": "helper.list_changes"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/diff": {
       "excluded": null,
       "fingerprint": "sha256:0aad0e93a4d3bba0",
-      "helper": null
+      "helper": "helper.diff_versions"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/{version}": {
       "excluded": null,
       "fingerprint": "sha256:f6555f204ced9efb",
-      "helper": null
+      "helper": "helper.get_version"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/{version}/datasets/{dataset}/records/{recordId}": {
       "excluded": null,
       "fingerprint": "sha256:a6de659a874ff7d1",
-      "helper": null
+      "helper": "helper.get_record_version"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/links": {
       "excluded": null,
