@@ -377,6 +377,16 @@ def test_query_spaces_reads_every_status_and_trims_the_key_material():
                         {"filter": {"localStatus": "one_to_one_pending"}})
 
 
+def test_list_spaces_by_status_reads_the_pending_rows_and_keeps_the_name_cache():
+    fx = wire(replies={"/v1/spaces": {"spaces": [
+        {"id": SID, "name": "x", "status": "invite_pending", "push": {"k": 1}}]}})
+    c = client(fx)
+    assert c.list_spaces(status="invite_pending") == [
+        {"id": SID, "name": "x", "status": "invite_pending"}]
+    assert fx.urls == ["/v1/spaces?status=invite_pending"]
+    assert c._spaces_cache is None          # a pending row is not a name to resolve
+
+
 def test_patch_space_sends_only_what_changes_and_drops_the_name_cache():
     fx = wire(replies={"/v1/spaces": {"spaces": [{"id": SID, "name": "old"}]}})
     c = client(fx)

@@ -2457,7 +2457,7 @@ class _Client:
     def cancel_join(self, space_id):
         """Withdraw this account's pending request to join a space; returns {}.
 
-        `space_id` is a row with status "joining" (query_spaces).
+        `space_id` is a row of list_spaces(status="joining").
         409 space.join_not_pending when the owner already answered:
         read the row again."""
         r = self._call("post", f"/v1/spaces/{space_id}/acl/cancel-join")
@@ -2468,8 +2468,8 @@ class _Client:
     def answer_space_invite(self, space_id, accept):
         """Accept or decline a space that another account added the user to; ask the user first.
 
-        `space_id` is a row with localStatus "invite_pending"
-        (query_spaces). `accept=True` loads the space → its row (the
+        `space_id` is a row of list_spaces(status="invite_pending").
+        `accept=True` loads the space → its row (the
         load can continue in the background). `accept=False` hides
         the invite on every device → {}; a later accept still
         works."""
@@ -3177,7 +3177,7 @@ class _Client:
 
     # --- spaces & ui context ---------------------------------------------------
     @_public('getter', scoped=False, label="Reading the list of spaces")
-    def list_spaces(self, raw=False):
+    def list_spaces(self, raw=False, status=None):
         """Every space on the account → trimmed space rows.
 
         Rows: `{id, name, description?, status, ownRole, spaceType, createdAt}`
@@ -3185,7 +3185,15 @@ class _Client:
 
         Sync internals (push key material, settings, index pointers) are
         TRIMMED — `raw=True` returns the wire rows. Operate on
-        `status == "active"` unless asked otherwise."""
+        `status == "active"` unless asked otherwise. Without `status`
+        only the active spaces list. `status="all"` lists every row;
+        one value lists that status: "invite_pending" (another account
+        added the user: answer_space_invite), "one_to_one_pending" (a
+        direct chat request: answer_direct_space), "joining" (the
+        user's own request waits: cancel_join), "deleted"."""
+        if status:
+            rows = self._call("get", "/v1/spaces" + self._qs(status=status)).get("spaces", [])
+            return rows if raw else [_trim_space_row(r) for r in rows]
         rows = self._call("get", "/v1/spaces").get("spaces", [])
         self._spaces_cache = rows       # doubles as the name catalog (§8)
         return rows if raw else [_trim_space_row(r) for r in rows]
@@ -3263,15 +3271,16 @@ class _Client:
 
     @_public('getter', scoped=False, label="Reading the list of spaces")
     def query_spaces(self, **opts):
-        """The account's space rows, filtered and sorted → rows; every status included.
+        """The account's RAW space rows, filtered and sorted → rows; every status included.
 
         `opts`: filter / sort / limit / offset over the row fields:
         {id, name, spaceType, localStatus, remoteStatus, ownRole,
-        createdAt}. Unlike list_spaces (active only) this reads every
-        row: a deleted space, and a direct chat that waits for an
-        answer — filter={"localStatus": "one_to_one_pending"}. Direct
-        chats alone: filter={"spaceType": "any.onetoone"}. The key
-        material of a row is trimmed."""
+        createdAt}. For a filter or a sort that list_spaces cannot
+        do: direct chats alone are filter={"spaceType":
+        "any.onetoone"}. The rows carry the stored status pair, not
+        the `status` of list_spaces: for pending rows use
+        list_spaces(status=…). The key material of a row is
+        trimmed."""
         body = {k: v for k, v in opts.items() if v is not None}
         recs = self._call("post", "/v1/spaces/query", body).get("records", [])
         return [{k: v for k, v in r.items()
@@ -3284,9 +3293,9 @@ class _Client:
 
         EVERY member sees the change: ask the user first in a shared
         space. `description=""` clears it. The owner or a writer
-        can; a reader gets 403. A direct (1-1) space has no name of
-        its own. The user's private settings of a space are
-        set_space_settings."""
+        can; a reader gets 403. get_space shows the change a moment
+        later, not at once. The user's private settings of a space
+        are set_space_settings."""
         body = {k: v for k, v in (("name", name), ("description", description),
                                   ("iconCid", icon_cid)) if v is not None}
         if not body:
@@ -3316,7 +3325,8 @@ class _Client:
         """Record a direct-chat request learned out of band → {} (wire: 204).
 
         Unlisted: the server's inbox does this by itself. A pending
-        row appears (query_spaces), nothing is loaded. `display_hint`:
+        row appears (list_spaces(status="one_to_one_pending")),
+        nothing is loaded. `display_hint`:
         {name?, description?, iconCid?} for the UI."""
         body = {"peerIdentity": identity}
         if display_hint:
@@ -3327,8 +3337,8 @@ class _Client:
     def answer_direct_space(self, space_id, accept):
         """Accept or decline a pending direct (1-1) space; ask the user first.
 
-        `space_id` is the id of a row that query_spaces shows with
-        localStatus "one_to_one_pending". `accept=True` loads the
+        `space_id` is the id of a row from
+        list_spaces(status="one_to_one_pending"). `accept=True` loads the
         space on this device → its space row. `accept=False`
         declines on every device of the account → {}; the request
         does not come back, and only open_direct_space reverses
