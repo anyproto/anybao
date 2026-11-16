@@ -1,7 +1,7 @@
 {
   "endpoints": {
     "DELETE /account/icon": {
-      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "excluded": "account and identity avatars — pending a helper",
       "fingerprint": "sha256:610b869e0d43824f",
       "helper": null
     },
@@ -31,7 +31,7 @@
       "helper": null
     },
     "DELETE /spaces/{spaceId}/bundles/{bundleId}": {
-      "excluded": "bundle uninstall — pending a helper; no agent or harness use case so far",
+      "excluded": "bundle uninstall — pending a helper",
       "fingerprint": "sha256:7d3fa73f70920280",
       "helper": null
     },
@@ -121,12 +121,12 @@
       "helper": null
     },
     "GET /account/icon": {
-      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "excluded": "account and identity avatars — pending a helper",
       "fingerprint": "sha256:921207f0e0f7c4ed",
       "helper": null
     },
     "GET /account/limits": {
-      "excluded": "account storage pool + shared-spaces limit (client settings UI); no agent use case so far",
+      "excluded": "account storage pool + shared-spaces limit — pending a helper",
       "fingerprint": "sha256:77cb3ee4a091d793",
       "helper": null
     },
@@ -196,12 +196,12 @@
       "helper": null
     },
     "GET /identities/{identity}/icon": {
-      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "excluded": "account and identity avatars — pending a helper",
       "fingerprint": "sha256:ca60fc93a03a39f9",
       "helper": null
     },
     "GET /local-discovery": {
-      "excluded": "device network setting (client settings UI / harness); no agent use case",
+      "excluded": "device network setting — pending a helper",
       "fingerprint": "sha256:5225ad17448fe6e3",
       "helper": null
     },
@@ -401,7 +401,7 @@
       "helper": null
     },
     "GET /spaces/{spaceId}/read-state/unread": {
-      "excluded": "client read state (unread badges, UI); no agent use case so far",
+      "excluded": "unread counters of a space — pending a helper",
       "fingerprint": "sha256:49575bd9879d8eb8",
       "helper": null
     },
@@ -951,7 +951,7 @@
       "helper": "helper.upsert_records"
     },
     "PUT /account/icon": {
-      "excluded": "client profile UI (avatar image bytes); no agent use case so far",
+      "excluded": "account and identity avatars — pending a helper",
       "fingerprint": "sha256:3be6f1c8306388b3",
       "helper": null
     },
@@ -966,7 +966,7 @@
       "helper": "anyclient.register_device (ADR-015 election, harness lifecycle)"
     },
     "PUT /local-discovery": {
-      "excluded": "device network setting (client settings UI / harness); no agent use case",
+      "excluded": "device network setting — pending a helper",
       "fingerprint": "sha256:32a885d2a1a67c12",
       "helper": null
     },

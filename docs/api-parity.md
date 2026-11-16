@@ -64,13 +64,13 @@ re-fingerprinted. `anyrt drift` is clean.
 definition only: the objects keep the dead id in `any.type` /
 `any.collections` and their values under it.
 
-**Excluded (14)**
+**Excluded, each pending a helper (14)** — none is excluded for
+good; the guest surface is to cover every one:
 
 - account avatar `GET/PUT/DELETE /account/icon` and `GET
   /identities/:i/icon`, `GET /account/limits`, `GET/PUT
-  /local-discovery`, `GET …/read-state/unread` — client settings and
-  badges, no agent use case so far;
-- `DELETE …/bundles/:b` (uninstall) — pending a helper;
+  /local-discovery`, `GET …/read-state/unread`;
+- `DELETE …/bundles/:b` (uninstall);
 - declared dataset indexes `POST …/datasets/:d/indexes`, `DELETE
   …/indexes/:i` — program plumbing, pending a `_`-private helper
   beside `create_dataset`;
