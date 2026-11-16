@@ -268,7 +268,7 @@
     "GET /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
       "fingerprint": "sha256:1c897e16be9c24c3",
-      "helper": null
+      "helper": "helper.get_collection"
     },
     "GET /spaces/{spaceId}/collections/{collectionId}/properties": {
       "excluded": null,
@@ -338,7 +338,7 @@
     "GET /spaces/{spaceId}/members/me": {
       "excluded": null,
       "fingerprint": "sha256:10095b4faf14c1af",
-      "helper": null
+      "helper": "helper.get_member"
     },
     "GET /spaces/{spaceId}/members/requests": {
       "excluded": null,
@@ -353,12 +353,12 @@
     "GET /spaces/{spaceId}/members/{identity}": {
       "excluded": null,
       "fingerprint": "sha256:854949ce6e93a78f",
-      "helper": null
+      "helper": "helper.get_member"
     },
     "GET /spaces/{spaceId}/objects/{objectId}": {
       "excluded": null,
       "fingerprint": "sha256:9e6ded962f7e9e32",
-      "helper": null
+      "helper": "helper.get_object"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/backlinks": {
       "excluded": null,
@@ -428,7 +428,7 @@
     "GET /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
       "fingerprint": "sha256:b1284dd9ba5c7dcb",
-      "helper": null
+      "helper": "helper.get_type"
     },
     "GET /spaces/{spaceId}/types/{typeId}/datasets": {
       "excluded": null,

@@ -82,7 +82,7 @@ goes from reads to the writes that cannot be undone.
 | # | Row | Routes | Kind |
 |---|---|---|---|
 | 1 ✓ | Object history | `GET …/history`, `/history/:v`, `/history/:v/datasets/:d/records/:r`, `/history/diff` | read |
-| 2 | Single reads | `GET …/objects/:o`, `…/types/:t`, `…/collections/:c`, `…/members/me`, `…/members/:i` | read |
+| 2 ✓ | Single reads | `GET …/objects/:o`, `…/types/:t`, `…/collections/:c`, `…/members/me`, `…/members/:i` | read |
 | 3 | Account | `GET /account/limits`, `GET …/read-state/unread`, `GET /identities/:i/icon`, `GET/PUT/DELETE /account/icon`, `GET/PUT /local-discovery`, `PATCH …/settings` | read + write |
 | 4 | Chat messages | edit, delete, react; `…/read`, `…/reactions-read`, `…/chat/read-all` | write |
 | 5 | Editor blocks | `POST …/blocks`, `PATCH` / `DELETE …/blocks/:b` | write |

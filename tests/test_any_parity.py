@@ -66,4 +66,51 @@ def test_diff_versions_names_the_property_paths():
     assert fx.urls[0] == OBJ + "/history/diff?version=v2&base=v1"
 
 
-NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions")
+# --- single reads --------------------------------------------------------------
+
+def test_get_object_reads_one_row_like_a_query_row():
+    fx = wire(replies={**_CAT, "/objects/o1": {"objectId": "o1", "record": {
+        "id": "o1", "_ver": {"id": "!"}, "any": {"name": "Ship", "type": "bafyTASK"},
+        "bafyTASK": {"bafySTATUS": "open"}}}})
+    c = client(fx)
+    r = c.get_object("s1", "o1")
+    assert r == {"id": "o1", "any": {"name": "Ship", "type": "task"},
+                 "task": {"status": "open"}}
+    assert ("GET", OBJ, None) in fx.calls
+    assert c.get_object("s1", "o1", normalize=False)["_ver"] == {"id": "!"}
+
+
+def test_get_object_is_none_for_a_missing_object():
+    fx = wire(status=404, replies={"": {"error": {"code": "object.not_found"}}})
+    assert client(fx).get_object("s1", "gone") is None
+
+
+def test_get_type_and_get_collection_read_one_definition():
+    cat = {**_CAT, "/collections": {"collections": [
+        {"id": "bafyTAG", "name": "Reading list", "xKey": "reading_list"}]},
+        "/types/bafyTASK": {"id": "bafyTASK", "xKey": "task", "name": "Task"},
+        "/collections/bafyTAG": {"id": "bafyTAG", "xKey": "reading_list"}}
+    fx = wire(replies=cat)
+    c = client(fx)
+    assert c.get_type("s1", "task")["name"] == "Task"
+    assert c.get_collection("s1", "reading_list")["xKey"] == "reading_list"
+    gets = [p for v, p, _ in fx.calls]
+    assert "/v1/spaces/s1/types/bafyTASK" in gets
+    assert "/v1/spaces/s1/collections/bafyTAG" in gets
+
+
+def test_get_member_reads_me_or_one_identity():
+    fx = wire(replies={"/members/me": {"identity": "A1", "permission": "owner",
+                                       "status": "active"},
+                       "/members/A2": {"identity": "A2", "name": "Bo",
+                                       "permission": "reader", "status": "active"}})
+    c = client(fx)
+    assert c.get_member("s1")["permission"] == "owner"
+    assert c.get_member("s1", "A2") == {"identity": "A2", "name": "Bo",
+                                        "permission": "reader", "status": "active"}
+    assert [p for _, p, _ in fx.calls] == ["/v1/spaces/s1/members/me",
+                                           "/v1/spaces/s1/members/A2"]
+
+
+NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
+         "get_object", "get_type", "get_collection", "get_member")

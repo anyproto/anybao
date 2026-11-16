@@ -2015,6 +2015,30 @@ class _Client:
             by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
         return list(by_scope.values())
 
+    @_public('getter', label="Reading {object} in {space}")
+    def get_object(self, space, object_id, normalize=True):
+        """One object by id → its row, shaped like a query_objects row; None if it is gone.
+
+        One call, with no filter to build: `uri` first, then `any`
+        (name, type, collections), the property groups by xKey, and
+        `createdAt` / `modifiedAt`. The body is `get_markdown`.
+        `normalize=False` returns the raw wire record."""
+        try:
+            r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}")
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        rec = r.get("record")
+        if not isinstance(rec, dict):
+            return None
+        if not normalize:
+            return rec
+        self._refresh_catalog_for(space, [rec])
+        out = [self._normalize_record(space, rec)]
+        self._hydrate_links(space, out)   # ADR-022 §3
+        return self._linked(space, out[0], "id")
+
     @_public('getter', listed=False)
     def undefined_objects(self, space):
         """The ids of the objects whose type, or one of whose
@@ -2326,6 +2350,25 @@ class _Client:
             rows.sort(key=lambda m: m.get("status") != "active")
             self._members_cache[space] = rows
         return list(rows)
+
+    @_public('getter')
+    def get_member(self, space, identity=None):
+        """One member of the space → {identity, name, permission, status}; None if not a member.
+
+        Without `identity`: this account, so `permission` (owner /
+        writer / reader) says what the agent may do in the space
+        before it tries a write. Read fresh, not from the run's
+        roster cache."""
+        try:
+            r = self._call("get", f"/v1/spaces/{space}/members/"
+                           + (_urlquote(identity) if identity else "me"))
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        if not r.get("identity"):
+            return None
+        return {k: r.get(k) for k in ("identity", "name", "permission", "status")}
 
     # the account-global identities directory: every account this one
     # has met in a shared space, with the spaces shared (the server's
@@ -2886,6 +2929,26 @@ class _Client:
         return [c for c in self._list_collections_raw(space)
                 if c.get("id") not in _SYNTHETIC_TYPES
                 and c.get("id") not in _BUILTIN_COLLECTION_IDS]
+
+    @_public('getter', label="Reading the type {type_key} in {space}")
+    def get_type(self, space, type_key):
+        """One type, read fresh → {id, xKey, name, description?, icon?, layout?, hidden?, builtIn?}.
+
+        `type_key` is the xKey or the id. The cheap read
+        when one type matters and its row may have changed in this
+        run (a rename, a new icon); `list_properties` reads its
+        properties."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._call("get", f"/v1/spaces/{space}/types/{tid}")
+
+    @_public('getter', label="Reading the collection {collection_key} in {space}")
+    def get_collection(self, space, collection_key):
+        """One collection, read fresh → {id, xKey, name, description?, icon?, meta?, hidden?}.
+
+        `collection_key` is the xKey or the id; the built-ins
+        `miniapp` and `bin` resolve too."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
+        return self._call("get", f"/v1/spaces/{space}/collections/{cid}")
 
     @_public('getter', label="Reading the properties of {type_key} in {space}")
     def list_properties(self, space, type_key):
