@@ -344,6 +344,12 @@ _RESERVED_GROUPS = {"any", "_ver"}
 # slice is unioned in, this set is the floor.
 _ROW_ROOT_KEYS = {"id", "author", "createdAt", "modifiedAt", "modifiedBy",
                   "spaceId"}
+# Groups the server stamps at the record root that no definition owns:
+# `chat` holds a chat's unread counters (unreadCount, unreadMentions,
+# …). Read-only and catalog-less (`GET …/types/chat/properties` is
+# 404), so unlike `_RESERVED_GROUPS` they take no writes and no
+# filter resolution — a normalized read passes them through verbatim.
+_SERVER_GROUPS = {"chat"}
 
 # Synthetic catalog rows: the meta rows GET /types (and, for
 # `collection`, GET /collections) list in every space. No object has
@@ -579,9 +585,37 @@ def _public(kind, scoped=True, listed=True, label=None):
     return mark
 
 
+def _undefined_side(path, unwind):
+    """One $facet side of _UNDEFINED_PIPELINE: the ids under `path`
+    (`any.type`, or each of `any.collections`) that no definition row
+    of the space carries, with their object counts. A definition is a
+    row of the same index, so the lookup joins the index on itself;
+    the built-ins (`page`, `bin`, the markers) are not content ids."""
+    return ([{"$unwind": "$" + path}] if unwind else []) + [
+        {"$group": {"_id": "$" + path, "objects": {"$count": {}}}},
+        {"$match": {"id": {"$regex": "^bafy"}}},
+        {"$lookup": {"localField": "id", "foreignField": "id", "as": "def"}},
+        {"$match": {"def": {"$size": 0}}},
+        {"$project": {"id": 1, "objects": 1}}]
+
+
+# the types and the collections that objects of a space name and the
+# space does not define: deleted, or not synced yet
+_UNDEFINED_PIPELINE = [{"$facet": {
+    "types": _undefined_side("any.type", False),
+    "collections": _undefined_side("any.collections", True)}}]
+_UNDEFINED_NOTE = (
+    "note: {n} of these rows have a type or a collection that this space "
+    "does not define (deleted, or not synced yet), so its values show "
+    "under a raw id. Ask the user if such objects should be deleted "
+    "for good. If yes: `for o in c.undefined_objects(s): "
+    "c.delete_object(s, o)`")
+
+
 class _Client:
     def __init__(self, base_url, bao_space=None):
         self._base = base_url.rstrip("/")
+        self._undefined_noted = set()   # spaces whose note is out (one per run)
         self._bao_space = bao_space   # the memory home (ADR-017 §0), runtime-wired
         # Per-space type/property catalog, memoized for the client's lifetime
         # (one cell). Resolves xKey<->id both ways so the agent reads/writes
@@ -1504,6 +1538,56 @@ class _Client:
                 out.append(e)
         return out
 
+    def _unknown_groups(self, space, recs):
+        """The root group keys of `recs` that no definition in the
+        cached catalog owns. The row-root instants (`createdAt`,
+        `modifiedAt` — dicts, ADR-019) are the record's own fields,
+        and the server's own groups (`chat`) have no definition:
+        neither is a group of a type or a collection."""
+        by_id = self._catalog(space)["by_id"]
+        return {k for r in recs if isinstance(r, dict)
+                for k, v in r.items()
+                if isinstance(v, dict) and k not in by_id
+                and k not in _RESERVED_GROUPS
+                and k not in _ROW_ROOT_KEYS
+                and k not in _SERVER_GROUPS}
+
+    def _refresh_catalog_for(self, space, recs):
+        """ONE catalog reload for a page of rows that carries a group
+        the cached catalog does not know (a definition made out of
+        band). A group that is still unknown after it belongs to a
+        definition that is deleted, or not synced yet: a deleted
+        definition leaves its id and its values on its objects, so
+        such rows are a normal state, and they pass with the raw id.
+        The bound is per page, not per row (BOB-202)."""
+        if not self._unknown_groups(space, recs):
+            return
+        self._cat_invalidate(space)
+        if space in self._undefined_noted:
+            return
+        # after the reload: the rows whose OWN type or collections are
+        # still undefined (a group a row kept from a collection it
+        # left is not one of these). One line per space and run, and
+        # no id in it: the ids are long and say nothing to the model.
+        by_id = self._catalog(space)["by_id"]
+        n = 0
+        for r in recs:
+            a = r.get("any") if isinstance(r, dict) else None
+            if not isinstance(a, dict):
+                continue
+            owners = [a.get("type"), *(a.get("collections") or [])]
+            if any(isinstance(o, str) and o.startswith("bafy")
+                   and o not in by_id for o in owners):
+                n += 1
+        if not n:
+            return
+        self._undefined_noted.add(space)
+        try:
+            emit = print   # the cell's printer, bound for modules (ADR-003 §3)
+        except NameError:  # an older kernel has none
+            return
+        emit(_UNDEFINED_NOTE.format(n=n))
+
     def _normalize_record(self, space, rec):
         """Reverse-map a raw wire record to the readable xKey-nested shape:
         record[ownerId][propId] -> out[ownerXKey][propXKey] for every
@@ -1516,14 +1600,6 @@ class _Client:
         if not isinstance(rec, dict):
             return rec
         cat = self._catalog(space)
-        # Refresh once if a group key references a type id we don't know yet
-        # (catalog stale after an out-of-band create).
-        for k, v in rec.items():
-            if (isinstance(v, dict) and k not in cat["by_id"]
-                    and k not in _RESERVED_GROUPS):
-                self._cat_invalidate(space)
-                cat = self._catalog(space)
-                break
         out = {}
         for k, v in rec.items():
             if k == "_ver":
@@ -1936,6 +2012,33 @@ class _Client:
             by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
         return list(by_scope.values())
 
+    @_public('getter', listed=False)
+    def undefined_objects(self, space):
+        """The ids of the objects whose type, or one of whose
+        collections, the space does not define: the definition is
+        deleted, or not synced yet (the client cannot tell which). A
+        deleted definition leaves its id and its values on its
+        objects. Unlisted: the note of a read names it (ADR-010 §8).
+        Returns [objectId]."""
+        r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
+                       {"pipeline": _UNDEFINED_PIPELINE})
+        rec = ((r or {}).get("records") or [{}])[0]
+        conds = [{path: {"$in": ids}} for path, ids in (
+            ("any.type", [x["id"] for x in rec.get("types") or []]),
+            ("any.collections", [x["id"] for x in rec.get("collections") or []]))
+            if ids]
+        if not conds:
+            return []
+        flt = conds[0] if len(conds) == 1 else {"$or": conds}
+        out, page = [], 500
+        while True:
+            recs = self._call("post", f"/v1/spaces/{space}/objects/query",
+                              {"filter": flt, "limit": page,
+                               "offset": len(out)}).get("records", [])
+            out.extend(x["id"] for x in recs)
+            if len(recs) < page:
+                return out
+
     @_public('mutator', label="Deleting {object} in {space}")
     def delete_object(self, space, object_id):
         """Delete an object permanently; returns {} (wire: 204).
@@ -2004,6 +2107,7 @@ class _Client:
         # surface can name or act on it (ADR-029 §4), so an
         # unfiltered query omits it like list_types omits the meta
         # rows — an `o["any"]` over every row never hits it.
+        self._refresh_catalog_for(space, recs)
         out = [self._normalize_record(space, r) for r in recs
                if "spaceIndex" not in r]
         self._hydrate_links(space, out)   # ADR-022 §3

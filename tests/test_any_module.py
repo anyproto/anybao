@@ -948,6 +948,101 @@ def test_normalize_strips_ver_noise_raw_keeps_it():
     assert raw["_ver"] == {"id": "!!$5"}
 
 
+def test_row_root_instants_do_not_reload_the_catalog():
+    # BOB-202: every row carries createdAt / modifiedAt as instants
+    # (dicts) at its root — the record's own fields, not unknown type
+    # groups. A read of N rows loads the catalog once.
+    at = {"$date": "2026-10-18T01:29:53.267Z"}
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": f"o{i}", "createdAt": at, "modifiedAt": at,
+         "any": {"name": "Ship", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}} for i in range(5)]}})
+    rows = client(fx).query_objects("s1", filter={"any.type": "task"})
+    assert [r["task"] for r in rows] == [{"status": "open"}] * 5
+    assert rows[0]["createdAt"] == at and rows[0]["modifiedAt"] == at
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 1
+    assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
+
+
+def test_rows_of_a_deleted_definition_reload_the_catalog_once(capsys):
+    # BOB-202: a deleted type leaves its id and its values on its
+    # objects, and no reload brings the definition back. A page of N
+    # such rows reloads the catalog once; the rows pass with the raw id.
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": f"o{i}", "any": {"name": "Old", "type": "bafyGONE"},
+         "bafyGONE": {"bafyP": "red"}} for i in range(5)] + [
+        {"id": "o9", "any": {"name": "Ship", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}}]}})
+    c = client(fx)
+    rows = c.query_objects("s1")
+    assert [r["bafyGONE"] for r in rows[:5]] == [{"bafyP": "red"}] * 5
+    assert rows[0]["any"]["type"] == "bafyGONE"
+    assert rows[5]["task"] == {"status": "open"}
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 2      # the load + ONE reload
+    assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
+    c.query_objects("s1")                              # the next page: one more
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 3
+    # one note for the space and the run: the count, the question for
+    # the user and the call that finds the objects — and no id
+    note = capsys.readouterr().out
+    assert note.count("note: ") == 1
+    assert note.startswith("note: 5 of these rows have a type or a collection")
+    assert "c.undefined_objects(s)" in note and "bafy" not in note
+
+
+def test_a_group_a_row_kept_from_a_collection_it_left_has_no_note(capsys):
+    # the group is unknown, the row's own type and collections are not:
+    # one reload, nothing to ask the user
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": "o1", "any": {"name": "Ship", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}, "bafyLEFT": {"bafyP": 1}}]}})
+    client(fx).query_objects("s1")
+    assert capsys.readouterr().out == ""
+
+
+def test_undefined_objects_asks_the_server_for_the_ids():
+    # unlisted (ADR-010 §8): the ids the note keeps out of the context
+    def reply(v, p, b):
+        if p.endswith("/objects/aggregate"):
+            return {"records": [{"types": [{"id": "bafyGONE", "objects": 2}],
+                                 "collections": [{"id": "bafyTAG", "objects": 1}]}]}
+        return {"records": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}
+    fx = wire()
+    inner = fx.__call__
+
+    def routed(name, payload):
+        out = inner(name, payload)
+        v, p, b = fx.calls[-1]
+        out["body"] = json.dumps(reply(v, p, b))
+        return out
+    routed.calls, routed.urls = fx.calls, fx.urls
+    c = client(routed)
+    assert c.undefined_objects("s1") == ["o1", "o2", "o3"]
+    (_, agg, ab), (_, qry, qb) = fx.calls
+    assert agg.endswith("/objects/aggregate") and "$facet" in ab["pipeline"][0]
+    assert qry.endswith("/objects/query")
+    assert qb["filter"] == {"$or": [{"any.type": {"$in": ["bafyGONE"]}},
+                                    {"any.collections": {"$in": ["bafyTAG"]}}]}
+
+
+def test_the_chat_group_does_not_reload_the_catalog():
+    # BOB-202: the server stamps a chat's unread counters under a root
+    # `chat` group that no definition owns — verbatim, no reload.
+    chat = {"unreadCount": 2, "unreadMentions": 0}
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": f"o{i}", "chat": chat,
+         "any": {"name": "General", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}} for i in range(5)]}})
+    rows = client(fx).query_objects("s1", filter={"any.type": "task"})
+    assert [r["chat"] for r in rows] == [chat] * 5
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 1
+    assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
+
+
 def test_catalog_refreshes_once_on_unknown_type_miss():
     # First /types reply lacks `task`; resolution refreshes the catalog and
     # the wire (stateful) then returns it. Proves refresh-on-miss.
