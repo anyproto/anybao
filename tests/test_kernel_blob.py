@@ -102,6 +102,16 @@ def test_from_bytes_and_tempfile_cross_as_blob_put():
     res = app._run_cell("import tempfile\nw = tempfile.TemporaryFile()\n"
                         "w.write(b'x')\nw.blob\n", "c2b")
     assert res["ok"] is False and "close()" in res["error"]["message"]
+    assert "AFTER the `with` block" in res["error"]["message"]
+    # a binary writer takes a str as utf-8, like blob.from_bytes
+    app._run_cell("with tempfile.TemporaryFile(mime='text/plain') as w:\n"
+                  "    w.write('héllo')\n    w.writelines(['a', b'b'])\n"
+                  "s = w.blob\n", "c2c")
+    assert base64.b64decode(seen[-1][1]["data"]) == "hélloab".encode()
+    # a write after close raises: those bytes would never reach the Blob
+    res = app._run_cell("w = tempfile.TemporaryFile()\nw.write(b'x')\nw.close()\n"
+                        "w.write(b'lost')\n", "c2d")
+    assert res["ok"] is False and "closed" in res["error"]["message"]
     res = app._run_cell("import tempfile\ntempfile.mkdtemp()\n", "c3")
     assert res["ok"] is False and "ADR-024" in res["error"]["message"]
     del ns

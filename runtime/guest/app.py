@@ -331,7 +331,10 @@ class _BlobWriter:
     """`tempfile.TemporaryFile()` in the guest (ADR-026 §4): a file-like
     object to write into; `close()` (or leaving the `with`) hands the
     bytes to the host and sets `.blob` — reading `.blob` while the
-    writer is open raises. Text mode encodes utf-8."""
+    writer is open raises (finishing it there would truncate a zipfile
+    still open over it), and so does a write after close (those bytes
+    would never reach the Blob). Text mode encodes utf-8; a binary
+    writer takes a str the same way, as `blob.from_bytes` does."""
 
     def __init__(self, mime="application/octet-stream", text=False):
         self.mime = mime
@@ -345,15 +348,23 @@ class _BlobWriter:
         # read before close() used to give None, and the failure only
         # surfaced later as from_bytes' "got NoneType" (BOB-160 bench)
         if not self.closed:
-            raise ValueError("the writer is still open: .blob exists after close() "
-                             "(or after leaving the `with` block)")
+            raise ValueError("the writer is still open: .blob exists after close() — "
+                             "read it on a line AFTER the `with` block, not inside it. "
+                             "Small data needs no writer: blob.from_bytes(data, mime)")
         return self._blob
 
     def write(self, data):
+        if self.closed:
+            raise ValueError("the writer is closed and its .blob is made: these bytes "
+                             "would be lost. Write before close(), or open a new "
+                             "tempfile.TemporaryFile()")
+        if not self._text and isinstance(data, str):
+            data = data.encode("utf-8")
         return self._buf.write(data)
 
     def writelines(self, lines):
-        self._buf.writelines(lines)
+        for line in lines:
+            self.write(line)
 
     def read(self, n=-1):
         return self._buf.read(n)
