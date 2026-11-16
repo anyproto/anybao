@@ -357,6 +357,103 @@ def test_patch_type_and_patch_collection_send_only_what_changes():
         raise AssertionError("an empty patch must raise")
 
 
+_TP = "/v1/spaces/s1/types/bafyTASK"
+
+
+def test_patch_type_properties_add_and_patch_and_never_remove():
+    # status exists (patched), priority exists and is not in the list (kept),
+    # due is missing (added)
+    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"propId": "pNEW", "properties": [
+        {"id": "bafySTATUS", "name": "Status", "xKey": "status",
+         "kind": "string", "xFormat": {"type": "text"}},
+        {"id": "bafyPRIO", "name": "Priority", "xKey": "priority", "kind": "string"}]}})
+    r = client(fx).patch_type("s1", "task", properties=[
+        {"name": "State", "xKey": "status", "xFormat": {"type": "longtext"}},
+        {"name": "Due", "xFormat": {"type": "date"}}])
+    assert r["patchedProps"] == ["status"] and list(r["addedProps"]) == ["due"]
+    writes = [(v, p, b) for v, p, b in fx.calls if v != "GET"]
+    assert writes[0] == ("PATCH", _TP + "/properties/bafySTATUS",
+                         {"set": {"name": "State", "xFormat.type": "longtext"}})
+    assert writes[1][:2] == ("POST", _TP + "/properties")
+    assert (writes[1][2]["xKey"], writes[1][2]["kind"]) == ("due", "datetime")
+    assert not [w for w in writes if w[0] == "DELETE"] and len(writes) == 2
+
+
+def test_patch_type_refuses_another_kind_before_any_write():
+    fx = wire(replies={**_CAT, "/types/bafyTASK/properties": {"properties": [
+        {"id": "bafySTATUS", "name": "Status", "xKey": "status", "kind": "string"}]}})
+    try:
+        client(fx).patch_type("s1", "task", name="Job", properties=[
+            {"name": "Status", "kind": "number"}])
+    except ValueError as e:
+        assert 'change_property_kind(space, "task", "status", "number")' in str(e)
+    else:
+        raise AssertionError("a kind change must raise")
+    assert not [1 for v, _, _ in fx.calls if v != "GET"]      # the rename did not land
+
+
+def _kind_rig(values):
+    """A fake any: one type, one string property, objects with `values`."""
+    recs = [{"id": f"o{i}", "any": {"type": "bafyTASK"}, "bafyTASK": {"bafySTATUS": v}}
+            for i, v in enumerate(values)]
+    return wire(replies={**_CAT, "/objects/query": {"records": recs},
+                         "/types/bafyTASK/properties": {"properties": [
+                             {"id": "bafySTATUS", "name": "Status", "xKey": "status",
+                              "kind": "string", "scope": "synced"}],
+                             "propId": "pNEW"}})
+
+
+def test_change_property_kind_runs_the_five_steps_in_order():
+    fx = _kind_rig(["3", " 4.5 ", None])
+    r = client(fx).change_property_kind("s1", "task", "status", "number")
+    assert r == {"propId": "pNEW", "xKey": "status", "kind": "number",
+                 "converted": 2, "failed": [], "old": "removed"}
+    writes = [(v, p, b) for v, p, b in fx.calls
+              if v != "GET" and not p.endswith("/objects/query")]
+    assert writes[0] == ("PATCH", _TP + "/properties/bafySTATUS",
+                         {"set": {"xKey": "status_old"}})
+    assert writes[1][:2] == ("POST", _TP + "/properties")
+    assert {k: writes[1][2][k] for k in ("name", "xKey", "kind", "scope")} == {
+        "name": "Status", "xKey": "status", "kind": "number", "scope": "synced"}
+    assert writes[2:4] == [
+        ("POST", "/v1/spaces/s1/properties/o0/set/bafyTASK", {"patch": {"pNEW": 3}}),
+        ("POST", "/v1/spaces/s1/properties/o1/set/bafyTASK", {"patch": {"pNEW": 4.5}})]
+    assert writes[4] == ("DELETE", _TP + "/properties/bafySTATUS", None)
+    assert len(writes) == 5
+
+
+def test_change_property_kind_keeps_the_old_property_when_a_value_does_not_convert():
+    fx = _kind_rig(["3", "soon"])
+    r = client(fx).change_property_kind("s1", "task", "status", "number")
+    assert r["converted"] == 1 and r["old"] == "status_old"
+    assert r["failed"] == [{"objectId": "o1", "value": "soon"}]
+    assert not [1 for v, _, _ in fx.calls if v == "DELETE"]
+
+
+def test_change_property_kind_refuses_the_same_kind():
+    try:
+        client(_kind_rig([])).change_property_kind("s1", "task", "status", "string")
+    except ValueError as e:
+        assert "already of kind string" in str(e)
+    else:
+        raise AssertionError("the same kind must raise")
+
+
+def test_convert_value_guesses_nothing():
+    g = load(wire())
+    cv, no = g["_convert_value"], g["_NO_VALUE"]
+    at = {"$date": "2026-01-02T00:00:00.000Z"}
+    assert cv(3.0, "string") == "3" and cv(True, "string") == "true"
+    assert cv(at, "string") == at["$date"] and cv(["a", "b"], "string") == "a, b"
+    assert cv("7", "number") == 7 and cv("1,5", "number") == 1.5 and cv("x", "number") is no
+    assert cv("Yes", "boolean") is True and cv(0, "boolean") is False
+    assert cv("maybe", "boolean") is no
+    assert cv("2026-01-02", "datetime") == at and cv("tomorrow", "datetime") is no
+    assert cv(1700000000, "datetime") is no           # a bare number is not a date
+    assert cv("a", "array") is no and cv(["a"], "array") == ["a"]
+    assert cv(at, "object") is no and cv({"k": 1}, "object") == {"k": 1}
+
+
 def test_uninstall_bundle_is_unlisted_and_encodes_the_id():
     fx = wire()
     c = client(fx)
@@ -511,7 +608,7 @@ NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "create_block", "patch_block", "delete_block",
          "query_dataset", "aggregate_dataset",
          "query_files", "file_stats", "file_info", "pin_file", "offload_file", "retry_file",
-         "patch_type", "patch_collection", "uninstall_bundle",
+         "patch_type", "patch_collection", "change_property_kind", "uninstall_bundle",
          "query_spaces", "patch_space", "open_direct_space",
          "register_incoming_direct", "answer_direct_space",
          "list_invites", "create_invite", "revoke_invite", "create_guest_key",

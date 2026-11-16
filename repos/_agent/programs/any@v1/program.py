@@ -468,6 +468,62 @@ _LEXID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxy
 _UNSET = object()   # encoder sentinel: value None ⇒ $unset
 
 
+_NO_VALUE = object()   # a value that does not convert to the new kind
+
+
+def _convert_value(v, kind):
+    """A stored property value as the same fact in another `kind`,
+    or _NO_VALUE when it has no honest reading there (the caller
+    reports it; nothing is guessed)."""
+    is_num = isinstance(v, (int, float)) and not isinstance(v, bool)
+    if kind == "string":
+        if isinstance(v, str):
+            return v
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if is_num:
+            return str(int(v)) if float(v).is_integer() else str(v)
+        if _is_instant(v):
+            return v["$date"]
+        if isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v):
+            return ", ".join(str(x) for x in v)
+    elif kind == "number":
+        if is_num:
+            return v
+        if isinstance(v, bool):
+            return 1 if v else 0
+        if isinstance(v, str):
+            try:
+                n = float(v.strip().replace(",", "."))
+            except ValueError:
+                return _NO_VALUE
+            return int(n) if n.is_integer() else n
+    elif kind == "boolean":
+        if isinstance(v, bool):
+            return v
+        if is_num:
+            return v != 0
+        if isinstance(v, str):
+            w = v.strip().lower()
+            if w in ("true", "yes", "y", "1", "on"):
+                return True
+            if w in ("false", "no", "n", "0", "off"):
+                return False
+    elif kind == "datetime":
+        if _is_instant(v):
+            return v
+        if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}($|T)", v.strip()):
+            d = v.strip()
+            return {"$date": d if "T" in d else d + "T00:00:00.000Z"}
+    elif kind == "array":
+        if isinstance(v, list):
+            return v
+    elif kind == "object":
+        if isinstance(v, dict) and not _is_instant(v):
+            return v
+    return _NO_VALUE
+
+
 def _lexid_after(pos):
     """A byte-compare-greater position after `pos` ("" ⇒ first)."""
     if not pos:
@@ -3646,43 +3702,178 @@ class _Client:
         self._cat_invalidate(space)
         return {"typeId": tid, "icon": value}
 
-    def _patch_def(self, space, route, did, fields):
-        body = {k: v for k, v in fields.items() if v is not None}
-        if not body:
-            raise ValueError("nothing to change: pass at least one of "
-                             + ", ".join(sorted(fields)))
-        self._call("patch", f"/v1/spaces/{space}/{route}/{did}", body)
+    def _plan_props(self, space, owner_id, owner_key, props):
+        """The `properties` drafts of patch_type / patch_collection,
+        checked and with no write: a missing property is to be added,
+        an existing one gets its changed name / description / slug,
+        and NOTHING is removed. → (missing drafts, [(xKey, id, sets)])."""
+        have = {p.get("xKey"): p for p in self._fetch_props(space, owner_id)}
+        missing, patches = [], []
+        for p in props or []:
+            pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
+            cur = have.get(pxkey)
+            if cur is None:
+                missing.append(p)
+                continue
+            slug = (p.get("xFormat") or {}).get("type")
+            want = p.get("kind") or (_KIND_OF_SLUG.get(slug, "string") if slug else None)
+            if want and cur.get("kind") and want != cur["kind"]:
+                raise ValueError(
+                    f'property "{pxkey}" is of kind {cur["kind"]}; a kind never '
+                    f"changes in place (every device checks values against it). "
+                    f'To make it {want}: change_property_kind(space, "{owner_key}", '
+                    f'"{pxkey}", "{want}") — it makes a new property, copies the '
+                    "values and removes the old one.")
+            sets = {}
+            if p.get("name") and p["name"] != cur.get("name"):
+                sets["name"] = p["name"]
+            if "description" in p and (p["description"] or "") != (cur.get("description") or ""):
+                sets["description"] = p["description"] or ""
+            if slug and slug != (cur.get("xFormat") or {}).get("type"):
+                sets["xFormat.type"] = slug
+            if sets:
+                patches.append((pxkey, cur["id"], sets))
+        return missing, patches
+
+    @_public('mutator', label="Changing the kind of {prop_key} on {type_key} in {space}")
+    def change_property_kind(self, space, type_key, prop_key, kind, xFormat=None):
+        """Give a property another kind: a NEW property takes its place and the values move.
+
+        A kind (string, number, boolean, datetime, array, object)
+        never changes in place. First check that you need this: a
+        slug moves within one kind with patch_property (text ↔ url,
+        number ↔ currency, date ↔ datetime). Else this call does the
+        whole move, in order: the old property takes the handle
+        `<xKey>_old`; a new property is added with the name, the
+        xKey and the scope of the old one, `kind`, and `xFormat`
+        (default: the plain slug of the kind); every object's value
+        is converted and written under it; the old property is
+        removed. A value with no honest reading in the new kind
+        ("soon" as a number) is NOT guessed: it is listed under
+        `failed`, and then the old property STAYS as `<xKey>_old`
+        so nothing is lost — fix those values and delete_property
+        it. `type_key` is the owner, a type or a collection. Not
+        atomic: an edit of the old property on another device
+        during the move is not copied, so do it while nobody edits
+        the type. A view or a filter saved in the UI that names the
+        old property must be set again by the user. Returns
+        {"propId", "xKey", "kind", "converted", "failed":
+        [{"objectId", "value"}], "old": "removed" | "<xKey>_old"}."""
+        if kind not in _KINDS or kind == "null":
+            raise ValueError(f"kind must be one of {[k for k in _KINDS if k != 'null']}")
+        tid = self._resolve_owner_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        old = next(p for p in self._fetch_props(space, tid) if p.get("id") == pid)
+        if old.get("kind") == kind:
+            raise ValueError(
+                f'"{prop_key}" is already of kind {kind}; a slug moves with '
+                'patch_property(…, set={"xFormat.type": <slug>})')
+        xkey = old.get("xKey") or _slugify_xkey(old.get("name") or "")
+        taken = {p.get("xKey") for p in self._fetch_props(space, tid)}
+        temp, n = f"{xkey}_old", 1
+        while temp in taken:
+            n += 1
+            temp = f"{xkey}_old{n}"
+        path = self._props_path(space, tid)
+        # 1. free the xKey  2. the new property, under a new id
+        self._call("patch", f"{path}/{pid}", {"set": {"xKey": temp}})
+        draft = {"name": old.get("name") or xkey, "xKey": xkey, "kind": kind}
+        for k in ("scope", "description"):
+            if old.get(k):
+                draft[k] = old[k]
+        if xFormat:
+            draft["xFormat"] = dict(xFormat)
+        new_pid = self._post_property(space, tid, draft)["propId"]
+        # 3. copy the values, object by object
+        member = ("any.collections" if self._def_kind(space, tid) == "collection"
+                  else "any.type")
+        converted, failed, offset, page = 0, [], 0, 200
+        while True:
+            recs = self._call("post", f"/v1/spaces/{space}/objects/query",
+                              {"filter": {member: tid}, "limit": page,
+                               "offset": offset}).get("records", [])
+            for r in recs:
+                v = (r.get(tid) or {}).get(pid)
+                if v is None:
+                    continue
+                nv = _convert_value(v, kind)
+                if nv is _NO_VALUE:
+                    failed.append({"objectId": r.get("id"), "value": v})
+                    continue
+                self._call("post", f"/v1/spaces/{space}/properties/{r['id']}/set/{tid}",
+                           {"patch": {new_pid: nv}})
+                converted += 1
+            if len(recs) < page:
+                break
+            offset += page
+        # 5. remove the old property — only when every value moved
+        if not failed:
+            self._call("delete", f"{path}/{pid}")
         self._cat_invalidate(space)
-        return {"id": did, **body}
+        return {"propId": new_pid, "xKey": xkey, "kind": kind, "converted": converted,
+                "failed": failed, "old": "removed" if not failed else temp}
+
+    def _patch_def(self, space, route, did, fields, owner_key=None, props=None):
+        body = {k: v for k, v in fields.items() if v is not None}
+        if not body and not props:
+            raise ValueError("nothing to change: pass at least one of "
+                             + ", ".join(sorted([*fields, "properties"])))
+        # the drafts are checked before the first write: a bad one changes nothing
+        missing, patches = self._plan_props(space, did, owner_key, props) if props else ([], [])
+        out = {"id": did, **body}
+        if body:
+            self._call("patch", f"/v1/spaces/{space}/{route}/{did}", body)
+        if props:
+            for _, pid, sets in patches:
+                self._call("patch", f"{self._props_path(space, did)}/{pid}", {"set": sets})
+            out["addedProps"] = self._add_missing_props(space, did, missing)
+            out["patchedProps"] = [x for x, _, _ in patches]
+        self._cat_invalidate(space)
+        return out
 
     @_public('mutator', label="Changing the type {type_key} in {space}")
-    def patch_type(self, space, type_key, name=None, description=None, hidden=None):
-        """Rename a type, or change its description or visibility → {"id", …the changed fields}.
+    def patch_type(self, space, type_key, name=None, description=None, hidden=None,
+                   properties=None):
+        """Change an existing type: its name, description, visibility and properties.
 
         `type_key` is the xKey (or id); the xKey does not change, so
         every write and filter keeps working. `description=""`
         clears it. `hidden=True` takes the type out of the user's
-        type picker; its objects stay as they are. The icon is
-        set_type_icon; the properties are add_property /
-        patch_property. A built-in type refuses (400
-        type.registered)."""
+        type picker; its objects stay as they are. `properties`:
+        the drafts of create_type ([{"name", "xKey"?, "kind"?,
+        "xFormat"?, "description"?}]), matched by xKey: a missing
+        property is ADDED, an existing one gets its changed name,
+        description and slug (`xFormat.type`, within its kind).
+        Nothing is ever removed: a property that the list leaves out
+        stays (delete_property removes one). A draft with another
+        kind raises and names change_property_kind; every draft is
+        checked before the first write. Options of a choice:
+        set_option. The icon: set_type_icon. A built-in type refuses
+        (400 type.registered). Returns {"id", …the changed fields,
+        "addedProps"?: {xKey: id}, "patchedProps"?: [xKey]}."""
         tid = self._resolve_type_or_raise(space, type_key)
         return self._patch_def(space, "types", tid, {
-            "name": name, "description": description, "hidden": hidden})
+            "name": name, "description": description, "hidden": hidden},
+            owner_key=type_key, props=properties)
 
     @_public('mutator', label="Changing the collection {collection_key} in {space}")
     def patch_collection(self, space, collection_key, name=None, description=None,
-                         hidden=None, meta=None):
-        """Rename a collection, or change its description, visibility or meta → {"id", …}.
+                         hidden=None, meta=None, properties=None):
+        """Change an existing collection: name, description, visibility, meta, properties.
 
         `collection_key` is the xKey (or id); the xKey does not
         change. `description=""` clears it; `meta` is patched key by
         key ({key: value}). `hidden=True` takes it out of the tag
-        pickers; the members stay filed. A built-in collection
-        refuses (400 collection.registered)."""
+        pickers; the members stay filed. `properties`: as in
+        patch_type — missing ones are added, existing ones get their
+        changed name, description and slug, nothing is removed, and
+        another kind raises with change_property_kind. A built-in
+        collection refuses (400 collection.registered). Returns
+        {"id", …, "addedProps"?, "patchedProps"?}."""
         cid = self._resolve_collection_or_raise(space, collection_key)
         return self._patch_def(space, "collections", cid, {
-            "name": name, "description": description, "hidden": hidden, "meta": meta})
+            "name": name, "description": description, "hidden": hidden, "meta": meta},
+            owner_key=collection_key, props=properties)
 
     @_public('mutator')
     def create_collection(self, space, body):
