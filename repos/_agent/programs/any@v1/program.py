@@ -604,18 +604,26 @@ def _undefined_side(path, unwind):
 _UNDEFINED_PIPELINE = [{"$facet": {
     "types": _undefined_side("any.type", False),
     "collections": _undefined_side("any.collections", True)}}]
-_UNDEFINED_NOTE = (
-    "note: {n} of these rows have a type or a collection that this space "
-    "does not define (deleted, or not synced yet), so its values show "
-    "under a raw id. Ask the user if such objects should be deleted "
-    "for good. If yes: `for o in c.undefined_objects(s): "
+# The server tells a deleted definition (410 object.deleted) from one
+# it does not know, or does not have yet (404): two notes, and only
+# the first one speaks of deleting.
+_DELETED_NOTE = (
+    "note: {n} of these rows have a type or a collection that was DELETED, "
+    "so its values show under a raw id. Ask the user if such objects should "
+    "be deleted for good. If yes: `for o in c.undefined_objects(s): "
     "c.delete_object(s, o)`")
+_UNSYNCED_NOTE = (
+    "note: {n} of these rows have a type or a collection that is not on this "
+    "device yet, so its values show under a raw id. It is not deleted: the "
+    "definition arrives with sync. Read again later, and do not delete "
+    "these objects.")
 
 
 class _Client:
     def __init__(self, base_url, bao_space=None):
         self._base = base_url.rstrip("/")
-        self._undefined_noted = set()   # spaces whose note is out (one per run)
+        self._undefined_noted = set()   # (space, note) pairs that are out (one per run)
+        self._def_state = {}            # (space, id) -> "deleted" | "unknown", this run
         self._bao_space = bao_space   # the memory home (ADR-017 §0), runtime-wired
         # Per-space type/property catalog, memoized for the client's lifetime
         # (one cell). Resolves xKey<->id both ways so the agent reads/writes
@@ -1552,6 +1560,25 @@ class _Client:
                 and k not in _ROW_ROOT_KEYS
                 and k not in _SERVER_GROUPS}
 
+    def _undefined_state(self, space, def_id, kind):
+        """"deleted" or "unknown" for a type / collection id that the
+        catalog does not list: the server answers 410 object.deleted
+        for a deleted definition, and 404 for one it does not know
+        or has not synced yet. One call for an id in a run."""
+        key = (space, def_id)
+        if key not in self._def_state:
+            route = "collections" if kind == "collection" else "types"
+            state = "unknown"
+            try:
+                self._call("get", f"/v1/spaces/{space}/{route}/{def_id}")
+            except AnyError as e:
+                if e.status == 410:
+                    state = "deleted"
+                elif e.status != 404:
+                    raise
+            self._def_state[key] = state
+        return self._def_state[key]
+
     def _refresh_catalog_for(self, space, recs):
         """ONE catalog reload for a page of rows that carries a group
         the cached catalog does not know (a definition made out of
@@ -1563,30 +1590,33 @@ class _Client:
         if not self._unknown_groups(space, recs):
             return
         self._cat_invalidate(space)
-        if space in self._undefined_noted:
+        if {(space, "deleted"), (space, "unknown")} <= self._undefined_noted:
             return
         # after the reload: the rows whose OWN type or collections are
         # still undefined (a group a row kept from a collection it
-        # left is not one of these). One line per space and run, and
-        # no id in it: the ids are long and say nothing to the model.
+        # left is not one of these), sorted by what the server says
+        # of the id. One line of each sort per space and run, and no
+        # id in it: the ids are long and say nothing to the model.
         by_id = self._catalog(space)["by_id"]
-        n = 0
+        counts = {"deleted": 0, "unknown": 0}
         for r in recs:
             a = r.get("any") if isinstance(r, dict) else None
             if not isinstance(a, dict):
                 continue
-            owners = [a.get("type"), *(a.get("collections") or [])]
-            if any(isinstance(o, str) and o.startswith("bafy")
-                   and o not in by_id for o in owners):
-                n += 1
-        if not n:
-            return
-        self._undefined_noted.add(space)
+            owners = [(a.get("type"), "type"),
+                      *((c, "collection") for c in a.get("collections") or [])]
+            states = {self._undefined_state(space, o, kind) for o, kind in owners
+                      if isinstance(o, str) and o.startswith("bafy") and o not in by_id}
+            for st in states:
+                counts[st] += 1
         try:
             emit = print   # the cell's printer, bound for modules (ADR-003 §3)
         except NameError:  # an older kernel has none
             return
-        emit(_UNDEFINED_NOTE.format(n=n))
+        for st, note in (("deleted", _DELETED_NOTE), ("unknown", _UNSYNCED_NOTE)):
+            if counts[st] and (space, st) not in self._undefined_noted:
+                self._undefined_noted.add((space, st))
+                emit(note.format(n=counts[st]))
 
     def _normalize_record(self, space, rec):
         """Reverse-map a raw wire record to the readable xKey-nested shape:
@@ -2018,18 +2048,23 @@ class _Client:
     @_public('getter', listed=False)
     def undefined_objects(self, space):
         """The ids of the objects whose type, or one of whose
-        collections, the space does not define: the definition is
-        deleted, or not synced yet (the client cannot tell which). A
-        deleted definition leaves its id and its values on its
-        objects. Unlisted: the note of a read names it (ADR-010 §8).
-        Returns [objectId]."""
+        collections, was DELETED: the definition is gone, its id and
+        its values stay on the objects. An object whose definition is
+        only not synced yet is NOT in the list (the server tells the
+        two apart: 410 object.deleted, 404). Unlisted: the note of a
+        read names it (ADR-010 §8). One aggregate finds the ids that
+        objects name and no definition carries, one read for each
+        such id sorts it, then one object query. Returns [objectId]."""
         r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
                        {"pipeline": _UNDEFINED_PIPELINE})
         rec = ((r or {}).get("records") or [{}])[0]
-        conds = [{path: {"$in": ids}} for path, ids in (
-            ("any.type", [x["id"] for x in rec.get("types") or []]),
-            ("any.collections", [x["id"] for x in rec.get("collections") or []]))
-            if ids]
+        conds = []
+        for path, kind, rows in (("any.type", "type", rec.get("types")),
+                                 ("any.collections", "collection", rec.get("collections"))):
+            ids = [x["id"] for x in rows or []
+                   if self._undefined_state(space, x["id"], kind) == "deleted"]
+            if ids:
+                conds.append({path: {"$in": ids}})
         if not conds:
             return []
         flt = conds[0] if len(conds) == 1 else {"$or": conds}
