@@ -908,18 +908,29 @@ def test_query_filters_error_on_unknown_keys_never_silent_empty():
     assert c.query_objects("s1", filter={"task.status": "open"}) == []
 
 
-def test_update_object_writes_name_markdown_and_prop_groups():
-    # o1's type declares the body: the write goes straight through, no
-    # membership call (no write sets a type — ADR-029 §3)
+def test_update_object_refuses_the_editor_body():
+    # the body has its own three calls (ADR-010 §8): the refusal names
+    # them, and nothing reaches the wire, the other keys included
+    for key in ("markdown", "body"):
+        fx = wire(replies=_CAT)
+        with pytest.raises(ValueError) as e:
+            client(fx).update_object("s1", "o1", {
+                "name": "Renamed", key: "# body", "task": {"status": "done"}})
+        for name in ("edit_markdown", "append_markdown", "put_markdown"):
+            assert name in str(e.value)
+        assert fx.calls == []
+
+
+def test_update_object_writes_name_and_prop_groups():
+    # no membership call (no write sets a type — ADR-029 §3)
     fx = wire(replies={**_CAT, "/objects/query": {"records": [
         {"id": "o1", "any": {"type": "bafyTASK"}}]}})
     r = client(fx).update_object("s1", "o1", {
         "name": "Renamed", "description": "now with mangoes",
-        "markdown": "# body", "task": {"status": "done"}})
+        "task": {"status": "done"}})
     assert r == {"objectId": "o1"}
     posts = [(p, b) for v, p, b in fx.calls if v in ("POST", "PUT")]
-    assert ("/v1/spaces/s1/objects/o1/editor/editor_blocks/markdown",
-            {"content": "# body"}) in posts
+    assert not any(p.endswith("/markdown") for p, _ in posts)
     assert not any("/properties/o1/type/" in p or "/collections/" in p for p, _ in posts)
     # name/description -> set/any patch (parity with create_object);
     # property group -> set/<typeId> patch
