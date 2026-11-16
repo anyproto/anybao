@@ -88,7 +88,11 @@ def test_the_note_on_undefined_owners_reaches_the_cell_printer():
                 return {"value": "http://any"}
             raise KeyError(payload["key"])
         body = {}
-        if payload["url"].partition("?")[0].endswith("/objects/query"):
+        path = payload["url"].partition("?")[0]
+        if path.endswith("/types/bafyGONE"):       # the server: this type was deleted
+            return {"status": 410, "headers": {}, "body": json.dumps(
+                {"error": {"code": "object.deleted"}})}
+        if path.endswith("/objects/query"):
             body = {"records": [{"id": f"o{i}", "any": {"type": "bafyGONE"},
                                  "bafyGONE": {"bafyP": 1}} for i in range(3)]}
         return {"status": 200, "headers": {}, "body": json.dumps(body)}

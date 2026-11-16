@@ -976,6 +976,22 @@ def test_row_root_instants_do_not_reload_the_catalog():
     assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
 
 
+def _gone(fx, states):
+    """`fx` with the answer of the server for an id that the catalog
+    does not list: 410 for a deleted definition, 404 for one it does
+    not know or has not synced yet. `states`: {id: 410 | 404}."""
+    def routed(name, payload):
+        out = fx(name, payload)
+        path = payload["url"].removeprefix("http://any").partition("?")[0]
+        code = states.get(path.rsplit("/", 1)[-1])
+        if name == "http.get" and code and "/properties" not in path:
+            out = {"status": code, "headers": {}, "body": json.dumps(
+                {"error": {"code": "object.deleted" if code == 410 else "type.not_found"}})}
+        return out
+    routed.calls, routed.urls = fx.calls, fx.urls
+    return routed
+
+
 def test_rows_of_a_deleted_definition_reload_the_catalog_once(capsys):
     # BOB-202: a deleted type leaves its id and its values on its
     # objects, and no reload brings the definition back. A page of N
@@ -985,7 +1001,7 @@ def test_rows_of_a_deleted_definition_reload_the_catalog_once(capsys):
          "bafyGONE": {"bafyP": "red"}} for i in range(5)] + [
         {"id": "o9", "any": {"name": "Ship", "type": "bafyTASK"},
          "bafyTASK": {"bafySTATUS": "open"}}]}})
-    c = client(fx)
+    c = client(_gone(fx, {"bafyGONE": 410}))
     rows = c.query_objects("s1")
     assert [r["bafyGONE"] for r in rows[:5]] == [{"bafyP": "red"}] * 5
     assert rows[0]["any"]["type"] == "bafyGONE"
@@ -996,12 +1012,34 @@ def test_rows_of_a_deleted_definition_reload_the_catalog_once(capsys):
     c.query_objects("s1")                              # the next page: one more
     gets = [p for v, p, _ in fx.calls if v == "GET"]
     assert gets.count("/v1/spaces/s1/types") == 3
+    assert gets.count("/v1/spaces/s1/types/bafyGONE") == 1   # asked once in the run
     # one note for the space and the run: the count, the question for
     # the user and the call that finds the objects — and no id
     note = capsys.readouterr().out
     assert note.count("note: ") == 1
-    assert note.startswith("note: 5 of these rows have a type or a collection")
+    assert note.startswith("note: 5 of these rows have a type or a collection that was DELETED")
     assert "c.undefined_objects(s)" in note and "bafy" not in note
+
+
+def test_a_definition_that_is_not_synced_yet_gets_no_advice_to_delete(capsys):
+    # 404: the server does not have the definition yet. The note says
+    # so and names no delete; a deleted collection on another row gets
+    # its own note.
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": "o1", "any": {"name": "A", "type": "bafyLATE"}, "bafyLATE": {"bafyP": 1}},
+        {"id": "o2", "any": {"name": "B", "type": "bafyLATE"}, "bafyLATE": {"bafyP": 2}},
+        {"id": "o3", "any": {"name": "C", "type": "bafyTASK", "collections": ["bafyDEAD"]},
+         "bafyDEAD": {"bafyQ": 1}}]}})
+    c = client(_gone(fx, {"bafyLATE": 404, "bafyDEAD": 410}))
+    c.query_objects("s1")
+    c.query_objects("s1")
+    deleted, unsynced = capsys.readouterr().out.strip().split("\n")
+    assert deleted.startswith("note: 1 of these rows") and "DELETED" in deleted
+    assert unsynced.startswith("note: 2 of these rows") and "not on this device yet" in unsynced
+    assert "do not delete" in unsynced and "undefined_objects" not in unsynced
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert "/v1/spaces/s1/types/bafyLATE" in gets
+    assert "/v1/spaces/s1/collections/bafyDEAD" in gets     # asked by its kind
 
 
 def test_a_group_a_row_kept_from_a_collection_it_left_has_no_note(capsys):
@@ -1014,29 +1052,29 @@ def test_a_group_a_row_kept_from_a_collection_it_left_has_no_note(capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_undefined_objects_asks_the_server_for_the_ids():
-    # unlisted (ADR-010 §8): the ids the note keeps out of the context
-    def reply(v, p, b):
-        if p.endswith("/objects/aggregate"):
-            return {"records": [{"types": [{"id": "bafyGONE", "objects": 2}],
-                                 "collections": [{"id": "bafyTAG", "objects": 1}]}]}
-        return {"records": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}
-    fx = wire()
-    inner = fx.__call__
-
-    def routed(name, payload):
-        out = inner(name, payload)
-        v, p, b = fx.calls[-1]
-        out["body"] = json.dumps(reply(v, p, b))
-        return out
-    routed.calls, routed.urls = fx.calls, fx.urls
-    c = client(routed)
+def test_undefined_objects_returns_the_objects_of_deleted_definitions_only():
+    # unlisted (ADR-010 §8): the ids the note keeps out of the context.
+    # bafyLATE is only not synced yet: its objects are not in the list.
+    fx = wire(replies={
+        "/objects/aggregate": {"records": [{
+            "types": [{"id": "bafyGONE", "objects": 2}, {"id": "bafyLATE", "objects": 4}],
+            "collections": [{"id": "bafyTAG", "objects": 1}]}]},
+        "/objects/query": {"records": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}})
+    c = client(_gone(fx, {"bafyGONE": 410, "bafyLATE": 404, "bafyTAG": 410}))
     assert c.undefined_objects("s1") == ["o1", "o2", "o3"]
-    (_, agg, ab), (_, qry, qb) = fx.calls
-    assert agg.endswith("/objects/aggregate") and "$facet" in ab["pipeline"][0]
-    assert qry.endswith("/objects/query")
-    assert qb["filter"] == {"$or": [{"any.type": {"$in": ["bafyGONE"]}},
-                                    {"any.collections": {"$in": ["bafyTAG"]}}]}
+    posts = [(p, b) for v, p, b in fx.calls if v == "POST"]
+    assert posts[0][0].endswith("/objects/aggregate") and "$facet" in posts[0][1]["pipeline"][0]
+    assert posts[1][0].endswith("/objects/query")
+    assert posts[1][1]["filter"] == {"$or": [{"any.type": {"$in": ["bafyGONE"]}},
+                                             {"any.collections": {"$in": ["bafyTAG"]}}]}
+
+
+def test_undefined_objects_is_empty_when_nothing_is_deleted():
+    fx = wire(replies={"/objects/aggregate": {"records": [{
+        "types": [{"id": "bafyLATE", "objects": 4}], "collections": []}]}})
+    c = client(_gone(fx, {"bafyLATE": 404}))
+    assert c.undefined_objects("s1") == []
+    assert not [1 for v, p, _ in fx.calls if p.endswith("/objects/query")]
 
 
 def test_the_chat_group_does_not_reload_the_catalog():
