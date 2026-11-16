@@ -585,9 +585,37 @@ def _public(kind, scoped=True, listed=True, label=None):
     return mark
 
 
+def _undefined_side(path, unwind):
+    """One $facet side of _UNDEFINED_PIPELINE: the ids under `path`
+    (`any.type`, or each of `any.collections`) that no definition row
+    of the space carries, with their object counts. A definition is a
+    row of the same index, so the lookup joins the index on itself;
+    the built-ins (`page`, `bin`, the markers) are not content ids."""
+    return ([{"$unwind": "$" + path}] if unwind else []) + [
+        {"$group": {"_id": "$" + path, "objects": {"$count": {}}}},
+        {"$match": {"id": {"$regex": "^bafy"}}},
+        {"$lookup": {"localField": "id", "foreignField": "id", "as": "def"}},
+        {"$match": {"def": {"$size": 0}}},
+        {"$project": {"id": 1, "objects": 1}}]
+
+
+# the types and the collections that objects of a space name and the
+# space does not define: deleted, or not synced yet
+_UNDEFINED_PIPELINE = [{"$facet": {
+    "types": _undefined_side("any.type", False),
+    "collections": _undefined_side("any.collections", True)}}]
+_UNDEFINED_NOTE = (
+    "note: {n} of these rows have a type or a collection that this space "
+    "does not define (deleted, or not synced yet), so its values show "
+    "under a raw id. Ask the user if such objects should be deleted "
+    "for good. If yes: `for o in c.undefined_objects(s): "
+    "c.delete_object(s, o)`")
+
+
 class _Client:
     def __init__(self, base_url, bao_space=None):
         self._base = base_url.rstrip("/")
+        self._undefined_noted = set()   # spaces whose note is out (one per run)
         self._bao_space = bao_space   # the memory home (ADR-017 §0), runtime-wired
         # Per-space type/property catalog, memoized for the client's lifetime
         # (one cell). Resolves xKey<->id both ways so the agent reads/writes
@@ -1532,8 +1560,33 @@ class _Client:
         definition leaves its id and its values on its objects, so
         such rows are a normal state, and they pass with the raw id.
         The bound is per page, not per row (BOB-202)."""
-        if self._unknown_groups(space, recs):
-            self._cat_invalidate(space)
+        if not self._unknown_groups(space, recs):
+            return
+        self._cat_invalidate(space)
+        if space in self._undefined_noted:
+            return
+        # after the reload: the rows whose OWN type or collections are
+        # still undefined (a group a row kept from a collection it
+        # left is not one of these). One line per space and run, and
+        # no id in it: the ids are long and say nothing to the model.
+        by_id = self._catalog(space)["by_id"]
+        n = 0
+        for r in recs:
+            a = r.get("any") if isinstance(r, dict) else None
+            if not isinstance(a, dict):
+                continue
+            owners = [a.get("type"), *(a.get("collections") or [])]
+            if any(isinstance(o, str) and o.startswith("bafy")
+                   and o not in by_id for o in owners):
+                n += 1
+        if not n:
+            return
+        self._undefined_noted.add(space)
+        try:
+            emit = print   # the cell's printer, bound for modules (ADR-003 §3)
+        except NameError:  # an older kernel has none
+            return
+        emit(_UNDEFINED_NOTE.format(n=n))
 
     def _normalize_record(self, space, rec):
         """Reverse-map a raw wire record to the readable xKey-nested shape:
@@ -1958,6 +2011,33 @@ class _Client:
             pdef = self._prop_def(space, tid, pid) or {}
             by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
         return list(by_scope.values())
+
+    @_public('getter', listed=False)
+    def undefined_objects(self, space):
+        """The ids of the objects whose type, or one of whose
+        collections, the space does not define: the definition is
+        deleted, or not synced yet (the client cannot tell which). A
+        deleted definition leaves its id and its values on its
+        objects. Unlisted: the note of a read names it (ADR-010 §8).
+        Returns [objectId]."""
+        r = self._call("post", f"/v1/spaces/{space}/objects/aggregate",
+                       {"pipeline": _UNDEFINED_PIPELINE})
+        rec = ((r or {}).get("records") or [{}])[0]
+        conds = [{path: {"$in": ids}} for path, ids in (
+            ("any.type", [x["id"] for x in rec.get("types") or []]),
+            ("any.collections", [x["id"] for x in rec.get("collections") or []]))
+            if ids]
+        if not conds:
+            return []
+        flt = conds[0] if len(conds) == 1 else {"$or": conds}
+        out, page = [], 500
+        while True:
+            recs = self._call("post", f"/v1/spaces/{space}/objects/query",
+                              {"filter": flt, "limit": page,
+                               "offset": len(out)}).get("records", [])
+            out.extend(x["id"] for x in recs)
+            if len(recs) < page:
+                return out
 
     @_public('mutator', label="Deleting {object} in {space}")
     def delete_object(self, space, object_id):

@@ -965,7 +965,7 @@ def test_row_root_instants_do_not_reload_the_catalog():
     assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
 
 
-def test_rows_of_a_deleted_definition_reload_the_catalog_once():
+def test_rows_of_a_deleted_definition_reload_the_catalog_once(capsys):
     # BOB-202: a deleted type leaves its id and its values on its
     # objects, and no reload brings the definition back. A page of N
     # such rows reloads the catalog once; the rows pass with the raw id.
@@ -985,6 +985,47 @@ def test_rows_of_a_deleted_definition_reload_the_catalog_once():
     c.query_objects("s1")                              # the next page: one more
     gets = [p for v, p, _ in fx.calls if v == "GET"]
     assert gets.count("/v1/spaces/s1/types") == 3
+    # one note for the space and the run: the count, the question for
+    # the user and the call that finds the objects — and no id
+    note = capsys.readouterr().out
+    assert note.count("note: ") == 1
+    assert note.startswith("note: 5 of these rows have a type or a collection")
+    assert "c.undefined_objects(s)" in note and "bafy" not in note
+
+
+def test_a_group_a_row_kept_from_a_collection_it_left_has_no_note(capsys):
+    # the group is unknown, the row's own type and collections are not:
+    # one reload, nothing to ask the user
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": "o1", "any": {"name": "Ship", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}, "bafyLEFT": {"bafyP": 1}}]}})
+    client(fx).query_objects("s1")
+    assert capsys.readouterr().out == ""
+
+
+def test_undefined_objects_asks_the_server_for_the_ids():
+    # unlisted (ADR-010 §8): the ids the note keeps out of the context
+    def reply(v, p, b):
+        if p.endswith("/objects/aggregate"):
+            return {"records": [{"types": [{"id": "bafyGONE", "objects": 2}],
+                                 "collections": [{"id": "bafyTAG", "objects": 1}]}]}
+        return {"records": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}
+    fx = wire()
+    inner = fx.__call__
+
+    def routed(name, payload):
+        out = inner(name, payload)
+        v, p, b = fx.calls[-1]
+        out["body"] = json.dumps(reply(v, p, b))
+        return out
+    routed.calls, routed.urls = fx.calls, fx.urls
+    c = client(routed)
+    assert c.undefined_objects("s1") == ["o1", "o2", "o3"]
+    (_, agg, ab), (_, qry, qb) = fx.calls
+    assert agg.endswith("/objects/aggregate") and "$facet" in ab["pipeline"][0]
+    assert qry.endswith("/objects/query")
+    assert qb["filter"] == {"$or": [{"any.type": {"$in": ["bafyGONE"]}},
+                                    {"any.collections": {"$in": ["bafyTAG"]}}]}
 
 
 def test_the_chat_group_does_not_reload_the_catalog():
