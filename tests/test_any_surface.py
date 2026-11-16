@@ -70,11 +70,37 @@ def test_signature_renders_spaceconfig_first_without_self():
 def test_unlisted_plumbing_is_callable_but_out_of_listings():
     app, mod, _ = _kernel()
     listing = app.describe(mod)
-    for n in ("append_turn", "create_chunk", "create_memory", "ensure_bundle", "modify"):
+    for n in ("append_turn", "create_chunk", "create_memory", "ensure_bundle", "modify",
+              "undefined_objects"):
         assert f"\n  {n}(" not in listing, n
         assert callable(getattr(mod, n)) and getattr(mod, n).__doc__
         assert app.describe(getattr(mod, n)).startswith(n + "(")
     assert "\n  create_object(" in listing and "\n  chat_log(" in listing
+
+
+def test_the_note_on_undefined_owners_reaches_the_cell_printer():
+    # a read whose rows name a type the space does not define prints
+    # ONE note in the cell: no id, and the unlisted call that finds them
+    def effect(name, payload):
+        if name == "runtime.get":
+            if payload["key"] == "any.base_url":
+                return {"value": "http://any"}
+            raise KeyError(payload["key"])
+        body = {}
+        if payload["url"].partition("?")[0].endswith("/objects/query"):
+            body = {"records": [{"id": f"o{i}", "any": {"type": "bafyGONE"},
+                                 "bafyGONE": {"bafyP": 1}} for i in range(3)]}
+        return {"status": 200, "headers": {}, "body": json.dumps(body)}
+
+    app = load_kernel(effect=effect)
+    out = app._run_cell(
+        'c = use("any@v1")\n'
+        f'n = len(c.query_objects("{SID}")) + len(c.query_objects("{SID}"))\n', "c1")
+    assert out["ok"], out
+    notes = [p["repr"] for p in out["prints"] if p["repr"].startswith("note: ")]
+    assert len(notes) == 1
+    assert notes[0].startswith("note: 3 of these rows have a type or a collection")
+    assert "c.undefined_objects(s)" in notes[0] and "bafy" not in notes[0]
 
 
 def test_a_bad_call_names_the_function():

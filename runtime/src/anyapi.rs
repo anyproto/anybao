@@ -154,7 +154,9 @@ fn transport_err(e: impl fmt::Display) -> AnyError {
 /// local, so a connect that does not land in 10s is a port nobody
 /// serves, and 5 min per request sits past every wait the server
 /// itself keeps (the 30s registry convergence, the 2-min bundle
-/// create): a hung call fails the boot step it belongs to instead of
+/// create, the ~3.5 min a catalog setup takes to answer `503
+/// catalog.setup_timeout`: 90s of waits, then a 2-min install): a
+/// hung call fails the boot step it belongs to instead of
 /// hanging serve with nothing in the log (BOB-113). The SSE stream
 /// keeps NO read bound — the server heartbeats, a dead peer FINs.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -461,8 +463,11 @@ impl Client {
     /// Reply `{usecase, bundles: [{usecase, id, bundle: {id, rootId,
     /// roots, losers?, derived?}, installed, typeId?, properties?,
     /// miniapp?}]}`. Idempotent on every member and device; the
-    /// server runs the registry-convergence wait itself, so 409
-    /// `bundle.not_ready` is the only retryable answer.
+    /// server runs the registry-convergence wait itself. Two answers
+    /// are retryable: 409 `bundle.not_ready`, and 503
+    /// `catalog.setup_timeout` — the call ran past a server bound (90s
+    /// of waits, 2 min inside the install); what it landed stays and
+    /// the next call resumes.
     pub fn catalog_setup(&self, usecase: &str, space_id: &str) -> Result<Value, AnyError> {
         self.call(
             "POST",

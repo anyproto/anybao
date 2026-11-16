@@ -65,7 +65,12 @@ stops naming it. Setup is idempotent and adopt-or-install on every
 member and device, so it replaces the locked registry read
 (`GET …/bundles` + ensure-on-definitive-miss): the server runs the
 convergence wait itself, and `409 bundle.not_ready` keeps the boot's
-brief retry. The chat root carries `miniapp` (`bundle:
+brief retry. `503 catalog.setup_timeout` — a setup past a server bound
+(90s of waits, 2 min inside the install), a registry wait that bound
+cut short included — is retryable but **not retried at boot**: the
+call already took minutes, so serve fails the start and its host
+restarts it (the desktop shell, on its backoff), which logs and shows
+every miss. The guest raises it to the caller. The chat root carries `miniapp` (`bundle:
 "system:general-chat/v1"`), so it is a sidebar entry like every app.
 
 Messages, the `agent`/`control` groups, read tracking, the

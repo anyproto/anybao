@@ -421,7 +421,8 @@ lib API (the crate stays sync/thread-based).
    joined by `stop()` — a running turn finishes on its own. Revisit
    with a stream read timeout only if heartbeat gaps bite in practice.
    The one-shot JSON calls ARE bounded (connect 10s, request 5 min —
-   past every wait the server keeps, e.g. the 2-min bundle create):
+   past every wait the server keeps; the longest is a catalog setup,
+   which answers `503 catalog.setup_timeout` within ~3.5 min):
    a hung call fails its boot step instead of hanging serve silently
    (BOB-113). Serve also logs each boot step with its elapsed time
    (`boot: … (+Ns)`), so `agent.log` says where a slow boot went.

@@ -183,6 +183,7 @@ On `any@v1` (flat and `c.`), named for what a human says:
 | `trash(space, object_id)` / `restore(space, object_id)` | add to / remove from the built-in `bin` | the server stamps `bin.movedAt` / `movedBy`; the skill offers trash before `delete_object` |
 | `list_collections(space)` | `GET …/collections?includeHidden=true` | user collections and the catalog's (wiki, contact, …); the meta row `collection` and the built-ins `miniapp` / `bin` are filtered out |
 | `create_collection(space, {name, xKey?, hidden?, properties?})` | `POST …/collections` + `…/properties` | the `create_type` composite without layout or body; the same handle guards (builtins, catalog handles on BOTH surfaces, record-root keys) |
+| `delete_type(space, type)` / `delete_collection(space, collection)` | `DELETE …/types/:t` / `DELETE …/collections/:c` | **amended 2026-11-16**: permanent, the DEFINITION only — the objects keep the dead id in `any.type` / `any.collections` and their values under it; built-in and catalog definitions refuse (`type.registered` / `collection.registered`); the catalog is read fresh afterwards |
 | `list_properties` / `add_property` / `patch_property` / `delete_property` / `set_option` / `reorder_property` | `…/types/:t/properties*` or `…/collections/:c/properties*` | one property surface, routed by the owner's kind |
 
 `list_types` returns the types a user picks from: hidden ones
