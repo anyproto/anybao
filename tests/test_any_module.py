@@ -965,6 +965,28 @@ def test_row_root_instants_do_not_reload_the_catalog():
     assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
 
 
+def test_rows_of_a_deleted_definition_reload_the_catalog_once():
+    # BOB-202: a deleted type leaves its id and its values on its
+    # objects, and no reload brings the definition back. A page of N
+    # such rows reloads the catalog once; the rows pass with the raw id.
+    fx = wire(replies={**_CAT, "/objects/query": {"records": [
+        {"id": f"o{i}", "any": {"name": "Old", "type": "bafyGONE"},
+         "bafyGONE": {"bafyP": "red"}} for i in range(5)] + [
+        {"id": "o9", "any": {"name": "Ship", "type": "bafyTASK"},
+         "bafyTASK": {"bafySTATUS": "open"}}]}})
+    c = client(fx)
+    rows = c.query_objects("s1")
+    assert [r["bafyGONE"] for r in rows[:5]] == [{"bafyP": "red"}] * 5
+    assert rows[0]["any"]["type"] == "bafyGONE"
+    assert rows[5]["task"] == {"status": "open"}
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 2      # the load + ONE reload
+    assert gets.count("/v1/spaces/s1/types/bafyTASK/properties") == 1
+    c.query_objects("s1")                              # the next page: one more
+    gets = [p for v, p, _ in fx.calls if v == "GET"]
+    assert gets.count("/v1/spaces/s1/types") == 3
+
+
 def test_the_chat_group_does_not_reload_the_catalog():
     # BOB-202: the server stamps a chat's unread counters under a root
     # `chat` group that no definition owns — verbatim, no reload.

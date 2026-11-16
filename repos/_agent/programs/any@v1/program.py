@@ -1510,6 +1510,31 @@ class _Client:
                 out.append(e)
         return out
 
+    def _unknown_groups(self, space, recs):
+        """The root group keys of `recs` that no definition in the
+        cached catalog owns. The row-root instants (`createdAt`,
+        `modifiedAt` — dicts, ADR-019) are the record's own fields,
+        and the server's own groups (`chat`) have no definition:
+        neither is a group of a type or a collection."""
+        by_id = self._catalog(space)["by_id"]
+        return {k for r in recs if isinstance(r, dict)
+                for k, v in r.items()
+                if isinstance(v, dict) and k not in by_id
+                and k not in _RESERVED_GROUPS
+                and k not in _ROW_ROOT_KEYS
+                and k not in _SERVER_GROUPS}
+
+    def _refresh_catalog_for(self, space, recs):
+        """ONE catalog reload for a page of rows that carries a group
+        the cached catalog does not know (a definition made out of
+        band). A group that is still unknown after it belongs to a
+        definition that is deleted, or not synced yet: a deleted
+        definition leaves its id and its values on its objects, so
+        such rows are a normal state, and they pass with the raw id.
+        The bound is per page, not per row (BOB-202)."""
+        if self._unknown_groups(space, recs):
+            self._cat_invalidate(space)
+
     def _normalize_record(self, space, rec):
         """Reverse-map a raw wire record to the readable xKey-nested shape:
         record[ownerId][propId] -> out[ownerXKey][propXKey] for every
@@ -1522,19 +1547,6 @@ class _Client:
         if not isinstance(rec, dict):
             return rec
         cat = self._catalog(space)
-        # Refresh once if a group key references a type id we don't know yet
-        # (catalog stale after an out-of-band create). The row-root
-        # instants (`createdAt`, `modifiedAt` — dicts, ADR-019) are the
-        # record's own fields, and the server's own groups (`chat`)
-        # have no definition: neither is a type group.
-        for k, v in rec.items():
-            if (isinstance(v, dict) and k not in cat["by_id"]
-                    and k not in _RESERVED_GROUPS
-                    and k not in _ROW_ROOT_KEYS
-                    and k not in _SERVER_GROUPS):
-                self._cat_invalidate(space)
-                cat = self._catalog(space)
-                break
         out = {}
         for k, v in rec.items():
             if k == "_ver":
@@ -2015,6 +2027,7 @@ class _Client:
         # surface can name or act on it (ADR-029 §4), so an
         # unfiltered query omits it like list_types omits the meta
         # rows — an `o["any"]` over every row never hits it.
+        self._refresh_catalog_for(space, recs)
         out = [self._normalize_record(space, r) for r in recs
                if "spaceIndex" not in r]
         self._hydrate_links(space, out)   # ADR-022 §3
