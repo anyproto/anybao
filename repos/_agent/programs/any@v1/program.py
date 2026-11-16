@@ -3362,6 +3362,44 @@ class _Client:
         self._cat_invalidate(space)
         return {"typeId": tid, "icon": value}
 
+    def _patch_def(self, space, route, did, fields):
+        body = {k: v for k, v in fields.items() if v is not None}
+        if not body:
+            raise ValueError("nothing to change: pass at least one of "
+                             + ", ".join(sorted(fields)))
+        self._call("patch", f"/v1/spaces/{space}/{route}/{did}", body)
+        self._cat_invalidate(space)
+        return {"id": did, **body}
+
+    @_public('mutator', label="Changing the type {type_key} in {space}")
+    def patch_type(self, space, type_key, name=None, description=None, hidden=None):
+        """Rename a type, or change its description or visibility → {"id", …the changed fields}.
+
+        `type_key` is the xKey (or id); the xKey does not change, so
+        every write and filter keeps working. `description=""`
+        clears it. `hidden=True` takes the type out of the user's
+        type picker; its objects stay as they are. The icon is
+        set_type_icon; the properties are add_property /
+        patch_property. A built-in type refuses (400
+        type.registered)."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._patch_def(space, "types", tid, {
+            "name": name, "description": description, "hidden": hidden})
+
+    @_public('mutator', label="Changing the collection {collection_key} in {space}")
+    def patch_collection(self, space, collection_key, name=None, description=None,
+                         hidden=None, meta=None):
+        """Rename a collection, or change its description, visibility or meta → {"id", …}.
+
+        `collection_key` is the xKey (or id); the xKey does not
+        change. `description=""` clears it; `meta` is patched key by
+        key ({key: value}). `hidden=True` takes it out of the tag
+        pickers; the members stay filed. A built-in collection
+        refuses (400 collection.registered)."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
+        return self._patch_def(space, "collections", cid, {
+            "name": name, "description": description, "hidden": hidden, "meta": meta})
+
     @_public('mutator')
     def create_collection(self, space, body):
         """Create a collection — a tag, what objects are FILED UNDER — with properties.
@@ -4044,6 +4082,21 @@ class _Client:
         losing root may hold content."""
         r = self._call("get", f"/v1/spaces/{space}/bundles")
         return r.get("bundles") or []
+
+    @_public('mutator', listed=False)
+    def uninstall_bundle(self, space, bundle_id):
+        """Uninstall a bundle: delete its root(s) and what they hold; returns {} (wire: 204).
+
+        Unlisted, and NOT how an app is removed for a user: that is
+        remove_app (the UI hides the app and keeps its content). This
+        deletes the install: every losing root, then the winner,
+        with the records on them. No undo; a later install starts
+        empty. Idempotent. A derived bundle (the general chat, bao's
+        own) cannot be uninstalled. 409 bundle.not_ready while the
+        registry has not synced."""
+        r = self._call("delete", self._bundle_path(space, bundle_id))
+        self._cat_invalidate(space)
+        return r
 
     @_public('getter', listed=False)
     def get_bundle(self, space, bundle_id):

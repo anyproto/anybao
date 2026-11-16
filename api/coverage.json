@@ -31,9 +31,9 @@
       "helper": "anyclient.delete_space (host only; no guest helper)"
     },
     "DELETE /spaces/{spaceId}/bundles/{bundleId}": {
-      "excluded": "bundle uninstall — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:7d3fa73f70920280",
-      "helper": null
+      "helper": "helper.uninstall_bundle (unlisted, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
@@ -458,7 +458,7 @@
     "PATCH /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
       "fingerprint": "sha256:f5d0d5102c77354f",
-      "helper": null
+      "helper": "helper.patch_collection"
     },
     "PATCH /spaces/{spaceId}/collections/{collectionId}/properties/{propId}": {
       "excluded": null,
@@ -488,7 +488,7 @@
     "PATCH /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
       "fingerprint": "sha256:69c028c44819511b",
-      "helper": "anyclient.patch_type (hidden harness types, ADR-027 §2)"
+      "helper": "anyclient.patch_type / helper.patch_type, set_type_icon"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/datasets/{defId}": {
       "excluded": null,

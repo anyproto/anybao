@@ -332,6 +332,39 @@ def test_query_files_is_empty_before_the_first_file():
     assert client(fx).query_files("s1", "o1") == []
 
 
+# --- definitions -------------------------------------------------------------------------
+
+def test_patch_type_and_patch_collection_send_only_what_changes():
+    cat = {**_CAT, "/collections": {"collections": [
+        {"id": "bafyTAG", "name": "Reading list", "xKey": "reading_list"}]}}
+    fx = wire(replies=cat)
+    c = client(fx)
+    assert c.patch_type("s1", "task", name="Job") == {"id": "bafyTASK", "name": "Job"}
+    c.patch_collection("s1", "reading_list", description="", meta={"pinned": True})
+    writes = [x for x in fx.calls if x[0] == "PATCH"]
+    assert writes == [("PATCH", "/v1/spaces/s1/types/bafyTASK", {"name": "Job"}),
+                      ("PATCH", "/v1/spaces/s1/collections/bafyTAG",
+                       {"description": "", "meta": {"pinned": True}})]
+    # the rename is read back: the catalog cache is dropped
+    n = len([1 for v, p, _ in fx.calls if p.endswith("/types")])
+    c.get_type("s1", "task")
+    assert len([1 for v, p, _ in fx.calls if p.endswith("/types")]) == n + 1
+    try:
+        c.patch_type("s1", "task")
+    except ValueError as e:
+        assert "nothing to change" in str(e)
+    else:
+        raise AssertionError("an empty patch must raise")
+
+
+def test_uninstall_bundle_is_unlisted_and_encodes_the_id():
+    fx = wire()
+    c = client(fx)
+    assert c.uninstall_bundle("s1", "system:notes/v1") == {}
+    assert fx.calls == [("DELETE", "/v1/spaces/s1/bundles/system%3Anotes%2Fv1", None)]
+    assert c.uninstall_bundle.__any_public__[2] is False
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
@@ -339,4 +372,5 @@ NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "chat_edit", "chat_delete", "chat_react", "chat_mark_read",
          "create_block", "patch_block", "delete_block",
          "query_dataset", "aggregate_dataset",
-         "query_files", "file_stats", "file_info", "pin_file", "offload_file", "retry_file")
+         "query_files", "file_stats", "file_info", "pin_file", "offload_file", "retry_file",
+         "patch_type", "patch_collection", "uninstall_bundle")
