@@ -3321,6 +3321,34 @@ class _Client:
         self._props_cache.pop((space, tid), None)
         return {}
 
+    # --- deleting a definition (ADR-029 §4) -------------------------------------
+    @_public('mutator', label="Deleting the type {type_key} in {space}")
+    def delete_type(self, space, type_key):
+        """PERMANENTLY delete a user type — confirm with the user first.
+
+        Deletes the DEFINITION only, never its objects: each keeps the dead type
+        (its id in `any.type`, its values under that id) and its body takes no
+        more writes. So first give the objects another type (set_type) or trash
+        them, unless the user wants them left as they are. No undo. Built-in
+        and catalog types refuse. Returns {}."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        self._call("delete", f"/v1/spaces/{space}/types/{tid}")
+        self._cat_invalidate(space)
+        return {}
+
+    @_public('mutator', label="Deleting the collection {collection_key} in {space}")
+    def delete_collection(self, space, collection_key):
+        """PERMANENTLY delete a user collection — confirm with the user first.
+
+        Deletes the DEFINITION only: its members stay, each still filed under
+        the dead id with the values it held there (out of view; unfile one with
+        remove_from_collection by that id). No undo. Built-in and catalog
+        collections refuse. Returns {}."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
+        self._call("delete", f"/v1/spaces/{space}/collections/{cid}")
+        self._cat_invalidate(space)
+        return {}
+
     # --- membership: the one type, the collections (ADR-029 §4) ---------------
     @_public('mutator', label="Changing the type of {object} to {type_key} in {space}")
     def set_type(self, space, object_id, type_key):

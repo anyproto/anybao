@@ -419,10 +419,34 @@ def test_add_property_seeds_options_and_validates_the_descriptor():
         c.add_property("s1", "task", {"name": "X", "kind": "date"})
 
 
+def test_delete_type_and_delete_collection_wire_shapes():
+    # the definition goes, its objects stay (ADR-029 §4); the catalog
+    # is read fresh afterwards
+    cat = {"/types": {"types": [{"id": "bafyTASK", "name": "Task", "xKey": "task"}]},
+           "/collections": {"collections": [
+               {"id": "bafyLIST", "name": "Reading list", "xKey": "reading_list"}]}}
+    fx = wire(replies=cat)
+    c = client(fx)
+    assert c.delete_type("s1", "task") == {}
+    assert c.delete_collection("s1", "reading_list") == {}
+    assert [(v, p.split("/s1/")[1]) for v, p, _ in fx.calls if v == "DELETE"] == [
+        ("DELETE", "types/bafyTASK"), ("DELETE", "collections/bafyLIST")]
+    assert c._types_cache == {}
+    # each surface refuses the other kind, and an unknown handle
+    with pytest.raises(ValueError, match="is a collection, not a type"):
+        c.delete_type("s1", "reading_list")
+    with pytest.raises(ValueError, match="is a type, not a collection"):
+        c.delete_collection("s1", "task")
+    with pytest.raises(ValueError, match="doesn't exist"):
+        c.delete_type("s1", "nope")
+    assert len([1 for v, _, _ in fx.calls if v == "DELETE"]) == 2
+
+
 def test_flat_surface_exposes_the_new_tools_with_docs():
     g = load(wire())
     for name in ("patch_property", "set_option", "remove_option", "reorder_property",
-                 "delete_property", "set_type", "add_to_collection",
+                 "delete_property", "delete_type", "delete_collection",
+                 "set_type", "add_to_collection",
                  "remove_from_collection", "trash", "restore", "list_collections",
                  "create_collection", "list_apps",
                  "list_available_apps", "setup_app", "links", "move_object"):
