@@ -2922,6 +2922,63 @@ class _Client:
                        {"content": content})
         return self._warned(r, self._link_warnings(content))
 
+
+    # --- editor blocks: the body, one block at a time (parity §C10) ----------
+    def _blocks_path(self, space, object_id, block_id=None):
+        return (f"/v1/spaces/{space}/objects/{object_id}/editor/editor_blocks/blocks"
+                + (f"/{_urlquote(block_id)}" if block_id else ""))
+
+    @_public('mutator', label="Adding a block to {object} in {space}")
+    def create_block(self, space, object_id, block):
+        """Add ONE block to an object's body → {versionId, changeId, recordIds}.
+
+        `recordIds[0]` is the new block id. `block`: {"type", "text"?,
+        "style"?, "nav"?}. `type`: paragraph, heading, list_item,
+        check_list_item, code, quote, divider, table, image.
+        `text` is INLINE markdown only (bold, links); the block
+        syntax lives in `type` + `style`: {"level": 1..6} heading,
+        {"ordered": True} list_item, {"checked": bool}
+        check_list_item, {"lang": "go"} code. `nav`: {"parentId":
+        <block id>} nests it, {"pos": <lexid>} places it; default =
+        top level, at the end. Read blocks with query(space,
+        object_id, "editor_blocks", sort=["nav.pos", "id"]). For
+        ordinary writing, the markdown calls are simpler; blocks are
+        for an exact structural edit."""
+        self._check_body(space, object_id)
+        r = self._call("post", self._blocks_path(space, object_id), block)
+        text = block.get("text") if isinstance(block, dict) else None
+        return self._warned(r, self._link_warnings(text))
+
+    @_public('mutator', label="Editing a block of {object} in {space}")
+    def patch_block(self, space, object_id, block_id, set=None, unset=None):
+        """Change fields of one block → {versionId, changeId, recordIds}.
+
+        `set`: {path: value} with DOTTED paths, each one field:
+        {"text": "new", "style.checked": True, "nav.pos": "…"}
+        ("style": {…} replaces the whole style). `unset`: [path].
+        Writable: type, text, style[.key], nav[.parentId|.pos]; type
+        and nav cannot be unset. Tick one checkbox, retype a block,
+        or move it under another parent without touching the rest of
+        the body. 404 blocks.not_found."""
+        body = {}
+        if set:
+            body["set"] = dict(set)
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("patch_block needs `set` and/or `unset`")
+        r = self._call("patch", self._blocks_path(space, object_id, block_id), body)
+        return self._warned(r, self._link_warnings((set or {}).get("text")))
+
+    @_public('mutator', label="Deleting a block of {object} in {space}")
+    def delete_block(self, space, object_id, block_id):
+        """Delete one block → {versionId, changeId, recordIds}.
+
+        Its child blocks are NOT deleted with it: delete them too
+        (query editor_blocks for `nav.parentId` == the block), or they
+        stay without a parent. The object history keeps the block."""
+        return self._call("delete", self._blocks_path(space, object_id, block_id))
+
     # --- spaces & ui context ---------------------------------------------------
     @_public('getter', scoped=False, label="Reading the list of spaces")
     def list_spaces(self, raw=False):

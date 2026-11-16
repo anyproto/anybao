@@ -211,8 +211,40 @@ def test_chat_mark_read_picks_the_route_by_its_arguments():
         raise AssertionError("reactions without a message must raise")
 
 
+# --- editor blocks -----------------------------------------------------------------
+
+BLOCKS = OBJ + "/editor/editor_blocks/blocks"
+_PAGE = {"/objects/query": {"records": [{"id": "o1", "any": {"type": "page"}}]}}
+
+
+def test_create_block_posts_one_block_after_the_body_gate():
+    fx = wire(replies={**_PAGE, "/blocks": {"recordIds": ["b9"]}})
+    r = client(fx).create_block("s1", "o1", {"type": "heading", "text": "Plan",
+                                             "style": {"level": 2}})
+    assert r["recordIds"] == ["b9"]
+    assert fx.calls[-1] == ("POST", BLOCKS, {"type": "heading", "text": "Plan",
+                                             "style": {"level": 2}})
+
+
+def test_patch_and_delete_block_address_one_block():
+    fx = wire(replies={"": {"recordIds": ["b:1"]}})
+    c = client(fx)
+    c.patch_block("s1", "o1", "b:1", set={"style.checked": True}, unset=["style.lang"])
+    c.delete_block("s1", "o1", "b:1")
+    assert fx.calls == [("PATCH", BLOCKS + "/b%3A1", {"set": {"style.checked": True},
+                                                      "unset": ["style.lang"]}),
+                        ("DELETE", BLOCKS + "/b%3A1", None)]
+    try:
+        c.patch_block("s1", "o1", "b:1")
+    except ValueError as e:
+        assert "needs" in str(e)
+    else:
+        raise AssertionError("an empty patch must raise")
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
          "local_discovery", "set_local_discovery", "list_unread", "set_space_settings",
-         "chat_edit", "chat_delete", "chat_react", "chat_mark_read")
+         "chat_edit", "chat_delete", "chat_react", "chat_mark_read",
+         "create_block", "patch_block", "delete_block")

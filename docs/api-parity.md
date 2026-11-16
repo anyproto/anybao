@@ -85,7 +85,7 @@ goes from reads to the writes that cannot be undone.
 | 2 ✓ | Single reads | `GET …/objects/:o`, `…/types/:t`, `…/collections/:c`, `…/members/me`, `…/members/:i` | read |
 | 3 ✓ | Account | `GET /account/limits`, `GET …/read-state/unread`, `GET /identities/:i/icon`, `GET/PUT/DELETE /account/icon`, `GET/PUT /local-discovery`, `PATCH …/settings` | read + write |
 | 4 ✓ | Chat messages | edit, delete, react; `…/read`, `…/reactions-read`, `…/chat/read-all` | write |
-| 5 | Editor blocks | `POST …/blocks`, `PATCH` / `DELETE …/blocks/:b` | write |
+| 5 ✓ | Editor blocks | `POST …/blocks`, `PATCH` / `DELETE …/blocks/:b` | write |
 | 6 | Datasets | space-level `…/datasets/query`, `/aggregate`; declared indexes (create, delete); `PATCH …/fields/:f` | read + write |
 | 7 | Files | `GET …/files/stats`, `…/files/:f/status`; `pin`, `offload`, `retry`; `POST …/objects/:o/files/query` | read + write |
 | 8 | Definitions | `PATCH …/collections/:c`, `DELETE …/bundles/:b` | write |

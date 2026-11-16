@@ -78,7 +78,7 @@
     "DELETE /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:119872c67db71c22",
-      "helper": null
+      "helper": "helper.delete_block"
     },
     "DELETE /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
       "excluded": null,
@@ -473,7 +473,7 @@
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:3d40c081e5d23013",
-      "helper": null
+      "helper": "helper.patch_block"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown": {
       "excluded": null,
@@ -848,7 +848,7 @@
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks": {
       "excluded": null,
       "fingerprint": "sha256:b8d6a66cc0e5d60b",
-      "helper": null
+      "helper": "helper.create_block"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown/append": {
       "excluded": null,
