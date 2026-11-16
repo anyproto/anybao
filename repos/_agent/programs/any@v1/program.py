@@ -5316,6 +5316,82 @@ class _Client:
         q = f"?objectId={object_id}" if object_id else ""
         return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
 
+    @_public('getter', label="Reading the file rows of {object} in {space}")
+    def query_files(self, space, object_id, **opts):
+        """One object's file rows, filtered and sorted → [{id, rootCid, size, objectId}].
+
+        The windowed read for an object with MANY files: `opts` are
+        filter / sort / limit / offset over the row fields (`size`,
+        `id`). The rows carry no name and no mime: list_files has
+        those. An object with no file yet reads as []."""
+        body = {k: v for k, v in opts.items() if v is not None}
+        try:
+            r = self._call("post", f"/v1/spaces/{space}/objects/{object_id}/files/query",
+                           body)
+        except AnyError as e:
+            if e.status == 404 and e.code == "file.not_found":
+                return []
+            raise
+        return r.get("records", [])
+
+    @_public('getter')
+    def file_stats(self, space):
+        """How many files of the space are backed up → {total, durable, inflight, limited}.
+
+        `durable` = safe on the network; `inflight` = the upload
+        still runs; `limited` = the upload waits because the
+        account's storage is full (see account_limits)."""
+        return self._call("get", f"/v1/spaces/{space}/files/stats")
+
+    @_public('getter', scoped=False)
+    def file_info(self, link, file=None):
+        """One file's facts and backup state, no bytes → FileInfo + `uri` + `state`.
+
+        {fileId, objectId, name?, mime?, size, durable, cached,
+        state, attempts?, lastErr?}. `state`: durable / inflight /
+        limited (see file_stats); `cached` = the bytes are on this
+        device. Forms as file_content: `file_info(link)` or
+        `file_info(spaceConfig, fileId)`. Check it before you tell
+        the user that an upload is safe, or when a download answers
+        409 file.not_available."""
+        space, file_id, _ = self._file_target("file_info", link, file)
+        info = dict(self._call("get", f"/v1/spaces/{space}/files/{file_id}"))
+        st = self._call("get", f"/v1/spaces/{space}/files/{file_id}/status")
+        info.update({k: st[k] for k in ("state", "cached", "attempts", "lastErr")
+                     if k in st})
+        info["uri"] = f"any://f/{space}/{info.get('fileId') or file_id}"
+        return info
+
+    def _file_op(self, fn, op, link, file):
+        space, file_id, _ = self._file_target(fn, link, file)
+        return self._call("post", f"/v1/spaces/{space}/files/{file_id}/{op}")
+
+    @_public('mutator', scoped=False)
+    def pin_file(self, link, file=None):
+        """Fetch a file's bytes to this device in the background; returns {} (wire: 204).
+
+        For a file that must open offline or fast later. file_info's
+        `cached` turns True when the fetch is done."""
+        return self._file_op("pin_file", "pin", link, file)
+
+    @_public('mutator', scoped=False)
+    def offload_file(self, link, file=None):
+        """Drop a file's bytes from this device and keep the file; returns {} (wire: 204).
+
+        Frees local disk; the file stays in the space and downloads
+        again on the next read. Refused while this device holds the
+        only copy: 409 file.not_durable."""
+        return self._file_op("offload_file", "offload", link, file)
+
+    @_public('mutator', scoped=False)
+    def retry_file(self, link, file=None):
+        """Run a file's waiting upload or fetch now; returns {} (wire: 204).
+
+        For a file that file_info shows as inflight or limited with
+        a `lastErr`, after the cause is gone (network back, storage
+        freed)."""
+        return self._file_op("retry_file", "retry", link, file)
+
     @_public('getter', scoped=False)
     def file_content(self, link, file=None):
         # ADR-026 §5

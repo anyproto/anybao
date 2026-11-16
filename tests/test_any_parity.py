@@ -3,7 +3,7 @@
 
 import json
 
-from test_any_module import _CAT, REF, client, load, wire
+from test_any_module import _CAT, REF, SID, client, load, wire
 
 OBJ = "/v1/spaces/s1/objects/o1"
 
@@ -290,10 +290,53 @@ def test_the_dataset_declaration_plumbing_is_private_and_hits_its_routes():
                       ("DELETE", DEFS + "/indexes/i1", None)]
 
 
+# --- files -----------------------------------------------------------------------------
+
+FILE = "/v1/spaces/" + SID + "/files/f1"
+
+
+def test_file_info_merges_the_facts_and_the_backup_state():
+    fx = wire(replies={"/files/f1/status": {"fileId": "f1", "state": "inflight",
+                                            "cached": True, "attempts": 2},
+                       "/files/f1": {"fileId": "f1", "name": "a.png", "size": 9,
+                                     "durable": False}})
+    r = client(fx).file_info(f"any://f/{SID}/f1")
+    assert r == {"fileId": "f1", "name": "a.png", "size": 9, "durable": False,
+                 "state": "inflight", "cached": True, "attempts": 2,
+                 "uri": f"any://f/{SID}/f1"}
+    assert [p for _, p, _ in fx.calls] == [FILE, FILE + "/status"]
+
+
+def test_pin_offload_and_retry_post_to_the_file():
+    fx = wire()
+    c = client(fx)
+    link = f"any://f/{SID}/f1"
+    c.pin_file(link)
+    c.offload_file(link)
+    c.retry_file(link)
+    assert fx.calls == [("POST", FILE + "/pin", None), ("POST", FILE + "/offload", None),
+                        ("POST", FILE + "/retry", None)]
+
+
+def test_file_stats_and_query_files():
+    fx = wire(replies={"/files/stats": {"total": 3, "durable": 3},
+                       "/files/query": {"records": [{"id": "f1", "size": 9}]}})
+    c = client(fx)
+    assert c.file_stats("s1") == {"total": 3, "durable": 3}
+    assert c.query_files("s1", "o1", sort=["-size"], limit=None) == [{"id": "f1", "size": 9}]
+    assert fx.calls[-1] == ("POST", OBJ + "/files/query", {"sort": ["-size"]})
+
+
+def test_query_files_is_empty_before_the_first_file():
+    fx = wire(status=404, replies={"": {"error": {"code": "file.not_found"}}})
+    assert client(fx).query_files("s1", "o1") == []
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
          "local_discovery", "set_local_discovery", "list_unread", "set_space_settings",
          "chat_edit", "chat_delete", "chat_react", "chat_mark_read",
          "create_block", "patch_block", "delete_block",
-         "query_dataset", "aggregate_dataset")
+         "query_dataset", "aggregate_dataset",
+         "query_files", "file_stats", "file_info", "pin_file", "offload_file", "retry_file")

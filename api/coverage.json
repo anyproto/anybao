@@ -298,7 +298,7 @@
     "GET /spaces/{spaceId}/files/stats": {
       "excluded": null,
       "fingerprint": "sha256:d2cc98058ea337f7",
-      "helper": null
+      "helper": "helper.file_stats"
     },
     "GET /spaces/{spaceId}/files/subscribe": {
       "excluded": null,
@@ -308,7 +308,7 @@
     "GET /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
       "fingerprint": "sha256:1602a86f115ce865",
-      "helper": "file_info"
+      "helper": "anyclient.file_info / helper.file_info"
     },
     "GET /spaces/{spaceId}/files/{fileId}/content": {
       "excluded": null,
@@ -318,7 +318,7 @@
     "GET /spaces/{spaceId}/files/{fileId}/status": {
       "excluded": null,
       "fingerprint": "sha256:049d6fa65dd2368c",
-      "helper": null
+      "helper": "helper.file_info"
     },
     "GET /spaces/{spaceId}/invites": {
       "excluded": null,
@@ -763,17 +763,17 @@
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
       "excluded": null,
       "fingerprint": "sha256:fdc6fb8a4e06ea76",
-      "helper": null
+      "helper": "helper.offload_file"
     },
     "POST /spaces/{spaceId}/files/{fileId}/pin": {
       "excluded": null,
       "fingerprint": "sha256:093dacc706c1a094",
-      "helper": null
+      "helper": "helper.pin_file"
     },
     "POST /spaces/{spaceId}/files/{fileId}/retry": {
       "excluded": null,
       "fingerprint": "sha256:093dacc706c1a094",
-      "helper": null
+      "helper": "helper.retry_file"
     },
     "POST /spaces/{spaceId}/guest-key": {
       "excluded": null,
@@ -863,7 +863,7 @@
     "POST /spaces/{spaceId}/objects/{objectId}/files/query": {
       "excluded": null,
       "fingerprint": "sha256:6a3a46060d269026",
-      "helper": null
+      "helper": "helper.query_files"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query/subscribe": {
       "excluded": null,
