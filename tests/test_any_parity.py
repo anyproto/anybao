@@ -506,6 +506,36 @@ def test_create_type_with_a_matching_draft_reports_nothing():
     assert "unchangedFields" not in r and "unchangedProps" not in r
 
 
+def test_a_collection_icon_is_a_glyph_and_never_an_emoji():
+    cat = {**_CAT, "/collections": {"collectionId": "bafyNEW", "collections": [
+        {"id": "bafyTAG", "name": "Reading list", "xKey": "reading_list"}]}}
+    fx = wire(replies=cat)
+    c = client(fx)
+    c.create_collection("s1", {"name": "Shelf", "icon": {"glyph": "library"}})
+    post = next(b for v, p, b in fx.calls if v == "POST" and p.endswith("/collections"))
+    assert "library" in post["iconCid"] and "icon" not in post
+    r = c.patch_collection("s1", "reading_list", {"icon": {"glyph": "book-open"}})
+    assert r["changed"] == ["icon"]
+    (patch,) = [b for v, p, b in fx.calls if v == "PATCH"]
+    assert "book-open" in patch["iconCid"]
+    for call, body in ((c.create_collection, {"name": "X", "icon": {"emoji": "📚"}}),
+                       (c.create_collection, {"name": "X", "icon": "📚"}),
+                       (c.create_collection, {"name": "X", "iconCid": "📚"}),
+                       (c.create_type, {"name": "X", "icon": {"emoji": "📚"}})):
+        try:
+            call("s1", body)
+        except ValueError as e:
+            assert "glyph" in str(e)
+        else:
+            raise AssertionError(body)
+    try:
+        c.patch_collection("s1", "reading_list", {"icon": {"emoji": "📚"}})
+    except ValueError as e:
+        assert "never an emoji" in str(e)
+    else:
+        raise AssertionError("an emoji must raise")
+
+
 def test_uninstall_bundle_is_unlisted_and_encodes_the_id():
     fx = wire()
     c = client(fx)

@@ -394,16 +394,17 @@ def _icon_v2(assignment):
                                      separators=(",", ":"), ensure_ascii=False)
 
 
-def _format_type_icon(icon):
-    """A type's `icon` draft -> the stored string; ValueError names
-    the shape. Lucide glyphs only: the client's type picker shows no
-    emoji."""
+def _format_type_icon(icon, what="type"):
+    """The `icon` draft of a definition (a type or a collection) ->
+    the stored string; ValueError names the shape. Lucide glyphs
+    only, never an emoji: the client's pickers show none."""
     if not isinstance(icon, dict) or not icon.get("glyph"):
-        raise ValueError(f'a type\'s "icon" must be {_TYPE_ICON_SHAPE}')
+        raise ValueError(f'a {what}\'s "icon" must be {_TYPE_ICON_SHAPE} — '
+                         "a Lucide glyph, never an emoji")
     if set(icon) - {"glyph"}:
         raise ValueError(
-            f'a type\'s "icon" takes only "glyph" (got {sorted(set(icon) - {"glyph"})}); '
-            "the colour is the user's, in the client's picker")
+            f'a {what}\'s "icon" takes only "glyph" (got {sorted(set(icon) - {"glyph"})}); '
+            "no emoji, and the colour is the user's, in the client's picker")
     g = icon["glyph"]
     if not isinstance(g, str) or len(g) > 256 or not _ICON_GLYPH_RE.match(g):
         raise ValueError(
@@ -3858,7 +3859,8 @@ class _Client:
 
     _PATCH_KEYS = {"types": ("name", "description", "hidden", "icon", "layout", "meta",
                              "properties"),
-                   "collections": ("name", "description", "hidden", "meta", "properties")}
+                   "collections": ("name", "description", "hidden", "icon", "meta",
+                                   "properties")}
 
     def _patch_def(self, space, route, did, owner_key, body):
         """The shared body of patch_type / patch_collection: the
@@ -3879,11 +3881,12 @@ class _Client:
         if "layout" in body:
             wire["layout"] = body["layout"]          # None clears it
         if "icon" in body:
+            what = "type" if route == "types" else "collection"
             if not self._is_user_def(row) or row.get("xKey") in self._catalog_handles():
                 raise ValueError(
-                    f'"{owner_key}" is a builtin or catalog type — its icon is the '
-                    "client's; only a user type's icon can be set.")
-            wire["iconCid"] = _format_type_icon(body["icon"])
+                    f'"{owner_key}" is a builtin or catalog {what} — its icon is the '
+                    f"client's; only a user {what}'s icon can be set.")
+            wire["iconCid"] = _format_type_icon(body["icon"], what)
         if not wire and not props:
             raise ValueError(f"{fn}: nothing to change — the body takes "
                              f"{list(self._PATCH_KEYS[route])}")
@@ -3943,8 +3946,9 @@ class _Client:
         """Change an EXISTING collection: its name, description, meta and properties.
 
         The body of create_collection, for a collection that exists:
-        {"name"?, "description"?, "hidden"?, "meta"?, "properties"?};
-        only the keys you pass change. `collection_key` is the xKey
+        {"name"?, "description"?, "hidden"?, "icon"?, "meta"?,
+        "properties"?}; only the keys you pass change. `icon` is
+        {"glyph": "<Lucide name>"}, never an emoji. `collection_key` is the xKey
         (or id); the xKey never changes. `description: ""` clears
         it; `meta` is patched key by key; `hidden: True` takes it
         out of the tag pickers, the members stay filed. `properties`
@@ -3961,9 +3965,12 @@ class _Client:
     def create_collection(self, space, body):
         """Create a collection — a tag, what objects are FILED UNDER — with properties.
 
-        body: {"name", "xKey"?, "description"?, "hidden"?, "meta"?,
-        "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?}]} (the
-        property drafts of create_type). An empty collection is a
+        body: {"name", "xKey"?, "description"?, "hidden"?, "icon"?,
+        "meta"?, "properties"?: [{"name", "xKey"?, "kind"?,
+        "xFormat"?}]} (the property drafts of create_type). `icon` is
+        optional: {"glyph": "<Lucide icon name>"}, a glyph and never
+        an emoji, as for a type; on an existing collection it is set
+        only when the collection has none. An empty collection is a
         plain tag; with properties it is a supertag: its members carry
         those columns under the collection's group (`{"reading_list":
         {"order": 1}}` in create_object / update_object) and lose them
@@ -3980,13 +3987,23 @@ class _Client:
         body = dict(body or {})
         props = body.pop("properties", None) or []
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        if "iconCid" in body:
+            raise ValueError('a collection takes "icon": ' + _TYPE_ICON_SHAPE
+                             + ' — there is no "iconCid" key')
+        icon = _format_type_icon(body["icon"], "collection") if body.get("icon") else None
         row = self._definition_guards(space, xkey, "collection")
         cid = row["id"] if row else None
         created = False
+        if cid is not None and icon is not None and not row.get("iconCid"):
+            # as create_type: an icon is healed onto a row that has
+            # none; a row that has one keeps it (the user's pick wins)
+            self._call("patch", f"/v1/spaces/{space}/collections/{cid}", {"iconCid": icon})
         if cid is None:
-            req = {k: body[k] for k in ("name", "description", "iconCid", "hidden", "meta")
+            req = {k: body[k] for k in ("name", "description", "hidden", "meta")
                    if k in body}
             req["xKey"] = xkey
+            if icon is not None:
+                req["iconCid"] = icon
             cid = self._call("post", f"/v1/spaces/{space}/collections", req)["collectionId"]
             created = True
             # the property route needs the owner's KIND before any
