@@ -73,7 +73,7 @@
     "DELETE /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:3e81af59d6200494",
-      "helper": null
+      "helper": "helper.chat_delete"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
@@ -468,7 +468,7 @@
     "PATCH /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:60c982bccbf2c947",
-      "helper": null
+      "helper": "helper.chat_edit"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
@@ -828,22 +828,22 @@
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions-read": {
       "excluded": null,
       "fingerprint": "sha256:fe35c044f6c5f22c",
-      "helper": null
+      "helper": "helper.chat_mark_read (reactions=True)"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions/{emoji}": {
       "excluded": null,
       "fingerprint": "sha256:483cf4887052c542",
-      "helper": null
+      "helper": "helper.chat_react"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/read": {
       "excluded": null,
       "fingerprint": "sha256:5d9e1213a631d01b",
-      "helper": null
+      "helper": "helper.chat_mark_read"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/read-all": {
       "excluded": null,
       "fingerprint": "sha256:22ae489a4085c582",
-      "helper": null
+      "helper": "helper.chat_mark_read (no message)"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks": {
       "excluded": null,

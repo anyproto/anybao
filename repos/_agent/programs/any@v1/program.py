@@ -4261,6 +4261,65 @@ class _Client:
                 "bubbles, agent.done=false, go here)")
         return self._post_message(space, chat_id, body)
 
+    # The agent runs as the user's account: "own" below is every message
+    # of that account, the ones the user typed included, and a reaction
+    # or a read mark is the user's own.
+    def _msg_path(self, space, chat_id, message_id, tail=""):
+        return (f"/v1/spaces/{space}/objects/{chat_id}/chat/messages/"
+                f"{_urlquote(message_id)}{tail}")
+
+    @_public('mutator', label="Editing a message in {space}")
+    def chat_edit(self, space, chat_id, message_id, text):
+        """Replace the text of a message this account sent → {versionId, changeId, recordIds}.
+
+        `message_id` is the `id` of a `chat_messages` record. Own
+        messages only (403 chat.not_author; 404 chat.not_found): the
+        ones you posted and the ones the user typed. Edit a message
+        the user typed only when they ask. The text is required, at
+        most 32 KiB; link warnings as in chat_send."""
+        r = self._call("patch", self._msg_path(space, chat_id, message_id),
+                       {"text": text})
+        return self._warned(r, self._link_warnings(text))
+
+    @_public('mutator', label="Deleting a message in {space}")
+    def chat_delete(self, space, chat_id, message_id):
+        """Delete a message this account sent → {versionId, changeId, recordIds}; no undo.
+
+        Own messages only (403 chat.not_author). The message goes for
+        every member. Delete a message the user typed only when they
+        ask for exactly that."""
+        return self._call("delete", self._msg_path(space, chat_id, message_id))
+
+    @_public('mutator', label="Reacting to a message in {space}")
+    def chat_react(self, space, chat_id, message_id, emoji):
+        """Toggle a reaction on a message → {versionId, changeId, recordIds}.
+
+        A second call with the same emoji removes it. The reaction
+        shows as the USER's own (the agent has no identity of its
+        own), on any member's message. `emoji` is one emoji, at most
+        64 bytes (400 chat.emoji_invalid). Read the result on the
+        message's `reactions`."""
+        return self._call("post", self._msg_path(space, chat_id, message_id,
+                                                 "/reactions/" + _urlquote(emoji)))
+
+    @_public('mutator', label="Marking messages read in {space}")
+    def chat_mark_read(self, space, chat_id, message_id=None, reactions=False):
+        """Mark chat messages read FOR THE USER; returns {} (wire: 204).
+
+        No `message_id`: the whole chat. With one: that message and
+        every message before it; `reactions=True` clears the unread
+        reactions on that one message instead. Forward only: nothing
+        marks a message unread again. The user's unread badges drop
+        on every device, so do it when the user asks or when you have
+        told them what the messages say."""
+        if message_id is None:
+            if reactions:
+                raise ValueError("reactions=True needs the message_id whose "
+                                 "reactions are read")
+            return self._call("post", f"/v1/spaces/{space}/objects/{chat_id}/chat/read-all")
+        return self._call("post", self._msg_path(
+            space, chat_id, message_id, "/reactions-read" if reactions else "/read"))
+
     def _post_message(self, space, chat_id, body):
         r = self._call("post",
                        f"/v1/spaces/{space}/objects/{chat_id}/chat/messages", body)

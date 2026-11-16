@@ -179,7 +179,40 @@ def test_set_space_settings_patches_per_key():
         raise AssertionError("an empty patch must raise")
 
 
+# --- chat messages ---------------------------------------------------------------
+
+MSG = OBJ + "/chat/messages/m1"
+
+
+def test_chat_edit_delete_and_react_hit_the_message_routes():
+    fx = wire(replies={"": {"changeId": "c1", "recordIds": ["m1"]}})
+    c = client(fx)
+    assert c.chat_edit("s1", "o1", "m1", "new text")["recordIds"] == ["m1"]
+    c.chat_react("s1", "o1", "m1", "👍")
+    c.chat_delete("s1", "o1", "m1")
+    assert fx.calls == [("PATCH", MSG, {"text": "new text"}),
+                        ("POST", MSG + "/reactions/%F0%9F%91%8D", None),
+                        ("DELETE", MSG, None)]
+
+
+def test_chat_mark_read_picks_the_route_by_its_arguments():
+    fx = wire()
+    c = client(fx)
+    c.chat_mark_read("s1", "o1")
+    c.chat_mark_read("s1", "o1", "m1")
+    c.chat_mark_read("s1", "o1", "m1", reactions=True)
+    assert [p for _, p, _ in fx.calls] == [OBJ + "/chat/read-all", MSG + "/read",
+                                           MSG + "/reactions-read"]
+    try:
+        c.chat_mark_read("s1", "o1", reactions=True)
+    except ValueError as e:
+        assert "message_id" in str(e)
+    else:
+        raise AssertionError("reactions without a message must raise")
+
+
 NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "get_object", "get_type", "get_collection", "get_member",
          "account_limits", "account_icon", "identity_icon", "set_account_icon",
-         "local_discovery", "set_local_discovery", "list_unread", "set_space_settings")
+         "local_discovery", "set_local_discovery", "list_unread", "set_space_settings",
+         "chat_edit", "chat_delete", "chat_react", "chat_mark_read")
