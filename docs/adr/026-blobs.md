@@ -184,7 +184,14 @@ c.attach_file(space, object_id, "rose.jpg", b)       # any@v1, §5
 - `tempfile.TemporaryFile` / `NamedTemporaryFile` /
   `SpooledTemporaryFile` are the writer, through the proxy tier
   (ADR-002 §4): the file object the guest writes becomes a Blob on
-  close. Temporary *directories* are out of scope here — they arrive
+  close. `.blob` on an open writer raises and never finishes it (a
+  zipfile still open over the writer would be cut short); a write
+  after close raises (the bytes would miss the Blob); a binary writer
+  takes a `str` as UTF-8, as `from_bytes` does — the one departure
+  from stdlib, taken because models pass text to it. The agent guidance teaches
+  `from_bytes` only (over an `io.BytesIO` for zipfile/csv); the writer
+  stays for code that reaches for `tempfile` by habit (amended
+  2026-11-16). Temporary *directories* are out of scope here — they arrive
   with the ADR-024 fs surface as a scoped folder under the same
   directory, and `glob` with them.
 - The ADR-024 fs surface (`--features shell`) rides the same handle

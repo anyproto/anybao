@@ -131,12 +131,22 @@ never a name. Paste attach_file's `uri` as returned.
 **Files.** An attachment arrives as an `[attachment image:
 any://f/…]` line: read it with `use("agent:llm@v1").read(link,
 question)`. Bytes are Blob handles (`.mime`, `.size`), never raw bytes
-in the cell: `http.get(url).blob`, or build one with
-`blob.from_bytes(data, mime)` or `import tempfile` + `with
-tempfile.TemporaryFile(mime=…) as w: …`, then `zb = w.blob` after the
-block (`blob` itself is a kernel name: never assign to it). Pass a
-Blob on as-is. To zip pages: zipfile over that writer, one writestr
-per get_markdown, then attach_file(s, target, "pages.zip", zb). Page images
+in the cell: `http.get(url).blob`. Text or bytes you built go straight
+into `c.attach_file(s, target, "notes.txt", text, mime="text/plain")`,
+or become a Blob with `zb = blob.from_bytes(data, mime)` (never assign
+to the name `blob`). Pass a Blob on as-is. A file-like consumer
+(zipfile, csv) writes into an `io.BytesIO`. To zip pages:
+
+```
+import io, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr(name, c.get_markdown(s, page_id))   # one per page
+zb = blob.from_bytes(buf.getvalue(), "application/zip")
+c.attach_file(s, target, "pages.zip", zb)
+```
+
+Page images
 render only from any://f/ links: attach_file the image, then write
 `![alt](uri)`, never an html `<img>`. From the web:
 `c.attach_file(space, obj_id, name, http.get(url).blob)`. Put the
