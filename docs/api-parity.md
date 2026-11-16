@@ -54,6 +54,50 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C10. Manifest audit 2026-11-16 (the manifest against the call sites)
+
+`anyrt drift` compares fingerprints. It does not check that a helper
+name is true, and it accepts a route with neither a helper nor an
+exclusion. This audit compared every route with the HTTP call sites of
+`any@v1` and of the host client (`anyapi.rs`). 196 routes: 81 mapped,
+61 excluded, 54 with neither.
+
+**Corrected**
+
+- 11 routes had a call site and no helper name: `delete_file`,
+  `delete_property`, `find_identities`, `get_identity`, `list_files`,
+  `patch_property`, `create_space`, `aggregate` (records), and the
+  host's `delete_space`, `get_properties`, `subscribe_dataset`.
+- 4 routes were excluded and called all the same: `me`,
+  `list_search_scopes`, `delete_records`, `modify`.
+- 6 routes named a helper that no code carries (chat edit / delete /
+  react, editor block create / patch / delete). They have no helper
+  now.
+- 2 names were wrong (`get_object`, `register_device`).
+
+**The worklist** — the target is a helper for every route below; one
+row is one change, each with its ADR line and a rig test. The order
+goes from reads to the writes that cannot be undone.
+
+| # | Row | Routes | Kind |
+|---|---|---|---|
+| 1 | Object history | `GET …/history`, `/history/:v`, `/history/:v/datasets/:d/records/:r`, `/history/diff` | read |
+| 2 | Single reads | `GET …/objects/:o`, `…/types/:t`, `…/collections/:c`, `…/members/me`, `…/members/:i` | read |
+| 3 | Account | `GET /account/limits`, `GET …/read-state/unread`, `GET /identities/:i/icon`, `GET/PUT/DELETE /account/icon`, `GET/PUT /local-discovery`, `PATCH …/settings` | read + write |
+| 4 | Chat messages | edit, delete, react; `…/read`, `…/reactions-read`, `…/chat/read-all` | write |
+| 5 | Editor blocks | `POST …/blocks`, `PATCH` / `DELETE …/blocks/:b` | write |
+| 6 | Datasets | space-level `…/datasets/query`, `/aggregate`; declared indexes (create, delete); `PATCH …/fields/:f` | read + write |
+| 7 | Files | `GET …/files/stats`, `…/files/:f/status`; `pin`, `offload`, `retry`; `POST …/objects/:o/files/query` | read + write |
+| 8 | Definitions | `PATCH …/collections/:c`, `DELETE …/bundles/:b` | write |
+| 9 | Spaces | `PATCH …/spaces/:s`, `POST /spaces/query`, one-to-one (create, register-incoming, accept, decline), a guest `delete_space` | write, one that cannot be undone |
+| 10 | Sharing | acl (add, remove, permissions, ownership, self-remove, stop-sharing, decline, cancel-join), invites (list, get, delete one, delete all, accept, decline), guest key (create, delete) | write, ask first |
+| 11 | Streams | the seven `…/subscribe` routes (identities, spaces, members, files ×2, objects, datasets) | needs a design: a guest program has no stream primitive |
+
+Not on the worklist: the 46 routes excluded as host or operator
+plumbing (the local trace store, auth, health, shutdown, debug,
+sync-status, push, the file cache, device management, the part
+routes that ADR-027 §2 replaces).
+
 ## C9. Drift refresh 2026-11-16 (pin → any 1dd612cb, v0.4.1 + 29, a running server on that build, `/v1/openapi.json`)
 
 156 paths, 10 added, none removed; 16 endpoint keys added, 30

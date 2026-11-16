@@ -28,7 +28,7 @@
     "DELETE /spaces/{spaceId}": {
       "excluded": null,
       "fingerprint": "sha256:b6bcc7230b3e36e3",
-      "helper": null
+      "helper": "anyclient.delete_space (host only; no guest helper)"
     },
     "DELETE /spaces/{spaceId}/bundles/{bundleId}": {
       "excluded": "bundle uninstall — pending a helper",
@@ -48,7 +48,7 @@
     "DELETE /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
       "fingerprint": "sha256:093dacc706c1a094",
-      "helper": null
+      "helper": "helper.delete_file"
     },
     "DELETE /spaces/{spaceId}/guest-key": {
       "excluded": null,
@@ -73,12 +73,12 @@
     "DELETE /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:3e81af59d6200494",
-      "helper": "helper.chat_delete"
+      "helper": null
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:119872c67db71c22",
-      "helper": "helper.delete_block"
+      "helper": null
     },
     "DELETE /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
       "excluded": null,
@@ -113,12 +113,12 @@
     "DELETE /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
       "fingerprint": "sha256:d0cc40134703a945",
-      "helper": null
+      "helper": "helper.delete_property"
     },
     "GET /account": {
-      "excluded": "harness/account profile",
+      "excluded": null,
       "fingerprint": "sha256:c801ddd86c666245",
-      "helper": null
+      "helper": "helper.me"
     },
     "GET /account/icon": {
       "excluded": "account and identity avatars — pending a helper",
@@ -183,7 +183,7 @@
     "GET /identities": {
       "excluded": null,
       "fingerprint": "sha256:8b5b5a8ca3f0b298",
-      "helper": null
+      "helper": "helper.find_identities"
     },
     "GET /identities/subscribe": {
       "excluded": null,
@@ -193,7 +193,7 @@
     "GET /identities/{identity}": {
       "excluded": null,
       "fingerprint": "sha256:7c5b693cd0f0a756",
-      "helper": null
+      "helper": "anyclient.identity / helper.get_identity"
     },
     "GET /identities/{identity}/icon": {
       "excluded": "account and identity avatars — pending a helper",
@@ -276,9 +276,9 @@
       "helper": "helper catalog (list_properties — routed by the owner kind, ADR-029 §4)"
     },
     "GET /spaces/{spaceId}/datasets": {
-      "excluded": "schema discovery (harness)",
+      "excluded": null,
       "fingerprint": "sha256:ea8cc27a50a9bc40",
-      "helper": null
+      "helper": "helper.list_search_scopes"
     },
     "GET /spaces/{spaceId}/debug": {
       "excluded": "diagnostic (harness/human)",
@@ -293,7 +293,7 @@
     "GET /spaces/{spaceId}/files": {
       "excluded": null,
       "fingerprint": "sha256:f85c105606020c19",
-      "helper": null
+      "helper": "helper.list_files"
     },
     "GET /spaces/{spaceId}/files/stats": {
       "excluded": null,
@@ -398,7 +398,7 @@
     "GET /spaces/{spaceId}/properties/{objectId}": {
       "excluded": null,
       "fingerprint": "sha256:3e582fe803123c8c",
-      "helper": null
+      "helper": "anyclient.get_properties (host only; no guest helper)"
     },
     "GET /spaces/{spaceId}/read-state/unread": {
       "excluded": "unread counters of a space — pending a helper",
@@ -468,12 +468,12 @@
     "PATCH /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:60c982bccbf2c947",
-      "helper": "helper.chat_edit"
+      "helper": null
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:3d40c081e5d23013",
-      "helper": "helper.patch_block"
+      "helper": null
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown": {
       "excluded": null,
@@ -508,7 +508,7 @@
     "PATCH /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
       "fingerprint": "sha256:507d5d6c3826c7ca",
-      "helper": null
+      "helper": "helper.patch_property (+ set_option / remove_option / reorder_property)"
     },
     "POST /account/access-code": {
       "excluded": "client onboarding (alpha invite code redemption, any 6f14041); no agent use case",
@@ -633,7 +633,7 @@
     "POST /spaces": {
       "excluded": null,
       "fingerprint": "sha256:7a7383d2c5d77a8a",
-      "helper": null
+      "helper": "anyclient.create_space / helper.create_space"
     },
     "POST /spaces/derived/{name}": {
       "excluded": null,
@@ -713,7 +713,7 @@
     "POST /spaces/{spaceId}/aggregate": {
       "excluded": null,
       "fingerprint": "sha256:21fdadfc40172ebd",
-      "helper": null
+      "helper": "helper.aggregate (records of one object's dataset)"
     },
     "POST /spaces/{spaceId}/bundles": {
       "excluded": null,
@@ -756,9 +756,9 @@
       "helper": null
     },
     "POST /spaces/{spaceId}/delete-records": {
-      "excluded": "low-level (harness)",
+      "excluded": null,
       "fingerprint": "sha256:3c936eb3e9a9fc17",
-      "helper": null
+      "helper": "helper.delete_records"
     },
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
       "excluded": null,
@@ -796,9 +796,9 @@
       "helper": "create_invite"
     },
     "POST /spaces/{spaceId}/modify": {
-      "excluded": "raw modify — helper wraps internally",
+      "excluded": null,
       "fingerprint": "sha256:c7bfde2401fdec67",
-      "helper": null
+      "helper": "anyclient.modify / helper.modify (unlisted, ADR-010 §1)"
     },
     "POST /spaces/{spaceId}/objects": {
       "excluded": null,
@@ -813,7 +813,7 @@
     "POST /spaces/{spaceId}/objects/query": {
       "excluded": null,
       "fingerprint": "sha256:774687f850181062",
-      "helper": "helper.get_object / query_objects"
+      "helper": "anyclient.query_objects / helper.query_objects"
     },
     "POST /spaces/{spaceId}/objects/query/subscribe": {
       "excluded": null,
@@ -833,7 +833,7 @@
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions/{emoji}": {
       "excluded": null,
       "fingerprint": "sha256:483cf4887052c542",
-      "helper": "helper.chat_react"
+      "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/read": {
       "excluded": null,
@@ -848,7 +848,7 @@
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks": {
       "excluded": null,
       "fingerprint": "sha256:b8d6a66cc0e5d60b",
-      "helper": "helper.create_block"
+      "helper": null
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown/append": {
       "excluded": null,
@@ -903,7 +903,7 @@
     "POST /spaces/{spaceId}/query/subscribe": {
       "excluded": null,
       "fingerprint": "sha256:11b7aeca0bc47785",
-      "helper": null
+      "helper": "anyclient.subscribe_dataset (the host's triggers; no guest helper)"
     },
     "POST /spaces/{spaceId}/search": {
       "excluded": null,
@@ -963,7 +963,7 @@
     "PUT /devices/me": {
       "excluded": null,
       "fingerprint": "sha256:e65b1ffdb5157637",
-      "helper": "anyclient.register_device (ADR-015 election, harness lifecycle)"
+      "helper": "anyclient.upsert_self_device (ADR-015 election, harness lifecycle)"
     },
     "PUT /local-discovery": {
       "excluded": "device network setting — pending a helper",
