@@ -54,6 +54,29 @@ raw spaces/modify (helper wraps it internally).
   invite accept/decline, guest-key mint/revoke (owner-side overlay op —
   today done via the `any` CLI, `docs/repo-overlay-e2e.md`).
 
+## C11. Drift refresh 2026-11-17 (pin → any 35c15512, scratch server on that build, `/v1/openapi.json`)
+
+156 paths, none added, none removed; 33 endpoint keys
+re-fingerprinted. `anyrt drift` is clean.
+
+**Re-fingerprinted (33)** — one change on each: the route documents
+`410 object.deleted`. An id of a deleted object, type or collection
+answers `410`; an id that the device does not know, or does not have
+yet, answers `404`.
+
+- types: `GET/PATCH/DELETE …/types/:t`, their properties, parts and
+  datasets (fields, indexes);
+- collections: `GET/PATCH/DELETE …/collections/:c` and their
+  properties;
+- objects: `DELETE …/objects/:o`, `POST …/properties/:o/type/:t`,
+  `…/set/:t`, `…/collections/:c`;
+- bundles: `POST …/bundles` and `…/bundles/:b/children`, for a
+  deleted `rootType`, `rootCollections` entry or child type.
+
+`any@v1` uses the split on a read: an object that names an unlisted
+type or collection asks `GET …/types/:id` or `…/collections/:id` once
+for each id, and offers deletion only on `410` (ADR-010 §8).
+
 ## C10. Manifest audit 2026-11-16 (the manifest against the call sites)
 
 `anyrt drift` compares fingerprints. It does not check that a helper
