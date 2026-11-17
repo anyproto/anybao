@@ -641,15 +641,17 @@ def test_backend_openrouter_cache_markers_and_thinking():
 
 
 def test_backend_anthropic_thinking_budget():
-    r = LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": 4000}, T(thinking="on"))
+    # the models that take a token budget
+    fin, old = LLM["BACKENDS"]["anthropic"]["finish"], "claude-haiku-4-5-20251001"
+    r = fin({"model": old, "max_tokens": 4000}, T(thinking="on"))
     assert r["thinking"] == {"type": "enabled", "budget_tokens": 3999}
-    r = LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": 40000}, T(thinking="on"))
+    r = fin({"model": old, "max_tokens": 40000}, T(thinking="on"))
     assert r["thinking"]["budget_tokens"] == 16000
     # a cap too small for the 1024 floor: no thinking block rather than a 400
     for cap in (512, 1024, 1025):
-        r = LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": cap}, T(thinking="on"))
+        r = fin({"model": old, "max_tokens": cap}, T(thinking="on"))
         assert ("thinking" in r) == (cap - 1 >= 1024), cap
-    assert "thinking" not in LLM["BACKENDS"]["anthropic"]["finish"]({"max_tokens": 4000}, T())
+    assert "thinking" not in fin({"model": old, "max_tokens": 4000}, T())
 
 
 def test_backend_chat_template_thinking_switch():
@@ -979,6 +981,70 @@ def test_chat_never_retries_a_client_error(status):
         g["chat"](MSGS)
     assert e.value.status == status
     assert len(host.posts) == 1 and host.sleeps == []
+
+
+OPENROUTER_ROW = {"provider": "openai-compat", "model": "minimax/minimax-m3.1-flash",
+                  "base_url": "https://openrouter.ai/api/v1",
+                  "api_key_ref": "llm.key.openrouter"}
+MANDATORY = (400, '{"error":{"message":"Reasoning is mandatory for this endpoint '
+                  'and cannot be disabled.","code":400}}')
+OR_OK = (200, _openai_text("[]"))
+
+
+def test_classify_off_steps_down_when_the_provider_refuses_it():
+    host = ScriptedHost([MANDATORY, OR_OK, OR_OK], prov=OPENROUTER_ROW)
+    g = load(host)
+    assert g["chat"](MSGS, tier="classify")["stop"] == "done"
+    # off as OpenRouter spells it, refused; then the least it can ask for
+    assert [p["json"].get("reasoning") for p in host.posts] == [
+        {"enabled": False}, {"effort": "minimal"}]
+    assert host.sleeps == []          # a step down is not a backoff
+    # the rung is kept for the run: the next call skips the refused form
+    g["chat"](MSGS, tier="classify")
+    assert host.posts[2]["json"]["reasoning"] == {"effort": "minimal"}
+    assert len(host.posts) == 3
+
+
+def test_classify_off_ends_with_no_reasoning_parameter():
+    host = ScriptedHost([MANDATORY, MANDATORY, OR_OK], prov=OPENROUTER_ROW)
+    assert load(host)["chat"](MSGS, tier="classify")["stop"] == "done"
+    assert "reasoning" not in host.posts[2]["json"]
+    # and a provider that refuses that too fails as any 400 does
+    host = ScriptedHost([MANDATORY] * 3, prov=OPENROUTER_ROW)
+    g = load(host)
+    with pytest.raises(g["LlmError"]):
+        g["chat"](MSGS, tier="classify")
+    assert len(host.posts) == 3
+
+
+def test_classify_off_does_not_retry_an_unrelated_400_or_a_row_option():
+    host = ScriptedHost([(400, "bad request: messages"), OR_OK], prov=OPENROUTER_ROW)
+    g = load(host)
+    with pytest.raises(g["LlmError"]):
+        g["chat"](MSGS, tier="classify")
+    assert len(host.posts) == 1
+    # the row's own `options` spell reasoning: sent as written, no steps
+    row = {**OPENROUTER_ROW, "options": {"reasoning": {"effort": "high"}}}
+    host = ScriptedHost([MANDATORY, OR_OK], prov=row)
+    g = load(host)
+    with pytest.raises(g["LlmError"]):
+        g["chat"](MSGS, tier="classify")
+    assert host.posts[0]["json"]["reasoning"] == {"effort": "high"}
+    assert len(host.posts) == 1
+
+
+@pytest.mark.parametrize("model, sent", [
+    ("claude-haiku-5-5", {"type": "adaptive"}),
+    ("claude-sonnet-4-6", {"type": "adaptive"}),
+    ("claude-opus-4-8", {"type": "adaptive"}),
+    ("claude-haiku-4-5-20251001", {"type": "enabled", "budget_tokens": 16000}),
+    ("claude-sonnet-4-20250514", {"type": "enabled", "budget_tokens": 16000}),
+    ("claude-opus-4-5-20251101", {"type": "enabled", "budget_tokens": 16000}),
+])
+def test_anthropic_spells_thinking_on_by_model(model, sent):
+    req = LLM["_finish_anthropic"]({"model": model, "max_tokens": 32768},
+                                   T(thinking="on"))
+    assert req["thinking"] == sent
 
 
 def test_chat_does_not_retry_other_effect_failures():

@@ -197,7 +197,20 @@ On the `anthropic` backend `off` is a value to send, because current
 models reason when the request names no `thinking`: `disabled` where
 the model takes it, `between_tools` where that is its only off form
 (Sonnet 5.5), and nothing where reasoning cannot be turned off
-(Opus 5.5, Fable, Mythos).
+(Opus 5.5, Fable, Mythos). `on` is `adaptive`, and a token budget only
+on the models that still take one (Haiku 4.5 and the 4.5-and-earlier
+Opus and Sonnet).
+
+**`off` a provider refuses steps down.** Some endpoints answer an off
+spelling with a 400 ("Reasoning is mandatory for this endpoint and
+cannot be disabled" — on OpenRouter 6 of 13 models probed 2026-11-17,
+among them MiniMax M3.1 Flash, GLM 5.3 and Gemini 3.8 Flash). `chat()`
+then resends with the least reasoning the wire can ask for
+(`reasoning: {effort: "minimal"}` on OpenRouter; `reasoning_effort`
+`minimal`, then `low`), and last with no reasoning parameter. Only a
+400 whose body speaks of reasoning steps down; the step that answered
+is kept for the run, so a model pays the refused attempt once. A row
+whose `options` spell reasoning is sent as written, with no steps.
 
 **1.4 Provider adapters.** `anthropic` — native; Thinking
 `provider_state` round-trips byte-exact; `cache_control` breakpoints at

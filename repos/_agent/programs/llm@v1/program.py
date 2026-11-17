@@ -984,20 +984,74 @@ _ANTHROPIC_THINKING_OFF = (
 )
 
 
+# `thinking: "on"`: the models that take a token budget. Every later
+# model takes `adaptive` and answers a budget with a 400.
+_ANTHROPIC_BUDGET_MODELS = r"claude-3|haiku-4|(opus|sonnet)-4-([0-5]|20\d{6})(-|$)"
+
+
 def _finish_anthropic(req, traits):
+    model = req.get("model") or ""
     if traits["thinking"] == "off":
         for pattern, value in _ANTHROPIC_THINKING_OFF:
-            if re.search(pattern, req.get("model") or ""):
+            if re.search(pattern, model):
                 if value:
                     req["thinking"] = dict(value)
                 break
-        return req
-    # budget_tokens must be ≥ 1024 and < max_tokens: a small output cap
-    # (a classify-style call) leaves no room — send no thinking block
-    budget = min(16000, req["max_tokens"] - 1)
-    if traits["thinking"] == "on" and budget >= 1024:
-        req["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    elif traits["thinking"] == "on":
+        if not re.search(_ANTHROPIC_BUDGET_MODELS, model):
+            req["thinking"] = {"type": "adaptive"}
+        else:
+            # budget_tokens must be ≥ 1024 and < max_tokens: a small
+            # output cap leaves no room — send no thinking block
+            budget = min(16000, req["max_tokens"] - 1)
+            if budget >= 1024:
+                req["thinking"] = {"type": "enabled", "budget_tokens": budget}
     return req
+
+
+# --- `thinking: "off"` a provider refuses (ADR-005 §1.3) ---------------------
+# Off is an intent, and some endpoints cannot honor it ("Reasoning is
+# mandatory for this endpoint and cannot be disabled", a 400). The call
+# then steps down: the least reasoning the wire can ask for, then no
+# reasoning parameter at all. The rung that worked is kept for the run,
+# so one model pays the refused attempt once.
+_OFF_KEYS = ("thinking", "reasoning", "reasoning_effort", "chat_template_kwargs")
+_REFUSED_OFF = re.compile(r"reason|think", re.I)
+_OFF_RUNG = {}   # (backend, model) → index into the steps that answered
+
+
+def _off_steps(req):
+    """The request's `off` spelling, then each softer one, last none."""
+    if "reasoning" in req:            # OpenRouter
+        softer = [{"reasoning": {"effort": "minimal"}}]
+    elif "reasoning_effort" in req:   # OpenAI and the hosts that copy it
+        softer = [{"reasoning_effort": "minimal"}, {"reasoning_effort": "low"}]
+    else:
+        softer = []
+    return [None, *softer, {}]
+
+
+def _post_off(payload, fold, key):
+    """`_post` for a request that spells `thinking: "off"`, stepping
+    down `_off_steps` while the provider refuses the reasoning setting."""
+    first = payload["json"]
+    steps = _off_steps(first)
+    i = min(_OFF_RUNG.get(key, 0), len(steps) - 1)
+    while True:
+        req = first
+        if steps[i] is not None:
+            req = {k: v for k, v in first.items() if k not in _OFF_KEYS}
+            req.update(steps[i])
+        try:
+            raw = _post({**payload, "json": req}, fold)
+        except LlmError as e:
+            if e.status != 400 or not _REFUSED_OFF.search(e.body or "") \
+                    or i == len(steps) - 1:
+                raise
+            i += 1
+            continue
+        _OFF_RUNG[key] = i
+        return raw
 
 
 def _finish_openai(req, traits):
@@ -1606,7 +1660,12 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
-    raw = _post(payload, lambda body: _fold(adapter, body, stream))
+    fold = lambda body: _fold(adapter, body, stream)  # noqa: E731
+    # an `off` the row's own `options` spell is the row's word: sent as is
+    if traits["thinking"] == "off" and not set(_OFF_KEYS) & set(prov.get("options") or {}):
+        raw = _post_off(payload, fold, (backend, prov["model"]))
+    else:
+        raw = _post(payload, fold)
     raw = be.get("normalize", lambda r: r)(raw)
     return _wall_out(table, _lift(adapter.parse_response(raw), traits))
 
