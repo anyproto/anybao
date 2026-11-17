@@ -2167,6 +2167,46 @@ def test_space_name_ambiguity_fails_loud():
         load(fx)["list_types"]("dev")
 
 
+_H = "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwxyz"
+_SHORT_SPACES = {"/v1/spaces": {"spaces": [
+    {"id": "bafyrei" + ("a3nqg" + _H)[:52] + ".aaaa", "name": "Garden", "status": "active"},
+    {"id": "bafyrei" + ("k7mzz" + _H)[:52] + ".bbbb", "name": "gyuur", "status": "active"},
+    {"id": "bafyrei" + ("gyuur" + _H)[:52] + ".cccc", "name": "Books", "status": "active"},
+    {"id": "bafyrei" + ("x2x2x" + _H)[:52] + ".dddd", "name": "One", "status": "active"},
+    {"id": "bafyrei" + ("x2x2x" + _H)[:52] + ".eeee", "name": "Two", "status": "active"},
+    {"id": "bafyrei" + ("oldol" + _H)[:52] + ".ffff", "name": "Old", "status": "deleted"}]}}
+
+
+def test_short_space_id_resolves_against_the_space_list():
+    fx = wire(replies={**_SHORT_SPACES, "/types": {"types": []}},
+              config={"any.base_url": "http://any"})
+    g = load(fx)
+    rows = _SHORT_SPACES["/v1/spaces"]["spaces"]
+    g["list_types"]("a3nqg")
+    g["list_types"]("ref:space/a3nqg")        # a handle that no wall expanded
+    g["list_types"]("a3nqgabc")               # a longer start of the same id
+    g["list_types"]("gyuur")                  # a name wins over a short id
+    paths = [p for _, p, _ in fx.calls if p.endswith("/types")]
+    assert paths == [f"/v1/spaces/{rows[0]['id']}/types"] * 3 + [
+        f"/v1/spaces/{rows[1]['id']}/types"]
+    assert [p for _, p, _ in fx.calls].count("/v1/spaces") == 1
+
+
+def test_short_space_id_ambiguous_and_unknown_fail_loud():
+    fx = wire(replies=_SHORT_SPACES, config={"any.base_url": "http://any"})
+    g = load(fx)
+    # two spaces with one hash: a short id never tells them apart
+    with pytest.raises(ValueError, match=r'short space id "x2x2x" is ambiguous: '
+                                         r'"One" \(bafyreix2x2x.*"Two" \(bafyreix2x2x'):
+        g["list_types"]("x2x2x")
+    with pytest.raises(ValueError, match='no space named "zzzzz"'):
+        g["list_types"]("zzzzz")
+    with pytest.raises(ValueError, match='no space named "oldol"'):
+        g["list_types"]("oldol")              # a deleted space does not resolve
+    with pytest.raises(ValueError, match='no space named "a3nq"'):
+        g["list_types"]("a3nq")               # four characters: not a short id
+
+
 def test_id_shaped_spaceconfig_skips_the_catalog():
     fx = wire(replies={"/types": {"types": []}},
               config={"any.base_url": "http://any"})

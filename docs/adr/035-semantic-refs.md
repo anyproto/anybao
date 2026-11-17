@@ -21,7 +21,8 @@ Amends: ADR-005 §1 (`llm@v1 chat` gains the wall of §5:
 every `any://` link in the text it sends is rendered as a handle, and
 every handle in the reply is expanded back), ADR-005 §5 (the message
 suffix gains a refs line; the final reply gains chips for what the
-run changed), ADR-010 §8 (a `getRef` global beside `baoSpaceConfig`)
+run changed), ADR-010 §8 (a `getRef` global beside `baoSpaceConfig`;
+a short space id resolves where a space name does, §5)
 Tracks: Linear BOB-179 (from BOB-160 bullet 3, "automap ids to
 semantic meanings"); evidence in `docs/bob-160-probe-results.md`
 (rounds 1 and 2), the boot-window calibration of 2026-10-16 and the
@@ -549,6 +550,20 @@ reaches the kernel with them, so a handle inside a string literal — a
 page body for `put_markdown`, a memory, a program source — is a real
 link by the time any@v1 sees it.
 
+**A short space id is a space argument.** Where an any@v1 function
+takes a space, it reads a short space id — 5 to 52 characters of
+`[a-z2-7]`, the start of the id after `bafyrei` — and `ref:space/<key>`
+with the same key. It resolves against the memoized list of the
+account's active spaces, the list that resolves a space name (ADR-010
+§8); a name wins over a short id. One match is that space; several
+raise with the candidates (two spaces with one hash are never told
+apart by a short id); none falls through to the error of an unknown
+name. An account has tens of spaces, so the list is the whole lookup
+and the server needs no part in it. The wall expands every space
+handle of a call before the cell runs, so this path serves a key that
+reached a cell another way: one that code put together, or one the
+model carried from a thinking part.
+
 A model also fills the link form it knows with the keys it holds:
 `any://f/bow/WKo`, from `ref:space/bow` and `ref:file/WKo` (seen in a
 chat on 2026-11-13; the link was dead for every reader). The outward
@@ -958,7 +973,11 @@ its key, a forced collision leaves the later id long in every place
 of the call and raises nothing, the key expands to the first id only,
 two space ids with one hash leave the later one long, a stamp with an
 id that has no key stays as written, kinds do
-not collide with each other. Unit-test the link shape: a placeholder,
+not collide with each other. Unit-test the short space id in any@v1:
+it resolves against the space list, as a key and as `ref:space/<key>`,
+with one read of the list; a name wins; two spaces with one hash
+raise with both candidates; an unknown key, a deleted space and four
+characters raise as an unknown name. Unit-test the link shape: a placeholder,
 a cut id, a short id, a link with a query, a legacy `any://m/` link
 and a link of an unknown kind all pass through unchanged and take no
 key. Unit-test the kinds: a record link and a property link carry the
