@@ -186,6 +186,19 @@ wire. The wire-facing ones are consumed inside `chat()`. A model trick
 that no trait can express is new code in exactly one hook plus the
 trait that gates it — the config selects behavior, it never defines it.
 
+**A tier sets a default too (amended 2026-11-17).** Resolution order is
+generic traits, the profile's deviations, the tier's own default
+(`TIER_TRAITS`), then the tier row's `traits`. One tier default exists:
+`classify` resolves `thinking: "off"` — its calls are one-off judgments
+with a short answer, and a reasoning pass before each one costs several
+times the answer in output tokens and seconds. A row that wants
+reasoning on its classify model says `"traits": {"thinking": "default"}`.
+On the `anthropic` backend `off` is a value to send, because current
+models reason when the request names no `thinking`: `disabled` where
+the model takes it, `between_tools` where that is its only off form
+(Sonnet 5.5), and nothing where reasoning cannot be turned off
+(Opus 5.5, Fable, Mythos).
+
 **1.4 Provider adapters.** `anthropic` — native; Thinking
 `provider_state` round-trips byte-exact; `cache_control` breakpoints at
 the end of each system block (a `system` list renders one block per

@@ -114,6 +114,32 @@ def test_anthropic_parse_done_and_length():
     assert LLM["AnthropicAdapter"]().parse_response(maxed)["stop"] == "length"
 
 
+def test_classify_tier_resolves_thinking_off_unless_the_row_says():
+    row = {"provider": "anthropic", "model": "claude-haiku-5-5"}
+    assert LLM["_resolve_traits"](row, "classify")[1]["thinking"] == "off"
+    assert LLM["_resolve_traits"](row, "codegen")[1]["thinking"] == "default"
+    assert LLM["_resolve_traits"](row)[1]["thinking"] == "default"
+    keep = {**row, "traits": {"thinking": "default"}}
+    assert LLM["_resolve_traits"](keep, "classify")[1]["thinking"] == "default"
+
+
+@pytest.mark.parametrize("model, sent", [
+    ("claude-haiku-5-5", {"type": "disabled"}),
+    ("claude-haiku-4-5-20251001", {"type": "disabled"}),
+    ("claude-sonnet-5", {"type": "disabled"}),
+    ("claude-sonnet-5-5", {"type": "between_tools"}),
+    ("claude-opus-5-5", None),          # reasoning cannot be turned off
+    ("claude-fable-5-2", None),
+])
+def test_anthropic_spells_thinking_off_by_model(model, sent):
+    req = LLM["_finish_anthropic"]({"model": model, "max_tokens": 32768},
+                                   T(thinking="off"))
+    assert req.get("thinking") == sent
+    # default intent names no thinking at all
+    req = LLM["_finish_anthropic"]({"model": model, "max_tokens": 32768}, T())
+    assert "thinking" not in req
+
+
 def test_anthropic_build_request_roundtrips_blocks():
     msgs = [
         {"role": "user", "parts": [{"type": "text", "text": "hi"}]},

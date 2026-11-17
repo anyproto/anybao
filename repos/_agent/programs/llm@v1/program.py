@@ -197,6 +197,13 @@ GENERIC_TRAITS = {
     "signed_tool_calls": False, "pdf_input": "none", "web_search": False,
 }
 
+# What a tier is FOR sets a default too (ADR-005 §1.3): `classify` is the
+# one-off judgment — a short answer, no reasoning pass. Applied over the
+# profile, under the tier row's own `traits`.
+TIER_TRAITS = {
+    "classify": {"thinking": "off"},
+}
+
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
 # `match` is tried against the tier's `model` (first hit, in order)
 # when the tier names no `profile`; `traits` are deviations from
@@ -286,13 +293,15 @@ def _profile_name(prov):
     return "generic"
 
 
-def _resolve_traits(prov):
-    """GENERIC_TRAITS, then the profile's deviations, then the tier
-    row's own `traits` — what this endpoint can do (`web_search`,
-    `vision`) is the tier's to say, wherever the model family is."""
+def _resolve_traits(prov, tier_name=None):
+    """GENERIC_TRAITS, then the profile's deviations, then the tier's
+    own default (`TIER_TRAITS`), then the tier row's `traits` — what
+    this endpoint can do (`web_search`, `vision`) is the tier's to say,
+    wherever the model family is."""
     name = _profile_name(prov)
     traits = dict(GENERIC_TRAITS)
     traits.update(PROFILES[name]["traits"])
+    traits.update(TIER_TRAITS.get(tier_name, {}))
     _check_traits(traits, f"profile {name!r}")
     tier = prov.get("traits")
     if tier is not None:
@@ -963,7 +972,26 @@ def _thinking_reasoning_effort(req, traits):
     return req
 
 
+# `thinking: "off"` on the Anthropic wire, by model. Current models
+# think when the request names no `thinking`, so off is a value to
+# send: `disabled` where the model takes it, `between_tools` where that
+# is its only off form, nothing where thinking cannot be turned off
+# (first match).
+_ANTHROPIC_THINKING_OFF = (
+    (r"fable|mythos|opus-5-5", None),
+    (r"sonnet-5-5", {"type": "between_tools"}),
+    (r"", {"type": "disabled"}),
+)
+
+
 def _finish_anthropic(req, traits):
+    if traits["thinking"] == "off":
+        for pattern, value in _ANTHROPIC_THINKING_OFF:
+            if re.search(pattern, req.get("model") or ""):
+                if value:
+                    req["thinking"] = dict(value)
+                break
+        return req
     # budget_tokens must be ≥ 1024 and < max_tokens: a small output cap
     # (a classify-style call) leaves no room — send no thinking block
     budget = min(16000, req["max_tokens"] - 1)
@@ -1225,7 +1253,7 @@ def _resolve(tier):
     prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
     if prov.get("provider") not in ADAPTERS:
         raise ConfigError(f"llm.tier.{tier}: unknown provider {prov.get('provider')!r}")
-    name, traits = _resolve_traits(prov)
+    name, traits = _resolve_traits(prov, tier)
     if traits["web_search"] and prov["provider"] != "openai-compat":
         # only the openai-compat wire carries it (`web_search_options`)
         raise ConfigError(f"llm.tier.{tier}: web_search needs provider 'openai-compat', "
