@@ -18,6 +18,7 @@ EDGE_TYPES = ("relates_to", "caused_by", "supersedes", "decided_in",
 BATCH = 20
 TIER = "classify"
 MAX_LINKS = 3
+NEIGHBOR_CHARS = 300
 STATE_DATASET = "agent_job_state"
 STATE_ID = "linkgen"
 
@@ -49,9 +50,16 @@ def _save_state(c, space, brain, last_ts):
                     {"lastCreatedAt": last_ts})
 
 
+def _neighbor_text(hit):
+    """The matched text of a search hit, on one line and capped. The
+    server carries it in `data`; a hit without it shows its id."""
+    text = " ".join(str(hit.get("data") or "").split())
+    return text[:NEIGHBOR_CHARS] or hit.get("recordId")
+
+
 def propose_links(item, neighbors, tier):
-    lines = [f"- id={n.get('recordId')} [{n.get('scope')}] "
-             f"{n.get('snippet') or n.get('recordId')}" for n in neighbors]
+    lines = [f"- id={n.get('recordId')} [{n.get('scope')}] {_neighbor_text(n)}"
+             for n in neighbors]
     prompt = (f"ITEM: [{item.get('category')}] {item.get('context')}\n"
               f"{item.get('body') or ''}\n\nNEIGHBORS:\n" + "\n".join(lines))
     reply = use("llm@v1").chat(  # noqa: F821 - guest global

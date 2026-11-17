@@ -182,15 +182,18 @@ def test_linkgen_writes_only_curated_vocabulary_to_real_neighbors():
     ]
     fake = FakeGuest(
         items=[item("m1", 100)],
-        hits=[{"recordId": "m2", "scope": "agent", "snippet": "other fact"},
+        hits=[{"recordId": "m2", "scope": "agent", "data": "other\nfact"},
               {"recordId": "m1", "scope": "agent"}],     # self-hit dropped
         llm_texts=[json.dumps(proposals)])
     out = run_main("linkgen@v1.py", fake, LG_ARGS)
     assert out == {"swept": 1, "linked": 1, "errors": 0}
     assert fake.evolves == [{"item_id": "m1",
                              "edges": [{"to": "m2", "type": "relates_to"}]}]
+    prompt = fake.llm_calls[0]["messages"][0]["parts"][0]["text"]
     # self was not offered as a neighbor
-    assert "id=m1" not in fake.llm_calls[0]["messages"][0]["parts"][0]["text"]
+    assert "id=m1" not in prompt
+    # the judge reads the neighbor's text, not only its id
+    assert "- id=m2 [agent] other fact" in prompt
     assert fake.state_writes[-1]["value"] == {"lastCreatedAt": at(100)}
 
 
@@ -199,7 +202,7 @@ def test_linkgen_appends_to_existing_edges_and_respects_cursor():
         items=[item("m1", 50), item("m2", 150,
                                     edges=[{"to": "m9", "type": "part_of"}])],
         state=[{"id": "linkgen", "lastCreatedAt": 100}],
-        hits=[{"recordId": "m7", "scope": "agent", "snippet": "s"}],
+        hits=[{"recordId": "m7", "scope": "agent", "data": "s"}],
         llm_texts=[json.dumps([{"to": "m7", "type": "discussed_in"}])])
     out = run_main("linkgen@v1.py", fake, LG_ARGS)
     assert out["swept"] == 1     # m1 is behind the cursor
@@ -218,7 +221,7 @@ def test_linkgen_no_neighbors_no_llm_call():
 def test_llm_parse_failure_counts_error_and_sweep_continues():
     fake = FakeGuest(
         items=[item("m1", 100), item("m2", 110)],
-        hits=[{"recordId": "m7", "scope": "agent", "snippet": "s"}],
+        hits=[{"recordId": "m7", "scope": "agent", "data": "s"}],
         llm_texts=["no json here", json.dumps([{"to": "m7", "type": "part_of"}])])
     out = run_main("linkgen@v1.py", fake, LG_ARGS)
     assert out == {"swept": 2, "linked": 1, "errors": 1}
