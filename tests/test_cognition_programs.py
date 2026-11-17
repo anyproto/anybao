@@ -175,10 +175,11 @@ def item(iid, ts, edges=None):
 
 def test_linkgen_writes_only_curated_vocabulary_to_real_neighbors():
     proposals = [
-        {"to": "m2", "type": "relates_to"},     # ok
-        {"to": "m2", "type": "invented_type"},  # vocabulary ✗
+        {"to": "n1", "type": "relates_to"},     # ok
+        {"to": "n1", "type": "invented_type"},  # vocabulary ✗
         {"to": "ghost", "type": "caused_by"},   # not a neighbor ✗
-        {"to": "m2", "type": "relates_to"},     # duplicate ✗
+        {"to": "m2", "type": "caused_by"},      # a target, not a key ✗
+        {"to": "n1", "type": "relates_to"},     # duplicate ✗
     ]
     fake = FakeGuest(
         items=[item("m1", 100)],
@@ -193,8 +194,35 @@ def test_linkgen_writes_only_curated_vocabulary_to_real_neighbors():
     # self was not offered as a neighbor
     assert "id=m1" not in prompt
     # the judge reads the neighbor's text, not only its id
-    assert "- id=m2 [agent] other fact" in prompt
+    assert "- id=n1 [agent] other fact" in prompt
     assert fake.state_writes[-1]["value"] == {"lastCreatedAt": at(100)}
+
+
+def test_linkgen_links_an_object_hit_to_the_object_not_its_record():
+    page = "any://o/s1/bafyobj"
+    fake = FakeGuest(
+        items=[item("m1", 100)],
+        hits=[
+            # two records of ONE object: its name property and a body block
+            {"recordId": "name", "scope": "basic", "uri": page,
+             "title": "Trip plan", "data": "Trip plan"},
+            {"recordId": "win_abc:2", "scope": "basic", "uri": page,
+             "title": "Trip plan", "data": "day two: the\nmuseum"},
+            {"recordId": "00000042", "scope": "history", "data": "we planned it"},
+            {"recordId": "blk9", "scope": "basic", "data": "no object link"},
+        ],
+        llm_texts=[json.dumps([{"to": "n1", "type": "relates_to"},
+                               {"to": "n2", "type": "discussed_in"},
+                               {"to": "name", "type": "relates_to"}])])   # a record id ✗
+    out = run_main("linkgen@v1.py", fake, LG_ARGS)
+    assert out == {"swept": 1, "linked": 1, "errors": 0}
+    prompt = fake.llm_calls[0]["messages"][0]["parts"][0]["text"]
+    # one neighbor per object, titled; the hit with no object is not offered
+    assert prompt.count("[basic]") == 1
+    assert "- id=n1 [basic] Trip plan: Trip plan" in prompt
+    assert "- id=n2 [history] we planned it" in prompt
+    assert fake.evolves[0]["edges"] == [{"to": page, "type": "relates_to"},
+                                        {"to": "00000042", "type": "discussed_in"}]
 
 
 def test_linkgen_appends_to_existing_edges_and_respects_cursor():
@@ -203,7 +231,7 @@ def test_linkgen_appends_to_existing_edges_and_respects_cursor():
                                     edges=[{"to": "m9", "type": "part_of"}])],
         state=[{"id": "linkgen", "lastCreatedAt": 100}],
         hits=[{"recordId": "m7", "scope": "agent", "data": "s"}],
-        llm_texts=[json.dumps([{"to": "m7", "type": "discussed_in"}])])
+        llm_texts=[json.dumps([{"to": "n1", "type": "discussed_in"}])])
     out = run_main("linkgen@v1.py", fake, LG_ARGS)
     assert out["swept"] == 1     # m1 is behind the cursor
     assert fake.evolves[0]["edges"] == [{"to": "m9", "type": "part_of"},
@@ -222,6 +250,6 @@ def test_llm_parse_failure_counts_error_and_sweep_continues():
     fake = FakeGuest(
         items=[item("m1", 100), item("m2", 110)],
         hits=[{"recordId": "m7", "scope": "agent", "data": "s"}],
-        llm_texts=["no json here", json.dumps([{"to": "m7", "type": "part_of"}])])
+        llm_texts=["no json here", json.dumps([{"to": "n1", "type": "part_of"}])])
     out = run_main("linkgen@v1.py", fake, LG_ARGS)
     assert out == {"swept": 2, "linked": 1, "errors": 1}

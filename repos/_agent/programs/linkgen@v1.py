@@ -57,9 +57,38 @@ def _neighbor_text(hit):
     return text[:NEIGHBOR_CHARS] or hit.get("recordId")
 
 
+def _target(hit):
+    """What an edge to this hit points at. A memory item or a history
+    record: its record id, unique in its store. Any other hit: the
+    OBJECT that holds the matched record, as its link — a property or
+    block record id (`name`, a window id) names nothing by itself."""
+    if hit.get("scope") in ("agent", "history"):
+        return hit.get("recordId")
+    return hit.get("uri")
+
+
+def neighbors_of(hits, item_id):
+    """The hits as link candidates, best first: `{key, target, scope,
+    text}`. One candidate per target (two records of one object are one
+    neighbor), never the item itself; `key` (`n1`, `n2`, …) is the
+    short id the judge answers with."""
+    out, seen = [], {item_id}
+    for h in hits:
+        target = _target(h)
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        title = " ".join(str(h.get("title") or "").split())
+        text = _neighbor_text(h)
+        if title and h.get("scope") not in ("agent", "history"):
+            text = f"{title}: {text}"
+        out.append({"key": f"n{len(out) + 1}", "target": target,
+                    "scope": h.get("scope"), "text": text})
+    return out
+
+
 def propose_links(item, neighbors, tier):
-    lines = [f"- id={n.get('recordId')} [{n.get('scope')}] {_neighbor_text(n)}"
-             for n in neighbors]
+    lines = [f"- id={n['key']} [{n['scope']}] {n['text']}" for n in neighbors]
     prompt = (f"ITEM: [{item.get('category')}] {item.get('context')}\n"
               f"{item.get('body') or ''}\n\nNEIGHBORS:\n" + "\n".join(lines))
     reply = use("llm@v1").chat(  # noqa: F821 - guest global
@@ -69,14 +98,15 @@ def propose_links(item, neighbors, tier):
     return _first_json_array(text)
 
 
-def valid_links(proposals, neighbor_ids, existing_edges, max_links):
+def valid_links(proposals, targets, existing_edges, max_links):
     """Vocabulary + target allow-lists enforced in code; dedup against
-    edges already on the item."""
+    edges already on the item. `targets` maps a neighbor key to the
+    edge target it stands for."""
     seen = {(e.get("to"), e.get("type")) for e in existing_edges}
     out = []
     for p in proposals:
-        to, typ = p.get("to"), p.get("type")
-        if typ not in EDGE_TYPES or to not in neighbor_ids or (to, typ) in seen:
+        to, typ = targets.get(p.get("to")), p.get("type")
+        if typ not in EDGE_TYPES or to is None or (to, typ) in seen:
             continue
         seen.add((to, typ))
         out.append({"to": to, "type": typ})
@@ -104,12 +134,11 @@ def main(args):
         try:
             hits = c.search(space, item.get("context", ""),
                             scopes=["agent", "history", "basic"], limit=8)
-            neighbors = [h for h in hits.get("hits", [])
-                         if h.get("recordId") != item["id"]]
+            neighbors = neighbors_of(hits.get("hits", []), item["id"])
             if not neighbors:
                 continue
             proposals = propose_links(item, neighbors, tier)
-            links = valid_links(proposals, {n["recordId"] for n in neighbors},
+            links = valid_links(proposals, {n["key"]: n["target"] for n in neighbors},
                                 item.get("edges") or [], max_links)
             if links:
                 mem.evolve(item["id"],
