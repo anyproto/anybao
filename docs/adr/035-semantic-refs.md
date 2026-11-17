@@ -5,7 +5,9 @@ Status: **Accepted** (2026-11-12; proposed 2026-09-25, revised
 2026-11-10 after the PR review, 2026-11-11 after the community chat
 review and a replay on real windows, 2026-11-12 the collision rule
 stated as a set lookup, with its measured cost, and the link kinds of
-the server's registry)
+the server's registry, 2026-11-16 the key is the first five characters
+of the id after its header — the short object id of the server — and
+an id whose key is taken stays long)
 Date: 2026-09-25
 Builds on: ADR-001 §4 (span records: `input` on begin, `output` on
 end), ADR-002 (the effect boundary: `http.post` is the one effect
@@ -19,7 +21,8 @@ Amends: ADR-005 §1 (`llm@v1 chat` gains the wall of §5:
 every `any://` link in the text it sends is rendered as a handle, and
 every handle in the reply is expanded back), ADR-005 §5 (the message
 suffix gains a refs line; the final reply gains chips for what the
-run changed), ADR-010 §8 (a `getRef` global beside `baoSpaceConfig`)
+run changed), ADR-010 §8 (a `getRef` global beside `baoSpaceConfig`;
+a short space id resolves where a space name does, §5)
 Tracks: Linear BOB-179 (from BOB-160 bullet 3, "automap ids to
 semantic meanings"); evidence in `docs/bob-160-probe-results.md`
 (rounds 1 and 2), the boot-window calibration of 2026-10-16 and the
@@ -147,11 +150,11 @@ does not change.
 ### 1. A ref and its handle
 
 ```
-ref:object/gyu#book  {"kind": "object", "type": "book", "name": "Dune", "spaceId": "...",
+ref:object/gyuur#book  {"kind": "object", "type": "book", "name": "Dune", "spaceId": "...",
                       "objectId": "...", "uri": "any://o/<spaceId>/<objectId>"}
-ref:file/3V2         {"kind": "file", "name": "demo.png", "spaceId": "...", "fileId": "...",
+ref:file/3V2A2         {"kind": "file", "name": "demo.png", "spaceId": "...", "fileId": "...",
                       "on": "<objectId>", "uri": "any://f/<spaceId>/<fileId>"}
-ref:space/a3n        {"kind": "space", "name": "Garden", "spaceId": "..."}
+ref:space/a3nqg        {"kind": "space", "name": "Garden", "spaceId": "..."}
 ```
 
 On the left is the handle the model reads and writes; on the right is
@@ -191,83 +194,77 @@ model wrote and one finds every uri it is about to read. A handle and
 a uri are two spellings of one thing; the scheme is not what keeps
 the short spelling out of the chat — the wall is.
 
-The **key** is **three** characters sliced from the id. An id that
-starts with `bafy` drops its first seven characters (multibase, codec
-and hash header — constant for every id the server mints); any other
-id is sliced from its start, except an identity, which drops its
-first two characters (they take few values, so a slice from the start
-would collide often). The slice runs over the letters and
-digits of the id; the dot in a space id is skipped. So
-`bafyreigyuur4hq…` keys as `gyu`, the file `3V2A2AJ6J8j` as `3V2`,
-the space `bafyreia3nqgj…` as `a3n`.
+The **key** is the first **five** characters of the id, after its
+header. An id that starts with `bafy` drops its first seven characters
+(`bafyrei`: multibase, codec and hash header — constant for every id
+the server mints); any other id is read from its start, except an
+identity, which drops its first two characters (they take few
+values). The key runs over the letters and digits of the id. So
+`bafyreigyuur4hq…` keys as `gyuur`, the file `3V2A2AJ6J8j` as `3V2A2`,
+the space `bafyreia3nqgj…` as `a3nqg`.
 
-Keys are given **in text order, and the first id seen keeps its
-key**. The wall reads the text of one call from its start; each new
-id takes its slice. If that slice is already the key of another id
-of the same kind in this call, the new id **shifts** its slice one
-character along the id (characters 2–4, then 3–5, …) until the slice
-is free. The length never changes and a key already given never
-changes. A collision is therefore not an error: it raises nothing.
-The kind keeps the id spaces apart; a `ref:prop` handle has no key of
-its own, it carries the key of its object.
+For an object this is the **short object id of the server**: the any
+server reads 5 to 52 characters of the id after `bafyrei` where a
+request names an object, and resolves them within the space (any
+`docs/03-api.md` § Object ids, any PR 345, open on 2026-11-16). The
+wall does not depend on that: it expands every handle to the full id
+before a request is made (§5). The two spellings are the same so that
+one short form names an object everywhere, and so that a later
+revision can ask the server about a key that the table of a call does
+not hold.
 
-"Free" is one question to one set: the keys already given in this
-call, one key per id. The wall never compares an id with another id,
-and never looks at the other slices of an id that has its key. Two
-ids that start with the same characters therefore part after one
-step: the first holds `gyu`, the second takes `yuu`, and `yuu` is
-free because no id holds it as a key — that both ids contain it does
-not matter. No reader matches a key against an id either: a handle
-resolves by a lookup in the table of its call, in both directions.
-An id of 59 characters has about 50 slices. If every one of them is
-taken, the id takes its first slice with one more character (and one
-more again, if needed), so the rule always ends. Only well-formed ids
-get a key (§5), and for those the case is out of reach: with 120 keys
-in the call the chance is about 10⁻²² for a file id (9 slices) and
-about 10⁻¹²² for an object id (50 slices). A call with thousands of
-ids needs a four-character key, not a better last resort.
+A key is a **function of the id alone**. One object has one key in
+every call, every chat and on every device; the text before the id
+does not change it.
 
-The cost is linear in the number of ids in the call:
+**The first id seen keeps its key.** The wall reads the text of one
+call from its start. When the key of a new id is already the key of
+another id of the same kind in this call, the new id gets no key: it
+stays in the text as it is written, long, in every place of the call,
+and the key names the first id only. Nothing is raised and no key
+ever changes. The kind keeps the id spaces apart; a `ref:prop` handle
+has no key of its own, it carries the key of its object.
 
-| | Measured (2026-11-12, one account, 50 days, 3,554 model calls of 517 conversation runs) |
-|---|---|
-| Lookups per id | 1.0002 (56,149 lookups for 56,135 keys given) |
-| Calls with a shift | 14 of 3,554 (0.4%), all in one run |
-| Ids that shift | 14 of 56,135 (0.02%) |
-| Steps per shift | 1 in all 14 cases |
-| Largest call | 55 lookups |
-| Time per call | 0.02 ms for the keys; 1.5 ms to find the ids in the text (130,000 characters on average) |
+The header of a `bafy` id is 32 bits and a base32 character holds 5,
+so the first character after `bafyrei` carries 3 bits of the hash and
+takes 8 values (`a` to `h`). Five characters are therefore 23 bits:
+8,388,608 keys for objects and for spaces. A file id and an identity
+use letters and digits of both cases, about 900 million keys.
 
-With `n` ids of one kind in a call and 32,768 three-character keys,
-the chance that a call has a collision is about `n(n−1)/65,536`: 0.4%
-at the median run (17 ids), 2.4% at 40 ids, about 20% at the largest
-run measured (120 ids). An id that collides takes `1/(1 − n/32,768)`
-steps on average, 1.004 at 120 ids. The expected work is therefore
-`n` lookups plus a fraction of one. The worst case, with ids built on
-purpose, is one step per key already given, `n²/2` lookups in all:
-7,200 at 120 ids, still less than the scan of the text.
+With `n` ids of one kind in a call, the chance that a call has an id
+without a key is about `n(n−1)/2` in 8,388,608: 0.002% at the median
+run (17 ids), 0.009% at 40 ids, 0.09% at the largest run measured
+(120 ids). Two space ids with one hash and two suffixes share every
+key: the later one always stays long (one such pair in 2,469
+conversation runs, 2026-11-11, four accounts). These are estimates
+from the key space; the recorded windows were not replayed with
+five-character keys.
 
-A key is a function of the id and of the text before it, and of
-nothing else — not of the process, the device, the run or the text
-after it. Two consequences carry the design:
+The work is one set lookup per id. Measured on 2026-11-12 (one
+account, 50 days, 3,554 model calls of 517 conversation runs): 56,135
+ids, 55 in the largest call, 0.02 ms per call for the keys and 1.5 ms
+to find the ids in the text (130,000 characters on average).
+
+A handle costs 6.8 tokens on Qwen3 and 6.6 on `o200k` with a
+five-character key, against 5.4 with three characters and 6.1 with
+four (2026-11-16: 5,000 generated object ids, the handle
+`ref:object/<key>` counted alone; a full object id is 37.5 and 34.8
+tokens). Five characters cost about 1.3 tokens per handle over three.
+
+Two consequences carry the design:
 
 - the same text renders the same handles everywhere, so a prompt
   whose prefix is stable renders a stable prefix (the cache, §5), and
   a replay or a second device makes the same wire text (§5);
-- in almost every call the key is the plain slice: at three
-  characters 18 of 2,469 conversation runs had a collision among
-  their links and stamp ids (2026-11-11, four accounts; 17 of the 18
-  on one account, and one a pair of space ids with the same hash and
-  different suffixes: the later one takes its key after one step,
-  like any other pair). In
-  two different chats an object may rarely get two different keys;
-  nothing depends on them being equal, because no handle outlives
-  its call (§5b).
+- a handle the model read in one call is the handle of that object in
+  the next call too. Nothing depends on that, because no handle
+  outlives its call (§5b), but a part that the wall cannot rewrite —
+  a signed thinking part — holds a key that is still right.
 
 The **type** rides as a `#` fragment, the way a fragment rides a
 URL: a label, not part of the identity. The wall reads kind + key and
-drops the fragment on the way out, so `ref:object/gyu#novel` and a
-bare `ref:object/gyu` both expand to the same link after a
+drops the fragment on the way out, so `ref:object/gyuur#novel` and a
+bare `ref:object/gyuur` both expand to the same link after a
 `set_type`. Files and spaces carry no fragment.
 
 **One object, two spellings.** Only the refs line carries a fragment.
@@ -275,8 +272,8 @@ The loop reads the type of each ref at run start (§2) and writes it
 after the link (§3); the wall keeps a fragment that follows a link.
 Every other text reaches the wall as a plain link — a result, an
 earlier reply, the stamp — and the wall renders a bare handle there.
-So one call can show `ref:object/gyu#book` on the refs line and
-`ref:object/gyu` in a result: the same object, and the model may
+So one call can show `ref:object/gyuur#book` on the refs line and
+`ref:object/gyuur` in a result: the same object, and the model may
 write either. A reply written with a fragment is stored without it,
 and comes back bare in the window of the next run. The wall does not
 add the type everywhere because the window must render the same
@@ -377,9 +374,9 @@ The loop:
 
 The loop writes uris; the model never reads them. The wall renders
 the line with the rest of the message (§5), and the model reads:
-`[refs: [Dune](ref:object/gyu#book) in Garden ·
-[Books](ref:object/k7m#folder) in Garden ·
-[demo.png](ref:file/3V2) on Dune · [Garden](ref:space/a3n)]`. The link shape is
+`[refs: [Dune](ref:object/gyuur#book) in Garden ·
+[Books](ref:object/k7mzz#folder) in Garden ·
+[demo.png](ref:file/3V2A2) on Dune · [Garden](ref:space/a3nqg)]`. The link shape is
 the one the model reads and writes everywhere else. No long ids reach
 the model.
 
@@ -400,7 +397,7 @@ inject with a view gets the same line, rebuilt.
 `getRef(x)` returns the dict of §1 for one entry. `x` is a uri
 (`any://o/…`, `any://f/…`), a space id, or a name (`"Dune"`).
 
-The model writes a handle — `getRef("ref:object/gyu")` — and the
+The model writes a handle — `getRef("ref:object/gyuur")` — and the
 kernel never sees it: the wall expands the cell source before the
 loop has it (§5), so the call that runs is `getRef("any://o/…")`.
 That is why `getRef` needs no key table, and why a handle is always
@@ -418,7 +415,7 @@ argument resolves to the right entry or raises. Calls stay exactly as
 today:
 
 ```python
-d = getRef("ref:object/gyu")
+d = getRef("ref:object/gyuur")
 c.update_object(d["spaceId"], d["objectId"], {"book": {"rating": 9}})
 llm.read(getRef("demo.png")["uri"], "describe the image")
 ```
@@ -495,11 +492,11 @@ referencing object, in its own space). A result that
 showed only `'id': 'bafy…'` left the model with a long id and no
 handle, and a model that had to link the object made a handle up
 (staging rig, 2026-11-14). A model also passes a handle where a call
-takes an object id (`get_markdown(space, "ref:object/bcj")`); the
+takes an object id (`get_markdown(space, "ref:object/bcjq4")`); the
 handle reaches the cell as the link of the object, so every any@v1
 function reads an object link in `object_id` as that object. The
 same holds for the `id` condition of a filter
-(`filter={"id": "ref:object/bcj"}`, `{"id": {"$in": [...]}}`): the
+(`filter={"id": "ref:object/bcjq4"}`, `{"id": {"$in": [...]}}`): the
 server matches `id` on the id alone, so a link there matched nothing
 and raised no error.
 
@@ -535,7 +532,7 @@ sentence ends the link. An object keeps the space of the first link
 that showed it. The tool definitions are not rewritten. A thing that
 is not an object gets no handle, so the table holds only ids that the
 server can resolve, and a text cannot fill the table with short fake
-ids to push a real id off its slice (§1).
+ids to take the key of a real id (§1).
 
 **Outward**, on the text parts and the `tool_call` inputs of the
 reply: `ref:object/<key>`, `ref:file/<key>` and `ref:user/<key>`
@@ -543,7 +540,7 @@ become the uri from the table, fragment dropped; a tail after an
 object handle stays after the uri, and `ref:prop/<key>/<propId>`
 becomes the property link of that object. A space has two spellings,
 and the place of the handle selects one: `ref:space/<key>` as the
-target of a markdown link (`](ref:space/a3n)`) becomes
+target of a markdown link (`](ref:space/a3nqg)`) becomes
 `any://s/<spaceId>`, a link that the chat can open; anywhere else it
 becomes the space id, which is what every call takes for a space. The
 loop receives real
@@ -552,6 +549,20 @@ parser (`_auto_attachments`) chips them as today; the cell source
 reaches the kernel with them, so a handle inside a string literal — a
 page body for `put_markdown`, a memory, a program source — is a real
 link by the time any@v1 sees it.
+
+**A short space id is a space argument.** Where an any@v1 function
+takes a space, it reads a short space id — 5 to 52 characters of
+`[a-z2-7]`, the start of the id after `bafyrei` — and `ref:space/<key>`
+with the same key. It resolves against the memoized list of the
+account's active spaces, the list that resolves a space name (ADR-010
+§8); a name wins over a short id. One match is that space; several
+raise with the candidates (two spaces with one hash are never told
+apart by a short id); none falls through to the error of an unknown
+name. An account has tens of spaces, so the list is the whole lookup
+and the server needs no part in it. The wall expands every space
+handle of a call before the cell runs, so this path serves a key that
+reached a cell another way: one that code put together, or one the
+model carried from a thinking part.
 
 A model also fills the link form it knows with the keys it holds:
 `any://f/bow/WKo`, from `ref:space/bow` and `ref:file/WKo` (seen in a
@@ -612,21 +623,22 @@ earlier calls or earlier runs would put the history of the process
 into the provider body, and a replay in a new process would miss.
 
 **The cache.** A prompt whose prefix is unchanged renders an
-unchanged prefix, because each key depends only on the text before
-it (§1). Across runs the boot window is that prefix, so the boot-end
+unchanged prefix, because a key depends on its id and, for the rare
+id whose key is taken, on the text before it (§1). Across runs the boot window is that prefix, so the boot-end
 breakpoint (ADR-005 §1.4) holds: shipping the wall costs one cache
 miss per chat, then the window is stable — and about a fifth shorter.
 Inside a run the message list only grows (the loop appends the reply
 and the results; it never edits an earlier message), so each call
 extends the one before it.
 
-What the wall does not cover, and why that is fine: a link that a
+What the wall does not cover, and why that is fine: an id whose key
+another id of the call holds stays long (§1); a link that a
 slice cut in the middle is not well-formed and stays long; a
 handle assembled from fragments inside code escapes the rewrite and
 misses at the first call, loudly; a key the model damaged into the
 key of another object in the same call expands to that object, as a
-mis-copied long id does today — three fixed characters make that a
-one-in-30,000 accident per pair, and the raw reply in the
+mis-copied long id does today — five fixed characters make that a
+one-in-eight-million accident per pair of objects, and the raw reply in the
 `http.post` record shows what was written. `llm@v1 judge` builds its
 own request and has no wall.
 
@@ -645,7 +657,7 @@ history carries the links whether or not the model wrote them.
 A handle exists between the wall's two rewrites and nowhere else.
 What the loop holds, what a cell runs and what anything persists is
 always the uri: a program (ADR-013) the model saved with
-`getRef("ref:object/gyu")` in it is stored as `getRef("any://o/…")`,
+`getRef("ref:object/gyuur")` in it is stored as `getRef("any://o/…")`,
 which resolves on any run without a table (§4). No write gate is
 needed. Pages and memories are prose and arrive expanded the same
 way.
@@ -664,21 +676,21 @@ the stamp only — there are no refs yet. The cell
 `c.create_object(currentUserSpace, {"name": "Dune", "type": "book"})`
 leaves a span whose begin record holds the name and space and whose
 end record holds the id and link. The cell's result holds the uri;
-on the next call the wall renders it as `ref:object/gyu`, and the
-model replies `Added [Dune](ref:object/gyu)`, which the wall
+on the next call the wall renders it as `ref:object/gyuur`, and the
+model replies `Added [Dune](ref:object/gyuur)`, which the wall
 expands: the loop and the chat see `[Dune](any://o/…)` and a chip.
 The run's `llm.chat` records hold the uri; its `http.post` records
-hold `ref:object/gyu`.
+hold `ref:object/gyuur`.
 
 Exchange 2, the user sends demo.png, "this is the cover". At start
 the query over run 1 yields two ids, the read names them `Dune`
 (book) and `Garden`; `_ctx` binds the resolver, and the loop ends the
 message with the stamp and a refs line of two links. The model reads
-`[refs: [Dune](ref:object/gyu#book) in Garden ·
-[Garden](ref:space/a3n)]`, and the window shows exchange 1's reply
-as `Added [Dune](ref:object/gyu)` — the same key, because the window
-comes first in the text and Dune's id was first seen there. The model
-writes `d = getRef("ref:object/gyu"); c.attach_file(d["spaceId"],
+`[refs: [Dune](ref:object/gyuur#book) in Garden ·
+[Garden](ref:space/a3nqg)]`, and the window shows exchange 1's reply
+as `Added [Dune](ref:object/gyuur)` — the same key, because a key is
+the start of the id. The model
+writes `d = getRef("ref:object/gyuur"); c.attach_file(d["spaceId"],
 d["objectId"], "demo.png", data)`; the cell that runs has the uri in
 place of the handle, and copies no id. The reply `Attached the cover
 to Dune.` carries no link; §5a chips Dune anyway, because the run
@@ -687,17 +699,17 @@ changed it.
 Exchange 3, "what's in that image?". The window shows the two past
 turns exactly as today (stamp, `[ran: any.attach_file×1 · run_…]`,
 replies) with handles for their links; the current message ends with
-`[refs: [demo.png](ref:file/3V2) on Dune ·
-[Dune](ref:object/gyu#book) in Garden · [Garden](ref:space/a3n)]`. The
-cell `llm.read(getRef("ref:file/3V2")["uri"], "describe the image")`
+`[refs: [demo.png](ref:file/3V2A2) on Dune ·
+[Dune](ref:object/gyuur#book) in Garden · [Garden](ref:space/a3nqg)]`. The
+cell `llm.read(getRef("ref:file/3V2A2")["uri"], "describe the image")`
 is where round 2 failed: the file link was in no reply, the model
 built a wrong one. Had the user renamed the book to "Dune: Part One"
 between the exchanges, the line would carry the new name and the
 same handle.
 
-Had a second book's id sliced to `gyu` as well, the one later in the
-text would read `ref:object/yuu` (its slice shifted by one) in that
-call, and nothing else would change.
+Had a second book's id started with `gyuur` as well, the one later
+in the text would stay a full link in that call, and nothing else
+would change.
 
 ## Consequences
 
@@ -721,45 +733,47 @@ call, and nothing else would change.
   trace does not show.
 - The table is **reproducible without a store**: it is a function of
   the call's text, so the same text gives the same handles on every
-  run, every device and every replay. Three things follow from "the
-  first id seen keeps its key":
-  - the cache holds at any key length (0 breaks in 342 extending
-    windows for every first-seen rule in the replay; 40 for the one
-    rule that let a new id reshape an old key);
-  - a collision is harmless — the later id shifts its slice — so the
-    key can be short: three characters, not the six that the 11-10
-    revision needed to make a raising collision rare;
-  - an incrementing number by first appearance would be as stable as
-    a slice (the 11-10 revision said a per-run number was
-    cache-unstable; the replay shows that this holds only for a
-    number given in table order, not in text order). The slice is
-    kept for another reason, below.
-- The key is a **fixed-length slice, not a counter and not a growing
-  prefix**, because of what a damaged handle does. On the largest
-  window (31 objects): with a key that starts at one character and
-  grows on a collision, 23 of 31 keys become the key of another live
-  object when one character is dropped; with a counter, 9 of 31, and
-  a random number names a live object 31% of the time; with a fixed
-  slice, 0 of 31, and a random three-character key hits a live
-  object about once in 1,000. A fixed slice that is damaged misses
-  the table, becomes `ref:unknown/…` and is named in `unresolvedRefs`
-  (§5). The price is a token and a half per handle over a
-  one-character key (5.5 against 4.0, Qwen3 and `o200k`) — less than
+  run, every device and every replay. A key is a function of its id,
+  and "the first id seen keeps its key" settles the rare pair that
+  shares one:
+  - the cache holds: a key never changes, and whether a later id has
+    a key depends only on the text before it (the 2026-11-11 replay
+    measured 0 breaks in 342 extending windows for every first-seen
+    rule, and 40 for the one rule that let a new id reshape an old
+    key);
+  - a collision is harmless — the later id stays long — and at 23
+    bits it is rare enough to pay for with a long id (§1).
+- The key is a **fixed-length start of the id, not a counter and not
+  a growing prefix**, because of what a damaged handle does. On the
+  largest window (31 objects): with a key that starts at one
+  character and grows on a collision, 23 of 31 keys become the key of
+  another live object when one character is dropped; with a counter,
+  9 of 31, and a random number names a live object 31% of the time;
+  with a fixed length, 0 of 31, and a random five-character key hits
+  one of 31 live objects about once in 270,000. A fixed-length key
+  that is damaged misses the table, becomes `ref:unknown/…` and is
+  named in `unresolvedRefs` (§5). The price is under three tokens per
+  handle over a one-character key (6.8 against 4.0 on Qwen3) — about
   1% of the window.
+- The key is the short id of the server, so a person can paste a key
+  from a trace into a request, and the server and the wall name an
+  object the same way.
 - The window is about a fifth shorter (15,083 tokens against 19,249
-  on the largest replayed window), and stays byte-stable across runs.
+  on the largest replayed window, measured with three-character keys;
+  five characters add about 1.3 tokens for each of its 63 handles),
+  and stays byte-stable across runs.
 - The two spellings never meet: the model reads and writes handles,
   everything else holds uris, and one place converts. No prompt rule
   about which goes where, and nothing for a weaker model to drop.
 - Cost: one local aggregate plus one batched read per run start
   (milliseconds); two regex passes over the prompt per model call;
-  and a refs line of ~100–200 tokens per message (about 13 per entry:
-  a five-token handle, the name, the type and space, the link
+  and a refs line of ~100–200 tokens per message (about 15 per entry:
+  a seven-token handle, the name, the type and space, the link
   brackets) that rides the message suffix, outside the cached prefix
   (system blocks and boot window), so it never costs a cache write;
   plus one cache miss per chat, and one per cron program, when the
   wall ships. The saving is on the other side: cells that pass a
-  five-token handle instead of a 40-token id, replies and a window
+  seven-token handle instead of a 40-token id, replies and a window
   that carry handles instead of 45-token links, and lookups that do
   not happen.
 - A trace reader meets the short spelling in one place, the
@@ -797,31 +811,44 @@ call, and nothing else would change.
   against it. It is dense: every number up to the count is live, so a
   mis-typed number, or a number cut short at the output limit (`1`
   from `12`), is another live object and nothing reports it
-  (Consequences); a slice in the same state misses the table. Every
-  key depends on the order of the text, where a slice depends on it
-  for the ids that shift (0.02%): one object reads as `7` in one call
+  (Consequences); a five-character key in the same state misses the
+  table. Every key depends on the order of the text, where the key of
+  §1 never does: one object reads as `7` in one call
   and `9` in another, and a part that the wall cannot rewrite (a
   signed thinking part) holds a stale number as soon as the text
-  before it changes. And it saves no tokens: with one table per call
+  before it changes. It saves about a token: with one table per call
   a handle costs 5.5 tokens on Qwen3 at 17 objects and 6.1 at 120,
-  because each digit is a token, against 5.5 for a slice; on `o200k`
-  a number is one token, 5.0 against 5.6. The dense key space is the
+  because each digit is a token, against 6.8 for a five-character
+  key; on `o200k` a number is one token, 5.0 against 6.6. The dense key space is the
   reason that decides, and it weighs only as much as models damage
   handles — which the fluency tests measure, with the number as an
   arm (open question 5).
+- **A three-character slice that shifts on a collision** (the 11-12
+  revision, shipped until 2026-11-16: the later id takes characters
+  2–4 of its id, then 3–5, until a slice is free) — the shortest
+  fixed-length key (5.4 tokens), and every id gets one. It gave way
+  for three reasons. The key was a function of the id and of the text
+  before it, so one object could read as `gyu` in one call and `yuu`
+  in another, and a thinking part could hold the key of a different
+  call. A shifted key is not the start of its id, so nothing outside
+  the table of the call can resolve it. And the any server now reads
+  the start of an object id as a short id, from five characters: with
+  the key of §1 the wall and the server share one spelling. The price
+  is 1.3 tokens per handle and, in about one call in a thousand at
+  120 ids, one id that stays long.
 - **A key that grows from one character** (the 11-11 chat proposal) —
   the shortest handle (4.0 tokens) and cache-stable with first-seen
   order, but dense in the same way: `gy` exists only because `g` is
   taken, so a dropped character expands, silently, to another object.
 - **A key that extends on a collision** (the later id keeps its
-  first slice and takes a fourth character: `gyu`, then `gyuu`) —
-  the same set lookup and the same cost as the shift, and every key
+  first characters and takes one more: `gyuur`, then `gyuur4`) —
+  the same set lookup, every id gets a key, and every key
   stays the start of its id. It fails on three points. A dropped last
   character turns the longer key into the shorter one, so the model
   names the other object of the pair, silently — and the pair is the
-  two objects it is most likely to confuse; a shifted key that loses
-  a character has the wrong length and misses the table. The prefix
-  does not identify the id: `gyuu` starts both ids of the pair, and
+  two objects it is most likely to confuse; an id that stays long
+  has no key to damage. The prefix
+  does not identify the id: `gyuur` starts both ids of the pair, and
   for two space ids with one hash a prefix that tells them apart is
   the whole hash, about 53 characters. And the length is no longer
   fixed, which the rule for a damaged handle relies on (Consequences).
@@ -829,14 +856,17 @@ call, and nothing else would change.
   revision) — a function of the id alone, which looked necessary for
   the cache and is not. It paid two tokens per handle over three
   characters to make the raise rare, and still left a run that could
-  not name two of its objects.
+  not name two of its objects. The key of §1 is a function of the id
+  too; it differs in what a collision does — the later id stays long
+  and the run goes on.
 - **A table-dependent key** — the 11-04 draft lengthened colliding
   keys (first both, then the newer only, the older keeping the short
   one by trace order). A rule that reshapes a key already shown
   breaks the cache (40 of 342 windows in the replay) and the 11-04
   older-wins rule resolved the newer entry's handle to the older
-  object silently. First seen in text order with a shift has neither
-  fault: no key ever changes, and no two ids share one.
+  object silently. "The first id seen keeps its key, a later one
+  stays long" has neither fault: no key ever changes, and no two ids
+  share one.
 - **The wall in the loop** (the 11-10 revision) — the loop rewrote
   the message list and the reply, with a run-local map. The loop's
   records then held handles while the effects below them held uris,
@@ -912,15 +942,20 @@ call, and nothing else would change.
    links or stamp ids; the rest were bare. A bare id gives no kind
    except by its shape, and its handle expands to a uri where the
    model may have wanted a bare id.
-5. Key length and key shape: the draft starts at a three-character
-   slice (2026-11-11). Four characters is the fallback (6.2 tokens
-   against 5.5; a random key hits a live object about once in 30,000
-   instead of once in 1,000; 2 runs with a collision in 2,469
-   instead of 18). The model-fluency tests (Verification) decide
-   whether three is enough for the weak models. The same tests
-   measure a number by first appearance (Alternatives): if models
-   copy a number with no more wrong-object errors than a slice, the
+5. Key length and key shape: five characters, the shortest short id
+   the server reads (2026-11-16; the draft of 2026-11-11 had three,
+   with four as the fallback). The model-fluency tests (Verification)
+   still measure how often a model damages a handle, with a number by
+   first appearance (Alternatives) as an arm: if models copy a number
+   with no more wrong-object errors than a five-character key, the
    number is the simpler key and this question opens again.
+6. A handle that the table of the call does not hold: `ref:unknown`
+   as today, or ask the server for the key in the spaces that the call
+   names (one match expands; none or several stay unknown, with the
+   candidates in the retry message)? The second needs the short
+   object id on the server, and it ends the rule that a handle the
+   call did not make never expands: an invented key then names a real
+   object about once in 8.4 million tries per object of the space.
 
 ## Verification
 
@@ -928,17 +963,21 @@ On the staging rig, with the wall in place: re-run S1–S6 and S10 of the probe 
 where lookups and lost links showed) on sonnet-5 AND one weaker model
 (GLM or Kimi via OpenRouter), measuring re-lookup cells, missing-link
 turns and cost against round 2, and counting `unresolvedRefs` and
-wrong expansions per key shape (a slice of three and of four
-characters, and a number by first appearance).
+wrong expansions per key shape (a key of five characters and a
+number by first appearance).
 
-Unit-test the key rule: the `bafy` prefix drop, the three-character
-slice, the dot of a space id skipped, first seen keeps its key, a
-forced collision shifts the later id and raises nothing, a second
-forced collision shifts again, two space ids with one hash and two
-suffixes get two keys after one step, an id whose every slice is
-taken extends its first slice by one character, the number of set
-lookups for a window equals its ids plus its shift steps, kinds do
-not collide with each other. Unit-test the link shape: a placeholder,
+Unit-test the key rule: the `bafy` header drop, the five-character
+key, an object key that is the start of its id after `bafyrei`, a key
+that does not change with the text before its id, first seen keeps
+its key, a forced collision leaves the later id long in every place
+of the call and raises nothing, the key expands to the first id only,
+two space ids with one hash leave the later one long, a stamp with an
+id that has no key stays as written, kinds do
+not collide with each other. Unit-test the short space id in any@v1:
+it resolves against the space list, as a key and as `ref:space/<key>`,
+with one read of the list; a name wins; two spaces with one hash
+raise with both candidates; an unknown key, a deleted space and four
+characters raise as an unknown name. Unit-test the link shape: a placeholder,
 a cut id, a short id, a link with a query, a legacy `any://m/` link
 and a link of an unknown kind all pass through unchanged and take no
 key. Unit-test the kinds: a record link and a property link carry the

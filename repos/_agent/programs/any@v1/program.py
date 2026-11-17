@@ -725,7 +725,10 @@ class _Client:
     # --- space-name resolution (ADR-010 §8) ----------------------------------
     # Spaces resolve by NAME the way types/props resolve by xKey: a
     # memoized list_spaces catalog, refresh-once-on-miss, loud errors
-    # carrying the space list. Id-shaped strings skip the catalog.
+    # carrying the space list. Id-shaped strings skip the catalog. A
+    # short space id resolves against the same list (ADR-035 §5).
+    _SHORT_ID = re.compile(r"[a-z2-7]{5,52}")
+
     def _spaces(self):
         if self._spaces_cache is None:
             self._spaces_cache = self._call("get", "/v1/spaces").get("spaces", [])
@@ -746,6 +749,19 @@ class _Client:
                 f'space name "{sid}" is ambiguous: '
                 + ", ".join(f'"{h.get("name")}" ({h["id"]})' for h in hits)
                 + " — pass the id")
+        # a short space id (ADR-035 §5): the start of the id after
+        # `bafyrei`, the shape the server reads for an object. A name
+        # wins over it; `ref:space/<key>` is the same key.
+        key = sid[len("ref:space/"):] if sid.startswith("ref:space/") else sid
+        if self._SHORT_ID.fullmatch(key):
+            hits = [r for r in active if r["id"].startswith("bafyrei" + key)]
+            if len(hits) == 1:
+                return hits[0]["id"]
+            if len(hits) > 1:
+                raise ValueError(
+                    f'short space id "{key}" is ambiguous: '
+                    + ", ".join(f'"{h.get("name")}" ({h["id"]})' for h in hits)
+                    + " — pass the full id")
         if not _retried:
             self._spaces_cache = None         # fresh space? refresh once
             return self._resolve_space(sid, True)
