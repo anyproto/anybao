@@ -1247,9 +1247,11 @@ _EXCERPT = 400
 # --- The wall (ADR-035 §1, §5): handles on the way in, links on the way out --
 # The model reads and writes `ref:<kind>/<key>`; every caller of `chat`
 # holds `any://` links. One table per call, made from the call's own
-# text in text order, dropped when the call returns.
+# text, dropped when the call returns.
 
-_KEY_LEN = 3
+# an object key is the short id of the server (any docs/03-api.md
+# § Object ids): the first five characters after `bafyrei`
+_KEY_LEN = 5
 
 _SPACE_ID = r"bafy[a-z2-7]{55}\.[A-Za-z0-9]+"
 _OBJECT_ID = r"bafy[a-z2-7]{55}"
@@ -1298,44 +1300,41 @@ _WALL_OUT = re.compile(
 
 
 def _wall_table():
-    """The table of one call: `keys` (kind, key) → entry, `ids`
-    (kind, id) → key, and `lookups`, the count of questions asked to
-    the key set (ADR-035 §1: one per id plus one per shift step).
-    `foreign` holds the typed links the call's own text carried: the
-    outward rule never reads a key out of those."""
-    return {"keys": {}, "ids": {}, "lookups": 0, "foreign": set()}
+    """The table of one call: `keys` (kind, key) → entry and `ids`
+    (kind, id) → key; an id with no key maps to None. `foreign` holds
+    the typed links the call's own text carried: the outward rule
+    never reads a key out of those."""
+    return {"keys": {}, "ids": {}, "foreign": set()}
 
 
 def _wall_key(table, kind, ident, entry):
-    """The key of an id (ADR-035 §1). The first id seen keeps its key;
-    a later id whose slice is taken slides one character along the id
-    until a slice is free; with every slice taken it takes its first
-    slice plus one more character. A key already given never changes.
-    None only when the id has no free key at all (two ids with the same
-    letters and digits) — the caller then leaves the text as it is."""
-    known = table["ids"].get((kind, ident))
-    if known is not None:
-        held = table["keys"][(kind, known)]
-        if held.get("space") is None and entry.get("space") is not None:
-            # the id stood bare first; a link now names its space
-            held["space"] = entry["space"]
+    """The key of an id (ADR-035 §1): its first five letters and
+    digits, after the header of a `bafy` id and after the first two
+    characters of an identity. The key is a function of the id alone.
+    None when another id of the kind holds that key in this call — the
+    first id seen keeps it, and the caller leaves the later id in the
+    text as it is."""
+    ids = table["ids"]
+    if (kind, ident) in ids:
+        known = ids[(kind, ident)]
+        if known is not None:
+            held = table["keys"][(kind, known)]
+            if held.get("space") is None and entry.get("space") is not None:
+                # the id stood bare first; a link now names its space
+                held["space"] = entry["space"]
         return known
     chars = "".join(c for c in ident if c.isalnum())
     if ident.startswith("bafy"):
         chars = chars[7:]       # multibase, codec and hash header
     elif kind == "user":
         chars = chars[2:]       # the first two take few values
-    n = _KEY_LEN
-    slides = (chars[i:i + n] for i in range(len(chars) - n + 1))
-    longer = (chars[:j] for j in range(n + 1, len(chars) + 1))
-    for group in (slides, longer):
-        for key in group:
-            table["lookups"] += 1
-            if (kind, key) not in table["keys"]:
-                table["keys"][(kind, key)] = entry
-                table["ids"][(kind, ident)] = key
-                return key
-    return None
+    key = chars[:_KEY_LEN]
+    if len(key) < _KEY_LEN or (kind, key) in table["keys"]:
+        key = None
+    else:
+        table["keys"][(kind, key)] = entry
+    ids[(kind, ident)] = key
+    return key
 
 
 def _wall_handle(table, m):
